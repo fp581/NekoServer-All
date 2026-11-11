@@ -68,13 +68,13 @@ OLD_LOCATIONS = {'photos': 'photos', 'movies': 'movies', 'music': 'music', CLOUD
 
 
 def apps_of(row):
-    """The apps whose settings a row's installation drive holds. The download apps
-    (Lidarr among them) are installed with Movies and shows."""
+    """The apps whose settings a row's installation drive holds. Prowlarr and
+    qBittorrent, which both groups' finding uses, are installed with Movies and shows."""
     if row == CLOUD:
         return ['nextcloud']
     if row not in MEDIA_GROUPS:
         return []
-    home = {app: 'movies' if DOWNLOADS in groups else groups[0] for app, groups in APP_GROUPS.items() if groups}
+    home = {app: 'movies' if groups == (DOWNLOADS,) else groups[0] for app, groups in APP_GROUPS.items() if groups}
     return [app for app, group in home.items() if group == row]
 
 
@@ -119,10 +119,10 @@ def derived_drives(config):
     for name, (key, _mount) in OLD_DRIVES.items():
         record = storage.get(key)
         if isinstance(record, dict) and record.get('uuid'):
-            drives[name] = {k: record[k] for k in ('uuid', 'fstype', 'network', 'subvolume') if record.get(k)}
+            drives[name] = {k: record[k] for k in ('uuid', 'fstype', 'network', 'subvolume', 'folder') if record.get(k)}
     # Every other drive listed under "storage" (0.50.0), by the name it has there.
     for name, record in extra_drives(config).items():
-        drives[name] = {k: record[k] for k in ('uuid', 'fstype', 'network', 'subvolume') if record.get(k)}
+        drives[name] = {k: record[k] for k in ('uuid', 'fstype', 'network', 'subvolume', 'folder') if record.get(k)}
     photos = config.get('photos', {})
     if photos.get('external_backup_uuid'):
         drives[OFFLINE_DRIVE] = {

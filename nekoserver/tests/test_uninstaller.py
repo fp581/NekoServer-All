@@ -409,6 +409,30 @@ class PlanTests(unittest.TestCase):
         self.assertIn("Docker's data-root setting (/srv/nekoserver/docker-engine) is taken out", notes)
         self.assertEqual(len(self.plan.fstab_lines()), 3)
 
+    def test_a_role_on_the_system_disk_never_costs_the_systems_own_fstab_line(self):
+        """0.50.0: the apps kept in a folder of the disk Linux runs from carry that disk's
+        UUID in the settings. Its line in /etc/fstab is the system's: taking it out would
+        leave a PC that does not start. Only the role's own bind line goes."""
+        apps = '/var/lib/nekoserver/apps'
+        settings = {
+            **SETTINGS,
+            'storage': {
+                'data_ssd': {'uuid': 'cccc-3333', 'fstype': 'ext4', 'folder': apps, 'subvolume': apps},
+                'media_hdd': {'uuid': 'bbbb-2222', 'fstype': 'ext4'},
+            },
+        }
+        self.system.write(
+            '/etc/fstab',
+            'UUID=cccc-3333 / ext4 defaults 0 1\n'
+            f'{apps} /srv/nekoserver none bind 0 0\n'
+            'UUID=bbbb-2222 /mnt/nekoserver-media ext4 defaults,nofail,x-systemd.device-timeout=90s 0 2\n',
+        )
+        lines = self.system.plan(settings=settings).fstab_lines()
+        self.assertEqual([line.split()[1] for line in lines], ['/srv/nekoserver', '/mnt/nekoserver-media'])
+        # Settings written by hand that name the system's UUID as a drive: still never its line.
+        by_hand = {**SETTINGS, 'storage': {'data_ssd': {'uuid': 'cccc-3333', 'fstype': 'ext4'}}}
+        self.assertNotIn('/', [line.split()[1] for line in self.system.plan(settings=by_hand).fstab_lines()])
+
     def test_the_plan_shows_sizes_and_the_phrase_names_the_personal_data(self):
         text = self.plan.describe({'server', 'photos'})
         self.assertIn('== NekoServer itself', text)

@@ -14,7 +14,7 @@ def run(ctx):
     if not gateway_tools.configure(ctx, 'lan'):
         return {
             'status': 'needs_setup',
-            'reason': 'Choose gateway.lan_ip/lan_cidr and confirm secured gateway.confirmed_services on the actual server',
+            'reason': gateway_tools.waiting_said(ctx.config),
         }
     gateway_tools.choose_lan_ports(ctx)
     result = gateway_tools.apply_lan(ctx.config)

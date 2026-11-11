@@ -1146,7 +1146,7 @@ class ReadyToStartTests(unittest.TestCase):
         said = []
         with self.pipe('maybe\nno\n') as stdin, mock.patch('sys.stdout'):
             self.assertFalse(wizard.wait_to_start(self.path, builtins.input, said.append, window, stdin))
-        self.assertIn('Type yes, no, or the number of a line (1 to 10).', said)
+        self.assertIn('Type yes, no, or the number of a line (1 to 11).', said)
         window.choose.assert_not_called()
         with self.pipe('y\n') as stdin, mock.patch('sys.stdout'):
             self.assertTrue(wizard.wait_to_start(self.path, builtins.input, lambda line: None, window, stdin))
@@ -1161,9 +1161,9 @@ class ReadyToStartTests(unittest.TestCase):
 
     def test_a_number_switches_that_line_through_the_window(self):
         window = self.window()
-        with self.pipe('2 6\nno\n') as stdin, mock.patch('sys.stdout'):
+        with self.pipe('2 7\nno\n') as stdin, mock.patch('sys.stdout'):
             self.assertFalse(wizard.wait_to_start(self.path, builtins.input, lambda line: None, window, stdin))
-        # Line 2 (Movies and shows) was on, line 6 (a TV) off on a new server.
+        # Line 2 (Movies and shows) was on, line 7 (a TV) off on a new server.
         window.choose.assert_called_once_with({'media_movies': False, 'tv': True}, start=False)
 
     def test_without_a_window_or_in_tests_the_plain_question_is_asked(self):

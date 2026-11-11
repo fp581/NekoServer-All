@@ -18,7 +18,7 @@ import shutil
 import subprocess
 
 import setup_progress
-from neko_common import media_apps_wanted, typed
+from neko_common import extra_drives, media_apps_wanted, typed
 
 # The roles a drive can have: (what setup calls it, what goes on it, the same with the
 # media apps left out).
@@ -316,9 +316,20 @@ def inside(row):
     return '; '.join(facts)
 
 
+def system_roles(config):
+    """The roles kept on the disk Linux runs from (a folder of it each)."""
+    storage = config.get('storage', {})
+    return [
+        key for key in ('data_ssd', 'media_hdd') if isinstance(storage.get(key), dict) and storage[key].get('folder')
+    ]
+
+
 def role_of(row, config):
-    """The role this drive has in the settings now ('data_ssd', 'media_hdd', 'usb'), or None."""
-    if not row['uuid'] or row['system']:
+    """The role this drive has in the settings now ('data_ssd', 'media_hdd', 'usb'), or None.
+    The disk Linux runs from may have both of the first two: the first is named."""
+    if row['system']:
+        return next(iter(system_roles(config)), None)
+    if not row['uuid']:
         return None
     storage = config.get('storage', {})
     for key in ('data_ssd', 'media_hdd'):
@@ -327,7 +338,44 @@ def role_of(row, config):
     return 'usb' if config.get('photos', {}).get('external_backup_uuid') == row['uuid'] else None
 
 
-SYSTEM_DISK = 'it is the disk Linux runs from, which NekoServer never uses for your files'
+# Said with the disk Linux runs from wherever it can be chosen (0.50.0: a PC with one
+# drive, or with one drive beside it, is a server too).
+SYSTEM_DISK = (
+    'It is the disk Linux runs from: NekoServer keeps this in a folder of it (/var/lib/nekoserver). If that disk '
+    'fails, Linux and what is kept there are lost together, and a disk that fills up stops Linux too. A drive of '
+    'its own is the safer choice.'
+)
+# Said when the backups go to the disk the apps are on.
+SAME_DISK_BACKUPS = (
+    'The backups are then on the same disk as what they copy. They still help after a mistake or a broken app, '
+    'but not when that disk fails: an offline backup on a removable drive is what covers that.'
+)
+SYSTEM_NOT_OFFLINE = (
+    'it is the disk Linux runs from; the offline backup must be a drive of its own that you can take away'
+)
+SYSTEM_FILESYSTEMS = ('ext4', 'xfs', 'btrfs')
+
+
+def system_verdict(key, config):
+    """Why the disk Linux runs from cannot have the role `key`, or '': it can hold the
+    apps, the media and backups, or both, when its filesystem is one the apps can use and
+    it has room for what is put there (the minimums of both roles when both are on it)."""
+    from modules import storage
+
+    if key == 'usb':
+        return SYSTEM_NOT_OFFLINE
+    try:
+        _uuid, fstype = storage.system_filesystem()
+        free = storage.system_free_gb()
+    except (OSError, RuntimeError):
+        return 'setup cannot read the filesystem Linux runs from'
+    if fstype not in SYSTEM_FILESYSTEMS:
+        return f'Linux runs from a {fstype} filesystem, which the apps cannot keep their files on'
+    needed = sum(storage.sizes(role_key)[0] for role_key in {key, *system_roles(config)})
+    if free < needed:
+        both = ' together with what is already kept there' if set(system_roles(config)) - {key} else ''
+        return f'it has too little room: {free} GB free, and {role(key)} needs at least {needed} GB there{both}'
+    return ''
 
 
 def in_use(row, folder):
@@ -343,12 +391,14 @@ def verdict(row, key, config):
     """Why this drive cannot have the role `key`, in words that follow "cannot be the app
     SSD: "; '' when it can."""
     if row['system']:
-        return SYSTEM_DISK
+        return system_verdict(key, config)
     if row['problem']:
         return row['problem']
     has = role_of(row, config)
     if has and has != key:
         return f'it is already {role(has)}'
+    if row['uuid'] and any(record.get('uuid') == row['uuid'] for record in extra_drives(config).values()):
+        return "it already holds an app's files (chosen as a drive of their own)"
     if row['export']:
         return 'it is a folder the NAS shares; the network storage step chooses those'
     return backup_verdict(row, config) if key == 'usb' else drive_verdict(row, key, config)
@@ -495,6 +545,8 @@ def for_window(table, key, config):
             'inside': inside(row),
             'role': (f'Chosen as {role(has)}' if (has := role_of(row, config)) else ''),
             'why': verdict(row, key, config),
+            # What choosing it means, said before it is chosen (the disk Linux runs from).
+            'caution': SYSTEM_DISK if row['system'] and key != 'usb' and not verdict(row, key, config) else '',
         }
         for row in table
     ]
@@ -508,7 +560,7 @@ def none_usable(table, key, config):
     )
     return (
         f'No drive here can be {role(key)} ({holds(config, key)}). NekoServer never formats a drive by itself, '
-        f'and never uses the disk Linux runs from or a drive already in use.\n{found}\n'
+        f'and never takes a drive that is in use elsewhere.\n{found}\n'
         'Then run  sudo bash install.sh  again. Nothing was changed.'
     )
 
@@ -586,6 +638,10 @@ def ask(table, key, config, input_fn=input, out_fn=print, attempts=3, skippable=
             if not why:
                 chosen = said({'said': brief(row)}, first=True)
                 out_fn(f'{chosen} is {role(key)}. Nothing on it is changed by choosing it.')
+                if row['system']:
+                    out_fn(SYSTEM_DISK)
+                    if key == 'media_hdd' and 'data_ssd' in system_roles(config):
+                        out_fn(SAME_DISK_BACKUPS)
                 return row
             refused = said({'said': brief(row)}, first=True)
             out_fn(f'{refused} cannot be {role(key)}: {why}. Choose another one from the list.')

@@ -1212,23 +1212,43 @@ class GatewayConfirmationTests(unittest.TestCase):
 
         config = {'gateway': {'services': ['jellyfin', 'immich']}, 'accounts': {'enabled': True}}
         saved = []
+        self.said = []
         ctx = mock.Mock(
-            config=config, apply=True, log=lambda m: None, persist_config=lambda: saved.append(dict(config['gateway']))
+            config=config,
+            apply=True,
+            log=self.said.append,
+            persist_config=lambda: saved.append(dict(config['gateway'])),
         )
         entry = {'state': 'verified'} if verified else None
         with (
             mock.patch.object(gateway_tools, 'selected', return_value=['jellyfin', 'immich']),
             mock.patch('account_store.get', return_value=entry),
             mock.patch('sys.stdin.isatty', return_value=interactive),
-            mock.patch.object(gateway_tools.guided_setup, 'app_security', side_effect=AssertionError('asked')),
+            mock.patch('builtins.input', side_effect=AssertionError('asked')),
         ):
             return gateway_tools.configure(ctx, 'tailnet'), config['gateway'].get('confirmed_services')
 
     def test_verified_logins_confirm_the_apps_by_themselves(self):
         self.assertEqual(self.configure(verified=True, interactive=False), (True, ['jellyfin', 'immich']))
 
-    def test_unverified_logins_still_wait_for_a_person(self):
-        self.assertEqual(self.configure(verified=False, interactive=False), (False, None))
+    def test_unverified_logins_keep_the_addresses_off_and_nobody_is_asked_to_vouch(self):
+        """0.50.0, the wizard (T19): a person used to confirm it (in one place by typing
+        SECURED). Not verified is not safe: the addresses stay off, with the reason."""
+        import gateway_tools
+        import guided_setup
+        import questions
+
+        for interactive in (False, True):
+            self.assertEqual(self.configure(verified=False, interactive=interactive), (False, None))
+            self.assertIn('App addresses stay off: the login of Jellyfin, Immich could not be verified', self.said[-1])
+        self.assertFalse(hasattr(guided_setup, 'app_security'))
+        for gone in ('access_checked', 'apps_signed_in'):
+            self.assertNotIn(gone, questions.Q)
+        source = (Path(gateway_tools.__file__).parent / 'gateway_tools.py').read_text()
+        self.assertNotIn('SECURED', source)
+        # A server that does not keep the logins says so, and how to vouch in the settings.
+        off = {'accounts': {'enabled': False}}
+        self.assertIn('"confirmed_services" under "gateway"', gateway_tools.unverified_said(off, ['jellyfin']))
 
 
 class StackedMountTests(unittest.TestCase):

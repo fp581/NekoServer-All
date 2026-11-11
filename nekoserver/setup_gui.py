@@ -316,6 +316,8 @@ class Window:
                     'on': explanations.extra_state(self.config, e),
                     'part': dict(explanations.PARTS)[e['part']],
                     'needs': list(e.get('needs', ())),
+                    'under': e.get('under', ''),
+                    'small': e.get('small', ''),
                 }
                 for e in explanations.EXTRAS
             ]

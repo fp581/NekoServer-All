@@ -559,6 +559,15 @@ class DriveStepTests(unittest.TestCase):
         ]
     }  # fmt: skip
 
+    def setUp(self):
+        # The disk Linux runs from, the same on every machine these tests run on: ext4 and
+        # full, so it is in the list and cannot be chosen (tests/test_drive_table.py has
+        # the one with room).
+        for name, value in (('system_filesystem', ('root-fs-0001', 'ext4')), ('system_free_gb', 0)):
+            patch = mock.patch.object(storage, name, return_value=value)
+            patch.start()
+            self.addCleanup(patch.stop)
+
     def test_a_nas_disk_is_known_as_one_with_its_identity(self):
         found = {v['uuid']: v for v in storage.discover_filesystems(self.INVENTORY, sub_uuid=lambda n: None)}
         self.assertTrue(found['nas-1']['network'])
@@ -982,9 +991,11 @@ class LocationTests(unittest.TestCase):
         return ctx
 
     def test_the_better_drive_is_offered_first_and_enter_takes_it(self):
-        ctx = self.ask(['', '2', ''])
+        ctx = self.ask(['', '', '2', ''])  # photos, films and shows, music, Nextcloud's files
         # A 250 GB SSD: photos and music on the media drive; music moved to the SSD by hand.
-        self.assertEqual(self.config['locations'], {'photos': 'media', 'music': 'ssd', 'cloud': 'media'})
+        self.assertEqual(
+            self.config['locations'], {'photos': 'media', 'movies': 'media', 'music': 'ssd', 'cloud': 'media'}
+        )
         said = '\n'.join(ctx.lines)
         self.assertIn('the media drive: 1800 GB free, the most room  (recommended)', said)
         self.assertIn('The backups follow wherever you choose', said)
@@ -1017,7 +1028,7 @@ class LocationTests(unittest.TestCase):
         ctx = self.Ctx(self.config)
         with (
             mock.patch.object(storage, 'free_gb', lambda f: 230 if f.endswith('srv') else 1800),
-            mock.patch('builtins.input', side_effect=['2', '', '']),
+            mock.patch('builtins.input', side_effect=['2', '', '', '']),
         ):
             storage.choose_locations(ctx, None, True)
         self.assertEqual(self.config['locations']['photos'], 'ssd')  # the second offer, typed
@@ -1040,7 +1051,7 @@ class LocationTests(unittest.TestCase):
         library = self.root / 'srv/photos/immich-library'
         library.mkdir(parents=True)
         (library / 'upload').mkdir()
-        self.ask(['', ''])
+        self.ask(['', '', ''])
         self.assertEqual(self.config['locations']['photos'], 'ssd')  # the layout before 0.46.0
         self.config['locations']['photos'] = 'media'
         with self.assertRaisesRegex(RuntimeError, 'would start with an empty folder'):
@@ -1055,7 +1066,7 @@ class LocationTests(unittest.TestCase):
         self.assertNotIn('photos', self.config.get('locations', {}))
         # Once the settings say which one, it is used, and the other is named as left alone.
         self.config['locations'] = {'photos': 'media'}
-        ctx = self.ask(['', ''])
+        ctx = self.ask(['', '', ''])
         self.assertEqual(self.config['locations']['photos'], 'media')
         self.assertIn('The SSD holds another folder of them too', '\n'.join(ctx.lines))
 

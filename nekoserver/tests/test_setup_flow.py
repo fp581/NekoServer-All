@@ -186,13 +186,23 @@ class SetupWindowTests(unittest.TestCase):
         what will be installed with Back, and one button that starts it."""
         extras = [
             {'id': 'media_movies', 'title': 'Movies and shows - Jellyfin', 'part': 'Apps', 'needs': [], 'on': False},
-            {'id': 'media_music', 'title': 'Music - Navidrome', 'part': 'Apps', 'needs': [], 'on': False},
+            {'id': 'media_music', 'title': 'Music - Navidrome', 'part': 'Apps', 'needs': [], 'on': True},
+            # The switch inside each of the two cards: drawn in its card, offered while the card is on.
             {
-                'id': 'media_downloads',
-                'title': 'Set up automatic media downloads',
-                'part': 'Downloads',
-                'needs': ['media_movies', 'media_music'],
-                'on': False,
+                'id': 'movies_downloads',
+                'title': 'Also find and download new ones',
+                'part': 'Apps',
+                'under': 'media_movies',
+                'needs': ['media_movies'],
+                'on': True,
+            },
+            {
+                'id': 'music_downloads',
+                'title': 'Also find and download new ones',
+                'part': 'Apps',
+                'under': 'media_music',
+                'needs': ['media_music'],
+                'on': True,
             },
             {'id': 'tv', 'title': 'A TV connected to this PC', 'part': 'Optional extras', 'needs': [], 'on': False},
         ]
@@ -204,18 +214,26 @@ class SetupWindowTests(unittest.TestCase):
         }
         state = {**self.choose(), 'extras': extras, 'review': review}
         seen = self.page([state])
-        self.assertEqual(seen['parts'], ['Apps', 'Downloads', 'Optional extras'])
-        # The downloads cannot be pressed while there is nothing to download for; every
-        # card says yes or no (nothing is "asked later").
+        self.assertEqual(seen['parts'], ['Apps', 'Optional extras'])
+        # Three cards; every card says yes or no (nothing is "asked later").
+        self.assertEqual(seen['cards'], [['extra', 'no', False], ['extra on', 'yes', False], ['extra', 'no', False]])
+        # The finding switch is inside its card, and cannot be pressed while the card is off.
         self.assertEqual(
-            seen['cards'],
-            [['extra', 'no', False], ['extra', 'no', False], ['extra unavailable', 'no', True], ['extra', 'no', False]],
+            seen['subs'],
+            [
+                ['Movies and shows - Jellyfin', 'sub-switch unavailable', 'no', True],
+                ['Music - Navidrome', 'sub-switch', 'yes', False],
+            ],
         )
         self.assertEqual((seen['review']['appsHidden'], seen['review']['hidden']), (False, True))
-        # Music on: the downloads are offered.
-        seen = self.page([{**state, 'press': 'Music - Navidrome'}])
-        self.assertEqual(seen['cards'][1:3], [['extra on', 'yes', False], ['extra', 'no', False]])
-        self.assertEqual(seen['posts'], [['api/choose', {'media_music': True}]])
+        # The card switched on: its switch is offered, on as it was saved.
+        seen = self.page([{**state, 'press': 'Movies and shows - Jellyfin'}])
+        self.assertEqual(seen['subs'][0], ['Movies and shows - Jellyfin', 'sub-switch', 'yes', False])
+        self.assertEqual(seen['posts'], [['api/choose', {'media_movies': True}]])
+        # The switch inside the Music card pressed: Navidrome alone.
+        seen = self.page([{**state, 'pressInside': 'Music - Navidrome'}])
+        self.assertEqual(seen['subs'][1], ['Music - Navidrome', 'sub-switch', 'no', False])
+        self.assertEqual(seen['posts'], [['api/choose', {'music_downloads': False}]])
         # Continue: the review, with what the button will do; nothing has started.
         seen = self.page([{**state, 'continue': True}])
         self.assertEqual((seen['review']['appsHidden'], seen['review']['hidden']), (True, False))

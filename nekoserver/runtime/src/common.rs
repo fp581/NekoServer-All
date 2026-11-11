@@ -208,11 +208,15 @@ pub static MEDIA_APPS: std::sync::LazyLock<Vec<&str>> = std::sync::LazyLock::new
 /// and download) is a switch beside the three: its own answer counts with films or music
 /// on; without one it is as "movies" is (the download apps were set up with it before).
 pub fn media_group(cfg: &Value, group: &str) -> bool {
+    // Finding and downloading, a small switch inside each of the two groups, on unless
+    // switched off; "downloads" (Prowlarr, qBittorrent) is whether either is set up.
+    if group == "movies_downloads" || group == "music_downloads" {
+        return cfg["media_apps"][group] != false;
+    }
     if group == "downloads" {
-        return match cfg["media_apps"][group].as_bool() {
-            Some(chosen) => chosen && (media_group(cfg, "movies") || media_group(cfg, "music")),
-            None => media_group(cfg, "movies"),
-        };
+        return [("movies", "movies_downloads"), ("music", "music_downloads")]
+            .iter()
+            .any(|(of, switch)| media_group(cfg, of) && media_group(cfg, switch));
     }
     match cfg["media_apps"][group].as_bool() {
         Some(chosen) => chosen,
@@ -241,6 +245,25 @@ pub fn media_services(cfg: &Value) -> Vec<&str> {
         .filter_map(Value::as_str)
         .filter(|app| app_wanted(cfg, app))
         .collect()
+}
+/// The app drive and the media drive are one filesystem by choice (setup's storage page,
+/// 0.50.0: both kept on the disk Linux runs from). Each is then a folder of it ("folder"
+/// in its record), mounted at the role's place and told apart by the folder findmnt
+/// shows there ("subvolume"), which every drive check compares. Only then may the two
+/// carry one UUID.
+pub fn share_system_disk(cfg: &Value) -> bool {
+    let storage = &cfg["storage"];
+    let folder = |key: &str| {
+        storage[key]["folder"]
+            .as_str()
+            .is_some_and(|f| !f.is_empty())
+    };
+    let kept = |key: &str| storage[key]["subvolume"].as_str().unwrap_or("");
+    folder("data_ssd")
+        && folder("media_hdd")
+        && !kept("data_ssd").is_empty()
+        && !kept("media_hdd").is_empty()
+        && kept("data_ssd") != kept("media_hdd")
 }
 /// Immich is set up: photos.deploy_immich, and the Photos group not left out.
 pub fn immich_wanted(cfg: &Value) -> bool {
@@ -1435,6 +1458,32 @@ mod media_answer_tests {
         assert!(files_root(&unknown, "photos").is_err());
     }
 
+    /// One filesystem for the apps and the media only when both are folders of the system
+    /// disk by choice, each known by its own folder (modules/storage.py SYSTEM_FOLDERS).
+    #[test]
+    fn two_roles_share_a_filesystem_only_as_folders_of_the_system_disk() {
+        use super::share_system_disk;
+        let role = |folder: &str, kept: &str| json!({"uuid": "root-1", "fstype": "ext4", "folder": folder, "subvolume": kept});
+        let apps = role("/var/lib/nekoserver/apps", "/var/lib/nekoserver/apps");
+        let media = role("/var/lib/nekoserver/media", "/var/lib/nekoserver/media");
+        assert!(share_system_disk(
+            &json!({"storage": {"data_ssd": apps, "media_hdd": media}})
+        ));
+        // One of them a drive of its own, the folder not learned yet, or both the same folder: no.
+        let drive = json!({"uuid": "root-1", "fstype": "ext4"});
+        assert!(!share_system_disk(
+            &json!({"storage": {"data_ssd": apps, "media_hdd": drive}})
+        ));
+        let unknown = role("/var/lib/nekoserver/media", "");
+        assert!(!share_system_disk(
+            &json!({"storage": {"data_ssd": apps, "media_hdd": unknown}})
+        ));
+        assert!(!share_system_disk(
+            &json!({"storage": {"data_ssd": apps, "media_hdd": apps}})
+        ));
+        assert!(!share_system_disk(&json!({})));
+    }
+
     /// The three groups (neko_common.media_group and tests/test_media_groups.py): each
     /// chosen on its own, any combination, an app set up when every group it names is on.
     #[test]
@@ -1455,9 +1504,12 @@ mod media_answer_tests {
         let photos = with(json!({"photos": true, "movies": false, "music": false}));
         assert!(immich_wanted(&photos) && media_wanted(&photos));
         assert!(media_services(&photos).is_empty());
-        // Music alone: Navidrome (the downloads, with no answer, are as Movies and shows is: off).
+        // Music alone: Navidrome, with Lidarr and what it needs to find and download.
         let music = with(json!({"photos": false, "movies": false, "music": true}));
-        assert_eq!(media_services(&music), ["navidrome"]);
+        assert_eq!(
+            media_services(&music),
+            ["navidrome", "lidarr", "prowlarr", "qbittorrent"]
+        );
         assert!(!immich_wanted(&music));
         // Movies and shows alone: everything but Navidrome and Lidarr.
         let movies = with(json!({"photos": false, "movies": true, "music": false}));
@@ -1472,20 +1524,23 @@ mod media_answer_tests {
                 "qbittorrent"
             ]
         );
-        // The downloads are a switch of their own (neko_common.DOWNLOADS): playing without
-        // downloading, music downloads without the film player, and nothing to download
-        // for with neither. Without an answer they are as Movies and shows is (above).
-        let playing =
-            with(json!({"photos": false, "movies": true, "music": true, "downloads": false}));
-        assert_eq!(media_services(&playing), ["jellyfin", "navidrome"]);
-        let music_found =
-            with(json!({"photos": false, "movies": false, "music": true, "downloads": true}));
-        assert_eq!(
-            media_services(&music_found),
-            ["navidrome", "lidarr", "prowlarr", "qbittorrent"]
+        // Finding and downloading is a small switch inside each of the two groups
+        // (neko_common.FINDING), on unless switched off: off leaves Jellyfin, or Navidrome,
+        // alone, and the other group keeps its own.
+        let playing = with(
+            json!({"photos": false, "movies": true, "music": true, "movies_downloads": false, "music_downloads": false}),
         );
-        let nothing_for =
-            with(json!({"photos": true, "movies": false, "music": false, "downloads": true}));
+        assert_eq!(media_services(&playing), ["jellyfin", "navidrome"]);
+        let films_played = with(
+            json!({"photos": false, "movies": true, "music": true, "movies_downloads": false}),
+        );
+        assert_eq!(
+            media_services(&films_played),
+            ["jellyfin", "navidrome", "lidarr", "prowlarr", "qbittorrent"]
+        );
+        let nothing_for = with(
+            json!({"photos": true, "movies": false, "music": false, "movies_downloads": true}),
+        );
         assert!(media_services(&nothing_for).is_empty() && !media_group(&nothing_for, "downloads"));
         // None, and all.
         let none = with(json!({"photos": false, "movies": false, "music": false}));
@@ -1498,7 +1553,10 @@ mod media_answer_tests {
             media_wanted(&json!({})) && immich_wanted(&json!({"photos": {"deploy_immich": true}}))
         );
         let old_no = with(json!({"wanted": false, "music": true}));
-        assert_eq!(media_services(&old_no), ["navidrome"]);
+        assert_eq!(
+            media_services(&old_no),
+            ["navidrome", "lidarr", "prowlarr", "qbittorrent"]
+        );
         assert!(!immich_wanted(&old_no));
         // Nextcloud is in no group, and an app that is not in the list is in none either.
         assert!(app_wanted(&none, "nextcloud") && app_wanted(&none, "unknown"));

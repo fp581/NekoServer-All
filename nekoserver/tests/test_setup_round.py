@@ -316,8 +316,14 @@ class WindowPackageTests(unittest.TestCase):
             saved,
             {
                 'tv': {'wanted': True},  # chosen before: kept
-                # A new server: the apps are offered on, the downloads and the extras off.
-                'media_apps': {'photos': True, 'movies': True, 'music': False, 'downloads': False},
+                # A new server: the apps are offered on, with finding and downloading; the extras off.
+                'media_apps': {
+                    'photos': True,
+                    'movies': True,
+                    'music': False,
+                    'movies_downloads': True,
+                    'music_downloads': True,
+                },
                 'nextcloud': {'enabled': True},
                 'notifications': {'wanted': False},
                 'heartbeat': {'wanted': False},
@@ -688,6 +694,13 @@ class DriveSizeTests(unittest.TestCase):
     )
 
     def setUp(self):
+        # The disk Linux runs from, the same on every machine these tests run on: ext4 and
+        # full, so it is in the list and cannot be chosen (tests/test_drive_table.py has
+        # the one with room).
+        for name, value in (('system_filesystem', ('root-fs-0001', 'ext4')), ('system_free_gb', 0)):
+            patch = mock.patch.object(storage, name, return_value=value)
+            patch.start()
+            self.addCleanup(patch.stop)
         # The list is shown afresh, and no drive of this computer is looked into.
         import drive_table
 
@@ -735,8 +748,7 @@ class DriveSizeTests(unittest.TestCase):
         self.assertIn(f'  3) sdb1: 16 GB drive, Cruzer, named "SSD", ext4  - not this one: {too_small}', out)
         self.assertIn('  4) sdc1: 466 GB drive, Samsung SSD 870, named "Fast", ext4', out)
         self.assertIn(
-            '  2) nvme0n1: 477 GB NVMe SSD, WD SN770  - not this one: it is the disk Linux runs from, which '
-            'NekoServer never uses for your files',
+            '  2) nvme0n1: 477 GB NVMe SSD, WD SN770  - not this one: it has too little room: 0 GB free, and the app SSD needs at least 20 GB there',
             out,
         )
         self.assertIn(

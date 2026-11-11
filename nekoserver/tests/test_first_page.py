@@ -38,16 +38,17 @@ class Base(unittest.TestCase):
 
 
 class PageTests(Base):
-    def test_the_rows_and_their_words_are_the_specifications(self):
-        rows = [(extra['part'], extra['title']) for extra in explanations.EXTRAS]
+    def test_the_rows_and_their_words(self):
+        rows = [(extra['part'], extra['title']) for extra in explanations.shown()]
         self.assertEqual(
             rows,
             [
                 ('apps', 'Photos and phone backup - Immich'),
                 ('apps', 'Movies and shows - Jellyfin'),
+                ('apps', 'Also find and download new ones'),
                 ('apps', 'Music - Navidrome'),
+                ('apps', 'Also find and download new ones'),
                 ('apps', 'Personal files - Nextcloud'),
-                ('downloads', 'Set up automatic media downloads'),
                 ('extras', 'A TV connected to this PC'),
                 ('extras', 'Send alerts to my phone'),
                 ('extras', 'Warn me if the server stops checking in'),
@@ -56,12 +57,24 @@ class PageTests(Base):
             ],
         )
         self.assertEqual(explanations.PAGE_TITLE, 'What would you like this server to do?')
-        # Statements the specification takes out.
+        # The cards say what the person gets; the app names are small print.
+        movies = by_id('media_movies')
+        self.assertEqual(
+            movies['explanation'],
+            'Watch your films and shows on any device, and ask for new ones to be found and added.',
+        )
+        self.assertEqual(
+            movies['small'], 'Jellyfin. With finding and downloading: Seerr, Sonarr, Radarr, Prowlarr and qBittorrent.'
+        )
+        self.assertIn('Lidarr', by_id('media_music')['small'])
+        # Statements the specification takes out, and a file name that says nothing to the person.
         words = ' '.join(extra['explanation'] for extra in explanations.EXTRAS)
-        for gone in ('never slows', 'slower', 'nothing you ask leaves', 'asked later'):
+        for gone in ('never slows', 'slower', 'nothing you ask leaves', 'asked later', 'ASSISTANT.md'):
             self.assertNotIn(gone, words)
+        # The word TV is the TV connected to this PC, nothing else.
+        self.assertEqual([e['id'] for e in explanations.EXTRAS if 'TV' in e['title']], ['tv'])
 
-    def test_a_new_server_is_offered_the_apps_on_and_the_downloads_and_extras_off(self):
+    def test_a_new_server_is_offered_the_apps_on_and_the_extras_off(self):
         self.assertEqual(
             explanations.states(settings()),
             {
@@ -69,7 +82,8 @@ class PageTests(Base):
                 'media_movies': True,
                 'media_music': True,
                 'nextcloud': True,
-                'media_downloads': False,
+                'movies_downloads': True,
+                'music_downloads': True,
                 'tv': False,
                 'notifications': False,
                 'heartbeat': False,
@@ -78,27 +92,39 @@ class PageTests(Base):
             },
         )
         # A saved answer is what it says, on a new server too.
-        chosen = settings(media_apps={'downloads': True}, tv={'wanted': True})
-        self.assertTrue(explanations.states(chosen)['media_downloads'])
+        chosen = settings(media_apps={'movies_downloads': False}, tv={'wanted': True})
+        self.assertFalse(explanations.states(chosen)['movies_downloads'])
         self.assertTrue(explanations.states(chosen)['tv'])
 
-    def test_the_downloads_need_films_or_music(self):
-        downloads = by_id('media_downloads')
-        self.assertEqual(downloads['needs'], ('media_movies', 'media_music'))
-        photos_only = settings(media_apps={'movies': False, 'music': False, 'downloads': True})
-        self.assertFalse(explanations.offered(photos_only, downloads))
-        self.assertFalse(explanations.states(photos_only)['media_downloads'])
-        self.assertTrue(explanations.offered(settings(media_apps={'movies': False}), downloads))  # music is on
-        # Settled, it is saved off: there is nothing to download for.
-        explanations.settle(photos_only)
-        self.assertIs(photos_only['media_apps']['downloads'], False)
+    def test_finding_and_downloading_is_a_switch_inside_its_card(self):
+        for group in ('movies', 'music'):
+            switch = by_id(group + '_downloads')
+            self.assertEqual((switch['under'], switch['needs']), ('media_' + group, ('media_' + group,)))
+            self.assertEqual(switch['title'], 'Also find and download new ones')
+        finding = by_id('movies_downloads')
+        self.assertIn('Finds and downloads films and shows you are entitled to', finding['explanation'])
+        # Offered while its card is on.
+        no_films = settings(media_apps={'movies': False})
+        self.assertFalse(explanations.offered(no_films, finding))
+        self.assertTrue(explanations.offered(no_films, by_id('music_downloads')))
+        # Off: Jellyfin alone; music keeps its own.
+        playing = settings(media_apps={'movies_downloads': False})
+        self.assertEqual(
+            neko_common.media_services(playing), ['jellyfin', 'navidrome', 'lidarr', 'prowlarr', 'qbittorrent']
+        )
+        # A card switched off keeps its switch's answer for when it comes back.
+        explanations.settle(no_films)
+        self.assertEqual(
+            no_films['media_apps'],
+            {'movies': False, 'photos': True, 'music': True, 'movies_downloads': True, 'music_downloads': True},
+        )
 
     def test_settling_gives_every_part_an_answer_so_no_step_asks(self):
         config = settings()
         explanations.settle(config)
         for extra in explanations.EXTRAS:
             self.assertIs(type(config[extra['section']][extra['key']]), bool, extra['id'])
-        self.assertEqual(neko_common.media_services(config), ['jellyfin', 'navidrome'])  # playing, no downloading
+        self.assertEqual(neko_common.media_services(config), SERVICES)
         ctx = mock.Mock(config=config)
         refuse = mock.Mock(side_effect=AssertionError('asked'))
         with mock.patch.object(guided_setup, 'interactive', return_value=True):
@@ -107,7 +133,7 @@ class PageTests(Base):
             guided_setup.asked_media_apps(ctx, prompt=refuse, output=refuse)
 
     def test_the_review_lists_what_will_be_installed(self):
-        config = settings(media_apps={'downloads': True, 'photos': False}, assistant={'wanted': True})
+        config = settings(media_apps={'photos': False}, assistant={'wanted': True})
         review = dict(explanations.review(config))
         self.assertEqual(
             review['Apps to install'],
@@ -146,8 +172,8 @@ class ExistingServerTests(Base):
         # alerts and the outage warning are what it has; the assistant was always an opt-in.
         now = explanations.states(settings())
         self.assertEqual(
-            {key: now[key] for key in ('media_downloads', 'tv', 'notifications', 'heartbeat', 'assistant')},
-            {'media_downloads': True, 'tv': True, 'notifications': True, 'heartbeat': True, 'assistant': False},
+            {key: now[key] for key in ('movies_downloads', 'tv', 'notifications', 'heartbeat', 'assistant')},
+            {'movies_downloads': True, 'tv': True, 'notifications': True, 'heartbeat': True, 'assistant': False},
         )
         config = settings()
         explanations.settle(config)
@@ -178,37 +204,41 @@ class TerminalTests(Base):
         self.assertEqual(len(asked), 1)  # the one approval
         self.assertIn('=== What would you like this server to do? ===', said)
         self.assertIn(' [x]  2. Movies and shows - Jellyfin', said)
-        self.assertIn(' [ ]  5. Set up automatic media downloads', said)
+        self.assertIn('      [x]  3. Also find and download new ones', said)  # set in, under its card
+        self.assertIn(' [ ]  7. A TV connected to this PC', said)
         self.assertIn('=== Ready to install NekoServer ===', said)
         self.assertIn('  - Jellyfin: movies & shows', said)
         # Yes saved every part with its answer.
-        self.assertEqual(saved['media_apps'], {'photos': True, 'movies': True, 'music': True, 'downloads': False})
+        self.assertEqual(
+            saved['media_apps'],
+            {'photos': True, 'movies': True, 'music': True, 'movies_downloads': True, 'music_downloads': True},
+        )
         self.assertEqual(saved['tv'], {'wanted': False})
 
     def test_a_number_switches_its_line_and_the_page_is_shown_again(self):
-        started, asked, said, saved = self.run_page('5 7', 'yes')
+        started, asked, said, saved = self.run_page('3 8', 'yes')
         self.assertTrue(started)
-        self.assertIn(' [x]  5. Set up automatic media downloads', said)
-        self.assertIn(' [x]  7. Send alerts to my phone', said)
-        self.assertIn('  - Sonarr: manage your TV library', said)
-        self.assertIs(saved['media_apps']['downloads'], True)
+        self.assertIn('      [ ]  3. Also find and download new ones', said)
+        self.assertIn(' [x]  8. Send alerts to my phone', said)
+        # Jellyfin alone now: Sonarr is in the first review and not in the second.
+        self.assertEqual(said.count('  - Sonarr: manage your TV library'), 1)
+        self.assertIs(saved['media_apps']['movies_downloads'], False)
         self.assertEqual(saved['notifications'], {'wanted': True})
 
     def test_no_stops_and_a_wrong_line_is_said(self):
-        started, asked, said, saved = self.run_page('11', '', 'no')
+        started, asked, said, saved = self.run_page('12', '', 'no')
         self.assertFalse(started)
-        self.assertIn('Type yes, no, or the number of a line (1 to 10).', said)
+        self.assertIn('Type yes, no, or the number of a line (1 to 11).', said)
         self.assertIn('Type yes, no, or the number of a line. Enter alone does nothing here.', said)
         self.assertEqual(saved, settings())  # nothing was saved
-        # The downloads with neither films nor music: said, not switched.
-        self.path.write_text(json.dumps(settings(media_apps={'movies': False, 'music': False})))
-        started, asked, said, saved = self.run_page('5', 'no')
+        # A card's own switch with the card off: said, not switched.
+        self.path.write_text(json.dumps(settings(media_apps={'movies': False})))
+        started, asked, said, saved = self.run_page('3', 'no')
         self.assertIn(
-            '"Set up automatic media downloads" needs one of these switched on first: '
-            'Movies and shows - Jellyfin or Music - Navidrome.',
+            '"Also find and download new ones" needs one of these switched on first: Movies and shows - Jellyfin.',
             said,
         )
-        self.assertNotIn('downloads', saved['media_apps'])
+        self.assertNotIn('movies_downloads', saved['media_apps'])
 
     def test_yes_approves_only_what_was_shown(self):
         """A switch pressed in the setup window while the terminal waits: yes typed there
@@ -225,7 +255,7 @@ class TerminalTests(Base):
 
         self.assertTrue(wizard.wait_to_start(self.path, prompt, said.append, None))
         self.assertIn('A choice was changed in the setup window meanwhile. Here they are as they stand now.', said)
-        self.assertIn(' [x]  9. Add a local AI assistant', said)
+        self.assertIn(' [x] 10. Add a local AI assistant', said)
         self.assertEqual(said.count('=== Ready to install NekoServer ==='), 2)
 
     def test_an_existing_server_is_asked_to_apply_changes(self):

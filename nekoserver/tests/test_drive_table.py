@@ -94,6 +94,11 @@ class DriveListCase(unittest.TestCase):
             patch = mock.patch.object(target, name, stand_in)
             patch.start()
             self.addCleanup(patch.stop)
+        # The disk Linux runs from, the same on every machine: ext4 with 300 GB free.
+        for name, value in (('system_filesystem', ('root-0001', 'ext4')), ('system_free_gb', 300)):
+            patch = mock.patch.object(storage, name, return_value=value)
+            patch.start()
+            self.addCleanup(patch.stop)
 
     def table(self, config=None, inventory=None):
         return drive_table.rows(inventory or INVENTORY, config or dict(FOLDERS))
@@ -133,11 +138,13 @@ class TableTests(DriveListCase):
         def can(key):
             return [row['number'] for row in drive_table.usable(table, key, config)]
 
-        self.assertEqual(can('data_ssd'), [2, 3, 8])
-        self.assertEqual(can('media_hdd'), [2, 3, 7, 8])
+        # The disk Linux runs from (1) can hold the apps or the media, never the offline backup.
+        self.assertEqual(can('data_ssd'), [1, 2, 3, 8])
+        self.assertEqual(can('media_hdd'), [1, 2, 3, 7, 8])
         self.assertEqual(can('usb'), [2, 3, 4, 5, 7, 8])  # a disk on the NAS may hold the backup
+        self.assertEqual(drive_table.verdict(table[0], 'usb', config), drive_table.SYSTEM_NOT_OFFLINE)
         why = {row['number']: drive_table.verdict(row, 'data_ssd', config) for row in table}
-        self.assertEqual(why[1], 'it is the disk Linux runs from, which NekoServer never uses for your files')
+        self.assertEqual(why[1], '')
         self.assertTrue(why[4].startswith('it is formatted exFAT, which Linux apps can'), why[4])
         self.assertEqual(
             why[5], 'it is too small: the app SSD needs a drive of at least 22 GB (20 GB free once formatted)'
@@ -245,7 +252,7 @@ class QuestionTests(DriveListCase):
         return config
 
     def test_the_whole_conversation_is_the_golden_text(self):
-        talk = Conversation(['1', '5', '2', '2', '3', '9', '4'])
+        talk = Conversation(['5', '2', '2', '3', '9', '4', '1', '1'])
         talk.heading('A first run: the list, then the app SSD, the media HDD and the USB backup drive')
         config = self.first_run(talk)
         photo_backup.select_external(config, INVENTORY, talk.ask, talk.out)
@@ -254,9 +261,21 @@ class QuestionTests(DriveListCase):
         self.assertEqual(config['photos']['external_backup_uuid'], 'USB0-0001')
         talk.heading('Setup run again: the drives chosen last time')
         storage.resolve_storage_identity(config, INVENTORY, True, True, talk.ask, talk.out)
+        talk.heading('A PC with one drive: the disk Linux runs from holds the apps, the media and the backups')
+        alone = {'blockdevices': [INVENTORY['blockdevices'][2]]}
+        one = dict(FOLDERS)
+        with mock.patch('builtins.input', talk.ask):
+            storage.resolve_storage_identity(one, alone, True, True, talk.ask, talk.out)
+        self.assertEqual(
+            one['storage'],
+            {
+                'data_ssd': {'uuid': 'root-0001', 'fstype': 'ext4', 'folder': '/var/lib/nekoserver/apps'},
+                'media_hdd': {'uuid': 'root-0001', 'fstype': 'ext4', 'folder': '/var/lib/nekoserver/media'},
+            },
+        )
         talk.heading('A PC with no drive that can be used')
         bare = {'blockdevices': [INVENTORY['blockdevices'][2], INVENTORY['blockdevices'][7]]}
-        with self.assertRaises(RuntimeError) as caught:
+        with self.assertRaises(RuntimeError) as caught, mock.patch.object(storage, 'system_free_gb', return_value=5):
             storage.resolve_storage_identity(dict(FOLDERS), bare, True, True, talk.ask, talk.out)
         talk.out(caught.exception)
         said = '\n'.join(talk.lines).strip() + '\n'
@@ -349,9 +368,11 @@ class WindowFormTests(DriveListCase):
                 'inside': 'ext4, UUID ssd-0001; not open; about 1 % full',
                 'role': '',
                 'why': '',
+                'caution': '',
             },
         )
-        self.assertEqual(choose['rows'][0]['why'], drive_table.SYSTEM_DISK)
+        # The disk Linux runs from can be chosen, and says what that means before it is.
+        self.assertEqual((choose['rows'][0]['why'], choose['rows'][0]['caution']), ('', drive_table.SYSTEM_DISK))
         self.assertEqual(len(talk.pages), 2)  # two questions, no confirmation between them
         self.assertNotIn('confirm', choose)
         # The media HDD's page: the drive just chosen says its role and cannot be chosen.
@@ -375,7 +396,9 @@ class StoragePageTests(DriveListCase):
 
     def test_the_page_asks_only_what_has_no_answer_yet(self):
         new = self.context().config
-        self.assertEqual(list(storage.page_fields(new)), ['data_ssd', 'media_hdd', 'photos', 'music', 'cloud', 'usb'])
+        self.assertEqual(
+            list(storage.page_fields(new)), ['data_ssd', 'media_hdd', 'photos', 'movies', 'music', 'cloud', 'usb']
+        )
         # A kind of files this server does not keep has no line; a saved answer is not asked again.
         partly = {
             **new,
@@ -383,14 +406,17 @@ class StoragePageTests(DriveListCase):
             'storage': {'data_ssd': {'uuid': 'ssd-0001', 'fstype': 'ext4'}},
             'locations': {'music': 'ssd'},
         }
-        self.assertEqual(list(storage.page_fields(partly)), ['media_hdd', 'cloud', 'usb'])
+        self.assertEqual(list(storage.page_fields(partly)), ['media_hdd', 'movies', 'cloud', 'usb'])
         done = {
             **partly,
             'storage': {**partly['storage'], 'media_hdd': {'uuid': 'hdd-0001', 'fstype': 'ext4'}},
-            'locations': {'music': 'ssd', 'cloud': 'media'},
+            'locations': {'music': 'ssd', 'cloud': 'media', 'movies': 'media'},
             'photos': {'external_backup_uuid': 'USB0-0001'},
         }
         self.assertEqual(storage.page_fields(done), {})
+        # A server that is set up is not asked where its films are: they stay where they are.
+        with mock.patch.object(storage, 'set_up_before', return_value=True):
+            self.assertNotIn('movies', storage.page_fields(partly))
         # Nothing to ask, or nobody there: no page.
         for config, at_terminal in ((done, True), (new, False)):
             with mock.patch('sys.stdin.isatty', return_value=at_terminal):
@@ -417,8 +443,16 @@ class StoragePageTests(DriveListCase):
             self.assertTrue(ssd['needs'].startswith('It needs at least 20 GB free, so a drive of 22 GB or more'))
             self.assertIn('it is too small: the app SSD needs a drive of at least 22 GB', ssd['rows'][4]['why'])
             self.assertEqual(ssd['rows'][1]['why'], '')
-            self.assertEqual([place['key'] for place in page['places']], ['photos', 'music', 'cloud'])
-            self.assertEqual([option[0] for option in page['places'][0]['options']], ['', 'ssd', 'media'])
+            self.assertEqual([place['key'] for place in page['places']], ['photos', 'movies', 'music', 'cloud'])
+            # The two roles' drives, or a drive of their own: any other drive that could hold them.
+            self.assertEqual(
+                [option[0] for option in page['places'][0]['options']],
+                ['', 'ssd', 'media', 'drive:2', 'drive:3', 'drive:7', 'drive:8'],
+            )
+            self.assertEqual(
+                page['places'][0]['options'][3][1],
+                'On a drive of their own: 2 · 466 GB SSD, Samsung SSD 870, named "apps"',
+            )
             self.assertIn('SMB) are not supported yet', page['network'])
             # The window sends every line with the first question's answer.
             setup_progress._page['answers'].update({'data_ssd': '2', 'media_hdd': '3', 'usb': '4', 'photos': 'media'})
@@ -438,6 +472,85 @@ class StoragePageTests(DriveListCase):
             'Nothing on it is changed by choosing it.',
             said,
         )
+
+    def test_an_apps_files_can_have_a_drive_of_their_own(self):
+        """Any other drive that could hold them is offered beside the two roles' drives: in
+        the window by its row ("drive:8"), in the terminal by a number after the two."""
+        chosen = {
+            'data_ssd': {'uuid': 'ssd-0001', 'fstype': 'ext4'},
+            'media_hdd': {'uuid': 'hdd-0001', 'fstype': 'ext4'},
+        }
+        ctx = self.context(storage=chosen, nextcloud={'enabled': False}, media_apps={'movies': False, 'music': False})
+        ctx.persist_config = mock.Mock()
+        said = []
+        ctx.log = said.append
+        with mock.patch.object(storage, 'free_gb', return_value=400):
+            # The terminal: 1 and 2 are the two roles' drives, 3 onward the others (rows 7 and 8).
+            storage.choose_locations(ctx, lambda prompt='': '4', True, inventory=INVENTORY)
+        self.assertIn(
+            '  3) a drive of their own: drive 7 (sdf: 3.6 TB network disk (iSCSI), Synology LUN, named "nas-media")',
+            said,
+        )
+        self.assertEqual(ctx.config['locations'], {'photos': 'd3'})
+        self.assertEqual(ctx.config['storage']['d3'], {'uuid': 'nvme-0002', 'fstype': 'xfs'})
+        self.assertIn(
+            "Immich's photos and videos: on drive 8 (nvme1n1p1: 233 GB NVMe SSD, KINGSTON SNV2S250G), a drive of their own",
+            said,
+        )
+        # It is mounted like the two (neko_common.drives_in_use), and is no longer free for another role.
+        import neko_common
+
+        self.assertEqual(neko_common.drives_in_use(ctx.config), ['d3'])
+        table = self.table(ctx.config)
+        self.assertEqual(
+            drive_table.verdict(table[7], 'usb', ctx.config),
+            "it already holds an app's files (chosen as a drive of their own)",
+        )
+        # The window names the row; a drive that is one of the roles is that role, not a new name.
+        again = self.context(
+            storage=dict(chosen), nextcloud={'enabled': False}, media_apps={'movies': False, 'music': False}
+        )
+        again.persist_config = mock.Mock()
+        with mock.patch.object(storage, 'free_gb', return_value=400), storage.storage_page(again, INVENTORY):
+            pass
+        row = next(row for row in self.table(again.config) if row['uuid'] == 'hdd-0001')
+        self.assertEqual(storage.placed_on(again.config, row), 'media')
+
+    def test_none_for_now_is_an_answer_for_the_offline_backup(self):
+        """Until the wizard of 0.50.0 a skipped USB drive was asked for again by the weekly
+        backup step, and waited as "needs you". Now it is a choice: saved, not asked
+        again, and the weekly copy is left out."""
+        ctx = self.context(storage={'data_ssd': {'uuid': 'ssd-0001'}, 'media_hdd': {'uuid': 'hdd-0001'}})
+        ctx.persist_config = mock.Mock()
+        said = []
+        ctx.log = said.append
+        with (
+            mock.patch('sys.stdin.isatty', return_value=True),
+            mock.patch.object(storage, 'inventory_now', return_value=INVENTORY),
+            mock.patch('builtins.input', return_value=''),
+        ):
+            storage.choose_usb(ctx)
+            self.assertIs(ctx.config['photos']['external_backup_wanted'], False)
+            ctx.persist_config.assert_called_once()
+            self.assertTrue(any(line.startswith('Offline backup: none, as you chose.') for line in said))
+            self.assertNotIn('usb', storage.page_fields(ctx.config))
+            # Not asked a second time, by this step or by the weekly backup step.
+            with mock.patch('builtins.input', side_effect=AssertionError('asked again')):
+                storage.choose_usb(ctx)
+                step = SimpleNamespace(config=ctx.config, apply=True, log=said.append)
+                with (
+                    mock.patch('os.geteuid', return_value=0),
+                    mock.patch.object(photo_backup, 'switch_off') as off,
+                ):
+                    result = photo_backup.run(step)
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertIn('Left out by choice', result['reason'])
+        off.assert_called_once()
+        # The dashboard's settings carry the choice (the collector shows the job as switched off).
+        from modules import dashboard
+
+        self.assertIn("clean['photos']['external_backup_wanted'] = False", (ROOT / 'modules/dashboard.py').read_text())
+        self.assertTrue(callable(dashboard.run))
 
     def test_nothing_asks_for_a_drives_name_any_more(self):
         import neko_common

@@ -47,6 +47,8 @@ MANAGED = '# Managed by NekoServer'
 DAEMON_JSON = '/etc/docker/daemon.json'
 DOCKER_GUARD = '/etc/systemd/system/docker.service.d/10-nekoserver-storage.conf'  # modules/docker.py
 FSTAB = '/etc/fstab'
+# Where Linux itself is mounted: a line for one of these is never taken out of /etc/fstab.
+SYSTEM_PLACES = frozenset(('/', '/boot', '/boot/efi', '/efi', '/home', '/usr', '/var', '/tmp', 'none', 'swap'))
 GATEWAY_SETTINGS = '/etc/nekoserver-gateway'
 TAILNET_LEDGER = 'gateway/tailnet-owned.json'  # on the SSD: the Tailscale routes setup made (gateway_tools.py)
 # The server-OS step (modules/server_os.py): no sleep, log limits, and the sleep targets masked.
@@ -403,7 +405,14 @@ class Plan:
             folders['external_backup_mount'],
         )
         storage = settings.get('storage', {}) if isinstance(settings.get('storage'), dict) else {}
-        self.uuids = {str(v.get('uuid')) for v in storage.values() if isinstance(v, dict) and v.get('uuid')}
+        # A role kept on the disk Linux runs from (0.50.0, "folder" in its record) carries
+        # that disk's own UUID: never a drive of NekoServer's to look for in /etc/fstab, where
+        # that UUID is the system's own line. Its line is found by its mount folder.
+        self.uuids = {
+            str(v.get('uuid'))
+            for v in storage.values()
+            if isinstance(v, dict) and v.get('uuid') and not v.get('folder')
+        }
         photos = settings.get('photos', {}) if isinstance(settings.get('photos'), dict) else {}
         expected = {
             'data': storage.get('data_ssd') if isinstance(storage.get('data_ssd'), dict) else {},
@@ -771,6 +780,8 @@ class Plan:
             if line.strip()
             and not line.lstrip().startswith('#')
             and len(line.split()) >= 2
+            # Never a line of the system itself, whatever the settings name.
+            and line.split()[1] not in SYSTEM_PLACES
             and (line.split()[1] in folders or any(line.split()[0] == 'UUID=' + u for u in self.uuids))
         ]
 

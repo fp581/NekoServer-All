@@ -111,7 +111,9 @@
       const on = switches[card.extra.id] && offered;
       card.input.checked = on;
       card.input.disabled = !offered;
-      card.node.className = 'extra' + (on ? ' on' : '') + (offered ? '' : ' unavailable');
+      card.node.className = card.extra.under
+        ? 'sub-switch' + (offered ? '' : ' unavailable')
+        : 'extra' + (on ? ' on' : '') + (offered ? '' : ' unavailable');
       card.caption.textContent = on ? 'yes' : 'no';
     }
   }
@@ -129,13 +131,24 @@
       }
       const input = el('input', { type: 'checkbox', 'aria-label': extra.title });
       const caption = el('span', { class: 'caption' });
-      const node = el(
-        'div',
-        { class: 'extra' },
-        el('h3', { text: extra.title }),
-        el('div', { class: 'choice' }, caption, el('label', { class: 'switch' }, input, el('span'))),
-        el('p', { text: extra.explanation })
-      );
+      const parent = extra.under ? cards.find(card => card.extra.id === extra.under) : null;
+      // A switch inside a card (finding and downloading): a line of the card it belongs to.
+      const node = parent
+        ? el(
+            'div',
+            { class: 'sub-switch', title: extra.explanation },
+            el('span', { class: 'sub-title', text: extra.title }),
+            caption,
+            el('label', { class: 'switch' }, input, el('span'))
+          )
+        : el(
+            'div',
+            { class: 'extra' },
+            el('h3', { text: extra.title }),
+            el('div', { class: 'choice' }, caption, el('label', { class: 'switch' }, input, el('span'))),
+            el('p', { text: extra.explanation }),
+            extra.small ? el('small', { class: 'card-small', text: extra.small }) : null
+          );
       input.addEventListener('change', () => {
         switches[extra.id] = input.checked;
         chosen[extra.id] = input.checked;
@@ -143,7 +156,8 @@
         saving = save({ [extra.id]: input.checked });
       });
       if (extra.installs.length) node.append(...installsOf(extra));
-      box.append(node);
+      if (parent) parent.node.append(node);
+      else box.append(node);
       cards.push({ extra, input, caption, node });
     }
     built = true;
@@ -662,7 +676,9 @@
       input.disabled = !!drive.why;
       // Only the ones that can be chosen are switched off and on again around an answer.
       if (!drive.why) pickInputs.push(input);
-      const facts = [drive.inside, drive.role, drive.why ? 'Not this one: ' + drive.why : ''].filter(Boolean);
+      const facts = [drive.inside, drive.role, drive.why ? 'Not this one: ' + drive.why : '', drive.caution].filter(
+        Boolean
+      );
       list.append(
         el(
           'label',
@@ -693,7 +709,7 @@
   /* What the chosen drive holds now, under its line (it changes with the choice). */
   function driveFacts(role, select, facts) {
     const drive = role.rows.find(row => String(row.number) === select.value);
-    facts.textContent = drive ? [drive.name, drive.inside].filter(Boolean).join(' · ') : '';
+    facts.textContent = drive ? [drive.name, drive.inside, drive.caution].filter(Boolean).join(' · ') : '';
   }
 
   /* The storage page: every line is a list to choose from. A drive is named by what it
@@ -733,6 +749,12 @@
       if (!value && !role.optional) return 'Choose a drive for “' + role.title + '” first.';
       if (value && chosen[value]) return 'One drive cannot be both “' + chosen[value] + '” and “' + role.title + '”.';
       if (value) chosen[value] = role.title;
+    }
+    // A drive of its own for an app's files cannot be the removable drive of the offline backup.
+    for (const place of page.places) {
+      const value = values[place.key] || '';
+      if (value.startsWith('drive:') && values.usb && value.slice(6) === values.usb)
+        return 'The drive for “' + place.title + '” cannot also be the offline backup.';
     }
     return '';
   }

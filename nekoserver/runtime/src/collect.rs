@@ -1201,6 +1201,16 @@ fn retired(cfg: &Value, key: &str) -> Option<&'static str> {
         "external" if !immich && cfg["nextcloud"]["enabled"] != true => {
             Some("Switched off: neither Immich nor Nextcloud is set up")
         }
+        // "None for now" on setup's storage page (modules/storage.py OFFLINE_WANTED).
+        "external"
+            if cfg["photos"]["external_backup_wanted"] == false
+                && cfg["photos"]["external_backup_uuid"]
+                    .as_str()
+                    .unwrap_or("")
+                    .is_empty() =>
+        {
+            Some("Switched off: no removable drive was chosen for the offline backup")
+        }
         _ => None,
     }
 }
@@ -2726,7 +2736,8 @@ pub fn job_states(a: &Args) -> Result<()> {
         checked("data_ssd", "data_mount")?,
         checked("media_hdd", "media_mount")?,
     );
-    let apart = !matches!((&data, &media), (Some(a), Some(b)) if a == b);
+    let apart =
+        common::share_system_disk(&cfg) || !matches!((&data, &media), (Some(a), Some(b)) if a == b);
     let ok = data.is_some() && apart;
     let media_ok = media.is_some() && apart;
     let states = json!({
@@ -3111,6 +3122,14 @@ mod os_tests {
         assert!(retired(&cloud_only, "archive").is_some());
         assert!(retired(&cloud_only, "database").is_some());
         assert_eq!(retired(&cloud_only, "external"), None);
+        // "None for now" for the offline backup (setup's storage page): off by choice,
+        // until a drive is chosen after all.
+        let no_usb = json!({"photos":{"deploy_immich":true,"external_backup_wanted":false},
+            "nextcloud":{"enabled":true}});
+        assert!(retired(&no_usb, "external").is_some());
+        let usb_after_all = json!({"photos":{"deploy_immich":true,"external_backup_wanted":false,
+            "external_backup_uuid":"cccc-3333"},"nextcloud":{"enabled":true}});
+        assert_eq!(retired(&usb_after_all, "external"), None);
         let neither = json!({"photos":{"deploy_immich":false},"music":{"backup_enabled":false}});
         assert!(retired(&neither, "external").is_some());
         assert!(retired(&neither, "music").is_some());

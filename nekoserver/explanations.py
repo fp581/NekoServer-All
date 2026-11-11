@@ -81,10 +81,29 @@ PAGE_HINT = (
 )
 PARTS = (
     ('apps', 'Apps'),
-    ('downloads', 'Downloads'),
     ('extras', 'Optional extras'),
     ('storage', 'Storage'),
 )
+# The small switch inside the Movies and shows card and the Music card (`under`): off
+# leaves Jellyfin, or Navidrome, alone. Offered while its card is on (`needs`).
+FINDING_SWITCH = {
+    group: {
+        'id': group + '_downloads',
+        'section': 'media_apps',
+        'key': group + '_downloads',
+        'group': True,
+        'part': 'apps',
+        'under': 'media_' + group,
+        'needs': ('media_' + group,),
+        'on_default': True,
+        'step': 'media',
+        'title': 'Also find and download new ones',
+        'explanation': 'Finds and downloads ' + what + ' you are entitled to, and adds them to your library. '
+        'You choose where it searches later.',
+        'installs': (),
+    }
+    for group, what in (('movies', 'films and shows'), ('music', 'music'))
+}
 EXTRAS = (
     # The media apps (neko_common.MEDIA_GROUPS): each a switch of its own, saved under
     # "media_apps". `group` marks them: one with no answer follows the one yes/no of
@@ -110,7 +129,8 @@ EXTRAS = (
         'on_default': True,
         'step': 'media',
         'title': 'Movies and shows - Jellyfin',
-        'explanation': 'Watch the films and shows you already have, on any of your devices.',
+        'explanation': 'Watch your films and shows on any device, and ask for new ones to be found and added.',
+        'small': 'Jellyfin. With finding and downloading: Seerr, Sonarr, Radarr, Prowlarr and qBittorrent.',
         'installs': (),
     },
     {
@@ -122,7 +142,8 @@ EXTRAS = (
         'on_default': True,
         'step': 'music',
         'title': 'Music - Navidrome',
-        'explanation': 'Play your music collection from your phone or browser.',
+        'explanation': 'Play your music collection from your phone or browser, and have new music found and added.',
+        'small': 'Navidrome. With finding and downloading: Lidarr, Prowlarr and qBittorrent.',
         'installs': (),
     },
     {
@@ -136,24 +157,9 @@ EXTRAS = (
         'explanation': 'Access your files from your devices.',
         'installs': (),
     },
-    # Offered with films and shows, or music (`needs`): there is nothing to download for
-    # without one of them.
-    {
-        'id': 'media_downloads',
-        'section': 'media_apps',
-        'key': 'downloads',
-        'group': True,
-        'part': 'downloads',
-        'needs': ('media_movies', 'media_music'),
-        'on_default': True,
-        'new_default': False,
-        'step': 'media',
-        'title': 'Set up automatic media downloads',
-        'explanation': 'Adds tools for finding and downloading media you are entitled to access: Prowlarr and '
-        'qBittorrent; with Movies and shows also Sonarr, Radarr and Seerr; with Music also Lidarr. '
-        'You can configure the search providers later.',
-        'installs': (),
-    },
+    # Drawn inside their cards (`under`); listed here after the cards themselves.
+    FINDING_SWITCH['movies'],
+    FINDING_SWITCH['music'],
     {
         'id': 'tv',
         'section': 'tv',
@@ -163,8 +169,8 @@ EXTRAS = (
         'new_default': False,
         'step': 'tv',
         'title': 'A TV connected to this PC',
-        'explanation': 'Steam Big Picture for Remote Play from your gaming PC, a YouTube shortcut and Bluetooth for a '
-        'controller. Leave it off if this PC has no TV; your apps work on your other devices either way.',
+        'explanation': 'Play games from your gaming PC and watch YouTube on the TV this PC is plugged into: Steam Big '
+        'Picture with Remote Play, a YouTube shortcut and Bluetooth for a controller. Leave it off if this PC has no TV.',
         'installs': ('steam', 'steam-devices', 'vulkan-intel', 'lib32-vulkan-intel', 'firefox', 'bluez'),
     },
     {
@@ -201,8 +207,8 @@ EXTRAS = (
         'step': 'assistant',
         'title': 'Add a local AI assistant',
         'explanation': 'Ask Neko, in the dashboard: it explains what the dashboard shows and what to do about a '
-        'problem, and can suggest a fix that runs only when you approve it. Its model runs on this PC '
-        '(ASSISTANT.md says what it needs).',
+        'problem, and can suggest a fix that runs only when you approve it. Its model runs on this PC; setup '
+        'shows how much memory each model needs before you choose one.',
         'installs': (),
     },
     {
@@ -222,6 +228,17 @@ EXTRAS = (
         'installs': ('open-iscsi', 'nfs-utils'),
     },
 )
+
+
+def shown():
+    """The extras in the order a list shows them: each card followed by the switches inside it."""
+    inside = [extra for extra in EXTRAS if extra.get('under')]
+    order = []
+    for extra in EXTRAS:
+        if not extra.get('under'):
+            order.append(extra)
+            order += [sub for sub in inside if sub['under'] == extra['id']]
+    return order
 
 
 def extra_chosen(config, extra):
@@ -259,12 +276,13 @@ def states(config):
 
 def settle(config):
     """Every extra saved as it stands (the first page was gone through): from here on
-    each one has an answer, so no step asks about it. An extra that needs another one
-    (the downloads, with neither films nor music) is saved off."""
+    each one has an answer, so no step asks about it."""
     now = states(config)
     for extra in EXTRAS:
-        on = now[extra['id']] and (not extra.get('needs') or any(now[other] for other in extra['needs']))
-        set_extra(config, extra, on)
+        # A switch inside a card keeps its own answer while its card is off: it counts
+        # again when the card is switched back on.
+        needed = not extra.get('under') and extra.get('needs')
+        set_extra(config, extra, now[extra['id']] and (not needed or any(now[other] for other in extra['needs'])))
 
 
 def offered(config, extra):
@@ -316,7 +334,11 @@ def review(config):
     if now['nextcloud']:
         apps.append('Nextcloud: your files on your own devices')
     extras = [extra['title'] for extra in EXTRAS if extra['part'] in ('extras', 'storage') and now[extra['id']]]
-    left_out = [extra['title'] for extra in EXTRAS if extra['part'] == 'apps' and not now[extra['id']]]
+    left_out = [
+        extra['title']
+        for extra in EXTRAS
+        if extra['part'] == 'apps' and not extra.get('under') and not now[extra['id']]
+    ]
     asked = [words for key, words in ASKED_DURING.items() if key not in now or now[key]]
     sections = [('Apps to install', apps or ['None: only what is always set up'])]
     if extras:

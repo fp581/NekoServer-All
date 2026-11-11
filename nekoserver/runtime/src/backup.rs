@@ -3275,7 +3275,7 @@ pub fn guard(cfgpath: &Path, data: &Path, media: &Path) -> Result<()> {
     for (key, path) in [("data_ssd", data), ("media_hdd", media)] {
         ids.push(checked_drive(&c, key, path)?);
     }
-    if ids[0] == ids[1] {
+    if ids[0] == ids[1] && !common::share_system_disk(&c) {
         return Err(Error::new("Distinct backup filesystems required"));
     }
     // Every other drive something is placed on is the one setup chose, too: a job never

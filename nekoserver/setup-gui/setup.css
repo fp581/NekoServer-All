@@ -367,9 +367,33 @@ main > section {
   text-align: right;
   white-space: nowrap;
 }
-/* A card that needs another one first (the downloads: films and shows, or music). */
-.extra.unavailable {
+/* A switch that needs its card on first (finding and downloading). */
+.extra.unavailable,
+.sub-switch.unavailable {
   opacity: 0.55;
+}
+/* The apps a card installs, in small print, and a switch of its own inside the card:
+   each a line across the card, under its main switch. */
+.card-small {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: var(--muted);
+}
+.sub-switch {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+.sub-switch .caption {
+  width: 2.4em;
+}
+.sub-switch .sub-title {
+  flex: 1;
+  min-width: 0;
 }
 /* The heading of a kind of card, across the whole row. */
 .part-title {

@@ -212,15 +212,6 @@ Q = {
         'example': {'app': 'Jellyfin'},
         'old': 'ENTER to retry saved login, or c to enter the current login:',
     },
-    'apps_signed_in': {
-        'screen': 'Logins for your apps',
-        'title': 'Could you sign in to every app that opened?',
-        'hint': 'Each app opened in your browser. "Show login" gives you its user name and password.',
-        'kind': 'yesno',
-        'yes': 'Yes, all of them',
-        'no': 'Not yet',
-        'old': 'Have you completed this step successfully? [yes/no]:',
-    },
     'app_signed_in': {
         'screen': 'Logins for your apps',
         'title': 'Could you sign in to {app}?',
@@ -230,17 +221,6 @@ Q = {
         'no': 'Not yet',
         'example': {'app': 'Jellyfin'},
         'old': 'Have you completed this step successfully? [yes/no]:',
-    },
-    'access_checked': {
-        'screen': 'Logins for your apps',
-        'title': 'Have you checked who can sign in to these apps?',
-        'hint': 'Your phone will be able to open them once you say so. Make sure each has a password and strangers cannot sign up.',
-        'kind': 'text',
-        'send': 'Switch it on',
-        'skip': '',
-        'skip_label': 'Not yet',
-        'how': 'Type SECURED and press Enter to switch it on. Anything else leaves it off for now.',
-        'old': 'After verifying those settings, type SECURED to enable access:',
     },
     # ---- Tailscale
     'tailscale_connected': {

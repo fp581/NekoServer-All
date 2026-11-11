@@ -215,7 +215,7 @@ def run(ctx):
         ctx.log('Private gateway preview: browser/phone instructions and prompts run only during interactive apply')
         return
     if not gateway_tools.configure(ctx, 'tailnet'):
-        return {'status': 'needs_setup', 'reason': 'Selected app security checks/confirmation still pending'}
+        return {'status': 'needs_setup', 'reason': gateway_tools.waiting_said(ctx.config)}
     # Read before the routes are applied: applying rewrites the report.
     earlier = confirmed_links(ctx.config)
     result = secure_addresses(ctx)
