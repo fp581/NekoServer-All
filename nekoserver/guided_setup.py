@@ -1000,34 +1000,3 @@ def ask_backup_times(ctx, now, night_end, prompt, output):
         output,
     )
     return {'daily': daily, 'weekly_day': weekday, 'weekly': weekly, 'monthly': monthly}
-
-
-def app_security(ctx, apps, ports):
-    def verify_accounts():
-        import account_setup
-        from recovery_tools import lock
-
-        with lock(ctx.config):
-            return not account_setup.provision(ctx.config, apps, output=ctx.log)
-
-    import account_store
-
-    verify = verify_accounts if account_store.enabled(ctx.config) else None
-    return checkpoint(
-        ctx,
-        'Check application logins and access permissions',
-        [
-            'Sign into each opened app using its own saved username/email and password.',
-            'See an app\'s login (with a QR code) in a terminal on the server:  ' + login_command(ctx.config) + '  '
-            'Email-shaped local logins do not sign you into an external mail provider.',
-            'If an app explicitly requests email verification, open your own email app, '
-            'follow its verification link, then return. Enter external passwords only on the provider page.',
-            'Verify administrator access, disable unwanted public registration where available, '
-            'and check that personal files are not shared with unintended users.',
-            'Do not confirm until every selected app can be signed into.',
-        ],
-        [('url', 'http://127.0.0.1:' + str(ports[app]) + '/') for app in apps],
-        verify=verify,
-        logins=apps,
-        ask='apps_signed_in',
-    )

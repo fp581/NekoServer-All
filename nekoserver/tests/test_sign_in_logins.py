@@ -277,8 +277,6 @@ class StepTests(unittest.TestCase):
 
         with mock.patch.object(guided_setup, 'checkpoint', checkpoint), mock.patch.object(guided_setup, 'part', part):
             accounts.finish_pending(ctx, ['jellyfin'])
-            with mock.patch.object(account_store, 'enabled', return_value=False):
-                guided_setup.app_security(ctx, ['jellyfin', 'immich'], {'jellyfin': 8096, 'immich': 2283})
             links = {'jellyfin': 'https://neko.ts.net:8443/', 'navidrome': 'https://neko.ts.net:8446/'}
             with (
                 mock.patch.object(gateway_tailnet.phone_guide, 'write_page', return_value='/tmp/page.html'),
@@ -289,7 +287,6 @@ class StepTests(unittest.TestCase):
         self.assertEqual(by_title['Finish Jellyfin administrator'][0], ['jellyfin'])
         self.assertIn('"Show login" in the setup window', by_title['Finish Jellyfin administrator'][1])
         self.assertNotIn('APP-CREDENTIALS.txt', by_title['Finish Jellyfin administrator'][1])
-        self.assertEqual(by_title['Check application logins and access permissions'][0], ['jellyfin', 'immich'])
         # The phone is one part (0.50.0): each of its steps names the login it means.
         [(title, steps)] = parts
         self.assertEqual(title, 'Set up your phone')
