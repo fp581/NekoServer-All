@@ -11,6 +11,16 @@ services:
       - "${NEKO_DATA}/appdata/jellyfin:/config"
       - "${NEKO_MEDIA}/library/movies:/data/movies:ro"
       - "${NEKO_MEDIA}/library/tv:/data/tv:ro"
+      # Media you already have, used where it is (existing_media.py): each folder is
+      # mounted under library/existing by setup, and seen here as /data/existing/<kind>.
+      # rslave: a share that comes back after this app started is seen without a restart.
+      - type: bind
+        source: "${NEKO_MEDIA}/library/existing"
+        target: /data/existing
+        read_only: true
+        bind:
+          propagation: rslave
+          create_host_path: true
     devices:
       - /dev/dri:/dev/dri
     restart: unless-stopped
