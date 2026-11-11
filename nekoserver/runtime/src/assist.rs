@@ -1593,8 +1593,6 @@ mod tests {
             user.contains("as it was 2 hours ago") && !user.contains("The dashboard now"),
             "{user}"
         );
-        let source = include_str!("control.rs");
-        assert!(source.contains("assist::summary(status, common::now())"));
     }
 
     /// Review of the 0.50.0 fixes: readings stamped in the future read as "now" for
@@ -1801,9 +1799,6 @@ mod tests {
                 .sig,
             ""
         );
-        let source = include_str!("control.rs");
-        assert!(source.contains("assist::approved_update(checked, shown)"));
-        assert!(!source.contains("update_signature"));
         let _ = std::fs::remove_dir_all(&data);
     }
 
@@ -2018,15 +2013,14 @@ mod tests {
         // No such container (docker ps prints nothing) is "no log" too.
         let none = |_: &[&str], _: u64| (0, String::new());
         assert_eq!(log_lines_with(&app, later, &none).as_deref(), Some(""));
-        // The control service starts the clock before it asks Ollama for its models, and
-        // tells the model when the log is missing for that reason.
+        // The control service starts the clock before it asks Ollama for its models (what
+        // it tells the model about a late log is run in control.rs's own test).
         let control = include_str!("control.rs");
         let asks = &control[control.find("fn assistant(").unwrap()..];
         assert!(
             asks.find("Instant::now() + assist::PREPARE").unwrap()
                 < asks.find("assist::ollama_models").unwrap()
         );
-        assert!(control.contains("assist::LOG_LATE"));
     }
 
     /// Review of the 0.50.0 fixes: a command ended by its time limit (whole seconds, so
@@ -2082,11 +2076,44 @@ mod tests {
             pieces.concat(),
             "Restart Jellyfin.\nACTION: restart_app:jellyfin It has"
         );
-        // Only a whole answer is read for a repair: a failed one never sets it.
-        let source = include_str!("assist.rs");
-        let ended = &source[source.find("match result {").unwrap()..];
-        let failed = &ended[ended.find("Err(why) =>").unwrap()..][..120];
-        assert!(!failed.contains("repair"), "{failed}");
+    }
+
+    /// The same answer as its page gets it: failed, not done, and no repair, though its
+    /// text names one that is on offer.
+    #[test]
+    fn a_cut_off_answer_offers_no_repair() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let said = "Restart Jellyfin.\nACTION: restart_app:jellyfin";
+        let body = json!({"message": {"content": said}, "done": false});
+        let (address, _) = fake_ollama(Some(format!("HTTP/1.0 200 OK\r\n\r\n{body}\n")));
+        let offered = vec![("restart_app:jellyfin".to_string(), String::new())];
+        // The text does name a repair on offer: a whole answer would have set it.
+        assert_eq!(
+            suggested(said, &offered).as_deref(),
+            Some("restart_app:jellyfin")
+        );
+        let id = begin(
+            Turn::take().unwrap(),
+            "local".into(),
+            address,
+            "m".into(),
+            2,
+            json!([]),
+            offered,
+            LIMITS,
+        )
+        .unwrap();
+        wait_until(|| asks().get(&id).is_some_and(|a| a.ended.is_some()));
+        wait_until(|| Turn::take().is_some());
+        let cut = progress(&id, "local").unwrap();
+        assert_eq!(
+            cut["failed"],
+            format!("{NOT_AVAILABLE}: {CUT_OFF}"),
+            "{cut}"
+        );
+        assert_eq!(cut["done"], false, "{cut}");
+        assert_eq!(cut["repair"], Value::Null, "{cut}");
+        assert_eq!(cut["text"], said);
     }
 
     /// Review of 0.49.0: `keep` was asked only when a read timed out, so an answer that

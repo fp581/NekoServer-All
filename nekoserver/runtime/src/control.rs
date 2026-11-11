@@ -1696,6 +1696,80 @@ mod tests {
         let _ = fs::remove_dir_all(&data);
     }
 
+    /// What the control service itself does with the readings' age and a log that is
+    /// late (run here, not read from the source): the model is told both.
+    #[test]
+    fn the_model_is_told_how_old_the_readings_are_and_that_a_log_is_late() {
+        let data = std::env::temp_dir().join(format!("neko-ask-old-{}", std::process::id()));
+        let status = json!({"generated_at": common::now() - 7200.0, "alerts": [
+            {"id": "backup:music", "title": "Music library backup failed", "detail": "It stopped", "level": "warning"}]});
+        // No time left for the log: its command is not started, and that is said.
+        let ready = ask(
+            &json!({}),
+            &data,
+            &status,
+            "qwen3.5:4b",
+            &json!({"question": "why?", "item": "backup:music"}),
+            Instant::now(),
+        );
+        assert_eq!(ready["ok"], true, "{ready}");
+        let user = ready["messages"][1]["content"].as_str().unwrap();
+        assert!(user.contains("as it was 2 hours ago"), "{user}");
+        assert!(!user.contains("The dashboard now"), "{user}");
+        assert!(
+            user.contains("Music library backup failed: It stopped"),
+            "{user}"
+        );
+        assert!(user.contains(assist::LOG_LATE), "{user}");
+        assert!(!user.contains("Its last log lines"), "{user}");
+        // The excerpt a bug report quotes says so too.
+        assert!(
+            ready["excerpt"]
+                .as_str()
+                .unwrap()
+                .trim_end()
+                .ends_with(assist::LOG_LATE),
+            "{ready}"
+        );
+    }
+
+    /// Approve as the control service runs it: only the version the card showed goes on
+    /// to "Update now"; any other signature is refused and the page is told to show the
+    /// card again.
+    #[test]
+    fn an_approved_update_goes_on_only_with_the_signature_the_card_showed() {
+        let board = fans::tests::Board::new("ask-approve");
+        let s = service(&board, Some("4321"), 1);
+        let config = board.0.join("no-settings.json");
+        let (shown, newer) = ("a".repeat(16), "b".repeat(16));
+        let waiting = |sig: &str| assist::Repair {
+            id: "update_app:jellyfin".into(),
+            does: String::new(),
+            warning: String::new(),
+            sig: sig.into(),
+        };
+        // Another version waits than the one shown, or the press names none: refused,
+        // and marked so the page makes the card again.
+        for (now, sent) in [
+            (&newer, shown.as_str()),
+            (&shown, ""),
+            (&shown, "not-a-signature"),
+        ] {
+            let refused = run_repair(&s, &config, &waiting(now), sent);
+            assert_eq!(refused["ok"], false, "{refused}");
+            assert_eq!(refused["changed"], true, "{refused}");
+            assert_eq!(refused["message"], assist::NEWER_ARRIVED, "{refused}");
+        }
+        // The version shown is the one waiting: it goes on to "Update now", which then
+        // makes its own checks (here: these settings have no such app). Not "changed".
+        let went_on = run_repair(&s, &config, &waiting(&shown), &shown);
+        assert_eq!(went_on["changed"], Value::Null, "{went_on}");
+        assert_eq!(
+            went_on["message"], "That app isn't installed on this server",
+            "{went_on}"
+        );
+    }
+
     #[test]
     fn pins_are_hashed_checked_and_rate_limited() {
         assert!(valid_pin("1234") && valid_pin("12345678"));
