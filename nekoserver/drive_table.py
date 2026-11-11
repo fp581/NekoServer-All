@@ -18,7 +18,7 @@ import shutil
 import subprocess
 
 import setup_progress
-from neko_common import media_apps_wanted, typed
+from neko_common import extra_drives, media_apps_wanted, typed
 
 # The roles a drive can have: (what setup calls it, what goes on it, the same with the
 # media apps left out).
@@ -397,6 +397,8 @@ def verdict(row, key, config):
     has = role_of(row, config)
     if has and has != key:
         return f'it is already {role(has)}'
+    if row['uuid'] and any(record.get('uuid') == row['uuid'] for record in extra_drives(config).values()):
+        return "it already holds an app's files (chosen as a drive of their own)"
     if row['export']:
         return 'it is a folder the NAS shares; the network storage step chooses those'
     return backup_verdict(row, config) if key == 'usb' else drive_verdict(row, key, config)

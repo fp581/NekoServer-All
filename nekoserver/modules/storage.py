@@ -9,7 +9,16 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from neko_common import mount_path, atomic_json, atomic_write, findmnt, nas_disk_wwn, safe_path
+from neko_common import (
+    atomic_json,
+    atomic_write,
+    drives_in_use,
+    extra_drives,
+    findmnt,
+    mount_path,
+    nas_disk_wwn,
+    safe_path,
+)
 
 DEPENDENCIES = ['system', 'network_storage']
 DESCRIPTION = 'Inspect disks; --apply mounts explicitly identified data SSD and media HDD by UUID'
@@ -1244,8 +1253,27 @@ def place_drives(context, inventory):
     resolve_storage_identity(context.config, inventory, apply=True, interactive=sys.stdin.isatty(), out_fn=context.log)
     remember_subvolumes(context.config)
     specs = mount_specs(context.config)
-    exports = shared_folders(context.config)
-    folders = system_folders(context.config)
+    checked_before_mount(context.config, specs)
+    # Saved for unattended reruns only once the choice passed these checks: a wrong pick
+    # is asked again on the next run instead of being kept.
+    save_storage(context)
+    mount_all(context, specs)
+    remember_media_apps(context)
+    before = drives_in_use(context.config)
+    choose_locations(context, inventory=inventory)
+    if drives_in_use(context.config) != before:
+        # A drive of its own chosen for an app's files: checked, saved and mounted like the two.
+        specs = mount_specs(context.config)
+        checked_before_mount(context.config, specs)
+        save_storage(context)
+        mount_all(context, specs)
+    choose_usb(context)
+
+
+def checked_before_mount(config, specs):
+    """Every drive to mount is the one the settings name, and nothing else is in its place."""
+    exports = shared_folders(config)
+    folders = system_folders(config)
     for _, uuid, fstype, target, _ in specs:
         if target in folders:
             validate_system_folder(uuid, fstype)
@@ -1265,13 +1293,6 @@ def place_drives(context, inventory):
                 f'Refusing mount over nonempty directory {target}: something is already in that folder '
                 f'(on the system disk). Move it elsewhere, or pick another drive, and run setup again'
             )
-    # Saved for unattended reruns only once the choice passed these checks: a wrong pick
-    # is asked again on the next run instead of being kept.
-    save_storage(context)
-    mount_all(context, specs)
-    remember_media_apps(context)
-    choose_locations(context)
-    choose_usb(context)
 
 
 # false under "photos": no removable drive for the weekly offline copy, by choice (the storage page).
@@ -1326,11 +1347,15 @@ def storage_page(context, inventory):
         for key in ('data_ssd', 'media_hdd', 'usb')
         if key in asked
     ]
+    others = [
+        [f"drive:{row['number']}", f"On a drive of their own: {row['number']} · {drive_table.words(row)}"]
+        for row in data_drives(config, inventory)
+    ]
     places = [
         {
             'key': what,
             'title': words[0].upper() + words[1:],
-            'options': [list(option) for option in PAGE_PLACES.items()],
+            'options': [list(option) for option in PAGE_PLACES.items()] + others,
         }
         for what, words, _threshold in WHERE
         if what in asked
@@ -1359,7 +1384,13 @@ def page_fields(config):
             asked[key] = ''
     places = config.get('locations') if isinstance(config.get('locations'), dict) else {}
     for what, _words, _threshold in WHERE:
-        if asked_where(config, what) and places.get(what) not in DRIVE_WORDS:
+        if what == 'movies' and set_up_before(config):
+            continue  # a server that is set up keeps its films where they are, unasked
+        if (
+            asked_where(config, what)
+            and places.get(what) not in DRIVE_WORDS
+            and places.get(what) not in extra_drives(config)
+        ):
             asked[what] = ''
     photos = config.get('photos', {})
     if not photos.get('external_backup_uuid') and photos.get(OFFLINE_WANTED) is not False:
@@ -1513,6 +1544,7 @@ def mount_and_check(uuid, target, subvolume, fstype='btrfs', log=None, folder=No
 # The three places setup asks about (neko_common.LOCATIONS), in the words it asks them.
 WHERE = (
     ('photos', "Immich's photos and videos", 500),
+    ('movies', 'the films and shows (and their downloads)', None),
     ('music', 'the music library (and its downloads)', 400),
     ('cloud', "Nextcloud's files", None),
 )
@@ -1526,6 +1558,10 @@ def asked_where(config, what):
 
     if what == 'photos':
         return immich_wanted(config)
+    if what == 'movies':
+        from neko_common import apps_to_connect
+
+        return apps_to_connect(config)  # Jellyfin's library, or the download apps' folders
     if what == 'music':
         return media_group(config, 'music')
     return config.get('nextcloud', {}).get('enabled', True) is True
@@ -1568,15 +1604,20 @@ def free_gb(folder):
 DRIVE_WORDS = {'ssd': 'the SSD', 'media': 'the media drive'}
 
 
-def choose_locations(context, input_fn=None, interactive=None):
-    """Where each app keeps your files, asked once (saved as "locations"): the SSD or the
-    media drive, the better one pre-selected. The backups, restores and checks all follow
-    the choice (neko_common.files_root). A place already holding files stays as it is."""
+def choose_locations(context, input_fn=None, interactive=None, inventory=None):
+    """Where each app keeps your files, asked once (saved as "locations"): the SSD, the
+    media drive (the better one pre-selected), or another drive connected to this PC
+    (`inventory`: what lsblk lists; such a drive is added under "storage" and mounted
+    by the caller). The backups, restores and checks all follow the choice
+    (neko_common.files_root). A place already holding files stays as it is."""
+    import setup_progress
+
     config = context.config
     chosen = config.setdefault('locations', {})
     interactive = sys.stdin.isatty() if interactive is None else interactive
     room = {'ssd': free_gb(config['data_mount']), 'media': free_gb(config['media_mount'])}
     on_nas = bool(config.get('storage', {}).get('media_hdd', {}).get('network'))
+    others = data_drives(config, inventory) if interactive and inventory else []
     changed = False
     for what, words, threshold in WHERE:
         if not asked_where(config, what):
@@ -1585,16 +1626,25 @@ def choose_locations(context, input_fn=None, interactive=None):
         if chosen.get(what) in DRIVE_WORDS:
             same_place(context, what, words, chosen[what], kept)
             continue
+        if chosen.get(what) in extra_drives(config):
+            continue  # on a drive of its own, as chosen before
+        asks = interactive and (input_fn or input)
+        if what == 'movies' and (kept or not asks or set_up_before(config)):
+            # Where every server before 0.50.0 has them (the media drive): not written
+            # down unless someone chose, so a server that is set up keeps its settings.
+            setup_progress.page_answer(what)
+            continue
         if kept:
             chosen[what] = where_kept(context, what, words, kept)
-            import setup_progress
-
             setup_progress.page_answer(what)  # not a choice here: the files are where they are
         else:
-            chosen[what] = new_place(
-                context, what, (words, threshold), (room, on_nas), interactive and (input_fn or input), key=what
-            )
-            context.log(f'{words.capitalize()}: on {DRIVE_WORDS[chosen[what]]}')
+            place = new_place(context, what, (words, threshold), (room, on_nas), asks, key=what, others=others)
+            if isinstance(place, dict):
+                chosen[what] = placed_on(config, place)
+                context.log(f'{words.capitalize()}: on {drive_table_said(place)}, a drive of their own')
+            else:
+                chosen[what] = place
+                context.log(f'{words.capitalize()}: on {DRIVE_WORDS[place]}')
         changed = True
     if chosen.get('photos') == 'media' and asked_where(config, 'photos'):
         context.log(PHOTOS_ON_MEDIA)
@@ -1611,7 +1661,47 @@ PHOTOS_ON_MEDIA = (
 )
 
 
-def new_place(context, what, asked, drives, input_fn, key=None):
+def data_drives(config, inventory):
+    """The drives connected to this PC, beyond the two roles, that an app's files may be
+    kept on: a filesystem Linux apps can use, a disk of its own (not the one Linux runs
+    from, not one of the roles'), big enough, not in use elsewhere. Rows of the drive
+    list (drive_table.py), with the numbers they have there."""
+    import drive_table
+
+    table = drive_table.rows(inventory, config, discover_filesystems(inventory))
+    return [
+        row
+        for row in table
+        if not row['system']
+        and row['device'] is not None
+        and not drive_table.role_of(row, config)
+        and not drive_table.drive_verdict(row, 'media_hdd', config)
+    ]
+
+
+def placed_on(config, row):
+    """The name ("ssd", "media", or one such as "d3" under "storage") of the drive in this
+    row of the list: the role it has, the name it was given before, or a new one."""
+    storage = config.setdefault('storage', {})
+    for key, name in (('data_ssd', 'ssd'), ('media_hdd', 'media')):
+        if isinstance(storage.get(key), dict) and storage[key].get('uuid') == row['uuid']:
+            return name
+    for name, record in extra_drives(config).items():
+        if record.get('uuid') == row['uuid']:
+            return name
+    name = next(f'd{n}' for n in range(3, 100) if f'd{n}' not in storage)
+    storage[name] = {}
+    new_drive(storage[name], whole(unlocked(row['device'])))
+    return name
+
+
+def drive_table_said(row):
+    import drive_table
+
+    return drive_table.brief(row)
+
+
+def new_place(context, what, asked, drives, input_fn, key=None, others=()):
     """The drive for `what`, which has no files yet. Asked (`input_fn`, False when no one is
     at the keyboard): the better drive is offered first. Not asked: the better one on a new
     server, and on one set up before 0.46.0 the layout it had, so nothing moves without
@@ -1623,7 +1713,7 @@ def new_place(context, what, asked, drives, input_fn, key=None):
     best = recommended(room['ssd'], threshold)
     if not input_fn:
         return LOCATIONS[what][0] if set_up_before(context.config) else best
-    return asked_location(context, words, best, room, on_nas, input_fn, key=key)
+    return asked_location(context, words, best, room, on_nas, input_fn, key=key, others=others)
 
 
 def where_kept(context, what, words, kept):
@@ -1664,10 +1754,12 @@ def same_place(context, what, words, chosen, kept):
         )
 
 
-def asked_location(context, words, best, room, on_nas, input_fn=None, key=None):
-    """The drive for `words`, asked: the better one first, Enter takes it. `key`: its
-    line on the storage page, where the window names the drive itself ("ssd", "media")
-    or leaves it to setup."""
+def asked_location(context, words, best, room, on_nas, input_fn=None, key=None, others=()):
+    """The drive for `words`, asked: the better one first, Enter takes it. `others`: the
+    drives beyond the two that it may be kept on (data_drives), offered after them; one
+    chosen is returned as its row. `key`: its line on the storage page, where the window
+    names the drive itself ("ssd", "media", "drive:4" for row 4 of the list) or leaves it
+    to setup."""
     import drive_table
 
     # "The most room" only when it has it (seen on the rig: said of a media drive with
@@ -1681,13 +1773,22 @@ def asked_location(context, words, best, room, on_nas, input_fn=None, key=None):
     context.log(f'Where should {words} be kept? (The backups follow wherever you choose.)')
     for n, drive in enumerate(options, 1):
         context.log(f'  {n}) {said[drive]}' + ('  (recommended)' if drive == best else ''))
+    for n, row in enumerate(others, 3):
+        context.log(f'  {n}) a drive of their own: {drive_table.brief(row)}')
     for _ in range(3):
         answer = drive_table.field(key or 'place', input_fn or input, 'Number (Enter for the recommended one): ')
         if answer in DRIVE_WORDS:
             return answer
-        if answer in ('', '1', '2'):
+        if answer.startswith('drive:'):
+            # The window names the row of the list.
+            named = next((row for row in others if str(row['number']) == answer[len('drive:') :]), None)
+            if named is not None:
+                return named
+        elif answer in ('', '1', '2'):
             return options[int(answer) - 1] if answer else best
-        context.log('Type 1 or 2, or press Enter.')
+        elif answer.isdigit() and 3 <= int(answer) < 3 + len(others):
+            return others[int(answer) - 3]
+        context.log(f'Type a number from 1 to {2 + len(others)}, or press Enter.')
     return best
 
 

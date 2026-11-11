@@ -736,6 +736,12 @@
       if (value && chosen[value]) return 'One drive cannot be both “' + chosen[value] + '” and “' + role.title + '”.';
       if (value) chosen[value] = role.title;
     }
+    // A drive of its own for an app's files cannot be the removable drive of the offline backup.
+    for (const place of page.places) {
+      const value = values[place.key] || '';
+      if (value.startsWith('drive:') && values.usb && value.slice(6) === values.usb)
+        return 'The drive for “' + place.title + '” cannot also be the offline backup.';
+    }
     return '';
   }
 
