@@ -105,12 +105,17 @@ MEASURE = """(async () => {
   const page = () => ['main', '.track', '#phase-badge', '#steps', '#notices'].map(s => box(document.querySelector(s)));
   const result = { presses: [], states: [] };
   await pause(1500);
-  for (const input of document.querySelectorAll('.extra input')) {
-    const before = JSON.stringify(cards());
-    input.click();
-    await pause(300);
-    result.presses.push(before === JSON.stringify(cards()));
+  // Every switch pressed, then every switch pressed back: each press is measured
+  // against the page as it was just before it (on to off, off to on, "asked later" to yes).
+  for (const pass of [1, 2]) {
+    for (const input of document.querySelectorAll('.extra input')) {
+      const before = JSON.stringify(cards());
+      input.click();
+      await pause(300);
+      result.presses.push(before === JSON.stringify(cards()));
+    }
   }
+  result.captions = [...document.querySelectorAll('.extra .caption')].map(c => c.textContent);
   for (const state of %s) {
     window.nextState = state;
     await pause(1500);
@@ -172,8 +177,13 @@ class NothingMovesTests(unittest.TestCase):
         for size in ('1180,480', '700,620'):
             with self.subTest(size=size):
                 measured = self.measure(CHOOSE, [], size)
-                self.assertEqual(len(measured['presses']), len(CHOOSE['extras']))
+                # The setup review (S3): a description moved 22.5 px when its option was
+                # toggled. Each title, description, caption and switch is measured before and
+                # after every press, both ways.
+                self.assertEqual(len(measured['presses']), 2 * len(CHOOSE['extras']))
                 self.assertTrue(all(measured['presses']), measured['presses'])
+                # The captions did change under the measuring (it measured a real toggle).
+                self.assertEqual(measured['captions'], ['yes', 'no', 'yes', 'yes', 'yes'])
 
     def test_a_question_coming_and_going_moves_nothing(self):
         # 0.49.0: the "needs an answer" strip pushed the page down when a question came, and
