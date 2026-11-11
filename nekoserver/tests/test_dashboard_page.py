@@ -842,6 +842,19 @@ class AskNekoPageTests(unittest.TestCase):
         self.assertIn('the retention step removes the newest copy.', report)
         self.assertIsNone(page(('bugReport', {'question': 'q', 'answer': 'no report here'}))[0])
 
+    def test_copy_says_so_when_the_browser_has_no_clipboard(self):
+        """The review of 0.49.0: over plain http there is no Clipboard API, and Copy on a
+        bug report then neither copied nor selected the text, and said nothing."""
+        self.assertEqual(page(('copied', 'works'), ('copied', 'missing'), ('copied', 'refuses')), [True, False, False])
+        app = (ROOT / 'dashboard/app.js').read_text()
+        self.assertNotIn('navigator.clipboard?.writeText(report)', app)
+        box = app[app.index('function bugBox(report)') :][:900]
+        self.assertIn('if (await copied(report)) {', box)
+        self.assertIn('area.select();', box)
+        # The other Copy button (a command to run) goes the same way.
+        self.assertEqual(app.count('navigator.clipboard.writeText('), 1, 'only inside copied()')
+        self.assertIn('(await copied(value))', app)
+
     def test_without_the_assistant_the_page_says_so(self):
         self.assertIn('not set up on this server', page(('askIntro', {}))[0])
 

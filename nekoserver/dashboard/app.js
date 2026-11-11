@@ -1876,15 +1876,15 @@ function bugBox(report) {
       'This looks like a problem in NekoServer itself. Nothing is sent anywhere: read it, then copy it to report the problem.'
     ),
     area,
-    button('Copy', () => {
-      navigator.clipboard?.writeText(report).then(
-        () => toast('Copied.'),
-        () => {
-          // The browser did not allow copying (the 0.49.0 gate): the report is selected instead.
-          area.select();
-          toast('The report is selected: copy it from there.');
-        }
-      );
+    button('Copy', async () => {
+      if (await copied(report)) {
+        toast('Copied.');
+        return;
+      }
+      // The browser cannot copy here, or did not allow it (the 0.49.0 gate): the report
+      // is selected instead.
+      area.select();
+      toast('The report is selected: copy it from there.');
     })
   );
   return box;
@@ -4695,13 +4695,27 @@ const GUIDES = {
     extra: '/usr/local/lib/nekoserver-dashboard/v{version}/nekoserver-runtime hardware'
   }
 };
-async function copy(value) {
+/* Whether the text was copied. A page opened over plain http has no Clipboard API at
+ * all (navigator.clipboard is not there), and a browser may refuse: both are "no", so
+ * the caller can say so and offer the text to select (the review of 0.49.0: with the
+ * API missing, Copy did nothing and said nothing). */
+async function copied(value) {
+  if (typeof navigator.clipboard?.writeText !== 'function') {
+    return false;
+  }
   try {
     await navigator.clipboard.writeText(value);
-    toast('Copied. Paste it into a terminal on the server.');
+    return true;
   } catch {
-    toast('Couldn’t copy: select the command and copy it by hand.');
+    return false;
   }
+}
+async function copy(value) {
+  toast(
+    (await copied(value))
+      ? 'Copied. Paste it into a terminal on the server.'
+      : 'Couldn’t copy: select the command and copy it by hand.'
+  );
 }
 function commandBox(command) {
   const box = el('div', 'command-box');

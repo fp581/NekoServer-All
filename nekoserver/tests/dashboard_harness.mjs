@@ -41,6 +41,7 @@ const CALLS = new Set([
   'askItem',
   'shownAnswer',
   'bugReport',
+  'copied',
   'askIntro'
 ]);
 /* Calls answered from another function's result, with more of it. */
@@ -166,8 +167,22 @@ const SPECIAL = {
     return { min: Number(input.min), value: Number(input.value), fixed: argument.fixed };
   }
 };
+// "copied" in a browser whose Clipboard API "works", "refuses", or is not there at all.
+SPECIAL.copied = argument => {
+  const clipboards = {
+    works: { writeText: async () => undefined },
+    refuses: {
+      writeText: async () => {
+        throw new Error('not allowed');
+      }
+    }
+  };
+  const clipboard = clipboards[argument];
+  Object.defineProperty(globalThis, 'navigator', { value: clipboard ? { clipboard } : {}, configurable: true });
+  return app.copied('text');
+};
 const answers = calls.map(([name, argument]) => {
   if (!CALLS.has(name) && !DETAILED.has(name)) throw new Error('Not a function the harness offers: ' + name);
   return (SPECIAL[name] ?? app[name])(argument);
 });
-process.stdout.write(JSON.stringify(answers));
+process.stdout.write(JSON.stringify(await Promise.all(answers)));
