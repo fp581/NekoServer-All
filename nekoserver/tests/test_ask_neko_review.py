@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 
 import setup_progress  # noqa: E402
 import wizard  # noqa: E402
+from modules import assistant  # noqa: E402
 
 
 class OptionalAssistantTests(unittest.TestCase):
@@ -77,6 +79,58 @@ class OptionalAssistantTests(unittest.TestCase):
         code, text, checkups = self.after({'status': 'success'})
         self.assertEqual((code, checkups), (1, 0), 'the installer said 1 for a reason of its own: no checkup')
         self.assertNotIn('Needs a look (optional', text)
+
+
+def set_up_with(tmp, *models):
+    """An app SSD where the assistant is set up and these models are downloaded."""
+    project = Path(tmp) / 'compose/assistant'
+    project.mkdir(parents=True)
+    (project / assistant.MANIFEST).write_text('services: {}\n')
+    for model in models:
+        name, tag = assistant.tagged(model).rsplit(':', 1)
+        record = Path(tmp) / 'appdata/assistant/models/models/manifests/registry.ollama.ai/library' / name / tag
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text('{}')
+    return {'data_mount': tmp}
+
+
+def free(gb):
+    return lambda path: SimpleNamespace(free=gb * 1000**3)
+
+
+class ModelSpaceTests(unittest.TestCase):
+    """Finding 3: with the assistant set up, choosing another model asked only for the
+    room kept for everything else, so a 6.6 GB model passed with 11 GB free."""
+
+    def test_another_model_than_the_one_there_counts_its_download(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = set_up_with(tmp, 'qwen3.5:4b')
+            with self.assertRaises(assistant.NotHere) as caught:
+                assistant.check_space(config, 'qwen3.5:8b', 6.6, free(11))
+            said = str(caught.exception)
+            self.assertIn('needs 17 GB free on the app SSD', said)
+            self.assertIn('6.6 GB for the model qwen3.5:8b', said)
+            self.assertIn('10 GB kept free for everything else', said)
+            self.assertIn('there are 11 GB', said)
+            self.assertNotIn("Ollama's image", said)  # there already
+            assistant.check_space(config, 'qwen3.5:8b', 6.6, free(17))
+
+    def test_the_same_model_again_needs_only_the_room_kept_free(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = set_up_with(tmp, 'qwen3.5:4b')
+            assistant.check_space(config, 'qwen3.5:4b', 3.3, free(11))
+
+    def test_a_first_install_counts_the_image_and_the_model(self):
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(assistant.NotHere) as caught:
+            assistant.check_space({'data_mount': tmp}, 'qwen3.5:8b', 6.6, free(20))
+        self.assertIn("for Ollama's image, 6.6 GB for the model qwen3.5:8b", str(caught.exception))
+
+    def test_a_name_cannot_point_outside_ollamas_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = set_up_with(tmp, 'qwen3.5:4b')
+            (Path(tmp) / 'appdata/assistant/secret').write_text('x')
+            self.assertFalse(assistant.downloaded(config, '../../../../../../secret:x'))
+            self.assertTrue(assistant.downloaded(config, 'qwen3.5:4b'))
 
 
 if __name__ == '__main__':

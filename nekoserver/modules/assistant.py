@@ -152,7 +152,7 @@ def _run(ctx):
                 return None
             save_choice(ctx, True, model)
         model, size, memory = fitting(ctx.config, room)
-        check_space(ctx.config, size)
+        check_space(ctx.config, model, size)
         need_pin(ctx)
     except NotHere:
         # Not here (any more): one that runs is stopped, so it can never squeeze the
@@ -298,14 +298,38 @@ def memory_for_model(total, available, own=0):
     return available + own - max(RESERVE_GIB, total * RESERVE_SHARE)
 
 
-def check_space(config, size, usage=shutil.disk_usage):
-    """The SSD has room for the image and the model, with room left for everything else.
-    Setup run again: they are on the SSD already, so only the room for everything else."""
+def downloaded(config, model):
+    """The model is on the SSD already: Ollama keeps a record of each model it has
+    finished downloading (models/manifests/<where from>/<whose>/<name>/<tag>)."""
+    name, tag = tagged(model).rsplit(':', 1)
+    parts = name.split('/')
+    if len(parts) == 1:
+        parts = ['library', *parts]  # Ollama's own models
+    if len(parts) == 2:
+        parts = ['registry.ollama.ai', *parts]  # the Ollama library
+    store = os.path.realpath(folders(config)[1] / 'models' / 'manifests')
+    record = os.path.realpath(os.path.join(store, *parts, tag))
+    # A name can't point outside Ollama's own folder (its manifests).
+    return record.startswith(store + os.sep) and os.path.isfile(record)
+
+
+def check_space(config, model, size, usage=shutil.disk_usage):
+    """The SSD has room for what is still to download (Ollama's image, the chosen model),
+    with room left for everything else. What is on the SSD already is not counted again:
+    the image once the assistant is set up, the model once it is downloaded. Another
+    model than the one there is a new download (the review of 0.49.0: a 6.6 GB model
+    passed with 11 GB free, because the assistant was set up with a smaller one)."""
     free = usage(config['data_mount']).free / 1000**3
-    there = (folders(config)[0] / MANIFEST).is_file()
-    needed = SPARE_GB if there else math.ceil(IMAGES_GB + size + SPARE_GB)
+    parts = []
+    if not (folders(config)[0] / MANIFEST).is_file():
+        parts.append((IMAGES_GB, "Ollama's image"))
+    if not downloaded(config, model):
+        parts.append((size, f'the model {model}'))
+    needed = math.ceil(sum(amount for amount, _ in parts) + SPARE_GB)
     if free < needed:
-        raise NotHere(f'it needs {needed} GB free on the app SSD and there are {free:.0f} GB')
+        counted = ', '.join(f'{amount:g} GB for {what}' for amount, what in parts)
+        counted += (', ' if counted else '') + f'{SPARE_GB} GB kept free for everything else'
+        raise NotHere(f'it needs {needed} GB free on the app SSD ({counted}) and there are {free:.0f} GB')
 
 
 # ---- the choice -------------------------------------------------------------------------
@@ -490,6 +514,12 @@ def wait_until_answering(opener=urllib.request.urlopen, sleep=time.sleep, clock=
         if clock() >= deadline:
             raise RuntimeError(f'Ollama did not answer within {wait // 60} minutes')
         sleep(5)
+
+
+def tagged(model):
+    """A model's name as Ollama lists it: one without a tag is its ":latest" ("qwen3.5"
+    is "qwen3.5:latest"). A colon before the last "/" is a port, not a tag."""
+    return model if ':' in model.rsplit('/', 1)[-1] else model + ':latest'
 
 
 def fetch_model(base, model, log, run=checked_run):

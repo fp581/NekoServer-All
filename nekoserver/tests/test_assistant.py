@@ -365,7 +365,7 @@ class CapabilityTests(unittest.TestCase):
             assistant.processor_ok(lambda: 'x86_64', self.cpuinfo('sse4_2'))
             assistant.port_free_for_us({'data_mount': tmp}, connect=mock.Mock(side_effect=OSError))
             assistant.memory_now()
-            assistant.check_space({'data_mount': tmp}, 3.3, lambda p: SimpleNamespace(free=10**12))
+            assistant.check_space({'data_mount': tmp}, 'qwen3.5:4b', 3.3, lambda p: SimpleNamespace(free=10**12))
 
 
 class MemoryTests(unittest.TestCase):
@@ -420,15 +420,19 @@ class MemoryTests(unittest.TestCase):
 class SpaceTests(unittest.TestCase):
     def test_too_little_ssd_space_is_not_available(self):
         with tempfile.TemporaryDirectory() as tmp, self.assertRaises(assistant.NotHere) as caught:
-            assistant.check_space({'data_mount': tmp}, 3.3, lambda p: SimpleNamespace(free=12 * 1000**3))
+            assistant.check_space({'data_mount': tmp}, 'qwen3.5:4b', 3.3, lambda p: SimpleNamespace(free=12 * 1000**3))
         self.assertIn('needs 19 GB free', str(caught.exception))
 
     def test_setup_run_again_does_not_count_what_is_there_already(self):
         with tempfile.TemporaryDirectory() as tmp:
             installed_project(tmp)
-            assistant.check_space({'data_mount': tmp}, 3.3, lambda p: SimpleNamespace(free=12 * 1000**3))
+            record = Path(tmp) / 'appdata/assistant/models/models/manifests/registry.ollama.ai/library/qwen3.5/4b'
+            record.parent.mkdir(parents=True)
+            record.write_text('{}')
+            config = {'data_mount': tmp}
+            assistant.check_space(config, 'qwen3.5:4b', 3.3, lambda p: SimpleNamespace(free=12 * 1000**3))
             with self.assertRaises(assistant.NotHere):
-                assistant.check_space({'data_mount': tmp}, 3.3, lambda p: SimpleNamespace(free=8 * 1000**3))
+                assistant.check_space(config, 'qwen3.5:4b', 3.3, lambda p: SimpleNamespace(free=8 * 1000**3))
 
 
 class TemplateTests(unittest.TestCase):
