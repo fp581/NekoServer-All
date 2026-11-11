@@ -195,11 +195,9 @@ def require_settings(config):
 # cannot tell that from a choice, so fewer backups are never kept without asking: setup
 # asks once (when someone is at the keyboard), and the answer is kept.
 # (group, key, earlier default, current default, what is counted)
-RETIRED_DEFAULTS = (
-    ('app_backup', 'keep_snapshots', 14, 7, 'nightly app backups'),
-    ('host_backup', 'keep_snapshots', 14, 7, 'nightly settings backups'),
-    ('photos', 'database_keep', 8, 4, 'weekly Immich database copies'),
-)
+# (The nightly app and settings backups, 14 before v0.30.0 and 7 until 0.50.0, are
+# reviewed by review_backup_counts since 0.50.0: their count is 1 to 7 now, 3 by default.)
+RETIRED_DEFAULTS = (('photos', 'database_keep', 8, 4, 'weekly Immich database copies'),)
 
 # Set in the settings once the earlier defaults were reviewed: a number seen after that is
 # someone's choice, also when it equals an earlier default.
@@ -232,13 +230,56 @@ def retire_old_defaults(config, ask=None):
     return lines, True
 
 
+def review_backup_counts(config, ask=None, held=None):
+    """0.50.0 keeps 3 nightly app backups and 3 nightly settings backups on a new server,
+    and 1 to 7 at most. A server set up earlier may keep more (up to 3650), or every one
+    (0). Such a count is never changed, and nothing is removed, without the person's yes:
+    it is marked as the earlier setting and goes on working as it did. With `ask` (a
+    yes/no question to the person at the keyboard) each one is shown once with what the
+    change would do (backup_plan.review; `held(group)`: how many backups there are now)
+    and moves to 3 only on a yes. Returns (lines for the log, whether the settings
+    changed). Removing the older backups is the scheduled job's work, after its next
+    backup that succeeds; setup removes none."""
+    import backup_plan
+
+    if config.get(backup_plan.REVIEWED) is True:
+        return [], False
+    marked = backup_plan.note_earlier(config)
+    lines = []
+    waiting = backup_plan.earlier_groups(config)
+    for group in waiting:
+        what = backup_plan.COUNTED[group][0]
+        keep = backup_plan.count(config, group)[0]
+        kept = backup_plan.kept_words(keep, what)
+        said = backup_plan.review(config, group, backup_plan.DEFAULT, held(group) if held else None)
+        if ask is not None and ask(f'{said}\nKeep the newest {backup_plan.DEFAULT} {what} from now on?') is True:
+            backup_plan.set_count(config, group, backup_plan.DEFAULT)
+            lines.append(
+                f'Backups: the newest {backup_plan.DEFAULT} {what} are kept from now on, not {kept}; the older ones '
+                'are removed after the next backup that succeeds, none before'
+            )
+        else:
+            lines.append(
+                f'Backups: {kept} stay kept, as before (new servers keep {backup_plan.DEFAULT}, at most '
+                f'{backup_plan.MOST}); nothing was removed. The backup page of setup changes it'
+            )
+    if ask is None and waiting:
+        return lines, marked  # asked when someone is at the keyboard
+    config[backup_plan.REVIEWED] = True
+    return lines, True
+
+
 def review_retention(ctx, apply):
-    """The earlier default backup counts reviewed (retire_old_defaults), asking only
-    when someone is at the keyboard; the answer saved with --apply."""
-    lines, changed = retire_old_defaults(ctx.config, guided_setup.yes_no if apply and sys.stdin.isatty() else None)
-    for line in lines:
+    """The earlier backup counts reviewed (retire_old_defaults, review_backup_counts),
+    asking only when someone is at the keyboard; the answers saved with --apply."""
+    import backup_plan
+
+    ask = guided_setup.yes_no if apply and sys.stdin.isatty() else None
+    lines, changed = retire_old_defaults(ctx.config, ask)
+    more, counts = review_backup_counts(ctx.config, ask, lambda group: backup_plan.held(ctx.config, group))
+    for line in lines + more:
         ctx.log(line)
-    if changed and apply:
+    if (changed or counts) and apply:
         ctx.persist_config()
 
 

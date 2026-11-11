@@ -23,6 +23,8 @@ guided_setup.py
     On which day should the weekly USB copy run? ({days}; Enter for {now['usb_day']}):
     At what time on that day? (HH:MM, Enter for {now['usb']}):
     At what time should the monthly check start? (HH:MM before {night_end}:00, Enter for {offered}{why}):
+installer.py
+    {said} Keep the newest {backup_plan.DEFAULT} {what} from now on?
 media-connect.py
     {prompt} (its number; Enter alone skips):
     source_filter

@@ -9,6 +9,7 @@ import subprocess
 
 import native_runtime
 import host
+from modules.app_backup import kept_count
 from neko_common import (
     RESUME_TIMEOUT,
     SYSTEMD_UNITS,
@@ -60,6 +61,7 @@ HOST_DIRS = (
     '/etc/nekoserver-dashboard',
 )
 PRIVATE = Path('/etc/nekoserver-backups/host.json')
+SETTINGS_BACKUPS = 'nightly settings backups'
 BACKUP_UNIT, BACKUP_TIMER = 'nekoserver-host-backup.service', 'nekoserver-host-backup.timer'
 RESUME_UNIT = 'nekoserver-host-resume.service'
 
@@ -74,9 +76,7 @@ def settings(config):
     free = opts.get('minimum_free_gb', 2)
     if type(free) is not int or not 1 <= free <= 1024:
         raise RuntimeError('Invalid backup free-space reserve')
-    keep = opts.get('keep_snapshots', 7)
-    if type(keep) is not int or not 0 <= keep <= 3650:
-        raise RuntimeError('host_backup.keep_snapshots must be a whole number from 0 to 3650')
+    kept_count(config, 'host_backup', SETTINGS_BACKUPS)  # 1 to 7, or an earlier setting kept as it was
     paths = opts.get('extra_paths', [])
     if not isinstance(paths, list) or len(paths) > 32 or any(not isinstance(p, str) for p in paths):
         raise RuntimeError('extra_paths must be a list of at most 32 absolute paths')
@@ -194,7 +194,9 @@ def guard(config, previous=None):
         'steam_uid': user.pw_uid if user and opts.get('steam', True) else None,
         'user': user.pw_name if user else None,
         'minimum_free_bytes': opts.get('minimum_free_gb', 2) * 1024**3,
-        'keep_snapshots': opts.get('keep_snapshots', 7),
+        # "earlier": a count from before 0.50.0 outside 1 to 7, kept to as before.
+        'keep_snapshots': kept_count(config, 'host_backup', SETTINGS_BACKUPS)[0],
+        **({'earlier': True} if kept_count(config, 'host_backup', SETTINGS_BACKUPS)[1] else {}),
     }
     return value
 
