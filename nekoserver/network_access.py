@@ -135,14 +135,9 @@ def chosen(rows, is_wireless=None, route=None):
 
 
 NOT_CONNECTED = (
-    'This PC is not connected. Plug in a network cable, or join Wi-Fi from this PC\'s own settings, then try again.'
+    'This PC is not connected to your home network. Plug in a network cable, or join Wi-Fi from this PC\'s '
+    'own settings, then run setup again.'
 )
-
-
-def connected(run=command):
-    """This PC has a way out to the internet (a default route): checked before the first
-    thing setup downloads, so an offline PC is told so plainly instead of failing there."""
-    return default_route(run) is not None
 
 
 def choose_lan(ctx, ask=input, interactive=None, output=print):

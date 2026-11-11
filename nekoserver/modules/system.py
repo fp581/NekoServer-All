@@ -36,11 +36,4 @@ def run(context):
     else:
         context.log('GPU inspection skipped: lspci not installed')
     context.log(timezone_note(context.config))
-    if context.apply:
-        # Before anything is downloaded: an offline PC is told so plainly (and the step
-        # can be tried again), instead of failing at the first package it fetches.
-        import network_access
-
-        if not network_access.connected():
-            raise RuntimeError(network_access.NOT_CONNECTED)
     context.log('System check complete (read-only).')

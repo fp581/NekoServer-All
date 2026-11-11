@@ -133,34 +133,17 @@ class LanChoiceTests(unittest.TestCase):
         ctx, _ = self.ctx(lan_ip='auto', lan_cidr='auto')
         with (
             mock.patch.object(network_access, 'candidates', return_value=[]),
-            self.assertRaisesRegex(RuntimeError, 'This PC is not connected. Plug in a network cable, or join Wi-Fi'),
+            self.assertRaisesRegex(
+                RuntimeError, 'This PC is not connected to your home network. Plug in a network cable'
+            ),
         ):
             network_access.choose_lan(ctx, output=lambda *_: None)
-        # ... and before the first download: the first step checks for a way out.
         routes = '[{"dst": "default", "gateway": "192.168.1.1", "dev": "enp3s0"}]'
-        self.assertTrue(network_access.connected(lambda argv: routes))
-        self.assertFalse(network_access.connected(lambda argv: '[]'))
         self.assertEqual(network_access.default_route(lambda argv: routes), 'enp3s0')
-        from modules import system
-
-        ctx = SimpleNamespace(config={}, apply=True, log=lambda line: None)
-        with (
-            mock.patch.object(system.host, 'os_release', return_value={}),
-            mock.patch.object(system.shutil, 'which', return_value=None),
-            mock.patch.object(system, 'timezone_note', return_value=''),
-            mock.patch.object(network_access, 'connected', return_value=False),
-            self.assertRaisesRegex(RuntimeError, 'This PC is not connected'),
-        ):
-            system.run(ctx)
-        # A look without --apply downloads nothing and is not stopped.
-        ctx.apply = False
-        with (
-            mock.patch.object(system.host, 'os_release', return_value={}),
-            mock.patch.object(system.shutil, 'which', return_value=None),
-            mock.patch.object(system, 'timezone_note', return_value=''),
-            mock.patch.object(network_access, 'connected', return_value=False),
-        ):
-            system.run(ctx)
+        self.assertIsNone(network_access.default_route(lambda argv: '[]'))
+        # No check of its own before the first download (the user: setup cannot start
+        # without the internet anyway): a download that fails says so, with Retry.
+        self.assertNotIn('network_access', (ROOT / 'modules/system.py').read_text())
 
     def test_samba_chooses_the_lan_itself_instead_of_waiting_for_the_gateway(self):
         ctx, _ = self.ctx(lan_ip='auto', lan_cidr='auto')
