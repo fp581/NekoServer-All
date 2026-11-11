@@ -971,6 +971,31 @@ class AccountStoreTests(unittest.TestCase):
             ):
                 account_store.load({'data_mount': d})
 
+    def test_the_store_is_read_and_written_only_on_the_ssd(self):
+        """The SSD's path comes from the settings file: a store folder that does not lie on
+        the SSD is refused, and nothing is read or made there."""
+        import account_store
+
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as elsewhere:
+            config = {'data_mount': d}
+            outside = Path(elsewhere) / 'accounts'
+            value = {'format': 1, 'mode': 'per-app', 'apps': {}}
+            with (
+                mock.patch.object(account_store, 'folder', return_value=outside),
+                mock.patch.object(account_store, 'check_parent') as looked,
+            ):
+                with self.assertRaisesRegex(RuntimeError, 'must lie on the app SSD'):
+                    account_store.load(config)
+                with self.assertRaisesRegex(RuntimeError, 'must lie on the app SSD'):
+                    account_store.save(config, value)
+            looked.assert_not_called()
+            self.assertEqual(list(Path(elsewhere).iterdir()), [])
+            # On the SSD it is made and written as before.
+            with mock.patch.object(account_store, 'check_parent'), mock.patch.object(account_store, 'private'):
+                account_store.save(config, value)
+                self.assertEqual(account_store.load(config)['apps'], {})
+            self.assertEqual(oct((Path(d) / 'secrets/accounts').stat().st_mode & 0o777), '0o700')
+
 
 class UsbPickerSystemDiskTests(unittest.TestCase):
     def test_a_btrfs_system_disk_showing_home_is_still_the_system_disk(self):
