@@ -549,6 +549,81 @@ class SetupWindowTests(unittest.TestCase):
         seen = self.page([self.asked(question, page, skipPage=True)])
         self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '', 'skip': True}]])
 
+    DRIVES = [
+        {
+            'number': 1, 'name': 'nvme0n1', 'what': '477 GB NVMe SSD, WD SN770', 'inside': '', 'role': '',
+            'why': 'it is the disk Linux runs from, which NekoServer never uses for your files',
+        },
+        {
+            'number': 2, 'name': 'sda1', 'what': '466 GB SSD, Samsung SSD 870, named "apps"',
+            'inside': 'ext4, UUID ssd-0001; not open; about 1 % full', 'role': '', 'why': '',
+        },
+        {
+            'number': 3, 'name': 'sdb1', 'what': '1.8 TB HDD, WDC WD20EZRZ, named "media"',
+            'inside': 'ext4, UUID hdd-0001; not open', 'role': 'Chosen as the media HDD',
+            'why': 'it is already the media HDD',
+        },
+    ]  # fmt: skip
+
+    def test_the_drives_are_cards_chosen_by_clicking_then_confirmed_by_name(self):
+        """0.50.0, item 5: the drive questions were the terminal's numbered lines only."""
+        names = 'The short names (sdb1) are Linux\'s own and can change at the next start.'
+        page = {
+            'form': 'drives', 'fields': {'choice': ''}, 'asking': 'choice', 'rows': self.DRIVES, 'skippable': False,
+            'what': 'Choose the drive for your apps, photos and music (the app SSD).',
+            'needs': 'It needs at least 20 GB free, so a drive of 22 GB or more (100 GB or more is recommended).',
+            'names': names,
+        }  # fmt: skip
+        question = 'Number of the drive for your apps, photos and music (the app SSD) (Enter alone stops setup here): '
+        seen = self.page([self.asked(question, page)])
+        self.assertEqual(seen['prompt'], page['what'])
+        self.assertEqual(
+            (seen['send'], seen['skipHidden'], seen['note'], seen['contextHidden']),
+            ('Use this drive', True, names, True),
+        )
+        self.assertEqual(
+            seen['drives'],
+            [
+                {
+                    'name': '1 · nvme0n1 · 477 GB NVMe SSD, WD SN770',
+                    'facts': ['Not this one: it is the disk Linux runs from, which NekoServer never uses for your files'],
+                    'off': True, 'radioHidden': False,
+                },
+                {
+                    'name': '2 · sda1 · 466 GB SSD, Samsung SSD 870, named "apps"',
+                    'facts': ['ext4, UUID ssd-0001; not open; about 1 % full'],
+                    'off': False, 'radioHidden': False,
+                },
+                {
+                    'name': '3 · sdb1 · 1.8 TB HDD, WDC WD20EZRZ, named "media"',
+                    'facts': ['ext4, UUID hdd-0001; not open', 'Chosen as the media HDD', 'Not this one: it is already the media HDD'],
+                    'off': True, 'radioHidden': False,
+                },
+            ],
+        )  # fmt: skip
+        # Nothing chosen: said, not sent. A card clicked: its number is the answer.
+        seen = self.page([self.asked(question, page, leave=True)])
+        self.assertEqual((seen['posts'], seen['note']), ([], 'Choose a drive in the list first.'))
+        seen = self.page([self.asked(question, page, tick=[2])])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '2', 'fields': {'choice': '2'}}]])
+        # The USB backup drive may be left for later.
+        seen = self.page([self.asked(question, {**page, 'skippable': True}, skipPage=True)])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '', 'skip': True}]])
+        # The confirmation: the chosen drive alone, and its name to type.
+        confirm = {
+            'form': 'drives', 'fields': {'confirm': ''}, 'asking': 'confirm', 'rows': [self.DRIVES[1]],
+            'confirm': 'sda1', 'skippable': False, 'needs': '', 'names': '',
+            'what': 'Type sda1 to confirm that this drive is the app SSD.',
+        }  # fmt: skip
+        asks = 'Type sda1 to confirm it is the app SSD (drive 2: 466 GB SSD, Samsung SSD 870, named "apps"): '
+        seen = self.page([self.asked(asks, confirm)])
+        self.assertEqual((seen['prompt'], seen['send']), (confirm['what'], 'Confirm this drive'))
+        self.assertEqual([(card['name'][:8], card['radioHidden']) for card in seen['drives']], [('2 · sda1', True)])
+        seen = self.page([self.asked(asks, confirm, leave=True)])
+        self.assertEqual((seen['posts'], seen['note']), ([], 'Type the name shown, sda1, to be sure of the drive.'))
+        seen = self.page([self.asked(asks, confirm, fill={'ask-page-confirm': 'sda1'})])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': 'sda1', 'fields': {'confirm': 'sda1'}}]])
+
     def test_an_answer_that_was_not_delivered_can_be_sent_again(self):
         """The setup review (S8): when sending an answer failed, the window's buttons and
         fields stayed off, and the same question on the next polls did not bring them back."""
@@ -795,16 +870,16 @@ class DriveLayoutTests(unittest.TestCase):
 
         pool = self.pool_both_ways()
         self.assertEqual(storage.size_bytes(pool['size']), 32 * 1024**3)
-        self.assertIn('only its smallest drive is counted, to be safe', storage.describe(pool))
-        with self.assertRaisesRegex(RuntimeError, 'No drive here is big enough.*32 GB.*could not be read'):
-            storage.ask_drive([pool], 'media_hdd', 'the HDD', lambda q: '', lambda s: None)
+        self.assertIn('only its smallest drive is counted, to be safe', pool['size_note'])
+        self.assertIn('could not be read', pool['size_note'])
+        self.assertFalse(storage.big_enough(pool, storage.sizes('media_hdd')[0]))
 
     def test_a_raid1_pool_holds_what_its_smallest_mirror_holds_and_a_single_one_the_sum(self):
         from modules import storage
 
         mirrored = self.pool_both_ways(profiles={'RAID1'})
         self.assertEqual(storage.size_bytes(mirrored['size']), 32 * 1024**3)
-        self.assertIn('keeping its data as RAID1', storage.describe(mirrored))
+        self.assertIn('keeping its data as RAID1', mirrored['size_note'])
         self.assertFalse(storage.big_enough(mirrored, storage.sizes('media_hdd')[0]))
         single = self.pool_both_ways(profiles={'SINGLE'})
         self.assertEqual(storage.size_bytes(single['size']), (4 * 1024 + 32) * 1024**3)
@@ -819,9 +894,18 @@ class DriveLayoutTests(unittest.TestCase):
         enough = {'name': 'sdc1', 'size': '54G', 'fstype': 'ext4', 'uuid': 'y'}
         self.assertFalse(storage.big_enough(exactly, 50))
         self.assertTrue(storage.big_enough(enough, 50))
-        said = []
-        with self.assertRaisesRegex(RuntimeError, 'No drive here is big enough'):
-            storage.ask_drive([exactly], 'media_hdd', 'the HDD', lambda q: '', said.append)
+        # The list says so with the size that would do, and the drive cannot be chosen.
+        import drive_table
+
+        inventory = {'blockdevices': [self.disk('sdb', {**exactly, 'type': 'part'})]}
+        config = {'media_mount': '/mnt/nekoserver-media'}
+        [row] = drive_table.rows(inventory, config)
+        self.assertEqual(
+            drive_table.verdict(row, 'media_hdd', config),
+            'it is too small: the media HDD needs a drive of at least 54 GB (50 GB free once formatted)',
+        )
+        with self.assertRaisesRegex(RuntimeError, 'No drive here can be the media HDD'):
+            storage.choose_new(config, [row], 'media_hdd', lambda q: '', lambda s: None)
 
     def test_a_mounted_pool_counts_what_the_pool_itself_reports(self):
         from modules import storage
@@ -829,7 +913,7 @@ class DriveLayoutTests(unittest.TestCase):
         reported = mock.Mock(f_blocks=1000, f_bfree=900, f_bavail=700, f_frsize=1024**3 // 25)
         pool = self.pool_both_ways(statvfs=lambda folder: reported, mountpoint='/run/media/neko/pool')
         self.assertEqual(storage.size_bytes(pool['size']), 800 * (1024**3 // 25))
-        self.assertIn('usable space as the pool itself reports it', storage.describe(pool))
+        self.assertIn('usable space as the pool itself reports it', pool['size_note'])
 
     def test_usable_space_by_data_profile(self):
         from modules import storage

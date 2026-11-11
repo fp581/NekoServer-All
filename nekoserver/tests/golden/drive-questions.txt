@@ -1,0 +1,85 @@
+===== A first run: the list, then the app SSD, the media HDD and the USB backup drive =====
+Everything connected to this PC:
+  1) nvme0n1: 477 GB NVMe SSD, WD SN770
+       Cannot be used: it is the disk Linux runs from, which NekoServer never uses for your files.
+  2) sda1: 466 GB SSD, Samsung SSD 870, named "apps"
+       ext4, UUID ssd-0001; not open; about 1 % full
+       Can be the app SSD, the media HDD or the USB backup drive.
+  3) sdb1: 1.8 TB HDD, WDC WD20EZRZ, named "media"
+       ext4, UUID hdd-0001; open at /run/media/neko/media; about 40 % full, holds files
+       Can be the app SSD, the media HDD or the USB backup drive.
+  4) sdc1: 29 GB USB drive, SanDisk Ultra, named "BACKUP"
+       exFAT, UUID USB0-0001; not open
+       Can be the USB backup drive.
+  5) sdd1: 15 GB USB drive, Cruzer Blade, named "stick"
+       ext4, UUID small-0001; not open; about 3 % full
+       Can be the USB backup drive.
+  6) sde: 932 GB HDD, ST1000DM010
+       Cannot be used: it has no filesystem yet. To use it, format it as ext4 yourself with the Disks app (GNOME) or KDE Partition Manager, or in a terminal with  sudo mkfs.ext4 /dev/sde  (this erases what is on it; setup never formats a drive).
+  7) sdf: 3.6 TB network disk (iSCSI), Synology LUN, named "nas-media"
+       ext4, UUID nas-0001; the NAS disk 0x6001405abc; not open
+       Can be the media HDD or the USB backup drive.
+  8) nvme1n1p1: 233 GB NVMe SSD, KINGSTON SNV2S250G
+       xfs, UUID nvme-0002; not open
+       Can be the app SSD, the media HDD or the USB backup drive.
+  9) sdg1: 238 GB SSD, Crucial MX500, named "Windows"
+       NTFS (Windows), UUID WIN0-0001; not open
+       Cannot be used: it is formatted NTFS (Windows), which Linux apps can't keep their files on. To use it, copy its files elsewhere first, then format it as ext4 yourself with the Disks app (GNOME) or KDE Partition Manager, or in a terminal with  sudo mkfs.ext4 /dev/sdg1  (this erases what is on it; setup never formats a drive).
+The short names (sdb1, nvme0n1p2) are Linux's own and can change at the next start. NekoServer remembers a drive by its UUID, which you never have to type.
+Setup never formats a drive and changes nothing by showing this list.
+Now choose the drive for your apps, photos and music (the app SSD). It needs at least 20 GB free, so a drive of 22 GB or more (100 GB or more is recommended).
+  1) nvme0n1: 477 GB NVMe SSD, WD SN770  - not this one: it is the disk Linux runs from, which NekoServer never uses for your files
+  2) sda1: 466 GB SSD, Samsung SSD 870, named "apps", ext4, about 1 % full
+  3) sdb1: 1.8 TB HDD, WDC WD20EZRZ, named "media", ext4, about 40 % full, holds files
+  4) sdc1: 29 GB USB drive, SanDisk Ultra, named "BACKUP", exfat  - not this one: it is formatted exFAT, which Linux apps can't keep their files on
+  5) sdd1: 15 GB USB drive, Cruzer Blade, named "stick", ext4, about 3 % full  - not this one: it is too small: the app SSD needs a drive of at least 22 GB (20 GB free once formatted)
+  6) sde: 932 GB HDD, ST1000DM010  - not this one: it has no filesystem yet
+  7) sdf: 3.6 TB network disk (iSCSI), Synology LUN, named "nas-media", ext4  - not this one: it is on the network storage box, and the app SSD must be connected to this PC (by USB 3, or inside it): it holds the databases and is what makes the apps fast
+  8) nvme1n1p1: 233 GB NVMe SSD, KINGSTON SNV2S250G, xfs
+  9) sdg1: 238 GB SSD, Crucial MX500, named "Windows", ntfs  - not this one: it is formatted NTFS (Windows), which Linux apps can't keep their files on
+Number of the drive for your apps, photos and music (the app SSD) (Enter alone stops setup here): [1]
+Drive 1 (nvme0n1: 477 GB NVMe SSD, WD SN770) cannot be the app SSD: it is the disk Linux runs from, which NekoServer never uses for your files. Choose another one from the list.
+Number of the drive for your apps, photos and music (the app SSD) (Enter alone stops setup here): [5]
+Drive 5 (sdd1: 15 GB USB drive, Cruzer Blade, named "stick") cannot be the app SSD: it is too small: the app SSD needs a drive of at least 22 GB (20 GB free once formatted). Choose another one from the list.
+Number of the drive for your apps, photos and music (the app SSD) (Enter alone stops setup here): [2]
+Type sda1 to confirm it is the app SSD (drive 2: 466 GB SSD, Samsung SSD 870, named "apps"): [sdb1]
+That is not sda1. Type sda1 exactly as shown, to be sure of the drive.
+Type sda1 to confirm it is the app SSD (drive 2: 466 GB SSD, Samsung SSD 870, named "apps"): [sda1]
+Now choose the drive for your movies, shows, Nextcloud files and the backups (the media HDD). It needs at least 50 GB free, so a drive of 54 GB or more (500 GB or more is recommended).
+  1) nvme0n1: 477 GB NVMe SSD, WD SN770  - not this one: it is the disk Linux runs from, which NekoServer never uses for your files
+  2) sda1: 466 GB SSD, Samsung SSD 870, named "apps", ext4, about 1 % full  - not this one: it is already the app SSD
+  3) sdb1: 1.8 TB HDD, WDC WD20EZRZ, named "media", ext4, about 40 % full, holds files
+  4) sdc1: 29 GB USB drive, SanDisk Ultra, named "BACKUP", exfat  - not this one: it is formatted exFAT, which Linux apps can't keep their files on
+  5) sdd1: 15 GB USB drive, Cruzer Blade, named "stick", ext4, about 3 % full  - not this one: it is too small: the media HDD needs a drive of at least 54 GB (50 GB free once formatted)
+  6) sde: 932 GB HDD, ST1000DM010  - not this one: it has no filesystem yet
+  7) sdf: 3.6 TB network disk (iSCSI), Synology LUN, named "nas-media", ext4
+  8) nvme1n1p1: 233 GB NVMe SSD, KINGSTON SNV2S250G, xfs
+  9) sdg1: 238 GB SSD, Crucial MX500, named "Windows", ntfs  - not this one: it is formatted NTFS (Windows), which Linux apps can't keep their files on
+Number of the drive for your movies, shows, Nextcloud files and the backups (the media HDD) (Enter alone stops setup here): [2]
+Drive 2 (sda1: 466 GB SSD, Samsung SSD 870, named "apps") cannot be the media HDD: it is already the app SSD. Choose another one from the list.
+Number of the drive for your movies, shows, Nextcloud files and the backups (the media HDD) (Enter alone stops setup here): [3]
+Type sdb1 to confirm it is the media HDD (drive 3: 1.8 TB HDD, WDC WD20EZRZ, named "media"): [sdb1]
+Now choose the drive for the weekly copy of your photos and files (the USB backup drive).
+  1) nvme0n1: 477 GB NVMe SSD, WD SN770  - not this one: it is the disk Linux runs from, which NekoServer never uses for your files
+  2) sda1: 466 GB SSD, Samsung SSD 870, named "apps", ext4, about 1 % full  - not this one: it is already the app SSD
+  3) sdb1: 1.8 TB HDD, WDC WD20EZRZ, named "media", ext4, about 40 % full, holds files  - not this one: it is already the media HDD
+  4) sdc1: 29 GB USB drive, SanDisk Ultra, named "BACKUP", exfat
+  5) sdd1: 15 GB USB drive, Cruzer Blade, named "stick", ext4, about 3 % full
+  6) sde: 932 GB HDD, ST1000DM010  - not this one: it has no filesystem yet
+  7) sdf: 3.6 TB network disk (iSCSI), Synology LUN, named "nas-media", ext4
+  8) nvme1n1p1: 233 GB NVMe SSD, KINGSTON SNV2S250G, xfs
+  9) sdg1: 238 GB SSD, Crucial MX500, named "Windows", ntfs  - not this one: it is formatted NTFS (Windows); a backup drive must be exFAT or ext4 (FAT32 cannot hold files over 4 GB, such as videos)
+Number of the drive for the weekly copy of your photos and files (the USB backup drive) (Enter to skip for now): [9]
+Drive 9 (sdg1: 238 GB SSD, Crucial MX500, named "Windows") cannot be the USB backup drive: it is formatted NTFS (Windows); a backup drive must be exFAT or ext4 (FAT32 cannot hold files over 4 GB, such as videos). Copy off anything you need from it, then format it yourself (this erases it) with the Disks app (GNOME) or KDE Partition Manager. Choose another one from the list.
+Number of the drive for the weekly copy of your photos and files (the USB backup drive) (Enter to skip for now): [4]
+Type sdc1 to confirm it is the USB backup drive (drive 4: 29 GB USB drive, SanDisk Ultra, named "BACKUP"): [sdc1]
+
+===== Setup run again: the drives chosen last time =====
+Last time you chose drive 2 (sda1: 466 GB SSD, Samsung SSD 870, named "apps") as the app SSD (UUID ssd-0001). It is used again.
+Last time you chose drive 3 (sdb1: 1.8 TB HDD, WDC WD20EZRZ, named "media") as the media HDD (UUID hdd-0001). It is used again.
+
+===== A PC with no drive that can be used =====
+No drive here can be the app SSD (your apps, photos and music). NekoServer never formats a drive by itself, and never uses the disk Linux runs from or a drive already in use.
+  - drive 1 (nvme0n1: 477 GB NVMe SSD, WD SN770): it is the disk Linux runs from, which NekoServer never uses for your files
+  - drive 2 (sde: 932 GB HDD, ST1000DM010): it has no filesystem yet. To use it, format it as ext4 yourself with the Disks app (GNOME) or KDE Partition Manager, or in a terminal with  sudo mkfs.ext4 /dev/sde  (this erases what is on it; setup never formats a drive)
+Then run  sudo bash install.sh  again. Nothing was changed.

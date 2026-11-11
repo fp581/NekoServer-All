@@ -677,6 +677,15 @@ class DriveSizeTests(unittest.TestCase):
         }
     )
 
+    def setUp(self):
+        # The list is shown afresh, and no drive of this computer is looked into.
+        import drive_table
+
+        drive_table.forget_shown()
+        look = mock.patch.object(drive_table, 'look_inside', return_value=(None, None))
+        look.start()
+        self.addCleanup(look.stop)
+
     def resolve(self, answers, config=None, inventory=None):
         config = config or dict(DRIVE_FOLDERS)
         given = iter(answers)
@@ -697,39 +706,57 @@ class DriveSizeTests(unittest.TestCase):
         # and a new Btrfs one looked for a subvolume it may not have.
         config = dict(DRIVE_FOLDERS)
         config['storage'] = {'data_ssd': {'uuid': '', 'fstype': 'btrfs', 'subvolume': '/@data'}}
-        config, _ = self.resolve(['2', 'sdc1', '2', 'sdd1'], config)
+        config, _ = self.resolve(['4', 'sdc1', '5', 'sdd1'], config)
         self.assertEqual(config['storage']['data_ssd'], {'uuid': 'ssd-0001', 'fstype': 'ext4'})
         self.assertIsNone(storage.subvolume_of(config['storage']['data_ssd']))
 
     def test_the_question_says_the_sizes_first_and_a_too_small_drive_is_asked_again(self):
-        config, out = self.resolve(
-            ['1', '2', 'sdc1', '2', 'sdd1']
-        )  # (the SSD's drive is no longer offered for the HDD)
+        # 3 is the 16 GB drive; every drive keeps its number from the list for both questions.
+        config, out = self.resolve(['3', '4', 'sdc1', '5', 'sdd1'])
         self.assertEqual(config['storage']['data_ssd']['uuid'], 'ssd-0001')
         self.assertEqual(config['storage']['media_hdd']['uuid'], 'hdd-0001')
-        self.assertEqual(
-            out[0],
-            'Now choose the SSD (apps, photos and music). It needs at least 20 GB free, so a drive of 22 GB or '
-            'more (100 GB or more is recommended).',
-        )
-        self.assertIn('  1) sdb1: 16 GB, named "SSD", Cruzer (ext4)  - too small, needs 22 GB', out)
-        self.assertIn('  2) sdc1: 466 GB, named "Fast", Samsung SSD 870 (ext4)', out)
-        self.assertIn('  (The disk Linux runs from is not in the list: it is never used for this.)', out)
+        self.assertEqual(out[0], 'Everything connected to this PC:')  # the list comes first (0.50.0)
         self.assertIn(
-            'sdb1 is 16 GB, too small for the SSD: it needs a drive of at least 22 GB (20 GB free once formatted). '
+            'Now choose the drive for your apps, photos and music (the app SSD). It needs at least 20 GB free, so '
+            'a drive of 22 GB or more (100 GB or more is recommended).',
+            out,
+        )
+        too_small = 'it is too small: the app SSD needs a drive of at least 22 GB (20 GB free once formatted)'
+        self.assertIn(f'  3) sdb1: 16 GB drive, Cruzer, named "SSD", ext4  - not this one: {too_small}', out)
+        self.assertIn('  4) sdc1: 466 GB drive, Samsung SSD 870, named "Fast", ext4', out)
+        self.assertIn(
+            '  2) nvme0n1: 477 GB NVMe SSD, WD SN770  - not this one: it is the disk Linux runs from, which '
+            'NekoServer never uses for your files',
+            out,
+        )
+        self.assertIn(
+            f'Drive 3 (sdb1: 16 GB drive, Cruzer, named "SSD") cannot be the app SSD: {too_small}. '
             'Choose another one from the list.',
             out,
         )
-        self.assertIn('Type sdc1 to confirm it is the SSD (466 GB): ', out)
-        self.assertTrue(any(line.startswith('Now choose the HDD') and '50 GB' in line for line in out))
+        self.assertIn(
+            'Number of the drive for your apps, photos and music (the app SSD) (Enter alone stops setup here): ', out
+        )
+        self.assertIn(
+            'Type sdc1 to confirm it is the app SSD (drive 4: 466 GB drive, Samsung SSD 870, named "Fast"): ', out
+        )
+        self.assertTrue(
+            any(line.startswith('Now choose the drive for your movies') and '50 GB' in line for line in out)
+        )
+        # The drive just chosen keeps its number and is refused for the other role.
+        self.assertTrue(any(line.startswith('  4) sdc1') and 'it is already the app SSD' in line for line in out))
+        # The UUID is shown in the list and never has to be typed.
+        self.assertIn('       ext4, UUID ssd-0001; not open', out)
         self.assertFalse(any('UUID=' in line or 'mounted=' in line for line in out))
 
     def test_no_drive_big_enough_stops_before_anything_with_the_sizes(self):
         inventory = {'blockdevices': self.INVENTORY['blockdevices'][:5]}
         with self.assertRaises(RuntimeError) as caught:
             self.resolve([], inventory=inventory)
+        self.assertIn('No drive here can be the app SSD (your apps, photos and music).', str(caught.exception))
         self.assertIn(
-            'No drive here is big enough for the SSD (apps, photos and music): it needs a drive of at least 22 GB',
+            'drive 3 (sdb1: 16 GB drive, Cruzer, named "SSD"): it is too small: the app SSD needs a drive of at '
+            'least 22 GB (20 GB free once formatted)',
             str(caught.exception),
         )
         self.assertIn('Nothing was changed', str(caught.exception))
@@ -745,7 +772,7 @@ class DriveSizeTests(unittest.TestCase):
 
     def test_enter_alone_says_how_to_go_on(self):
         with self.assertRaisesRegex(
-            RuntimeError, r'No drive was chosen for the SSD .* Run  sudo bash install\.sh  again'
+            RuntimeError, r'No drive was chosen for the app SSD\. Run  sudo bash install\.sh  again'
         ):
             self.resolve([''])
 
@@ -780,11 +807,11 @@ class DriveSizeTests(unittest.TestCase):
 
     def test_a_saved_drive_too_small_is_asked_for_again(self):
         config = {**self.EMPTY, 'storage': {'data_ssd': {'uuid': 'small-0001', 'fstype': 'ext4'}}}
-        config, out = self.resolve(['2', 'sdc1', '2', 'sdd1'], config)
+        config, out = self.resolve(['4', 'sdc1', '5', 'sdd1'], config)
         self.assertEqual(config['storage']['data_ssd']['uuid'], 'ssd-0001')
         self.assertIn(
-            'sdb1 (16 GB), the drive saved as the SSD, is too small: it needs a drive of at least 22 GB (20 GB '
-            'free once formatted). Choose the SSD (apps, photos and music) again:',
+            'Drive 3 (sdb1: 16 GB drive, Cruzer, named "SSD"), the drive saved as the app SSD, is too small: it '
+            'needs a drive of at least 22 GB (20 GB free once formatted). Choose the SSD (apps, photos and music) again:',
             out,
         )
 

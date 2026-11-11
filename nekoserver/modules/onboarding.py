@@ -10,14 +10,12 @@ import sys
 from pathlib import Path
 from neko_common import (
     MEDIA_APPS,
-    OPTIONAL_QUESTIONS,
     VERSION,
     app_port,
     app_ports,
     atomic_json,
     media_apps_wanted,
     media_services,
-    optional_answers,
     remember_answer,
     safe_path,
 )

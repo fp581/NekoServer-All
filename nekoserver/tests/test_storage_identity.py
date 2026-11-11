@@ -66,7 +66,9 @@ class SystemDiskTests(unittest.TestCase):
         self.assertTrue(storage.holds_system(inventory['blockdevices'][0]))
         self.assertFalse(storage.holds_system(inventory['blockdevices'][1]))
         # Its FAT boot partition is not named as a drive to reformat.
-        message = storage.nothing_eligible(inventory, [], set(), 'the SSD')
+        import drive_table
+
+        message = drive_table.none_usable(drive_table.rows(inventory, {}), 'data_ssd', {})
         self.assertNotIn('sda1', message)
         self.assertIn('/efi', photo_backup.SYSTEM_MOUNTS)
 

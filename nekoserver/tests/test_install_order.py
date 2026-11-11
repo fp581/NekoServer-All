@@ -96,9 +96,18 @@ class DrivePickingTests(unittest.TestCase):
         ]
     }
 
+    def setUp(self):
+        # The list is shown afresh, and no drive of this computer is looked into.
+        import drive_table
+
+        drive_table.forget_shown()
+        look = mock.patch.object(drive_table, 'look_inside', return_value=(None, None))
+        look.start()
+        self.addCleanup(look.stop)
+
     def test_desktop_mounted_drive_can_be_chosen_by_its_name(self):
         config = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media'}
-        answers = iter(['1', 'sdb1', '1', '/dev/sdc1'])
+        answers = iter(['2', 'sdb1', '3', '/dev/sdc1'])  # 1 is the disk Linux runs from
         out = []
         storage.resolve_storage_identity(
             config, self.INVENTORY, apply=True, interactive=True, input_fn=lambda q='': next(answers), out_fn=out.append
@@ -109,7 +118,7 @@ class DrivePickingTests(unittest.TestCase):
 
     def test_wrong_confirmation_is_refused(self):
         config = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media'}
-        answers = iter(['1', 'sdc1', 'sdc1', 'sdc1'])  # another drive's name, three times
+        answers = iter(['2', 'sdc1', 'sdc1', 'sdc1'])  # another drive's name, three times
         with self.assertRaisesRegex(RuntimeError, 'was not typed back'):
             storage.resolve_storage_identity(
                 config,
@@ -123,7 +132,7 @@ class DrivePickingTests(unittest.TestCase):
 
     def test_a_typo_is_asked_again(self):
         config = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media'}
-        answers = iter(['9', '1', 'sbd1', 'sdb1', 'x', '1', 'sdc1'])
+        answers = iter(['9', '2', 'sbd1', 'sdb1', 'x', '3', 'sdc1'])
         out = []
         storage.resolve_storage_identity(
             config, self.INVENTORY, apply=True, interactive=True, input_fn=lambda q='': next(answers), out_fn=out.append
@@ -179,7 +188,7 @@ class DrivePickingTests(unittest.TestCase):
             ]
         }
         config = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media'}
-        answers = iter(['1', 'sdb1'])
+        answers = iter(['2', 'sdb1'])
         with self.assertRaises(RuntimeError) as caught:
             storage.resolve_storage_identity(
                 config,
@@ -190,11 +199,15 @@ class DrivePickingTests(unittest.TestCase):
                 out_fn=lambda s: None,
             )
         message = str(caught.exception)
-        self.assertIn('/dev/sdc1 is formatted NTFS (Windows)', message)
-        self.assertIn('/dev/sdd1 is already in use at /mnt/films', message)
+        self.assertIn('No drive here can be the media HDD', message)
+        # Every drive by the number and words the list gave it (0.50.0), with its reason.
+        self.assertIn('drive 3 (sdc1: drive): it is formatted NTFS (Windows)', message)
+        self.assertIn('drive 4 (sdd1: drive): it is in use at /mnt/films', message)
         self.assertIn('sudo umount /mnt/films', message)
+        self.assertIn('drive 2 (sdb1: drive): it is already the app SSD', message)
+        self.assertIn('drive 1 (nvme0n1: NVMe SSD): it is the disk Linux runs from', message)
         self.assertNotIn('nvme0n1p1', message)  # the system disk's boot partition
-        self.assertNotIn('/dev/sdb1', message)  # already chosen for the SSD
+        self.assertNotIn('mkfs.ext4 /dev/nvme', message)
 
     def test_a_new_unformatted_drive_is_named_not_called_missing(self):
         inventory = {
@@ -234,12 +247,18 @@ class DrivePickingTests(unittest.TestCase):
                 config, inventory, apply=True, interactive=True, input_fn=lambda q='': '', out_fn=lambda s: None
             )
         message = str(caught.exception)
-        self.assertIn('/dev/sdb (2T) has no filesystem yet. To use it, format it as ext4', message)
+        self.assertIn(
+            'drive 2 (sdb: 2.0 TB drive, WDC WD20EZAZ): it has no filesystem yet. To use it, format it as ext4',
+            message,
+        )
         # A server often has no desktop: the terminal's command is given too (seen on a Debian VM).
-        self.assertIn('in a terminal:  sudo mkfs.ext4 /dev/sdb', message)
-        self.assertNotIn('No other drive was found', message)
-        for name in ('zram0', 'mmcblk0boot0', 'nbd0', 'sdc'):
-            self.assertNotIn('/dev/' + name, message)
+        self.assertIn('in a terminal with  sudo mkfs.ext4 /dev/sdb  (this erases what is on it', message)
+        self.assertNotIn('No drive was found', message)
+        for name in ('zram0', 'mmcblk0boot0', 'nbd0'):
+            self.assertNotIn(name, message)
+        # A disk with a partition that has no filesystem is listed, but never one to format.
+        self.assertIn('drive 3 (sdc: 1.0 TB drive): nothing on it is a filesystem', message)
+        self.assertNotIn('/dev/sdc', message)
 
 
 if __name__ == '__main__':
@@ -1525,20 +1544,35 @@ class UsbPickerTests(unittest.TestCase):
         'storage': {'data_ssd': {'uuid': 'ssd-uuid-0001'}, 'media_hdd': {'uuid': 'hdd-uuid-0001'}},
     }
 
+    def setUp(self):
+        # The list is shown afresh, and no drive of this computer is looked into.
+        import drive_table
+
+        drive_table.forget_shown()
+        look = mock.patch.object(drive_table, 'look_inside', return_value=(None, None))
+        look.start()
+        self.addCleanup(look.stop)
+
     def test_only_a_separate_physical_disk_is_offered(self):
         from modules import photo_backup
         import copy
 
         shown = []
         config = copy.deepcopy(self.CONFIG)
-        answers = iter(['1', 'sdc1'])
+        answers = iter(['3', '4', 'sdc1'])  # 3: the second partition of the media HDD, refused
         photo_backup.select_external(config, self.INVENTORY, input_fn=lambda q='': next(answers), out_fn=shown.append)
         self.assertEqual(config['photos']['external_backup_uuid'], 'usb-uuid-0001')
         offered = '\n'.join(shown)
-        self.assertNotIn('sdb2', offered)  # second partition of the media HDD
-        self.assertNotIn('nvme0n1p3', offered)  # spare partition of the system disk
+        # In the list with why not (0.50.0: everything connected is shown), and refused when chosen.
+        self.assertIn('  3) sdb2: drive, exfat  - not this one: it must be a drive of its own', offered)
+        self.assertIn('Drive 3 (sdb2: drive) cannot be the USB backup drive: it must be a drive of its own', offered)
+        self.assertIn('  2) sdb1: drive, ext4  - not this one: it is already the media HDD', offered)
+        self.assertNotIn('nvme0n1p3', offered)  # spare partition of the system disk: the disk is one row
         # Worded as the SSD and HDD lists are, not as UUIDs and mount points (seen on a Debian VM).
-        self.assertIn('  1) sdc1: 1.0 TB, open at /run/media/neko/BACKUP (exfat)', offered)
+        self.assertIn('  4) sdc1: 1.0 TB drive, exfat', shown)
+        self.assertIn(
+            'Now choose the drive for the weekly copy of your photos and files (the USB backup drive).', shown
+        )
         self.assertNotIn('UUID=', offered)
 
     def test_a_typo_in_the_usb_picker_is_asked_again(self):
@@ -1547,7 +1581,7 @@ class UsbPickerTests(unittest.TestCase):
         from modules import photo_backup
 
         config = copy.deepcopy(self.CONFIG)
-        answers = iter(['5', '1', 'sdb1', 'sdc1'])
+        answers = iter(['5', '4', 'sdb1', 'sdc1'])
         photo_backup.select_external(config, self.INVENTORY, input_fn=lambda q='': next(answers), out_fn=lambda s: None)
         self.assertEqual(config['photos']['external_backup_uuid'], 'usb-uuid-0001')
 
@@ -2101,15 +2135,16 @@ class StoppedStepMessageTests(unittest.TestCase):
     promising that each item says how to fix it."""
 
     def test_a_drive_question_left_unanswered_says_what_to_do(self):
-        from neko_common import confirmed, pick_drive
+        import drive_table
+        from neko_common import confirmed
 
         drive = {'name': 'sdc', 'uuid': 'u1', 'fstype': 'ext4', 'size': '32G'}
         with self.assertRaisesRegex(RuntimeError, 'sdc was not typed back.*sudo bash install.sh  again'):
             confirmed(drive, 'the USB backup drive', lambda q='': 'sdx', lambda s: None)
-        with self.assertRaisesRegex(
-            RuntimeError, 'No drive was chosen for the backup drive. Run  sudo bash install.sh'
-        ):
-            pick_drive([drive], 'the backup drive', lambda q='': '', lambda s: None)
+        config = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media'}
+        table = drive_table.rows(DrivePickingTests.INVENTORY, config)
+        with self.assertRaisesRegex(RuntimeError, 'No drive was chosen for the app SSD. Run  sudo bash install.sh'):
+            drive_table.ask(table, 'data_ssd', config, lambda q='': '', lambda s: None)
 
     def test_tailscale_waiting_says_how_to_sign_in(self):
         source = (Path(__file__).resolve().parents[1] / 'modules/tailscale.py').read_text()

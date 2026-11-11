@@ -130,6 +130,7 @@ console.log(JSON.stringify({ posts, title: elements['finish-title']?.textContent
   pick: (elements['ask-pick']?.children ?? []).map((label) => [label.children[0].type, label.children[1].textContent, label.hidden]),
   pickCount: elements['ask-pick-count']?.textContent ?? '',
   askOff: ['ask-send', 'ask-page-send', 'ask-page-skip', 'ask-yes', 'ask-no'].filter((id) => elements[id]?.disabled),
+  drives: (elements['ask-pick']?.children ?? []).filter((card) => (card.className ?? '').includes('drive')).map((card) => ({ name: card.children[1].textContent, facts: card.children.slice(2).map((fact) => fact.textContent), off: card.children[0].disabled, radioHidden: card.children[0].hidden })),
   pickNotes: (elements['ask-pick']?.children ?? []).map((label) => label.children[2]?.textContent ?? ''),
   recommended: [elements['ask-pick-recommended']?.textContent ?? '', elements['ask-pick-recommended']?.hidden ?? null],
   advice: elements['ask-pick-advice']?.textContent ?? '',

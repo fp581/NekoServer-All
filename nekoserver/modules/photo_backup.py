@@ -23,7 +23,6 @@ from neko_common import (
     host_timezone,
     immich_wanted,
     mount_path,
-    pick_drive,
     relative_path,
     safe_path,
     job_times,
@@ -158,12 +157,15 @@ def select_external(config, inventory, input_fn=input, out_fn=print):
         raise RuntimeError('Duplicate external filesystem UUID; identify cloned drives first')
     if not candidates:
         raise RuntimeError(no_backup_drive(config, inventory))
-    from modules.storage import describe
+    import drive_table
 
-    # Worded as the SSD and HDD lists are (it listed UUIDs and mount points before).
-    chosen = pick_drive(candidates, 'the USB backup drive', input_fn, out_fn, skippable=True, describe=describe)
-    if chosen is None:
+    # Chosen in the same list as the app SSD and the media HDD, by the same numbers.
+    table = drive_table.rows(inventory, config)
+    drive_table.show_once(table, config, out_fn)
+    row = drive_table.ask(table, 'usb', config, input_fn, out_fn, skippable=True)
+    if row is None:
         return None  # skipped for now, as offered
+    chosen = row['backup']
     photos = config.setdefault('photos', {})
     photos.update(external_backup_uuid=chosen['uuid'], external_backup_fstype=chosen['fstype'])
     photos.pop('external_backup_network', None)  # an earlier drive's; check_drive notes this one's

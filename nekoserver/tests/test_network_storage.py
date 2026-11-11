@@ -564,7 +564,13 @@ class DriveStepTests(unittest.TestCase):
         self.assertTrue(found['nas-1']['network'])
         self.assertEqual(found['nas-1']['wwn'], '0x6001405abc')
         self.assertFalse(found['ssd-1']['network'])
-        self.assertIn('on the network storage box (iSCSI, 0x6001405abc)', storage.describe(found['nas-1']))
+        # The list of everything connected says what it is and which NAS disk (0.50.0).
+        import drive_table
+
+        table = drive_table.rows(self.INVENTORY, {}, list(found.values()))
+        row = next(row for row in table if row['uuid'] == 'nas-1')
+        self.assertEqual(drive_table.words(row), '1.8 TB network disk (iSCSI)')
+        self.assertIn('the NAS disk 0x6001405abc', drive_table.inside(row))
         record = {}
         storage.new_drive(record, found['nas-1'])
         self.assertEqual(record['network'], {'transport': 'iscsi', 'wwn': '0x6001405abc'})
@@ -580,25 +586,22 @@ class DriveStepTests(unittest.TestCase):
 
     def test_the_ssd_question_never_offers_a_nas_disk(self):
         # Found in the lab: the NAS disks were listed for the SSD, then refused once picked.
+        import drive_table
+
         items = storage.discover_filesystems(self.INVENTORY, sub_uuid=lambda n: None)
-        asked = {}
+        config = {'data_mount': '/srv/x', 'media_mount': '/mnt/m'}
+        table = drive_table.rows(self.INVENTORY, config, items)
 
-        def ask(options, key, label, input_fn, out_fn):
-            asked[key] = [v['uuid'] for v in options]
-            return options[0]
+        def can_be(key):
+            return [row['uuid'] for row in drive_table.usable(table, key, config)]
 
-        with mock.patch.object(storage, 'ask_drive', ask):
-            storage.choose_new(
-                {'data_mount': '/srv/x'}, self.INVENTORY, items, set(), 'data_ssd', 'the SSD', None, None
-            )
-            storage.choose_new(
-                {'media_mount': '/mnt/m'}, self.INVENTORY, items, set(), 'media_hdd', 'the HDD', None, None
-            )
-            self.assertEqual(asked, {'data_ssd': ['ssd-1'], 'media_hdd': ['ssd-1', 'nas-1']})
-            with self.assertRaisesRegex(RuntimeError, 'Only disks on the network storage box were found for the SSD'):
-                storage.choose_new(
-                    {'data_mount': '/srv/x'}, self.INVENTORY, items, {'ssd-1'}, 'data_ssd', 'the SSD', None, None
-                )
+        self.assertEqual((can_be('data_ssd'), can_be('media_hdd')), (['ssd-1'], ['ssd-1', 'nas-1']))
+        nas = next(row for row in table if row['uuid'] == 'nas-1')
+        self.assertIn('the app SSD must be connected to this PC', drive_table.verdict(nas, 'data_ssd', config))
+        # With the only local drive taken, nothing is left for the SSD: said, not asked.
+        taken = {**config, 'storage': {'media_hdd': {'uuid': 'ssd-1'}}}
+        with self.assertRaisesRegex(RuntimeError, 'it is on the network storage box, and the app SSD must be'):
+            storage.choose_new(taken, table, 'data_ssd', None, None)
 
     def test_a_saved_nas_disk_must_be_the_same_one(self):
         record = {'uuid': 'nas-1', 'network': {'transport': 'iscsi', 'wwn': '0xaaa'}}
@@ -1016,14 +1019,18 @@ class LocationTests(unittest.TestCase):
         self.assertEqual(self.config['locations']['photos'], 'ssd')  # the second offer, typed
 
     def test_the_usb_backup_drive_is_never_offered_as_the_ssd_or_the_hdd(self):
-        items = [
-            {'uuid': 'hdd-1111', 'mountpoint': None, 'name': 'sdb'},
-            {'uuid': 'usb-1111', 'mountpoint': None, 'name': 'sdc'},
-        ]
+        import drive_table
+
+        inventory = {
+            'blockdevices': [
+                {'name': name, 'type': 'disk', 'size': '2T', 'fstype': 'ext4', 'uuid': uuid}
+                for name, uuid in (('sdb', 'hdd-1111'), ('sdc', 'usb-1111'))
+            ]
+        }
         config = {**self.config, 'photos': {'external_backup_uuid': 'usb-1111'}}
-        with mock.patch.object(storage, 'ask_drive', side_effect=lambda options, *a: options):
-            offered = storage.choose_new(config, {}, items, set(), 'media_hdd', 'HDD', None, None)
-        self.assertEqual([v['uuid'] for v in offered], ['hdd-1111'])
+        table = drive_table.rows(inventory, config)
+        self.assertEqual([row['uuid'] for row in drive_table.usable(table, 'media_hdd', config)], ['hdd-1111'])
+        self.assertEqual(drive_table.verdict(table[1], 'media_hdd', config), 'it is already the USB backup drive')
 
     def test_files_already_on_a_drive_stay_there_and_a_wrong_setting_stops_setup(self):
         library = self.root / 'srv/photos/immich-library'

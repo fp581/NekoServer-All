@@ -4,7 +4,6 @@ import json, os, pwd, re, shutil, subprocess, sys
 import network_access
 from pathlib import Path
 import host
-import setup_progress
 from neko_common import safe_path, atomic_write, findmnt, immich_wanted, last_words, media_apps_wanted, SYSTEMD_UNITS
 
 DEPENDENCIES = ['storage', 'system']

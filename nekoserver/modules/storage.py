@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from neko_common import mount_path, atomic_json, atomic_write, findmnt, confirmed, nas_disk_wwn, safe_path
+from neko_common import mount_path, atomic_json, atomic_write, findmnt, nas_disk_wwn, safe_path
 
 DEPENDENCIES = ['system', 'network_storage']
 DESCRIPTION = 'Inspect disks; --apply mounts explicitly identified data SSD and media HDD by UUID'
@@ -24,7 +24,7 @@ def call(argv, timeout=30):
 def inventory_now():
     """Every disk and partition, as lsblk JSON (one command, used by all drive pickers)."""
     return json.loads(
-        call(['lsblk', '-J', '-o', 'NAME,SIZE,TYPE,FSTYPE,UUID,MOUNTPOINT,MOUNTPOINTS,MODEL,RM,TRAN,LABEL,WWN'])
+        call(['lsblk', '-J', '-o', 'NAME,SIZE,TYPE,FSTYPE,UUID,MOUNTPOINT,MOUNTPOINTS,MODEL,RM,TRAN,LABEL,WWN,ROTA'])
     )
 
 
@@ -361,50 +361,6 @@ def empty_disk(dev):
     )
 
 
-def nothing_eligible(inventory, items, selected, label):
-    """Why no drive can be picked for `label`, drive by drive, and what to do."""
-    lines = []
-
-    def how(dev):
-        # A server often has no desktop, so the terminal's way is given too.
-        return f"with the Disks app (GNOME) or KDE Partition Manager, or in a terminal:  sudo mkfs.ext4 /dev/{dev.get('name')}"
-
-    def walk(dev):
-        if dev.get('type') in ('part', 'disk') and dev.get('fstype') in NOT_LINUX:
-            fs = dev['fstype']
-            lines.append(
-                f"/dev/{dev.get('name')} is formatted {NOT_LINUX[fs]}, which Linux apps can't keep their files "
-                f'on. To use it, copy its files elsewhere first, then format it as ext4 (this erases it) {how(dev)}'
-            )
-        elif empty_disk(dev):
-            lines.append(
-                f"/dev/{dev.get('name')} ({dev['size']}) has no filesystem yet. To use it, format it as "
-                f'ext4 (this erases it) {how(dev)}'
-            )
-        for child in dev.get('children', []):
-            walk(child)
-
-    for device in inventory.get('blockdevices', []):
-        if not holds_system(device):  # its boot partition (FAT) is never a choice
-            walk(device)
-    for v in items:
-        if v['uuid'] in selected:
-            continue
-        lines.append(
-            f"/dev/{v['name']} is already in use at {v['mountpoint']}. To use it, unmount it first "
-            f"(sudo umount {v['mountpoint']}, and take out its line in /etc/fstab if you added one)."
-        )
-    found = (
-        ('\n'.join('  - ' + line for line in lines) + '\n')
-        if lines
-        else '  No other drive was found: check that it is connected and shows up in the Disks app.\n'
-    )
-    return (
-        f'No drive can be used for {label}. NekoServer never formats a drive by itself, and never uses the '
-        f'system disk or a drive already in use.\n{found}Then run  sudo bash install.sh  again.'
-    )
-
-
 # The drives setup asks for: (settings key, what it is for, its short name).
 DRIVES = (
     ('data_ssd', 'the SSD (apps, photos and music)', 'the SSD'),
@@ -426,11 +382,6 @@ def drive_label(config, key, label):
 
 GIB = 1024**3
 UNITS = {'B': 0, 'K': 1, 'M': 2, 'G': 3, 'T': 4, 'P': 5}
-
-
-def short_name(key):
-    """'the SSD' or 'the HDD'."""
-    return next(short for name, _, short in DRIVES if name == key)
 
 
 def size_bytes(text):
@@ -481,79 +432,14 @@ def drive_needed(smallest):
     return math.ceil(smallest * OVERHEAD)
 
 
-def size_said(device):
-    """A drive's size in words, with how it was counted for a Btrfs pool over several drives."""
-    note = device.get('size_note')
-    return size_words(device.get('size')) + (f' ({note})' if note else '')
-
-
-def describe(device):
-    """One drive as the person knows it: its size, the name they gave it (the label in the
-    Disks app), its model, where the desktop opened it; for a pool, how its size was counted."""
-    words = [size_words(device.get('size'))]
-    if device.get('label'):
-        words.append(f'named "{device["label"]}"')
-    if device.get('model'):
-        words.append(str(device['model']).strip())
-    if device.get('mountpoint'):
-        words.append(f'open at {device["mountpoint"]}')
-    if device.get('network'):
-        words.append('on the network storage box (iSCSI' + (f", {device['wwn']}" if device.get('wwn') else '') + ')')
-    note = f"; {device['size_note']}" if device.get('size_note') else ''
-    return f"{device['name']}: " + ', '.join(words) + f" ({device['fstype']})" + note
-
-
-def ask_drive(options, key, label, input_fn=input, out_fn=print, attempts=3):
-    """The drive for `key`, chosen by its number and confirmed by typing its name. What it
-    needs comes first, then the drives with what tells them apart; one that is too small
-    is refused at once and another asked for, before anything is mounted or saved."""
-    short = short_name(key)
-    smallest, recommended = sizes(key)
-    if not any(big_enough(v, smallest) for v in options):
-        found = ', '.join(describe(v) for v in options)
-        raise RuntimeError(
-            f'No drive here is big enough for {label}: it needs a drive of at least {drive_needed(smallest)} GB '
-            f'({smallest} GB free once formatted; {recommended} GB or more is recommended), and these are smaller: {found}. Connect a bigger one (formatted '
-            'ext4), then run  sudo bash install.sh  again. Nothing was changed.'
-        )
-    out_fn(
-        f'Now choose {label}. It needs at least {smallest} GB free, so a drive of {drive_needed(smallest)} GB or '
-        f'more ({recommended} GB or more is recommended).'
-    )
-    for n, v in enumerate(options, 1):
-        out_fn(
-            f'  {n}) {describe(v)}'
-            + ('' if big_enough(v, smallest) else f'  - too small, needs {drive_needed(smallest)} GB')
-        )
-    out_fn('  (The disk Linux runs from is not in the list: it is never used for this.)')
-    for _ in range(attempts):
-        try:
-            choice = input_fn(f'Number of {short} (Enter alone stops setup here): ').strip()
-        except EOFError:
-            choice = ''
-        if not choice:
-            break
-        if not (choice.isdigit() and 1 <= int(choice) <= len(options)):
-            out_fn(f'Type a number from 1 to {len(options)}.')
-            continue
-        device = options[int(choice) - 1]
-        if big_enough(device, smallest):
-            return confirmed(device, f"{short} ({size_words(device.get('size'))})", input_fn, out_fn, attempts)
-        out_fn(
-            f"{device['name']} is {size_said(device)}, too small for {short}: it needs a drive of at least "
-            f'{drive_needed(smallest)} GB ({smallest} GB free once formatted). Choose another one from the list.'
-        )
-    raise RuntimeError(
-        f'No drive was chosen for {label}. Run  sudo bash install.sh  again to choose it; nothing was changed.'
-    )
-
-
 def local_ssd(key, device):
     """The application SSD is on this PC: it holds the databases and setup's own records,
     and makes the apps fast. A disk on a NAS is for the media HDD and the backup drive."""
     if key == 'data_ssd' and device.get('network'):
+        import drive_table
+
         raise RuntimeError(
-            f"{device['name']} is a disk on the network storage box. The SSD for the apps must be connected to "
+            f"{drive_table.said(device, first=True)} is a disk on the network storage box. The SSD for the apps must be connected to "
             'this PC (by USB 3, or inside it): it holds the databases and setup\'s own records, and is what makes '
             'the apps fast. Choose the NAS disk for the media HDD, then run setup again. Nothing was changed.'
         )
@@ -574,8 +460,12 @@ def new_drive(record, device):
 
 def resolve_storage_identity(config, inventory, apply=False, interactive=False, input_fn=input, out_fn=print):
     """Identify disks by verified UUID. Explicit confirmation is required for unknown devices."""
+    import drive_table
+
     items = discover_filesystems(inventory)
     configured = config.setdefault('storage', {})
+    # Everything connected, each drive with the number it is chosen by and named with after.
+    table = drive_table.rows(inventory, config, items) if apply else []
     selected = set()
     selected_disks = set()
     for key, label, _ in DRIVES:
@@ -599,13 +489,14 @@ def resolve_storage_identity(config, inventory, apply=False, interactive=False, 
                 config=config,
                 interactive=interactive,
                 out_fn=out_fn,
+                table=table,
             )
         if not uuid and apply:
             if not interactive:
                 raise RuntimeError(
                     f'No drive is chosen for {label} yet. Run  sudo bash install.sh  in a terminal on the server to choose it.'
                 )
-            device = whole(unlocked(choose_new(config, inventory, items, selected, key, label, input_fn, out_fn)))
+            device = whole(unlocked(choose_new(config, table, key, input_fn, out_fn)))
             local_ssd(key, device)
             new_drive(record, device)
             uuid = device['uuid']
@@ -645,37 +536,17 @@ def shared_folders(config):
     return found
 
 
-def choose_new(config, inventory, items, selected, key, label, input_fn, out_fn):
-    """The drive for `key`, asked for among those not chosen yet and not in use elsewhere."""
-    # A drive the desktop opened by itself (/run/media/...) is still eligible.
-    folder = config.get('data_mount' if key == 'data_ssd' else 'media_mount')
-    # The USB backup drive is never offered as the SSD or the HDD (the 0.46.1 audit: chosen
-    # when a replaced HDD was picked again, it was refused only later, by the backup step).
-    backup = config.get('photos', {}).get('external_backup_uuid')
-    options = [
-        v
-        for v in items
-        if v['uuid'] not in selected
-        and v['uuid'] != backup
-        and (
-            not v['mountpoint']
-            or v['mountpoint'] == folder
-            or str(v['mountpoint']).startswith(('/run/media/', '/media/'))
-        )
-    ]
-    # The SSD for the apps is on this PC: a disk on the NAS is not offered for it.
-    remote = [v for v in options if v.get('network')] if key == 'data_ssd' else []
-    options = [v for v in options if v not in remote]
-    if not options and remote:
-        raise RuntimeError(
-            'Only disks on the network storage box were found for the SSD ('
-            + ', '.join(v['name'] for v in remote)
-            + "). The SSD for the apps must be connected to this PC (by USB 3, or inside it), formatted ext4: "
-            'connect it, then run  sudo bash install.sh  again. Nothing was changed.'
-        )
-    if not options:
-        raise RuntimeError(nothing_eligible(inventory, items, selected, label))
-    return ask_drive(options, key, label, input_fn, out_fn)
+def choose_new(config, table, key, input_fn, out_fn):
+    """The drive for `key`, asked for in the list of everything connected (drive_table.py):
+    by its number there, then confirmed by typing its name. A drive that cannot have the
+    role (the disk Linux runs from, one in use elsewhere, the USB backup drive, a disk on
+    the NAS for the app SSD, one too small) is in the list with the reason, and refused."""
+    import drive_table
+
+    if not drive_table.usable(table, key, config):
+        raise RuntimeError(drive_table.none_usable(table, key, config))
+    drive_table.show_once(table, config, out_fn)
+    return drive_table.ask(table, key, config, input_fn, out_fn)['device']
 
 
 def not_offered(inventory, uuid):
@@ -707,7 +578,9 @@ def why_not(dev, system):
     return None
 
 
-def saved_choice(record, uuid, items, key, label, apply, inventory=None, config=None, interactive=False, out_fn=print):
+def saved_choice(
+    record, uuid, items, key, label, apply, inventory=None, config=None, interactive=False, out_fn=print, table=()
+):
     """A drive already in the settings: it must be connected, of the same type and, when
     setup goes on to mount it, unlocked by Linux at every start as a newly chosen one must
     be (settings reused after a reinstall may name an encrypted drive opened by hand).
@@ -736,8 +609,18 @@ def saved_choice(record, uuid, items, key, label, apply, inventory=None, config=
         unlocked(matches[0])
         local_ssd(key, matches[0])
         same_nas_disk(record, matches[0], label)
+        said_last_time(table, uuid, key, out_fn)
     record['fstype'] = matches[0]['fstype']
     return uuid
+
+
+def said_last_time(table, uuid, key, out_fn):
+    """A rerun says which drive it uses again: as the list names it, with its UUID."""
+    import drive_table
+
+    row = drive_table.saved_row(table, uuid)
+    if row:
+        out_fn(drive_table.last_time(row, key))
 
 
 def same_nas_disk(record, device, label):
@@ -766,10 +649,12 @@ def too_small(device, key, label, config, interactive, out_fn):
     folder = config.get('data_mount' if key == 'data_ssd' else 'media_mount', '')
     if big_enough(device, smallest) or (Path(str(config.get('data_mount', ''))) / 'docker-engine').is_dir():
         return False
-    short = short_name(key)
+    import drive_table
+
+    counted = f" ({device['size_note']})" if device.get('size_note') else ''
     said = (
-        f"{device['name']} ({size_said(device)}), the drive saved as {short}, is too small: it needs a drive "
-        f'of at least {drive_needed(smallest)} GB ({smallest} GB free once formatted).'
+        f'{drive_table.said(device, first=True)}, the drive saved as {drive_table.role(key)}, is too small{counted}: '
+        f'it needs a drive of at least {drive_needed(smallest)} GB ({smallest} GB free once formatted).'
     )
     if device.get('mountpoint') and device['mountpoint'] == folder:
         raise RuntimeError(
@@ -1525,7 +1410,6 @@ def choose_usb(context):
     from modules.photo_backup import select_external
 
     inventory = inventory_now()
-    context.log('Now the USB backup drive (it gets a weekly copy of your photos and Nextcloud files):')
     try:
         chosen = select_external(context.config, inventory, out_fn=context.log)
     except RuntimeError as exc:

@@ -61,6 +61,12 @@ desktop account for host snapshots, `systemd-escape`'s answers for the drive dev
 mount units, systemd's socket proxy at `/usr/lib/systemd/systemd-socket-proxyd`, and the
 Tailscale name of the `media-drive` dashboard.
 
+`drive-questions.txt` is not a file setup writes: it is the whole conversation of the drive
+questions (0.50.0: the list of everything connected, each question, the refusals, the
+confirmation, a rerun's "Last time ...", a PC with no drive to use), held so that a change
+to their words shows in review. `tests/test_drive_table.py` makes it; write it again with
+`NEKO_UPDATE_GOLDEN=1 python3 -m unittest tests.test_drive_table`.
+
 Not frozen here, and why: the heartbeat's and the phone alerts' private files (they hold
 the URL and token you typed), the gateway's `/etc/nekoserver-gateway/storage.json` and
 Docker's `installer/guards/<release>/storage.json` (both composed inline in a function

@@ -275,6 +275,23 @@
       'Leave a field empty to keep its default. Skip for now leaves this one out; the others are not affected.'
   };
 
+  // The drives connected to this PC: one is chosen by clicking it (its number is what the
+  // terminal takes), then confirmed by typing its name, as the terminal asks.
+  PAGES.drives = {
+    prompt: page => page.what,
+    build: buildDrives,
+    values: page => (page.confirm ? inputValues() : pickValues()),
+    problem: (page, values) => {
+      if (page.confirm)
+        return values.confirm.trim() ? '' : 'Type the name shown, ' + page.confirm + ', to be sure of the drive.';
+      return values.choice ? '' : 'Choose a drive in the list first.';
+    },
+    send: page => (page.confirm ? 'Confirm this drive' : 'Use this drive'),
+    skip: page => page.skippable,
+    note: page =>
+      page.confirm ? 'Nothing on the drive is changed by confirming it. Setup never formats a drive.' : page.names
+  };
+
   function pageOf(q) {
     return q.page && Object.hasOwn(PAGES, q.page.form) ? q.page : null;
   }
@@ -438,6 +455,45 @@
 
   function pickProblem(page, values) {
     return values.choice ? '' : 'Tick one in the list first, or press Skip for now.';
+  }
+
+  /* One card for each drive: what it is, what is on it, the role it has already, and why
+     it cannot be the one asked for (such a card cannot be chosen). Asked to confirm, the
+     page shows the chosen drive alone, with a field for its name. */
+  function buildDrives(page) {
+    pickInputs = [];
+    pageInputs = {};
+    const list = el('div', { class: 'pick drives', id: 'ask-pick', role: 'group', 'aria-label': page.what });
+    for (const drive of page.rows) {
+      const input = el('input', { type: 'radio', name: 'ask-pick', value: String(drive.number) });
+      input.disabled = !!drive.why;
+      input.hidden = !!page.confirm;
+      // Only the ones that can be chosen are switched off and on again around an answer.
+      if (!drive.why && !page.confirm) pickInputs.push(input);
+      const facts = [drive.inside, drive.role, drive.why ? 'Not this one: ' + drive.why : ''].filter(Boolean);
+      list.append(
+        el(
+          'label',
+          { class: drive.why ? 'pick-row drive off' : 'pick-row drive' },
+          input,
+          el('span', { class: 'pick-name', text: drive.number + ' · ' + drive.name + ' · ' + drive.what }),
+          ...facts.map(text => el('small', { text }))
+        )
+      );
+    }
+    const parts = [page.needs ? el('p', { class: 'drives-needs', text: page.needs }) : null, list];
+    if (page.confirm) {
+      const name = el('input', {
+        type: 'text',
+        id: 'ask-page-confirm',
+        autocomplete: 'off',
+        spellcheck: 'false',
+        'aria-label': 'The name of the drive: ' + page.confirm
+      });
+      pageInputs = { confirm: name };
+      parts.push(row('Type ' + page.confirm, [name], ''));
+    }
+    $('ask-page').replaceChildren(...parts.filter(Boolean));
   }
 
   /* One card for each step: why it stopped, what usually fixes it, and its Retry button
@@ -636,7 +692,7 @@
     }
     kind.build(page);
     $('ask-page-send').textContent = kind.send(page);
-    $('ask-page-skip').hidden = !kind.skip;
+    $('ask-page-skip').hidden = !(typeof kind.skip === 'function' ? kind.skip(page) : kind.skip);
   }
 
   function showQuestion(q, current) {
@@ -658,7 +714,7 @@
     const page = pageOf(q);
     // A list to pick from shows every row itself (the terminal's last lines are its tail),
     // and the retry cards say what the terminal said.
-    context.hidden = !q.context.length || ['pick', 'retry', 'logins'].includes(page?.form);
+    context.hidden = !q.context.length || ['pick', 'retry', 'logins', 'drives'].includes(page?.form);
     context.scrollTop = context.scrollHeight; // the last lines matter most
     let prompt = q.text;
     if (page) prompt = PAGES[page.form].prompt(page);

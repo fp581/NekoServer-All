@@ -725,6 +725,16 @@ main > section {
 .retry-fix li {
   margin: 2px 0;
 }
+/* the drives connected to this PC: a card each; one that cannot be chosen is quieter */
+.pick.drives {
+  max-height: 46vh;
+}
+.drive.off .pick-name {
+  color: var(--muted);
+}
+.drives-needs {
+  margin: 0;
+}
 /* a saved login shown on request: the password to copy, and its QR code */
 .login-shown {
   display: grid;

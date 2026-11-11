@@ -78,18 +78,30 @@ You can change your mind. Run `sudo bash install.sh` again, answer `yes` to `Ask
 
 #### Choosing the drives
 
-Setup lists the drives it found, numbered, for example:
+Before the first drive question, setup shows **everything connected to this PC**, numbered. Each drive says what it is (its size, whether it is an SSD, an HDD, an NVMe drive, a USB drive or a disk on the NAS, its model and the name you gave it), what is on it (its filesystem and UUID, where it is open, how full it is), and what it can be used as, or why it cannot be used:
 
 ```text
-  1) /dev/sdb1 931.5G ext4 UUID=7fde… mounted=-
-  2) /dev/sdc1 3.6T ext4 UUID=12ab… mounted=-
-Choose number (or ENTER to abort):
+Everything connected to this PC:
+  1) nvme0n1: 477 GB NVMe SSD, WD SN770
+       Cannot be used: it is the disk Linux runs from, which NekoServer never uses for your files.
+  2) sda1: 466 GB SSD, Samsung SSD 870, named "apps"
+       ext4, UUID 7fde…; not open; about 1 % full
+       Can be the app SSD, the media HDD or the USB backup drive.
+  3) sdb1: 1.8 TB HDD, WDC WD20EZRZ, named "media"
+       ext4, UUID 12ab…; open at /run/media/you/media; about 40 % full, holds files
+       Can be the app SSD, the media HDD or the USB backup drive.
+  4) sde: 932 GB HDD, ST1000DM010
+       Cannot be used: it has no filesystem yet. To use it, format it as ext4 yourself …
 ```
 
-1. Type the **number** of your SSD and press Enter. Use the size to tell the drives apart.
-2. Setup asks you to type the drive's name back, for example `Type sdb1 to confirm it is the SSD:`. Type it exactly (`sdb1`) and press Enter. This is a safety check, so the wrong drive is never used.
-3. The same follows for the HDD, and then for the USB drive. No USB drive yet? Press Enter to skip it; you will be asked again at the weekly backup step.
-4. Then setup asks **when the backups run**: the time of the daily backups (`When should the daily backups run? (HH:MM, Enter for 04:15)`), the day and time of the weekly USB copy (Sunday 03:00 unless you say otherwise) and the time of the monthly check on the 1st (at night, 02:30 unless you say otherwise). Press Enter to keep the time shown; choose hours when nobody uses the server, because the apps pause for a moment while they are copied. Setup run again keeps your answers and asks only if you say yes to asking the optional questions again. In the setup window the three come as one page: a row each for the daily backups, the weekly USB copy (day and time) and the monthly check, with a line under each saying what runs then; **Save these times** sends all three, **Skip for now** keeps the times shown.
+The short names (`sda1`, `sdb1`) are Linux's own and can change at the next start. NekoServer remembers a drive by its UUID, which is shown and which you never have to type. Setup never formats a drive; for a new drive the list gives the command to run yourself.
+
+1. Each question names the role and what goes on that drive, for example `Number of the drive for your apps, photos and music (the app SSD)`. Type the drive's **number** from the list and press Enter. A drive that cannot have that role is in the list with the reason ("not this one: it is too small ..."); choosing it anyway says why and asks again.
+2. Setup asks you to type the drive's name back, for example `Type sda1 to confirm it is the app SSD (drive 2: 466 GB SSD, Samsung SSD 870, named "apps"):`. Type it exactly (`sda1`) and press Enter. This is a safety check, so the wrong drive is never used.
+3. The same follows for the media HDD, and then for the USB backup drive, with the same numbers. No USB drive yet? Press Enter to skip it; you will be asked again at the weekly backup step.
+4. **In the setup window** the list is a card for each drive. Click the one you want (a drive that cannot be used is dimmed and says why) and press **Use this drive**; the next page shows that drive alone and asks for its name, as the terminal does.
+5. **Setup run again** says which drives it uses: `Last time you chose drive 2 (sda1: 466 GB SSD, ...) as the app SSD (UUID 7fde…). It is used again.` Every later message about a drive names it this way, never by `sda1` alone.
+6. Then setup asks **when the backups run**: the time of the daily backups (`When should the daily backups run? (HH:MM, Enter for 04:15)`), the day and time of the weekly USB copy (Sunday 03:00 unless you say otherwise) and the time of the monthly check on the 1st (at night, 02:30 unless you say otherwise). Press Enter to keep the time shown; choose hours when nobody uses the server, because the apps pause for a moment while they are copied. Setup run again keeps your answers and asks only if you say yes to asking the optional questions again. In the setup window the three come as one page: a row each for the daily backups, the weekly USB copy (day and time) and the monthly check, with a line under each saying what runs then; **Save these times** sends all three, **Skip for now** keeps the times shown.
 
 ### 5. Drive space
 
