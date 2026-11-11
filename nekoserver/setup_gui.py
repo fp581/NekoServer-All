@@ -8,6 +8,7 @@ at the end it shows the finishing screen.
 It is served by setup itself on 127.0.0.1, on a port picked at random, behind a path
 nobody can guess (a token), and only for as long as setup runs."""
 
+import contextlib
 import ipaddress
 import json
 import os
@@ -185,7 +186,13 @@ UNREADABLE_SAID = (
 class Window:
     """The server behind the setup window, running in a thread of setup's own process."""
 
-    def __init__(self, config_path, config, titles, plan, version=VERSION, owners=None, tables=TCP_TABLES):
+    def __init__(
+        self, config_path, config, titles, plan, version=VERSION, owners=None, tables=TCP_TABLES, session=None
+    ):
+        # `session`: the name of a menu of its own the window follows instead of setup's
+        # steps (the recovery menu, the uninstaller): it shows what the terminal says and
+        # asks the menu's questions; there are no switches and no step list.
+        self.menu = session
         self.config_path = Path(config_path)
         self.config = config
         self.titles = dict(titles)
@@ -209,7 +216,7 @@ class Window:
         self.tables = tables
         self.packages = None  # this Linux's package names (family_packages), once asked
         self.started = threading.Event()  # Start was pressed in the window
-        self.frozen = False  # setup has started: the choices are fixed
+        self.frozen = bool(session)  # setup has started (or this is a menu): the choices are fixed
         self.delivered = threading.Event()  # the page has shown the finishing screen
         self.lock = threading.Lock()
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), self._handler())
@@ -321,6 +328,8 @@ class Window:
     def _phase(self, finished, steps):
         if finished:
             return 'finished'
+        if self.menu:
+            return 'running'
         if self.frozen or self.started.is_set() or any(s['status'] != 'pending' for s in steps):
             return 'running'
         return 'choose'
@@ -354,6 +363,8 @@ class Window:
             'done': sum(1 for s in here if s['status'] == 'success'),
             'total': len(here),
             'question': question,
+            # A menu of its own: its name and the terminal's last lines.
+            'session': {'title': self.menu, 'lines': setup_progress.recent_lines(30)} if self.menu else None,
             'finish': finished['lines'] if finished else [],
             'title': (finished.get('title') or '') if finished else '',
             'stopped': bool(finished and finished.get('stopped') is True),
@@ -593,6 +604,40 @@ def open_window(config, url):
     else:
         return False
     return guided_setup.launch_quietly(config, argv)
+
+
+# ----- a menu of its own in the window: the recovery menu, the uninstaller
+
+
+@contextlib.contextmanager
+def session(title, config, output=print, opener=None):
+    """While this is active, a menu that is not setup (the recovery menu, the uninstaller)
+    has the setup window too, when there is a desktop: it shows what the terminal says
+    and asks every question the menu asks, and either place answers. Without a desktop,
+    or when the window cannot be served or opened, the menu runs in the terminal alone,
+    exactly as before: recovery is used when things are broken, so nothing here may
+    stop it. Yields the window, or None."""
+    setup_progress.enable()
+    window = None
+    try:
+        window = Window(Path('/nonexistent/no-settings-to-change.json'), config, {}, [], session=title)
+        if (opener or open_window)(config, window.url):
+            output('A window opened in your browser with the same questions: answer there or here, as you like.')
+        else:
+            window.stop()
+            window = None
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+        window = None
+    try:
+        if window is None:
+            yield None
+        else:
+            with setup_progress.watching_prompts():
+                yield window
+    finally:
+        if window is not None:
+            window.stop()
+        setup_progress.disable()
 
 
 # ----- setup stopped before the wizard

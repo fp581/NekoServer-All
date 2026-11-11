@@ -389,6 +389,41 @@ class SetupWindowTests(unittest.TestCase):
         for text in ('Listener username: ', 'Does the NAS ask for a CHAP user name and password? [y/N]: '):
             self.assertEqual(self.page([self.asked(text)])['placeholder'], '', text)
 
+    def test_a_menu_of_its_own_shows_its_name_and_the_terminals_words(self):
+        """The recovery menu and the uninstaller in the window (0.50.0): no steps, no
+        switches; what the terminal said, and the menu's questions."""
+        lines = ['What do you want to get back?', '  1. Photos and videos (Immich)', '  0. Quit']
+        state = {
+            **self.choose(),
+            'phase': 'running',
+            'extras': [],
+            'session': {'title': 'NekoServer recovery', 'lines': lines},
+        }
+        seen = self.page([state])
+        self.assertEqual(seen['now'], ['IN THE TERMINAL TOO', 'NekoServer recovery', '\n'.join(lines), 'said'])
+        self.assertEqual((seen['stepsHidden'], seen['running'], seen['progressHidden']), (True, 'running alone', True))
+        self.assertEqual(seen['badge'], 'Working…')
+        # A question of the menu is asked as setup's own are, under the menu's name.
+        asked = {
+            **state,
+            'question': {
+                'seq': 3,
+                'text': 'Choose a number: ',
+                'secret': False,
+                'kind': 'text',
+                'context': lines,
+                'page': None,
+            },
+            'choose': 1,
+        }
+        seen = self.page([asked])
+        self.assertEqual(seen['askLabel'], 'A QUESTION · NekoServer recovery')
+        self.assertEqual(seen['options'][0][:2], ['1', 'Photos and videos (Immich)'])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 3, 'text': '1'}]])
+        # Setup's own run is drawn as before: its steps, two columns.
+        seen = self.page([self.backup_times_question()])
+        self.assertEqual((seen['stepsHidden'], seen['running'], seen['now'][3]), (False, 'running', ''))
+
     def test_the_pages_rows_go_when_a_plain_question_follows(self):
         # The rows' inputs are `required` and sit in the same form as the plain answer:
         # left behind hidden, they blocked every later Send.

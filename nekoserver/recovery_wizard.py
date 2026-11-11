@@ -4,6 +4,7 @@ A menu over the existing restore tools. Everything is restored into a NEW folder
 live data is never overwritten. Each restore ends with what to do next.
 """
 
+import builtins
 import contextlib
 import datetime as dt
 import errno
@@ -2559,6 +2560,18 @@ def run(prompt=input, output=print, config_path=None):
         return 2
     stop_on_sigterm()
     config = settings(config_path, output)
+    if prompt is not builtins.input:
+        return menu_loop(config, prompt, output)  # asked by a test, or another program: no window
+    import setup_gui
+
+    # With a desktop, the setup window shows the menu too and either place answers
+    # (0.50.0); without one, or with a broken one, the terminal alone, as before.
+    with setup_gui.session('NekoServer recovery', config, output):
+        return menu_loop(config, prompt, output)
+
+
+def menu_loop(config, prompt, output):
+    """The recovery menu itself: one restore or repair after another, until Quit."""
     say(output, '\nNekoServer recovery', 'Everything is restored into a NEW folder. Nothing you have now is changed.')
     handlers = {
         'photos': restore_photos,

@@ -1919,6 +1919,27 @@ def main(argv):
         print(PACKAGES_LEFT)
         return 0
     print('This removes NekoServer from this PC. Nothing is formatted; what you keep stays as it is.')
+    # With a desktop, the setup window asks the same questions and either place answers.
+    with window_session(settings):
+        return removal(plan)
+
+
+def window_session(settings):
+    """The setup window for this menu too (setup_gui.session, since 0.50.0). Whatever
+    keeps it from loading (a download with files missing, say) leaves the terminal
+    alone, as before: removing NekoServer must work on a broken one."""
+    import contextlib
+
+    try:
+        import setup_gui
+
+        return setup_gui.session('Removing NekoServer', settings if isinstance(settings, dict) else {})
+    except Exception:  # the window is a convenience here, never a reason to stop
+        return contextlib.nullcontext()
+
+
+def removal(plan):
+    """The questions, the removal itself and what is left to say (main)."""
     try:
         chosen = choose(input, print)
         if not confirm(plan, chosen, input, print):

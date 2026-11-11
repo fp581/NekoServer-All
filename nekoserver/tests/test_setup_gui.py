@@ -2,6 +2,7 @@
 and the wizard's "Ready to start?" that the window can answer."""
 
 import builtins
+import contextlib
 import json
 import os
 import sys
@@ -932,6 +933,139 @@ class WindowTests(unittest.TestCase):
 
             time.sleep(0.3)
         self.assertNotIn('Traceback', err.getvalue())
+
+
+class MenuWindowTests(unittest.TestCase):
+    """0.50.0, item 8: the recovery menu and the uninstaller have the setup window too, when
+    there is a desktop; the terminal keeps working, and is all there is without one."""
+
+    def setUp(self):
+        packages = mock.patch.object(setup_gui, 'family_packages', return_value={'names': lambda n: [n], 'vulkan': []})
+        packages.start()
+        self.addCleanup(packages.stop)
+        self.addCleanup(setup_progress.disable)
+
+    def browser_of(self, window):
+        browser = WindowTests.cookie_browser()
+        browser.open(window.url, timeout=5).read()
+        return browser
+
+    def state(self, window, browser):
+        with browser.open(window.url + 'api/state', timeout=5) as response:
+            return json.loads(response.read())
+
+    def answer(self, window, browser, payload):
+        request = urllib.request.Request(
+            window.url + 'api/answer',
+            data=json.dumps(payload).encode(),
+            headers={'Content-Type': 'application/json'},
+            method='POST',
+        )
+        with browser.open(request, timeout=5) as response:
+            return json.loads(response.read())
+
+    def test_a_menu_is_followed_and_answered_in_the_window(self):
+        import pty
+        import time
+
+        master, slave = pty.openpty()
+        self.addCleanup(os.close, master)
+        terminal = os.fdopen(slave, 'r')
+        self.addCleanup(terminal.close)
+        said, picked, opened = [], [], []
+
+        def menu():
+            with mock.patch('sys.stdin', terminal), mock.patch('sys.stdout'):
+                with setup_gui.session('NekoServer recovery', {}, said.append, lambda config, url: True) as window:
+                    opened.append(window)
+                    print('What do you want to get back?')
+                    print('  1. Photos and videos (Immich)')
+                    print('  2. Nextcloud files')
+                    print('  0. Quit')
+                    picked.append(builtins.input('Choose a number: '))
+
+        thread = threading.Thread(target=menu)
+        thread.start()
+        deadline = time.time() + 20
+        while not opened and time.time() < deadline:
+            time.sleep(0.05)
+        window = opened[0]
+        browser = self.browser_of(window)
+        shown = None
+        while time.time() < deadline:
+            shown = self.state(window, browser)
+            if shown['question']:
+                break
+            time.sleep(0.05)
+        # The window follows the menu: its name, the terminal's words, no steps or switches.
+        self.assertEqual(shown['phase'], 'running')
+        self.assertEqual(shown['session']['title'], 'NekoServer recovery')
+        self.assertEqual(shown['steps'], [])
+        self.assertEqual(shown['question']['text'], 'Choose a number:')
+        self.assertEqual(
+            shown['question']['context'][-3:], ['  1. Photos and videos (Immich)', '  2. Nextcloud files', '  0. Quit']
+        )
+        self.assertEqual(self.answer(window, browser, {'seq': shown['question']['seq'], 'text': '2'}), {'ok': True})
+        thread.join(10)
+        self.assertEqual(picked, ['2'])  # the menu got the window's answer
+        self.assertIn('A window opened in your browser with the same questions', said[0])
+        # Its switches are never there to press: a menu changes no settings file.
+        self.assertTrue(window.frozen)
+
+    def test_without_a_desktop_the_menu_is_the_terminal_alone(self):
+        said = []
+        with setup_gui.session('NekoServer recovery', {}, said.append, lambda config, url: False) as window:
+            self.assertIsNone(window)
+            # Asked the plain way: nothing watches the prompts.
+            self.assertFalse(setup_progress._watching)
+        self.assertEqual(said, [])
+        # A window that cannot even be served changes nothing either.
+        with mock.patch.object(setup_gui, 'Window', side_effect=OSError('no port')):
+            with setup_gui.session('Removing NekoServer', {}, said.append) as window:
+                self.assertIsNone(window)
+
+    def test_the_recovery_menu_opens_it_only_when_a_person_runs_it(self):
+        import recovery_wizard
+
+        sessions = []
+
+        @contextlib.contextmanager
+        def session(title, config, output):
+            sessions.append(title)
+            yield None
+
+        with (
+            mock.patch.object(recovery_wizard.os, 'geteuid', return_value=0),
+            mock.patch.object(recovery_wizard, 'stop_on_sigterm'),
+            mock.patch.object(recovery_wizard, 'settings', return_value={}),
+            mock.patch.object(recovery_wizard, 'menu_loop', return_value=0) as loop,
+            mock.patch.object(setup_gui, 'session', session),
+        ):
+            # A prompt of someone's own (a test, another program): the menu alone.
+            self.assertEqual(recovery_wizard.run(lambda text: '0', lambda line: None), 0)
+            self.assertEqual(sessions, [])
+            # The person's own terminal: with the window.
+            self.assertEqual(recovery_wizard.run(builtins.input, lambda line: None), 0)
+            self.assertEqual(sessions, ['NekoServer recovery'])
+        self.assertEqual(loop.call_count, 2)
+
+    def test_the_uninstaller_never_depends_on_the_window(self):
+        import uninstaller
+
+        with mock.patch.dict(sys.modules, {'setup_gui': None}):  # its file cannot be loaded
+            with uninstaller.window_session({'data_mount': '/srv/nekoserver'}) as window:
+                self.assertIsNone(window)
+        seen = []
+
+        @contextlib.contextmanager
+        def session(title, config):
+            seen.append((title, config))
+            yield None
+
+        with mock.patch.object(setup_gui, 'session', session):
+            with uninstaller.window_session('not a settings object'):
+                pass
+        self.assertEqual(seen, [('Removing NekoServer', {})])
 
 
 class WindowPlacementTests(unittest.TestCase):

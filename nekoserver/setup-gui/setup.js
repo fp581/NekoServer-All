@@ -551,6 +551,15 @@
     $('now-notes').replaceChildren(...current.notes.map(n => el('li', { text: n })));
   }
 
+  /* A menu of its own: its name, and what the terminal said last (the same words). */
+  function showSession(session) {
+    $('now-label').textContent = 'IN THE TERMINAL TOO';
+    $('now-title').textContent = session.title;
+    $('now-text').textContent = session.lines.join('\n');
+    $('now-packages').replaceChildren();
+    $('now-notes').replaceChildren();
+  }
+
   function showBetween(state) {
     const waiting = state.steps.filter(s => s.status === 'needs_setup');
     $('now-label').textContent = 'BETWEEN STEPS';
@@ -581,11 +590,16 @@
     progress(state);
     const waiting = state.question;
     badge(waiting ? 'Waiting for you' : 'Working…', waiting ? 'waiting' : '');
-    const current = state.steps.find(s => s.id === state.current);
+    // A menu of its own (the recovery menu, the uninstaller) has a name, no steps.
+    const current = state.session ? { title: state.session.title } : state.steps.find(s => s.id === state.current);
     showQuestion(state.question, current);
     $('now').hidden = !!state.question;
-    if (current) showCurrent(state, current);
+    $('now-text').className = state.session ? 'said' : '';
+    if (state.session) showSession(state.session);
+    else if (current) showCurrent(state, current);
     else showBetween(state);
+    $('running').className = state.session ? 'running alone' : 'running';
+    $('steps').hidden = !!state.session;
     stepList($('steps'), state.steps, state.current);
   }
 

@@ -281,7 +281,7 @@ It removes NekoServer from this PC: what you choose, after two confirmations, an
    ```
 
 2. **Look first** (optional, changes nothing, no password needed): `bash uninstall.sh --dry-run` shows what each choice would remove, with sizes.
-3. **Start it:** `sudo bash uninstall.sh`, then type your login password.
+3. **Start it:** `sudo bash uninstall.sh`, then type your login password. On a PC with a desktop the setup window opens with the same questions; the terminal keeps working, and is all there is without a desktop.
 4. **Choose what goes.** A numbered checklist appears; `[x]` means it will be removed. Type a number and press Enter to switch that line on or off (several at once work too: `3 4`), `all` to take everything, or just press Enter when the list is the way you want it. Only NekoServer itself and the app containers are switched on to begin with: your photos, movies, Nextcloud files and backups stay unless you switch them on.
 5. **Check the plan.** It lists every folder that would go, with its size, and what stays. Type `yes` to go on (anything else stops, with nothing changed).
 6. **Type the phrase** it shows, exactly, for example `remove NekoServer and delete my photos, backups`. Then it removes what you chose and says what it did. Nothing removed can be brought back.

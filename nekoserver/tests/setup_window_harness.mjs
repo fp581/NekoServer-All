@@ -108,5 +108,7 @@ console.log(JSON.stringify({ posts, title: elements['finish-title']?.textContent
   pickCount: elements['ask-pick-count']?.textContent ?? '',
   send: elements['ask-page-send']?.textContent ?? '', skipHidden: elements['ask-page-skip']?.hidden ?? null,
   placeholder: elements['ask-input']?.placeholder ?? '', yesnoHidden: elements['ask-yesno']?.hidden ?? null,
+  now: [elements['now-label']?.textContent ?? '', elements['now-title']?.textContent ?? '', elements['now-text']?.textContent ?? '', elements['now-text']?.className ?? ''],
+  stepsHidden: elements.steps?.hidden ?? null, askLabel: elements['ask-label']?.textContent ?? '', running: elements.running?.className ?? '',
   prompt: elements['ask-prompt']?.textContent ?? '', note: elements['ask-note']?.textContent ?? '',
   start: [elements.start?.disabled ?? null, elements.start?.textContent ?? ''], chooseNote: elements['choose-note']?.textContent ?? '' }));

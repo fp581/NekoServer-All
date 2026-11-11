@@ -149,6 +149,16 @@ def question_context():
     return lines[-CONTEXT_LINES:]
 
 
+def recent_lines(count=CONTEXT_LINES):
+    """The last lines the terminal printed (the installer's time stamps taken off): what a
+    window that follows a menu of its own, the recovery menu or the uninstaller, shows
+    between two questions."""
+    with _lock:
+        raw = [line for line in _recent if line != CUT]
+    lines = [STAMP.sub('', line).rstrip() for line in raw]
+    return [line for line in lines if line.strip()][-count:]
+
+
 _asked = {'text': None, 'context': []}  # the question asked last, and what was shown with it
 RETRY_LINES = 2  # at most this much new text: the same question asked again after a wrong answer
 

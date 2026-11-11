@@ -32,7 +32,7 @@ Not sure? Start the recovery menu anyway. It only reads your backups until you c
 
 ## The recovery menu, step by step
 
-1. **Start it:** `sudo bash install.sh --recover` in the NekoServer folder. Type your login password when `sudo` asks.
+1. **Start it:** `sudo bash install.sh --recover` in the NekoServer folder. Type your login password when `sudo` asks. On a PC with a desktop the setup window opens too (since 0.50.0): it shows what the terminal says and asks the same questions, and you can answer in either. Without a desktop, or when the window cannot open, the menu works in the terminal alone, as it always did.
 2. **Choose what you want back** by its number. `0` goes back (or leaves the menu).
 3. **Choose where from**, when the menu asks: the HDD, or the USB drive (plug it in first). If it says no backup was found, check that the drive is plugged in.
 4. **Choose a backup by its date.** The newest is first.
