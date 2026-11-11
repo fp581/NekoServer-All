@@ -1,5 +1,6 @@
 """Selected-app HTTPS gateways; never publish Funnel or change Docker bindings."""
 
+import questions
 import guided_setup
 import native_runtime
 import permission_checks
@@ -239,12 +240,7 @@ def configure(ctx, kind):
                 'Create administrator accounts, disable unwanted public signup and verify login/access permissions for: '
                 + ', '.join(apps)
             )
-            if (
-                input(
-                    'Once you have checked those settings, type SECURED to switch on access from your other devices (anything else leaves it off for now): '
-                ).strip()
-                != 'SECURED'
-            ):
+            if questions.ask('access_checked', input).strip() != 'SECURED':
                 return False
         opts['confirmed_services'] = list(apps)
         changed = True

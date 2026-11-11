@@ -270,7 +270,9 @@ class SetupQuestionTests(unittest.TestCase):
         self.assertEqual(printed.count('Type a time of day as HH:MM, for example 04:15.'), 2)
         self.assertEqual(printed.count('Type the day as one of Mon, Tue, Wed, Thu, Fri, Sat, Sun.'), 1)
         self.assertEqual(printed.count('Type a time of day as HH:MM before 06:00, for example 02:30.'), 1)
-        self.assertFalse(any('[yes/no]' in q for q in asked), 'text questions: the setup window shows a field for them')
+        self.assertFalse(
+            any('yes or no' in q for q in asked), 'text questions: the setup window shows a field for them'
+        )
 
     def window_prompt(self, first, fields=None, skip=False):
         """A terminal prompt whose first question the setup window answers, with the rest
@@ -426,7 +428,7 @@ class SetupQuestionTests(unittest.TestCase):
 
         def prompt(question):
             asked.append(question)
-            return 'yes' if '[yes/no]' in question else ''
+            return 'yes' if 'yes or no' in question else ''
 
         guided_setup.choose_backup_times(ctx, prompt=prompt, output=lambda *_: None)
         self.assertIs(ctx.ask_optional_again, True)
@@ -520,7 +522,7 @@ class SetupQuestionTests(unittest.TestCase):
 
         printed = []
         guided_setup.choose_backup_times(ctx, prompt=prompt, output=printed.append)
-        self.assertFalse(any('[yes/no]' in question for question in asked), 'not offered to keep')
+        self.assertFalse(any('yes or no' in question for question in asked), 'not offered to keep')
         self.assertEqual(len(asked), 4)
         self.assertIn(
             f'The backup times in the settings ({template}) are not the ones chosen last time ({old}), '
@@ -634,7 +636,7 @@ class SetupQuestionTests(unittest.TestCase):
             asked = []
 
             def prompt(question):
-                if '[yes/no]' in question:  # the first round's answer, offered on the second: ask again
+                if 'yes or no' in question:  # the first round's answer, offered on the second: ask again
                     return 'yes'
                 asked.append(question)
                 return ''

@@ -191,7 +191,12 @@
       if (askedSeq != null) void answer(askedSeq, b.dataset.answer, b.id === 'ask-skip');
     });
   $('ask-page-skip').addEventListener('click', () => {
-    if (askedSeq != null) void answer(askedSeq, '', true);
+    if (askedSeq == null) return;
+    const page = askedQuestion && pageOf(askedQuestion);
+    // A question that can wait takes its own "not now" answer (what Enter alone gives in
+    // the terminal); a step that is left takes what Ctrl+D gives there.
+    if (page?.form === 'ask' && !page.leave && page.skip != null) void answer(askedSeq, page.skip);
+    else void answer(askedSeq, '', true);
   });
 
   /* ---- pages: related questions shown and answered together.
@@ -275,6 +280,19 @@
       'Leave a field empty to keep its default. Skip for now leaves this one out; the others are not affected.'
   };
 
+  // A question in its own words (questions.py): a short question, a line under it, and
+  // buttons that say what they do, or a box to fill in. Nothing here tells anyone to type.
+  PAGES.ask = {
+    prompt: page => page.title,
+    build: buildAsk,
+    values: () => ({ answer: pageInputs.answer ? pageInputs.answer.value : '' }),
+    problem: () => '',
+    send: page => page.send,
+    sends: page => page.kind === 'text' || page.kind === 'secret',
+    skip: page => page.leave || page.skip != null,
+    note: page => page.hint
+  };
+
   // Several steps about one thing (the phone, the TV): each with a sliding yes of its
   // own, and one Continue. All on yes confirms the part; with some still off, those stay
   // for the next run of setup and the ones marked are kept.
@@ -285,7 +303,7 @@
     problem: () => '',
     send: () => 'Continue',
     skip: false,
-    note: page => page.question + ' Slide each step to yes once it is done. Steps left off are kept for the next run.'
+    note: () => 'Slide each step to yes once it is done. Steps you leave off are kept for next time.'
   };
 
   // The drives connected to this PC: one is chosen by clicking it (its number is what the
@@ -468,6 +486,39 @@
 
   function pickProblem(page, values) {
     return values.choice ? '' : 'Tick one in the list first, or press Skip for now.';
+  }
+
+  /* A question's answers: a button for each choice (the first of a yes or no stands
+     out), or one box, a password box for something private. */
+  function buildAsk(page) {
+    pageInputs = {};
+    pickInputs = [];
+    if (page.kind === 'text' || page.kind === 'secret') {
+      const input = el('input', {
+        type: page.kind === 'secret' ? 'password' : 'text',
+        id: 'ask-page-answer',
+        autocomplete: 'off',
+        spellcheck: 'false',
+        'aria-label': page.title
+      });
+      pageInputs = { answer: input };
+      $('ask-page').replaceChildren(input);
+      return;
+    }
+    const choices = el('div', { class: 'ask-choices', id: 'ask-choices', role: 'group', 'aria-label': page.title });
+    page.choices.forEach((choice, index) => {
+      const button = el('button', {
+        type: 'button',
+        class: page.kind === 'yesno' && index === 0 ? 'primary' : 'secondary',
+        text: choice.label
+      });
+      button.addEventListener('click', () => {
+        if (askedSeq != null) void answer(askedSeq, choice.answer);
+      });
+      pickInputs.push(button); // off with the other controls while the answer is on its way
+      choices.append(button);
+    });
+    $('ask-page').replaceChildren(choices);
   }
 
   /* What the person marked on a part's page, kept for a reload of the window (only
@@ -763,7 +814,9 @@
     }
     kind.build(page);
     $('ask-page-send').textContent = kind.send(page);
+    $('ask-page-send').hidden = kind.sends ? !kind.sends(page) : false;
     $('ask-page-skip').hidden = !(typeof kind.skip === 'function' ? kind.skip(page) : kind.skip);
+    $('ask-page-skip').textContent = page.skip_label || 'Skip for now';
   }
 
   function showQuestion(q, current) {
@@ -785,7 +838,10 @@
     const page = pageOf(q);
     // A list to pick from shows every row itself (the terminal's last lines are its tail),
     // and the retry cards say what the terminal said.
-    context.hidden = !q.context.length || ['pick', 'retry', 'logins', 'drives', 'part'].includes(page?.form);
+    // A question in its own words shows what came before it only when it is about that.
+    const alone =
+      ['pick', 'retry', 'logins', 'drives', 'part'].includes(page?.form) || (page?.form === 'ask' && !page.above);
+    context.hidden = !q.context.length || alone;
     context.scrollTop = context.scrollHeight; // the last lines matter most
     let prompt = q.text;
     if (page) prompt = PAGES[page.form].prompt(page);

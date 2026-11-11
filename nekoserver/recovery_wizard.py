@@ -128,6 +128,16 @@ def ask(question, prompt=input, output=print):
     return answer
 
 
+def asked(key, prompt=input, output=print, **values):
+    """`ask` for a question of questions.py: its own words in the window and the terminal."""
+    import questions
+
+    answer = questions.yes_no(key, prompt, output, **values)
+    if answer is None:
+        raise EOFError
+    return answer
+
+
 def choose(title, options, prompt=input, output=print, leave='Back'):
     """Numbered choice; returns the chosen value or None for 0 (`leave`: "Back", or
     "Quit" in the top menu)."""
@@ -256,7 +266,7 @@ def new_folder(suggested, prompt=input, output=print, avoid=(), refuse=()):
     path = Path(suggested) if suggested is not None else typed_folder(prompt, output)
     while path is not None:
         output(f'\nRestore into this new folder:\n  {path}')
-        if ask('Use this folder?', prompt, output):
+        if asked('restore_folder_ok', prompt, output):
             problem = folder_problem(path, avoid, refuse)
             if problem is None:
                 return path
@@ -925,7 +935,7 @@ def missing_check(missing, checked, prompt, output, copies):
             f'(for example {", ".join(missing[:5])}).'
             + (f' {checked.other.capitalize()} may have them.' if checked.other else '')
         )
-        if not ask('Restore everything else from this backup now? ("no" stops, with nothing restored)', prompt, output):
+        if not asked('restore_rest', prompt, output):
             raise RuntimeError(
                 'Nothing was restored.'
                 + (f' Use {checked.other} instead, or choose' if checked.other else ' Choose')
@@ -1020,9 +1030,7 @@ def copy_choice(sources, target, prompt, output, ledger_root=None, other=None, r
         return count - len(checked.damaged), True, checked
     missing = checked.require_present(sources)
     missing_check(missing, checked, prompt, output, {key: checked.sums[key] for key in missing})
-    latest = ask(
-        'Restore only the NEWEST version of each file? (recommended; "no" copies every version)', prompt, output
-    )
+    latest = asked('restore_newest', prompt, output)
     output(COPYING)
     count = copy_latest(sources, target, output, checked) if latest else copy_new(sources, target, checked)
     return count - len(checked.damaged), latest, checked
@@ -1667,7 +1675,7 @@ def restore_monthly(config, prompt, output):
     target = restore_target(config, f'monthly-{stamp()}', prompt, output)
     if target is None:
         return
-    images = ask('Also load the saved app versions into Docker (needed on a new server)?', prompt, output)
+    images = asked('restore_app_versions', prompt, output)
     args = ['--snapshot', str(run), '--stage', str(target)] + (['--load-images'] if images else [])
     if tool('monthly-recovery.py', *args):
         try:
@@ -2341,7 +2349,7 @@ def checked_drive(config, prompt, output, run, writes, errors):
         'To check it, the apps that write there are stopped, the drive is unmounted (never by force),',
         'its filesystem checked and repaired, then mounted again and the apps started.',
     )
-    if not ask('Stop the apps and check the drive now?', prompt, output):
+    if not asked('check_drive', prompt, output):
         output('Nothing was changed.')
         return
     busy = repair_blocked(config, run)
@@ -2387,7 +2395,7 @@ def repaired(folder, device, fstype, prompt, output, run):
             f'{folder} is unmounted. Its filesystem ({fstype}) is checked with  {command} ; then run  sudo bash '
             'install.sh  to mount it again and start the apps.'
         )
-    if not ask('Check and repair its filesystem now (e2fsck: it changes only what is broken)?', prompt, output):
+    if not asked('repair_drive', prompt, output):
         raise RuntimeError(f'{folder} is unmounted and not checked; run  sudo bash install.sh  to mount it again.')
     output('Checking (on a large drive this takes a few minutes)...')
     fsck = run(['e2fsck', '-f', '-p', device], capture_output=True, text=True, timeout=6 * 3600, check=False)

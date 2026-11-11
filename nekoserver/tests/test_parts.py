@@ -24,7 +24,8 @@ STEPS = [
     {'id': 'two', 'title': 'The second thing', 'lines': ['Do that.'], 'logins': []},
     {'id': 'three', 'title': 'The third thing', 'lines': ['And that.']},
 ]
-QUESTION = 'Did all three work?'
+QUESTION = 'tv_worked'  # a part's one question, by its key in questions.py
+ASKED = '\nDid everything work on the TV?\nType yes or no, then press Enter. '
 
 
 def context(folder='/nonexistent/neko'):
@@ -59,7 +60,7 @@ class PartTests(unittest.TestCase):
     def test_the_terminal_lists_every_step_and_asks_once(self):
         person = Person(['yes'])
         self.assertEqual(person.part(intro=['Keep this page open.']), {'one', 'two', 'three'})
-        self.assertEqual(person.asked, ['Did all three work? [yes/no]: '])
+        self.assertEqual(person.asked, [ASKED])
         said = '\n'.join(person.shown)
         self.assertIn('=== Three things ===\nKeep this page open.', said)
         for heading in (
@@ -104,7 +105,7 @@ class PartTests(unittest.TestCase):
         [page] = person.pages
         self.assertEqual(
             (page['form'], page['asking'], page['title'], page['question']),
-            ('part', 'answer', 'Three things', QUESTION),
+            ('part', 'answer', 'Three things', 'Did everything work on the TV?'),
         )
         self.assertEqual(
             page['steps'],
@@ -146,21 +147,20 @@ class StepQuestionTests(unittest.TestCase):
         missing = []
         for path in [*ROOT.glob('*.py'), *ROOT.glob('modules/*.py')]:
             source = path.read_text(encoding='utf-8')
-            self.assertNotIn('Have you completed this step successfully', source, path.name)
+            if path.name != 'questions.py':  # (it keeps the old words, for the review page)
+                self.assertNotIn('Have you completed this step successfully', source, path.name)
             for node in ast.walk(ast.parse(source)):
                 if (
                     isinstance(node, ast.Call)
                     and getattr(node.func, 'attr', getattr(node.func, 'id', '')) == 'checkpoint'
                 ):
                     owner = getattr(getattr(node.func, 'value', None), 'id', '')
-                    if owner in ('guided_setup', '') and not any(k.arg == 'question' for k in node.keywords):
+                    if owner in ('guided_setup', '') and not any(k.arg in ('question', 'ask') for k in node.keywords):
                         if owner == 'guided_setup' or path.name == 'guided_setup.py':
                             missing.append(f'{path.name}:{node.lineno}')
         self.assertEqual(missing, [])
         # The playback test is called through a stand-in (not seen above): it has its own too.
-        self.assertIn(
-            "question='Did something you added play in Jellyfin?'", (ROOT / 'modules/onboarding.py').read_text()
-        )
+        self.assertIn("ask='played'", (ROOT / 'modules/onboarding.py').read_text())
         js = (ROOT / 'setup-gui/setup.js').read_text(encoding='utf-8')
         self.assertNotIn('Have you completed this step successfully', js)
 
@@ -202,7 +202,7 @@ class PhoneTests(unittest.TestCase):
         [(title, ids, question, done, more)] = calls  # one part, not a question per app
         self.assertEqual(title, 'Set up your phone')
         self.assertEqual(ids, ['tailscale', 'jellyfin', 'immich', 'away_from_home'])
-        self.assertEqual(question, 'Is your phone set up, and did an app open on mobile data?')
+        self.assertEqual(question, 'phone_ready')  # its words are in questions.py
         self.assertEqual(done, [])
         self.assertIn(('url', gateway_tailnet.phone_guide.TAILSCALE_DOWNLOAD), more['targets'])
         self.assertEqual(report['client_acceptance'], 'user_confirmed')

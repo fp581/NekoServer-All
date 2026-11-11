@@ -1,6 +1,6 @@
 """Explicit RFC1918 interface/subnet selection; no routing or firewall mutations."""
 
-import ipaddress, json, re, subprocess, sys
+import ipaddress, json, re, subprocess
 
 
 def network(*octets, bits):
@@ -102,70 +102,86 @@ def shown(row):
     return row['interface'] + ' · ' + row['ip'] + ' · ' + row['cidr']
 
 
+def wireless(interface, sys_net='/sys/class/net'):
+    """The connection is Wi-Fi (Linux keeps a "wireless" folder for such a one)."""
+    import os
+
+    return os.path.isdir(os.path.join(sys_net, interface, 'wireless'))
+
+
+def plainly(row, is_wireless=None):
+    """A connection as a person knows it: "your cable connection, 192.168.1.50" or "your
+    Wi-Fi connection, 192.168.1.73"."""
+    kind = 'Wi-Fi' if (is_wireless or wireless)(row['interface']) else 'cable'
+    return f"your {kind} connection, {row['ip']}"
+
+
+def default_route(run=command):
+    """The connection this PC reaches the internet through (the default route's), or None."""
+    try:
+        routes = json.loads(run(['ip', '-j', 'route', 'show', 'default']))
+    except (ValueError, RuntimeError):
+        return None
+    return next((route.get('dev') for route in routes if isinstance(route, dict) and route.get('dev')), None)
+
+
+def chosen(rows, is_wireless=None, route=None):
+    """The home network among several connections, without asking (the user, 2026-11-11:
+    a home PC is on its home network): a cable before Wi-Fi, and among equals the one
+    this PC reaches the internet through; else the first Linux lists."""
+    route = default_route() if route is None else route
+    is_wireless = is_wireless or wireless
+    return min(rows, key=lambda row: (is_wireless(row['interface']), row['interface'] != route))
+
+
+NOT_CONNECTED = (
+    'This PC is not connected. Plug in a network cable, or join Wi-Fi from this PC\'s own settings, then try again.'
+)
+
+
+def connected(run=command):
+    """This PC has a way out to the internet (a default route): checked before the first
+    thing setup downloads, so an offline PC is told so plainly instead of failing there."""
+    return default_route(run) is not None
+
+
 def choose_lan(ctx, ask=input, interactive=None, output=print):
     """The home-network address and subnet (gateway.lan_ip / lan_cidr), chosen once and
     shared by every step that needs it: LAN folder sharing (Samba) and the LAN HTTPS
-    gateway. Whichever runs first asks; the other uses the answer. Settings that name
-    them already are kept, unless the server no longer has that address (the router gave
-    it another one): then it is asked again. With only one network that can be it, that
-    one is used without asking, with or without a keyboard. False when there are several
-    and nobody is there to choose."""
+    gateway. Nothing is asked: with several connections setup takes the cable before
+    Wi-Fi (`chosen`) and says which it uses. Settings that name them already are kept
+    while the server still has that address, so nothing moves under a server that is set
+    up; when the router gave it another one, the choice is made again and said."""
     opts = ctx.config.setdefault('gateway', {})
-    interactive = sys.stdin.isatty() if interactive is None else interactive
-    if keep_saved(ctx.config, opts, interactive, output):
+    if keep_saved(ctx.config, opts, output):
         return True
     rows = candidates()
-    if len(rows) == 1:
-        row = rows[0]
-        output('Home network: ' + shown(row))
-    elif not interactive:
-        return False
-    elif not rows:
+    if not rows:
         raise RuntimeError(
-            'This PC has no home-network address setup can use (it is not connected to a router by cable or Wi-Fi, or only to a VPN). Connect it to your home network and run setup again; to name the address yourself, set "lan_ip" and "lan_cidr" under "gateway" in my-config.json'
+            NOT_CONNECTED + ' (Setup found no home-network address on this PC; a VPN alone is not one. To name '
+            'the address yourself, set "lan_ip" and "lan_cidr" under "gateway" in my-config.json.)'
         )
-    else:
-        output('Which network connects this server to your home network (your router)?')
-        for i, row in enumerate(rows, 1):
-            output(str(i) + '. ' + shown(row))
-        row = pick(rows, ask, output=output)
-        if row is None:
-            return False
+    row = chosen(rows)
+    output('Home network: using ' + plainly(row))
     opts.update(lan_ip=row['ip'], lan_cidr=row['cidr'])
     save_settings(ctx)
     return True
 
 
-def keep_saved(config, opts, interactive, output=print):
+def keep_saved(config, opts, output=print):
     """True: the saved choice is still this server's address. False: there is none yet, or
-    it moved and someone can choose again. Raises when it moved and nobody can."""
+    the router gave the server another address (said, and the choice is made again)."""
     if opts.get('lan_ip') in (None, 'auto') or opts.get('lan_cidr') in (None, 'auto'):
         return False
     if still_here(config):
         return True
-    moved = (
+    output(
         'This server\'s home-network address is no longer '
         + str(opts['lan_ip'])
-        + ' (gateway.lan_ip): the router gave '
-        'it another one. '
+        + ': the router gave it another one. Reserve the new address for this server in your router, so '
+        'the addresses of your apps stay the same.'
     )
-    if not interactive:
-        raise RuntimeError(moved + 'Run  sudo bash install.sh  in a terminal to choose the home network again')
-    output(moved + 'Choose the home network again; afterwards, reserve the new address for this server in your router.')
     return False
-
-
-def pick(rows, ask, attempts=3, output=print):
-    """The row whose number is typed; None after three wrong numbers or Ctrl+D."""
-    for _ in range(attempts):
-        try:
-            choice = ask('Number of the connection that is your home network (from the list above): ').strip()
-        except EOFError:
-            return None
-        if choice.isdigit() and 1 <= int(choice) <= len(rows):
-            return rows[int(choice) - 1]
-        output('Please type one of the numbers shown.')
-    return None
 
 
 def still_here(config):

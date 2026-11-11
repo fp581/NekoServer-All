@@ -170,7 +170,9 @@ class QuestionTests(unittest.TestCase):
     def test_a_group_chosen_in_the_window_is_not_asked_again(self):
         config = settings(self.tmp.name, movies=False)
         _, asked, _ = self.ask(config, ['yes', 'yes'])
-        self.assertEqual([q.split('?')[0] for q in asked], ['Install Photos (Immich)', 'Install Music (Navidrome)'])
+        self.assertEqual(
+            [q.strip().split('?')[0] for q in asked], ['Install Photos (Immich)', 'Install Music (Navidrome)']
+        )
         self.assertEqual(config['media_apps'], {'movies': False, 'photos': True, 'music': True})
         # All three chosen: nothing is asked.
         self.assertEqual(self.ask(config, [])[1], [])

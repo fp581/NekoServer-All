@@ -1,0 +1,178 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>NekoServer 0.50.0: the questions setup asks</title>
+<style>
+body { font: 16px/1.5 system-ui, sans-serif; max-width: 860px; margin: 2em auto; padding: 0 1em; color: #1d1b26; }
+h1 { font-size: 26px; } h2 { margin-top: 2.2em; border-bottom: 2px solid #d9d4ea; padding-bottom: 4px; }
+.block { margin: 1.2em 0 2em; }
+.window { border: 1px solid #c9c2e3; border-radius: 12px; padding: 14px 16px; background: #faf8ff; }
+.window .label { font-size: 11px; letter-spacing: .08em; color: #6a5acd; }
+.window h3 { margin: 4px 0 6px; font-size: 19px; }
+.window p { margin: 0 0 10px; color: #4a4660; }
+.button { display: inline-block; border: 1px solid #6a5acd; border-radius: 8px; padding: 5px 12px; margin: 2px 6px 2px 0; }
+.button.main { background: #6a5acd; color: white; }
+.box { display: inline-block; border: 1px solid #999; border-radius: 6px; padding: 4px 90px 4px 8px; color: #888; margin-right: 8px; }
+.terminal { background: #17151f; color: #e8e6f0; border-radius: 8px; padding: 10px 14px; margin: 8px 0 0; white-space: pre-wrap; font: 13.5px/1.45 ui-monospace, Consolas, monospace; }
+.old { color: #7a7690; font-size: 14px; margin: 8px 0 0; } .old b { color: #5a5670; }
+.note { color: #4a4660; font-size: 14px; }
+</style></head><body>
+<h1>NekoServer 0.50.0: the questions setup asks</h1>
+<p>One block for each question, in the order setup shows them. The light box is what the setup window shows: the question, one line under it, and its buttons. The dark box is the same question in the terminal, with one line on how to answer there. "Before" is the old text, where the question existed. The names (Jellyfin, drive 2, an address) are examples.</p>
+<h2>What to install</h2>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW · a switch for each, then Start setup</div><h3>Photos (Immich)</h3><p>Immich, your own photo backup and gallery, with its archive and its weekly USB copy. Switched off later, it is stopped and your photos and its backups stay where they are.</p><h3>Movies and shows (Jellyfin, Seerr and the download apps)</h3><p>Jellyfin to watch your films and shows, Seerr to ask for new ones, and Sonarr, Radarr and Prowlarr with qBittorrent, which find and download them; with video on the graphics chip, the hourly app check and the TV mode. Switched off later, they are stopped and their settings and your films stay.</p><h3>Music (Navidrome)</h3><p>Navidrome, your music player, with the music backup. With Movies and shows on as well, Lidarr finds and downloads music. Switched off later, it is stopped and your music stays.</p><h3>My media and backup drives are in a network storage box (NAS)</h3><p>For a NAS that offers iSCSI disks (a WD My Cloud EX, Synology, QNAP...) or shares folders over NFS (slower). The SSD for the apps stays on this PC. Setup asks for the NAS's address, sees which of the two it offers, and asks which disks or folders to use; it never formats one, and tries a shared folder out before using it. Experimental: tried in a test lab, not yet on many real NAS boxes (SUPPORT.md).</p><h3>A TV connected to this PC</h3><p>Steam Big Picture for Remote Play from your gaming PC, a YouTube shortcut and Bluetooth for a controller. Skip it if this PC has no TV; your apps work on your other devices either way.</p><h3>Phone alerts when something fails</h3><p>A message on your phone through the free ntfy app when a backup or an app fails. You set up the ntfy app on your phone during setup.</p><h3>Outage alerts if the server goes offline</h3><p>The server checks in with an outside service you choose (Healthchecks.io, say); when it stops checking in, that service tells you.</p><h3>Nextcloud, your private cloud drive</h3><p>Your files on your own server, from the phone and the browser, with sharing. Photos go to Immich either way.</p><h3>An AI assistant in the dashboard ("Ask Neko")</h3><p>It explains what the dashboard shows and what to do about a problem, and can suggest a fix that runs only when you approve it. The model runs on this server, so nothing you ask leaves your home. Setup offers the models that fit the memory your apps leave free; it never slows them down (ASSISTANT.md).</p><span class="button main">Start setup</span></div><p class="note">In the terminal these are asked one by one when setup gets to them (the three media groups are in the block below).</p></div>
+<h2>Starting setup</h2>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>This PC already has a NekoServer server. Keep its settings?</h3><p>Choose "Keep them" when you are updating. "Start fresh" asks for every drive and password again.</p><span class="button main">Keep them</span><span class="button">Start fresh</span></div><div class="terminal">This PC already has a NekoServer server. Keep its settings?
+Choose "Keep them" when you are updating. "Start fresh" asks for every drive and password again.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Use them for this release (yes when updating)? [yes/no]:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Keep fewer old backups from now on?</h3><p>This server keeps the newest 30 app backups. New servers keep 7, which saves drive space.</p><span class="button main">Keep the newest 7</span><span class="button">Keep 30 as now</span></div><div class="terminal">Keep fewer old backups from now on?
+This server keeps the newest 30 app backups. New servers keep 7, which saves drive space.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Your settings keep the newest 30 app backups, the default before v0.30.0 (now 7). Keep fewer from now on, the newest 7? [yes/no]:</p></div>
+<h2>Setup run again</h2>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Change any of these answers?</h3><p>Your answers from last time are listed above. "Keep them" goes straight on.</p><span class="button main">Ask me again</span><span class="button">Keep them</span></div><div class="terminal">Change any of these answers?
+Your answers from last time are listed above. "Keep them" goes straight on.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Ask these questions again? [yes/no]:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Install Photos (Immich)?</h3><p>Immich is your own photo backup and gallery. You can add it later.</p><span class="button main">Install</span><span class="button">Leave it out</span></div><div class="terminal">Install Photos (Immich)?
+Immich is your own photo backup and gallery. You can add it later.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Install the media apps too? [yes/no]:</p></div>
+<h2>Your drives</h2>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Choose the drive for your apps, photos and music (the app SSD).</h3><p>It needs at least 20 GB free, so a drive of 22 GB or more (100 GB or more is recommended). Each drive is a card that says what it is; one that cannot be used says why.</p><span class="button main">Use this drive</span></div><div class="terminal">Now choose the drive for your apps, photos and music (the app SSD). It needs at least 20 GB free, so a drive of 22 GB or more (100 GB or more is recommended).
+  1) nvme0n1: 477 GB NVMe SSD, WD SN770  - not this one: it is the disk Linux runs from
+  2) sda1: 466 GB SSD, Samsung SSD 870, named "apps", ext4, about 1 % full
+Number of the drive for your apps, photos and music (the app SSD) (Enter alone stops setup here):</div><p class="old"><b>Before:</b> Number of the SSD (Enter alone stops setup here):</p></div><div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Type sda1 to confirm that this drive is the app SSD.</h3><p>Nothing on the drive is changed by confirming it. Setup never formats a drive.</p><span class="box">a box to fill in</span><span class="button main">Confirm this drive</span></div><div class="terminal">Type sda1 to confirm it is the app SSD (drive 2: 466 GB SSD, Samsung SSD 870, named "apps"):</div><p class="old"><b>Before:</b> Type sda1 to confirm it is the SSD (466 GB):</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>One of your drives is small. Go on anyway?</h3><p>The list above says which drive and how much room it has. It will fill up sooner.</p><span class="button main">Go on</span><span class="button">Stop, I will change the drive</span></div><div class="terminal">One of your drives is small. Go on anyway?
+The list above says which drive and how much room it has. It will fill up sooner.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Continue with these drives anyway? [yes/no]:</p></div>
+<h2>A network storage box (NAS)</h2>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>What is the address of your storage box?</h3><p>It is what you open in a browser to reach it, such as 192.168.1.20.</p><span class="box">a box to fill in</span><span class="button main">Look there</span></div><div class="terminal">What is the address of your storage box?
+It is what you open in a browser to reach it, such as 192.168.1.20.
+Type it, then press Enter.</div><p class="old"><b>Before:</b> The NAS's address on your network (such as 192.168.1.20):</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>How should NekoServer use your storage box?</h3><p>It offers both ways. If you are not sure, take the first.</p><span class="button main">As a disk of its own (faster; only this PC can use it)</span><span class="button">As a shared folder (slower; the files stay visible on the storage box)</span></div><div class="terminal">How should NekoServer use your storage box?
+It offers both ways. If you are not sure, take the first.
+  1) As a disk of its own (faster; only this PC can use it)
+  2) As a shared folder (slower; the files stay visible on the storage box)
+Type 1 or 2, then press Enter. Enter alone takes the first.</div><p class="old"><b>Before:</b> Which one does NekoServer use? [1/2] (Enter alone: 1):</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Which of these disks are for NekoServer?</h3><p>The storage box offers the disks listed above. Choose only the ones you made for this server.</p><span class="box">a box to fill in</span><span class="button main">Use these</span></div><div class="terminal">Which of these disks are for NekoServer?
+The storage box offers the disks listed above. Choose only the ones you made for this server.
+Type their numbers with commas between them (such as 1,2), then press Enter. Enter alone stops setup here.</div><p class="old"><b>Before:</b> Numbers of the ones NekoServer uses, separated by commas (Enter alone stops here):</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Does your storage box ask for a user name and password for this disk?</h3><p>Most do not. If you set one up on the storage box (it calls it CHAP), choose yes. The disk is iqn.2000-01.com.synology:nas.Target-1.</p><span class="button main">Yes, it has a password</span><span class="button">No password</span></div><div class="terminal">Does your storage box ask for a user name and password for this disk?
+Most do not. If you set one up on the storage box (it calls it CHAP), choose yes. The disk is iqn.2000-01.com.synology:nas.Target-1.
+Type yes or no, then press Enter. Enter alone means no.</div><p class="old"><b>Before:</b> Does the NAS ask for a CHAP user name and password for iqn.2000-01.com.synology:nas.Target-1? [y/N]:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>What is the user name for that disk?</h3><span class="box">a box to fill in</span><span class="button main">Next</span></div><div class="terminal">What is the user name for that disk?
+Type it, then press Enter.</div><p class="old"><b>Before:</b> CHAP user name:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Which shared folder is for your films, shows and backups?</h3><p>The folders the storage box shares are listed above.</p><span class="box">a box to fill in</span><span class="button main">Use this folder</span><span class="button">Use a drive on this PC instead</span></div><div class="terminal">Which shared folder is for your films, shows and backups?
+The folders the storage box shares are listed above.
+Type its number or its name, then press Enter. Enter alone uses a drive on this PC instead.</div><p class="old"><b>Before:</b> The shared folder for the media drive: its number (1 to 3) or its name, or Enter alone for a drive on this PC:</p></div>
+<h2>Logins for your apps</h2>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Who picks the logins for your apps?</h3><p>Each app gets its own user name and password. You can see them on this PC whenever you need them.</p><span class="button main">NekoServer makes a strong one for each app (recommended)</span><span class="button">I'll decide app by app</span></div><div class="terminal">Who picks the logins for your apps?
+Each app gets its own user name and password. You can see them on this PC whenever you need them.
+  1) NekoServer makes a strong one for each app (recommended)
+  2) I'll decide app by app
+Type the number of your choice, then press Enter.</div><p class="old"><b>Before:</b> Logins for the apps: 1 = NekoServer makes a strong username and password for each app (recommended; you can see them later), 2 = you choose them app by app. Type 1 or 2:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Who picks the login for Jellyfin?</h3><span class="button main">NekoServer makes one for me (recommended)</span><span class="button">I'll choose my own</span></div><div class="terminal">Who picks the login for Jellyfin?
+  1) NekoServer makes one for me (recommended)
+  2) I'll choose my own
+Type the number of your choice, then press Enter.</div><p class="old"><b>Before:</b> [1] generate random login/password [2] enter username/password:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>What user name do you want for Jellyfin?</h3><span class="box">a box to fill in</span><span class="button main">Next</span></div><div class="terminal">What user name do you want for Jellyfin?
+Type it, then press Enter.</div><p class="old"><b>Before:</b> Username:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>What email address do you want to sign in to Immich with?</h3><p>It is only a name to sign in with. No email is sent to it.</p><span class="box">a box to fill in</span><span class="button main">Next</span></div><div class="terminal">What email address do you want to sign in to Immich with?
+It is only a name to sign in with. No email is sent to it.
+Type it, then press Enter.</div><p class="old"><b>Before:</b> Email login:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Jellyfin did not take the saved login. What now?</h3><p>If you changed the password in Jellyfin yourself, tell NekoServer the new one.</p><span class="button main">Try the saved login again</span><span class="button">I changed it: here is the new one</span></div><div class="terminal">Jellyfin did not take the saved login. What now?
+If you changed the password in Jellyfin yourself, tell NekoServer the new one.
+  Enter) Try the saved login again
+  c) I changed it: here is the new one
+Press Enter alone to try again, or type c and press Enter to enter the new login.</div><p class="old"><b>Before:</b> ENTER to retry saved login, or c to enter the current login:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Could you sign in to every app that opened?</h3><p>Each app opened in your browser. "Show login" gives you its user name and password.</p><span class="button main">Yes, all of them</span><span class="button">Not yet</span></div><div class="terminal">Could you sign in to every app that opened?
+Each app opened in your browser. "Show login" gives you its user name and password.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Have you completed this step successfully? [yes/no]:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Could you sign in to Jellyfin?</h3><p>Jellyfin opened in your browser. "Show login" gives you its user name and password.</p><span class="button main">Yes, I am in</span><span class="button">Not yet</span></div><div class="terminal">Could you sign in to Jellyfin?
+Jellyfin opened in your browser. "Show login" gives you its user name and password.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Have you completed this step successfully? [yes/no]:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Have you checked who can sign in to these apps?</h3><p>Your phone will be able to open them once you say so. Make sure each has a password and strangers cannot sign up.</p><span class="box">a box to fill in</span><span class="button main">Switch it on</span><span class="button">Not yet</span></div><div class="terminal">Have you checked who can sign in to these apps?
+Your phone will be able to open them once you say so. Make sure each has a password and strangers cannot sign up.
+Type SECURED and press Enter to switch it on. Anything else leaves it off for now.</div><p class="old"><b>Before:</b> After verifying those settings, type SECURED to enable access:</p></div>
+<h2>Reaching the server from your phone</h2>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Is this server connected to Tailscale?</h3><p>The Tailscale page in your browser says so once you have signed in and pressed Connect.</p><span class="button main">Yes, it is connected</span><span class="button">Not yet</span></div><div class="terminal">Is this server connected to Tailscale?
+The Tailscale page in your browser says so once you have signed in and pressed Connect.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Have you completed this step successfully? [yes/no]:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Did you switch on both settings in Tailscale?</h3><p>On the page that opened, "MagicDNS" and "HTTPS Certificates" must both be on. They give each app a safe address.</p><span class="button main">Yes, both are on</span><span class="button">Not yet</span></div><div class="terminal">Did you switch on both settings in Tailscale?
+On the page that opened, "MagicDNS" and "HTTPS Certificates" must both be on. They give each app a safe address.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Have you completed this step successfully? [yes/no]:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Is your phone set up?</h3><p>Yes when the apps open on the phone, also with Wi-Fi off.</p><span class="button main">Yes, it works</span><span class="button">Not yet</span></div><div class="terminal">Is your phone set up?
+Yes when the apps open on the phone, also with Wi-Fi off.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Have you completed this step successfully? [yes/no]: (asked after each of up to eight steps)</p></div>
+<h2>Connecting your apps</h2>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Did you finish what was left in the apps?</h3><p>The list above says what each app still needs.</p><span class="button main">Yes, done</span><span class="button">Not yet</span></div><div class="terminal">Did you finish what was left in the apps?
+The list above says what each app still needs.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Have you completed this step successfully? [yes/no]:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Did a film or show play in Jellyfin?</h3><p>Add something you are allowed to watch, wait for it to arrive, and press play. You can also do this later.</p><span class="button main">Yes, it played</span><span class="button">Not yet</span></div><div class="terminal">Did a film or show play in Jellyfin?
+Add something you are allowed to watch, wait for it to arrive, and press play. You can also do this later.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Have you completed this step successfully? [yes/no]:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Looking for a download source by name?</h3><p>A few letters of its name shorten the list.</p><span class="box">a box to fill in</span><span class="button main">Show the list</span><span class="button">Show them all</span></div><div class="terminal">Looking for a download source by name?
+A few letters of its name shorten the list.
+Type part of a name and press Enter. Enter alone shows them all.</div><p class="old"><b>Before:</b> Filter catalog by name (blank for all):</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Do you have your account at ExampleTracker ready?</h3><p>ExampleTracker needs an account of its own. Have its user name and password, or its key, at hand.</p><span class="button main">Yes, I have it</span><span class="button">Not yet</span></div><div class="terminal">Do you have your account at ExampleTracker ready?
+ExampleTracker needs an account of its own. Have its user name and password, or its key, at hand.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Have you completed this step successfully? [yes/no]:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Is ExampleTracker saved in Prowlarr now?</h3><p>Prowlarr opened in your browser. Fill in what it asks for ExampleTracker, press Test, then Save.</p><span class="button main">Yes, it is saved</span><span class="button">Not yet</span></div><div class="terminal">Is ExampleTracker saved in Prowlarr now?
+Prowlarr opened in your browser. Fill in what it asks for ExampleTracker, press Test, then Save.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Have you completed this step successfully? [yes/no]:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>What is the user name of your download app (qBittorrent)?</h3><p>It is "admin" unless you changed it.</p><span class="box">a box to fill in</span><span class="button main">Next</span><span class="button">It is admin</span></div><div class="terminal">What is the user name of your download app (qBittorrent)?
+It is "admin" unless you changed it.
+Type it and press Enter. Enter alone means admin.</div><p class="old"><b>Before:</b> qBittorrent username [admin]:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>What is the password of your download app (qBittorrent)?</h3><p>It is used once to connect the apps and is not kept.</p><span class="box">a password box</span><span class="button main">Connect</span></div><div class="terminal">What is the password of your download app (qBittorrent)?
+It is used once to connect the apps and is not kept.
+Type it, then press Enter. It is not shown while you type.</div><p class="old"><b>Before:</b> qBittorrent WebUI password (not saved by this connector):</p></div>
+<h2>Alerts on your phone</h2>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Is the alerts app set up on your phone?</h3><p>Install "ntfy" on the phone and follow a topic there. Keep its address at hand for the next question.</p><span class="button main">Yes, it is</span><span class="button">Not yet</span></div><div class="terminal">Is the alerts app set up on your phone?
+Install "ntfy" on the phone and follow a topic there. Keep its address at hand for the next question.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Have you completed this step successfully? [yes/no]:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Paste the address of your alerts topic</h3><p>It starts with https:// and ends with the name you chose in the ntfy app. You can add it later.</p><span class="box">a password box</span><span class="button main">Save</span><span class="button">Skip for now</span></div><div class="terminal">Paste the address of your alerts topic
+It starts with https:// and ends with the name you chose in the ntfy app. You can add it later.
+Type it, then press Enter. It is not shown while you type. Press Enter alone to skip this for now.</div><p class="old"><b>Before:</b> Private ntfy topic URL (blank defers):</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Does your alerts topic have an access token? Paste it here</h3><p>Only private topics have one. If yours has none, skip this.</p><span class="box">a password box</span><span class="button main">Save</span><span class="button">It has none</span></div><div class="terminal">Does your alerts topic have an access token? Paste it here
+Only private topics have one. If yours has none, skip this.
+Type it, then press Enter. It is not shown while you type. Press Enter alone to skip this for now.</div><p class="old"><b>Before:</b> ntfy access token (blank for no token):</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Send alerts to the new topic?</h3><p>Your settings name another alerts topic than the one alerts go to now.</p><span class="button main">Use the new one</span><span class="button">Keep the old one</span></div><div class="terminal">Send alerts to the new topic?
+Your settings name another alerts topic than the one alerts go to now.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Alerts go to another ntfy topic now. Send them to the topic in my-config.json (notifications.endpoint) instead? [yes/no]:</p></div>
+<h2>A warning when the server is off</h2>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Did you make a check at your monitoring service?</h3><p>A service outside your home (such as Healthchecks.io) warns you when this server stops answering. Make a check there and copy the address it gives you.</p><span class="button main">Yes, I copied the address</span><span class="button">Not yet</span></div><div class="terminal">Did you make a check at your monitoring service?
+A service outside your home (such as Healthchecks.io) warns you when this server stops answering. Make a check there and copy the address it gives you.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Have you completed this step successfully? [yes/no]:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Paste the address your monitor gave you</h3><p>It starts with https://. You can add it later from setup.</p><span class="box">a password box</span><span class="button main">Save</span><span class="button">Skip for now</span></div><div class="terminal">Paste the address your monitor gave you
+It starts with https://. You can add it later from setup.
+Type it, then press Enter. It is not shown while you type. Press Enter alone to skip this for now.</div><p class="old"><b>Before:</b> Private monitor ping URL (blank defers):</p></div>
+<h2>Ask Neko, the AI assistant</h2>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Which AI assistant do you want?</h3><p>Bigger ones answer better and use more memory. The list above says what each needs.</p><span class="button main">No assistant</span><span class="button">qwen3.5:4b</span><span class="button">qwen3.5:8b</span></div><div class="terminal">Which AI assistant do you want?
+Bigger ones answer better and use more memory. The list above says what each needs.
+  0) No assistant
+  1) qwen3.5:4b
+  2) qwen3.5:8b
+Type its number, then press Enter. Enter alone keeps no assistant.</div><p class="old"><b>Before:</b> Which one? (0-2, Enter for no assistant):</p></div>
+<h2>A TV connected to this PC</h2>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Did everything work on the TV?</h3><p>Steam, the controller, and the picture and sound.</p><span class="button main">Yes, all of it</span><span class="button">Not yet</span></div><div class="terminal">Did everything work on the TV?
+Steam, the controller, and the picture and sound.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Have you completed this step successfully? [yes/no]: (asked after each of three steps)</p></div>
+<h2>Checking the finished server</h2>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Did this test work: A photo taken on the phone appears in Immich?</h3><p>Say yes only if you saw it work yourself.</p><span class="button main">Yes, I saw it work</span><span class="button">Not yet</span></div><div class="terminal">Did this test work: A photo taken on the phone appears in Immich?
+Say yes only if you saw it work yourself.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Have you completed this step successfully? [yes/no]:</p></div>
+<h2>Recovery</h2>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Restore everything else from this backup now?</h3><p>"Stop" leaves the server as it is: nothing is restored.</p><span class="button main">Restore it</span><span class="button">Stop</span></div><div class="terminal">Restore everything else from this backup now?
+"Stop" leaves the server as it is: nothing is restored.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Restore everything else from this backup now? ("no" stops, with nothing restored) [yes/no]:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Bring back only the newest version of each file?</h3><p>That is what most people want. The other choice also copies every older version, which takes longer and more room.</p><span class="button main">Only the newest (recommended)</span><span class="button">Every version</span></div><div class="terminal">Bring back only the newest version of each file?
+That is what most people want. The other choice also copies every older version, which takes longer and more room.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Restore only the NEWEST version of each file? (recommended; "no" copies every version) [yes/no]:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Is this a new server?</h3><p>On a new server the apps themselves are put back from the backup too, so they are the versions your data was made with.</p><span class="button main">Yes, put the apps back too</span><span class="button">No, the apps are here</span></div><div class="terminal">Is this a new server?
+On a new server the apps themselves are put back from the backup too, so they are the versions your data was made with.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Also load the saved app versions into Docker (needed on a new server)? [yes/no]:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Put the restored files in this folder?</h3><span class="button main">Use this folder</span><span class="button">Choose another</span></div><div class="terminal">Put the restored files in this folder?
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Use this folder? [yes/no]:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Stop the apps and check the drive now?</h3><p>The apps are off while the drive is checked, and start again afterwards.</p><span class="button main">Check it now</span><span class="button">Not now</span></div><div class="terminal">Stop the apps and check the drive now?
+The apps are off while the drive is checked, and start again afterwards.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Stop the apps and check the drive now? [yes/no]:</p></div>
+<div class="block"><div class="window"><div class="label">THE SETUP WINDOW</div><h3>Repair the drive now?</h3><p>The check found damage. The repair changes only what is broken.</p><span class="button main">Repair it</span><span class="button">Leave it</span></div><div class="terminal">Repair the drive now?
+The check found damage. The repair changes only what is broken.
+Type yes or no, then press Enter.</div><p class="old"><b>Before:</b> Check and repair its filesystem now (e2fsck: it changes only what is broken)? [yes/no]:</p></div>
+</body></html>

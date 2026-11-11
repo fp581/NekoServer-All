@@ -20,6 +20,7 @@ the NAS's address, finds the disks it offers, asks which ones NekoServer uses (w
 login if the NAS asks for one), logs in to them for good (again at every start), and lists
 them with their identity, size and filesystem for the drive questions that follow."""
 
+import questions
 import json
 import os
 import re
@@ -478,6 +479,13 @@ def ask(prompt, input_fn):
         return ''
 
 
+def asked_plainly(key, input_fn, **values):
+    """A question in the words of questions.py: its own page in the setup window, and the
+    same words with how to answer in the terminal."""
+    with questions.shown(key, **values):
+        return ask(questions.terminal(key, **values), input_fn)
+
+
 def chosen_targets(found, saved, input_fn, out_fn):
     """The targets NekoServer uses: those saved before (still offered), or those picked now."""
     names = [iqn for iqn, _ in found]
@@ -495,7 +503,7 @@ def chosen_targets(found, saved, input_fn, out_fn):
     for n, iqn in enumerate(names, 1):
         out_fn(f'  {n}) {iqn}')
     for _ in range(3):
-        answer = ask('Numbers of the ones NekoServer uses, separated by commas (Enter alone stops here): ', input_fn)
+        answer = asked_plainly('nas_disks', input_fn)
         if not answer:
             break
         picks = [p.strip() for p in answer.split(',') if p.strip()]
@@ -509,7 +517,7 @@ def asked_portal(saved, input_fn, out_fn):
     if saved and portal_of(saved):
         return portal_of(saved)
     for _ in range(3):
-        portal = portal_of(ask("The NAS's address on your network (such as 192.168.1.20): ", input_fn))
+        portal = portal_of(asked_plainly('nas_address', input_fn))
         if portal:
             return portal
         out_fn('Type its address as numbers (192.168.1.20) or its name on your network (nas.home).')
@@ -534,11 +542,11 @@ def asked_chap(iqn, portal, input_fn, out_fn, secret_fn, again=False):
     if again == 'missing':
         out_fn(f'The CHAP login of {iqn} is missing from its iSCSI settings; give it again.')
     else:
-        answer = ask(f'Does the NAS ask for a CHAP user name and password for {iqn}? [y/N]: ', input_fn).lower()
+        answer = asked_plainly('nas_login_needed', input_fn, iqn=iqn).lower()
         if answer not in ('y', 'yes'):
             return False
     for _ in range(3):
-        user = ask('CHAP user name: ', input_fn)
+        user = asked_plainly('nas_login_user', input_fn)
         try:
             password = secret_fn('CHAP password (not shown; at least 12 characters): ')
         except EOFError:
@@ -777,7 +785,7 @@ def asked_kind(host, input_fn, out_fn):
         'visible on the NAS itself. Setup tries the folder out first and says what to change when it cannot be used.'
     )
     for _ in range(3):
-        answer = ask('Which one does NekoServer use? [1/2] (Enter alone: 1): ', input_fn)
+        answer = asked_plainly('nas_kind', input_fn)
         if answer in ('', '1', '2'):
             return NFS if answer == '2' else ISCSI
         out_fn('Type 1 or 2.')
@@ -898,9 +906,8 @@ def asked_folder(words, names, input_fn, out_fn):
     """One shared folder, or None when Enter alone was typed."""
     import nfs_exports
 
-    how = f'its number (1 to {len(names)}) or its name' if names else 'its name'
     for _ in range(3):
-        answer = ask(f'The shared folder for {words}: {how}, or Enter alone for a drive on this PC: ', input_fn)
+        answer = asked_plainly('nas_folder', input_fn, words=words)
         if not answer:
             return None
         if answer.isdigit() and 1 <= int(answer) <= len(names):

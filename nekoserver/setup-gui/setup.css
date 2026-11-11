@@ -725,6 +725,15 @@ main > section {
 .retry-fix li {
   margin: 2px 0;
 }
+/* a question's answers as buttons that say what they do */
+.ask-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ask-choices button {
+  text-align: left;
+}
 /* a part of several steps: a card each, its sliding yes at the bottom right */
 .part-step {
   justify-items: stretch;

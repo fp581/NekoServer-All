@@ -1,6 +1,7 @@
 """Configure an OS-local Rust heartbeat to an independently hosted monitor."""
 
 import guided_setup
+from modules.notifications import asked_privately
 import json
 import os
 from pathlib import Path
@@ -120,14 +121,14 @@ def run(context):
                 'Later verify pings in the provider and actual missed-ping/recovery alerts.',
             ],
             [('url', 'https://healthchecks.io/docs/')],
-            question='Is the check created at your monitor, with its ping address copied?',
+            ask='monitor_ready',
         ):
             return {'status': 'needs_setup', 'reason': 'Independent monitor setup pending'}
         context.log(
             'Create an independent missing-ping monitor, set its period/grace and alert recipient, then enter its private success-ping HTTPS URL.'
         )
-        address = guided_setup.private_entry(
-            'The check\'s ping address, such as https://hc-ping.com/your-code (not shown as you type; Enter alone leaves it for later): ',
+        address = asked_privately(
+            'monitor_address',
             endpoint,
             'That is not a ping URL. It starts with https:// and looks like '
             'https://hc-ping.com/1a2b3c4d-... Copy it again from the monitor and paste it.',

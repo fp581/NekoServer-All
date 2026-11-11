@@ -17,7 +17,7 @@ def refresh(config, log):
     return gateway_tools.refresh_dashboard_route(config, log)
 
 
-PHONE_QUESTION = 'Is your phone set up, and did an app open on mobile data?'
+PHONE_QUESTION = 'phone_ready'  # its words are in questions.py
 
 
 def phone_steps(ctx, result, done=()):
@@ -194,7 +194,7 @@ def secure_addresses(ctx):
         ],
         [('url', 'https://console.tailscale.com/admin/dns')],
         verify=configure_routes,
-        question='Are MagicDNS and HTTPS both switched on in Tailscale?',
+        ask='tailscale_https',
     ):
         return answering(result)
     return {'status': 'needs_setup', 'reason': 'Private HTTPS configuration pending; reapply to resume'}

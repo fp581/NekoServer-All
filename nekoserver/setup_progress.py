@@ -181,12 +181,16 @@ def question(text, secret=False):
     global _pending
     # A hidden entry's own words are shown too ("PIN:", "Same PIN again:"): only its answer is secret.
     shown = str(text).strip()[:300]
+    # A question of several lines (its hint, its choices by number, how to answer in the
+    # terminal) has printed them already: they are the question, not what came before it.
+    own = {line.strip() for line in str(text).splitlines()}
+    context = [line for line in context_for(shown, question_context()) if line.strip() not in own]
     record = event(
         'question',
         text=shown,
         secret=bool(secret),
         form=question_kind(shown, secret),
-        context=context_for(shown, question_context()),
+        context=context,
         page=page_shown(),
     )
     with _lock:

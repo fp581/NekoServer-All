@@ -14,7 +14,7 @@ import host
 from neko_common import VERSION, find_program, safe_path
 
 
-def yes_no(question, prompt=None, output=None):
+def yes_no(question, prompt=None, output=None, how=' [yes/no]: '):
     """Ask until the answer is yes or no. Returns True or False, or None when the person
     pressed Ctrl+D (leave it for now). Ctrl+C stops setup (KeyboardInterrupt goes on),
     as it does everywhere else. The one yes/no question used across NekoServer."""
@@ -22,7 +22,7 @@ def yes_no(question, prompt=None, output=None):
     output = output or print
     while True:
         try:
-            answer = prompt(question + ' [yes/no]: ').strip().lower()
+            answer = prompt(question + how).strip().lower()
         except EOFError:
             output('')
             return None
@@ -379,6 +379,8 @@ def checkpoint(
     keys=KEYS,
     logins=(),
     question=None,
+    ask=None,
+    values=None,
 ):
     """No repeats instructions/opening; yes must also pass any supplied verifier. `logins`:
     the saved logins (account_store's names) this step asks the person to sign in with,
@@ -401,10 +403,16 @@ def checkpoint(
             show_step(output, title, instructions, keys)
             open_targets(ctx, prepared_targets(targets, prepare, output), output)
             show_logins(ctx.config, logins, prompt, output)
-            # The window can leave such a step for later ("Skip for now", as Ctrl+D here).
-            with setup_progress.page(CONFIRM_STEP, {'answer': ''}):
-                setup_progress.page_asks('answer')
-                answer = yes_no(question or f'Is this done: {title}?', prompt, output)
+            if ask:
+                # The step's own question, in the words of questions.py: the window may
+                # leave it for later ("Skip for now", as Ctrl+D here).
+                import questions
+
+                answer = questions.yes_no(ask, prompt, output, leave=True, **(values or {}))
+            else:
+                with setup_progress.page(CONFIRM_STEP, {'answer': ''}):
+                    setup_progress.page_asks('answer')
+                    answer = yes_no(question or f'Is this done: {title}?', prompt, output)
             if answer is None:
                 raise EOFError
             if not answer:
@@ -454,9 +462,14 @@ def part(ctx, title, steps, question, done=(), intro=(), targets=(), prompt=None
         {'id': step['id'], 'title': step['title'], 'lines': list(step['lines']), 'done': step['id'] in confirmed}
         for step in steps
     ]
-    with setup_progress.page('part', {'answer': '', 'done': ''}, title=title, question=question, steps=shown):
+    import questions
+
+    asked = questions.words(question)  # the part's one question, by its key in questions.py
+    with setup_progress.page(
+        'part', {'answer': '', 'done': ''}, title=title, question=asked['title'], hint=asked['hint'], steps=shown
+    ):
         setup_progress.page_asks('answer')
-        answer = yes_no(question, prompt, output)
+        answer = yes_no('\n' + asked['title'], prompt, output, how='\n' + asked['how'] + ' ')
         marked = setup_progress.page_answer('done')  # the window's switches, when it answered
     if answer:
         confirmed |= {step['id'] for step in todo}
@@ -607,8 +620,9 @@ def optional_kept(ctx, asked, prompt=None, output=None):
         for question in OPTIONAL_QUESTIONS:
             if question in kept:
                 output(f'  {OPTIONAL_QUESTIONS[question]}: {answer_shown(ctx, question, kept[question])}')
-        output('Answer no to keep these answers; yes asks the questions again.')
-        again = bool(yes_no('Ask these questions again?', prompt, output))
+        import questions
+
+        again = bool(questions.yes_no('ask_again', prompt, output))
         output('')
         ctx.log('Optional questions: ' + ('asked again' if again else 'kept as answered last time'))
         ctx.ask_optional_again = again
@@ -722,9 +736,10 @@ def asked_media_apps(ctx, prompt=None, output=None):
         output(line)
     answered = {}
     for group in to_ask:
-        for line in GROUP_EXPLAINED[group]:
-            output(line)
-        answer = yes_no(f'Install {GROUP_NAMES[group]}?', prompt, output)
+        import questions
+
+        about = ' '.join(line for line in GROUP_EXPLAINED[group] if line)
+        answer = questions.yes_no('install_group', prompt, output, group=GROUP_NAMES[group], about=about)
         if answer is None:
             output('Left for now: it is set up (yes), and this is asked again next time.')
             continue
@@ -1016,5 +1031,5 @@ def app_security(ctx, apps, ports):
         [('url', 'http://127.0.0.1:' + str(ports[app]) + '/') for app in apps],
         verify=verify,
         logins=apps,
-        question='Could you sign in to every app that opened?',
+        ask='apps_signed_in',
     )

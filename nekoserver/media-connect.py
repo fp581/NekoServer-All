@@ -26,6 +26,7 @@ from neko_common import (
     remember_answer,
 )
 import qbit_setup
+import questions
 import account_store
 import setup_progress
 
@@ -216,7 +217,7 @@ def chosen_indexers(schemas, names, ask=None, attempts=3):
     count of the ticked ones, and one button for the recommended ones. Empty when none
     is chosen (Enter alone, Skip for now, Ctrl+D)."""
     ask = ask or input
-    query = ask('Show only the sources whose name contains (Enter alone shows them all): ').strip().casefold()
+    query = questions.ask('source_filter', ask).strip().casefold()
     matches = [schema for schema in schemas if query in indexer_name(schema).casefold()]
     if not matches:
         print('No matching definitions')
@@ -313,7 +314,8 @@ def provider_account_ready(entry, config):
         ],
         [('url', 'http://127.0.0.1:9696/')],
         logins=['prowlarr'],
-        question=f'Is your account at {indexer_name(entry)} ready, with its key or login at hand?',
+        ask='source_account_ready',
+        values={'source': indexer_name(entry)},
     )
     return done or not guided_setup.interactive(ctx)
 
@@ -342,7 +344,8 @@ def finished_in_prowlarr(entry, key, config):
         [('url', 'http://127.0.0.1:9696/')],
         verify=present,
         logins=['prowlarr'],
-        question=f'Is {indexer_name(entry)} saved in Prowlarr now?',
+        ask='source_saved',
+        values={'source': indexer_name(entry)},
     )
 
 
@@ -671,10 +674,10 @@ def configure_download_clients(root, apply, apps=('sonarr', 'radarr', 'lidarr'),
     if stored:
         user, password = stored['username'], stored['password']
     else:
-        password = getpass.getpass("qBittorrent's password (not shown as you type, and not saved by this step): ")
+        password = questions.ask('qbit_password', getpass.getpass)
         if not password:
             raise RuntimeError('No password supplied; download-client setup incomplete')
-        user = input('qBittorrent username [admin]: ').strip() or 'admin'
+        user = questions.ask('qbit_user', input).strip() or 'admin'
     if verify_qbit:
         categories = tuple({'sonarr': 'tv', 'radarr': 'movies', 'lidarr': 'music'}[app] for app in apps)
         qbit_setup.configure(user, password, apply, categories)

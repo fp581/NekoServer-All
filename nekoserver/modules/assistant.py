@@ -15,6 +15,7 @@ platform.machine, a socket, the SSD's free space): no program of a package is ru
 checking tool can be missing. Docker comes from the docker step, which this one needs.
 """
 
+import questions
 import json
 import math
 import os
@@ -387,7 +388,11 @@ def ask_model(ctx, total, room, cores, prompt=None, output=None):
     last = len(answers) - 2
     while True:
         try:
-            typed = prompt(f'Which one? (0-{last}, Enter for {answers[default] if switched_on else "no assistant"}): ')
+            listed = [
+                (number, model if model != 'none' else 'No assistant') for number, model in answers.items() if number
+            ]
+            kept = answers[default] if switched_on else 'no assistant'
+            typed = questions.ask('assistant_model', prompt, choices=listed, default=kept)
         except EOFError:
             output('')
             return None

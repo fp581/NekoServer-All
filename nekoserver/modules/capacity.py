@@ -12,6 +12,7 @@ import tempfile
 import time
 
 import guided_setup
+import questions
 from neko_common import cloud_files, photo_library, regular_files, sha256_file, usb_mount_options, version_parts
 
 DEPENDENCIES = ['storage']
@@ -376,7 +377,7 @@ def run(ctx, prompt=input, output=print):
     output('\n=== Drive space ===')
     for number, line in enumerate(warn, 1):
         output(f'{number}. {line}')
-    if ask('Continue with these drives anyway?', prompt, output):
+    if questions.yes_no('drive_space', prompt, output):
         return
     return {
         'status': 'needs_setup',

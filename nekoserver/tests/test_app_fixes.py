@@ -527,7 +527,7 @@ class OptionalAnswersTests(unittest.TestCase):
             self.assertIn('  Download sources: none added', printed)
             self.assertIn('  Indexers (Prowlarr): none chosen', printed)
             self.assertIn('  Playback test: skipped', printed)
-            self.assertIn('Ask these questions again? [yes/no]: ', printed)
+            self.assertTrue(any('Change any of these answers?' in line for line in printed), printed)
             self.assertIn('Optional questions: kept as answered last time', logs)
             self.assertIn('Playback test: skipped last time and not asked again (optional)', logs)
         with tempfile.TemporaryDirectory() as d:

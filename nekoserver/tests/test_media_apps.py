@@ -110,7 +110,8 @@ class QuestionTests(unittest.TestCase):
         ctx = context(config, **more)
         typed = iter(answers)
         shown = []
-        guided_setup.choose_media_apps(ctx, prompt=lambda _: next(typed), output=shown.append)
+        # What the person reads: what setup prints and what each question says.
+        guided_setup.choose_media_apps(ctx, prompt=lambda q: shown.append(q) or next(typed), output=shown.append)
         return ctx, shown
 
     def test_asked_once_explained_and_saved(self):

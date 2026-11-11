@@ -17,6 +17,7 @@ import sys
 import termios
 
 import guided_setup
+import questions
 import setup_gui
 import setup_progress
 from neko_common import ASSISTANT, VERSION, atomic_json, dashboard_port, mount_path, safe_path, settings_path
@@ -172,7 +173,7 @@ def take_earlier_settings(root=ROOT, account=None, prompt=input, output=print):
     if source is None:
         return False
     output('This PC already has a NekoServer server set up. Its settings are in ' + str(source) + '.')
-    answer = guided_setup.yes_no('Use them for this release (yes when updating)?', prompt, output)
+    answer = questions.yes_no('earlier_settings', prompt, output)
     if answer is None:
         # Stopped here (Ctrl+C, Ctrl+D): no new settings file, or the next run would
         # never offer these again and ask for every drive and password from the start.

@@ -101,6 +101,8 @@ async function step(i) {
     }
   }
   if (states[i].continue) elements.ask.fire('submit');
+  // A question in its own words: {"press": 2} presses its second button.
+  if (states[i].pressChoice) elements['ask-choices'].children[states[i].pressChoice - 1].fire('click');
   // A sign-in step: {"showLogin": 1} presses the first card's Show login (twice: {"showLogin": [1, 1]}).
   for (const n of [states[i].showLogin ?? []].flat()) {
     elements['ask-page'].children[n - 1].children[3].fire('click');
@@ -138,6 +140,8 @@ console.log(JSON.stringify({ posts, title: elements['finish-title']?.textContent
   optionsHidden: elements['ask-options']?.hidden ?? null,
   pick: (elements['ask-pick']?.children ?? []).map((label) => [label.children[0].type, label.children[1].textContent, label.hidden]),
   pickCount: elements['ask-pick-count']?.textContent ?? '',
+  choices: (elements['ask-choices']?.children ?? []).map((button) => [button.textContent, button.className]),
+  sendHidden: elements['ask-page-send']?.hidden ?? null, skipLabel: elements['ask-page-skip']?.textContent ?? '',
   part: (elements['ask-page']?.children ?? []).filter((card) => (card.className ?? '').includes('part-step')).map((card) => { const choice = card.children[card.children.length - 1]; const input = choice.children[1].children[0]; return { title: card.children[0].textContent, lines: card.children.length === 3 ? card.children[1].children.map((line) => line.textContent) : [], caption: choice.children[0].textContent, on: input.checked, off: input.disabled, role: input.role, label: input['aria-label'] }; }),
   skipShown: elements['ask-skip'] ? !elements['ask-skip'].hidden : null,
   askOff: ['ask-send', 'ask-page-send', 'ask-page-skip', 'ask-yes', 'ask-no'].filter((id) => elements[id]?.disabled),

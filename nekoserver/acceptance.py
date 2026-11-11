@@ -1272,7 +1272,8 @@ def guided_manual(config, report):
                 'and reopens any relevant local pages/apps; Ctrl+D leaves it pending.',
             ],
             targets,
-            question=f"Did you see this test pass: {check['name']}?",
+            ask='test_passed',
+            values={'name': check['name']},
         )
         if done:
             check.update(status='pass', confirmed_at=time.time(), evidence='user_reported')

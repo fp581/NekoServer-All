@@ -244,7 +244,7 @@ class WizardFlowTests(unittest.TestCase):
         self.saved(self.root.parent / 'nekoserver-v0.29.0/my-config.json', 'older')
         self.saved(self.root / 'ssd/installer/releases/v0.30.0/config.json', 'ssd')
         asked, out = self.setup_until_ready('yes')
-        self.assertIn('Use them for this release', asked[0])
+        self.assertIn('Keep its settings?', asked[0])
         self.assertTrue(any(str(self.root.parent / 'nekoserver-v0.30.0/my-config.json') in line for line in out))
         self.assertEqual(self.settings_uuid(), 'kept')
         self.assertEqual((self.root / 'my-config.json').stat().st_mode & 0o777, 0o600)

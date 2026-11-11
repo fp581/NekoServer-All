@@ -1,6 +1,7 @@
 """Install private ntfy delivery with a Rust timer independent of SSD availability."""
 
 import guided_setup
+import questions
 import json
 import os
 from pathlib import Path
@@ -45,9 +46,16 @@ def valid_token(token):
     return isinstance(token, str) and len(token) <= 512 and re.fullmatch(r'[A-Za-z0-9._-]*', token) is not None
 
 
+def asked_privately(key, valid, hint, ask=None):
+    """A private value (an address, a token) asked in the words of questions.py: a
+    password box in the setup window, typed hidden in the terminal."""
+    with questions.shown(key):
+        return guided_setup.private_entry(questions.terminal(key), valid, hint, ask=ask)
+
+
 def ask_token(ask=None):
-    return guided_setup.private_entry(
-        'The topic\'s access token (not shown as you type; Enter alone when it has none): ',
+    return asked_privately(
+        'alerts_token',
         valid_token,
         'That is not an access token: it has only letters, digits, ".", "_" and "-" '
         '(such as tk_abc123...). Copy it again from ntfy and paste it.',
@@ -67,11 +75,7 @@ def switch(context, configured, current, token, prompt=None, ask=None):
                 'to now. To switch, run  sudo bash install.sh --module notifications --apply  in a terminal',
             }
         return configured, token
-    if current and not guided_setup.yes_no(
-        'Alerts go to another ntfy topic now. Send them to the topic in '
-        'my-config.json (notifications.endpoint) instead?',
-        prompt,
-    ):
+    if current and not questions.yes_no('alerts_switch', prompt):
         return {
             'status': 'needs_setup',
             'reason': 'Alerts still go to the earlier ntfy topic. Put it back in '
@@ -109,14 +113,14 @@ def first_destination(context):
             'No notification is sent by this browser step. Actual phone receipt must still be tested.',
         ],
         [('url', 'https://ntfy.sh/docs/subscribe/phone/')],
-        question='Is your phone subscribed to the topic, with its address and access token at hand?',
+        ask='alerts_phone_ready',
     ):
         return {'status': 'needs_setup', 'reason': 'Notification subscription setup pending'}
     context.log(
         'Subscribe your phone to an access-controlled ntfy topic. Enter its full HTTPS URL; the access token stays outside your installer config.'
     )
-    address = guided_setup.private_entry(
-        'The topic\'s full address, such as https://ntfy.example.org/my-topic (not shown as you type; Enter alone leaves it for later): ',
+    address = asked_privately(
+        'alerts_address',
         endpoint,
         'That is not a topic URL. It starts with https:// and ends with the topic name, '
         'such as https://ntfy.example.com/my-server-alerts. Copy it again and paste it.',

@@ -1,97 +1,60 @@
 acceptance.py
     Type PASS {check['id']}, FAIL {check['id']}, or Enter to leave pending:
-    Did you see this test pass: {check['name']}?
 account-setup.py
     Press Enter to hide it (the screen is cleared).
     Type a number to show that login (press Enter to stop):
 account_store.py
-    Email login: | Username:
-    Password (not shown as you type):
-    The same password again (not shown):
-    Press Enter to try the saved login again, or type c to enter the login this app has now:
-    Logins for the apps: 1 = NekoServer makes a strong username and password for each app (recommended; you can see them later), 2 = you choose them app by app. Type 1 or 2:
-    For this app: 1 = NekoServer makes a strong username and password, 2 = you type your own. Type 1 or 2:
+    Password for {APPS[app][0]} (it is not shown while you type):
+    The same password once more:
+    login_retry
+    logins_who
+    login_who
 backup_secrets.py
     Backup password:
     Same backup password again:
 drive_table.py
     Number of {what} ({leave}):
 gateway_tools.py
-    Once you have checked those settings, type SECURED to switch on access from your other devices (anything else leaves it off for now):
+    access_checked
 guided_setup.py
-    {question} [yes/no]:
     Show a login now? Type its number (Enter alone: go on):
+    {asked['title']}
     {what}:
     The same password again:
-    Ask these questions again?
-    Install {GROUP_NAMES[group]}?
+    ask_again
+    install_group
     When should the daily backups run? (HH:MM, Enter for {now['app']}):
     On which day should the weekly USB copy run? ({days}; Enter for {now['usb_day']}):
     At what time on that day? (HH:MM, Enter for {now['usb']}):
     At what time should the monthly check start? (HH:MM before {night_end}:00, Enter for {offered}{why}):
-    Could you sign in to every app that opened?
-installer.py
-    Your settings keep the newest {old} {what}, the default before v0.30.0 (now {new}). Keep fewer from now on, the newest {new}?
 media-connect.py
     {prompt} (its number; Enter alone skips):
-    Show only the sources whose name contains (Enter alone shows them all):
+    source_filter
     {question} (Enter alone skips):
     {row['label']} (Enter alone keeps its default):
-    Is your account at {indexer_name(entry)} ready, with its key or login at hand?
-    Is {indexer_name(entry)} saved in Prowlarr now?
-    qBittorrent's password (not shown as you type, and not saved by this step):
-    qBittorrent username [admin]:
-modules/accounts.py
-    Could you sign in to {title}?
+    qbit_password
+    qbit_user
 modules/assistant.py
-    Which one? (0-{last}, Enter for {answers[default] if switched_on else 'no assistant'}):
+    assistant_model
 modules/capacity.py
-    Continue with these drives anyway?
+    drive_space
 modules/dashboard.py
     PIN:
     Same PIN again:
-modules/gateway_tailnet.py
-    Are MagicDNS and HTTPS both switched on in Tailscale?
-modules/heartbeat.py
-    Is the check created at your monitor, with its ping address copied?
-    The check's ping address, such as https://hc-ping.com/your-code (not shown as you type; Enter alone leaves it for later):
-modules/network_storage.py
-    Numbers of the ones NekoServer uses, separated by commas (Enter alone stops here):
-    The NAS's address on your network (such as 192.168.1.20):
-    Does the NAS ask for a CHAP user name and password for {iqn}? [y/N]:
-    CHAP user name:
-    Which one does NekoServer use? [1/2] (Enter alone: 1):
-    The shared folder for {words}: {how}, or Enter alone for a drive on this PC:
 modules/notifications.py
-    The topic's access token (not shown as you type; Enter alone when it has none):
-    Alerts go to another ntfy topic now. Send them to the topic in my-config.json (notifications.endpoint) instead?
-    Is your phone subscribed to the topic, with its address and access token at hand?
-    The topic's full address, such as https://ntfy.example.org/my-topic (not shown as you type; Enter alone leaves it for later):
-modules/onboarding.py
-    Have you finished what was left in the apps?
-    Did something you added play in Jellyfin?
+    alerts_switch
 modules/samba.py
     Password for the shared folders (account {user})
-modules/tailscale.py
-    Did the Tailscale page say this server is connected?
 modules/tv.py
-    Did Steam, the controller, and the TV picture and sound all work?
+    tv_worked
 music-setup.py
     Listener username:
     Listener password (never saved as plaintext):
 neko_common.py
     Type {device['name']} to confirm it is {label}:
-network_access.py
-    Number of the connection that is your home network (from the list above):
 recovery_wizard.py
     Choose a number:
     Type a full path for a NEW folder (or press Enter to go back):
-    Use this folder?
-    Restore everything else from this backup now? ("no" stops, with nothing restored)
-    Restore only the NEWEST version of each file? (recommended; "no" copies every version)
-    Also load the saved app versions into Docker (needed on a new server)?
-    Stop the apps and check the drive now?
-    Check and repair its filesystem now (e2fsck: it changes only what is broken)?
 seerr_providers.py
     Choose a number (Enter alone skips):
 source-wizard.py
@@ -105,6 +68,6 @@ uninstaller.py
     Remove everything listed above? Type yes to go on, anything else to stop:
     Type exactly {phrase} to go on:
 wizard.py
-    Use them for this release (yes when updating)?
+    earlier_settings
     Ready to start?
     Ready to start?

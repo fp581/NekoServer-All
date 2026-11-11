@@ -118,7 +118,7 @@ def run(context):
             ],
             prepare=login_targets,
             verify=connected,
-            question='Did the Tailscale page say this server is connected?',
+            ask='tailscale_connected',
         )
         if not done:
             return {

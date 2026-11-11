@@ -111,7 +111,7 @@ class ChoosingTests(unittest.TestCase):
 
     def test_the_window_gets_the_whole_list_to_tick(self):
         _, pages, _ = self.chosen(['', '2'])
-        self.assertIsNone(pages[0])  # the filter is a plain question
+        self.assertEqual(pages[0]['title'], 'Looking for a download source by name?')  # the filter
         page = pages[1]
         self.assertEqual((page['form'], page['multiple'], page['asking']), ('pick', True, 'choice'))
         self.assertEqual(page['what'], 'Download sources (indexers) to add')

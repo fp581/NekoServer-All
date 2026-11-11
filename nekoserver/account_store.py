@@ -10,6 +10,7 @@ import stat
 import string
 
 import setup_progress
+import questions
 from neko_common import (
     APPS as CATALOG,
     atomic_json,
@@ -259,13 +260,14 @@ def selected(config, plan):
 
 def ask_login(app, existing, value, prompt, password_prompt, output):
     while True:
-        username = prompt('  Email login: ' if app in EMAIL_LOGINS else '  Username: ').strip()
+        key = 'login_email' if app in EMAIL_LOGINS else 'login_name'
+        username = questions.ask(key, prompt, app=APPS[app][0]).strip()
         # In the setup window the password and its second entry are one page.
         with setup_progress.password_page(APPS[app][0] + ': password'):
-            password = setup_progress.page_field('password', password_prompt, '  Password (not shown as you type): ')
-            confirmation = setup_progress.page_field(
-                'again', password_prompt, '  The same password again (not shown): '
+            password = setup_progress.page_field(
+                'password', password_prompt, f'Password for {APPS[app][0]} (it is not shown while you type): '
             )
+            confirmation = setup_progress.page_field('again', password_prompt, 'The same password once more: ')
         try:
             validate_login(app, username, password, existing=existing)
             if app == 'navidrome_listener' and value['apps'].get('navidrome', {}).get('username') == username:
@@ -295,13 +297,7 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
                     '(the account in the app is not changed or reset).'
                 )
             while True:
-                answer = (
-                    prompt(
-                        '  Press Enter to try the saved login again, or type c to enter the login this app has now: '
-                    )
-                    .strip()
-                    .lower()
-                )
+                answer = questions.ask('login_retry', prompt, app=APPS[app][0]).strip().lower()
                 if answer in ('', 'c'):
                     break
                 output('Press Enter alone, or type c.')
@@ -317,9 +313,7 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
         return
     if not value['apps']:
         while True:
-            answer = prompt(
-                'Logins for the apps: 1 = NekoServer makes a strong username and password for each app (recommended; you can see them later), 2 = you choose them app by app. Type 1 or 2: '
-            ).strip()
+            answer = questions.ask('logins_who', prompt).strip()
             if answer in ('1', '2'):
                 value['mode'] = 'generate' if answer == '1' else 'per-app'
                 break
@@ -338,9 +332,7 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
             mode = 'custom'
         if mode == 'per-app':
             while True:
-                answer = prompt(
-                    '  For this app: 1 = NekoServer makes a strong username and password, 2 = you type your own. Type 1 or 2: '
-                ).strip()
+                answer = questions.ask('login_who', prompt, app=APPS[app][0]).strip()
                 if answer in ('1', '2'):
                     mode = 'generate' if answer == '1' else 'custom'
                     break

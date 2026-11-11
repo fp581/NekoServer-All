@@ -512,7 +512,7 @@ def run(ctx):
         ctx,
         'Try the TV: Steam, the controller, picture and sound',
         [{'id': key, 'title': title, 'lines': instructions} for key, title, instructions, _ in handoffs],
-        'Did Steam, the controller, and the TV picture and sound all work?',
+        'tv_worked',  # the question's words are in questions.py
         done=before,
         targets=[('steam', '')],
     )

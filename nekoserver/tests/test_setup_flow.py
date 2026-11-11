@@ -640,7 +640,7 @@ class SetupWindowTests(unittest.TestCase):
         seen = self.page([self.asked(question, self.PART, kind='yesno')])
         self.assertEqual((seen['prompt'], seen['send'], seen['skipHidden']), ('Set up your phone', 'Continue', True))
         self.assertEqual((seen['yesnoHidden'], seen['contextHidden']), (True, True))  # no second yes/no beside it
-        self.assertTrue(seen['note'].startswith(self.PART['question']))
+        self.assertTrue(seen['note'].startswith('Slide each step to yes once it is done.'))
         self.assertEqual(
             seen['part'],
             [
@@ -683,6 +683,58 @@ class SetupWindowTests(unittest.TestCase):
         self.assertEqual((seen['skipShown'], seen['yesnoHidden'], seen['pageHidden']), (True, False, True))
         seen = self.page([self.asked('Continue with these drives anyway? [yes/no]: ', kind='yesno')])
         self.assertEqual(seen['skipShown'], False)
+
+    def test_a_question_has_its_own_words_and_buttons_in_the_window(self):
+        """0.50.0, item 13 redone: the window showed the terminal's line ("... [yes/no]:",
+        "Type 1 or 2", "Enter alone skips"). Each question now has a title, a hint and
+        buttons that say what they do; nothing in the window tells anyone to type."""
+        import questions
+
+        def asked(key, choices=None, leave=False, **more):
+            page = {'form': 'ask', 'fields': {'answer': ''}, 'asking': 'answer', 'leave': leave}
+            page.update(questions.window(key, choices, **questions.Q[key].get('example', {})))
+            kind = 'yesno' if page['kind'] == 'yesno' else 'text'
+            return self.asked(questions.terminal(key, choices), page, kind=kind, context=['An earlier line.'], **more)
+
+        # A yes or no: two buttons in the question's own words, no Send and no yes/no pair.
+        seen = self.page([asked('tailscale_connected', leave=True)])
+        self.assertEqual(seen['prompt'], 'Is this server connected to Tailscale?')
+        self.assertTrue(seen['note'].startswith('The Tailscale page in your browser says so'))
+        self.assertEqual(seen['choices'], [['Yes, it is connected', 'primary'], ['Not yet', 'secondary']])
+        self.assertEqual((seen['sendHidden'], seen['yesnoHidden'], seen['answerHidden']), (True, True, True))
+        self.assertEqual((seen['skipHidden'], seen['skipLabel'], seen['contextHidden']), (False, 'Skip for now', True))
+        seen = self.page([asked('tailscale_connected', leave=True, pressChoice=2)])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': 'no'}]])
+        # A step that can be left: Skip for now does what Ctrl+D does in the terminal.
+        seen = self.page([asked('tailscale_connected', leave=True, skipPage=True)])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '', 'skip': True}]])
+        # A choice: a button for each, sending what the terminal would be given.
+        seen = self.page([asked('login_who', pressChoice=2)])
+        self.assertEqual(seen['prompt'], 'Who picks the login for Jellyfin?')
+        self.assertEqual(
+            [label for label, _ in seen['choices']], ['NekoServer makes one for me (recommended)', "I'll choose my own"]
+        )
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '2'}]])
+        self.assertEqual(seen['skipHidden'], True)
+        # A list made at run time (the assistants this PC can run).
+        models = [('0', 'No assistant'), ('1', 'qwen3.5:4b')]
+        seen = self.page([asked('assistant_model', models, pressChoice=2)])
+        self.assertEqual(seen['prompt'], 'Which AI assistant do you want?')
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '1'}]])
+        # Something to paste: a password box, Save, and a Skip that answers "not now".
+        seen = self.page([asked('monitor_address')])
+        self.assertEqual(seen['prompt'], 'Paste the address your monitor gave you')
+        self.assertEqual(
+            (seen['send'], seen['sendHidden'], seen['skipHidden'], seen['skipLabel']),
+            ('Save', False, False, 'Skip for now'),
+        )
+        seen = self.page([asked('monitor_address', fill={'ask-page-answer': 'https://example.org/x'})])
+        self.assertEqual(seen['posts'][0][1]['text'], 'https://example.org/x')
+        seen = self.page([asked('monitor_address', skipPage=True)])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': ''}]])  # Enter alone, not Ctrl+D
+        # A question about what was listed just before it keeps that list in view.
+        seen = self.page([asked('drive_space')])
+        self.assertEqual(seen['contextHidden'], False)
 
     def test_an_answer_that_was_not_delivered_can_be_sent_again(self):
         """The setup review (S8): when sending an answer failed, the window's buttons and

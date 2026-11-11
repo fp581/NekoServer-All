@@ -114,7 +114,7 @@ def run(ctx):
                 if a in ports
             ],
             logins=[a for a in media_services(ctx.config) if a in ports],
-            question='Have you finished what was left in the apps?',
+            ask='apps_finished',
         )
         ctx.log('Media deployed; connecting the apps is not finished: ' + why)
         return {
@@ -245,7 +245,7 @@ def witness_playback(ctx, checkpoint=None):
             ],
             [('url', f"http://127.0.0.1:{app_port('jellyfin')}/")],
             keys=guided_setup.SKIPPABLE,
-            question='Did something you added play in Jellyfin?',
+            ask='played',
         )
     except KeyboardInterrupt:
         done = False

@@ -218,14 +218,7 @@ def retire_old_defaults(config, ask=None):
         options = config.get(group)
         if not (isinstance(options, dict) and type(options.get(key)) is int and options[key] == old):
             continue
-        if (
-            ask is not None
-            and ask(
-                f'Your settings keep the newest {old} {what}, the default before v0.30.0 '
-                f'(now {new}). Keep fewer from now on, the newest {new}?'
-            )
-            is True
-        ):
+        if ask is not None and ask(keep_fewer_words(old, new, what)) is True:
             options[key] = new
             lines.append(f'Backups: the newest {new} {what} are kept from now on, not {old}')
         else:
@@ -611,6 +604,17 @@ def note_unfinished(config, states, log):
 
 
 # How often one step is tried again in one run before setup says to come back later.
+
+
+def keep_fewer_words(old, new, what):
+    """ "Keep fewer old backups from now on?" in the words of questions.py: the question,
+    then the line that says what is kept now and what a new server keeps."""
+    import questions
+
+    asked = questions.words('keep_fewer', old=old, new=new, what=what)
+    return asked['title'] + ' ' + asked['hint']
+
+
 MOST_RETRIES = 3
 
 
