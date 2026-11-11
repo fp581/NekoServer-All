@@ -26,6 +26,7 @@ from neko_common import (
 )
 import qbit_setup
 import account_store
+import setup_progress
 
 OPENER = local_opener()
 
@@ -104,19 +105,24 @@ def field_set(fields, name, value):
 def choose(items, prompt, ask=input, attempts=3):
     """The item picked by its number; None when skipped (blank or Ctrl+D). A number not
     in the list is asked again rather than failing the step."""
-    for i, item in enumerate(items, 1):
-        print(f" {i:3d}. {item.get('name') or item.get('implementationName') or item.get('implementation')}")
-    for _ in range(attempts):
-        try:
-            answer = ask(f'{prompt} (number, blank to skip): ').strip()
-        except EOFError:
-            print()
-            return None
-        if not answer:
-            return None
-        if answer.isdecimal() and 1 <= int(answer) <= len(items):
-            return items[int(answer) - 1]
-        print(f'Type a number from 1 to {len(items)}, or press Enter to skip.')
+    names = [str(item.get('name') or item.get('implementationName') or item.get('implementation')) for item in items]
+    for i, name in enumerate(names, 1):
+        print(f' {i:3d}. {name}')
+    # In the setup window: the whole list with a search box, however long it is (the
+    # terminal's last lines alone would show only its end).
+    with setup_progress.page('pick', {'choice': ''}, what=prompt, items=[{'label': name} for name in names]):
+        setup_progress.page_asks('choice')
+        for _ in range(attempts):
+            try:
+                answer = ask(f'{prompt} (number, blank to skip): ').strip()
+            except EOFError:
+                print()
+                return None
+            if not answer:
+                return None
+            if answer.isdecimal() and 1 <= int(answer) <= len(items):
+                return items[int(answer) - 1]
+            print(f'Type a number from 1 to {len(items)}, or press Enter to skip.')
     return None
 
 

@@ -5,6 +5,7 @@ from acceptance_summary import scope_digest
 import getpass, grp, json, os, platform, re, shutil, socket, subprocess, sys, time
 from pathlib import Path
 import host
+import setup_progress
 from neko_common import (
     SHARED,
     immich_wanted,
@@ -427,8 +428,16 @@ def choose_pin(binary, log, ask=getpass.getpass):
         '\nChoose a PIN (6 to 8 digits) for the dashboard: it lets you change fans and lights from your phone or tablet,\n'
         'and restart or close apps (on every device, the server too).\nPress Enter to skip: fans and lights then change on the server itself only, and apps can\'t be restarted or closed from the dashboard.'
     )
+    # In the setup window the PIN and its second entry are one page (hidden, checked to
+    # match before they are sent); the terminal is asked twice.
+    with setup_progress.password_page('Dashboard PIN', least=6, most=8, digits=True, optional=True):
+        return asked_pin(binary, log, ask)
+
+
+def asked_pin(binary, log, ask):
+    """The PIN asked for and saved (choose_pin): True once one is saved."""
     for _ in range(3):
-        pin = ask('PIN: ').strip()
+        pin = setup_progress.page_field('password', ask, 'PIN: ').strip()
         if not pin:
             log('Dashboard: no PIN chosen; fans and lights change on the server only, and app controls stay off')
             return False
@@ -437,7 +446,7 @@ def choose_pin(binary, log, ask=getpass.getpass):
         if not re.fullmatch(r'\d{6,8}', pin, re.ASCII):
             print('A PIN is 6 to 8 digits (0-9).')
             continue
-        if ask('Same PIN again: ').strip() != pin:
+        if setup_progress.page_field('again', ask, 'Same PIN again: ').strip() != pin:
             print('The two PINs differ.')
             continue
         saved = subprocess.run(

@@ -9,6 +9,7 @@ import secrets
 import stat
 import string
 
+import setup_progress
 from neko_common import (
     APPS as CATALOG,
     atomic_json,
@@ -259,8 +260,10 @@ def selected(config, plan):
 def ask_login(app, existing, value, prompt, password_prompt, output):
     while True:
         username = prompt('  Email login: ' if app in EMAIL_LOGINS else '  Username: ').strip()
-        password = password_prompt('  Password (hidden): ')
-        confirmation = password_prompt('  Confirm password (hidden): ')
+        # In the setup window the password and its second entry are one page.
+        with setup_progress.password_page(APPS[app][0] + ': password'):
+            password = setup_progress.page_field('password', password_prompt, '  Password (hidden): ')
+            confirmation = setup_progress.page_field('again', password_prompt, '  Confirm password (hidden): ')
         try:
             validate_login(app, username, password, existing=existing)
             if app == 'navidrome_listener' and value['apps'].get('navidrome', {}).get('username') == username:

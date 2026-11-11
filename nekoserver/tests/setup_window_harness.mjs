@@ -71,6 +71,22 @@ async function step(i) {
     elements.ask.fire('submit');
   }
   if (states[i].skipPage) elements['ask-page-skip'].fire('click');
+  // A list to pick from: {"tick": [2, 5]} ticks those rows and presses its Send;
+  // {"search": "rad"} types into its search box.
+  if (states[i].search != null) {
+    elements['ask-pick-search'].value = states[i].search;
+    elements['ask-pick-search'].fire('input');
+  }
+  if (states[i].tick) {
+    for (const n of states[i].tick) elements['ask-pick'].children[n - 1].children[0].checked = true;
+    elements['ask-pick'].fire('change');
+    elements.ask.fire('submit');
+  }
+  // The terminal's numbered lines as buttons: {"choose": 2} presses the second, then Send.
+  if (states[i].choose) {
+    elements['ask-options'].children[states[i].choose - 1].fire('click');
+    elements.ask.fire('submit');
+  }
   await settle();
   const next = waits.shift();
   if (next && i < states.length - 1) next();
@@ -84,6 +100,13 @@ console.log(JSON.stringify({ posts, title: elements['finish-title']?.textContent
   badge: elements['phase-badge']?.textContent ?? '', label: elements['finish-label']?.textContent ?? '', lines: elements['finish-lines']?.textContent ?? '',
   marks: marks(elements['steps-final']), progressHidden: elements.progress?.hidden ?? null, cards,
   pageHidden: elements['ask-page']?.hidden ?? null, answerHidden: elements['ask-answer']?.hidden ?? null,
-  rows: (elements['ask-page']?.children ?? []).map((row) => [row.children[0].textContent, row.children[1].children.map((input) => input.value), row.children[2].textContent]),
+  rows: (elements['ask-page']?.children ?? []).map((row) => [row.children[0].textContent, (row.children[1]?.children ?? []).map((input) => input.value), row.children[2]?.textContent ?? '']),
+  fieldTypes: (elements['ask-page']?.children ?? []).map((row) => (row.children[1]?.children ?? []).map((input) => input.type)),
+  options: (elements['ask-options']?.children ?? []).map((button) => [button.children[0].textContent, button.children[1].textContent, button.className]),
+  optionsHidden: elements['ask-options']?.hidden ?? null,
+  pick: (elements['ask-pick']?.children ?? []).map((label) => [label.children[0].type, label.children[1].textContent, label.hidden]),
+  pickCount: elements['ask-pick-count']?.textContent ?? '',
+  send: elements['ask-page-send']?.textContent ?? '', skipHidden: elements['ask-page-skip']?.hidden ?? null,
+  placeholder: elements['ask-input']?.placeholder ?? '', yesnoHidden: elements['ask-yesno']?.hidden ?? null,
   prompt: elements['ask-prompt']?.textContent ?? '', note: elements['ask-note']?.textContent ?? '',
   start: [elements.start?.disabled ?? null, elements.start?.textContent ?? ''], chooseNote: elements['choose-note']?.textContent ?? '' }));

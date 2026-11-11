@@ -219,6 +219,124 @@ class ProgressTests(unittest.TestCase):
                 self.assertIsNone(setup_progress._wait_for_answer(plain, False))
                 setup_progress.answered()
 
+    def test_a_page_field_is_asked_once_and_the_windows_copy_is_never_reused(self):
+        """0.50.0: a password chosen now is one page in the window (two hidden fields). The
+        window sends both with the first question; a second try must ask again, not find
+        the first try's entry still there."""
+        setup_progress.enable()
+        self.addCleanup(setup_progress.disable)
+        asked = []
+
+        def ask(prompt):
+            asked.append(prompt)
+            record = setup_progress.question(prompt, secret=True)
+            # The window answers this question with both fields, as its page posts them.
+            sent = {'password': 'first-try', 'again': 'other'} if len(asked) == 1 else {'password': 'b', 'again': 'b'}
+            setup_progress.answer_from_window(record['seq'], sent['password'], fields=sent)
+            setup_progress.answered()
+            return sent['password']
+
+        with setup_progress.password_page('Backup password', least=8):
+            shown = setup_progress.page_shown()
+            self.assertEqual(
+                shown,
+                {
+                    'form': 'new_password',
+                    'fields': {'password': '', 'again': ''},
+                    'asking': None,
+                    'least': 8,
+                    'what': 'Backup password',
+                },
+            )
+            first = setup_progress.page_field('password', ask, 'Backup password: ')
+            again = setup_progress.page_field('again', ask, 'Same backup password again: ')
+            self.assertEqual((first, again), ('first-try', 'other'))
+            self.assertEqual(asked, ['Backup password: '])  # the second entry came with the first
+            # The second try: both asked for anew.
+            self.assertEqual(setup_progress.page_field('password', ask, 'Backup password: '), 'b')
+            self.assertEqual(setup_progress.page_field('again', ask, 'Same backup password again: '), 'b')
+            self.assertEqual(len(asked), 2)
+        # Neither entry is in any event.
+        recorded = json.dumps([{k: v for k, v in e.items() if k != 'at'} for e in setup_progress.events()])
+        self.assertNotIn('first-try', recorded)
+        self.assertNotIn('other', recorded)
+        # Skip for now on the page leaves it as Ctrl+D does.
+        with setup_progress.password_page('Dashboard PIN', optional=True):
+            record = setup_progress.question('PIN: ', secret=True)
+            setup_progress.answer_from_window(record['seq'], '', skip=True)
+            setup_progress.answered()
+            with self.assertRaises(EOFError):
+                setup_progress.page_field('again', ask, 'Same PIN again: ')
+        # Off a page, a field is simply asked.
+        self.assertEqual(setup_progress.page_field('password', lambda prompt: 'typed', 'PIN: '), 'typed')
+
+    def test_the_short_yes_or_no_gets_buttons_too(self):
+        for text in ('Ready to start? [yes/no]: ', 'Does the NAS ask for a CHAP login? [y/N]: ', 'Go on? [Y/n] '):
+            self.assertEqual(setup_progress.question_kind(text, False), 'yesno', text)
+        for text in ('qBittorrent username [admin]: ', 'Which one? [1/2] (Enter alone: 1): ', 'Number: '):
+            self.assertEqual(setup_progress.question_kind(text, False), 'text', text)
+        self.assertEqual(setup_progress.question_kind('Delete it? [y/N]: ', True), 'secret')
+
+    def test_the_typed_twice_prompts_are_pages_with_their_own_rules(self):
+        import backup_secrets
+        from modules import dashboard
+
+        setup_progress.enable()
+        self.addCleanup(setup_progress.disable)
+        pages = []
+
+        def typing(*answers):
+            typed = iter(answers)
+
+            def ask(prompt):
+                pages.append(setup_progress.page_shown())
+                return next(typed)
+
+            return ask
+
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(backup_secrets, 'create_key') as made:
+            backup_secrets.setup(typing('long-enough', 'long-enough'), lambda line: None, Path(folder))
+        made.assert_called_once()
+        self.assertEqual((pages[0]['what'], pages[0]['least'], pages[0]['asking']), ('Backup password', 8, 'password'))
+        self.assertEqual(pages[1]['asking'], 'again')
+        pages.clear()
+        saved = mock.Mock(returncode=0)
+        with (
+            mock.patch.object(dashboard, 'CONTROL_CONFIG', Path('/nonexistent-control')),
+            mock.patch.object(dashboard.sys.stdin, 'isatty', return_value=True),
+            mock.patch.object(dashboard.subprocess, 'run', return_value=saved) as run,
+            mock.patch('builtins.print'),
+        ):
+            self.assertTrue(dashboard.choose_pin('/bin/runtime', lambda line: None, typing('123456', '123456')))
+        rules = {k: pages[0][k] for k in ('what', 'least', 'most', 'digits', 'optional')}
+        self.assertEqual(rules, {'what': 'Dashboard PIN', 'least': 6, 'most': 8, 'digits': True, 'optional': True})
+        # The PIN goes to the control service on its input, never on its command line.
+        self.assertEqual(run.call_args.kwargs['input'], '123456\n')
+        self.assertNotIn('123456', json.dumps(run.call_args.args))
+
+    def test_a_long_list_is_shown_whole_to_the_window(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location('media_connect_pick', ROOT / 'media-connect.py')
+        connect = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(connect)
+        setup_progress.enable()
+        self.addCleanup(setup_progress.disable)
+        items = [{'name': f'Indexer {n}'} for n in range(1, 41)]
+        pages = []
+
+        def ask(prompt):
+            pages.append(setup_progress.page_shown())
+            return '37'
+
+        with mock.patch('builtins.print'):
+            self.assertEqual(connect.choose(items, 'Select an indexer', ask), items[36])
+        page = pages[0]
+        self.assertEqual((page['form'], page['asking'], page['what']), ('pick', 'choice', 'Select an indexer'))
+        self.assertEqual(len(page['items']), 40)  # every row, not the terminal's last lines
+        self.assertEqual(page['items'][36], {'label': 'Indexer 37'})
+        self.assertIsNone(setup_progress.page_shown())  # over with the question
+
 
 class WindowTests(unittest.TestCase):
     def setUp(self):

@@ -289,17 +289,11 @@ def new_password(what, ask=None, output=print, tries=3):
     import setup_progress
 
     ask = ask or getpass.getpass
-    with setup_progress.page('new_password', {'password': '', 'again': ''}, what=what):
+    with setup_progress.password_page(what):
         for attempt in range(tries):
             try:
-                setup_progress.page_asks('password')
-                first = ask(f'{what}: ')
-                sent = setup_progress.page_answer('again')  # the window sends both at once
-                if sent is None:
-                    setup_progress.page_asks('again')
-                    again = ask('The same password again: ')
-                else:
-                    again = sent[1]
+                first = setup_progress.page_field('password', ask, f'{what}: ')
+                again = setup_progress.page_field('again', ask, 'The same password again: ')
             except EOFError:
                 return None
             if first and first == again:

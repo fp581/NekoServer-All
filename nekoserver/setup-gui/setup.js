@@ -30,6 +30,7 @@
   let askedSeq = null; // the question the form shows (rebuilt only when it changes)
   let askedQuestion = null; // that question itself (its page, when it is on one)
   let pageInputs = {}; // the fields of the page shown, by key
+  let pickInputs = []; // the tick boxes of a list to pick from (the "pick" page)
   let finishedShown = false; // the finishing screen is up: it stays, also once setup has closed
 
   function el(tag, attrs, ...children) {
@@ -157,10 +158,11 @@
   function askControls(enabled) {
     for (const id of ['ask-send', 'ask-page-send', 'ask-page-skip']) $(id).disabled = !enabled;
     for (const b of askButtons()) b.disabled = !enabled;
-    for (const input of Object.values(pageInputs)) input.disabled = !enabled;
+    for (const input of [...Object.values(pageInputs), ...pickInputs]) input.disabled = !enabled;
+    for (const option of $('ask-options').children) option.disabled = !enabled;
   }
 
-  /* `fields`: the other answers of a page (the backup times), sent with the one asked. */
+  /* `fields`: the other answers of a page (the backup times, a password's second entry), sent with the one asked. */
   async function answer(seq, text, skip = false, fields = null) {
     askControls(false);
     $('ask-note').textContent = skip ? 'Left for now. Setup goes on in a moment…' : 'Sent. Setup goes on in a moment…';
@@ -189,10 +191,55 @@
     if (askedSeq != null) void answer(askedSeq, '', true);
   });
 
-  /* ---- related questions on one page: when the backups run, three rows */
+  /* ---- pages: related questions shown and answered together.
+     Each kind of page says what it asks (prompt), draws its rows (build), reads them
+     (values), says why they cannot be sent yet (problem), and names its Send button. */
+
+  const PAGES = {
+    // When the backups run: three rows.
+    backup_times: {
+      prompt: () => 'When should the backups run? Times are on this PC’s clock.',
+      build: buildBackupTimes,
+      values: inputValues,
+      problem: backupTimesProblem,
+      send: () => 'Save these times',
+      skip: true,
+      note: () =>
+        'Save sends all three at once; in the terminal they are asked one at a time. Skip for now keeps the times shown.'
+    },
+    // A password or PIN chosen now: two hidden fields that must match.
+    new_password: {
+      prompt: page => page.what + ': choose it and type it twice.',
+      build: buildNewPassword,
+      values: inputValues,
+      problem: newPasswordProblem,
+      send: () => 'Save',
+      skip: false,
+      note: page =>
+        (page.optional ? 'Leave both empty to go on without one. ' : '') +
+        'Hidden here and in the terminal, and written to no log.'
+    },
+    // One or several of a long list (the download sources): a search box and a list that scrolls.
+    pick: {
+      prompt: page => page.what,
+      build: buildPick,
+      values: pickValues,
+      problem: pickProblem,
+      send: page => (page.multiple ? 'Add the selected ones' : 'Choose this one'),
+      skip: true,
+      note: page =>
+        page.multiple
+          ? 'Tick as many as you like. Skip for now adds none.'
+          : 'Skip for now chooses none; you can add one later.'
+    }
+  };
 
   function pageOf(q) {
-    return q.page?.form === 'backup_times' ? q.page : null;
+    return q.page && Object.hasOwn(PAGES, q.page.form) ? q.page : null;
+  }
+
+  function inputValues() {
+    return Object.fromEntries(Object.entries(pageInputs).map(([key, input]) => [key, input.value]));
   }
 
   function nightEnd(page) {
@@ -211,7 +258,7 @@
       { class: 'row' },
       el('span', { class: 'row-title', text: title }),
       el('span', { class: 'row-inputs' }, ...inputs),
-      el('small', { text: note })
+      note ? el('small', { text: note }) : null
     );
   }
 
@@ -248,11 +295,7 @@
     );
   }
 
-  function pageValues() {
-    return Object.fromEntries(Object.entries(pageInputs).map(([key, input]) => [key, input.value]));
-  }
-
-  function pageProblem(page, values) {
+  function backupTimesProblem(page, values) {
     for (const key of ['daily', 'weekly', 'monthly'])
       if (!/^\d\d:\d\d$/.test(values[key])) return 'Every time needs hours and minutes, as HH:MM.';
     if (Number(values.monthly.slice(0, 2)) >= (page.night_end ?? 6))
@@ -260,10 +303,92 @@
     return '';
   }
 
+  function hiddenInput(key, label) {
+    return el('input', { type: 'password', id: 'ask-page-' + key, autocomplete: 'new-password', 'aria-label': label });
+  }
+
+  /* Both fields, or only "the same again" when the first was typed in the terminal. */
+  function buildNewPassword(page) {
+    const again = hiddenInput('again', 'The same again');
+    if (page.asking === 'again') {
+      pageInputs = { again };
+      $('ask-page').replaceChildren(row('The same again', [again], 'The first one was typed in the terminal.'));
+      return;
+    }
+    pageInputs = { password: hiddenInput('password', page.what), again };
+    $('ask-page').replaceChildren(row(page.what, [pageInputs.password]), row('The same again', [again]));
+  }
+
+  function newPasswordProblem(page, values) {
+    if (page.asking === 'again') return values.again ? '' : 'Type it once more.';
+    if (page.optional && !values.password && !values.again) return '';
+    if (!values.password) return 'Type it in both fields.';
+    if (page.digits && !/^\d+$/.test(values.password)) return 'Use digits only (0-9).';
+    if (values.password.length < (page.least ?? 1))
+      return 'Use at least ' + page.least + (page.digits ? ' digits.' : ' characters.');
+    if (page.most && values.password.length > page.most) return 'Use at most ' + page.most + ' digits.';
+    if (values.password !== values.again) return 'The two do not match. Type them again.';
+    return '';
+  }
+
+  /* The list is drawn once; the search box only hides rows, so ticks are kept. */
+  function buildPick(page) {
+    const kind = page.multiple ? 'checkbox' : 'radio';
+    const list = el('div', { class: 'pick', id: 'ask-pick', role: 'group', 'aria-label': page.what });
+    pickInputs = [];
+    (page.items || []).forEach((item, index) => {
+      const input = el('input', { type: kind, name: 'ask-pick', value: String(index + 1) });
+      pickInputs.push(input);
+      list.append(
+        el(
+          'label',
+          { class: 'pick-row' },
+          input,
+          el('span', { class: 'pick-name', text: item.label }),
+          item.note ? el('small', { text: item.note }) : null
+        )
+      );
+    });
+    const count = el('small', { id: 'ask-pick-count', class: 'muted' });
+    const search = el('input', {
+      type: 'search',
+      id: 'ask-pick-search',
+      placeholder: 'Search the ' + (page.items || []).length + ' in the list',
+      'aria-label': 'Search the list'
+    });
+    const counted = () => {
+      const ticked = pickInputs.filter(input => input.checked).length;
+      count.textContent = page.multiple ? ticked + ' selected' : '';
+    };
+    search.addEventListener('input', () => {
+      const wanted = search.value.trim().toLowerCase();
+      for (const label of list.children) label.hidden = !label.textContent.toLowerCase().includes(wanted);
+    });
+    list.addEventListener('change', counted);
+    counted();
+    pageInputs = { search };
+    $('ask-page').replaceChildren(el('div', { class: 'pick-top' }, search, count), list);
+  }
+
+  /* The numbers ticked, as the terminal takes them: "3", or "1 4 7". */
+  function pickValues() {
+    return {
+      choice: pickInputs
+        .filter(input => input.checked)
+        .map(input => input.value)
+        .join(' ')
+    };
+  }
+
+  function pickProblem(page, values) {
+    return values.choice ? '' : 'Tick one in the list first, or press Skip for now.';
+  }
+
   async function answerPage(q) {
     const page = pageOf(q);
-    const values = pageValues();
-    const problem = pageProblem(page, values);
+    const kind = PAGES[page.form];
+    const values = kind.values(page);
+    const problem = kind.problem(page, values);
     if (problem) {
       $('ask-note').textContent = problem;
       return;
@@ -285,6 +410,63 @@
     return 'Enter alone sends an empty answer where setup allows one.';
   }
 
+  /* What Enter alone keeps, when the question names it: "[admin]", "(Enter for 04:15)". */
+  function defaultOf(text) {
+    const named = /\bEnter (?:for|alone:) ([^)]+)\)/.exec(text) || /\[([^\]/]+)\]:?\s*$/.exec(text);
+    return named ? named[1].trim() : '';
+  }
+
+  /* The numbered lines the terminal printed just before a question that asks for a
+     number ("  1) sdb 256 GB", " 2. Radarr", "[1] ...", "1 = ..."): each can be clicked
+     instead of typed. */
+  function numberedChoices(q) {
+    if (q.secret || !/number|which one|choose|type 1 or 2|\[1\]/i.test(q.text)) return [];
+    const found = [];
+    for (const line of q.context) {
+      const numbered = /^\s*\[?(\d{1,3})\s?[\]).:=]\s+(\S.*)$/.exec(line);
+      if (numbered) found.push({ number: numbered[1], label: numbered[2] });
+    }
+    return found.length >= 2 ? found : [];
+  }
+
+  function showChoices(q) {
+    const target = $('ask-options');
+    const choices = numberedChoices(q);
+    target.hidden = !choices.length;
+    target.replaceChildren();
+    for (const choice of choices) {
+      const button = el(
+        'button',
+        { type: 'button', class: 'option' },
+        el('b', { text: choice.number }),
+        el('span', { text: choice.label })
+      );
+      button.addEventListener('click', () => {
+        $('ask-input').value = choice.number;
+        for (const other of target.children) other.className = other === button ? 'option picked' : 'option';
+        $('ask-send').focus();
+      });
+      target.append(button);
+    }
+  }
+
+  function showPage(q, page) {
+    const kind = page ? PAGES[page.form] : null;
+    $('ask-page').hidden = !page;
+    $('ask-page-actions').hidden = !page;
+    pageInputs = {};
+    pickInputs = [];
+    // A page's rows are inputs of the same form: hidden, a required one would still
+    // stop every later Send, so off the page they go.
+    if (!page) {
+      $('ask-page').replaceChildren();
+      return;
+    }
+    kind.build(page);
+    $('ask-page-send').textContent = kind.send(page);
+    $('ask-page-skip').hidden = !kind.skip;
+  }
+
   function showQuestion(q, current) {
     const form = $('ask');
     if (!q) {
@@ -301,35 +483,29 @@
     $('ask-label').textContent = current ? 'A QUESTION · ' + current.title : 'A QUESTION';
     const context = $('ask-context');
     context.textContent = q.context.join('\n');
-    context.hidden = !q.context.length;
-    context.scrollTop = context.scrollHeight; // the last lines matter most
     const page = pageOf(q);
+    // A list to pick from shows every row itself: the terminal's last lines are its tail.
+    context.hidden = !q.context.length || page?.form === 'pick';
+    context.scrollTop = context.scrollHeight; // the last lines matter most
     let prompt = q.text;
-    if (page) prompt = 'When should the backups run? Times are on this PC’s clock.';
+    if (page) prompt = PAGES[page.form].prompt(page);
     else if (q.secret) prompt = q.text + ' (a hidden entry: type it here or in the terminal)';
     $('ask-prompt').textContent = prompt;
     const yesno = q.kind === 'yesno';
     $('ask-answer').hidden = yesno || !!page;
     $('ask-yesno').hidden = !yesno;
     $('ask-skip').hidden = !canSkip(q);
-    $('ask-page').hidden = !page;
-    $('ask-page-actions').hidden = !page;
-    pageInputs = {};
-    // The page's rows are required inputs of the same form: hidden, they would still
-    // stop every later Send, so off the page they go.
-    if (page) buildBackupTimes(page);
-    else $('ask-page').replaceChildren();
+    showPage(q, page);
+    showChoices(page || yesno ? { ...q, context: [] } : q);
     const input = $('ask-input');
     input.type = q.secret ? 'password' : 'text';
     input.value = '';
+    input.placeholder = q.secret || !defaultOf(q.text) ? '' : 'Enter alone keeps: ' + defaultOf(q.text);
     input.disabled = false;
     askControls(true);
-    let note = askNote(q, yesno);
-    if (page)
-      note =
-        'Save sends all three at once; in the terminal they are asked one at a time. Skip for now keeps the times shown.';
-    $('ask-note').textContent = note;
-    if (!yesno && !page) input.focus();
+    $('ask-note').textContent = page ? PAGES[page.form].note(page) : askNote(q, yesno);
+    if (page) Object.values(pageInputs)[0]?.focus();
+    else if (!yesno) input.focus();
   }
 
   /* ---- while it runs */

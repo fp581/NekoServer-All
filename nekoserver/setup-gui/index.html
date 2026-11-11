@@ -86,6 +86,8 @@
           <div class="eyebrow" id="ask-label">A QUESTION</div>
           <pre class="context" id="ask-context"></pre>
           <label class="prompt" for="ask-input" id="ask-prompt">Your answer</label>
+          <!-- The numbered lines of the terminal as buttons, for a question that asks for a number -->
+          <div class="options" id="ask-options" hidden></div>
           <div class="answer" id="ask-answer">
             <input id="ask-input" autocomplete="off" spellcheck="false" />
             <button class="primary" type="submit" id="ask-send">Send</button>
@@ -95,7 +97,8 @@
             <button class="secondary" type="button" data-answer="no">No</button>
             <button class="secondary" type="button" id="ask-skip" hidden>Skip for now</button>
           </div>
-          <!-- Related questions asked as one page (the backup times): rows built by setup.js -->
+          <!-- Related questions asked as one page (the backup times, a password typed twice, a long
+               list to pick from): rows built by setup.js -->
           <div class="rows" id="ask-page" hidden></div>
           <div class="answer" id="ask-page-actions" hidden>
             <button class="primary" type="submit" id="ask-page-send">Save these times</button>

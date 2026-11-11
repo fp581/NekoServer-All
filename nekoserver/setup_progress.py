@@ -109,7 +109,8 @@ def note(text):
 def question_kind(text, secret):
     if secret:
         return 'secret'
-    return 'yesno' if '[yes/no]' in text else 'text'
+    # "[yes/no]", and the short "[y/N]": the window answers both with Yes and No.
+    return 'yesno' if '[yes/no]' in text or re.search(r'\[[yY]/[nN]\]', text) else 'text'
 
 
 CUT = '\x00'  # in _recent: where the last answered question, or the step before, ended
@@ -284,6 +285,33 @@ def page_answer(key):
         if key in _page['answers']:
             return ('answer', _page['answers'].pop(key))
         return None
+
+
+def page_field(key, ask, prompt):
+    """One field of the page being asked: what the window sent for it with an earlier
+    field's question, else the question itself (asked in both places). EOFError when the
+    window left the whole page ("Skip for now"), as Ctrl+D in the terminal raises."""
+    sent = page_answer(key)
+    if sent is not None:
+        if sent[0] == 'skip':
+            raise EOFError
+        return sent[1]
+    page_asks(key)
+    answer = ask(prompt)
+    page_answer(key)  # the window sends every field: this one's copy is not kept for a second ask
+    return answer
+
+
+@contextlib.contextmanager
+def password_page(what, **rules):
+    """While this is active, a password (or PIN) chosen now and its second entry are one
+    page in the window: two hidden fields that must match before they are sent. The
+    terminal is still asked twice (page_field 'password', then 'again'). `rules` are what
+    the window checks before sending, as the caller checks them itself: `least` and
+    `most` (its length), `digits` (0-9 only), `optional` (both may be left empty).
+    Neither entry is ever in an event: the page's fields carry no values."""
+    with page('new_password', {'password': '', 'again': ''}, what=what, **rules):
+        yield
 
 
 def run_program(script, args=()):

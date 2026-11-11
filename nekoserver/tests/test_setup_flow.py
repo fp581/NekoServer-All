@@ -253,6 +253,142 @@ class SetupWindowTests(unittest.TestCase):
         seen = self.page([plain])
         self.assertEqual((seen['pageHidden'], seen['answerHidden'], seen['rows']), (True, False, []))
 
+    def asked(self, text, page=None, context=(), kind='text', secret=False, **changes):
+        """The window with this question waiting."""
+        state = self.backup_times_question(**changes)
+        state['question'] = {
+            'seq': 9,
+            'text': text,
+            'secret': secret,
+            'kind': kind,
+            'context': list(context),
+            'page': page,
+        }
+        return state
+
+    PASSWORD = {'form': 'new_password', 'fields': {'password': '', 'again': ''}, 'asking': 'password'}
+
+    def test_a_password_chosen_now_is_two_hidden_fields_that_must_match(self):
+        """0.50.0, item 8: the shared-folder password, an app's own password, the backup
+        password and the dashboard PIN were two hidden prompts one after the other."""
+        page = {**self.PASSWORD, 'what': 'Password for the shared folders (account neko)'}
+        typed = 'typed-' + 'x' * 10
+        question = 'Password for the shared folders (account neko): '
+        seen = self.page([self.asked(question, page, secret=True, kind='secret')])
+        self.assertEqual([row[0] for row in seen['rows']], [page['what'], 'The same again'])
+        self.assertEqual(seen['fieldTypes'], [['password'], ['password']])
+        self.assertEqual(seen['prompt'], page['what'] + ': choose it and type it twice.')
+        self.assertEqual((seen['send'], seen['skipHidden'], seen['answerHidden']), ('Save', True, True))
+        self.assertIn('written to no log', seen['note'])
+        # Two that differ are not sent.
+        differ = {'ask-page-password': typed, 'ask-page-again': typed + 'y'}
+        seen = self.page([self.asked(question, page, secret=True, kind='secret', fill=differ)])
+        self.assertEqual((seen['posts'], seen['note']), ([], 'The two do not match. Type them again.'))
+        seen = self.page([self.asked(question, page, secret=True, kind='secret', fill={})])
+        self.assertEqual((seen['posts'], seen['note']), ([], 'Type it in both fields.'))
+        # Two that match go together: the first as the answer, the second with it.
+        same = {'ask-page-password': typed, 'ask-page-again': typed}
+        seen = self.page([self.asked(question, page, secret=True, kind='secret', fill=same)])
+        self.assertEqual(
+            seen['posts'], [['api/answer', {'seq': 9, 'text': typed, 'fields': {'password': typed, 'again': typed}}]]
+        )
+
+    def test_the_rules_of_a_pin_or_a_backup_password_are_checked_before_sending(self):
+        pin = {**self.PASSWORD, 'what': 'Dashboard PIN', 'least': 6, 'most': 8, 'digits': True, 'optional': True}
+
+        def tried(first, again, page=pin):
+            fill = {'ask-page-password': first, 'ask-page-again': again}
+            seen = self.page([self.asked('PIN: ', page, secret=True, kind='secret', fill=fill)])
+            return seen['note'], seen['posts']
+
+        self.assertEqual(tried('12ab56', '12ab56')[0], 'Use digits only (0-9).')
+        self.assertEqual(tried('12345', '12345')[0], 'Use at least 6 digits.')
+        self.assertEqual(tried('123456789', '123456789')[0], 'Use at most 8 digits.')
+        self.assertEqual(tried('123456', '123457')[0], 'The two do not match. Type them again.')
+        self.assertEqual(tried('123456', '123456')[1][0][1]['text'], '123456')
+        # Optional: both left empty goes on without one, as Enter does in the terminal.
+        self.assertEqual(
+            tried('', '')[1], [['api/answer', {'seq': 9, 'text': '', 'fields': {'password': '', 'again': ''}}]]
+        )
+        backup = {**self.PASSWORD, 'what': 'Backup password', 'least': 8}
+        self.assertEqual(tried('short', 'short', backup)[0], 'Use at least 8 characters.')
+        self.assertEqual(tried('', '', backup)[0], 'Type it in both fields.')
+        # The first typed in the terminal: the page asks only for the second.
+        again = {**backup, 'asking': 'again'}
+        seen = self.page(
+            [self.asked('Same backup password again: ', again, secret=True, fill={'ask-page-again': 'longer-one'})]
+        )
+        self.assertEqual([row[0] for row in seen['rows']], ['The same again'])
+        self.assertEqual(seen['posts'][0][1]['text'], 'longer-one')
+
+    def test_a_long_list_is_searched_and_picked_from(self):
+        items = [{'label': name} for name in ('1337x', 'Nyaa', 'Radarr list', 'The Pirate Bay', 'YTS')]
+        page = {
+            'form': 'pick',
+            'fields': {'choice': ''},
+            'asking': 'choice',
+            'what': 'Select an indexer',
+            'items': items,
+        }
+        question = 'Select an indexer (number, blank to skip): '
+        seen = self.page([self.asked(question, page, search='ra')])
+        self.assertEqual([row[1] for row in seen['pick']], [item['label'] for item in items])
+        self.assertEqual({row[0] for row in seen['pick']}, {'radio'})  # one of them
+        self.assertEqual(
+            (seen['prompt'], seen['send'], seen['skipHidden']), ('Select an indexer', 'Choose this one', False)
+        )
+        # Nothing ticked: nothing sent.
+        seen = self.page([self.asked(question, page, tick=[])])
+        self.assertEqual((seen['posts'], seen['note']), ([], 'Tick one in the list first, or press Skip for now.'))
+        # The row's number is the answer, as the terminal takes it.
+        seen = self.page([self.asked(question, page, tick=[4])])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '4', 'fields': {'choice': '4'}}]])
+        seen = self.page([self.asked(question, page, skipPage=True)])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '', 'skip': True}]])
+        # Several at once (item 10): tick boxes, a count, and the numbers together.
+        many = {**page, 'multiple': True}
+        seen = self.page([self.asked(question, many, tick=[1, 3, 5])])
+        self.assertEqual({row[0] for row in seen['pick']}, {'checkbox'})
+        self.assertEqual((seen['send'], seen['pickCount']), ('Add the selected ones', '3 selected'))
+        self.assertEqual(seen['posts'][0][1], {'seq': 9, 'text': '1 3 5', 'fields': {'choice': '1 3 5'}})
+
+    def test_the_terminals_numbered_lines_can_be_clicked(self):
+        context = ['Now choose the SSD.', '  1) sdb: 232 GB, Samsung (ext4)', '  2) sdc: 1.8 TB, WD Red (ext4)']
+        seen = self.page([self.asked('Number of the SSD (Enter alone stops setup here): ', context=context, choose=2)])
+        self.assertEqual(
+            [option[:2] for option in seen['options']],
+            [['1', 'sdb: 232 GB, Samsung (ext4)'], ['2', 'sdc: 1.8 TB, WD Red (ext4)']],
+        )
+        self.assertEqual(seen['options'][1][2], 'option picked')
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '2'}]])
+        # Other shapes of a numbered line: " 1. name", "[1] ...", "1 = ...".
+        for lines in (
+            [' 1. Any', ' 2. HD-1080p'],
+            ['[1] generate random login', '[2] enter username/password'],
+            ['1 = NekoServer makes them', '2 = you choose them'],
+        ):
+            seen = self.page([self.asked('Choose a number (blank to skip): ', context=lines)])
+            self.assertEqual([option[0] for option in seen['options']], ['1', '2'], lines)
+        # Not for a question that asks for words, a hidden entry or a yes or no.
+        for text, extra in (
+            ('Type sdb to confirm it is the SSD: ', {}),
+            ('Number: ', {'secret': True}),
+            ('Use number 2? [yes/no]: ', {'kind': 'yesno'}),
+        ):
+            seen = self.page([self.asked(text, context=context, **extra)])
+            self.assertEqual((seen['options'], seen['optionsHidden']), ([], True), text)
+
+    def test_what_enter_alone_keeps_is_shown_in_the_field(self):
+        for text, kept in (
+            ('qBittorrent username [admin]: ', 'admin'),
+            ('When should the daily backups run? (HH:MM, Enter for 04:15): ', '04:15'),
+            ('Which one does NekoServer use? [1/2] (Enter alone: 1): ', '1'),
+        ):
+            seen = self.page([self.asked(text)])
+            self.assertEqual(seen['placeholder'], 'Enter alone keeps: ' + kept, text)
+        for text in ('Listener username: ', 'Does the NAS ask for a CHAP user name and password? [y/N]: '):
+            self.assertEqual(self.page([self.asked(text)])['placeholder'], '', text)
+
     def test_the_pages_rows_go_when_a_plain_question_follows(self):
         # The rows' inputs are `required` and sit in the same form as the plain answer:
         # left behind hidden, they blocked every later Send.
