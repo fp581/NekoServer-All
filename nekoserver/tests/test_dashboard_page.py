@@ -834,7 +834,9 @@ class AskNekoPageTests(unittest.TestCase):
         }
         report = page(('bugReport', entry))[0]
         self.assertIn('NekoServer ', report)
-        self.assertIn('Question: Why did it fail?', report)
+        self.assertIn('Question (passwords and keys removed): Why did it fail?', report)
+        # A cut-off answer (the review of 0.49.0) has no whole report to copy.
+        self.assertIsNone(page(('bugReport', {**entry, 'error': 'the answer was cut off'}))[0])
         self.assertIn('passwords and keys removed', report)
         self.assertIn('<removed> written', report)
         self.assertIn('the retention step removes the newest copy.', report)
@@ -881,6 +883,10 @@ class AskNekoPageTests(unittest.TestCase):
             )
         # A repair runs only from its Approve button, after the server checked it.
         self.assertIn("button('Approve', () => approveRepair(entry)", app)
+        # Review of 0.49.0: a password typed into the question went into the bug report as
+        # typed. The page keeps the server's copy of the question (secrets removed).
+        self.assertIn("entry.question = text(started.question, '(your question)');", app)
+        self.assertIn("'Question (passwords and keys removed): ' + entry.question", app)
         # Review of 0.49.0: an answer cut off part-way looked complete. What came stays,
         # marked as cut off; no bug report is made from it, and no repair is offered.
         entry = app[app.index('function askEntry(entry)') :][:900]

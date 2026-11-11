@@ -1008,7 +1008,10 @@ fn ask(cfg: &Value, data: &Path, status: &Value, model: &str, request: &Value) -
     let excerpt = about
         .map(|(words, log)| assist::redact(&format!("{words}\n{log}"), &known))
         .unwrap_or_default();
+    // The question as the page may keep and copy it: what was typed, with the same
+    // secrets taken out as for the model (a password pasted into it, say).
     json!({"ok": true, "model": model, "threads": assist::threads(data), "messages": messages, "excerpt": excerpt,
+        "question": assist::redact(&question, &known),
         "repairs": repairs.iter().map(|(id, _)| id).collect::<Vec<_>>()})
 }
 /// An approved repair (checked again just before): each one an operation the dashboard
@@ -1630,6 +1633,48 @@ mod tests {
         s.fans.lock().unwrap().controller.inventory.outputs[n]
             .id
             .clone()
+    }
+
+    /// Review of 0.49.0: the question went back to the page as typed, so a password typed
+    /// into it ended up in the bug report people copy and share.
+    #[test]
+    fn the_question_goes_back_to_the_page_with_its_secrets_removed() {
+        let data = std::env::temp_dir().join(format!("neko-ask-question-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&data);
+        fs::create_dir_all(data.join("secrets/accounts")).unwrap();
+        // Planted values, put together here so nothing in this file is shaped like one.
+        let saved = ["Saved", "-app-", "Pw", "-0042"].concat();
+        let key = ["tskey", "-auth-", "kAbCdEf1CNTRL", "-0123456789abcdef"].concat();
+        fs::write(
+            data.join("secrets/accounts/credentials.json"),
+            json!({"apps": {"jellyfin": {"username": "neko-admin", "password": saved}}})
+                .to_string(),
+        )
+        .unwrap();
+        let typed = format!("Jellyfin refuses {saved} and tailscale said {key}: why?");
+        let ready = ask(
+            &json!({}),
+            &data,
+            &json!({"generated_at": common::now()}),
+            "qwen3.5:4b",
+            &json!({"question": typed}),
+        );
+        assert_eq!(ready["ok"], true, "{ready}");
+        let back = ready["question"].as_str().unwrap();
+        assert!(
+            back.starts_with("Jellyfin refuses ") && back.ends_with(": why?"),
+            "{back}"
+        );
+        // Neither value is in the question the page keeps, nor anywhere else in the answer.
+        let whole = ready.to_string();
+        for planted in [&saved, &key] {
+            assert!(!back.contains(planted.as_str()), "{back}");
+            assert!(!whole.contains(planted.as_str()), "{whole}");
+        }
+        // The web service hands it on to the page with the ask's id.
+        let web = include_str!("serve.rs");
+        assert!(web.contains(r#""question": ready["question"]"#));
+        let _ = fs::remove_dir_all(&data);
     }
 
     #[test]

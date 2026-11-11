@@ -882,7 +882,9 @@ fn ask(
         repairs,
         assist::LIMITS,
     ) {
-        Ok(id) => json!({"ok": true, "id": id, "model": model, "excerpt": ready["excerpt"]}),
+        Ok(id) => {
+            json!({"ok": true, "id": id, "model": model, "excerpt": ready["excerpt"], "question": ready["question"]})
+        }
         Err(why) => {
             json!({"ok": false, "error": "E21", "message": format!("{}: {why}", assist::NOT_AVAILABLE)})
         }

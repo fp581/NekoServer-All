@@ -1805,7 +1805,7 @@ function bugReport(entry) {
   }
   return [
     'NekoServer ' + text(state.status?.version, '?'),
-    'Question: ' + entry.question,
+    'Question (passwords and keys removed): ' + entry.question,
     entry.excerpt ? 'What the server showed (passwords and keys removed):\n' + entry.excerpt : '',
     'Neko’s report:\n' + plainWords(entry.answer.slice(at + 'BUG REPORT:'.length).replace(/^[\s*_:]+/, ''))
   ]
@@ -1923,6 +1923,10 @@ async function askNeko(question, item) {
       return;
     }
     entry.excerpt = text(started.excerpt);
+    // From here on the question is the server's copy, with passwords and keys taken out:
+    // what the history shows and what a bug report quotes.
+    entry.question = text(started.question, '(your question)');
+    renderAskLog();
     await followAnswer(entry, text(started.id));
   } finally {
     ASK.busy = false;
