@@ -30,7 +30,7 @@ Automatic usernames use Python secrets.token_hex; automatic passwords contain 32
 
 The installer verifies the exact managed Docker project, expected SSD bind and loopback port before sending account credentials. A first-admin operation is allowed only for a recorded fresh app. Once verified, creation is permanently disabled for that saved record. Existing data causes the console to ask for the current login and only authenticate it; no password reset is attempted. That login is taken as the app has it: names with dots, spaces or a leading digit (`mary.smith`, `Mary Smith`, `1stuser`) and Immich's `admin@localhost` are fine; only control characters, spaces at either end and, for Nextcloud, a `:` or a leading `-` are refused. Logins NekoServer creates still start with a letter and use only letters, digits, `_` and `-`.
 
-The full profile runs account setup before the media connectors. The existing Jellyfin library connector and qBittorrent/Arr connector reuse verified saved credentials rather than asking you to type them again. Provider/indexer choices and credentials are separate prompts. Navidrome clients use the listener account; keep its administrator for management.
+The full profile runs account setup before the media connectors. The existing Jellyfin library connector and qBittorrent/Arr connector reuse verified saved credentials rather than asking you to type them again. Provider/indexer choices and credentials are separate prompts. Your Navidrome login is its administrator on a server set up with 0.50.0 or later; the non-admin listener is then only NekoServer's login for checking the music library. A server set up before keeps the listener on its phones (MUSIC.md, "Your logins").
 
 ## Your credentials file
 
@@ -49,7 +49,7 @@ The text file has a heading for each app/account, its local URL, setup status, u
 sudo python3 /srv/nekoserver/installer/releases/v0.50.0/account-setup.py show
 ```
 
-It lists the saved logins: type a number to show one, Enter to hide it again (the screen is cleared). `show jellyfin` (or `immich`, `seerr`, `nextcloud`, `navidrome_listener`…) goes straight to one. It runs only with sudo and only in a terminal: it refuses to print into a file or another program, so a password never lands in a log. The QR code is drawn by `qrencode`, which gets the password on its input, not its command line (other accounts can read command lines).
+It lists the saved logins: type a number to show one, Enter to hide it again (the screen is cleared). `show jellyfin` (or `immich`, `seerr`, `nextcloud`, `navidrome`…) goes straight to one; for Navidrome's two logins it says which one is yours. It runs only with sudo and only in a terminal: it refuses to print into a file or another program, so a password never lands in a log. The QR code is drawn by `qrencode`, which gets the password on its input, not its command line (other accounts can read command lines).
 
 The whole inventory, every app at once:
 

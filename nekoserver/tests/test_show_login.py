@@ -4,8 +4,10 @@ The phone guide used to send you to  sudo cat .../APP-CREDENTIALS.txt  for every
 to read a 32-letter password and type it on the phone, about five times."""
 
 import importlib.util
+import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -61,6 +63,24 @@ class ShowLoginTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn('account for playing music', text)
         self.assertIn('has not confirmed this login yet', text)
+
+    def test_navidromes_two_logins_say_which_one_is_yours(self):
+        # 0.50.0, item 11. A server set up before: the listener is the phones' login.
+        self.assertIn('not an administrator', setup.SHOW_HINT['navidrome_listener'])
+        self.assertIn('The administrator, for managing Navidrome', setup.SHOW_HINT['navidrome'])
+        # One whose Navidrome logins were made by 0.50.0 or later: the administrator is.
+        with tempfile.TemporaryDirectory() as folder:
+            settings = Path(folder) / 'my-config.json'
+            settings.write_text(json.dumps({'music': {'your_login': 'administrator'}}))
+            with mock.patch.object(setup, 'settings_path', side_effect=Path):
+                hints = setup.show_hints(settings)
+                self.assertIs(setup.show_hints(Path(folder) / 'missing.json'), setup.SHOW_HINT)
+        self.assertEqual(hints['navidrome'], 'Your Navidrome login, on your phone and computer too.')
+        self.assertIn("NekoServer's own login for checking the music library", hints['navidrome_listener'])
+        said = []
+        entry = {'username': 'neko_music', 'password': 'p' * 24, 'state': 'verified'}
+        setup.show_entry('navidrome', entry, lambda _: '', said.append, lambda text: '', hints)
+        self.assertIn('  Your Navidrome login, on your phone and computer too.', said)
 
     def test_never_shown_without_sudo_or_into_a_file(self):
         for kwargs, why in (({'root': False}, 'sudo'), ({'tty': False}, 'only on a screen')):

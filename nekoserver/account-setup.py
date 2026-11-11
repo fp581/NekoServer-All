@@ -13,7 +13,15 @@ import account_store
 import account_setup
 from modules.accounts import finish_pending
 from types import SimpleNamespace
-from neko_common import safe_path, settings_path, verify_storage, checked_settings, default_settings, media_services
+from neko_common import (
+    safe_path,
+    settings_path,
+    verify_storage,
+    checked_settings,
+    default_settings,
+    media_services,
+    navidrome_login,
+)
 from recovery_tools import lock
 
 
@@ -27,11 +35,29 @@ SHOW_WARNING = (
 )
 # Moves to the top, clears the screen and, in most terminals, the lines scrolled out of view too.
 CLEAR_SCREEN = '\033[H\033[2J\033[3J'
-# A word on the one login whose name alone does not say where it goes.
+# A word on Navidrome's two logins, whose names alone do not say which one is yours.
+# A server set up before 0.50.0: the phones play music with the listener.
 SHOW_HINT = {
-    'navidrome_listener': 'Use this one on your phone and computer: it is the account for playing '
-    'music (not the administrator).'
+    'navidrome_listener': 'Phones and computers set up so far use this one: it is the account for playing '
+    'music (not an administrator). Playlists and favourites belong to the login that made them.',
+    'navidrome': 'The administrator, for managing Navidrome. Phones set up so far play music with the other '
+    'Navidrome login, the listener.',
 }
+# A server whose Navidrome logins were made by 0.50.0 or later: the administrator is yours.
+SHOW_HINT_ADMINISTRATOR = {
+    'navidrome': 'Your Navidrome login, on your phone and computer too.',
+    'navidrome_listener': "NekoServer's own login for checking the music library (not an administrator). "
+    'Yours is the Navidrome administrator.',
+}
+
+
+def show_hints(settings):
+    """The hints for this server's Navidrome logins (neko_common.navidrome_login)."""
+    try:
+        config = json.loads(settings_path(settings).read_text())
+    except (OSError, ValueError, RuntimeError):
+        return SHOW_HINT
+    return SHOW_HINT_ADMINISTRATOR if navidrome_login(config) == 'navidrome' else SHOW_HINT
 
 
 def show_refused(screen):
@@ -78,12 +104,12 @@ def terminal_qr(text):
     return result.stdout if result.returncode == 0 else ''
 
 
-def show_entry(app, entry, prompt, output, qr):
+def show_entry(app, entry, prompt, output, qr, hints=SHOW_HINT):
     """One login on the screen until Enter, then the screen is cleared."""
     output(SHOW_WARNING + '\n')
     output(account_store.APPS[app][0])
-    if app in SHOW_HINT:
-        output('  ' + SHOW_HINT[app])
+    if app in hints:
+        output('  ' + hints[app])
     if entry['state'] != 'verified':
         output('  (Setup has not confirmed this login yet: it may not work until setup has finished.)')
     output('  Username: ' + entry['username'])
@@ -103,7 +129,7 @@ def show_entry(app, entry, prompt, output, qr):
         output(CLEAR_SCREEN)
 
 
-def show_menu(logins, prompt, output, qr):
+def show_menu(logins, prompt, output, qr, hints=SHOW_HINT):
     """A numbered list of the saved logins; each number shows one. Enter stops."""
     names = [app for app in account_store.APPS if app in logins]
     while True:
@@ -117,7 +143,7 @@ def show_menu(logins, prompt, output, qr):
         if not answer:
             return
         if answer.isdecimal() and 1 <= int(answer) <= len(names):
-            show_entry(names[int(answer) - 1], logins[names[int(answer) - 1]], prompt, output, qr)
+            show_entry(names[int(answer) - 1], logins[names[int(answer) - 1]], prompt, output, qr, hints)
         else:
             output('Type one of the numbers above, or press Enter to stop.')
 
@@ -144,8 +170,9 @@ def show(settings, app=None, prompt=input, output=print, qr=terminal_qr, screen=
     if not logins:
         output('No app logins are saved yet. Setup makes them at its "App passwords" step:  sudo bash install.sh')
         return 1
+    hints = show_hints(settings)
     if app is None:
-        show_menu(logins, prompt, output, qr)
+        show_menu(logins, prompt, output, qr, hints)
         return 0
     key = app.strip().lower().replace('-', '_')
     if key not in logins:
@@ -157,7 +184,7 @@ def show(settings, app=None, prompt=input, output=print, qr=terminal_qr, screen=
             + '.'
         )
         return 2
-    show_entry(key, logins[key], prompt, output, qr)
+    show_entry(key, logins[key], prompt, output, qr, hints)
     return 0
 
 

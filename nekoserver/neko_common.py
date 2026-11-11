@@ -1363,6 +1363,26 @@ def media_services(config):
     return list(config.get('media', {}).get('services', []))
 
 
+# Which Navidrome login the person is given. Navidrome has two: the administrator, and a
+# "listener" that is not one, which the music check signs in with (a login with the
+# least rights is the safer one to keep a token of). Up to 0.49.0 the person was given
+# the listener for their phone, so in Navidrome alone they were no administrator.
+# - A server whose Navidrome logins are made by 0.50.0 or later: the administrator, as
+#   in every other app ("your_login": "administrator" under "music", written by the
+#   App passwords step). The listener is then NekoServer's own checking account.
+# - A server set up before: the listener stays the one the guides give for phones, as
+#   they are signed in with it and Navidrome keeps playlists and favourites per
+#   account; the guides name both logins. Nothing is switched silently.
+ADMINISTRATOR = 'administrator'
+
+
+def navidrome_login(config):
+    """The saved login (account_store's name) the person signs in to Navidrome with."""
+    music = config.get('music')
+    yours = music.get('your_login') if isinstance(music, dict) else None
+    return 'navidrome' if yours == ADMINISTRATOR else 'navidrome_listener'
+
+
 def media_apps_installed(config):
     """The media apps this server already has, Immich among them: those whose Compose
     file is on the SSD. None on a new server (or before the SSD is mounted)."""

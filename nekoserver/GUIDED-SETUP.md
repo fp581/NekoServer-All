@@ -120,7 +120,7 @@ A few steps ask their questions in the terminal only. The setup window says **An
 - **Connecting the media apps.** Setup may ask which download sources to add. If you don't know what to choose, just press Enter: that skips it. You can add sources later in Prowlarr.
 
 When you run `sudo bash install.sh` again later, setup shows how you answered the optional questions last time (the media apps, the backup times, the download sources, the indexers, the playback test) and asks `Ask these questions again? [yes/no]`. Answer `no` to keep those answers and move on; `yes` asks them again.
-- **Music** (only if the automatic check did not pass). If setup asks for `Listener username:` and a password, type the login of your music account. To see it, open a second terminal (Ctrl+Alt+T) and run the command in [Seeing an app's password](#seeing-an-apps-password) with `show navidrome_listener`.
+- **Music** (only if the automatic check did not pass). If setup asks for `Listener username:` and a password, type the login of Navidrome's listener, the account the music check signs in with (not your own login on a server set up with 0.50.0 or later). To see it, open a second terminal (Ctrl+Alt+T) and run the command in [Seeing an app's password](#seeing-an-apps-password) with `show navidrome_listener`.
 - **The shared-folder password.** This is the password other computers at home use to open the shared folders. Type it, press Enter, then type it again. Nothing appears while you type.
 
 Setup may also ask you to **play something** in Jellyfin as a test. That is optional: answer `yes` once a video played, or press Ctrl+C to skip it.
@@ -201,7 +201,7 @@ Your app passwords are saved on the server, and only the administrator can read 
 sudo python3 /srv/nekoserver/installer/releases/v0.50.0/account-setup.py show
 ```
 
-It lists the saved logins. Type a number to show one. Press Enter to hide it again (the screen is cleared), and press Enter on the list to stop. To go straight to one app, add its name: `show jellyfin`, `show immich`, `show seerr`, `show nextcloud`, or `show navidrome_listener` for music. Check that nobody else can see your screen first.
+It lists the saved logins. Type a number to show one. Press Enter to hide it again (the screen is cleared), and press Enter on the list to stop. To go straight to one app, add its name: `show jellyfin`, `show immich`, `show seerr`, `show nextcloud`, or `show navidrome` for music (on a server set up before 0.50.0 the phones' music login is `show navidrome_listener`; the tool says which is which). Check that nobody else can see your screen first.
 
 ## Doing one part again later
 
