@@ -1,5 +1,6 @@
 """Safe existing-filesystem mounting by explicitly configured UUID; never formats."""
 
+import contextlib
 import json
 import math
 import os
@@ -1100,6 +1101,15 @@ def run(context):
             raise RuntimeError(f'Required tool missing: {tool}')
     # Before the drives: what goes on them depends on it (guided_setup.choose_media_apps).
     choose_media_apps(context)
+    # Every drive question of this step is one page in the setup window (storage_page).
+    with storage_page(context, inventory):
+        place_drives(context, inventory)
+    choose_backup_times(context)
+
+
+def place_drives(context, inventory):
+    """The drives chosen, checked and mounted, then where each app keeps your files and
+    the drive of the weekly offline copy."""
     resolve_storage_identity(context.config, inventory, apply=True, interactive=sys.stdin.isatty(), out_fn=context.log)
     remember_subvolumes(context.config)
     specs = mount_specs(context.config)
@@ -1127,7 +1137,96 @@ def run(context):
     remember_media_apps(context)
     choose_locations(context)
     choose_usb(context)
-    choose_backup_times(context)
+
+
+PAGE_TITLE = 'Where should NekoServer store your apps and files?'
+PAGE_HINT = (
+    'Choose a drive for each line. Setup never formats a drive, and choosing one changes nothing on it. '
+    'A drive that cannot be used for a line says why.'
+)
+# How the page names the drive roles and the places (the terminal's own words are drive_table's).
+PAGE_ROLES = {
+    'data_ssd': 'NekoServer and your apps',
+    'media_hdd': 'Your media and the backups',
+    'usb': 'Offline backup on a removable drive (optional)',
+}
+PAGE_PLACES = {
+    '': 'Let setup choose (the drive for your apps when it is big enough)',
+    'ssd': 'On the drive for your apps (faster)',
+    'media': 'On the drive for your media and the backups',
+}
+SMB_SAID = (
+    'A drive on a network storage box is connected first (the switch on setup\'s first page): as a disk of its '
+    'own (iSCSI) or a shared folder (NFS). Folders shared the Windows way (SMB) are not supported yet.'
+)
+
+
+@contextlib.contextmanager
+def storage_page(context, inventory):
+    """While this is active, the drive questions of this step are one page in the setup
+    window: a line for each role with the drives to choose from (each with why it cannot
+    be that one, when it cannot), a line for where each app keeps your files, and the
+    removable drive of the offline copy. The window sends them together; the terminal is
+    asked line by line. Nothing is shown when nothing is left to ask, or with nobody there."""
+    asked = page_fields(context.config) if sys.stdin.isatty() else {}
+    if not asked:
+        yield
+        return
+    import drive_table
+    import setup_progress
+
+    config = context.config
+    table = drive_table.rows(inventory, config, discover_filesystems(inventory))
+    roles = [
+        {
+            'key': key,
+            'title': PAGE_ROLES[key],
+            'holds': drive_table.holds(config, key),
+            'needs': drive_table.needs(key),
+            'optional': key == 'usb',
+            'rows': drive_table.for_window(table, key, config),
+        }
+        for key in ('data_ssd', 'media_hdd', 'usb')
+        if key in asked
+    ]
+    places = [
+        {
+            'key': what,
+            'title': words[0].upper() + words[1:],
+            'options': [list(option) for option in PAGE_PLACES.items()],
+        }
+        for what, words, _threshold in WHERE
+        if what in asked
+    ]
+    with setup_progress.page(
+        drive_table.STORAGE_PAGE,
+        asked,
+        title=PAGE_TITLE,
+        hint=PAGE_HINT,
+        roles=roles,
+        places=places,
+        names=drive_table.NAMES_CHANGE,
+        network=SMB_SAID,
+    ):
+        yield
+
+
+def page_fields(config):
+    """What the storage page still has to ask on this server, as {field: ''}: a drive role
+    with no drive yet, a kind of files with no place yet, the offline drive not chosen."""
+    storage = config.get('storage', {})
+    asked = {}
+    for key, _label, _short in DRIVES:
+        record = storage.get(key) if isinstance(storage.get(key), dict) else {}
+        if not str(record.get('uuid', '')).strip():
+            asked[key] = ''
+    places = config.get('locations') if isinstance(config.get('locations'), dict) else {}
+    for what, _words, _threshold in WHERE:
+        if asked_where(config, what) and places.get(what) not in DRIVE_WORDS:
+            asked[what] = ''
+    if not config.get('photos', {}).get('external_backup_uuid'):
+        asked['usb'] = ''
+    return asked
 
 
 def save_storage(context):
@@ -1334,9 +1433,12 @@ def choose_locations(context, input_fn=None, interactive=None):
             continue
         if kept:
             chosen[what] = where_kept(context, what, words, kept)
+            import setup_progress
+
+            setup_progress.page_answer(what)  # not a choice here: the files are where they are
         else:
             chosen[what] = new_place(
-                context, what, (words, threshold), (room, on_nas), interactive and (input_fn or input)
+                context, what, (words, threshold), (room, on_nas), interactive and (input_fn or input), key=what
             )
             context.log(f'{words.capitalize()}: on {DRIVE_WORDS[chosen[what]]}')
         changed = True
@@ -1355,7 +1457,7 @@ PHOTOS_ON_MEDIA = (
 )
 
 
-def new_place(context, what, asked, drives, input_fn):
+def new_place(context, what, asked, drives, input_fn, key=None):
     """The drive for `what`, which has no files yet. Asked (`input_fn`, False when no one is
     at the keyboard): the better drive is offered first. Not asked: the better one on a new
     server, and on one set up before 0.46.0 the layout it had, so nothing moves without
@@ -1367,7 +1469,7 @@ def new_place(context, what, asked, drives, input_fn):
     best = recommended(room['ssd'], threshold)
     if not input_fn:
         return LOCATIONS[what][0] if set_up_before(context.config) else best
-    return asked_location(context, words, best, room, on_nas, input_fn)
+    return asked_location(context, words, best, room, on_nas, input_fn, key=key)
 
 
 def where_kept(context, what, words, kept):
@@ -1408,8 +1510,12 @@ def same_place(context, what, words, chosen, kept):
         )
 
 
-def asked_location(context, words, best, room, on_nas, input_fn=None):
-    """The drive for `words`, asked: the better one first, Enter takes it."""
+def asked_location(context, words, best, room, on_nas, input_fn=None, key=None):
+    """The drive for `words`, asked: the better one first, Enter takes it. `key`: its
+    line on the storage page, where the window names the drive itself ("ssd", "media")
+    or leaves it to setup."""
+    import drive_table
+
     # "The most room" only when it has it (seen on the rig: said of a media drive with
     # 24 GB free beside an SSD with 26).
     most = ', the most room' if room['media'] > room['ssd'] else ''
@@ -1422,10 +1528,9 @@ def asked_location(context, words, best, room, on_nas, input_fn=None):
     for n, drive in enumerate(options, 1):
         context.log(f'  {n}) {said[drive]}' + ('  (recommended)' if drive == best else ''))
     for _ in range(3):
-        try:
-            answer = (input_fn or input)('Number (Enter for the recommended one): ').strip()
-        except EOFError:
-            answer = ''
+        answer = drive_table.field(key or 'place', input_fn or input, 'Number (Enter for the recommended one): ')
+        if answer in DRIVE_WORDS:
+            return answer
         if answer in ('', '1', '2'):
             return options[int(answer) - 1] if answer else best
         context.log('Type 1 or 2, or press Enter.')

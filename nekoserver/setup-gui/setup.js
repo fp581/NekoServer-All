@@ -371,20 +371,27 @@
   };
 
   // The drives connected to this PC: one is chosen by clicking it (its number is what the
-  // terminal takes), then confirmed by typing its name, as the terminal asks.
+  // terminal takes). Nothing is typed back: choosing a drive changes nothing on it.
   PAGES.drives = {
     prompt: page => page.what,
     build: buildDrives,
-    values: page => (page.confirm ? inputValues() : pickValues()),
-    problem: (page, values) => {
-      if (page.confirm)
-        return values.confirm.trim() ? '' : 'Type the name shown, ' + page.confirm + ', to be sure of the drive.';
-      return values.choice ? '' : 'Choose a drive in the list first.';
-    },
-    send: page => (page.confirm ? 'Confirm this drive' : 'Use this drive'),
+    values: pickValues,
+    problem: (page, values) => (values.choice ? '' : 'Choose a drive in the list first.'),
+    send: () => 'Use this drive',
     skip: page => page.skippable,
-    note: page =>
-      page.confirm ? 'Nothing on the drive is changed by confirming it. Setup never formats a drive.' : page.names
+    note: page => page.names
+  };
+
+  // Where everything is stored: a line for each role with the drives to choose from, a
+  // line for where each app keeps your files, and the removable drive of the offline copy.
+  PAGES.storage = {
+    prompt: page => page.title,
+    build: buildStorage,
+    values: inputValues,
+    problem: storageProblem,
+    send: () => 'Use these drives',
+    skip: false,
+    note: page => page.names
   };
 
   function pageOf(q) {
@@ -645,8 +652,7 @@
   }
 
   /* One card for each drive: what it is, what is on it, the role it has already, and why
-     it cannot be the one asked for (such a card cannot be chosen). Asked to confirm, the
-     page shows the chosen drive alone, with a field for its name. */
+     it cannot be the one asked for (such a card cannot be chosen). */
   function buildDrives(page) {
     pickInputs = [];
     pageInputs = {};
@@ -654,9 +660,8 @@
     for (const drive of page.rows) {
       const input = el('input', { type: 'radio', name: 'ask-pick', value: String(drive.number) });
       input.disabled = !!drive.why;
-      input.hidden = !!page.confirm;
       // Only the ones that can be chosen are switched off and on again around an answer.
-      if (!drive.why && !page.confirm) pickInputs.push(input);
+      if (!drive.why) pickInputs.push(input);
       const facts = [drive.inside, drive.role, drive.why ? 'Not this one: ' + drive.why : ''].filter(Boolean);
       list.append(
         el(
@@ -669,18 +674,67 @@
       );
     }
     const parts = [page.needs ? el('p', { class: 'drives-needs', text: page.needs }) : null, list];
-    if (page.confirm) {
-      const name = el('input', {
-        type: 'text',
-        id: 'ask-page-confirm',
-        autocomplete: 'off',
-        spellcheck: 'false',
-        'aria-label': 'The name of the drive: ' + page.confirm
-      });
-      pageInputs = { confirm: name };
-      parts.push(row('Type ' + page.confirm, [name], ''));
-    }
     $('ask-page').replaceChildren(...parts.filter(Boolean));
+  }
+
+  /* A list to choose from; an option that cannot be chosen says why and is off. */
+  function chooser(key, label, options, value) {
+    const select = el('select', { id: 'ask-page-' + key, 'aria-label': label });
+    for (const option of options) {
+      const node = el('option', { value: option.value, text: option.text });
+      node.disabled = !!option.off;
+      select.append(node);
+    }
+    select.value = value ?? '';
+    pageInputs[key] = select;
+    return select;
+  }
+
+  /* What the chosen drive holds now, under its line (it changes with the choice). */
+  function driveFacts(role, select, facts) {
+    const drive = role.rows.find(row => String(row.number) === select.value);
+    facts.textContent = drive ? [drive.name, drive.inside].filter(Boolean).join(' · ') : '';
+  }
+
+  /* The storage page: every line is a list to choose from. A drive is named by what it
+     is (its size, kind and model), with its number in the terminal's list; one that
+     cannot have the role is in the list with the reason, and cannot be chosen. */
+  function buildStorage(page) {
+    pickInputs = [];
+    pageInputs = {};
+    const rows = [el('p', { class: 'drives-needs', text: page.hint })];
+    for (const role of page.roles) {
+      const options = role.rows.map(drive => ({
+        value: String(drive.number),
+        text:
+          drive.number + ' · ' + drive.what + (drive.why ? ' (not this one: ' + drive.why.split('. ')[0] + ')' : ''),
+        off: drive.why
+      }));
+      options.unshift({ value: '', text: role.optional ? 'None for now' : 'Choose a drive…' });
+      const select = chooser(role.key, role.title, options, page.fields[role.key]);
+      const facts = el('small', { class: 'drive-facts', id: 'ask-page-' + role.key + '-facts' });
+      select.addEventListener('change', () => driveFacts(role, select, facts));
+      driveFacts(role, select, facts);
+      rows.push(row(role.title, [select], 'For ' + role.holds + '. ' + role.needs), facts);
+    }
+    for (const place of page.places) {
+      const options = place.options.map(([value, text]) => ({ value, text }));
+      rows.push(row(place.title, [chooser(place.key, place.title, options, page.fields[place.key])], ''));
+    }
+    rows.push(el('p', { class: 'drives-needs', text: page.network }));
+    $('ask-page').replaceChildren(el('div', { class: 'storage' }, ...rows));
+  }
+
+  /* A role without a drive, or one drive chosen for two roles, is said before anything is sent. */
+  function storageProblem(page, values) {
+    const chosen = {};
+    for (const role of page.roles) {
+      const value = values[role.key];
+      if (!value && !role.optional) return 'Choose a drive for “' + role.title + '” first.';
+      if (value && chosen[value]) return 'One drive cannot be both “' + chosen[value] + '” and “' + role.title + '”.';
+      if (value) chosen[value] = role.title;
+    }
+    return '';
   }
 
   /* One card for each step: why it stopped, what usually fixes it, and its Retry button

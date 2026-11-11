@@ -148,7 +148,11 @@ const parts = (elements.extras?.children ?? []).filter((card) => card.className 
 const review = { hidden: elements.review?.hidden ?? null, appsHidden: elements['choose-apps']?.hidden ?? null,
   title: elements['review-title']?.textContent ?? '', note: elements['review-note']?.textContent ?? '',
   sections: (elements['review-sections']?.children ?? []).map((part) => [part.children[0].textContent, part.children[1].children.map((li) => li.textContent)]) };
-console.log(JSON.stringify({ posts, parts, review, title: elements['finish-title']?.textContent ?? '', shown,
+const storage = (elements['ask-page']?.children?.[0]?.className === 'storage' ? elements['ask-page'].children[0].children : [])
+  .filter((row) => row.className === 'row').map((row) => { const select = row.children[1].children[0];
+    return { key: select.id.replace('ask-page-', ''), title: row.children[0].textContent,
+      options: select.children.map((option) => [option.value, option.textContent, !!option.disabled]) }; });
+console.log(JSON.stringify({ posts, parts, review, storage, title: elements['finish-title']?.textContent ?? '', shown,
   badge: elements['phase-badge']?.textContent ?? '', label: elements['finish-label']?.textContent ?? '', lines: elements['finish-lines']?.textContent ?? '',
   marks: marks(elements['steps-final']), progressHidden: elements.progress?.hidden ?? null, cards,
   pageHidden: elements['ask-page']?.hidden ?? null, answerHidden: elements['ask-answer']?.hidden ?? null,

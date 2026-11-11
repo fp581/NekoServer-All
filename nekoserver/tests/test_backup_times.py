@@ -667,8 +667,10 @@ class SetupQuestionTests(unittest.TestCase):
             storage.choose_backup_times(other)
             self.assertEqual(asked, [ctx, other])
         source = (ROOT / 'modules/storage.py').read_text()
+        # Asked by the drives step, after the drives (which are one page of their own).
         self.assertLess(
-            source.index('    choose_usb(context)\n    choose_backup_times(context)'), source.index('def save_storage')
+            source.index('        place_drives(context, inventory)\n    choose_backup_times(context)'),
+            source.index('def save_storage'),
         )
 
 

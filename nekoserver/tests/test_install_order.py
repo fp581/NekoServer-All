@@ -107,7 +107,7 @@ class DrivePickingTests(unittest.TestCase):
 
     def test_desktop_mounted_drive_can_be_chosen_by_its_name(self):
         config = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media'}
-        answers = iter(['2', 'sdb1', '3', '/dev/sdc1'])  # 1 is the disk Linux runs from
+        answers = iter(['2', '3'])  # 1 is the disk Linux runs from
         out = []
         storage.resolve_storage_identity(
             config, self.INVENTORY, apply=True, interactive=True, input_fn=lambda q='': next(answers), out_fn=out.append
@@ -116,10 +116,10 @@ class DrivePickingTests(unittest.TestCase):
         self.assertEqual(config['storage']['media_hdd']['uuid'], 'hdd-uuid-0001')
         self.assertFalse(any('1TB' in line or '12TB' in line for line in out))
 
-    def test_wrong_confirmation_is_refused(self):
+    def test_three_wrong_numbers_stop_with_nothing_chosen(self):
         config = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media'}
-        answers = iter(['2', 'sdc1', 'sdc1', 'sdc1'])  # another drive's name, three times
-        with self.assertRaisesRegex(RuntimeError, 'was not typed back'):
+        answers = iter(['9', 'sdb1', '0'])  # no such row, a name instead of its number, no such row
+        with self.assertRaisesRegex(RuntimeError, 'No drive was chosen for the app SSD'):
             storage.resolve_storage_identity(
                 config,
                 self.INVENTORY,
@@ -132,14 +132,15 @@ class DrivePickingTests(unittest.TestCase):
 
     def test_a_typo_is_asked_again(self):
         config = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media'}
-        answers = iter(['9', '2', 'sbd1', 'sdb1', 'x', '3', 'sdc1'])
+        answers = iter(['9', '2', 'x', '3'])
         out = []
         storage.resolve_storage_identity(
             config, self.INVENTORY, apply=True, interactive=True, input_fn=lambda q='': next(answers), out_fn=out.append
         )
         self.assertEqual(config['storage']['data_ssd']['uuid'], 'ssd-uuid-0001')
         self.assertEqual(config['storage']['media_hdd']['uuid'], 'hdd-uuid-0001')
-        self.assertIn('That is not sdb1. Type sdb1 exactly as shown, to be sure of the drive.', out)
+        self.assertEqual(out.count('Type a number from 1 to 3, as the list shows them.'), 2)
+        self.assertFalse([line for line in out if 'to confirm' in line or 'typed back' in line])
 
     def test_nothing_eligible_says_why_drive_by_drive(self):
         inventory = {
@@ -2136,11 +2137,7 @@ class StoppedStepMessageTests(unittest.TestCase):
 
     def test_a_drive_question_left_unanswered_says_what_to_do(self):
         import drive_table
-        from neko_common import confirmed
 
-        drive = {'name': 'sdc', 'uuid': 'u1', 'fstype': 'ext4', 'size': '32G'}
-        with self.assertRaisesRegex(RuntimeError, 'sdc was not typed back.*sudo bash install.sh  again'):
-            confirmed(drive, 'the USB backup drive', lambda q='': 'sdx', lambda s: None)
         config = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media'}
         table = drive_table.rows(DrivePickingTests.INVENTORY, config)
         with self.assertRaisesRegex(RuntimeError, 'No drive was chosen for the app SSD. Run  sudo bash install.sh'):

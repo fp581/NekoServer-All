@@ -1,5 +1,5 @@
 """0.50.0, item 5: everything connected to the PC is shown before the first drive question;
-each role is chosen by a row's number and confirmed by typing the drive's name; and every
+each role is chosen by a row's number, with nothing typed back; and every
 later message names the drive as the list did, never by its Linux name alone.
 
 The words are held by a golden file (tests/golden/drive-questions.txt): the whole
@@ -245,7 +245,7 @@ class QuestionTests(DriveListCase):
         return config
 
     def test_the_whole_conversation_is_the_golden_text(self):
-        talk = Conversation(['1', '5', '2', 'sdb1', 'sda1', '2', '3', 'sdb1', '9', '4', 'sdc1'])
+        talk = Conversation(['1', '5', '2', '2', '3', '9', '4'])
         talk.heading('A first run: the list, then the app SSD, the media HDD and the USB backup drive')
         config = self.first_run(talk)
         photo_backup.select_external(config, INVENTORY, talk.ask, talk.out)
@@ -267,7 +267,7 @@ class QuestionTests(DriveListCase):
         self.assertEqual(said, kept, 'the drive questions changed:\n' + diff)
 
     def test_every_message_names_the_drive_as_the_list_did(self):
-        talk = Conversation(['5', '2', 'sda1', '3', 'sdb1'])
+        talk = Conversation(['5', '2', '3'])
         config = self.first_run(talk)
         said = [line for line in talk.lines if 'drive 2' in line.lower() or 'drive 5' in line.lower()]
         self.assertIn(
@@ -275,9 +275,13 @@ class QuestionTests(DriveListCase):
             'the app SSD needs a drive of at least 22 GB (20 GB free once formatted). Choose another one from the list.',
             said,
         )
+        # The choice is said back in words; no name is typed (choosing changes nothing on a drive).
         self.assertIn(
-            'Type sda1 to confirm it is the app SSD (drive 2: 466 GB SSD, Samsung SSD 870, named "apps"): [sda1]', said
+            'Drive 2 (sda1: 466 GB SSD, Samsung SSD 870, named "apps") is the app SSD. '
+            'Nothing on it is changed by choosing it.',
+            said,
         )
+        self.assertFalse([line for line in talk.lines if 'to confirm' in line])
         # A rerun: the saved choice with its number, its description and its UUID.
         rerun = Conversation([])
         storage.resolve_storage_identity(config, INVENTORY, True, True, rerun.ask, rerun.out)
@@ -324,13 +328,13 @@ class QuestionTests(DriveListCase):
 
 class WindowFormTests(DriveListCase):
     """The setup window gets the same list as a page: a card for each drive, chosen by
-    clicking (its number is the answer), then the same confirmation."""
+    clicking (its number is the answer); nothing is typed back."""
 
-    def test_the_question_and_the_confirmation_are_pages_of_the_same_list(self):
-        talk = Conversation(['2', 'sda1', '3', 'sdb1'])
+    def test_each_question_is_a_page_of_the_same_list_and_nothing_is_typed_back(self):
+        talk = Conversation(['2', '3'])
         config = dict(FOLDERS)
         storage.resolve_storage_identity(config, INVENTORY, True, True, talk.ask, talk.out)
-        choose, confirm = talk.pages[0], talk.pages[1]
+        choose = talk.pages[0]
         self.assertEqual((choose['form'], choose['asking'], choose['skippable']), ('drives', 'choice', False))
         self.assertEqual(choose['what'], 'Choose the drive for your apps, photos and music (the app SSD).')
         self.assertTrue(choose['needs'].startswith('It needs at least 20 GB free'))
@@ -348,12 +352,10 @@ class WindowFormTests(DriveListCase):
             },
         )
         self.assertEqual(choose['rows'][0]['why'], drive_table.SYSTEM_DISK)
-        # The confirmation shows the chosen drive alone and asks for its name.
-        self.assertEqual((confirm['form'], confirm['asking'], confirm['confirm']), ('drives', 'confirm', 'sda1'))
-        self.assertEqual(confirm['what'], 'Type sda1 to confirm that this drive is the app SSD.')
-        self.assertEqual([row['number'] for row in confirm['rows']], [2])
+        self.assertEqual(len(talk.pages), 2)  # two questions, no confirmation between them
+        self.assertNotIn('confirm', choose)
         # The media HDD's page: the drive just chosen says its role and cannot be chosen.
-        second = talk.pages[2]['rows'][1]
+        second = talk.pages[1]['rows'][1]
         self.assertEqual((second['role'], second['why']), ('Chosen as the app SSD', 'it is already the app SSD'))
 
     def test_the_usb_drive_page_can_be_skipped(self):
@@ -362,6 +364,89 @@ class WindowFormTests(DriveListCase):
         photo_backup.select_external(config, INVENTORY, talk.ask, talk.out)
         self.assertTrue(talk.pages[0]['skippable'])
         self.assertEqual(talk.pages[0]['needs'], '')
+
+
+class StoragePageTests(DriveListCase):
+    """0.50.0, the wizard (P02): the drives step's questions are one page in the window."""
+
+    def context(self, **more):
+        config = {**FOLDERS, 'photos': {'deploy_immich': True}, **more}
+        return SimpleNamespace(config=config, log=lambda line: None)
+
+    def test_the_page_asks_only_what_has_no_answer_yet(self):
+        new = self.context().config
+        self.assertEqual(list(storage.page_fields(new)), ['data_ssd', 'media_hdd', 'photos', 'music', 'cloud', 'usb'])
+        # A kind of files this server does not keep has no line; a saved answer is not asked again.
+        partly = {
+            **new,
+            'media_apps': {'photos': False},
+            'storage': {'data_ssd': {'uuid': 'ssd-0001', 'fstype': 'ext4'}},
+            'locations': {'music': 'ssd'},
+        }
+        self.assertEqual(list(storage.page_fields(partly)), ['media_hdd', 'cloud', 'usb'])
+        done = {
+            **partly,
+            'storage': {**partly['storage'], 'media_hdd': {'uuid': 'hdd-0001', 'fstype': 'ext4'}},
+            'locations': {'music': 'ssd', 'cloud': 'media'},
+            'photos': {'external_backup_uuid': 'USB0-0001'},
+        }
+        self.assertEqual(storage.page_fields(done), {})
+        # Nothing to ask, or nobody there: no page.
+        for config, at_terminal in ((done, True), (new, False)):
+            with mock.patch('sys.stdin.isatty', return_value=at_terminal):
+                with storage.storage_page(SimpleNamespace(config=config), INVENTORY):
+                    self.assertIsNone(setup_progress.page_shown())
+
+    def test_every_line_is_on_the_page_and_the_windows_answers_are_not_asked_again(self):
+        ctx = self.context()
+        never = mock.Mock(side_effect=AssertionError('asked in the terminal'))
+        said = []
+        with mock.patch('sys.stdin.isatty', return_value=True), storage.storage_page(ctx, INVENTORY):
+            page = setup_progress.page_shown()
+            self.assertEqual((page['form'], page['title']), ('storage', storage.PAGE_TITLE))
+            self.assertEqual(
+                [(role['key'], role['title'], role['optional']) for role in page['roles']],
+                [
+                    ('data_ssd', 'NekoServer and your apps', False),
+                    ('media_hdd', 'Your media and the backups', False),
+                    ('usb', 'Offline backup on a removable drive (optional)', True),
+                ],
+            )
+            # Each role's drives with why one cannot be it: the capacity is said in numbers.
+            ssd = page['roles'][0]
+            self.assertTrue(ssd['needs'].startswith('It needs at least 20 GB free, so a drive of 22 GB or more'))
+            self.assertIn('it is too small: the app SSD needs a drive of at least 22 GB', ssd['rows'][4]['why'])
+            self.assertEqual(ssd['rows'][1]['why'], '')
+            self.assertEqual([place['key'] for place in page['places']], ['photos', 'music', 'cloud'])
+            self.assertEqual([option[0] for option in page['places'][0]['options']], ['', 'ssd', 'media'])
+            self.assertIn('SMB) are not supported yet', page['network'])
+            # The window sends every line with the first question's answer.
+            setup_progress._page['answers'].update({'data_ssd': '2', 'media_hdd': '3', 'usb': '4', 'photos': 'media'})
+            storage.resolve_storage_identity(ctx.config, INVENTORY, True, True, never, said.append)
+            self.assertEqual(ctx.config['storage']['data_ssd'], {'uuid': 'ssd-0001', 'fstype': 'ext4'})
+            self.assertEqual(ctx.config['storage']['media_hdd'], {'uuid': 'hdd-0001', 'fstype': 'ext4'})
+            # A place named by the window is taken as it is ("media"), with no number typed.
+            room = {'ssd': 400, 'media': 900}
+            self.assertEqual(
+                storage.asked_location(ctx, "Immich's photos", 'ssd', room, False, never, key='photos'), 'media'
+            )
+            photo_backup.select_external(ctx.config, INVENTORY, never, said.append)
+            self.assertEqual(ctx.config['photos']['external_backup_uuid'], 'USB0-0001')
+        self.assertIsNone(setup_progress.page_shown())
+        self.assertIn(
+            'Drive 2 (sda1: 466 GB SSD, Samsung SSD 870, named "apps") is the app SSD. '
+            'Nothing on it is changed by choosing it.',
+            said,
+        )
+
+    def test_nothing_asks_for_a_drives_name_any_more(self):
+        import neko_common
+
+        self.assertFalse(hasattr(neko_common, 'confirmed'))
+        self.assertFalse(hasattr(drive_table, 'confirm'))
+        for name in ('drive_table.py', 'neko_common.py', 'modules/storage.py', 'modules/photo_backup.py'):
+            self.assertNotIn('to confirm it is', (ROOT / name).read_text(), name)
+        self.assertNotIn('page.confirm', (ROOT / 'setup-gui/setup.js').read_text())
 
 
 if __name__ == '__main__':

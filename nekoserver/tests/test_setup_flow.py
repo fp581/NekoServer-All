@@ -616,7 +616,7 @@ class SetupWindowTests(unittest.TestCase):
         },
     ]  # fmt: skip
 
-    def test_the_drives_are_cards_chosen_by_clicking_then_confirmed_by_name(self):
+    def test_the_drives_are_cards_chosen_by_clicking(self):
         """0.50.0, item 5: the drive questions were the terminal's numbered lines only."""
         names = 'The short names (sdb1) are Linux\'s own and can change at the next start.'
         page = {
@@ -660,20 +660,61 @@ class SetupWindowTests(unittest.TestCase):
         # The USB backup drive may be left for later.
         seen = self.page([self.asked(question, {**page, 'skippable': True}, skipPage=True)])
         self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '', 'skip': True}]])
-        # The confirmation: the chosen drive alone, and its name to type.
-        confirm = {
-            'form': 'drives', 'fields': {'confirm': ''}, 'asking': 'confirm', 'rows': [self.DRIVES[1]],
-            'confirm': 'sda1', 'skippable': False, 'needs': '', 'names': '',
-            'what': 'Type sda1 to confirm that this drive is the app SSD.',
+
+    def test_the_storage_page_has_a_list_for_every_line_and_sends_them_together(self):
+        """0.50.0, the wizard (P02): every drive question on one page; a drive is chosen
+        in a list, no name is typed, and a drive that cannot have a role says why."""
+        places = [['', 'Let setup choose'], ['ssd', 'On the drive for your apps (faster)'], ['media', 'On the other']]
+        page = {
+            'form': 'storage', 'asking': 'data_ssd',
+            'fields': {'data_ssd': '', 'media_hdd': '', 'usb': '', 'photos': ''},
+            'title': 'Where should NekoServer store your apps and files?', 'hint': 'Choose a drive for each line.',
+            'roles': [
+                {'key': 'data_ssd', 'title': 'NekoServer and your apps', 'holds': 'your apps', 'needs': 'It needs 20 GB.',
+                 'optional': False, 'rows': self.DRIVES},
+                {'key': 'media_hdd', 'title': 'Your media and the backups', 'holds': 'your films', 'needs': '',
+                 'optional': False, 'rows': [{**self.DRIVES[0]}, {**self.DRIVES[1]}, {**self.DRIVES[2], 'why': ''}]},
+                {'key': 'usb', 'title': 'Offline backup', 'holds': 'the weekly copy', 'needs': '', 'optional': True,
+                 'rows': []},
+            ],
+            'places': [{'key': 'photos', 'title': "Immich's photos and videos", 'options': places}],
+            'names': 'The short names are Linux\'s own.', 'network': 'SMB is not supported yet.',
         }  # fmt: skip
-        asks = 'Type sda1 to confirm it is the app SSD (drive 2: 466 GB SSD, Samsung SSD 870, named "apps"): '
-        seen = self.page([self.asked(asks, confirm)])
-        self.assertEqual((seen['prompt'], seen['send']), (confirm['what'], 'Confirm this drive'))
-        self.assertEqual([(card['name'][:8], card['radioHidden']) for card in seen['drives']], [('2 · sda1', True)])
-        seen = self.page([self.asked(asks, confirm, leave=True)])
-        self.assertEqual((seen['posts'], seen['note']), ([], 'Type the name shown, sda1, to be sure of the drive.'))
-        seen = self.page([self.asked(asks, confirm, fill={'ask-page-confirm': 'sda1'})])
-        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': 'sda1', 'fields': {'confirm': 'sda1'}}]])
+        question = 'Number of the drive for your apps (the app SSD) (Enter alone stops setup here): '
+        seen = self.page([self.asked(question, page)])
+        self.assertEqual((seen['prompt'], seen['send']), (page['title'], 'Use these drives'))
+        self.assertEqual(seen['skipHidden'], True)
+        lists = seen['storage']
+        self.assertEqual([row['key'] for row in lists], ['data_ssd', 'media_hdd', 'usb', 'photos'])
+        self.assertEqual(
+            lists[0]['options'],
+            [
+                ['', 'Choose a drive…', False],
+                ['1', '1 · 477 GB NVMe SSD, WD SN770 (not this one: it is the disk Linux runs from, which '
+                 'NekoServer never uses for your files)', True],
+                ['2', '2 · 466 GB SSD, Samsung SSD 870, named "apps"', False],
+                ['3', '3 · 1.8 TB HDD, WDC WD20EZRZ, named "media" (not this one: it is already the media HDD)', True],
+            ],
+        )  # fmt: skip
+        self.assertEqual(lists[2]['options'], [['', 'None for now', False]])  # the offline copy can wait
+        self.assertEqual([option[0] for option in lists[3]['options']], ['', 'ssd', 'media'])
+        # Nothing chosen for a line that needs a drive: said, not sent.
+        seen = self.page([self.asked(question, page, leave=True)])
+        self.assertEqual((seen['posts'], seen['note']), ([], 'Choose a drive for “NekoServer and your apps” first.'))
+        # One drive for two lines: said, not sent.
+        both = {'ask-page-data_ssd': '2', 'ask-page-media_hdd': '2'}
+        seen = self.page([self.asked(question, page, fill=both)])
+        self.assertEqual(
+            (seen['posts'], seen['note']),
+            ([], 'One drive cannot be both “NekoServer and your apps” and “Your media and the backups”.'),
+        )
+        # Chosen: every line goes in one answer, the asked one as the terminal takes it.
+        chosen = {'ask-page-data_ssd': '2', 'ask-page-media_hdd': '3', 'ask-page-photos': 'ssd'}
+        seen = self.page([self.asked(question, page, fill=chosen)])
+        self.assertEqual(
+            seen['posts'],
+            [['api/answer', {'seq': 9, 'text': '2', 'fields': {'data_ssd': '2', 'media_hdd': '3', 'usb': '', 'photos': 'ssd'}}]],
+        )  # fmt: skip
 
     PART = {
         'form': 'part', 'fields': {'answer': '', 'done': ''}, 'asking': 'answer', 'title': 'Set up your phone',

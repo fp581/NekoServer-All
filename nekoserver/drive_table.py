@@ -2,7 +2,7 @@
 
 One table serves every drive question. The terminal prints it and the setup window
 draws it; each role (the app SSD, the media HDD, the USB backup drive) is chosen by a
-row's number and confirmed by typing the drive's name. A row says what the drive is in
+row's number (nothing is typed back: choosing formats nothing). A row says what the drive is in
 plain words, and every later message names the drive the same way, with the number it
 had: never by its Linux name alone, since sdb can be sdc at the next start. NekoServer
 itself remembers a drive by its UUID, which the table shows and nobody has to type.
@@ -11,13 +11,14 @@ Nothing here changes a drive. It reads the list lsblk gave (modules/storage.inve
 and looks at how full a drive is.
 """
 
+import contextlib
 import os
 import re
 import shutil
 import subprocess
 
 import setup_progress
-from neko_common import confirmed, media_apps_wanted, typed
+from neko_common import media_apps_wanted, typed
 
 # The roles a drive can have: (what setup calls it, what goes on it, the same with the
 # media apps left out).
@@ -520,12 +521,33 @@ def numbered(table, answer):
     return table[int(answer) - 1] if answer.isdigit() and 1 <= int(answer) <= len(table) else None
 
 
+STORAGE_PAGE = 'storage'  # the page every drive question of the drives step is on (modules/storage.py)
+
+
+def field(key, input_fn, prompt):
+    """One answer of a page: what the setup window sent for it with an earlier question
+    of the page, else the question itself, asked in the terminal and in the window.
+    Ctrl+D, and the window's Skip, are an empty answer."""
+    sent = setup_progress.page_answer(key)
+    if sent is not None:
+        return '' if sent[0] == 'skip' else sent[1].strip()
+    setup_progress.page_asks(key)
+    answer = typed(input_fn, prompt)
+    setup_progress.page_answer(key)  # the window sends every field: this one's copy is not asked for twice
+    return answer
+
+
 def ask(table, key, config, input_fn=input, out_fn=print, attempts=3, skippable=False):
-    """The drive for the role `key`, chosen by its number in the list and confirmed by
-    typing its name. A drive that cannot have the role is refused at once with the
-    reason, and another asked for, before anything is mounted or saved. Enter alone (or
-    Ctrl+D) stops: None when the choice may be left for later (`skippable`), otherwise
-    an error that says to run setup again."""
+    """The drive for the role `key`, chosen by its number in the list. Nothing is typed
+    back: choosing a drive formats nothing and changes nothing on it, and the choice is
+    said in words before anything is mounted. A drive that cannot have the role is
+    refused at once with the reason, and another asked for. Enter alone (or Ctrl+D)
+    stops: None when the choice may be left for later (`skippable`), otherwise an error
+    that says to run setup again.
+
+    On the storage page (modules/storage.py) the window shows every role at once and
+    sends them together; asked alone (the weekly backup step), the role is a page of
+    its own."""
     what = asked_for(config, key)
     for line in listed(table, key, config):
         out_fn(line)
@@ -533,20 +555,25 @@ def ask(table, key, config, input_fn=input, out_fn=print, attempts=3, skippable=
     stopped = (
         f'No drive was chosen for {role(key)}. Run  sudo bash install.sh  again to choose it; nothing was changed.'
     )
-    page = setup_progress.page(
-        'drives',
-        {'choice': ''},
-        what=f'Choose {what}.',
-        needs=needs(key),
-        rows=for_window(table, key, config),
-        skippable=skippable,
-        names=NAMES_CHANGE,
+    shown = setup_progress.page_shown()
+    on_storage_page = bool(shown) and shown.get('form') == STORAGE_PAGE
+    name = key if on_storage_page else 'choice'
+    page = (
+        contextlib.nullcontext()
+        if on_storage_page
+        else setup_progress.page(
+            'drives',
+            {'choice': ''},
+            what=f'Choose {what}.',
+            needs=needs(key),
+            rows=for_window(table, key, config),
+            skippable=skippable,
+            names=NAMES_CHANGE,
+        )
     )
-    chosen = None
     with page:
-        setup_progress.page_asks('choice')
         for _ in range(attempts):
-            answer = typed(input_fn, f'Number of {what} ({leave}): ')
+            answer = field(name, input_fn, f'Number of {what} ({leave}): ')
             if not answer:
                 if skippable:
                     return None
@@ -557,34 +584,12 @@ def ask(table, key, config, input_fn=input, out_fn=print, attempts=3, skippable=
                 continue
             why = verdict(row, key, config)
             if not why:
-                chosen = row
-                break
+                chosen = said({'said': brief(row)}, first=True)
+                out_fn(f'{chosen} is {role(key)}. Nothing on it is changed by choosing it.')
+                return row
             refused = said({'said': brief(row)}, first=True)
             out_fn(f'{refused} cannot be {role(key)}: {why}. Choose another one from the list.')
-    if chosen is None:
-        raise RuntimeError(stopped)
-    return confirm(chosen, key, config, input_fn, out_fn, attempts)
-
-
-def confirm(row, key, config, input_fn=input, out_fn=print, attempts=3):
-    """The row, once the drive's name is typed back (the window shows the drive again and
-    asks for the same)."""
-    label = f"{role(key)} (drive {row['number']}: {words(row)})"
-    page = setup_progress.page(
-        'drives',
-        {'confirm': ''},
-        what=f"Type {row['name']} to confirm that this drive is {role(key)}.",
-        needs='',
-        rows=[{**line, 'why': ''} for line in for_window([row], key, config)],
-        confirm=row['name'],
-        skippable=False,
-        names='',
-    )
-    device = row['backup'] if key == 'usb' else row['device']
-    with page:
-        setup_progress.page_asks('confirm')
-        confirmed(device, label, input_fn, out_fn, attempts)
-    return row
+    raise RuntimeError(stopped)
 
 
 def last_time(row, key):

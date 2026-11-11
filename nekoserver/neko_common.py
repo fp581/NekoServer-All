@@ -301,22 +301,6 @@ def typed(input_fn, question):
         return ''
 
 
-def confirmed(device, label, input_fn, out_fn, attempts=3):
-    """The drive, once its name is typed back (a typo is asked again)."""
-    for _ in range(attempts):
-        if input_fn(f"Type {device['name']} to confirm it is {label}: ").strip() in (
-            device['name'],
-            '/dev/' + device['name'],
-            device['uuid'],
-        ):
-            return device
-        out_fn(f"That is not {device['name']}. Type {device['name']} exactly as shown, to be sure of the drive.")
-    raise RuntimeError(
-        f"{device['name']} was not typed back, so it was not used for {label}. Run  sudo bash install.sh  again "
-        "and type the drive's name as shown; nothing was changed."
-    )
-
-
 def nas_disk_wwn(saved, seen, label, choose):
     """The WWN to keep for a drive on a NAS disk (iSCSI), as the runtime checks it
     (backup.rs other_nas_disk): the NAS disk setup chose, never a restored or copied LUN

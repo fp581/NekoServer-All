@@ -710,7 +710,7 @@ main > section {
 .small {
   font-size: 12.5px;
   margin: 0;
-  min-height: 1.4em;
+  min-height: 1.3em;
 }
 /* the terminal's numbered lines as buttons: click one instead of typing its number */
 .options {
@@ -911,6 +911,38 @@ main > section {
   border-color: var(--purple);
   outline: none;
   box-shadow: 0 0 0 3px var(--purple-soft);
+}
+/* The storage page: each line is its title, then a list as wide as the page, then what
+   the line needs; long words wrap instead of widening the page. */
+.storage {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.storage .row {
+  grid-template-columns: minmax(0, 1fr);
+}
+.storage .row-inputs {
+  min-width: 0;
+}
+.storage .row select {
+  width: 100%;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+.storage .row small,
+.storage .drives-needs {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+/* What the chosen drive holds, under its line: the line is kept when it is empty, so
+   choosing a drive moves nothing. */
+.drive-facts {
+  display: block;
+  min-height: 1.3em;
+  margin: -6px 0 0;
+  font-size: 12px;
+  color: var(--muted);
 }
 .row small {
   grid-column: 1 / -1;

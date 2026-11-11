@@ -12,8 +12,6 @@ account_store.py
 backup_secrets.py
     Backup password:
     Same backup password again:
-drive_table.py
-    Number of {what} ({leave}):
 gateway_tools.py
     access_checked
 guided_setup.py
@@ -50,8 +48,6 @@ modules/tv.py
 music-setup.py
     Listener username:
     Listener password (never saved as plaintext):
-neko_common.py
-    Type {device['name']} to confirm it is {label}:
 recovery_wizard.py
     Choose a number:
     Type a full path for a NEW folder (or press Enter to go back):

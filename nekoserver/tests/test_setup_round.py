@@ -748,7 +748,9 @@ class DriveSizeTests(unittest.TestCase):
             'Number of the drive for your apps, photos and music (the app SSD) (Enter alone stops setup here): ', out
         )
         self.assertIn(
-            'Type sdc1 to confirm it is the app SSD (drive 4: 466 GB drive, Samsung SSD 870, named "Fast"): ', out
+            'Drive 4 (sdc1: 466 GB drive, Samsung SSD 870, named "Fast") is the app SSD. '
+            'Nothing on it is changed by choosing it.',
+            out,
         )
         self.assertTrue(
             any(line.startswith('Now choose the drive for your movies') and '50 GB' in line for line in out)
