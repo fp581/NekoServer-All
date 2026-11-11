@@ -530,7 +530,7 @@ def fetch_model(base, model, log, run=checked_run):
     listed = run([*base, 'exec', '-T', 'ollama', 'ollama', 'list'], 60, f'{TITLE} (ollama list)').stdout
     for line in listed.splitlines():
         fields = line.split()
-        if fields[:1] == [model]:
+        if fields and tagged(fields[0]) == tagged(model):
             return 'ready', fields[1] if len(fields) > 1 else None
     run([*base, 'exec', '-d', '-T', 'ollama', 'ollama', 'pull', model], 60, f'{TITLE} (ollama pull)')
     log(

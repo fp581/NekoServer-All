@@ -133,5 +133,36 @@ class ModelSpaceTests(unittest.TestCase):
             self.assertTrue(assistant.downloaded(config, 'qwen3.5:4b'))
 
 
+class UntaggedModelTests(unittest.TestCase):
+    """Finding 9: "qwen3.5" did not match the cached "qwen3.5:latest", so every setup
+    run downloaded the model again."""
+
+    LISTED = 'NAME             ID    SIZE\nqwen3.5:latest   abc   6.6 GB\n'
+
+    def test_a_name_without_a_tag_is_its_latest(self):
+        ran = []
+
+        def run(argv, timeout, what):
+            ran.append(argv)
+            return SimpleNamespace(stdout=self.LISTED)
+
+        self.assertEqual(assistant.fetch_model(['docker'], 'qwen3.5', print, run), ('ready', 'abc'))
+        self.assertEqual(assistant.fetch_model(['docker'], 'qwen3.5:latest', print, run), ('ready', 'abc'))
+        self.assertEqual(len(ran), 2, 'listed twice, pulled never')
+        # Another tag of the same model is another model.
+        self.assertEqual(assistant.fetch_model(['docker'], 'qwen3.5:8b', lambda s: None, run)[0], 'downloading')
+
+    def test_the_space_check_knows_it_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = set_up_with(tmp, 'qwen3.5')  # kept by Ollama as qwen3.5:latest
+            self.assertTrue(assistant.downloaded(config, 'qwen3.5'))
+            self.assertTrue(assistant.downloaded(config, 'qwen3.5:latest'))
+            assistant.check_space(config, 'qwen3.5', 6.6, free(11))
+
+    def test_a_port_in_the_address_is_not_a_tag(self):
+        self.assertEqual(assistant.tagged('nas.lan:5000/me/model'), 'nas.lan:5000/me/model:latest')
+        self.assertEqual(assistant.tagged('me/model:q4'), 'me/model:q4')
+
+
 if __name__ == '__main__':
     unittest.main()
