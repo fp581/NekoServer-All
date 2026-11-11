@@ -1139,6 +1139,8 @@ def place_drives(context, inventory):
     choose_usb(context)
 
 
+# false under "photos": no removable drive for the weekly offline copy, by choice (the storage page).
+OFFLINE_WANTED = 'external_backup_wanted'
 PAGE_TITLE = 'Where should NekoServer store your apps and files?'
 PAGE_HINT = (
     'Choose a drive for each line. Setup never formats a drive, and choosing one changes nothing on it. '
@@ -1224,7 +1226,8 @@ def page_fields(config):
     for what, _words, _threshold in WHERE:
         if asked_where(config, what) and places.get(what) not in DRIVE_WORDS:
             asked[what] = ''
-    if not config.get('photos', {}).get('external_backup_uuid'):
+    photos = config.get('photos', {})
+    if not photos.get('external_backup_uuid') and photos.get(OFFLINE_WANTED) is not False:
         asked['usb'] = ''
     return asked
 
@@ -1540,7 +1543,7 @@ def asked_location(context, words, best, room, on_nas, input_fn=None, key=None):
 def choose_usb(context):
     """Pick the USB backup drive with the other drives, so the space check covers it."""
     photos = context.config.setdefault('photos', {})
-    if photos.get('external_backup_uuid') or not sys.stdin.isatty():
+    if photos.get('external_backup_uuid') or not sys.stdin.isatty() or photos.get(OFFLINE_WANTED) is False:
         return
     from modules.photo_backup import select_external
 
@@ -1551,8 +1554,12 @@ def choose_usb(context):
         context.log(f'USB backup drive not chosen yet ({exc}); you will be asked again at the weekly backup step')
         return
     if chosen is None:
-        context.log('USB backup drive skipped for now; you will be asked again at the weekly backup step')
-        return
+        # "None for now" is an answer: the weekly copy is left out, and nothing asks again.
+        photos[OFFLINE_WANTED] = False
+        context.log(
+            'Offline backup: none, as you chose. The weekly copy to a removable drive is left out. To add one '
+            f'later, take "{OFFLINE_WANTED}" out of "photos" in my-config.json and run  sudo bash install.sh  again.'
+        )
     if hasattr(context, 'persist_config'):
         context.persist_config()
 

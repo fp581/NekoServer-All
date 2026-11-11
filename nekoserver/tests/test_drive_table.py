@@ -439,6 +439,42 @@ class StoragePageTests(DriveListCase):
             said,
         )
 
+    def test_none_for_now_is_an_answer_for_the_offline_backup(self):
+        """Until the wizard of 0.50.0 a skipped USB drive was asked for again by the weekly
+        backup step, and waited as "needs you". Now it is a choice: saved, not asked
+        again, and the weekly copy is left out."""
+        ctx = self.context(storage={'data_ssd': {'uuid': 'ssd-0001'}, 'media_hdd': {'uuid': 'hdd-0001'}})
+        ctx.persist_config = mock.Mock()
+        said = []
+        ctx.log = said.append
+        with (
+            mock.patch('sys.stdin.isatty', return_value=True),
+            mock.patch.object(storage, 'inventory_now', return_value=INVENTORY),
+            mock.patch('builtins.input', return_value=''),
+        ):
+            storage.choose_usb(ctx)
+            self.assertIs(ctx.config['photos']['external_backup_wanted'], False)
+            ctx.persist_config.assert_called_once()
+            self.assertTrue(any(line.startswith('Offline backup: none, as you chose.') for line in said))
+            self.assertNotIn('usb', storage.page_fields(ctx.config))
+            # Not asked a second time, by this step or by the weekly backup step.
+            with mock.patch('builtins.input', side_effect=AssertionError('asked again')):
+                storage.choose_usb(ctx)
+                step = SimpleNamespace(config=ctx.config, apply=True, log=said.append)
+                with (
+                    mock.patch('os.geteuid', return_value=0),
+                    mock.patch.object(photo_backup, 'switch_off') as off,
+                ):
+                    result = photo_backup.run(step)
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertIn('Left out by choice', result['reason'])
+        off.assert_called_once()
+        # The dashboard's settings carry the choice (the collector shows the job as switched off).
+        from modules import dashboard
+
+        self.assertIn("clean['photos']['external_backup_wanted'] = False", (ROOT / 'modules/dashboard.py').read_text())
+        self.assertTrue(callable(dashboard.run))
+
     def test_nothing_asks_for_a_drives_name_any_more(self):
         import neko_common
 

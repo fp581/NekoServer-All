@@ -535,6 +535,8 @@ def collector_settings(cfg, smart, interval=60):
         # The USB drive now: checksum results made on another one are not shown as its own.
         'external_backup_uuid': cfg.get('photos', {}).get('external_backup_uuid', ''),
     }
+    if cfg.get('photos', {}).get('external_backup_wanted') is False:
+        clean['photos']['external_backup_wanted'] = False  # the weekly copy left out by choice
     clean['music'] = {'backup_enabled': cfg.get('music', {}).get('backup_enabled', True)}
     clean['monitoring'] = {
         'enabled': cfg.get('monitoring', {}).get('enabled', True),

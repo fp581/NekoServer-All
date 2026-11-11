@@ -396,6 +396,11 @@ def run(ctx):
         switch_off(ctx.log)
         ctx.log('USB backup: neither Immich nor Nextcloud is set up, so there is nothing for it to copy')
         return {'status': 'unavailable', 'reason': 'Nothing to copy: Immich and Nextcloud are both switched off'}
+    if opts.get('external_backup_wanted') is False and not str(opts.get('external_backup_uuid', '')).strip():
+        # "None for now" on the storage page: left out by choice, and not asked about again.
+        switch_off(ctx.log)
+        ctx.log('Offline backup: left out by choice (no removable drive was chosen)')
+        return {'status': 'unavailable', 'reason': 'Left out by choice: no removable drive for the weekly copy'}
     uuid = chosen_drive(ctx, opts)
     if uuid is None:
         return {
