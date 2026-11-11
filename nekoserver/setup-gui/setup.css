@@ -959,6 +959,21 @@ main > section {
   white-space: normal;
   overflow-wrap: anywhere;
 }
+/* The accounts page: the three entries of a row side by side, wrapping when narrow. */
+.account-inputs {
+  flex-wrap: wrap;
+}
+.account-inputs input {
+  flex: 1 1 150px;
+  min-width: 0;
+}
+.account-inputs[hidden] {
+  display: none;
+}
+.account-problem {
+  min-height: 1.4em;
+  color: var(--amber);
+}
 /* What the chosen drive holds, under its line: the line is kept when it is empty, so
    choosing a drive moves nothing. */
 .drive-facts {
