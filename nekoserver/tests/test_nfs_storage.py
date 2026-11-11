@@ -351,7 +351,7 @@ class KindTests(unittest.TestCase):
         self.assertEqual(chosen, 'nfs')
         said = '\n'.join(lines)
         self.assertIn('1) iSCSI', said)
-        self.assertIn('2) NFS: a folder the NAS shares. Slower', said)
+        self.assertIn('2) NFS: a folder the NAS shares. Nothing has to be formatted', said)
         self.assertIn('Type 1 or 2.', said)
         self.assertEqual(self.kind({'wanted': True}, [NAS, ''], iscsi=True, shared=True)[0], 'iscsi')  # Enter
 
@@ -428,7 +428,8 @@ class StepTests(unittest.TestCase):
         self.assertGreaterEqual(ctx.saved, 1)
         said = '\n'.join(ctx.lines)
         self.assertIn('experimental', said)
-        self.assertIn('slower than a drive connected to this PC', said)
+        self.assertIn('A folder shared over NFS is for films, music and backups.', said)
+        self.assertNotIn('lower', said)  # no promise about speed (the wizard specification)
         self.assertIn(f'The NAS at {NAS} shares these folders over NFS:', said)
         self.assertIn('  1) /volume1/media  (for: 192.168.1.0/24)', said)
         self.assertIn(f"{MEDIA}: tried out as root and as the apps' account (1001:1002)", said)

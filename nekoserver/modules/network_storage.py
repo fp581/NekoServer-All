@@ -777,11 +777,11 @@ def chosen_kind(options, interactive, log, input_fn=None):
 def asked_kind(host, input_fn, out_fn):
     out_fn(f'The NAS at {host} offers both:')
     out_fn(
-        '  1) iSCSI: the NAS hands this PC a disk of its own. Faster, and the apps see a real Linux drive. '
+        '  1) iSCSI: the NAS hands this PC a disk of its own. The apps see a real Linux drive. '
         'Only this PC can use that disk.'
     )
     out_fn(
-        '  2) NFS: a folder the NAS shares. Slower, but nothing has to be formatted and the files stay '
+        '  2) NFS: a folder the NAS shares. Nothing has to be formatted and the files stay '
         'visible on the NAS itself. Setup tries the folder out first and says what to change when it cannot be used.'
     )
     for _ in range(3):
@@ -851,7 +851,7 @@ def shared_folders(context, options, interactive, input_fn=None):
             'switched on in its settings, and that this PC is on the same network. Then run setup again.'
         )
     saved['server'] = host
-    log(nfs_exports.SLOWER)
+    log(nfs_exports.WHAT_FOR)
     if not any(saved.get(role) for role in FOLDER_ROLES):
         if not interactive:
             raise RuntimeError('No shared folder is chosen yet; run  sudo bash install.sh  in a terminal')

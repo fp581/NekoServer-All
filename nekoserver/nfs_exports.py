@@ -20,8 +20,7 @@ network, so there is no device, nothing to format and no UUID:
   itself the first time it is used after the NAS was away (a systemd automount), so a
   NAS that is off never keeps this PC from starting. A write waits for a NAS that
   stopped answering (`hard`) instead of failing half-way.
-
-NFS is slower than a drive connected to this PC, and than an iSCSI disk."""
+"""
 
 import errno
 import hashlib
@@ -42,9 +41,8 @@ FILESYSTEMS = ('nfs4', 'nfs')
 FOLDER = re.compile(r'(/[A-Za-z0-9_+@~-][A-Za-z0-9_.+@~-]*)+')
 HOST = re.compile(r'(\d{1,3}(\.\d{1,3}){3}|[A-Za-z0-9][A-Za-z0-9.-]{0,252})')
 
-SLOWER = (
-    'A folder shared over NFS is slower than a drive connected to this PC, and than an iSCSI disk on the same '
-    'NAS: fine for films, music and backups, and the reason the apps and their databases stay on the SSD.'
+WHAT_FOR = (
+    'A folder shared over NFS is for films, music and backups. The apps and their databases stay on the SSD in this PC.'
 )
 
 

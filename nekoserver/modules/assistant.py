@@ -8,7 +8,7 @@ memory, the SSD space and the port. No other step needs it, and nothing that goe
 fails setup: a problem is said ("the AI assistant needs a look", with the reason) or the PC
 is "not available" for it, and every other step runs as usual. It runs as a Compose project
 of its own with a hard memory limit, half the processor cores at most, the lowest priority,
-and Linux stops it first when memory runs out, so it never slows the other apps down.
+and Linux stops it first when memory runs out: the other apps come before it.
 
 Every check reads kernel files and Python's own library only (/proc/meminfo, /proc/cpuinfo,
 platform.machine, a socket, the SSD's free space): no program of a package is run, so no
@@ -98,8 +98,8 @@ START_WAIT = 120
 EXPLAIN = (
     'A private assistant inside the dashboard ("Ask Neko"): it explains what the dashboard shows,',
     'reads the logs of a problem with passwords and keys taken out, and can suggest a fix from a short',
-    'list that runs only when you press Approve. It runs on this server only: nothing you ask leaves your home.',
-    'It never slows down or stops your other apps: they come first, and everything works without it.',
+    'list that runs only when you press Approve. Its model runs on this server, not at an outside service.',
+    'Your other apps come first: it has a memory limit and the lowest priority, and everything works without it.',
     'The model is downloaded from the Ollama library during setup (so it needs the internet) and kept on the',
     'app SSD (appdata/assistant/models). NekoServer itself and its backups never contain it.',
 )

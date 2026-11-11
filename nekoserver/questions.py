@@ -116,8 +116,8 @@ Q = {
         'hint': 'It offers both ways. If you are not sure, take the first.',
         'kind': 'choice',
         'choices': [
-            ('1', 'As a disk of its own (faster; only this PC can use it)'),
-            ('2', 'As a shared folder (slower; the files stay visible on the storage box)'),
+            ('1', 'As a disk of its own (only this PC can use it)'),
+            ('2', 'As a shared folder (the files stay visible on the storage box)'),
         ],
         'how': 'Type 1 or 2, then press Enter. Enter alone takes the first.',
         'old': 'Which one does NekoServer use? [1/2] (Enter alone: 1):',
@@ -196,7 +196,7 @@ Q = {
     'login_email': {
         'screen': 'Logins for your apps',
         'title': 'What email address do you want to sign in to {app} with?',
-        'hint': 'It is only a name to sign in with. No email is sent to it.',
+        'hint': 'It is only a name to sign in with.',
         'kind': 'text',
         'send': 'Next',
         'example': {'app': 'Immich'},
@@ -478,7 +478,8 @@ Q = {
     'repair_drive': {
         'screen': 'Recovery',
         'title': 'Repair the drive now?',
-        'hint': 'The check found damage. The repair changes only what is broken.',
+        'hint': 'The check found damage. A repair rewrites parts of the filesystem on the drive, and a file that was '
+        'damaged can be lost. Copy what you still can first.',
         'kind': 'yesno',
         'yes': 'Repair it',
         'no': 'Leave it',
