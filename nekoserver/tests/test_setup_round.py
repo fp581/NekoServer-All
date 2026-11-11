@@ -346,7 +346,6 @@ class WindowPageTests(unittest.TestCase):
             'done': 0,
             'total': 0,
             'question': None,
-            'terminal': None,
             'finish': [],
             'title': '',
             'complete': False,

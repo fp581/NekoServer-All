@@ -11,10 +11,15 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+import setup_progress
+
+# Before any other of NekoServer's files is loaded: every question setup asks, in whatever
+# file, then goes through setup_progress and reaches the setup window too.
+setup_progress.own_prompts()
+
 import capabilities
 import guided_setup
 import host
-import setup_progress
 from neko_common import (
     atomic_json,
     mount_path,

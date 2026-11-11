@@ -74,11 +74,10 @@ def run(ctx):
         # while they are being connected would fail them half-way.
         from recovery_tools import lock
 
-        with (
-            lock(ctx.config),
-            setup_progress.in_terminal('Connecting the media apps: your download sources and sign-ins'),
-        ):
-            result = subprocess.run(cmd, check=False).returncode
+        # Inside setup's own process (setup_progress.run_program): its questions about
+        # download sources and sign-ins are asked in the setup window too.
+        with lock(ctx.config):
+            result = setup_progress.run_program(cmd[1], cmd[2:])
     else:
         cmd.append('--report-only')
         result = subprocess.run(cmd, check=False).returncode

@@ -171,17 +171,28 @@ def call(args, timeout=180):
     return p.stdout.strip()
 
 
-def samba_password(user, run=subprocess.run, tries=3):
-    """smbpasswd asks for the password twice on the terminal. Two that differ (or an
-    empty one) make it fail; that is a typo, not a broken setup, so it is asked again."""
-    for attempt in range(tries):
-        with setup_progress.in_terminal(f'The password for the shared folders (account {user}), typed twice'):
-            code = run(['smbpasswd', '-a', user], check=False).returncode
-        if code == 0:
-            return True
-        if attempt < tries - 1:
-            print('The two passwords did not match (or one was empty). Try again.')
-    return False
+def samba_password(user, run=subprocess.run, ask=None, output=print):
+    """The shared folders' password: chosen through setup's own question (typed twice,
+    hidden; in the setup window too), then handed to smbpasswd on its input (-s), never
+    on a command line and never kept. Until 0.50.0 smbpasswd asked for it itself, on the
+    terminal only. False when no password was chosen or Samba refused it (said)."""
+    import guided_setup
+
+    password = guided_setup.new_password(f'Password for the shared folders (account {user})', ask, output)
+    if password is None:
+        return False
+    done = run(
+        ['smbpasswd', '-s', '-a', user],
+        input=f'{password}\n{password}\n',
+        text=True,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    if done.returncode:
+        output('Samba did not take that password: ' + last_words(done.stderr or done.stdout or 'no reason given'))
+        return False
+    return True
 
 
 def includes_ours(text):
@@ -334,7 +345,7 @@ def run(context):
                 'status': 'needs_setup',
                 'reason': 'Run interactively to create the Samba password, or use sudo smbpasswd -a ' + user,
             }
-        # Samba prompts directly on the terminal; NekoServer does not store/log the password.
+        # NekoServer does not store or log the password: it goes straight to Samba.
         print(
             '\nShared folders: choose a password for opening the server\'s folders from other '
             'computers (user: ' + user + '). Type it twice; nothing is shown while you type.'
@@ -342,7 +353,7 @@ def run(context):
         if not samba_password(user):
             return {
                 'status': 'needs_setup',
-                'reason': 'No Samba password was set (the two did not match three times). Run setup again, or use  sudo smbpasswd -a '
+                'reason': 'No Samba password was set (the two did not match three times, or Samba refused it). Run setup again, or use  sudo smbpasswd -a '
                 + user,
             }
         account = subprocess.run(['pdbedit', '-L', '-u', user], capture_output=True, text=True, timeout=15, check=False)

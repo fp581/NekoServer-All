@@ -354,7 +354,6 @@ class Window:
             'done': sum(1 for s in here if s['status'] == 'success'),
             'total': len(here),
             'question': question,
-            'terminal': setup_progress.terminal_handoff(),
             'finish': finished['lines'] if finished else [],
             'title': (finished.get('title') or '') if finished else '',
             'stopped': bool(finished and finished.get('stopped') is True),

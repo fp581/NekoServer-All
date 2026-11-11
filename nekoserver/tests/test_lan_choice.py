@@ -322,11 +322,35 @@ class SambaAccountTests(unittest.TestCase):
 
 
 class SambaPasswordTests(unittest.TestCase):
+    def password(self, typed, code=0):
+        """samba_password with these lines typed; (its answer, smbpasswd's calls, what was said)."""
+        answers, calls, said = iter(typed), [], []
+
+        def run(argv, **kwargs):
+            calls.append((argv, kwargs.get('input')))
+            return mock.Mock(returncode=code, stderr='Failed to add entry', stdout='')
+
+        done = samba.samba_password('neko', run=run, ask=lambda prompt: next(answers), output=said.append)
+        return done, calls, said
+
     def test_a_mistyped_password_is_asked_again(self):
-        codes = iter([1, 0])
-        with mock.patch('builtins.print'):
-            self.assertTrue(samba.samba_password('neko', run=lambda argv, **_: mock.Mock(returncode=next(codes))))
-            self.assertFalse(samba.samba_password('neko', run=lambda argv, **_: mock.Mock(returncode=1)))
+        chosen = 'chosen-' + 'x' * 9  # made here, not a literal
+        done, calls, said = self.password(['one', 'other', chosen, chosen])
+        self.assertTrue(done)
+        self.assertEqual(said, ['The two did not match (or were empty). Try again.'])
+        # Given to smbpasswd on its input, twice, never on its command line.
+        self.assertEqual(calls, [(['smbpasswd', '-s', '-a', 'neko'], f'{chosen}\n{chosen}\n')])
+
+    def test_three_mismatches_or_an_empty_one_set_nothing(self):
+        done, calls, _ = self.password(['a', 'b', '', '', 'c', 'd'])
+        self.assertFalse(done)
+        self.assertEqual(calls, [])
+
+    def test_a_password_samba_refuses_is_said_and_sets_nothing(self):
+        done, calls, said = self.password(['same', 'same'], code=1)
+        self.assertFalse(done)
+        self.assertEqual(said, ['Samba did not take that password: Failed to add entry'])
+        self.assertEqual(len(calls), 1)
 
 
 class SambaRewriteTests(unittest.TestCase):

@@ -215,9 +215,9 @@ button:disabled {
   }
 }
 
-/* "Setup is working", "Setup needs an answer" or "Answer in the terminal": all three in
-   one cell, the ones not shown kept invisible, so the strip is always as tall as the
-   tallest and the page under it never jumps. */
+/* "Setup is working" or "Setup needs an answer": both in one cell, the one not shown
+   kept invisible, so the strip is always as tall as the taller and the page under it
+   never jumps. */
 .notices {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

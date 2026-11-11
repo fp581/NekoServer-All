@@ -280,6 +280,35 @@ def checkpoint(ctx, title, instructions, targets=(), verify=None, prepare=None, 
         return False
 
 
+def new_password(what, ask=None, output=print, tries=3):
+    """A password chosen now and typed twice, hidden. In the setup window the two are one
+    page (two hidden fields that must match before they are sent); in the terminal they
+    are asked one after the other. Returns it; None when the two differed (or were
+    empty) `tries` times, or the question was left (Ctrl+D, the window's Skip for now).
+    It is never written anywhere: the caller hands it on."""
+    import setup_progress
+
+    ask = ask or getpass.getpass
+    with setup_progress.page('new_password', {'password': '', 'again': ''}, what=what):
+        for attempt in range(tries):
+            try:
+                setup_progress.page_asks('password')
+                first = ask(f'{what}: ')
+                sent = setup_progress.page_answer('again')  # the window sends both at once
+                if sent is None:
+                    setup_progress.page_asks('again')
+                    again = ask('The same password again: ')
+                else:
+                    again = sent[1]
+            except EOFError:
+                return None
+            if first and first == again:
+                return first
+            if attempt < tries - 1:
+                output('The two did not match (or were empty). Try again.')
+    return None
+
+
 def private_entry(question, valid, hint, ask=None, output=print, attempts=3):
     """A private value typed without showing it (a URL or token). A typo is explained and
     asked again, up to `attempts` times; blank, or still not valid, returns '' (the step

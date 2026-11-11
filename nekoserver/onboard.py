@@ -7,7 +7,6 @@ Runs locally, never exports secrets, and distinguishes configuration from valida
 import argparse
 import json
 import os
-import subprocess
 import sys
 import time
 import urllib.error
@@ -18,6 +17,7 @@ from pathlib import Path
 import media_libraries
 import media_readiness
 import seerr_providers
+from setup_progress import run_program
 from neko_common import (
     LOCATIONS,
     MEDIA_APPS,
@@ -184,22 +184,16 @@ def main(argv=None):
         p.error('--report-only cannot configure or import sources')
     if a.sources:
         wizard = Path(__file__).with_name('source-wizard.py')
-        result = subprocess.call(
-            [
-                sys.executable,
-                str(wizard),
-                '--config',
-                str(Path(a.config).resolve()),
-                '--output',
-                str(root / 'config' / 'media-sources.json'),
-            ]
+        # Each program below runs inside this process (run_program), so what it asks is
+        # asked in the setup window too when setup started this one.
+        result = run_program(
+            wizard,
+            ['--config', Path(a.config).resolve(), '--output', root / 'config' / 'media-sources.json'],
         )
         source_results.append({'check': 'source_inventory', 'status': 'pass' if result == 0 else 'fail'})
     if a.import_sources or a.sources:
         script = Path(__file__).with_name('source_import.py')
         cmd = [
-            sys.executable,
-            str(script),
             '--config',
             str(Path(a.config).resolve()),
             '--sources',
@@ -213,7 +207,7 @@ def main(argv=None):
             cmd.append('--selected-only')
         if a.apply:
             cmd.append('--apply')
-        result = subprocess.call(cmd)
+        result = run_program(script, cmd)
         source_results.append({'check': 'source_import', 'status': {0: 'pass', 1: 'needs_setup'}.get(result, 'fail')})
     findings += source_results
     library_results = []
@@ -250,7 +244,7 @@ def main(argv=None):
     script = Path(__file__).with_name('media-connect.py')
     if not script.is_file():
         p.error('media-connect.py is missing')
-    cmd = [sys.executable, str(script), '--config', str(Path(a.config).resolve()), '--data-root', str(root)]
+    cmd = ['--config', str(Path(a.config).resolve()), '--data-root', str(root)]
     managers = {'sonarr', 'radarr', 'lidarr'} & set(apps)
     if managers:
         cmd += ['--root-folders', '--media-root', str(media)]
@@ -271,7 +265,7 @@ def main(argv=None):
     if has_connector:
         print('Configuring selected Arr root folders, Prowlarr and download-client connections.')
         print('Indexer selection is optional; existing sources will be preserved.')
-        result = subprocess.call(cmd)
+        result = run_program(script, cmd)
     provider_results = []
     if a.request_providers:
         provider_results = seerr_providers.configure(root, a.apply, apps)

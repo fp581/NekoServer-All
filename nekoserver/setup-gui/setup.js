@@ -403,7 +403,7 @@
 
   function renderRunning(state) {
     progress(state);
-    const waiting = state.question || state.terminal;
+    const waiting = state.question;
     badge(waiting ? 'Waiting for you' : 'Working…', waiting ? 'waiting' : '');
     const current = state.steps.find(s => s.id === state.current);
     showQuestion(state.question, current);
@@ -449,11 +449,7 @@
     // One notice at a time while setup runs, always in the same place (setup.css).
     $('notices').hidden = phase !== 'running';
     $('question').hidden = !state.question || phase !== 'running';
-    // A program of its own asks in the terminal only (its questions cannot come here).
-    $('terminal').hidden = !state.terminal || !!state.question || phase !== 'running';
-    $('working').hidden = !$('question').hidden || !$('terminal').hidden;
-    $('terminal-what').textContent = state.terminal ? state.terminal + ': its questions are asked there only.' : '';
-    $('terminal').title = state.terminal ? 'Answer this step in the terminal. ' + $('terminal-what').textContent : '';
+    $('working').hidden = !$('question').hidden;
     if (phase !== 'running') showQuestion(null);
   }
 
@@ -461,7 +457,6 @@
     // setup has ended and its server with it, or this window was opened again elsewhere
     $('notices').hidden = true;
     $('question').hidden = true;
-    $('terminal').hidden = true;
     if (finishedShown && why !== 'moved') {
       // The finishing screen is what the person needs (addresses, what is left): it stays.
       $('finish-closed').hidden = false;

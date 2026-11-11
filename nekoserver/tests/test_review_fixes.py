@@ -1336,7 +1336,7 @@ class OnboardingCompletionTests(unittest.TestCase):
                 with (
                     mock.patch.object(onboard, 'mount_ok', return_value=True),
                     mock.patch.object(onboard, 'report', return_value=[{'check': apps[0], 'status': 'pass'}]),
-                    mock.patch.object(onboard.subprocess, 'call') as call,
+                    mock.patch.object(onboard, 'run_program') as call,
                     mock.patch.object(onboard.media_readiness, 'check', return_value=[]),
                     mock.patch('builtins.print'),
                 ):

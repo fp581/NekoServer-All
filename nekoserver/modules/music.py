@@ -2,7 +2,6 @@
 
 import os
 from pathlib import Path
-import subprocess
 import sys
 
 import music_client
@@ -42,11 +41,8 @@ def run(ctx):
     result = music_client.check(ctx.config)
     if result['status'] != 'pass' and sys.stdin.isatty():
         release = Path(ctx.config['data_mount']) / 'installer/releases' / ('v' + VERSION)
-        with setup_progress.in_terminal('Music listener setup'):
-            code = subprocess.run(
-                [sys.executable, str(release / 'music-setup.py'), '--config', str(ctx.config_path), '--configure'],
-                check=False,
-            ).returncode
+        # Inside setup's own process: its two questions are asked in the setup window too.
+        code = setup_progress.run_program(release / 'music-setup.py', ['--config', ctx.config_path, '--configure'])
         if code == 2:
             raise RuntimeError('Music listener setup failed; credentials/configuration preserved')
         result = music_client.check(ctx.config)

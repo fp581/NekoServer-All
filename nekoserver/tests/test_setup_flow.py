@@ -160,7 +160,6 @@ class SetupWindowTests(unittest.TestCase):
             'done': 0,
             'total': 0,
             'question': None,
-            'terminal': None,
             'finish': [],
             'complete': False,
         }

@@ -473,58 +473,187 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(after['storage'], {'data_ssd': {'uuid': 'bbbb-2222'}})
         self.assertFalse(after['tv']['wanted'])
 
-    def test_a_program_asking_in_the_terminal_is_handed_off_there(self):
+    def answered_from_the_window(self, work, answers):
+        """`work` run while setup watches its prompts, on a terminal nobody types in: each
+        question it asks is answered from the window with the next of `answers` (what the
+        page posts). Returns (what work returned, the questions as the window showed them)."""
+        import pty
+        import time
+
+        master, slave = pty.openpty()
+        self.addCleanup(os.close, master)
+        terminal = os.fdopen(slave, 'r')
+        self.addCleanup(terminal.close)
+        result, shown, pending = [], [], list(answers)
+
+        def run():
+            with mock.patch('sys.stdin', terminal), mock.patch('sys.stdout'), setup_progress.watching_prompts():
+                result.append(work())
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        last, deadline = 0, time.time() + 30
+        while thread.is_alive() and time.time() < deadline:
+            question = self.state()['question']
+            if question and question['seq'] != last and pending:
+                last = question['seq']
+                shown.append(question)
+                self.assertEqual(self.post('api/answer', {'seq': last, **pending.pop(0)}), {'ok': True})
+            time.sleep(0.05)
+        thread.join(5)
+        self.assertFalse(thread.is_alive(), 'a question was left waiting')
+        return result[0], shown
+
+    def recorded(self):
+        """Everything setup recorded for the window, and what the window shows now, as text."""
+        events = [{k: v for k, v in e.items() if k != 'at'} for e in setup_progress.events()]
+        return json.dumps(events) + json.dumps(self.state())
+
+    def test_a_program_of_setups_asks_its_questions_in_the_window_too(self):
+        """0.50.0, item 8: connecting the media apps, the music setup and the shared-folder
+        password ran as programs of their own, whose questions reached only the terminal
+        ("Answer this step in the terminal"). They now run inside setup's process."""
+        import secrets
+
         self.window.started.set()
-        self.assertIsNone(self.state()['terminal'])
-        seen = []
-        from modules import samba
-
-        samba.samba_password(
-            'neko', run=lambda argv, **_: seen.append(self.state()['terminal']) or mock.Mock(returncode=0)
+        hidden = 'typed-' + secrets.token_hex(8)
+        program = Path(self.tmp.name) / 'music-setup.py'
+        program.write_text(
+            'import getpass, sys\n'
+            'print("Open http://127.0.0.1:4533 on the server.")\n'
+            'user = input("Listener username: ").strip()\n'
+            'password = getpass.getpass("Listener password (never saved as plaintext): ")\n'
+            'sys.exit(0 if (user, password) == ("listener", sys.argv[2]) else 2)\n'
         )
-        self.assertIn('account neko', seen[0])
-        self.assertIsNone(self.state()['terminal'])  # over once the program ended
+        argv = list(sys.argv)
+        code, shown = self.answered_from_the_window(
+            lambda: setup_progress.run_program(program, ['--expect', hidden]), [{'text': 'listener'}, {'text': hidden}]
+        )
+        self.assertEqual(code, 0)  # both answers reached the program
+        self.assertEqual(sys.argv, argv)
+        self.assertEqual(
+            [q['text'] for q in shown], ['Listener username:', 'Listener password (never saved as plaintext):']
+        )
+        self.assertIn('Open http://127.0.0.1:4533 on the server.', shown[0]['context'])  # what it printed
+        self.assertEqual((shown[1]['secret'], shown[1]['kind']), (True, 'secret'))
+        # A password typed in the window is in no event and not in what the window shows.
+        self.assertNotIn(hidden, self.recorded())
+        self.assertNotIn('terminal', self.state())  # nothing is handed off to the terminal any more
+        self.assertFalse(hasattr(setup_progress, 'in_terminal'))
 
-        def failing_program():
-            with setup_progress.in_terminal('Music listener setup'):
-                seen.append(self.state()['terminal'])
-                raise RuntimeError('it failed')
+    def test_a_program_ends_as_it_would_on_its_own(self):
+        program = Path(self.tmp.name) / 'program.py'
+        for body, expected in (
+            ('pass\n', 0),
+            ('import sys\nsys.exit(3)\n', 3),
+            ('import sys\nsys.exit()\n', 0),
+            ('import sys\nsys.exit("Onboarding failed")\n', 1),
+            ('raise RuntimeError("an error it did not handle")\n', 1),
+            ('import argparse\nargparse.ArgumentParser().error("a wrong option")\n', 2),
+        ):
+            program.write_text(body)
+            with self.subTest(body=body), mock.patch('sys.stderr'):
+                self.assertEqual(setup_progress.run_program(program), expected)
+        # Ctrl+C is setup's to handle, as when the program was one of its own.
+        program.write_text('raise KeyboardInterrupt\n')
+        with self.assertRaises(KeyboardInterrupt):
+            setup_progress.run_program(program)
 
-        self.assertRaises(RuntimeError, failing_program)
-        self.assertEqual(seen[-1], 'Music listener setup')
-        self.assertIsNone(self.state()['terminal'])
-
-    def test_onboarding_asks_in_the_terminal_with_the_window_told(self):
-        from modules import onboarding
+    def test_the_steps_run_their_programs_inside_setup(self):
+        from modules import music, onboarding
 
         release = Path(self.tmp.name) / 'data/installer/releases' / ('v' + setup_gui.VERSION)
         release.mkdir(parents=True)
         (release / 'onboard.py').write_text('')
-        ctx = mock.Mock(
-            apply=True,
-            plan=(),
-            log=lambda line: None,
-            config={'data_mount': str(Path(self.tmp.name) / 'data'), 'onboarding': {}, 'media': {'services': []}},
-        )
-        seen = []
-
-        def ran(cmd, **_):
-            seen.append(setup_progress.terminal_handoff())
-            return mock.Mock(returncode=0)
-
+        data = str(Path(self.tmp.name) / 'data')
+        config = {'data_mount': data, 'onboarding': {}, 'media': {'services': []}}
+        ctx = mock.Mock(apply=True, plan=(), log=lambda line: None, config=config, config_path='/c.json')
         import recovery_tools
 
         with (
             mock.patch.object(onboarding.sys.stdin, 'isatty', return_value=True),
             mock.patch.object(onboarding.account_store, 'enabled', return_value=False),
-            mock.patch.object(onboarding.subprocess, 'run', side_effect=ran),
+            mock.patch.object(onboarding.setup_progress, 'run_program', return_value=0) as connected,
+            mock.patch.object(onboarding.subprocess, 'run', side_effect=AssertionError('a program of its own')),
             mock.patch.object(onboarding, 'witness_playback'),
+            mock.patch.object(onboarding, 'remove_stale'),
             # The lock asks about this PC's own monthly update (its journal, its service): not this test's business.
             mock.patch.object(recovery_tools.neko_common, 'pending_maintenance', return_value=None),
         ):
             onboarding.run(ctx)
-        self.assertIn('media apps', seen[0])
-        self.assertIsNone(setup_progress.terminal_handoff())
+        script, options = connected.call_args.args
+        self.assertEqual(Path(script), release / 'onboard.py')
+        self.assertIn('--configure', options)
+        with (
+            mock.patch.object(music.os, 'geteuid', return_value=0),
+            mock.patch('neko_common.verify_storage'),
+            mock.patch.object(music.music_client, 'check', return_value={'status': 'needs_setup'}),
+            mock.patch.object(music.sys.stdin, 'isatty', return_value=True),
+            mock.patch.object(music.setup_progress, 'run_program', return_value=1) as asked,
+            mock.patch.object(music, 'atomic_json'),
+        ):
+            ctx.config = {'data_mount': data, 'media_mount': data + '-media', 'media': {'services': ['navidrome']}}
+            music.run(ctx)
+        asked.assert_called_once_with(release / 'music-setup.py', ['--config', '/c.json', '--configure'])
+
+    def test_the_shared_folders_password_is_one_hidden_page_and_goes_to_samba_on_its_input(self):
+        import secrets
+
+        from modules import samba
+
+        self.window.started.set()
+        chosen = 'chosen-' + secrets.token_hex(8)
+        calls = []
+
+        def smbpasswd(argv, **kwargs):
+            calls.append((argv, kwargs.get('input')))
+            return mock.Mock(returncode=0)
+
+        # The first try differs (the page checks that too, before it sends); the second matches.
+        done, shown = self.answered_from_the_window(
+            lambda: samba.samba_password('neko', run=smbpasswd),
+            [{'text': chosen, 'fields': {'again': chosen + 'x'}}, {'text': chosen, 'fields': {'again': chosen}}],
+        )
+        self.assertTrue(done)
+        self.assertEqual(
+            shown[0]['page'],
+            {
+                'form': 'new_password',
+                'fields': {'password': '', 'again': ''},  # never the values
+                'asking': 'password',
+                'what': 'Password for the shared folders (account neko)',
+            },
+        )
+        self.assertTrue(shown[0]['secret'])
+        self.assertEqual(len(shown), 2)  # "the same again" was never asked: the page sent both
+        # Samba gets it on its input (-s), never on its command line.
+        self.assertEqual(calls, [(['smbpasswd', '-s', '-a', 'neko'], f'{chosen}\n{chosen}\n')])
+        self.assertNotIn(chosen, json.dumps([c[0] for c in calls]))
+        self.assertNotIn(chosen, self.recorded())
+
+    def test_every_question_goes_through_setup_from_its_first_line(self):
+        """A function that took `input` as its default when its file was loaded
+        (`def collect(prompt=input)`) asked in the terminal only, unless its file happened
+        to be loaded after the window started watching. installer.py now makes input() and
+        getpass() setup's own before any other file is loaded."""
+        import subprocess
+
+        check = (
+            'import installer, builtins, getpass, setup_progress, account_store, guided_setup, backup_secrets\n'
+            'assert builtins.input is setup_progress.asking_input\n'
+            'assert getpass.getpass is setup_progress.asking_getpass\n'
+            'assert account_store.collect.__defaults__[0] is setup_progress.asking_input\n'
+            'assert account_store.collect.__defaults__[1] is setup_progress.asking_getpass\n'
+            'assert guided_setup.ask_choice.__defaults__[0] is setup_progress.asking_input\n'
+            'assert backup_secrets.setup.__defaults__[0] is setup_progress.asking_getpass\n'
+            'print("ok")\n'
+        )
+        ran = subprocess.run([sys.executable, '-c', check], cwd=ROOT, capture_output=True, text=True, timeout=60)
+        self.assertEqual((ran.returncode, ran.stdout.strip()), (0, 'ok'), ran.stderr)
+        # Without a window watching they ask the plain way.
+        with mock.patch.object(setup_progress, '_real_input', return_value='typed') as plain:
+            self.assertEqual(setup_progress.asking_input('Name: '), 'typed')
+        plain.assert_called_once_with('Name: ')
 
     def test_the_run_as_the_window_sees_it(self):
         self.window.started.set()

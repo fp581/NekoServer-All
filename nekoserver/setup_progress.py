@@ -217,7 +217,7 @@ def answer_from_window(seq, text, skip=False, fields=None):
                 _page['skipped'] = True
             elif isinstance(fields, dict):
                 _page['answers'].update(
-                    {key: str(value)[:100] for key, value in fields.items() if key in _page['fields']}
+                    {key: str(value)[:300] for key, value in fields.items() if key in _page['fields']}
                 )
         return True
 
@@ -286,26 +286,32 @@ def page_answer(key):
         return None
 
 
-@contextlib.contextmanager
-def in_terminal(what):
-    """A program of its own asks questions now (onboarding, music setup, smbpasswd):
-    its prompts reach only the terminal, so the window says to answer there."""
-    event('terminal', text=str(what)[:300])
+def run_program(script, args=()):
+    """One of NekoServer's own programs (onboard.py, media-connect.py, music-setup.py)
+    run inside this process, as `python3 script args` would run it. What it prints is
+    the terminal's, and every question it asks goes the way setup's own do, so the
+    window asks it too. (Until 0.50.0 these ran as programs of their own, whose
+    questions reached only the terminal, and the window said "answer in the terminal".)
+    Returns its exit code: what it ended with, 1 for an error it did not handle (said
+    in the terminal, as Python says it)."""
+    import runpy
+    import traceback
+
+    saved = sys.argv
+    sys.argv = [str(script), *(str(arg) for arg in args)]
     try:
-        yield
+        runpy.run_path(str(script), run_name='__main__')
+        return 0
+    except SystemExit as stop:
+        if stop.code is None or isinstance(stop.code, int):
+            return stop.code or 0
+        print(stop.code, file=sys.stderr)  # sys.exit('a message'), as Python ends it
+        return 1
+    except Exception:  # any error of the program ends that program, not setup
+        traceback.print_exc()
+        return 1
     finally:
-        event('terminal_done')
-
-
-def terminal_handoff():
-    """What is being answered in the terminal right now, or None."""
-    with _lock:
-        for record in reversed(_events):
-            if record['kind'] == 'terminal_done':
-                return None
-            if record['kind'] == 'terminal':
-                return record['text']
-    return None
+        sys.argv = saved
 
 
 class _Unwatchable(Exception):
@@ -437,34 +443,71 @@ class _Tee:
         return getattr(self._inner, name)
 
 
+# ----- every question setup asks goes through these two
+
+_real_input, _real_getpass = builtins.input, getpass.getpass
+_plain = {'input': _real_input, 'getpass': _real_getpass}  # how to ask without the window
+_watching = False
+
+
+def asking_input(prompt=''):
+    """input(), asked in the window too while setup watches its prompts."""
+    return _ask_both(str(prompt), False) if _watching else _real_input(prompt)
+
+
+def asking_getpass(prompt='Password: ', stream=None):
+    """getpass.getpass(), asked in the window too (hidden there as well)."""
+    return _ask_both(str(prompt), True) if _watching else _real_getpass(prompt, stream)
+
+
+def own_prompts():
+    """Called first thing by a program that runs setup (installer.py, uninstaller.py),
+    before any other of NekoServer's files is loaded: input() and getpass() are the two
+    functions above from then on. A function that takes `input` as a default when its
+    file is loaded (`def ask(prompt=input)`) then holds this one, so its question
+    reaches the window whenever its file was loaded: before 0.50.0 that depended on the
+    file being loaded after the window started watching. Without a window watching
+    they ask the plain way."""
+    builtins.input, getpass.getpass = asking_input, asking_getpass
+
+
+def _ask_both(prompt, secret):
+    """A question put in the terminal and in the window; the first answer is the answer."""
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    question(prompt, secret=secret)
+    try:
+        answer = _wait_for_answer(sys.stdin, secret)
+    except BaseException:  # Ctrl+D, Ctrl+C: the window stops showing the question too
+        answered()
+        raise
+    if answer is None:
+        # The terminal can't be watched (not a real stream): the plain way, prompt shown already.
+        try:
+            return _plain['getpass']('') if secret else _plain['input']('')
+        finally:
+            answered()
+    answered()
+    return answer
+
+
 @contextlib.contextmanager
 def watching_prompts():
     """While this is active, every input() and getpass() setup asks is also asked in the
     window, and either can answer it."""
-    real_input, real_getpass, real_stdout = builtins.input, getpass.getpass, sys.stdout
-    sys.stdout = _Tee(real_stdout)
-
-    def asked(prompt, secret):
-        sys.stdout.write(prompt)
-        sys.stdout.flush()
-        question(prompt, secret=secret)
-        try:
-            answer = _wait_for_answer(sys.stdin, secret)
-        except BaseException:  # Ctrl+D, Ctrl+C: the window stops showing the question too
-            answered()
-            raise
-        if answer is None:
-            # The terminal can't be watched (not a real stream): the plain way, prompt shown already.
-            try:
-                return real_getpass('') if secret else real_input('')
-            finally:
-                answered()
-        answered()
-        return answer
-
-    builtins.input = lambda prompt='': asked(str(prompt), False)
-    getpass.getpass = lambda prompt='Password: ', stream=None: asked(str(prompt), True)
+    global _watching
+    before = (builtins.input, getpass.getpass, sys.stdout)
+    # Asked the plain way when the terminal can't be watched: whatever input() and
+    # getpass() were before (setup's own two stand for the real ones).
+    _plain.update(
+        input=_real_input if before[0] is asking_input else before[0],
+        getpass=_real_getpass if before[1] is asking_getpass else before[1],
+    )
+    sys.stdout = _Tee(before[2])
+    builtins.input, getpass.getpass = asking_input, asking_getpass
+    _watching = True
     try:
         yield
     finally:
-        builtins.input, getpass.getpass, sys.stdout = real_input, real_getpass, real_stdout
+        _watching = False
+        builtins.input, getpass.getpass, sys.stdout = before

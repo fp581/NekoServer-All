@@ -58,7 +58,6 @@ CHOOSE = {
     'done': 0,
     'total': 0,
     'question': None,
-    'terminal': None,
     'finish': [],
     'title': '',
     'stopped': False,
@@ -89,7 +88,6 @@ QUESTION = {
         'page': None,
     },
 }
-TERMINAL = {**RUNNING, 'terminal': 'Connecting the apps together'}
 
 # Before setup.js: answers its polls with window.nextState (set by the measuring script).
 STUB = """window.nextState = %s;
@@ -182,9 +180,9 @@ class NothingMovesTests(unittest.TestCase):
         # the badge's words ("Working…", "Waiting for you") slid the progress bar sideways.
         for size in ('1180,480', '700,620'):
             with self.subTest(size=size):
-                states = self.measure(RUNNING, [RUNNING, QUESTION, TERMINAL, RUNNING], size)['states']
+                states = self.measure(RUNNING, [RUNNING, QUESTION, RUNNING], size)['states']
                 badges = [badge for _, badge in states]
-                self.assertEqual(badges, ['Working…', 'Waiting for you', 'Waiting for you', 'Working…'])
+                self.assertEqual(badges, ['Working…', 'Waiting for you', 'Working…'])
                 boxes = [json.loads(measured) for measured, _ in states]
                 if size == '700,620':
                     # One column: the step list comes under the question and follows its

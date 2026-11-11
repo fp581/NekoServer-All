@@ -494,14 +494,15 @@ class OptionalAnswersTests(unittest.TestCase):
         with (
             mock.patch.object(onboarding.sys.stdin, 'isatty', return_value=True),
             mock.patch.object(onboarding.account_store, 'enabled', return_value=False),
-            mock.patch.object(onboarding.subprocess, 'run', return_value=mock.Mock(returncode=0)) as run,
+            # The connecting program runs inside setup's process (0.50.0): its script and options.
+            mock.patch.object(onboarding.setup_progress, 'run_program', return_value=0) as run,
             mock.patch.object(onboarding.guided_setup, 'checkpoint', checkpoint),
             mock.patch('recovery_tools.lock', return_value=mock.MagicMock()),
             mock.patch('builtins.input', typed_in),
             mock.patch('builtins.print', shown),
         ):
             onboarding.run(ctx)
-        return run.call_args[0][0], printed, asked, logs
+        return [run.call_args[0][0], *run.call_args[0][1]], printed, asked, logs
 
     def test_a_rerun_shows_the_last_answers_and_asks_again_only_on_yes(self):
         kept = {'sources': 'none added', 'indexers': 'none chosen', 'playback': 'skipped'}
