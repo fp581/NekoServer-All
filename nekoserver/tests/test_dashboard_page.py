@@ -896,24 +896,87 @@ class AskNekoPageTests(unittest.TestCase):
             )
         # A repair runs only from its Approve button, after the server checked it.
         self.assertIn("button('Approve', () => approveRepair(entry)", app)
-        # Review of 0.49.0: a password typed into the question went into the bug report as
-        # typed. The page keeps the server's copy of the question (secrets removed).
-        self.assertIn("entry.question = text(started.question, '(your question)');", app)
-        self.assertIn("'Question (known passwords and keys removed): ' + entry.question", app)
-        # Review of 0.49.0: an answer cut off part-way looked complete. What came stays,
-        # marked as cut off; no bug report is made from it, and no repair is offered.
-        entry = app[app.index('function askEntry(entry)') :][:900]
-        self.assertIn("'The answer stops here: it was cut off before it ended.'", entry)
-        self.assertIn('if (at < 0 || entry.error) {', app)
-        self.assertIn("if (now.done === true && typeof now.repair === 'string')", app)
-        # Review of 0.49.0: Approve ran whatever version was newest when pressed. The card's
-        # version goes back with the approval, and a changed one shows the card afresh.
-        self.assertIn("postControl('assist-run', { action: r.id, sig: r.sig })", app)
-        self.assertIn("sig: text(answer.sig)", app)
-        changed = app[app.index('if (answer.changed === true)') :][:400]
-        self.assertIn('await offerRepair(entry, r.id)', changed)
-        self.assertIn('entry.repair.note = controlMessage(answer)', changed)
-        self.assertIn("postControl('assist-check', { action: id })", app)
+
+    # The four tests below run the page's own code on a page that keeps what is put on it
+    # (dashboard_harness.mjs: askFlow, approveFlow, cutOffEntry, bugBoxCopy), instead of
+    # looking for the lines in app.js.
+
+    def test_the_page_keeps_and_shows_the_servers_copy_of_the_question(self):
+        """Review of 0.49.0: a password typed into the question went into the bug report
+        as typed. The page keeps the server's copy of the question (secrets removed)."""
+        typed = 'Jellyfin refuses ' + '-'.join(('Blue', 'Horse', '77')) + ': why?'
+        kept = 'Jellyfin refuses <removed> why?'
+        flow = page(
+            ('askFlow', {'typed': typed, 'kept': kept, 'answer': 'It is a bug.\nBUG REPORT: the login step.'})
+        )[0]
+        # The question goes to the server as typed, once, through the PIN-checked path.
+        self.assertEqual(flow['sent'][0], ['/api/control/ask', {'question': typed}])
+        self.assertEqual(flow['sent'][1][0], '/api/ask/abc')
+        # From then on the page has only the server's copy: in its history and the report.
+        self.assertEqual(flow['question'], kept)
+        self.assertIn(kept, flow['shown'])
+        self.assertIn('Question (known passwords and keys removed): ' + kept, flow['report'])
+        for where in ('shown', 'report'):
+            self.assertNotIn('Blue-Horse-77', flow[where], where)
+
+    def test_approve_sends_the_cards_version_and_a_changed_one_makes_the_card_again(self):
+        """Review of 0.49.0: Approve ran whatever version was newest when pressed."""
+        shown, newer = 'a' * 16, 'b' * 16
+        # A newer version arrived since the card was shown.
+        flow = page(('approveFlow', {'shown': shown, 'waiting': newer}))[0]
+        first = flow['first']
+        self.assertEqual(first['sent'][0], ['/api/control/assist-run', {'action': 'update_app:jellyfin', 'sig': shown}])
+        self.assertEqual(first['sent'][1], ['/api/control/assist-check', {'action': 'update_app:jellyfin'}])
+        # Nothing ran: the card is there again, for the new version, and says why.
+        self.assertEqual((first['state'], first['sig']), ('offered', newer))
+        self.assertIn('Updates Jellyfin to 10.9.2 now.', first['card'])
+        self.assertNotIn('10.9.1', first['card'])
+        self.assertIn('A newer version arrived meanwhile', first['card'])
+        # Approve on that card sends the new version's signature, and it runs.
+        second = flow['second']
+        self.assertEqual(second['sent'], [['/api/control/assist-run', {'action': 'update_app:jellyfin', 'sig': newer}]])
+        self.assertEqual(second['state'], 'done')
+        self.assertIn('Jellyfin: updating now.', second['card'])
+        # Unchanged: the first press runs it.
+        same = page(('approveFlow', {'shown': shown, 'waiting': shown}))[0]['first']
+        self.assertEqual(same['state'], 'done')
+        self.assertEqual(len(same['sent']), 1)
+
+    def test_an_answer_that_failed_part_way_is_marked_and_offers_nothing(self):
+        """Review of 0.49.0: an answer cut off part-way looked complete."""
+        text = 'Restart it.\nACTION: restart_app:jellyfin\nBUG REPORT: the retention st'
+        failed = 'Neko is not available right now: the answer was cut off before it ended; ask again'
+        # Even if a repair came with it, a failed answer never offers one.
+        cut = page(
+            ('cutOffEntry', {'text': text, 'done': False, 'failed': failed, 'repair': 'restart_app:jellyfin'})
+        )[0]
+        self.assertEqual(cut['sent'], [], 'the server is not asked about a repair')
+        self.assertIsNone(cut['repair'])
+        self.assertIsNone(cut['report'])
+        self.assertIn('Restart it.', cut['shown'])
+        self.assertIn('The answer stops here: it was cut off before it ended.', cut['shown'])
+        self.assertIn(failed, cut['shown'])
+        for absent in ('Neko suggests a fix', 'A bug report to share'):
+            self.assertNotIn(absent, cut['shown'])
+        # The same answer, whole: its repair is checked with the server and offered, its report made.
+        whole = page(
+            ('cutOffEntry', {'text': text + 'ep.', 'done': True, 'failed': None, 'repair': 'restart_app:jellyfin'})
+        )[0]
+        self.assertEqual(whole['sent'], [['/api/control/assist-check', {'action': 'restart_app:jellyfin'}]])
+        self.assertIn('the retention step.', whole['report'])
+        self.assertNotIn('cut off', whole['shown'])
+
+    def test_copy_on_a_bug_report_selects_it_when_the_browser_cannot_copy(self):
+        """Review of 0.49.0: without a Clipboard API, Copy did nothing and said nothing."""
+        works, missing, refuses = page(('bugBoxCopy', 'works'), ('bugBoxCopy', 'missing'), ('bugBoxCopy', 'refuses'))
+        self.assertEqual((works['selected'], works['said']), (False, 'Copied.'))
+        for cannot in (missing, refuses):
+            self.assertEqual(
+                (cannot['selected'], cannot['said']), (True, 'The report is selected: copy it from there.')
+            )
+        # The box says what is removed and asks the person to read it first.
+        self.assertIn('Known passwords and keys are removed. Read it before you share it.', works['lines'])
+        self.assertIn('Question: why?', works['lines'])
 
 
 if __name__ == '__main__':
