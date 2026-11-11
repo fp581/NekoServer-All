@@ -71,8 +71,9 @@ pub const JOBS: [(&str, &str, &str); 4] = [
 /* ---------- secrets out ---------- */
 
 /// `text` with every secret taken out: values of settings named like a password, key,
-/// token, secret or cookie; "Bearer ..." credentials; Tailscale keys; a password in an
-/// address; e-mail addresses; long random strings (keys, tokens, IDs); and each of
+/// token, secret or cookie; a password written out in a sentence ("my password is X");
+/// "Bearer ..." credentials; Tailscale keys; a password in an address; e-mail
+/// addresses; long random strings (keys, tokens, IDs); and each of
 /// `known` (NekoServer's own secrets, see known_secrets) wherever it appears.
 pub fn redact(text: &str, known: &[String]) -> String {
     let mut out = text.to_string();
@@ -82,6 +83,7 @@ pub fn redact(text: &str, known: &[String]) -> String {
     for (pattern, with) in PATTERNS.iter() {
         out = pattern.replace_all(&out, *with).into_owned();
     }
+    let out = said_in_words(&out);
     LONG.replace_all(&out, |m: &regex::Captures| {
         let found = &m[0];
         // Keys, tokens and IDs are random: many digits among the letters. Long words
@@ -94,6 +96,136 @@ pub fn redact(text: &str, known: &[String]) -> String {
     })
     .into_owned()
 }
+/// A word that names a secret a person may write out in a sentence.
+static SECRET_WORD: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?i)\b(?:pass(?:word|wd|phrase|code)s?|pin)\b").unwrap()
+});
+static WORDS: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"\S+").unwrap());
+/// Words that follow "the password is" (or "to") in ordinary sentences and log lines,
+/// and so are not the password: "is wrong", "is required", "to Jellyfin", "to log in".
+/// Anything else there is taken out: a word too many removed costs little, a password
+/// left in a report that is shared costs much.
+#[rustfmt::skip]
+const ORDINARY: &[&str] = &[
+    "a", "an", "the", "my", "your", "our", "his", "her", "their", "its", "this", "that", "it",
+    "not", "no", "never", "wrong", "incorrect", "invalid", "correct", "right", "valid",
+    "required", "needed", "missing", "empty", "blank", "set", "unset", "saved", "stored", "kept",
+    "shown", "hidden", "changed", "reset", "expired", "old", "new", "different", "same", "too",
+    "very", "also", "still", "now", "there", "here", "in", "on", "at", "for", "to", "from", "by",
+    "with", "of", "and", "or", "but", "if", "when", "what", "where", "which", "who", "why", "how",
+    "refused", "rejected", "accepted", "denied", "working", "broken", "fine", "ok", "okay",
+    "good", "bad", "weak", "strong", "short", "long", "unknown", "known", "lost", "forgotten",
+    "gone", "being", "been", "asked", "used", "safe", "secure", "secret", "something", "nothing",
+    "anything", "protected", "encrypted", "hashed", "written", "printed", "given", "sent",
+    "removed", "log", "sign", "get", "access", "open", "enter", "continue", "login", "use",
+    "jellyfin", "immich", "nextcloud", "navidrome", "sonarr", "radarr", "prowlarr", "seerr",
+    "qbittorrent", "tailscale", "nekoserver", "neko", "dashboard", "server", "nas", "app",
+    "apps", "account", "admin", "user", "root", "wifi", "router",
+];
+
+/// `text` without a password (passphrase, passcode, PIN) written out in a sentence:
+/// "my password is X", "I changed the password to X", "the password to Jellyfin is X",
+/// "the PIN was 1234". The settings form ("password: X", "password=X") is one of
+/// PATTERNS. Ordinary sentences stay as they are ("the password is wrong").
+fn said_in_words(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut done = 0;
+    for name in SECRET_WORD.find_iter(text) {
+        if name.start() < done {
+            continue; // inside a value already taken out
+        }
+        // "pin" in small letters is also a verb ("pin to core 3"): only "PIN is ...".
+        let noun_only = name.as_str() == "pin";
+        let line = text[name.end()..]
+            .find('\n')
+            .unwrap_or(text.len() - name.end());
+        let tail = &text[name.end()..name.end() + line];
+        if let Some((from, to)) = value_in_words(tail, noun_only) {
+            out.push_str(&text[done..name.end() + from]);
+            out.push_str("<removed>");
+            done = name.end() + to;
+        }
+    }
+    out.push_str(&text[done..]);
+    out
+}
+
+/// Where the secret's value is in the words after its name (`tail`, to the end of the
+/// line), or None when what follows is an ordinary sentence.
+fn value_in_words(tail: &str, noun_only: bool) -> Option<(usize, usize)> {
+    let words: Vec<regex::Match> = WORDS.find_iter(tail).take(8).collect();
+    // A word without its quotes and punctuation, in small letters.
+    let plain = |i: usize| {
+        words.get(i).map(|w| {
+            w.as_str()
+                .trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+    };
+    // A word in quotation marks is a value, whatever it says.
+    let quoted = |i: usize| {
+        words
+            .get(i)
+            .is_some_and(|w| w.as_str().starts_with(['"', '\'', '\u{201c}']))
+    };
+    let ordinary = |i: usize| {
+        !quoted(i) && plain(i).is_none_or(|w| w.is_empty() || ORDINARY.contains(&w.as_str()))
+    };
+    let is = |i: usize| plain(i).is_some_and(|w| matches!(w.as_str(), "is" | "was" | "are" | "as"));
+    let first = plain(0)?;
+    let mut at = if is(0) {
+        1
+    } else if !noun_only && matches!(first.as_str(), "for" | "to" | "of" | "on" | "in" | "at") {
+        if first == "to" && !ordinary(1) {
+            // "I changed the password to X". With a name nobody knows here ("the password
+            // to plex is X") either word may be the password: both go.
+            let (from, to) = whole_value(tail, &words, 1)?;
+            let after = (is(2) && !ordinary(3))
+                .then(|| whole_value(tail, &words, 3))
+                .flatten();
+            return Some((from, after.map_or(to, |(_, end)| end)));
+        }
+        // "the password to Jellyfin is X", "the password for the NAS was X"
+        (1..=4).find(|i| is(*i))? + 1
+    } else {
+        return None;
+    };
+    while plain(at).is_some_and(|w| {
+        matches!(
+            w.as_str(),
+            "now" | "still" | "currently" | "just" | "set" | "to"
+        )
+    }) {
+        at += 1;
+    }
+    if ordinary(at) {
+        return None;
+    }
+    whole_value(tail, &words, at)
+}
+
+/// The value that starts at word `at`: that word, or, when it opens a quotation that
+/// closes later on the line, everything up to the closing mark (a passphrase of several
+/// words).
+fn whole_value(tail: &str, words: &[regex::Match], at: usize) -> Option<(usize, usize)> {
+    let word = words.get(at)?;
+    let mut end = word.end();
+    let opens = word
+        .as_str()
+        .chars()
+        .next()
+        .filter(|c| matches!(c, '"' | '\'' | '\u{201c}'));
+    if let Some(open) = opens {
+        let close = if open == '\u{201c}' { '\u{201d}' } else { open };
+        let closed_here = word.as_str()[open.len_utf8()..].contains(close);
+        if let (false, Some(n)) = (closed_here, tail[word.end()..].find(close)) {
+            end = word.end() + n + close.len_utf8();
+        }
+    }
+    Some((word.start(), end))
+}
+
 /// Long strings that may be keys or tokens (never with "/", so a folder path stays).
 static LONG: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"\b[A-Za-z0-9+=_-]{32,}").unwrap());
@@ -1234,6 +1366,81 @@ mod tests {
             said.contains("Failed sign-in attempt using invalid Seerr password"),
             "{said}"
         );
+    }
+
+    /// Review of the 0.50.0 fixes: the bug report said "passwords and keys removed", but
+    /// a password written out in a sentence stayed in the question.
+    #[test]
+    fn a_password_written_in_a_sentence_is_taken_out() {
+        // Made up here from pieces: not a saved login, not shaped like a key.
+        let word = ["Blue", "-Horse-", "77"].concat();
+        let digits = ["48", "15"].concat();
+        let phrase = ["correct", "pony", "staple"].join(" ");
+        let cases = [
+            (
+                format!("I changed the Jellyfin password to {word} and now it fails"),
+                "I changed the Jellyfin password to <removed> and now it fails".to_string(),
+            ),
+            (
+                format!("my password is {word}"),
+                "my password is <removed>".into(),
+            ),
+            (
+                format!("My password: {word}"),
+                "My password: <removed>".into(),
+            ),
+            (
+                format!("the password to Jellyfin is {word}, why is it refused?"),
+                "the password to Jellyfin is <removed> why is it refused?".into(),
+            ),
+            (
+                format!("The password for the admin account was {word}"),
+                "The password for the admin account was <removed>".into(),
+            ),
+            (
+                format!("the passphrase is now set to {word}"),
+                "the passphrase is now set to <removed>".into(),
+            ),
+            (
+                format!("the dashboard PIN is {digits} but it says wrong"),
+                "the dashboard PIN is <removed> but it says wrong".into(),
+            ),
+            (
+                format!("my passphrase is \"{phrase}\" and Immich refuses it"),
+                "my passphrase is <removed> and Immich refuses it".into(),
+            ),
+            (
+                format!("the password to plex is {word}"),
+                "the password to <removed>".into(),
+            ),
+            (
+                format!("first line\nPasswords are {word}\nlast line"),
+                "first line\nPasswords are <removed>\nlast line".into(),
+            ),
+        ];
+        for (typed, wanted) in cases {
+            let said = redact(&typed, &[]);
+            assert_eq!(said, wanted, "{typed}");
+            for secret in [&word, &digits, &phrase] {
+                assert!(!said.contains(secret.as_str()), "{said}");
+            }
+        }
+        // Ordinary sentences and log lines keep every word.
+        for line in [
+            "The password is wrong",
+            "Why is my password not accepted?",
+            "Jellyfin says the password is incorrect.",
+            "the password to log in is refused",
+            "Enter your password to continue",
+            "the password for Jellyfin is not saved",
+            "the password was changed yesterday",
+            "Is the PIN needed on this PC too?",
+            "taskset: pin to core 3",
+            "password is required",
+            "FATAL:  password authentication failed for user \"postgres\"",
+        ] {
+            assert_eq!(redact(line, &[]), line);
+        }
     }
 
     #[test]

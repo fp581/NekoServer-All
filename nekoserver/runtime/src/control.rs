@@ -1665,7 +1665,11 @@ mod tests {
                 .to_string(),
         )
         .unwrap();
-        let typed = format!("Jellyfin refuses {saved} and tailscale said {key}: why?");
+        // One written out in a sentence: not a saved login, not shaped like a key.
+        let spoken = ["Blue", "-Horse-", "77"].concat();
+        let typed = format!(
+            "Jellyfin refuses {saved} and tailscale said {key}, and I changed the Immich password to {spoken} today: why?"
+        );
         let ready = ask(
             &json!({}),
             &data,
@@ -1680,9 +1684,9 @@ mod tests {
             back.starts_with("Jellyfin refuses ") && back.ends_with(": why?"),
             "{back}"
         );
-        // Neither value is in the question the page keeps, nor anywhere else in the answer.
+        // None of the values is in the question the page keeps, nor anywhere else in the answer.
         let whole = ready.to_string();
-        for planted in [&saved, &key] {
+        for planted in [&saved, &key, &spoken] {
             assert!(!back.contains(planted.as_str()), "{back}");
             assert!(!whole.contains(planted.as_str()), "{whole}");
         }
