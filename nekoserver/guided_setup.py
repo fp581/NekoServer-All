@@ -641,12 +641,15 @@ MEDIA_EXPLAINED = (
 )
 GROUP_EXPLAINED = {
     'photos': ('', 'Photos: Immich, your own photo backup and gallery, with its archive and its weekly USB copy.'),
-    'movies': ('', 'Movies and TV: Jellyfin, to watch the films and shows you have; with video on the graphics chip.'),
+    'movies': (
+        '',
+        'Movies and shows: Jellyfin, to watch the films and shows you have; with video on the graphics chip.',
+    ),
     'music': ('', 'Music: Navidrome, your music player, with the music backup.'),
     'downloads': (
         '',
         'Automatic downloads: tools that find and download media you are entitled to access. Prowlarr and',
-        'qBittorrent; with Movies and TV also Sonarr, Radarr and Seerr; with Music also Lidarr.',
+        'qBittorrent; with Movies and shows also Sonarr, Radarr and Seerr; with Music also Lidarr.',
     ),
 }
 
@@ -701,7 +704,7 @@ def choose_media_apps(ctx, prompt=None, output=None):
 
 
 def asked_media_apps(ctx, prompt=None, output=None):
-    """Ask which media groups to install (Photos, Movies and TV, Music, and the automatic
+    """Ask which media groups to install (Photos, Movies and shows, Music, and the automatic
     downloads: a yes or no each) and save the answers under "media_apps". Setup's first
     page (wizard.wait_to_start, the setup window) saves every one of them, so this asks
     only when setup runs without that page (installer.py itself), at the drives step,

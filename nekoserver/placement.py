@@ -69,7 +69,7 @@ OLD_LOCATIONS = {'photos': 'photos', 'movies': 'movies', 'music': 'music', CLOUD
 
 def apps_of(row):
     """The apps whose settings a row's installation drive holds. The download apps
-    (Lidarr among them) are installed with Movies and TV."""
+    (Lidarr among them) are installed with Movies and shows."""
     if row == CLOUD:
         return ['nextcloud']
     if row not in MEDIA_GROUPS:
@@ -88,7 +88,7 @@ def install_folders(row):
 def applies(config, row):
     """The row is part of this server: its group is on (Nextcloud: switched on)."""
     if row == 'movies':
-        # The download apps live in this row too (music found by Lidarr, with Movies and TV off).
+        # The download apps live in this row too (music found by Lidarr, with Movies and shows off).
         return media_group(config, row) or media_group(config, DOWNLOADS)
     if row in MEDIA_GROUPS:
         return media_group(config, row)

@@ -351,7 +351,7 @@ class StepTests(unittest.TestCase):
             (tv, 'TV setup: left out, as Movies and shows is switched off (the TV mode opens Jellyfin)'),
             (
                 onboarding,
-                'Connecting the apps: Movies and TV and the downloads are switched off, so there is nothing to connect',
+                'Connecting the apps: Movies and shows and the downloads are switched off, so there is nothing to connect',
             ),
             (hardware_video, 'Hardware video: neither Jellyfin nor Immich runs on this server; nothing to switch over'),
         ):

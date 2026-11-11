@@ -109,8 +109,8 @@ EXTRAS = (
         'part': 'apps',
         'on_default': True,
         'step': 'media',
-        'title': 'Movies and TV shows - Jellyfin',
-        'explanation': 'Watch videos you already have from your TV, phone or browser.',
+        'title': 'Movies and shows - Jellyfin',
+        'explanation': 'Watch the films and shows you already have, on any of your devices.',
         'installs': (),
     },
     {
@@ -150,7 +150,7 @@ EXTRAS = (
         'step': 'media',
         'title': 'Set up automatic media downloads',
         'explanation': 'Adds tools for finding and downloading media you are entitled to access: Prowlarr and '
-        'qBittorrent; with Movies and TV shows also Sonarr, Radarr and Seerr; with Music also Lidarr. '
+        'qBittorrent; with Movies and shows also Sonarr, Radarr and Seerr; with Music also Lidarr. '
         'You can configure the search providers later.',
         'installs': (),
     },
@@ -162,7 +162,7 @@ EXTRAS = (
         'on_default': True,
         'new_default': False,
         'step': 'tv',
-        'title': 'Use this PC with a TV',
+        'title': 'A TV connected to this PC',
         'explanation': 'Steam Big Picture for Remote Play from your gaming PC, a YouTube shortcut and Bluetooth for a '
         'controller. Leave it off if this PC has no TV; your apps work on your other devices either way.',
         'installs': ('steam', 'steam-devices', 'vulkan-intel', 'lib32-vulkan-intel', 'firefox', 'bluez'),

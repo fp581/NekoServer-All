@@ -103,7 +103,7 @@
     {
       "id": "jellyfin",
       "name": "Jellyfin",
-      "role": "Movies & TV shows",
+      "role": "Movies & shows",
       "port": 8096,
       "media": true,
       "groups": ["movies"],

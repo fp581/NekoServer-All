@@ -294,7 +294,7 @@ class StepTests(unittest.TestCase):
         [(title, steps)] = parts
         self.assertEqual(title, 'Set up your phone')
         logins = {step['title']: step.get('logins', []) for step in steps}
-        self.assertEqual(logins['Jellyfin: movies and TV'], ['jellyfin'])
+        self.assertEqual(logins['Jellyfin: movies and shows'], ['jellyfin'])
         # Navidrome's login on the phone is the one this server gives the person (item 11).
         self.assertEqual(logins['Navidrome: music'], ['navidrome_listener'])
         self.assertEqual(logins['Tailscale on the phone'], [])

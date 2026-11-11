@@ -56,7 +56,7 @@ MUSIC_SIGN_IN_BEFORE = (
 
 APPS = {
     'jellyfin': {
-        'title': 'Jellyfin: movies and TV',
+        'title': 'Jellyfin: movies and shows',
         'iphone': 'Jellyfin (App Store)',
         'android': 'Jellyfin (Google Play)',
         'steps': [

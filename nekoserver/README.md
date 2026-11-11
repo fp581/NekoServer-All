@@ -10,7 +10,7 @@ It does **not** install Linux and it **never formats a drive**. You prepare thos
 
 | App | What it does | Where your files live |
 | --- | --- | --- |
-| **Jellyfin** | Watch your movies and TV shows on a TV, phone or browser | HDD |
+| **Jellyfin** | Watch your movies and shows on a TV, phone or browser | HDD |
 | **Seerr** | Request a movie or show; it is found and added for you | |
 | **Sonarr / Radarr / Lidarr** | Find and organise TV shows / movies / music | |
 | **Prowlarr** | Manages the sources Sonarr, Radarr and Lidarr search | |

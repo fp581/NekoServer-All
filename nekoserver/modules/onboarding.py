@@ -32,7 +32,9 @@ def run(ctx):
     if not apps_to_connect(ctx.config):
         # Jellyfin with its libraries, and the download apps, are what this step connects
         # (and asks about: the download sources, the indexers, the playback test).
-        ctx.log('Connecting the apps: Movies and TV and the downloads are switched off, so there is nothing to connect')
+        ctx.log(
+            'Connecting the apps: Movies and shows and the downloads are switched off, so there is nothing to connect'
+        )
         return
     if account_store.enabled(ctx.config) and 'accounts' in getattr(ctx, 'plan', ()):
         required = account_store.selected(ctx.config, ['media'])

@@ -841,7 +841,7 @@ TOP_FOLDERS = ('mnt', 'srv', 'home', 'var', 'tmp')
 
 
 # Where each app keeps your files, chosen at setup ("locations": "ssd" or "media"; the
-# apps' settings and databases always stay on the SSD, movies and TV on the media drive).
+# apps' settings and databases always stay on the SSD, movies and shows on the media drive).
 # Downloads live with the music: Lidarr moves finished downloads into the library, which
 # works only on one drive. A setting missing is the layout before 0.46.0.
 # Where each app's files live by default (shared with the runtime).
@@ -1371,17 +1371,17 @@ MEDIA_SECTION = 'media_apps'
 MEDIA_GROUPS = ('photos', 'movies', 'music')
 GROUP_NAMES = {
     'photos': 'Photos (Immich)',
-    'movies': 'Movies and TV (Jellyfin)',
+    'movies': 'Movies and shows (Jellyfin)',
     'music': 'Music (Navidrome)',
 }
 # Finding and downloading films, shows and music is a switch of its own (the wizard of
 # 0.50.0: playing and downloading are different wishes), saved as "downloads" beside the
-# groups. It holds Prowlarr and qBittorrent; with Movies and TV also Sonarr, Radarr and
+# groups. It holds Prowlarr and qBittorrent; with Movies and shows also Sonarr, Radarr and
 # Seerr; with Music also Lidarr. It does nothing without one of those two.
 # - A new server: off until the person switches it on (setup's first page, or its
 #   question in the terminal).
-# - A server that has no answer for it: as Movies and TV is, because until this switch
-#   existed the download apps were set up with Movies and TV, and an upgrade must not
+# - A server that has no answer for it: as Movies and shows is, because until this switch
+#   existed the download apps were set up with Movies and shows, and an upgrade must not
 #   stop them (or add them where they were left out).
 DOWNLOADS = 'downloads'
 DOWNLOADS_NAME = 'Automatic media downloads (Sonarr, Radarr, Lidarr, Prowlarr, qBittorrent, Seerr)'

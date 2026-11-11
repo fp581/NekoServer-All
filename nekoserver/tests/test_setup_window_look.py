@@ -48,9 +48,9 @@ CHOOSE = {
     'version': '0.50.0',
     'phase': 'choose',
     'extras': [
-        extra('media_movies', 'Movies and TV shows - Jellyfin', installs=0),
+        extra('media_movies', 'Movies and shows - Jellyfin', installs=0),
         extra('nextcloud', 'Personal files - Nextcloud'),
-        extra('tv', 'Use this PC with a TV', part='Optional extras', installs=6),
+        extra('tv', 'A TV connected to this PC', part='Optional extras', installs=6),
         extra('notifications', 'Send alerts to my phone', part='Optional extras'),
         extra(
             'network_storage',
@@ -220,7 +220,7 @@ class NothingMovesTests(unittest.TestCase):
             'steps': [
                 {'id': 'tailscale', 'title': 'Tailscale on the phone', 'done': False,
                  'lines': ['Install Tailscale on the phone from the App Store or Google Play, long enough to wrap.']},
-                {'id': 'jellyfin', 'title': 'Jellyfin: movies and TV', 'lines': ['Open the app.'], 'done': False},
+                {'id': 'jellyfin', 'title': 'Jellyfin: movies and shows', 'lines': ['Open the app.'], 'done': False},
                 {'id': 'immich', 'title': 'Immich: photos', 'lines': ['Open the app.'], 'done': True},
             ],
         }  # fmt: skip
@@ -237,7 +237,7 @@ class NothingMovesTests(unittest.TestCase):
                     measured['switches'],
                     [
                         ['checkbox', 'switch', 'Done: Tailscale on the phone', True],
-                        ['checkbox', 'switch', 'Done: Jellyfin: movies and TV', True],
+                        ['checkbox', 'switch', 'Done: Jellyfin: movies and shows', True],
                         ['checkbox', 'switch', 'Done: Immich: photos', False],  # done last time: not to be changed
                     ],
                 )

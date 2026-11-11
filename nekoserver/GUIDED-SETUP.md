@@ -154,7 +154,7 @@ If you did not switch it off in the window, setup asks whether a TV is connected
 Setup opens a **phone setup page** on the PC with a QR code for each app. Keep it open. For each app, the terminal tells you which phone app to install and what to type.
 
 1. **Tailscale first.** Install **Tailscale** on the phone (or scan the first QR code), sign in with the **same account** as in step 3, allow the VPN, and switch it on. Answer `yes` once the phone app says **Connected**.
-2. **Then each app**, one at a time: Jellyfin (movies and TV), Seerr (requests), Immich (photos), Navidrome (music), Nextcloud (files) and the dashboard. Scan the app's QR code with the phone camera to open its address, or type the address shown.
+2. **Then each app**, one at a time: Jellyfin (movies and shows), Seerr (requests), Immich (photos), Navidrome (music), Nextcloud (files) and the dashboard. Scan the app's QR code with the phone camera to open its address, or type the address shown.
 3. **Signing in.** The terminal shows the app's username. To see its password, open a **second terminal** on the PC (Ctrl+Alt+T) and run the command the step shows, for example:
 
    ```bash

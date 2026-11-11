@@ -710,7 +710,7 @@ class CatCompanionTests(unittest.TestCase):
     def test_an_apps_name_and_ports_are_the_ones_the_server_sends(self):
         """The review of 0.47.1: the page kept its own names, descriptions and ports for
         the apps (worded differently from setup's); they come from each app's row now."""
-        row = {'id': 'jellyfin', 'name': 'Jellyfin', 'description': 'Movies & TV shows', 'port': 8096, 'tailnet': 8443}
+        row = {'id': 'jellyfin', 'name': 'Jellyfin', 'description': 'Movies & shows', 'port': 8096, 'tailnet': 8443}
         spec, odd, shortcut = page(
             ('appSpec', {'id': 'jellyfin', 'app': row}),
             ('appSpec', {'id': 'jellyfin', 'app': {**row, 'port': 99999, 'tailnet': 'x'}}),
@@ -718,7 +718,7 @@ class CatCompanionTests(unittest.TestCase):
         )
         self.assertEqual(
             {k: spec[k] for k in ('name', 'description', 'port', 'tailnet', 'icon')},
-            {'name': 'Jellyfin', 'description': 'Movies & TV shows', 'port': 8096, 'tailnet': 8443, 'icon': '▶'},
+            {'name': 'Jellyfin', 'description': 'Movies & shows', 'port': 8096, 'tailnet': 8443, 'icon': '▶'},
         )
         self.assertEqual((odd['port'], odd['tailnet']), (None, None))
         self.assertEqual(shortcut['name'], 'YouTube')

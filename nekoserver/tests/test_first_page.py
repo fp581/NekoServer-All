@@ -44,11 +44,11 @@ class PageTests(Base):
             rows,
             [
                 ('apps', 'Photos and phone backup - Immich'),
-                ('apps', 'Movies and TV shows - Jellyfin'),
+                ('apps', 'Movies and shows - Jellyfin'),
                 ('apps', 'Music - Navidrome'),
                 ('apps', 'Personal files - Nextcloud'),
                 ('downloads', 'Set up automatic media downloads'),
-                ('extras', 'Use this PC with a TV'),
+                ('extras', 'A TV connected to this PC'),
                 ('extras', 'Send alerts to my phone'),
                 ('extras', 'Warn me if the server stops checking in'),
                 ('extras', 'Add a local AI assistant'),
@@ -112,7 +112,7 @@ class PageTests(Base):
         self.assertEqual(
             review['Apps to install'],
             [
-                'Jellyfin: movies & TV shows',
+                'Jellyfin: movies & shows',
                 'Navidrome: your music, everywhere',
                 'Sonarr: manage your TV library',
                 'Radarr: manage your movie library',
@@ -177,10 +177,10 @@ class TerminalTests(Base):
         self.assertTrue(started)
         self.assertEqual(len(asked), 1)  # the one approval
         self.assertIn('=== What would you like this server to do? ===', said)
-        self.assertIn(' [x]  2. Movies and TV shows - Jellyfin', said)
+        self.assertIn(' [x]  2. Movies and shows - Jellyfin', said)
         self.assertIn(' [ ]  5. Set up automatic media downloads', said)
         self.assertIn('=== Ready to install NekoServer ===', said)
-        self.assertIn('  - Jellyfin: movies & TV shows', said)
+        self.assertIn('  - Jellyfin: movies & shows', said)
         # Yes saved every part with its answer.
         self.assertEqual(saved['media_apps'], {'photos': True, 'movies': True, 'music': True, 'downloads': False})
         self.assertEqual(saved['tv'], {'wanted': False})
@@ -205,7 +205,7 @@ class TerminalTests(Base):
         started, asked, said, saved = self.run_page('5', 'no')
         self.assertIn(
             '"Set up automatic media downloads" needs one of these switched on first: '
-            'Movies and TV shows - Jellyfin or Music - Navidrome.',
+            'Movies and shows - Jellyfin or Music - Navidrome.',
             said,
         )
         self.assertNotIn('downloads', saved['media_apps'])

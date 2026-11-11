@@ -1163,7 +1163,7 @@ class ReadyToStartTests(unittest.TestCase):
         window = self.window()
         with self.pipe('2 6\nno\n') as stdin, mock.patch('sys.stdout'):
             self.assertFalse(wizard.wait_to_start(self.path, builtins.input, lambda line: None, window, stdin))
-        # Line 2 (Movies and TV shows) was on, line 6 (a TV) off on a new server.
+        # Line 2 (Movies and shows) was on, line 6 (a TV) off on a new server.
         window.choose.assert_called_once_with({'media_movies': False, 'tv': True}, start=False)
 
     def test_without_a_window_or_in_tests_the_plain_question_is_asked(self):

@@ -123,7 +123,7 @@ class MembershipTests(unittest.TestCase):
         # Nothing to download for: the switch does nothing.
         self.assertEqual(apps(settings(**only('photos'), downloads=True)), [])
         self.assertFalse(neko_common.media_group(settings(**only('photos'), downloads=True), 'downloads'))
-        # With no answer of its own it is as Movies and TV is: what every server had before
+        # With no answer of its own it is as Movies and shows is: what every server had before
         # the switch existed, so an upgrade neither stops the download apps nor adds them.
         self.assertEqual(apps(settings()), SERVICES)
         self.assertEqual(apps(settings(**only('movies'))), MOVIES)
@@ -309,7 +309,7 @@ class WindowTests(unittest.TestCase):
                 shown,
                 {
                     'media_photos': ('Photos and phone backup - Immich', True, 'Apps'),
-                    'media_movies': ('Movies and TV shows - Jellyfin', True, 'Apps'),
+                    'media_movies': ('Movies and shows - Jellyfin', True, 'Apps'),
                     'media_music': ('Music - Navidrome', True, 'Apps'),
                 },
             )
@@ -359,7 +359,7 @@ class StepTests(unittest.TestCase):
         ctx = context(config)
         self.assertIsNone(onboarding.run(ctx))
         self.assertIn(
-            'Connecting the apps: Movies and TV and the downloads are switched off, so there is nothing to connect',
+            'Connecting the apps: Movies and shows and the downloads are switched off, so there is nothing to connect',
             ctx.logs,
         )
         self.assertIsNone(tv.run(context(config)))

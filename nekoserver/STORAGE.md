@@ -28,7 +28,7 @@ Setup asks once, after the drives are chosen, where three things go: **Immich's 
 - **Photos on the media drive:** the weekly photo archive copy (`photos/archive`) is always on the media drive, so it is then on the same drive as the photos. It keeps older versions, but losing that drive (or the NAS it is on) loses both: the weekly USB backup is then your only copy on another drive. Setup says so, and asks for the USB drive.
 - Nextcloud's files: the media drive is offered first, because they keep growing and don't need the speed. You can still choose the SSD.
 
-The apps' settings and databases always stay on the SSD, and movies and TV on the media drive. Every backup, restore, check and update follows your choice. The weekly copies, the photo archive, the repair menu, the monthly snapshot and the update's checks all read where the files are from your settings (`"locations"` in `my-config.json`).
+The apps' settings and databases always stay on the SSD, and movies and shows on the media drive. Every backup, restore, check and update follows your choice. The weekly copies, the photo archive, the repair menu, the monthly snapshot and the update's checks all read where the files are from your settings (`"locations"` in `my-config.json`).
 
 A place that already holds files stays where it is: servers set up before 0.46.0 keep photos and music on the SSD. Changing `"locations"` by hand while the files are still on the other drive stops setup, because the app would start with an empty folder. Moving them is a job of its own: stop the apps, copy the folder with `rsync -aHAX`, then change the setting.
 

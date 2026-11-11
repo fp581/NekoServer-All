@@ -185,7 +185,7 @@ class SetupWindowTests(unittest.TestCase):
         """0.50.0, the wizard: the switches under their headings, Continue, the review of
         what will be installed with Back, and one button that starts it."""
         extras = [
-            {'id': 'media_movies', 'title': 'Movies and TV shows - Jellyfin', 'part': 'Apps', 'needs': [], 'on': False},
+            {'id': 'media_movies', 'title': 'Movies and shows - Jellyfin', 'part': 'Apps', 'needs': [], 'on': False},
             {'id': 'media_music', 'title': 'Music - Navidrome', 'part': 'Apps', 'needs': [], 'on': False},
             {
                 'id': 'media_downloads',
@@ -194,13 +194,13 @@ class SetupWindowTests(unittest.TestCase):
                 'needs': ['media_movies', 'media_music'],
                 'on': False,
             },
-            {'id': 'tv', 'title': 'Use this PC with a TV', 'part': 'Optional extras', 'needs': [], 'on': False},
+            {'id': 'tv', 'title': 'A TV connected to this PC', 'part': 'Optional extras', 'needs': [], 'on': False},
         ]
         extras = [{'explanation': '', 'installs': [], **extra} for extra in extras]
         review = {
             'title': 'Ready to install NekoServer',
             'button': 'Install selected apps',
-            'sections': [{'title': 'Apps to install', 'lines': ['Jellyfin: movies & TV shows']}],
+            'sections': [{'title': 'Apps to install', 'lines': ['Jellyfin: movies & shows']}],
         }
         state = {**self.choose(), 'extras': extras, 'review': review}
         seen = self.page([state])
@@ -220,7 +220,7 @@ class SetupWindowTests(unittest.TestCase):
         seen = self.page([{**state, 'continue': True}])
         self.assertEqual((seen['review']['appsHidden'], seen['review']['hidden']), (True, False))
         self.assertEqual(seen['review']['title'], 'Ready to install NekoServer')
-        self.assertEqual(seen['review']['sections'], [['Apps to install', ['Jellyfin: movies & TV shows']]])
+        self.assertEqual(seen['review']['sections'], [['Apps to install', ['Jellyfin: movies & shows']]])
         self.assertEqual(seen['start'], [False, 'Install selected apps'])
         self.assertEqual(seen['posts'], [])
         # Back: the switches again.
@@ -680,7 +680,7 @@ class SetupWindowTests(unittest.TestCase):
         'question': 'Is your phone set up, and did an app open on mobile data?',
         'steps': [
             {'id': 'tailscale', 'title': 'Tailscale on the phone', 'lines': ['Install it.', 'Turn it on.'], 'done': False},
-            {'id': 'jellyfin', 'title': 'Jellyfin: movies and TV', 'lines': ['Open the app.'], 'done': True},
+            {'id': 'jellyfin', 'title': 'Jellyfin: movies and shows', 'lines': ['Open the app.'], 'done': True},
             {'id': 'away_from_home', 'title': 'Check it works away from home', 'lines': ['Turn off Wi-Fi.'], 'done': False},
         ],
     }  # fmt: skip
@@ -700,8 +700,8 @@ class SetupWindowTests(unittest.TestCase):
                     'on': False, 'off': False, 'role': 'switch', 'label': 'Done: Tailscale on the phone',
                 },
                 {
-                    'title': '2. Jellyfin: movies and TV (done last time)', 'lines': [], 'caption': 'yes',
-                    'on': True, 'off': True, 'role': 'switch', 'label': 'Done: Jellyfin: movies and TV',
+                    'title': '2. Jellyfin: movies and shows (done last time)', 'lines': [], 'caption': 'yes',
+                    'on': True, 'off': True, 'role': 'switch', 'label': 'Done: Jellyfin: movies and shows',
                 },
                 {
                     'title': '3. Check it works away from home', 'lines': ['Turn off Wi-Fi.'], 'caption': 'not yet',

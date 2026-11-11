@@ -1455,7 +1455,7 @@ mod media_answer_tests {
         let photos = with(json!({"photos": true, "movies": false, "music": false}));
         assert!(immich_wanted(&photos) && media_wanted(&photos));
         assert!(media_services(&photos).is_empty());
-        // Music alone: Navidrome (the downloads, with no answer, are as Movies and TV is: off).
+        // Music alone: Navidrome (the downloads, with no answer, are as Movies and shows is: off).
         let music = with(json!({"photos": false, "movies": false, "music": true}));
         assert_eq!(media_services(&music), ["navidrome"]);
         assert!(!immich_wanted(&music));
@@ -1474,7 +1474,7 @@ mod media_answer_tests {
         );
         // The downloads are a switch of their own (neko_common.DOWNLOADS): playing without
         // downloading, music downloads without the film player, and nothing to download
-        // for with neither. Without an answer they are as Movies and TV is (above).
+        // for with neither. Without an answer they are as Movies and shows is (above).
         let playing =
             with(json!({"photos": false, "movies": true, "music": true, "downloads": false}));
         assert_eq!(media_services(&playing), ["jellyfin", "navidrome"]);

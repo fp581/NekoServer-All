@@ -1,14 +1,14 @@
 # NekoServer
 
 <p align="center">
-  <img src="docs/media/nekoserver-overview.webp" alt="NekoServer: turn your Linux PC into a home media server. Movies and TV, requests and downloads, music, phone photo backup, private files, a live hardware dashboard, backups and recovery, private remote access, guided setup." width="480">
+  <img src="docs/media/nekoserver-overview.webp" alt="NekoServer: turn your Linux PC into a home media server. Movies and shows, requests and downloads, music, phone photo backup, private files, a live hardware dashboard, backups and recovery, private remote access, guided setup." width="480">
 </p>
 
 **Turn a Linux PC into a home media server**, with your own video library, phone photo backup, music streaming and private cloud drive, set up by one guided installer that creates every account, connects the apps to each other and walks you through anything that needs you, one yes/no step at a time. It never formats a drive.
 
 | | |
 | --- | --- |
-| 🎬 **Movies & TV** | Jellyfin, with Seerr for requests and Sonarr / Radarr / Prowlarr / qBittorrent to find and download |
+| 🎬 **Movies & shows** | Jellyfin, with Seerr for requests and Sonarr / Radarr / Prowlarr / qBittorrent to find and download |
 | 📷 **Photos** | Immich: automatic backup from your phone |
 | 🎵 **Music** | Navidrome (with Lidarr) |
 | ☁️ **Files** | Nextcloud: your own cloud drive, and Samba folders on the home network |
