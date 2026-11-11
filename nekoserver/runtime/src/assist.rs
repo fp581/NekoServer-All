@@ -301,9 +301,48 @@ pub fn item_id(value: &Value) -> Option<&str> {
     })
 }
 
+/// Said to the model in place of the readings when there are none (the collector has
+/// not run, or its file cannot be read): never "nothing needs attention", which nobody
+/// looked for.
+pub const NO_READINGS: &str =
+    "The dashboard's readings could not be read, so how the server is now is not known. \
+Say that you cannot see the readings; do not say that nothing needs attention.";
+/// Readings older than this are not "now" (the collector writes them every minute).
+const FRESH_SECONDS: f64 = 300.0;
+
+/// How long ago, in the largest unit that fits: "12 minutes", "3 hours", "2 days".
+fn ago(seconds: f64) -> String {
+    let (n, unit) = match seconds {
+        s if s < 7200.0 => ((s / 60.0).round(), "minute"),
+        s if s < 172_800.0 => ((s / 3600.0).round(), "hour"),
+        s => ((s / 86_400.0).round(), "day"),
+    };
+    format!("{n:.0} {unit}{}", if n == 1.0 { "" } else { "s" })
+}
+
+/// The readings for the model, under a line that says when they were taken: "now" only
+/// while they are fresh; older ones say how old (the collector stopped, or the app SSD
+/// was away), and missing ones say so (NO_READINGS). `now`: the time, in seconds.
+pub fn summary(status: &Value, now: f64) -> String {
+    let Some(taken) = status["generated_at"].as_f64() else {
+        return NO_READINGS.into();
+    };
+    let age = (now - taken).max(0.0);
+    let heading = if age < FRESH_SECONDS {
+        "The dashboard now:".to_string()
+    } else {
+        format!(
+            "The dashboard as it was {} ago (its readings have not been updated since, so the server may be \
+             different now; say how old they are):",
+            ago(age)
+        )
+    };
+    format!("{heading}\n{}", readings(status))
+}
+
 /// A short summary of the readings: what needs attention, the backups, the drives, the
 /// apps. Plain lines, at most SUMMARY_CHARS characters.
-pub fn summary(status: &Value) -> String {
+fn readings(status: &Value) -> String {
     let rows = |key: &str| status[key].as_array().cloned().unwrap_or_default();
     let text = |v: &Value| v.as_str().unwrap_or("").to_string();
     let mut lines = vec![format!(
@@ -506,11 +545,7 @@ pub fn messages(
          If the problem looks like a bug in NekoServer itself, end with a part that starts \"BUG REPORT:\": what \
          failed, what the log shows, and a fix you suggest in words."
     );
-    let mut user = format!(
-        "{}\n\nThe dashboard now:\n{}",
-        redact(question, known),
-        redact(summary, known)
-    );
+    let mut user = format!("{}\n\n{}", redact(question, known), redact(summary, known));
     if let Some((words, log)) = about {
         user.push_str(&format!(
             "\n\nThe problem asked about:\n{}",
@@ -1241,13 +1276,58 @@ mod tests {
             "backups": [{"id": "host", "name": "Host and user snapshot", "status": "fail", "reason": "No space left"}],
             "storage": [{"name": "Media HDD", "status": "mounted", "total": 20_000_000_000u64, "used": 8_000_000_000u64}],
             "applications": [{"name": "Jellyfin", "state": "running", "health": "unhealthy"}]});
-        let s = summary(&status);
+        let s = readings(&status);
         assert!(s.contains("NekoServer 0.49.0"));
         assert!(s.contains("Needs attention: Host and user snapshot failed (critical)"));
         assert!(s.contains("Backup Host and user snapshot: fail (No space left)"));
         assert!(s.contains("Drive Media HDD: mounted, 12.0 GB free"));
         assert!(s.contains("App Jellyfin: running, unhealthy"));
-        assert!(summary(&json!({})).contains("Nothing needs attention"));
+    }
+
+    /// Review of 0.49.0: an unreadable status file became {} and the model was told
+    /// "Nothing needs attention"; an old snapshot was handed over as "The dashboard now".
+    #[test]
+    fn missing_or_old_readings_are_never_passed_off_as_current() {
+        let now = 1_800_000_000.0;
+        // No readings (the file is missing, empty or not JSON: common::json gives {}).
+        for none in [json!({}), json!(null), json!({"version": "0.50.0"})] {
+            let s = summary(&none, now);
+            assert_eq!(s, NO_READINGS, "{none}");
+            assert!(!s.contains("Nothing needs attention.\n"));
+        }
+        let taken =
+            |age: f64| json!({"version": "0.50.0", "generated_at": now - age, "alerts": []});
+        // Fresh: "now", and with nothing in the list, nothing needs attention.
+        let fresh = summary(&taken(40.0), now);
+        assert!(
+            fresh.starts_with("The dashboard now:\nNekoServer 0.50.0\nNothing needs attention."),
+            "{fresh}"
+        );
+        // Old: how old, never "now".
+        for (age, said) in [
+            (20.0 * 60.0, "20 minutes"),
+            (3.0 * 3600.0, "3 hours"),
+            (2.0 * 86_400.0, "2 days"),
+            (3600.0, "60 minutes"),
+        ] {
+            let old = summary(&taken(age), now);
+            assert!(
+                old.starts_with(&format!("The dashboard as it was {said} ago")),
+                "{old}"
+            );
+            assert!(!old.contains("The dashboard now"), "{old}");
+        }
+        // A clock set back never makes readings look old (or negative).
+        assert!(summary(&taken(-500.0), now).starts_with("The dashboard now:"));
+        // The model is handed the summary's own heading, not a fixed "now".
+        let m = messages("why", &summary(&taken(7200.0), now), None, &[], &[]);
+        let user = m[1]["content"].as_str().unwrap();
+        assert!(
+            user.contains("as it was 2 hours ago") && !user.contains("The dashboard now"),
+            "{user}"
+        );
+        let source = include_str!("control.rs");
+        assert!(source.contains("assist::summary(status, common::now())"));
     }
 
     /// Review of 0.49.0: the summary read a drive's "free", which the collector never
@@ -1263,19 +1343,19 @@ mod tests {
         );
         assert!(row.get("total").is_some() && row.get("used").is_some());
         assert!(row.get("free").is_none(), "the collector gives no \"free\"");
-        let not_mounted = summary(&json!({"storage": [row.clone()]}));
+        let not_mounted = readings(&json!({"storage": [row.clone()]}));
         assert!(
             not_mounted.contains("Drive Media HDD: mounted, ? free"),
             "{not_mounted}"
         );
         row["total"] = json!(2_000_000_000_000u64);
         row["used"] = json!(1_487_500_000_000u64);
-        let s = summary(&json!({"storage": [row]}));
+        let s = readings(&json!({"storage": [row]}));
         assert!(s.contains("Drive Media HDD: mounted, 512.5 GB free"), "{s}");
         // A reading that makes no sense (more used than there is) is never a negative.
         let odd =
             json!({"storage": [{"name": "SSD", "status": "mounted", "total": 10, "used": 20}]});
-        assert!(summary(&odd).contains("Drive SSD: mounted, 0.0 GB free"));
+        assert!(readings(&odd).contains("Drive SSD: mounted, 0.0 GB free"));
     }
 
     #[test]

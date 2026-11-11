@@ -1000,7 +1000,7 @@ fn ask(cfg: &Value, data: &Path, status: &Value, model: &str, request: &Value) -
     let repairs = assist::offered(cfg, status, data);
     let messages = assist::messages(
         &question,
-        &assist::summary(status),
+        &assist::summary(status, common::now()),
         about.as_ref().map(|(w, l)| (w.as_str(), l.as_str())),
         &repairs,
         &known,
