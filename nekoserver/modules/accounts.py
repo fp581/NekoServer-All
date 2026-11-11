@@ -32,7 +32,21 @@ def run(ctx):
             'status': 'needs_setup',
             'reason': 'Account setup pending for: ' + ', '.join(pending) + '; saved passwords preserved',
         }
-    ctx.log('Selected app logins verified; private APP-CREDENTIALS.txt updated')
+    ctx.log('Selected app logins verified and saved.')
+    for line in where_saved(ctx.config):
+        ctx.log(line)
+
+
+def where_saved(config):
+    """Where the logins are, and how to see one: said wherever the account step ends. The
+    file is the administrator's alone, so naming it without the command that shows a
+    login left a beginner with a path they could not open (the setup review, S4)."""
+    command = guided_setup.login_command(config, '').rstrip()
+    return [
+        'The logins are saved on the app SSD, in a file only the administrator can read.',
+        f'To see one on this screen, with a QR code for a phone:  {command}  (it lists the apps: choose one by '
+        'its number; add the app, such as jellyfin, to go straight to it).',
+    ]
 
 
 def finish_pending(ctx, pending):

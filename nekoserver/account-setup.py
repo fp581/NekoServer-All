@@ -11,7 +11,7 @@ import sys
 
 import account_store
 import account_setup
-from modules.accounts import finish_pending
+from modules.accounts import finish_pending, where_saved
 from types import SimpleNamespace
 from neko_common import (
     safe_path,
@@ -258,7 +258,8 @@ def main():
         pending = account_setup.provision(config, apps)
     pending = finish_pending(SimpleNamespace(config=config, apply=True, log=print), pending)
     passed_on = pass_on_qbittorrent(args.config, config, apps, before)
-    print('Private credential inventory: ' + str(account_store.folder(config) / 'APP-CREDENTIALS.txt'))
+    for line in where_saved(config):
+        print(line)
     return 1 if pending or not passed_on else 0
 
 

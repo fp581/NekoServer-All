@@ -33,6 +33,46 @@ class Screen:
         return self.tty
 
 
+class WhereTheLoginsAreTests(unittest.TestCase):
+    """The setup review (S4): the account step run by hand ended with "Private credential
+    inventory: <a file only root can read>" and no word on how to see a password."""
+
+    def test_every_ending_of_the_account_step_says_how_to_show_a_login(self):
+        from modules import accounts
+        from neko_common import VERSION
+
+        with tempfile.TemporaryDirectory() as folder:
+            config = {'data_mount': folder}
+            where, how = accounts.where_saved(config)
+        self.assertIn('a file only the administrator can read', where)
+        self.assertNotIn('/', where)  # no path to a file a beginner cannot open
+        self.assertIn(f'sudo python3 {folder}/installer/releases/v{VERSION}/account-setup.py show  (it lists', how)
+        self.assertIn('QR code', how)
+        # Both endings use it: the step in setup and account-setup.py run by hand; neither
+        # names the file alone any more, nor tells anyone to read it with cat.
+        by_hand = (ROOT / 'account-setup.py').read_text()
+        step = (ROOT / 'modules/accounts.py').read_text()
+        self.assertIn('for line in where_saved(config):', by_hand)
+        self.assertIn('for line in where_saved(ctx.config):', step)
+        for source in (by_hand, step):
+            self.assertNotIn('Private credential inventory', source)
+            self.assertNotIn('private APP-CREDENTIALS.txt updated', source)
+            self.assertNotIn('sudo cat', source)
+
+    def test_no_other_message_of_setup_points_at_the_file_alone(self):
+        """Every file of setup that names the passwords file: only the one
+        that writes it, and the recovery menu, whose file is a copy taken out of a backup
+        and comes with the command that opens it."""
+        named = sorted(
+            path.relative_to(ROOT).as_posix()
+            for path in [*ROOT.glob('*.py'), *ROOT.glob('modules/*.py')]
+            if 'APP-CREDENTIALS.txt' in path.read_text(encoding='utf-8')
+        )
+        self.assertEqual(named, ['account_store.py', 'recovery_wizard.py'])
+        recovery = (ROOT / 'recovery_wizard.py').read_text(encoding='utf-8')
+        self.assertEqual(recovery.count('APP-CREDENTIALS.txt'), recovery.count('Open it with:  sudo cat'))
+
+
 class ShowLoginTests(unittest.TestCase):
     def run_show(self, app=None, answers=('',), tty=True, root=True, logins=LOGINS, qr=lambda text: ''):
         said, asked = [], list(answers)
