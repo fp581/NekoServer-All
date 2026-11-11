@@ -444,6 +444,17 @@ pub const NO_READINGS: &str =
 Say that you cannot see the readings; do not say that nothing needs attention.";
 /// Readings older than this are not "now" (the collector writes them every minute).
 const FRESH_SECONDS: f64 = 300.0;
+/// Readings stamped further ahead of the clock than this have no known age (the
+/// collector's own rule for a saved time: collect.rs trusts none more than a minute ahead).
+const AHEAD_SECONDS: f64 = 60.0;
+/// The heading over readings whose time cannot be trusted.
+pub const TIME_NOT_KNOWN: &str =
+    "The dashboard's last readings (the time of the readings is not known, so the server may be different now; \
+say that you do not know how old they are):";
+/// Said in place of the attention list when the readings have none (a file from another
+/// writer, or half a one): nobody looked, so it is not "nothing needs attention".
+pub const NO_ATTENTION_LIST: &str =
+    "What needs attention is not in these readings: do not say that nothing needs attention.";
 
 /// How long ago, in the largest unit that fits: "12 minutes", "3 hours", "2 days".
 fn ago(seconds: f64) -> String {
@@ -462,8 +473,12 @@ pub fn summary(status: &Value, now: f64) -> String {
     let Some(taken) = status["generated_at"].as_f64() else {
         return NO_READINGS.into();
     };
-    let age = (now - taken).max(0.0);
-    let heading = if age < FRESH_SECONDS {
+    let age = now - taken;
+    let heading = if age < -AHEAD_SECONDS {
+        // Stamped later than now: a clock was wrong when they were taken, or is wrong
+        // now. Either way their age cannot be worked out, so they are not "now".
+        TIME_NOT_KNOWN.to_string()
+    } else if age < FRESH_SECONDS {
         "The dashboard now:".to_string()
     } else {
         format!(
@@ -485,7 +500,9 @@ fn readings(status: &Value) -> String {
         status["version"].as_str().unwrap_or("?")
     )];
     let attention = rows("alerts");
-    if attention.is_empty() {
+    if !status["alerts"].is_array() {
+        lines.push(NO_ATTENTION_LIST.into());
+    } else if attention.is_empty() {
         lines.push("Nothing needs attention.".into());
     }
     for a in &attention {
@@ -1567,8 +1584,8 @@ mod tests {
             );
             assert!(!old.contains("The dashboard now"), "{old}");
         }
-        // A clock set back never makes readings look old (or negative).
-        assert!(summary(&taken(-500.0), now).starts_with("The dashboard now:"));
+        // A few seconds ahead of the clock (two clocks read a moment apart) is still now.
+        assert!(summary(&taken(-30.0), now).starts_with("The dashboard now:"));
         // The model is handed the summary's own heading, not a fixed "now".
         let m = messages("why", &summary(&taken(7200.0), now), None, &[], &[]);
         let user = m[1]["content"].as_str().unwrap();
@@ -1578,6 +1595,46 @@ mod tests {
         );
         let source = include_str!("control.rs");
         assert!(source.contains("assist::summary(status, common::now())"));
+    }
+
+    /// Review of the 0.50.0 fixes: readings stamped in the future read as "now" for
+    /// ever, and readings without an "alerts" list said "Nothing needs attention".
+    #[test]
+    fn readings_from_the_future_or_without_a_list_are_not_passed_off_as_sound() {
+        let now = 1_800_000_000.0;
+        let taken =
+            |ahead: f64| json!({"version": "0.50.0", "generated_at": now + ahead, "alerts": []});
+        // A day ahead (the clock was wrong when the collector last ran, and it has not
+        // run since): the time is not known, never "now" and never an age.
+        for ahead in [61.0, 3600.0, 86_400.0] {
+            let s = summary(&taken(ahead), now);
+            assert!(s.starts_with(TIME_NOT_KNOWN), "{ahead}: {s}");
+            assert!(s.contains("the time of the readings is not known"), "{s}");
+            assert!(
+                !s.contains("The dashboard now") && !s.contains(" ago"),
+                "{s}"
+            );
+            // The readings themselves are still handed over.
+            assert!(
+                s.contains("NekoServer 0.50.0\nNothing needs attention."),
+                "{s}"
+            );
+        }
+        assert!(summary(&taken(59.0), now).starts_with("The dashboard now:"));
+        // No "alerts" list at all (not the collector's own file, or half of one): what
+        // needs attention is not known, which is not "nothing".
+        for odd in [
+            json!({"generated_at": now}),
+            json!({"generated_at": now, "alerts": null}),
+            json!({"generated_at": now, "alerts": "none"}),
+        ] {
+            let s = summary(&odd, now);
+            assert!(s.contains(NO_ATTENTION_LIST), "{odd}: {s}");
+            assert!(!s.contains("Nothing needs attention."), "{odd}: {s}");
+        }
+        // An empty list is the collector saying that nothing does.
+        let none = summary(&json!({"generated_at": now, "alerts": []}), now);
+        assert!(none.contains("Nothing needs attention.") && !none.contains(NO_ATTENTION_LIST));
     }
 
     /// Review of 0.49.0: the summary read a drive's "free", which the collector never
