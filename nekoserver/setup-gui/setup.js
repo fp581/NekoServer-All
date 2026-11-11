@@ -173,7 +173,10 @@
       const { ok } = await post('api/answer', body);
       if (!ok) $('ask-note').textContent = 'That question was already answered in the terminal.';
     } catch {
-      $('ask-note').textContent = 'Could not reach setup; answer in the terminal.';
+      // Not sent: the question is still waiting, so the ways to answer come back on
+      // (they stayed off, and the same question on the next poll did not bring them back).
+      askControls(true);
+      $('ask-note').textContent = 'Could not reach setup, so that was not sent. Try again, or answer in the terminal.';
     }
   }
 

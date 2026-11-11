@@ -549,6 +549,25 @@ class SetupWindowTests(unittest.TestCase):
         seen = self.page([self.asked(question, page, skipPage=True)])
         self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '', 'skip': True}]])
 
+    def test_an_answer_that_was_not_delivered_can_be_sent_again(self):
+        """The setup review (S8): when sending an answer failed, the window's buttons and
+        fields stayed off, and the same question on the next polls did not bring them back."""
+        question = self.asked('Username for the shared folders [neko]: ')
+        # Sent and delivered: the controls are off until the next question, as before.
+        seen = self.page([{**question, 'fill': {'ask-input': 'me'}}, question])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': 'me'}]])
+        self.assertIn('ask-send', seen['askOff'])
+        # Not delivered: they are on again, the note says so, and a second try goes through.
+        lost = {**question, 'failAnswer': 1, 'fill': {'ask-input': 'me'}}
+        seen = self.page([lost, question])
+        self.assertEqual(seen['askOff'], [])
+        self.assertEqual(
+            seen['note'], 'Could not reach setup, so that was not sent. Try again, or answer in the terminal.'
+        )
+        seen = self.page([lost, {**question, 'fill': {'ask-input': 'me'}}, question])
+        self.assertEqual(len(seen['posts']), 2)
+        self.assertEqual(seen['note'], 'Sent. Setup goes on in a moment…')
+
     def test_a_menu_of_its_own_shows_its_name_and_the_terminals_words(self):
         """The recovery menu and the uninstaller in the window (0.50.0): no steps, no
         switches; what the terminal said, and the menu's questions."""

@@ -39,12 +39,18 @@ globalThis.document = {
 let poll = 0;
 // {"refuseStart": "why"} in any state: Start setup is answered as the server's 409 is.
 const refusal = states.find((state) => state.refuseStart)?.refuseStart;
+let failures = states.find((state) => state.failAnswer)?.failAnswer ?? 0;
 globalThis.fetch = async (route, options) => {
   if (options?.method === 'POST') {
     posts.push([route, JSON.parse(options.body)]);
     if (route === 'api/start' && refusal) return { json: async () => ({ ok: false, reason: refusal }) };
     // {"login": {...}} in any state: what Show login is answered with.
     if (route === 'api/login') return { json: async () => states.find((state) => state.login)?.login ?? { ok: false } };
+    // {"failAnswer": 1} in any state: that many answers are not delivered (the network dropped).
+    if (route === 'api/answer' && failures > 0) {
+      failures -= 1;
+      throw new TypeError('Failed to fetch');
+    }
     return { json: async () => ({ ok: true }) };
   }
   const state = states[Math.min(poll, states.length - 1)];
@@ -123,6 +129,7 @@ console.log(JSON.stringify({ posts, title: elements['finish-title']?.textContent
   optionsHidden: elements['ask-options']?.hidden ?? null,
   pick: (elements['ask-pick']?.children ?? []).map((label) => [label.children[0].type, label.children[1].textContent, label.hidden]),
   pickCount: elements['ask-pick-count']?.textContent ?? '',
+  askOff: ['ask-send', 'ask-page-send', 'ask-page-skip', 'ask-yes', 'ask-no'].filter((id) => elements[id]?.disabled),
   pickNotes: (elements['ask-pick']?.children ?? []).map((label) => label.children[2]?.textContent ?? ''),
   recommended: [elements['ask-pick-recommended']?.textContent ?? '', elements['ask-pick-recommended']?.hidden ?? null],
   advice: elements['ask-pick-advice']?.textContent ?? '',
