@@ -201,6 +201,78 @@ class QuestionTests(unittest.TestCase):
         self.assertEqual(config['locations'], {'cloud': 'media'})
 
 
+class NoOnAServerWithTheAppsTests(unittest.TestCase):
+    """One place decides what no means on a server that already has the media apps
+    (guided_setup.settle_no_with_apps); nothing is deleted whichever way it is set."""
+
+    def server(self, wanted=False, apps=('jellyfin', 'immich')):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        for app in apps:
+            folder = Path(tmp.name, 'compose', app)
+            folder.mkdir(parents=True)
+            (folder / 'compose.yaml').write_text('services: {}\n')
+            Path(tmp.name, 'appdata', app).mkdir(parents=True)
+            Path(tmp.name, 'appdata', app, 'kept.db').write_text('data')
+        return context(settings(wanted, folder=tmp.name)), Path(tmp.name)
+
+    def kept(self, folder):
+        return sorted(str(p.relative_to(folder)) for p in folder.rglob('*') if p.is_file())
+
+    def test_the_apps_a_server_has_are_found_by_their_compose_files(self):
+        ctx, folder = self.server()
+        self.assertEqual(neko_common.media_apps_installed(ctx.config), ['jellyfin', 'immich'])
+        new, _ = self.server(apps=())
+        self.assertEqual(neko_common.media_apps_installed(new.config), [])
+        # A link out of the SSD is never followed to "find" an app.
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        Path(outside.name, 'compose.yaml').write_text('')
+        (folder / 'compose' / 'sonarr').symlink_to(outside.name)
+        self.assertNotIn('sonarr', neko_common.media_apps_installed(ctx.config))
+
+    def test_stop_is_what_ships_the_answer_stands_and_it_is_said(self):
+        self.assertEqual(guided_setup.NO_WITH_APPS_INSTALLED, guided_setup.STOP)
+        ctx, folder = self.server()
+        before = self.kept(folder)
+        self.assertEqual(guided_setup.settle_no_with_apps(ctx), ['jellyfin', 'immich'])
+        self.assertIs(ctx.config['media_apps']['wanted'], False)
+        said = '\n'.join(ctx.logs)
+        self.assertIn('this server already has them (Jellyfin, Immich). They are stopped in this run', said)
+        self.assertIn('Nothing is deleted', said)
+        self.assertEqual(self.kept(folder), before)
+
+    def test_keep_takes_the_no_back_before_any_step_reads_it(self):
+        ctx, folder = self.server()
+        before = self.kept(folder)
+        with mock.patch.object(guided_setup, 'NO_WITH_APPS_INSTALLED', guided_setup.KEEP):
+            guided_setup.settle_no_with_apps(ctx)
+        self.assertTrue(neko_common.media_apps_wanted(ctx.config))
+        self.assertEqual(neko_common.media_services(ctx.config), SERVICES)
+        ctx.persist_config.assert_called_once()
+        self.assertIn('they stay as they are and keep running; the answer no was not taken', '\n'.join(ctx.logs))
+        self.assertEqual(self.kept(folder), before)
+
+    def test_a_new_server_and_a_yes_have_nothing_to_settle(self):
+        new, _ = self.server(apps=())
+        self.assertEqual(guided_setup.settle_no_with_apps(new), [])
+        yes, _ = self.server(wanted=True)
+        self.assertEqual(guided_setup.settle_no_with_apps(yes), [])
+        self.assertEqual(new.logs + yes.logs, [])
+
+    def test_every_way_of_saying_no_goes_through_it(self):
+        # The question, the window's switch (the answer already in the settings) and a
+        # run with nobody at the terminal all end in the same place.
+        for interactive in (True, False):
+            ctx, _ = self.server()
+            with (
+                mock.patch.object(guided_setup, 'interactive', return_value=interactive),
+                mock.patch.object(guided_setup, 'settle_no_with_apps') as settled,
+            ):
+                guided_setup.choose_media_apps(ctx, prompt=mock.Mock(side_effect=AssertionError))
+            settled.assert_called_once_with(ctx)
+
+
 class WindowTests(unittest.TestCase):
     def test_the_window_offers_it_first_and_asks_it_later_when_left_alone(self):
         first = explanations.EXTRAS[0]

@@ -1363,6 +1363,20 @@ def media_services(config):
     return list(config.get('media', {}).get('services', []))
 
 
+def media_apps_installed(config):
+    """The media apps this server already has, Immich among them: those whose Compose
+    file is on the SSD. None on a new server (or before the SSD is mounted)."""
+    data = os.path.realpath(mount_path(config['data_mount']))
+    found = []
+    for app in (*MEDIA_APPS, 'immich'):
+        # The SSD's path comes from the settings file: a file is looked at only once it
+        # is proved to lie on the SSD with every link followed.
+        manifest = os.path.realpath(os.path.join(data, 'compose', app, 'compose.yaml'))
+        if manifest.startswith(data + os.sep) and os.path.isfile(manifest):
+            found.append(app)
+    return found
+
+
 # The steps that are only about the media apps: with them left out each one sets nothing
 # up (and stops or retires what it set up before), and nothing checks them afterwards.
 MEDIA_STEPS = (

@@ -386,7 +386,54 @@ MEDIA_EXPLAINED = (
 )
 
 
+# "No" on a server that already has the media apps: what it means is decided in one
+# place, settle_no_with_apps, by this setting.
+# - STOP (what 0.50.0 ships): the apps are stopped, and their settings, your photos,
+#   music and films and every backup stay where they are. Yes brings them back.
+# - KEEP: they go on running as they are, and the no is not taken.
+# Nothing is deleted either way.
+STOP, KEEP = 'stop', 'keep'
+NO_WITH_APPS_INSTALLED = STOP
+
+
+def settle_no_with_apps(ctx):
+    """The answer no (from the question, the window's switch or the settings file) on a
+    server that already has media apps: said once, here, with what happens to them.
+    With STOP the answer stands, and the media steps stop the apps and keep everything
+    (media.left_out, the photo steps' switch_off). With KEEP the answer goes back to yes
+    before any step reads it, so nothing is stopped. Returns the apps found."""
+    from neko_common import APPS, MEDIA_SECTION, media_apps_installed, media_apps_wanted
+
+    if media_apps_wanted(ctx.config):
+        return []
+    installed = media_apps_installed(ctx.config)
+    if not installed:
+        return []
+    names = ', '.join(APPS[app][0] for app in installed)
+    if NO_WITH_APPS_INSTALLED == KEEP:
+        ctx.config[MEDIA_SECTION]['wanted'] = True
+        save_settings(ctx)
+        ctx.log(
+            f'Media apps: this server already has them ({names}), so they stay as they are and keep '
+            'running; the answer no was not taken. Nothing was changed.'
+        )
+    else:
+        ctx.log(
+            f'Media apps: you answered no, and this server already has them ({names}). They are stopped in '
+            'this run; their settings, your photos, music and films and every backup stay where they are. '
+            'Nothing is deleted, and answering yes at a later run brings them back.'
+        )
+    return installed
+
+
 def choose_media_apps(ctx, prompt=None, output=None):
+    """The media question asked (asked_media_apps), then what no means on a server that
+    already has the apps (settle_no_with_apps)."""
+    asked_media_apps(ctx, prompt, output)
+    settle_no_with_apps(ctx)
+
+
+def asked_media_apps(ctx, prompt=None, output=None):
     """Ask "Install the media apps too?" and save the answer as "wanted" under
     "media_apps". Asked at the drives step, before the drives are chosen (the other
     optional questions are asked there too): once, and on a later run only when the
