@@ -488,6 +488,67 @@ class SetupWindowTests(unittest.TestCase):
         seen = self.page([self.asked(question, page, leave=True)])
         self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '', 'fields': {'answer': ''}}]])
 
+    def test_download_sources_are_ticked_many_at_once_with_the_recommended_in_one_press(self):
+        """0.50.0, item 10: one indexer at a time from a numbered list, in the terminal only."""
+        items = [
+            {'label': 'Alpha', 'note': 'public, en-US, torrent'},
+            {'label': 'Beta', 'note': 'private: needs an account'},
+            {'label': 'Gamma', 'note': ''},
+            {'label': 'Delta', 'note': 'needs a free account, usenet'},
+        ]
+        advice = 'Use only providers and content you are authorized to access.'
+        page = {
+            'form': 'pick', 'fields': {'choice': ''}, 'asking': 'choice', 'what': 'Download sources (indexers) to add',
+            'items': items, 'multiple': True, 'recommended': [1, 3], 'advice': advice,
+        }  # fmt: skip
+        question = 'Numbers to add, such as 1 4 7 or 1-5, or r for the recommended ones (blank to skip): '
+        seen = self.page([self.asked(question, page)])
+        self.assertEqual(
+            seen['pickNotes'],
+            ['public, en-US, torrent', 'private: needs an account', '', 'needs a free account, usenet'],
+        )
+        self.assertEqual(seen['recommended'], ['Tick the 2 recommended', False])
+        self.assertEqual(
+            (seen['advice'], seen['send'], seen['pickCount']), (advice, 'Add the selected ones', '0 selected')
+        )
+        # The recommended ones in one press, another ticked by hand, all sent together.
+        seen = self.page([self.asked(question, page, tickRecommended=True, tick=[4])])
+        self.assertEqual(seen['pickCount'], '3 selected')
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '1 3 4', 'fields': {'choice': '1 3 4'}}]])
+        # Without a recommended list there is no such button, and no word of advice is missing.
+        plain = {**page, 'recommended': []}
+        seen = self.page([self.asked(question, plain)])
+        self.assertEqual((seen['recommended'][1], seen['advice']), (True, advice))
+
+    def test_a_download_source_that_needs_a_login_has_a_small_form_of_its_own(self):
+        rows = [
+            {'key': 'baseUrl', 'label': 'Site address', 'secret': False},
+            {'key': 'apiKey', 'label': 'API Key', 'secret': True},
+        ]
+        page = {
+            'form': 'fields',
+            'fields': {'baseUrl': '', 'apiKey': ''},
+            'asking': 'baseUrl',
+            'what': 'Beta needs these',
+            'rows': rows,
+        }
+        question = 'Site address (leave blank for default): '
+        typed = 'typed-' + 'k' * 12
+        seen = self.page([self.asked(question, page)])
+        self.assertEqual(seen['prompt'], 'Beta needs these')
+        self.assertEqual([row[0] for row in seen['rows']], ['Site address', 'API Key'])
+        self.assertEqual(seen['fieldTypes'], [['text'], ['password']])
+        self.assertEqual(seen['rows'][1][2], 'Hidden, and written to no log.')
+        self.assertEqual((seen['send'], seen['skipHidden']), ('Save', False))
+        # Saved together: the field the terminal asks for as the answer, the rest with it.
+        seen = self.page([self.asked(question, page, fill={'ask-page-apiKey': typed})])
+        self.assertEqual(
+            seen['posts'], [['api/answer', {'seq': 9, 'text': '', 'fields': {'baseUrl': '', 'apiKey': typed}}]]
+        )
+        # Skip for now leaves this one out (the terminal's Ctrl+D).
+        seen = self.page([self.asked(question, page, skipPage=True)])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '', 'skip': True}]])
+
     def test_a_menu_of_its_own_shows_its_name_and_the_terminals_words(self):
         """The recovery menu and the uninstaller in the window (0.50.0): no steps, no
         switches; what the terminal said, and the menu's questions."""

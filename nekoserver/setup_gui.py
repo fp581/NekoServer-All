@@ -83,7 +83,7 @@ APP_BROWSERS = (
     'microsoft-edge',
 )
 WINDOW = ('1180', '480')  # the small window's size; it is placed low on the screen
-LARGEST_BODY = 10_000
+LARGEST_BODY = 40_000  # a page of fields, each up to setup_progress.LONGEST_ANSWER
 # The extras setup asks about when it gets to their step (the media apps at the drives
 # step), as long as nothing was chosen for them (Nextcloud is not asked: it is set up
 # unless switched off).
@@ -450,7 +450,7 @@ class Window:
             taken = (
                 isinstance(body.get('seq'), int)
                 and isinstance(body.get('text'), str)
-                and len(body['text']) <= 1000
+                and len(body['text']) <= setup_progress.LONGEST_ANSWER
                 and setup_progress.answer_from_window(
                     body['seq'],
                     body['text'],

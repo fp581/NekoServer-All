@@ -1,0 +1,4 @@
+{
+  "_about": "The indexers setup offers as Recommended when you add download sources (media-connect.py). Each name is a definition in Prowlarr's own catalogue; one Prowlarr no longer has is left out. A name is added here only once the person who ships NekoServer has approved it: the list is empty until then, and setup then shows no Recommended group.",
+  "indexers": []
+}

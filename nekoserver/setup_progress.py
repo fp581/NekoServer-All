@@ -30,6 +30,7 @@ _recent = collections.deque(maxlen=40)  # the terminal's last lines, for a quest
 _pending = None  # {'seq', 'event', 'answer'} while a question waits
 _page = None  # a group of questions the window shows as one page (page()), while it is asked
 CONTEXT_LINES = 14
+LONGEST_ANSWER = 4000  # an answer from the window (a provider's cookie can be long)
 POLL = 0.3  # seconds between looks at the terminal and the window while waiting
 
 
@@ -228,7 +229,7 @@ def answer_from_window(seq, text, skip=False, fields=None):
                 _page['skipped'] = True
             elif isinstance(fields, dict):
                 _page['answers'].update(
-                    {key: str(value)[:300] for key, value in fields.items() if key in _page['fields']}
+                    {key: str(value)[:LONGEST_ANSWER] for key, value in fields.items() if key in _page['fields']}
                 )
         return True
 

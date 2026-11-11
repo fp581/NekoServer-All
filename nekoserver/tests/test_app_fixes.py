@@ -440,12 +440,12 @@ class OptionalAnswersTests(unittest.TestCase):
         connect = load('media_connect', 'media-connect.py')
         with tempfile.TemporaryDirectory() as d:
             schemas = [{'name': 'Alpha', 'implementation': 'A', 'fields': []}]
-            answers = iter(['alp'])
+            answers = iter(['alp', ''])  # the filter, then Enter alone: none chosen
             with (
                 mock.patch.object(connect, 'app_key', return_value='k'),
                 mock.patch.object(connect, 'request', side_effect=[schemas, [], []]),
                 mock.patch('builtins.input', side_effect=answers),
-                mock.patch.object(connect, 'choose', return_value=None),
+                mock.patch('builtins.print'),
             ):
                 connect.configure_indexers(Path(d), False)
             self.assertEqual(

@@ -117,7 +117,12 @@ Setup now downloads and starts the apps: Jellyfin, Immich, Nextcloud, Navidrome 
 
 These three steps ask a few questions of their own. Since 0.50.0 they are asked in the setup window too, like every other question: answer in the window or in the terminal, whichever you like.
 
-- **Connecting the media apps.** Setup may ask which download sources to add. If you don't know what to choose, just press Enter: that skips it. You can add sources later in Prowlarr.
+- **Connecting the media apps.** Setup may ask which download sources (Prowlarr calls them indexers) to add. If you don't know what to choose, just press Enter: that skips it. You can add sources later in Prowlarr.
+  - **Several at once.** In the setup window the whole of Prowlarr's catalogue is one list that scrolls, with a search box and a tick box on every row; each row says whether the source is public or needs an account, its language, and whether it is for torrents or Usenet. Tick as many as you like (the page counts them) and press **Add the selected ones**. In the terminal, filter the list by name if you like, then type the numbers together: `1 4 7`, or a range such as `1-5`.
+  - **The ones that need no account are added at once.** Each one that needs a login or a key then gets a small form of its own (the login is typed hidden). **Skip for now** leaves that one out; the others are not affected.
+  - **One that Prowlarr refuses** is shown with Prowlarr's reason and **Retry this step**, which asks for its values again (a mistyped key is the usual cause). The others are added all the same.
+  - **Recommended.** When NekoServer ships a list of recommended sources, they are a group of their own: one button ticks them in the window, and `r` chooses them in the terminal. The list is a small file (`recommended-indexers.json`) of names from Prowlarr's own catalogue; it is empty until its names have been approved, and then there is no such button.
+  - Use only providers and content you are authorized to access.
 
 When you run `sudo bash install.sh` again later, setup shows how you answered the optional questions last time (the media apps, the backup times, the download sources, the indexers, the playback test) and asks `Ask these questions again? [yes/no]`. Answer `no` to keep those answers and move on; `yes` asks them again.
 - **Music** (only if the automatic check did not pass). If setup asks for `Listener username:` and a password, type the login of Navidrome's listener, the account the music check signs in with (not your own login on a server set up with 0.50.0 or later). To see it, open a second terminal (Ctrl+Alt+T) and run the command in [Seeing an app's password](#seeing-an-apps-password) with `show navidrome_listener`.

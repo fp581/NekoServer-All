@@ -79,6 +79,8 @@ async function step(i) {
     elements['ask-pick-search'].value = states[i].search;
     elements['ask-pick-search'].fire('input');
   }
+  // {"tickRecommended": true} presses the list's "Tick the N recommended".
+  if (states[i].tickRecommended) elements['ask-pick-recommended'].fire('click');
   if (states[i].tick) {
     for (const n of states[i].tick) elements['ask-pick'].children[n - 1].children[0].checked = true;
     elements['ask-pick'].fire('change');
@@ -115,12 +117,15 @@ console.log(JSON.stringify({ posts, title: elements['finish-title']?.textContent
   badge: elements['phase-badge']?.textContent ?? '', label: elements['finish-label']?.textContent ?? '', lines: elements['finish-lines']?.textContent ?? '',
   marks: marks(elements['steps-final']), progressHidden: elements.progress?.hidden ?? null, cards,
   pageHidden: elements['ask-page']?.hidden ?? null, answerHidden: elements['ask-answer']?.hidden ?? null,
-  rows: (elements['ask-page']?.children ?? []).map((row) => [row.children[0].textContent, (row.children[1]?.children ?? []).map((input) => input.value), row.children[2]?.textContent ?? '']),
+  rows: (elements['ask-page']?.children ?? []).map((row) => [row.children[0]?.textContent ?? '', (row.children[1]?.children ?? []).map((input) => input.value), row.children[2]?.textContent ?? '']),
   fieldTypes: (elements['ask-page']?.children ?? []).map((row) => (row.children[1]?.children ?? []).map((input) => input.type)),
   options: (elements['ask-options']?.children ?? []).map((button) => [button.children[0].textContent, button.children[1].textContent, button.className]),
   optionsHidden: elements['ask-options']?.hidden ?? null,
   pick: (elements['ask-pick']?.children ?? []).map((label) => [label.children[0].type, label.children[1].textContent, label.hidden]),
   pickCount: elements['ask-pick-count']?.textContent ?? '',
+  pickNotes: (elements['ask-pick']?.children ?? []).map((label) => label.children[2]?.textContent ?? ''),
+  recommended: [elements['ask-pick-recommended']?.textContent ?? '', elements['ask-pick-recommended']?.hidden ?? null],
+  advice: elements['ask-pick-advice']?.textContent ?? '',
   send: elements['ask-page-send']?.textContent ?? '', skipHidden: elements['ask-page-skip']?.hidden ?? null,
   placeholder: elements['ask-input']?.placeholder ?? '', yesnoHidden: elements['ask-yesno']?.hidden ?? null,
   retry: (elements['ask-page']?.children ?? []).filter((card) => card.className === 'retry').map((card) => card.children.map((part) => part.children.length ? [part.children[0].textContent, part.children[1].children.map((li) => li.textContent)] : part.textContent)),

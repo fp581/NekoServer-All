@@ -260,6 +260,18 @@
       'A login is fetched from this PC when you press Show login, and is in no log. Check that nobody else can see your screen.'
   };
 
+  // A few named values asked together (what one download source needs to sign in).
+  PAGES.fields = {
+    prompt: page => page.what,
+    build: buildFields,
+    values: inputValues,
+    problem: () => '',
+    send: () => 'Save',
+    skip: true,
+    note: () =>
+      'Leave a field empty to keep its default. Skip for now leaves this one out; the others are not affected.'
+  };
+
   function pageOf(q) {
     return q.page && Object.hasOwn(PAGES, q.page.form) ? q.page : null;
   }
@@ -386,6 +398,19 @@
       const ticked = pickInputs.filter(input => input.checked).length;
       count.textContent = page.multiple ? ticked + ' selected' : '';
     };
+    // The recommended ones, ticked with one press (a list of row numbers, when there is one).
+    const recommended = (page.recommended || []).filter(n => n >= 1 && n <= pickInputs.length);
+    const tickRecommended = el('button', {
+      type: 'button',
+      class: 'secondary',
+      id: 'ask-pick-recommended',
+      text: 'Tick the ' + recommended.length + ' recommended'
+    });
+    tickRecommended.hidden = !page.multiple || !recommended.length;
+    tickRecommended.addEventListener('click', () => {
+      for (const n of recommended) pickInputs[n - 1].checked = true;
+      counted();
+    });
     search.addEventListener('input', () => {
       const wanted = search.value.trim().toLowerCase();
       for (const label of list.children) label.hidden = !label.textContent.toLowerCase().includes(wanted);
@@ -393,7 +418,9 @@
     list.addEventListener('change', counted);
     counted();
     pageInputs = { search };
-    $('ask-page').replaceChildren(el('div', { class: 'pick-top' }, search, count), list);
+    const advice = page.advice ? el('small', { class: 'muted', id: 'ask-pick-advice', text: page.advice }) : null;
+    const top = el('div', { class: 'pick-top' }, search, tickRecommended, count);
+    $('ask-page').replaceChildren(...[top, list, advice].filter(Boolean));
   }
 
   /* The numbers ticked, as the terminal takes them: "3", or "1 4 7". */
@@ -507,6 +534,23 @@
     }
     target.replaceChildren(...parts);
     target.hidden = false;
+  }
+
+  /* One row for each value; a login's value is typed hidden. */
+  function buildFields(page) {
+    pageInputs = {};
+    const rows = page.rows.map(field => {
+      const input = el('input', {
+        type: field.secret ? 'password' : 'text',
+        id: 'ask-page-' + field.key,
+        autocomplete: 'off',
+        spellcheck: 'false',
+        'aria-label': field.label
+      });
+      pageInputs[field.key] = input;
+      return row(field.label, [input], field.secret ? 'Hidden, and written to no log.' : '');
+    });
+    $('ask-page').replaceChildren(...rows);
   }
 
   async function answerPage(q) {

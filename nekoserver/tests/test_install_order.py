@@ -1902,6 +1902,7 @@ class KeptCopyTests(unittest.TestCase):
             'runtime/THIRD-PARTY-NOTICES.md',
             'runtime/src/main.rs',
             'runtime/src/shared.json',
+            'recommended-indexers.json',
         ):
             (self.project / name).write_text(name + ' v1\n')
         self.data.mkdir()
