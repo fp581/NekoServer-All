@@ -1018,6 +1018,23 @@ fn tv(cfg: &Value, data: Option<&Path>) -> Value {
         None => json!({"set_up": null}),
     }
 }
+/// The AI assistant, for the dashboard's Ask Neko page (shown only when it is set up):
+/// chosen in setup ("wanted" under "assistant", which the collector's settings carry)
+/// and its model named in setup's report on the app SSD, with the memory and processor
+/// share it may use. Not said while the SSD is missing, so the page keeps what it showed.
+fn assistant(cfg: &Value, data: Option<&Path>) -> Value {
+    let chosen = cfg["assistant"]["wanted"] == true;
+    let Some(d) = data else {
+        return json!({"set_up": if chosen { Value::Null } else { json!(false) }});
+    };
+    let report = common::json(&d.join("reports/assistant.json"), 64000);
+    match report["model"].as_str() {
+        Some(model) if chosen => json!({"set_up": true, "model": chars(model, 64),
+            "memory": chars(report["memory"].as_str().unwrap_or(""), 16),
+            "cpus": chars(report["cpus"].as_str().unwrap_or(""), 8)}),
+        _ => json!({"set_up": false}),
+    }
+}
 /// "1 file", "3 files".
 fn plural(n: u64, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
@@ -2746,6 +2763,7 @@ pub fn run(a: &Args) -> Result<()> {
         json!({"apps": []})
     };
     result["tv"] = tv(&cfg, ok.then_some(data));
+    result["assistant"] = assistant(&cfg, ok.then_some(data));
     // The apps the Tailscale gateway really publishes (its own report): only those get an
     // "Open" link on a phone; the others' addresses lead nowhere.
     result["remote_apps"] = if ok {
@@ -3613,6 +3631,40 @@ mod acceptance_tests {
 #[cfg(test)]
 mod user_panel_tests {
     use super::*;
+    /// Ask Neko's page is shown only when the assistant was chosen and its model is set up.
+    #[test]
+    fn the_assistant_is_shown_only_when_set_up() {
+        let root =
+            std::env::temp_dir().join(format!("neko-collect-assistant-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("reports")).unwrap();
+        let yes = json!({"assistant": {"wanted": true}});
+        assert_eq!(assistant(&yes, Some(&root)), json!({"set_up": false}));
+        fs::write(
+            root.join("reports/assistant.json"),
+            r#"{"format":"neko-assistant-v1","model":"qwen3.5:4b","memory":"5g","cpus":"2"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            assistant(&yes, Some(&root)),
+            json!({"set_up": true, "model": "qwen3.5:4b", "memory": "5g", "cpus": "2"})
+        );
+        assert_eq!(
+            assistant(&json!({"assistant": {"wanted": false}}), Some(&root)),
+            json!({"set_up": false})
+        );
+        assert_eq!(assistant(&json!({}), Some(&root)), json!({"set_up": false}));
+        fs::write(
+            root.join("reports/assistant.json"),
+            r#"{"model":null,"stopped":true}"#,
+        )
+        .unwrap();
+        assert_eq!(assistant(&yes, Some(&root)), json!({"set_up": false}));
+        // The SSD missing: not said, so the page keeps what it showed.
+        assert_eq!(assistant(&yes, None), json!({"set_up": null}));
+        assert_eq!(assistant(&json!({}), None), json!({"set_up": false}));
+        let _ = fs::remove_dir_all(&root);
+    }
     /// The HDD missing (user panel UP-03/UP-04): one drive alert naming the apps it
     /// stopped, no "check its container logs" for each, and no backup alerts of their own.
     #[test]

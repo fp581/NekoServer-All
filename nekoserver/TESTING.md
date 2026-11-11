@@ -125,7 +125,7 @@ and is named; a replaced HDD is refused while the settings name the old UUID, an
 replacement drive keeps nothing of the old one. Evidence: the checksum comparison, the
 menu's output, the refusal line.
 
-## The seven safety rules
+## The eight safety rules
 
 Each rule holds across many tests. The invariant is stated for NekoServer, with the
 code that enforces it and the tests that already assert it. A new test that touches a
@@ -255,7 +255,33 @@ never their answers. Tests:
 `test_questions_are_seen_while_they_wait_and_never_their_answers` (tests/test_setup_gui.py:86),
 `test_the_pin_is_asked_twice_and_only_passed_to_the_runtime` (tests/test_dashboard.py:505).
 
-## The six controlled failures
+**S08 NekoServer works the same without the AI assistant.** The assistant (ASSISTANT.md) is
+optional and off unless chosen; with its model missing, unsupported, slow, out of memory or
+broken, setup, the backups, the updates, the recovery menu and the rest of the dashboard
+behave exactly as without it. Its setup step never raises (a problem is `needs_setup` or
+`unavailable`, `modules/assistant.py` `run`); no other step depends on it and no unit or
+job names it; an upgrade never goes back because of it (`upgrade.works_on`); Ollama runs
+on 127.0.0.1 only, with a hard memory limit (no swap), the lowest processor priority and
+`oom_score_adj` 1000 (`compose/assistant.yaml`), and its memory comes only from what is free
+with the other apps running, less a reserve for them. Ask Neko says "Neko is not available
+right now" with the reason and changes nothing by itself: passwords, keys, tokens and
+NekoServer's own secrets are taken out before the model sees anything (`redact`,
+`runtime/src/assist.rs`), and a repair it names runs only if it is on the fixed list, checked
+by the runtime and approved with the PIN. Tests:
+`test_any_error_becomes_a_step_that_waits_for_you` (tests/test_assistant.py:59),
+`test_nobody_at_the_terminal_installs_nothing` (tests/test_assistant.py:110),
+`test_no_room_any_more_stops_a_running_assistant` (tests/test_assistant.py:223),
+`test_the_trial_vm_has_no_room` (tests/test_assistant.py:303),
+`test_a_hard_memory_limit_and_the_lowest_priority` (tests/test_assistant.py:379),
+`test_an_upgrade_never_goes_back_because_of_the_assistant` (tests/test_assistant.py:496),
+`test_no_other_step_needs_it` (tests/test_assistant.py:506),
+`test_no_unit_or_job_names_it` (tests/test_assistant.py:514),
+`no_planted_secret_reaches_the_model` (runtime/src/assist.rs:757),
+`a_repair_is_checked_against_the_list_and_what_is_installed` (runtime/src/assist.rs:904),
+`only_an_exact_action_line_from_the_list_counts` (runtime/src/assist.rs:959),
+`ollama_is_asked_on_this_pc_only` (runtime/src/assist.rs:1140).
+
+## The eleven controlled failures
 
 Failures are introduced at named checkpoints, in a disposable VM or on test storage,
 never against anyone's only data.
@@ -268,6 +294,11 @@ never against anyone's only data.
 | F04 | API returns 409/500 | UI explains the problem and permits recovery | `test_a_refused_start_gives_the_button_back_with_the_reason` (tests/test_setup_flow.py:174), `test_error_codes_are_explained_everywhere` (tests/test_dashboard.py:67), `test_a_body_too_large_or_broken_is_refused` (tests/test_setup_gui.py:620); a 500 from the runtime to the dashboard page: not yet covered |
 | F05 | Settings are malformed | Existing settings remain untouched | `test_a_settings_file_that_cannot_be_read_is_never_written_over` (tests/test_setup_gui.py:448), `test_a_setting_that_could_not_be_read_is_never_overwritten` (tests/test_gateway_cloud_origin.py:144), `test_changes_are_never_saved_into_the_template` (tests/test_setup_flow.py:42), `test_a_wrong_time_is_refused_in_plain_words` (tests/test_backup_times.py:118); no rig stage |
 | F06 | Health report is stale | Dashboard cannot present it as current proof | `only_a_complete_check_turns_stale` (runtime/src/collect.rs:3554), `stale_input_never_recovers_reported_problem` (runtime/src/notify.rs:844), `test_a_changed_schedule_makes_witnessed_results_outdated` (tests/test_backup_times.py:194), `test_a_new_usb_drive_archive_or_schedule_makes_it_outdated` (tests/test_acceptance_scope.py:40); the page shows `Overdue` (`dashboard/app.js:215`); no rig stage moves the clock past a report |
+| F07 | The assistant's model is missing | Ask Neko says it is not downloaded yet (run setup again, it needs the internet), or still downloading while a download runs, never "downloading" for ever after a cut-off one; everything else unchanged | `a_model_not_downloaded_says_so_and_never_downloading_for_ever` (runtime/src/assist.rs), `a_missing_model_says_it_is_not_there_yet` (runtime/src/assist.rs) |
+| F08 | Ollama is stopped | Ask Neko says "not available right now"; everything else unchanged | `ollama_stopped_is_not_available_right_now` (runtime/src/assist.rs:1045); VM gate: `docker stop` its container, then ask and run a backup |
+| F09 | The model is killed for its memory | Only the model's container is stopped; SSH and every app keep working | `an_out_of_memory_model_is_said_as_such` (runtime/src/assist.rs:1069), `test_a_hard_memory_limit_and_the_lowest_priority` (tests/test_assistant.py:379); VM gate: a model whose need is over its limit, asked once (the 0.49.0 trial froze the VM for 12 minutes before the limits came from free memory) |
+| F10 | The model is too slow | The answer is stopped with the reason; the page stays usable | `a_model_too_slow_to_start_is_stopped` (runtime/src/assist.rs:1100) |
+| F11 | The model answers garbage | It is only text: no repair runs from it | `a_garbage_answer_is_only_text` (runtime/src/assist.rs:1087), `only_an_exact_action_line_from_the_list_counts` (runtime/src/assist.rs:959) |
 
 ## Compatibility fixtures
 
@@ -308,7 +339,7 @@ Evidence: Browser result and received API request
 Cleanup: Close fixture and remove temporary state
 ```
 
-IDs: `J01`..`J09` for journeys, `S01`..`S07` for safety rules, `F01`..`F06` for
+IDs: `J01`..`J09` for journeys, `S01`..`S08` for safety rules, `F01`..`F11` for
 controlled failures, `UI-SETUP-nnn`, `UI-DASH-nnn`, `REC-nnn` for single cases, and
 `B-<release>-<nn>` for bugs (below). The record says what is manual.
 

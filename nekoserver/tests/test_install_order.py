@@ -2123,3 +2123,23 @@ class NoUsbDriveMessageTests(unittest.TestCase):
         source = (Path(__file__).resolve().parents[1] / 'modules/photo_backup.py').read_text()
         self.assertNotIn('rerun photo_backup interactively', source)
         self.assertIn('No USB backup drive is chosen yet', source)
+
+
+class StateFolderOnTheSsdTests(unittest.TestCase):
+    """The SSD's path comes from the settings file, so setup's state folder on it is used
+    only once it is proved to lie on the SSD with every link followed."""
+
+    def test_each_state_folder_on_the_ssd_is_proved_before_it_is_made(self):
+        source = (ROOT / 'installer.py').read_text()
+        proof = "if not checked.startswith(os.path.realpath(config['data_mount']) + os.sep):"
+        places = source.split('ensure_directory(Path(checked), 0o700)\n')[:-1]
+        self.assertEqual(len(places), 2)
+        for folder, before in zip(('state_dir', 'persistent'), places):
+            # The path with every link followed, the proof on it and its refusal come
+            # directly before the folder is made, and that same path is the one made.
+            code = [line.strip() for line in before.split('\n') if line.strip() and not line.strip().startswith('#')][
+                -3:
+            ]
+            self.assertEqual(code[0], f'checked = os.path.realpath({folder})')
+            self.assertEqual(code[1], proof)
+            self.assertTrue(code[2].startswith('raise InstallerError('), code[2])

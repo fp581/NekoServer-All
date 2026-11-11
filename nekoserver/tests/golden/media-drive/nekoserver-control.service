@@ -4,8 +4,8 @@ After=systemd-modules-load.service docker.service
 StartLimitIntervalSec=0
 [Service]
 Type=simple
-ExecStart=/usr/local/lib/nekoserver-dashboard/v0.48.2/nekoserver-runtime control --no-lights --no-fans --config /etc/nekoserver-dashboard/config.json
-ExecStopPost=/usr/local/lib/nekoserver-dashboard/v0.48.2/nekoserver-runtime control --restore
+ExecStart=/usr/local/lib/nekoserver-dashboard/v0.49.0/nekoserver-runtime control --no-lights --no-fans --config /etc/nekoserver-dashboard/config.json
+ExecStopPost=/usr/local/lib/nekoserver-dashboard/v0.49.0/nekoserver-runtime control --restore
 TimeoutStopSec=600
 Restart=always
 RestartSec=3

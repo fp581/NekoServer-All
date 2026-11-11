@@ -1,0 +1,32 @@
+# The AI assistant (modules/assistant.py, ASSISTANT.md): Ollama runs the model on this PC;
+# the dashboard's Ask Neko page asks it. A project of its own on a network of its own: no
+# other app uses it or waits for it. Its port is on this PC only (127.0.0.1): the
+# dashboard's own service talks to it, nothing on the home network or Tailscale can.
+# Its limits keep it out of the other apps' way: at most the processor share and the
+# memory setup chose (a hard limit with no swap, so a model that needs more is stopped
+# instead of the server running out), the lowest processor priority, and the first to
+# go when memory runs out (oom_score_adj). Setup fills in the NEKO_ values; the defaults
+# after ":-" are only for `docker compose config` in CI.
+services:
+  ollama:
+    image: ollama/ollama:0.40.16
+    ports:
+      - "127.0.0.1:11434:11434"
+    environment:
+      # One question and one model at a time; the model leaves memory five minutes
+      # after the last question.
+      OLLAMA_KEEP_ALIVE: "5m"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_CONTEXT_LENGTH: "8192"
+    volumes:
+      - "${NEKO_DATA:-/srv/nekoserver}/appdata/assistant/models:/root/.ollama"
+    cpus: "${NEKO_CPUS:-2}"
+    cpu_shares: 256
+    mem_limit: "${NEKO_MODEL_MEMORY:-4g}"
+    memswap_limit: "${NEKO_MODEL_MEMORY:-4g}"
+    oom_score_adj: 1000
+    pids_limit: 512
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true

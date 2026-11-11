@@ -24,6 +24,7 @@ STEP_EXPLANATIONS = {
     'hardware_video': "Lets Jellyfin and Immich use the graphics chip, so video plays smoothly.",
     'onboarding': 'Connects the apps to each other: libraries, download paths, sources and requests.',
     'music': 'Checks music playback and puts Navidrome on the desktop.',
+    'assistant': 'Installs the AI assistant you chose for the dashboard\'s Ask Neko page, with its model running on this PC.',
     'gateway_lan': 'Gives your apps one address at home, with HTTPS, through the Caddy gateway.',
     'tailscale': 'Installs Tailscale: a private network between your own devices, so the apps work from anywhere.',
     'gateway_tailnet': 'Gives each app a private Tailscale address and walks you through setting up your phone.',
@@ -124,6 +125,18 @@ EXTRAS = (
         'title': 'Nextcloud, your private cloud drive',
         'explanation': 'Your files on your own server, from the phone and the browser, with sharing. '
         'Photos go to Immich either way.',
+        'installs': (),
+    },
+    {
+        'id': 'assistant',
+        'section': 'assistant',
+        'key': 'wanted',
+        'on_default': False,
+        'step': 'assistant',
+        'title': 'An AI assistant in the dashboard ("Ask Neko")',
+        'explanation': 'It explains what the dashboard shows and what to do about a problem, and can suggest a fix '
+        'that runs only when you approve it. The model runs on this server, so nothing you ask leaves your home. '
+        'Setup offers the models that fit the memory your apps leave free; it never slows them down (ASSISTANT.md).',
         'installs': (),
     },
 )

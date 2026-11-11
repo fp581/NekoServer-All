@@ -44,8 +44,9 @@ The window first lists the **optional extras**, each with a switch:
 - **Phone alerts** when something fails.
 - **Outage alerts** from outside, when the whole server goes quiet.
 - **Nextcloud**, your own cloud drive (installed unless you switch it off).
+- **An AI assistant** for the dashboard ("Ask Neko"), whose model runs on this server (off unless you switch it on; setup then offers the models that fit; see ASSISTANT.md).
 
-Switch off what you don't want. Not sure? Leave the switches alone: setup asks about the TV and the alerts later, when it gets to them. Then press **Start setup** in the window, or type `yes` in the terminal.
+Switch off what you don't want. Not sure? Leave the switches alone: setup asks about the TV, the alerts and the AI assistant later, when it gets to them. Then press **Start setup** in the window, or type `yes` in the terminal.
 
 ### 3. Tailscale: reaching your server from anywhere
 
@@ -123,7 +124,7 @@ Setup opens a **phone setup page** on the PC with a QR code for each app. Keep i
 3. **Signing in.** The terminal shows the app's username. To see its password, open a **second terminal** on the PC (Ctrl+Alt+T) and run the command the step shows, for example:
 
    ```bash
-   sudo python3 /srv/nekoserver/installer/releases/v0.48.2/account-setup.py show jellyfin
+   sudo python3 /srv/nekoserver/installer/releases/v0.49.0/account-setup.py show jellyfin
    ```
 
    It shows the username and password on the PC's screen, with a QR code you can scan with the phone to copy the password. Press Enter to hide it again. (Your server may keep its files somewhere other than `/srv/nekoserver`: copy the command exactly as the step shows it.)
@@ -179,7 +180,7 @@ If something still needs you, the finishing screen says what. Fix it, then run `
 Your app passwords are saved on the server, and only the administrator can read them. To see one app's login on the screen (with a QR code for your phone), run this in a terminal:
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.48.2/account-setup.py show
+sudo python3 /srv/nekoserver/installer/releases/v0.49.0/account-setup.py show
 ```
 
 It lists the saved logins. Type a number to show one. Press Enter to hide it again (the screen is cleared), and press Enter on the list to stop. To go straight to one app, add its name: `show jellyfin`, `show immich`, `show seerr`, `show nextcloud`, or `show navidrome_listener` for music. Check that nobody else can see your screen first.
@@ -233,7 +234,7 @@ During interactive `--apply`, a step that needs a browser, desktop app or phone:
 - Phone setup: open installation guidance on the server, print the actual private app links, explain phone VPN permissions and each app's own login, then walk through photo/file/music/video and mobile-data tests. The server cannot launch apps or grant permissions on a different phone. Their confirmations are labelled user-witnessed, not independent automatic probes. Passwords are never printed by the phone step nor written to its page (`/usr/local/share/nekoserver-pages/phone-setup.html`, readable by every account). Each app's step names `account-setup.py show APP` from the release copy on the SSD instead: it shows one login, to root only, on a terminal only (it refuses a pipe or a file, so nothing lands in a log), passes the password to `qrencode` on its standard input rather than its command line, and clears the screen afterwards.
 - Media sources/providers: after selecting a provider that needs credentials, explain its account/API requirements and open Prowlarr. Rejected provider setup can be completed in its UI and checked for a retained definition. End-to-end acquisition/playback remains a separate witnessed test.
 - After an update, the steps the new release added are added to the `full` profile (and any other profile) in your `my-config.json`, in their place, with a line in the log for each; a step you took out of a profile yourself stays out, and steps you added stay. The finishing screen counts every step the release's `full` profile has, so a settings file from an older release can't read "ready" with a step never run.
-- Optional extras (TV, ntfy phone alerts, outage monitor) are asked once with yes/no. `no` is saved as `"wanted": false` in `my-config.json` and the step counts as done; set it to `true` to set the extra up on a later run.
+- Optional extras (TV, ntfy phone alerts, outage monitor, the AI assistant) are asked once with yes/no. `no` is saved as `"wanted": false` in `my-config.json` and the step counts as done; set it to `true` to set the extra up on a later run.
 - Steps already confirmed are not repeated on a re-run: Tailscale sign-in and HTTPS, the phone walkthrough (for the same app addresses) and each TV hardware test.
 - TV: open Steam, Bluetooth settings when selected, display settings and browser playback; explain main-PC Remote Play and Xbox-controller tests. Hardware results are user-confirmed; package/service checks remain automatic.
 - New ntfy subscriptions and independent heartbeat monitors: open setup guidance, explain the work on the phone/provider, then collect private destination values in hidden console fields. Subscription/recipient choices are yours; the browser handoff sends no test messages.
@@ -241,7 +242,7 @@ During interactive `--apply`, a step that needs a browser, desktop app or phone:
 
 ### The order of the steps
 
-The `full` profile runs: system, tailscale, storage, capacity, recovery, account_credentials, server_os, docker, recovery_checkpoint, media, photos, photo_preservation, photo_backup, nextcloud, accounts, hardware_video, onboarding, music, samba, media_monitor, dashboard (the PIN), tv, desktop, gateway_tailnet (the phone), gateway_lan (the home network), app_backup, notifications, heartbeat, host_backup, maintenance (the backup password). Then the first checkup and backup.
+The `full` profile runs: system, tailscale, storage, capacity, recovery, account_credentials, server_os, docker, recovery_checkpoint, media, photos, photo_preservation, photo_backup, nextcloud, accounts, hardware_video, onboarding, music, samba, media_monitor, dashboard (the PIN), assistant (only when chosen; it needs the PIN), tv, desktop, gateway_tailnet (the phone), gateway_lan (the home network), app_backup, notifications, heartbeat, host_backup, maintenance (the backup password). Then the first checkup and backup.
 
 The Tailscale part, in order: connect this server (sign-in page, free account), turn on secure addresses (MagicDNS and HTTPS), create the private app addresses, then the phone: install Tailscale, then each app with its QR code from the page at `/usr/local/share/nekoserver-pages/phone-setup.html`, then a test on mobile data. If no sign-in page opens, the step explains the `sudo tailscale up` fallback.
 

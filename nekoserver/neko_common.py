@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.48.2'
+VERSION = '0.49.0'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -91,6 +91,22 @@ def app_ports(apps):
 # Tailscale addresses (8442-8448). The dashboard (8787 by default) must avoid them all.
 APP_PORTS = frozenset({*(port for _, _, port in APPS.values()), 2284, *range(8442, 8449)})
 DASHBOARD_DEFAULT_PORT = 8787
+# The optional AI assistant (modules/assistant.py, ASSISTANT.md): Ollama, on this PC
+# only (127.0.0.1), asked by the dashboard's Ask Neko page. Its port is not in
+# APP_PORTS: something of the person's own on it (an Ollama they installed) keeps it,
+# and the assistant is not installed.
+ASSISTANT = 'assistant'
+OLLAMA_PORT = 11434
+
+
+def assistant_installed(config):
+    """The AI assistant is wanted and its Compose file is in place (setup writes it last,
+    once the rest of its files are there). False for any settings that say otherwise."""
+    options = config.get(ASSISTANT)
+    if not isinstance(options, dict) or options.get('wanted') is not True:
+        return False
+    data = config.get('data_mount')
+    return isinstance(data, str) and (Path(data) / 'compose' / ASSISTANT / 'compose.yaml').is_file()
 
 
 def dashboard_port(config):
@@ -1341,8 +1357,13 @@ def optional_answers_file(data_mount):
 
 def optional_answers(data_mount):
     """The last answers by question, or {} when none were kept yet (or the file can't be read)."""
+    file = optional_answers_file(data_mount)
+    # The SSD's path comes from the settings file: the answers are read only from a file
+    # that lies inside it once every link is followed.
+    if not os.path.realpath(file).startswith(os.path.realpath(data_mount) + os.sep):
+        return {}
     try:
-        kept = json.loads(optional_answers_file(data_mount).read_text())
+        kept = json.loads(file.read_text())
     except (OSError, ValueError):
         return {}
     if not isinstance(kept, dict):

@@ -4,10 +4,13 @@
 //! hardware readings (`/api/live`) and the process list (`/api/processes`). Fan and
 //! lighting changes and app controls (`/api/control`) are passed to the root control
 //! service over its private socket; this server never writes to hardware, stops a
-//! program or talks to Docker itself. Anything
+//! program or talks to Docker itself. Ask Neko (`/api/control/ask`, then `/api/ask/<id>`)
+//! asks the AI assistant on 127.0.0.1 in the background (assist.rs), once the control
+//! service has checked the PIN and made the question ready. Anything
 //! that goes wrong is answered with a short code and a plain sentence (see ERRORS),
 //! which the page shows as is.
 use crate::{
+    assist,
     common::{self, Error, Result},
     live::Live,
     Args,
@@ -265,6 +268,9 @@ pub fn control_request(op: &str, body: &Value, who: &Who, token: Option<&str>) -
         "start",
         "sig",
         "tag",
+        "question",
+        "item",
+        "action",
     ] {
         if let Some(v) = body.get(key) {
             request[key] = v.clone();
@@ -641,34 +647,33 @@ fn handle(mut stream: TcpStream, server: &Server, accepted: Instant) {
         return;
     }
     let path = req.path.unwrap_or("").split('?').next().unwrap_or("");
+    // The server itself: a loopback address that Tailscale did not forward.
+    let forwarded = [
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "forwarded",
+        "tailscale-user-login",
+    ]
+    .iter()
+    .any(|h| !values(h).is_empty());
+    let local = is_local(forwarded, hosts[0]);
+    let token = values("x-neko-token")
+        .first()
+        .and_then(|v| std::str::from_utf8(v).ok())
+        .map(str::to_string);
+    if let (Some(id), false) = (path.strip_prefix("/api/ask/"), post) {
+        let owner = ask_owner(local, token.as_deref());
+        return answer_so_far(&mut stream, id, &owner, head);
+    }
     if path == "/api/control" || path.starts_with("/api/control/") {
-        // The server itself: a loopback address that Tailscale did not forward.
-        let forwarded = [
-            "x-forwarded-for",
-            "x-forwarded-host",
-            "forwarded",
-            "tailscale-user-login",
-        ]
-        .iter()
-        .any(|h| !values(h).is_empty());
-        let local = !forwarded
-            && (hosts[0].starts_with(b"127.0.0.1:") || hosts[0].starts_with(b"localhost:"));
-        let who = Who {
-            local,
-            source: if local {
-                // The account of the program on this computer that connected: each one's
-                // wrong PINs count on their own.
-                connection_owner(server, &stream).map(|uid| format!("account:{uid}"))
-            } else {
-                let named = source_of(&values("tailscale-user-login"), &values("x-forwarded-for"));
-                forwarded_source(server, &stream, named)
-            },
-        };
-        let token = values("x-neko-token")
-            .first()
-            .and_then(|v| std::str::from_utf8(v).ok())
-            .map(str::to_string);
+        let named = source_of(&values("tailscale-user-login"), &values("x-forwarded-for"));
+        let who = caller(server, &stream, local, named);
         let body = read_body(&mut stream, buf[body_start..].to_vec(), length, start);
+        if path == "/api/control/ask" && post {
+            let body = &body[..body.len().min(length)];
+            ask(server, &mut stream, body, length, &who, token.as_deref());
+            return;
+        }
         let result = control(
             server,
             path,
@@ -678,11 +683,7 @@ fn handle(mut stream: TcpStream, server: &Server, accepted: Instant) {
             token.as_deref(),
             length,
         );
-        match result {
-            Ok((status, b)) => reply(&mut stream, status, &b, "application/json", head),
-            Err(code) => reply_error(&mut stream, code, head),
-        }
-        return;
+        return answered(&mut stream, result, head);
     }
     if post {
         reply_error(&mut stream, "E42", false);
@@ -729,10 +730,7 @@ fn handle(mut stream: TcpStream, server: &Server, accepted: Instant) {
             None => Err("E40"),
         },
     };
-    match result {
-        Ok(b) => reply(&mut stream, 200, &b, "application/json", head),
-        Err(code) => reply_error(&mut stream, code, head),
-    }
+    answered(&mut stream, result.map(|b| (200, b)), head)
 }
 
 /// `/api/control` (GET: what can be controlled) and `/api/control/<op>` (POST).
@@ -757,6 +755,9 @@ fn control(
             "upgrade-nekoserver" => "app_upgrade_nekoserver",
             "desktop-close" => "desktop_close",
             "desktop-force" => "desktop_force",
+            "ask" => "app_ask",
+            "assist-check" => "app_assist_check",
+            "assist-run" => "app_assist_run",
             _ => return Err("E40"),
         },
         _ => return Err("E42"),
@@ -777,6 +778,122 @@ fn control(
     serde_json::to_vec(&answer)
         .map(|b| (status, b))
         .map_err(|_| "E21")
+}
+
+/// The server itself: a loopback address that Tailscale did not forward.
+fn is_local(forwarded: bool, host: &[u8]) -> bool {
+    !forwarded && (host.starts_with(b"127.0.0.1:") || host.starts_with(b"localhost:"))
+}
+
+/// Who sent a control request. On the server itself, the account of the program that
+/// connected: each one's wrong PINs count on their own. Otherwise the device Tailscale
+/// named (`named`), or the program on this computer that sent Tailscale's headers.
+fn caller(server: &Server, stream: &TcpStream, local: bool, named: Option<String>) -> Who {
+    let source = if local {
+        connection_owner(server, stream).map(|uid| format!("account:{uid}"))
+    } else {
+        forwarded_source(server, stream, named)
+    };
+    Who { local, source }
+}
+
+/// A JSON answer (its status and body), or an error by its code.
+fn answered(
+    stream: &mut TcpStream,
+    result: std::result::Result<(u16, Vec<u8>), &'static str>,
+    head: bool,
+) {
+    match result {
+        Ok((status, b)) => reply(stream, status, &b, "application/json", head),
+        Err(code) => reply_error(stream, code, head),
+    }
+}
+
+/// Ask Neko's answer so far (GET /api/ask/<id>), for the one who asked: a short request,
+/// whatever the model is doing.
+fn answer_so_far(stream: &mut TcpStream, id: &str, owner: &str, head: bool) {
+    match assist::progress(id, owner) {
+        Some(v) => reply(
+            stream,
+            200,
+            v.to_string().as_bytes(),
+            "application/json",
+            head,
+        ),
+        None => reply_error(stream, "E40", head),
+    }
+}
+
+/// Who may read an ask's answer: the PIN session that asked, or the server itself; ""
+/// (no one) for another device without a session.
+fn ask_owner(local: bool, token: Option<&str>) -> String {
+    match token {
+        Some(t) => format!("token:{t}"),
+        None if local => "local".into(),
+        None => String::new(),
+    }
+}
+
+/// Ask Neko: the control service checks the PIN and makes the question ready (the
+/// readings and logs with their secrets taken out); the answer is then asked for in the
+/// background (assist::begin) and the page gets only an id to poll (/api/ask/<id>).
+/// One question at a time.
+fn ask(
+    server: &Server,
+    stream: &mut TcpStream,
+    body: &[u8],
+    length: usize,
+    who: &Who,
+    token: Option<&str>,
+) {
+    let Some(turn) = assist::Turn::take() else {
+        let busy = json!({"ok": false, "error": "E47", "message": assist::BUSY});
+        return reply(
+            stream,
+            status_of("E47"),
+            busy.to_string().as_bytes(),
+            "application/json",
+            false,
+        );
+    };
+    let ready = match control(server, "/api/control/ask", true, body, who, token, length) {
+        Ok((200, b)) => serde_json::from_slice::<Value>(&b).unwrap_or_default(),
+        Ok((status, b)) => return reply(stream, status, &b, "application/json", false),
+        Err(code) => return reply_error(stream, code, false),
+    };
+    let owner = ask_owner(who.local, token);
+    let model = ready["model"].as_str().unwrap_or("").to_string();
+    let repairs: Vec<(String, String)> = ready["repairs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|id| id.as_str().map(|id| (id.to_string(), String::new())))
+        .collect();
+    if owner.is_empty() {
+        return reply_error(stream, "E43", false);
+    }
+    let answer = match assist::begin(
+        turn,
+        owner,
+        assist::OLLAMA.into(),
+        model.clone(),
+        ready["threads"].as_u64().unwrap_or(1),
+        ready["messages"].clone(),
+        repairs,
+        assist::LIMITS,
+    ) {
+        Ok(id) => json!({"ok": true, "id": id, "model": model, "excerpt": ready["excerpt"]}),
+        Err(why) => {
+            json!({"ok": false, "error": "E21", "message": format!("{}: {why}", assist::NOT_AVAILABLE)})
+        }
+    };
+    reply(
+        stream,
+        200,
+        answer.to_string().as_bytes(),
+        "application/json",
+        false,
+    );
 }
 
 /// The dashboard's socket: the one systemd opened for it at the start of the computer

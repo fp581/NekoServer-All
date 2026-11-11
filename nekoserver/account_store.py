@@ -2,6 +2,7 @@
 
 import getpass
 import json
+import os
 from pathlib import Path
 import re
 import secrets
@@ -33,6 +34,10 @@ def enabled(config):
     if not isinstance(opts, dict) or type(opts.get('enabled', False)) is not bool:
         raise RuntimeError('accounts.enabled must be a boolean')
     return opts.get('enabled', False)
+
+
+# Said when a folder worked out from the settings' data_mount does not lie on the SSD.
+OUTSIDE = 'Account storage must lie on the app SSD'
 
 
 def folder(config):
@@ -139,6 +144,10 @@ def drop_unfinished(root):
 
 def load(config):
     root = folder(config)
+    # The SSD's path comes from the settings file: the store is read only once its folder
+    # is proved to lie on the SSD with every link followed.
+    if not os.path.realpath(root).startswith(os.path.realpath(config['data_mount']) + os.sep):
+        raise RuntimeError(OUTSIDE)
     check_parent(root)
     if not root.exists():
         return {'format': 1, 'mode': 'per-app', 'apps': {}}
@@ -176,6 +185,9 @@ def load(config):
 
 def save(config, value):
     root = folder(config)
+    # As in load: written only to a folder proved to lie on the SSD.
+    if not os.path.realpath(root).startswith(os.path.realpath(config['data_mount']) + os.sep):
+        raise RuntimeError(OUTSIDE)
     check_parent(root)
     if root.exists():
         private(root, directory=True)
@@ -297,6 +309,9 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
         output(APPS[app][0])
         actual_app = 'navidrome' if app == 'navidrome_listener' else app
         data = safe_path(Path(config['data_mount']) / 'appdata' / actual_app)
+        # Looked at only once it is proved to lie on the SSD (its path comes from the settings).
+        if not os.path.realpath(data).startswith(os.path.realpath(config['data_mount']) + os.sep):
+            raise RuntimeError(OUTSIDE)
         fresh = not data.exists() or (data.is_dir() and not any(data.iterdir()))
         mode = value['mode']
         if not fresh:

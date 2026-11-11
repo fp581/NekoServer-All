@@ -3,7 +3,7 @@
 (the NekoServer tab, "Upgrade NekoServer"): a background service runs this, so closing
 the page stops nothing.
 
-  sudo python3 upgrade.py run --tag v0.48.2Beta    the upgrade (nekoserver-upgrade@<tag>)
+  sudo python3 upgrade.py run --tag v0.49.0Beta    the upgrade (nekoserver-upgrade@<tag>)
   sudo python3 upgrade.py resume                   after a restart: put a cut-off one right
 
 What it does, in order (a record in /etc/nekoserver-backups/upgrade.json says how far
@@ -34,6 +34,7 @@ import time
 from pathlib import Path
 
 from neko_common import (
+    ASSISTANT,
     RECOVERY,
     SETUP_LOCK,
     SHARED,
@@ -76,7 +77,7 @@ LIMIT = 200 * 1024 * 1024  # the release archive is a few MB
 
 
 def numbers(text):
-    """(0, 44, 0) from "v0.48.2Beta" or "0.48.2"; None for anything else."""
+    """(0, 44, 0) from "v0.49.0Beta" or "0.49.0"; None for anything else."""
     match = TAG.fullmatch(text)
     return tuple(int(n) for n in match.groups()[:3]) if match else None
 
@@ -305,8 +306,10 @@ def works_on(config, tag, before, version_now, running_now):
     """Why the server does not pass its check for release `tag` (after the upgrade, or
     after the previous release was put back), or None: a step that worked before does not
     now, the dashboard does not answer with that release, or an installed service still
-    runs another one."""
-    lost = sorted(set(before) - steps_done(config))
+    runs another one. The optional AI assistant does not count: whatever happens to it
+    (its download cut off, too little memory now) must never put the previous release
+    back for everything else."""
+    lost = sorted(set(before) - steps_done(config) - {ASSISTANT})
     if lost:
         return 'these steps worked before and do not now: ' + ', '.join(lost)
     wanted = '.'.join(str(n) for n in numbers(tag))

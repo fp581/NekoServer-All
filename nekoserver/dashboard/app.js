@@ -233,6 +233,7 @@ const LABELS = {
 };
 const ROUTES = {
   home: 'Home',
+  ask: 'Ask Neko',
   apps: 'Your apps',
   backups: 'Backups',
   hardware: 'Hardware',
@@ -246,6 +247,9 @@ const ROUTES = {
 };
 /* Pages that show live hardware readings (polled every few seconds). */
 const LIVE_ROUTES = new Set(['home', 'hardware', 'sensors']);
+/* Pages whose buttons change something: they read whether this device may (the PIN).
+ * Ask Neko is one: asking and approving a fix need the PIN. */
+const CONTROL_ROUTES = new Set(['cooling', 'apps', 'processes', 'home', 'ask']);
 /* Short, stable error codes. E10-E42 come from the server; E01, E02 and E12 are
  * noticed by this page. DASHBOARD.md lists the same table. */
 const ERRORS = {
@@ -389,7 +393,8 @@ function validStatus(raw) {
     heartbeat: object(raw.heartbeat),
     notifications: object(raw.notifications),
     recovery: object(raw.recovery),
-    tv: object(raw.tv)
+    tv: object(raw.tv),
+    assistant: object(raw.assistant)
   };
 }
 const LOADERS = {
@@ -1046,6 +1051,8 @@ function renderChrome() {
     $('version').textContent = 'NekoServer v' + s.version;
   }
   renderCounts(s);
+  // Ask Neko is in the menu only on a server that has the assistant.
+  $('nav-ask').hidden = !assistantSetUp(s);
   $('footer-status').textContent = s ? 'Readings from ' + ago(s.generated_at) : 'Waiting for readings';
 }
 
@@ -1259,6 +1266,7 @@ function hot(s) {
  * when there is something on it (renderCats). */
 const PAGE_CATS = {
   home: 'happy',
+  ask: 'listening',
   apps: 'curious',
   backups: 'sleeping',
   hardware: 'resting',
@@ -1661,6 +1669,14 @@ function issueRow(issue) {
       'issue-' + issue.id
     )
   );
+  if (assistantSetUp()) {
+    actions.append(
+      keyed(
+        button('Ask Neko about this', () => askAbout(issue)),
+        'ask-' + issue.id
+      )
+    );
+  }
   body.append(el('h3', '', issue.title), longText('', issue.detail), actions);
   row.append(el('span', 'issue-icon', issue.level === 'critical' ? '!' : '◇'), body, badge(issue.level));
   return row;
@@ -1684,6 +1700,303 @@ function renderAttention() {
     const more = el('a', 'text-link', 'See ' + (all.length - 3) + ' more →');
     more.href = '#attention';
     $('attention-list').append(more);
+  }
+}
+
+/* ---------- Ask Neko ---------- */
+/* The AI assistant (ASSISTANT.md), shown only when setup set it up. Asking needs the PIN
+ * (it uses the server's processor); the answer comes from the server, which takes every
+ * password and key out of what the model sees. The chat is kept in this page only:
+ * reloading or closing it clears it. A repair Neko suggests is one from a short list,
+ * checked by the server, and runs only when Approve is pressed. */
+const ASK = { log: [], busy: false, pending: null, item: null };
+const ASK_TIME = 200000; // longer than the server lets an answer take (assist.rs LIMITS: 3 minutes)
+const ASK_POLL = 1000; // how often the page asks for the answer so far
+function assistantSetUp(s = state.status) {
+  return object(s?.assistant).set_up === true;
+}
+/* The question an attention item asks, and the item as the server knows it: the page
+ * names the server's backup alerts job:<id>, the server backup:<id>. */
+function askItem(issue) {
+  const item = issue.id.startsWith('job:') ? 'backup:' + issue.id.slice(4) : issue.id;
+  return { item, question: 'What does "' + issue.title + '" mean, and what should I do?' };
+}
+function askAbout(issue) {
+  ASK.pending = askItem(issue);
+  location.hash = '#ask';
+}
+function gigabytes(limit) {
+  return text(limit).replace(/^(\d+)g$/, '$1 GB');
+}
+const ASK_NO_PIN = 'Ask Neko needs a dashboard PIN (run setup to choose one).';
+/* No PIN on this server (removed after setup): asking can never be allowed. */
+function askNeedsPin(control = state.control) {
+  return control?.access?.pin_set === false;
+}
+function askIntro(s = state.status, control = state.control) {
+  const a = object(s?.assistant);
+  if (!assistantSetUp(s)) {
+    return 'The AI assistant is not set up on this server. Setup offers it when the server has room for it.';
+  }
+  if (askNeedsPin(control)) {
+    return ASK_NO_PIN;
+  }
+  return (
+    'Neko uses ' +
+    text(a.model, 'its model') +
+    ', with up to ' +
+    gigabytes(a.memory) +
+    ' of memory and ' +
+    text(a.cpus, '1') +
+    ' processor cores, after every other app.'
+  );
+}
+function renderAsk() {
+  $('ask-model').textContent = askIntro();
+  if (ASK.pending) {
+    $('ask-input').value = ASK.pending.question;
+    ASK.item = ASK.pending.item;
+    ASK.pending = null;
+  }
+  watchJobs();
+  renderAskLog();
+  $('ask-send').disabled = ASK.busy || !assistantSetUp() || askNeedsPin();
+}
+function renderAskLog() {
+  put(
+    'ask-log',
+    ASK.log.length
+      ? ASK.log.map(askEntry)
+      : [
+          empty(
+            'Ask about anything the dashboard shows: a backup that failed, an app that stopped, what a reading means.'
+          )
+        ]
+  );
+}
+/* Small models write Markdown, and the page shows text as it is: so the marks come out
+ * (bold stars, code ticks, the # of a heading, a line of stars alone) and a list item
+ * gets a dot (the 0.49.0 gate: "**running too slow**" on the page). */
+function plainWords(words) {
+  return words
+    .replace(/\*\*|`/g, '')
+    .replace(/^[ \t]*#{1,6}[ \t]+/gm, '')
+    .replace(/^[ \t]*[*_]+[ \t]*$/gm, '')
+    .replace(/^([ \t]*)[*-][ \t]+/gm, '$1• ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+/* The answer as shown: without its ACTION line (a repair card shows it) and without its
+ * bug report (shown in a box of its own). */
+function shownAnswer(answer) {
+  const at = answer.indexOf('BUG REPORT:');
+  return plainWords(
+    (at < 0 ? answer : answer.slice(0, at))
+      .split('\n')
+      .filter(line => !line.replace(/^[\s*_`]+/, '').startsWith('ACTION:'))
+      .join('\n')
+  );
+}
+function bugReport(entry) {
+  const at = entry.answer.indexOf('BUG REPORT:');
+  if (at < 0) {
+    return null;
+  }
+  return [
+    'NekoServer ' + text(state.status?.version, '?'),
+    'Question: ' + entry.question,
+    entry.excerpt ? 'What the server showed (passwords and keys removed):\n' + entry.excerpt : '',
+    'Neko’s report:\n' + plainWords(entry.answer.slice(at + 'BUG REPORT:'.length).replace(/^[\s*_:]+/, ''))
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
+function askEntry(entry) {
+  const box = el('article', 'ask-entry');
+  box.append(el('p', 'ask-question', entry.question));
+  const said = shownAnswer(entry.answer);
+  if (said || (!entry.error && ASK.busy && entry === ASK.log.at(-1))) {
+    box.append(longText('ask-answer', said || 'Thinking…'));
+  }
+  if (entry.error) {
+    box.append(el('p', 'ask-error', entry.error));
+  }
+  if (entry.repair) {
+    box.append(repairCard(entry));
+  }
+  const report = bugReport(entry);
+  if (report) {
+    box.append(bugBox(report));
+  }
+  return box;
+}
+function repairCard(entry) {
+  const r = entry.repair,
+    card = el('div', 'ask-repair');
+  if (r.state === 'refused') {
+    card.append(el('p', '', 'Neko suggested something it may not do here: ' + r.message));
+    return card;
+  }
+  card.append(el('strong', '', 'Neko suggests a fix'), el('p', '', r.does));
+  if (r.warning) {
+    card.append(el('p', 'ask-warning', r.warning));
+  }
+  if (r.state === 'offered') {
+    card.append(
+      button('Approve', () => approveRepair(entry), 'button small'),
+      button('No, thanks', () => {
+        r.state = 'declined';
+        renderAskLog();
+      })
+    );
+  } else {
+    card.append(el('p', 'hint', r.state === 'declined' ? 'Not done.' : r.message || 'Running…'));
+  }
+  return card;
+}
+function bugBox(report) {
+  const box = el('div', 'ask-bug'),
+    area = el('textarea');
+  area.readOnly = true;
+  area.rows = 8;
+  area.value = report;
+  box.append(
+    el('strong', '', 'A bug report to share'),
+    el(
+      'p',
+      'hint',
+      'This looks like a problem in NekoServer itself. Nothing is sent anywhere: read it, then copy it to report the problem.'
+    ),
+    area,
+    button('Copy', () => {
+      navigator.clipboard?.writeText(report).then(
+        () => toast('Copied.'),
+        () => {
+          // The browser did not allow copying (the 0.49.0 gate): the report is selected instead.
+          area.select();
+          toast('The report is selected: copy it from there.');
+        }
+      );
+    })
+  );
+  return box;
+}
+/* Ask Neko's requests are app actions: like Restart app, they need the PIN on every
+ * device, the server too (the control service wants a PIN session for each). */
+function askUnlock(
+  then,
+  why = 'Asking Neko uses the server’s processor, so it needs your PIN on every device, the server too.'
+) {
+  if (askNeedsPin()) {
+    toast(ASK_NO_PIN);
+    return;
+  }
+  unlockDialog(then, 'ASK NEKO', why);
+}
+async function askNeko(question, item) {
+  if (!signedIn()) {
+    askUnlock(() => askNeko(question, item));
+    return;
+  }
+  const entry = { question, answer: '' };
+  ASK.log.push(entry);
+  ASK.busy = true;
+  renderAsk();
+  try {
+    const started = await postControl('ask', item ? { question, item } : { question });
+    if (started.error === 'E43') {
+      // The PIN session ran out meanwhile: ask for the PIN, then the same question again.
+      ASK.log.pop();
+      askUnlock(() => askNeko(question, item));
+      return;
+    }
+    if (!started.ok) {
+      entry.error = controlMessage(started);
+      return;
+    }
+    entry.excerpt = text(started.excerpt);
+    await followAnswer(entry, text(started.id));
+  } finally {
+    ASK.busy = false;
+    renderAsk();
+  }
+}
+/* The answer so far, asked for about once a second until it is done or has failed: the
+ * server writes it in the background and keeps no connection open for it. When this page
+ * stops asking (it was closed), the server gives the answer up and the model stops. */
+async function followAnswer(entry, id) {
+  const until = Date.now() + ASK_TIME;
+  while (Date.now() < until) {
+    await new Promise(resolve => setTimeout(resolve, ASK_POLL));
+    let now;
+    try {
+      now = object(await getJson('/api/ask/' + encodeURIComponent(id), 8000, tokenHeader()));
+    } catch {
+      entry.error = 'Neko is not available right now: the server could not be reached.';
+      return;
+    }
+    askProgress(entry, now);
+    if (now.done === true || typeof now.failed === 'string') {
+      return;
+    }
+  }
+  entry.error = 'Neko took too long to answer, so the question was stopped.';
+}
+function askProgress(entry, now) {
+  entry.answer = text(now.text);
+  if (typeof now.failed === 'string') {
+    entry.error = now.failed;
+  }
+  if (now.done === true && typeof now.repair === 'string') {
+    void offerRepair(entry, now.repair);
+  }
+  renderAskLog();
+}
+async function offerRepair(entry, id) {
+  const answer = await postControl('assist-check', { action: id });
+  entry.repair = answer.ok
+    ? { id, does: text(answer.does), warning: text(answer.warning), state: 'offered' }
+    : { id, state: 'refused', message: controlMessage(answer) };
+  renderAskLog();
+}
+async function approveRepair(entry) {
+  const r = entry.repair;
+  r.state = 'running';
+  renderAskLog();
+  const answer = await postControl('assist-run', { action: r.id });
+  if (answer.error === 'E43') {
+    r.state = 'offered';
+    askUnlock(() => approveRepair(entry), 'Approving a fix needs your PIN on every device, the server too.');
+    return;
+  }
+  if (!answer.ok) {
+    r.state = 'failed';
+  } else {
+    r.state = answer.job ? 'watching' : 'done';
+  }
+  r.message = answer.ok ? text(answer.message, 'Done.') : controlMessage(answer);
+  if (answer.job) {
+    r.job = text(answer.job);
+    r.since = nowSeconds() - 5;
+  }
+  renderAskLog();
+}
+/* A backup Neko started: its result once it has ended (from the readings). */
+function watchJobs() {
+  for (const entry of ASK.log) {
+    const r = entry.repair;
+    if (r?.state !== 'watching') {
+      continue;
+    }
+    const row = values(state.status?.backups).find(j => j.id === r.job);
+    if (row && numeric(row.last_attempt) && row.last_attempt >= r.since && row.status !== 'running') {
+      r.state = 'done';
+      r.message =
+        'Finished: ' +
+        text(row.name, 'the backup') +
+        ' ' +
+        (row.status === 'pass' ? 'worked.' : 'needs a look (' + text(row.reason, row.status) + ').');
+    }
   }
 }
 
@@ -4764,6 +5077,9 @@ function moreMenu() {
   const nav = el('nav', 'more-list');
   nav.setAttribute('aria-label', 'All pages');
   for (const [id, name] of Object.entries(ROUTES)) {
+    if (id === 'ask' && !assistantSetUp()) {
+      continue;
+    }
     const a = el('a', id === state.route ? 'nav active' : 'nav', name);
     a.href = '#' + id;
     a.addEventListener('click', () => $('dialog').close());
@@ -4818,6 +5134,7 @@ const PAGES = {
     renderAttention();
     renderApps();
   },
+  ask: renderAsk,
   apps: renderApps,
   attention: renderAttention,
   backups: renderBackups,
@@ -4863,7 +5180,7 @@ function poll(routeChanged = false) {
   every('status', 15000, true);
   every('live', 4000, LIVE_ROUTES.has(state.route));
   every('processes', 5000, state.route === 'processes');
-  every('control', 3000, ['cooling', 'apps', 'processes', 'home'].includes(state.route));
+  every('control', 3000, CONTROL_ROUTES.has(state.route));
 }
 function refreshNow() {
   void load('status');
@@ -4873,7 +5190,7 @@ function refreshNow() {
   if (state.route === 'processes') {
     void load('processes');
   }
-  if (['cooling', 'apps', 'processes', 'home'].includes(state.route)) {
+  if (CONTROL_ROUTES.has(state.route)) {
     void load('control');
   }
 }
@@ -4907,6 +5224,17 @@ $('refresh').addEventListener('click', refreshNow);
 $('preferences').addEventListener('click', preferences);
 $('theme-toggle').addEventListener('click', toggleTheme);
 $('more').addEventListener('click', moreMenu);
+$('ask-form').addEventListener('submit', e => {
+  e.preventDefault();
+  const question = $('ask-input').value.trim();
+  if (!question || ASK.busy) {
+    return;
+  }
+  $('ask-input').value = '';
+  const item = ASK.item;
+  ASK.item = null;
+  void askNeko(question, item);
+});
 $('export').addEventListener('click', diagnostics);
 $('close-dialog').addEventListener('click', () => $('dialog').close());
 $('dialog').addEventListener('close', () => {

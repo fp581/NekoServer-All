@@ -454,6 +454,11 @@ def choose_pin(binary, log, ask=getpass.getpass):
     return False
 
 
+def runtime_binary():
+    """The control program this release's dashboard step installs (it saves the PIN)."""
+    return Path('/usr/local/lib/nekoserver-dashboard') / ('v' + VERSION) / native_runtime.NAME
+
+
 def launcher(port):
     """A command that opens the dashboard in its own window, without browser tabs or
     bars: an installed Chromium-family browser in app mode, otherwise the default
@@ -520,6 +525,9 @@ def collector_settings(cfg, smart, interval=60):
     # The TV step's choice (guided_setup.wanted saves it as tv.wanted): with its report on the
     # SSD, it decides whether the page offers Steam Big Picture.
     clean['tv'] = {'wanted': cfg.get('tv', {}).get('wanted')}
+    # The AI assistant's choice (also guided_setup.wanted): its tile is shown only when wanted.
+    assistant = cfg.get('assistant', {})
+    clean['assistant'] = {'wanted': assistant.get('wanted') is True if isinstance(assistant, dict) else False}
     clean['acceptance_scope'] = scope_digest(cfg)
     # The profiles an acceptance run may name (config.json), for the collector to check.
     clean['acceptance_profiles'] = sorted(

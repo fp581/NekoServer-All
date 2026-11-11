@@ -417,6 +417,21 @@ class OptionalAnswersTests(unittest.TestCase):
             neko_common.optional_answers_file(d).write_text('[broken')
             self.assertEqual(neko_common.optional_answers(d), {})
 
+    def test_answers_are_read_only_from_inside_the_ssd(self):
+        """The SSD's path comes from the settings file: a link leading out of it is not read."""
+        import neko_common
+
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as elsewhere:
+            outside = Path(elsewhere) / 'answers.json'
+            outside.write_text(json.dumps({'playback': 'skipped'}))
+            file = neko_common.optional_answers_file(d)
+            file.parent.mkdir(parents=True)
+            file.symlink_to(outside)
+            self.assertEqual(neko_common.optional_answers(d), {})
+            file.unlink()
+            file.write_text(json.dumps({'playback': 'skipped'}))
+            self.assertEqual(neko_common.optional_answers(d), {'playback': 'skipped'})
+
     def test_the_source_wizard_and_the_indexer_choice_keep_how_they_went(self):
         wizard = load('source_wizard', 'source-wizard.py')
         self.assertEqual(wizard.sources_answer(0, 0), 'none added')

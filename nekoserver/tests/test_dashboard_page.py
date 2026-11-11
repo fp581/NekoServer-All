@@ -614,6 +614,7 @@ class CatCompanionTests(unittest.TestCase):
     # The cat placement package (placement-map.json), by route: all eleven pages.
     PACKAGE = {
         'home': 'happy',
+        'ask': 'listening',
         'apps': 'curious',
         'backups': 'sleeping',
         'hardware': 'resting',
@@ -769,6 +770,118 @@ class CatCompanionTests(unittest.TestCase):
         for mood in dashboard.CAT_PAGES:
             self.assertIn(f'cat-{mood}-small.webp', dashboard.ASSETS)
             self.assertIn(f'cat-{mood}.png', dashboard.ASSETS)
+
+
+@unittest.skipUnless(NODE, 'node is not installed')
+class AskNekoPageTests(unittest.TestCase):
+    """The Ask Neko page (ASSISTANT.md): only on a server with the assistant, its answers
+    shown without the ACTION line, a bug report the person reads and copies."""
+
+    def test_it_is_there_only_when_the_assistant_is_set_up(self):
+        said = page(
+            ('assistantSetUp', status(assistant={'set_up': True, 'model': 'qwen3.5:4b'})),
+            ('assistantSetUp', status(assistant={'set_up': False})),
+            ('assistantSetUp', status(assistant={'set_up': None})),
+            ('assistantSetUp', status()),
+        )
+        self.assertEqual(said, [True, False, False, False])
+        html = (ROOT / 'dashboard/index.html').read_text()
+        self.assertIn('id="nav-ask" hidden', html)
+        nav = re.findall(r'data-route="([a-z]+)"', html)
+        self.assertEqual(nav[:2], ['home', 'ask'])  # right under Home
+        app = (ROOT / 'dashboard/app.js').read_text()
+        self.assertIn("$('nav-ask').hidden = !assistantSetUp(s);", app)
+        self.assertIn("if (id === 'ask' && !assistantSetUp())", app)
+
+    def test_an_attention_item_asks_about_itself(self):
+        said = page(
+            ('askItem', {'id': 'job:host', 'title': 'Host and user snapshot failed'}),
+            ('askItem', {'id': 'app:jellyfin', 'title': 'Jellyfin needs attention'}),
+        )
+        self.assertEqual(said[0]['item'], 'backup:host')
+        self.assertEqual(said[1]['item'], 'app:jellyfin')
+        self.assertEqual(said[0]['question'], 'What does "Host and user snapshot failed" mean, and what should I do?')
+
+    def test_the_answer_is_shown_without_its_action_line_and_bug_report(self):
+        answer = 'The disk is full.\nFree some space.\nACTION: run_job:host\nBUG REPORT: the cleanup never ran'
+        self.assertEqual(page(('shownAnswer', answer))[0], 'The disk is full.\nFree some space.')
+        # Dressed up in Markdown, as a small model wrote it on the 0.49.0 gate.
+        dressed = '**ACTION: restart_app:jellyfin:**  \nJellyfin stopped; restart it.'
+        self.assertEqual(page(('shownAnswer', dressed))[0], 'Jellyfin stopped; restart it.')
+
+    def test_markdown_marks_are_not_shown(self):
+        """The page shows text as it is, and a small model writes Markdown (the 0.49.0 gate)."""
+        answer = (
+            'Jellyfin is **running too slow**.\n\n## What to do\n*   Restart it\n- Run `sudo bash install.sh`\n'
+            '2 * 3 is 6, and __pycache__ stays.\n\n**BUG REPORT:**\n*   **What failed:** the check'
+        )
+        self.assertEqual(
+            page(('shownAnswer', answer))[0],
+            'Jellyfin is running too slow.\n\nWhat to do\n• Restart it\n• Run sudo bash install.sh\n'
+            '2 * 3 is 6, and __pycache__ stays.',
+        )
+        report = page(('bugReport', {'question': 'q', 'answer': answer}))[0]
+        self.assertTrue(report.endswith('Neko’s report:\nWhat failed: the check'), report)
+        app = (ROOT / 'dashboard/app.js').read_text()
+        # Copying refused by the browser: the report is selected, and the page says so.
+        self.assertIn("toast('The report is selected: copy it from there.')", app)
+
+    def test_a_bug_report_names_the_version_the_question_and_the_redacted_excerpt(self):
+        entry = {
+            'question': 'Why did it fail?',
+            'answer': 'It failed.\nBUG REPORT: the retention step removes the newest copy.',
+            'excerpt': 'Host and user snapshot: failed\n<removed> written',
+        }
+        report = page(('bugReport', entry))[0]
+        self.assertIn('NekoServer ', report)
+        self.assertIn('Question: Why did it fail?', report)
+        self.assertIn('passwords and keys removed', report)
+        self.assertIn('<removed> written', report)
+        self.assertIn('the retention step removes the newest copy.', report)
+        self.assertIsNone(page(('bugReport', {'question': 'q', 'answer': 'no report here'}))[0])
+
+    def test_without_the_assistant_the_page_says_so(self):
+        self.assertIn('not set up on this server', page(('askIntro', {}))[0])
+
+    def test_without_a_pin_the_page_says_so_instead_of_asking_for_one(self):
+        ready = status(assistant={'set_up': True, 'model': 'qwen3.5:4b', 'memory': '5g', 'cpus': '2'})
+        said = page(
+            ('askIntro', {'status': ready, 'control': {'access': {'pin_set': False}}}),
+            ('askIntro', {'status': ready, 'control': {'access': {'pin_set': True}}}),
+            ('askIntro', {'status': ready}),
+        )
+        self.assertEqual(said[0], 'Ask Neko needs a dashboard PIN (run setup to choose one).')
+        self.assertTrue(said[1].startswith('Neko uses qwen3.5:4b'), said[1])
+        self.assertTrue(said[2].startswith('Neko uses qwen3.5:4b'), said[2])  # not known yet: no claim
+        app = (ROOT / 'dashboard/app.js').read_text()
+        # The send button stays off, and no PIN dialog opens that could never succeed.
+        self.assertIn('|| askNeedsPin();', app)
+        unlock = app[app.index('function askUnlock(') : app.index('async function askNeko(')]
+        self.assertLess(unlock.index('askNeedsPin()'), unlock.index('unlockDialog('))
+        self.assertIn('toast(ASK_NO_PIN)', unlock)
+
+    def test_asking_needs_the_pin_and_nothing_is_kept(self):
+        app = (ROOT / 'dashboard/app.js').read_text()
+        ask = app[app.index('async function askNeko(') : app.index('function askProgress(')]
+        # An app action: the PIN on every device, the server too (control.rs signed_in).
+        self.assertIn('if (!signedIn())', ask)
+        self.assertNotIn('canChange()', ask)
+        self.assertIn('askUnlock(', ask)
+        self.assertIn("started.error === 'E43'", ask)
+        # Asked through the PIN-checked control path; the answer is polled with the same session.
+        self.assertIn("postControl('ask',", ask)
+        self.assertIn("getJson('/api/ask/' + encodeURIComponent(id), 8000, tokenHeader())", ask)
+        self.assertIn('ASK_POLL', ask)
+        for kept in ('localStorage', 'sessionStorage.setItem', 'indexedDB'):
+            self.assertNotIn(
+                kept,
+                app[
+                    app.index('/* ---------- Ask Neko ---------- */') : app.index('/* ---------- backups ---------- */')
+                ],
+            )
+        # A repair runs only from its Approve button, after the server checked it.
+        self.assertIn("button('Approve', () => approveRepair(entry)", app)
+        self.assertIn("postControl('assist-check', { action: id })", app)
 
 
 if __name__ == '__main__':

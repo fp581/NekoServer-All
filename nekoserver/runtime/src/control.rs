@@ -12,7 +12,7 @@
 //! be slow, or hang until its timeout) only ever holds the lighting lock, so it can never
 //! delay a fan step or the emergency full-speed response.
 use crate::{
-    apps,
+    apps, assist,
     common::{self, Error, Result},
     fans::{self, Controller, Setting},
     openrgb, Args,
@@ -921,6 +921,12 @@ fn app_control(service: &Arc<Service>, op: &str, request: &Value) -> Value {
                 request["sig"].as_str().unwrap_or(""),
             ),
         },
+        // Ask Neko (assist.rs): the question made ready for the model, a suggested repair
+        // checked, an approved one run.
+        "app_ask" | "app_assist_check" | "app_assist_run" => match &service.config {
+            None => refuse("E42", "App controls are switched off on this server"),
+            Some(config) => assistant(service, config, op, request),
+        },
         "desktop_close" | "desktop_force" => match process() {
             Some((pid, start)) => apps::Close {
                 host: service.host.clone(),
@@ -936,6 +942,113 @@ fn app_control(service: &Arc<Service>, op: &str, request: &Value) -> Value {
     }
 }
 
+/// Ask Neko's three requests (the PIN is already checked). The app SSD must be the one
+/// setup chose, and the assistant set up on it.
+fn assistant(service: &Arc<Service>, config: &Path, op: &str, request: &Value) -> Value {
+    let cfg = common::json(config, 64000);
+    let Ok(data) = common::mount_path(cfg["data_mount"].as_str().unwrap_or(""))
+        .and_then(|data| crate::backup::guard_data(config, &data).map(|()| data))
+    else {
+        return refuse("E42", "The app SSD is not connected, so Neko can't look");
+    };
+    let Some(model) = assist::model(&cfg, &data) else {
+        return refuse("E42", "The AI assistant is not set up on this server");
+    };
+    let status = common::json(Path::new(assist::STATUS), 2_000_000);
+    if op == "app_ask" {
+        // Downloaded during setup, never shipped with NekoServer: when it is not there
+        // (yet), say so rather than ask Ollama for it.
+        let have = assist::ollama_models(assist::OLLAMA);
+        if let Some(why) = assist::model_missing(&data, &model, have.as_deref()) {
+            return refuse("E21", &format!("{}: {why}", assist::NOT_AVAILABLE));
+        }
+        return ask(&cfg, &data, &status, &model, request);
+    }
+    let id = request["action"].as_str().unwrap_or("");
+    let checked = match assist::repair(&cfg, &status, &data, id) {
+        Ok(checked) => checked,
+        Err(why) => {
+            // Anything outside the list is refused and noted in the control service's log.
+            eprintln!(
+                "Ask Neko: repair refused ({}): {why}",
+                id.chars().take(60).collect::<String>()
+            );
+            return refuse("E42", &why);
+        }
+    };
+    if op == "app_assist_check" {
+        return json!({"ok": true, "id": checked.id, "does": checked.does, "warning": checked.warning});
+    }
+    run_repair(service, config, &data, &checked.id)
+}
+/// The question, made ready for the model: the messages (the readings summary, and the
+/// attention item asked about with its log lines, every secret taken out), the repairs
+/// it may suggest, and the excerpt the page may put in a bug report.
+fn ask(cfg: &Value, data: &Path, status: &Value, model: &str, request: &Value) -> Value {
+    let Some(question) = assist::question(&request["question"]) else {
+        return refuse("E42", "What would you like to ask Neko?");
+    };
+    let about = assist::item_id(&request["item"])
+        .and_then(|id| assist::item(status, id))
+        .map(|(words, source)| (words, assist::log_lines(&source)));
+    let known = assist::known_secrets(cfg, data);
+    let repairs = assist::offered(cfg, status, data);
+    let messages = assist::messages(
+        &question,
+        &assist::summary(status),
+        about.as_ref().map(|(w, l)| (w.as_str(), l.as_str())),
+        &repairs,
+        &known,
+    );
+    let excerpt = about
+        .map(|(words, log)| assist::redact(&format!("{words}\n{log}"), &known))
+        .unwrap_or_default();
+    json!({"ok": true, "model": model, "threads": assist::threads(data), "messages": messages, "excerpt": excerpt,
+        "repairs": repairs.iter().map(|(id, _)| id).collect::<Vec<_>>()})
+}
+/// An approved repair (checked again just before): each one an operation the dashboard
+/// already has.
+fn run_repair(service: &Arc<Service>, config: &Path, data: &Path, id: &str) -> Value {
+    let (kind, name) = id.split_once(':').unwrap_or((id, ""));
+    eprintln!("Ask Neko: running the approved repair {id}");
+    match kind {
+        "restart_app" => apps::Restart {
+            config,
+            app: name,
+            actions: &service.actions,
+        }
+        .start(),
+        "update_check" => start_update_job(config, "app_update_check", "", ""),
+        "update_app" => match assist::update_signature(data, name) {
+            Some(sig) => start_update_job(config, "app_update_run", name, &sig),
+            None => refuse("E42", "No new version of that app is waiting any more"),
+        },
+        "run_job" => {
+            let Some((job, unit, _)) = assist::JOBS.iter().find(|j| j.0 == name) else {
+                return refuse("E42", "That backup does not run on this server");
+            };
+            if let Some(why) = assist::job_blocked(
+                Path::new("/run/nekoserver-operation.lock"),
+                &assist::unit_active,
+            ) {
+                return refuse(
+                    "E47",
+                    &format!("Not now: {why}. Try again once it has finished."),
+                );
+            }
+            match common::probe(&["systemctl", "start", "--no-block", unit], 30) {
+                (0, _) => {
+                    json!({"ok": true, "job": job, "message": "Started. This page and the Backups page show how it ends."})
+                }
+                _ => refuse(
+                    "E47",
+                    "The backup could not be started; the Backups page shows why",
+                ),
+            }
+        }
+        _ => refuse("E42", "That is not one of Neko's repairs"),
+    }
+}
 /// "Install at the next update night" for a version the daily check found: it skips its
 /// settling days (an urgent fix, say). The PIN is already checked.
 fn update_now(config: &Path, app: &str, sig: &str) -> Value {

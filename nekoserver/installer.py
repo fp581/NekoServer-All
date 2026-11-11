@@ -356,12 +356,21 @@ def _execute(args, root=ROOT):
     added, profiles_changed = template_steps(config)
     modules = load_modules(root / 'modules')
     enabled = [k for k in modules if config.get('modules', {}).get(k, {}).get('enabled', False)]
-    state_dir = Path(args.state_dir).expanduser()
-    if not state_dir.is_absolute() or '..' in state_dir.parts:
+    # The folder as given on the command line (or the default): never from the settings.
+    given = Path(args.state_dir).expanduser()
+    if not given.is_absolute() or '..' in given.parts:
         raise InstallerError('--state-dir must be an absolute path without ".."')
-    state_dir = safe_path(state_dir)
+    given = safe_path(given)
+    # With the default folder and the SSD mounted, the state is kept on the SSD.
+    state_dir = given
+    on_the_ssd = False
     if state_dir == DEFAULT_STATE and os.path.ismount(config['data_mount']):
+        on_the_ssd = True
         state_dir = Path(config['data_mount']) / 'installer' / 'state'
+        # The SSD's path comes from the settings file: the folder is used only once it
+        # is proved to lie on the SSD with every link followed.
+        if not os.path.realpath(state_dir).startswith(os.path.realpath(config['data_mount']) + os.sep):
+            raise InstallerError(f'The setup state folder must lie on the app SSD: {state_dir}')
     state_path = safe_path(state_dir / 'state.json')
     safe_path(state_dir / 'install.log')
     previous = read_json(state_path) if state_path.exists() else {}
@@ -412,7 +421,16 @@ def _execute(args, root=ROOT):
         if args.check:
             print('Configuration and dependency graph valid.')
         return 0
-    ensure_directory(state_dir, 0o700)
+    if on_the_ssd:
+        # Its path comes from the settings: it is made as the path with every link
+        # followed, once that is proved to lie on the SSD. safe_path refused links on the
+        # way above, so on a real server this is the same path as state_dir.
+        checked = os.path.realpath(state_dir)
+        if not checked.startswith(os.path.realpath(config['data_mount']) + os.sep):
+            raise InstallerError(f'The setup state folder must lie on the app SSD: {state_dir}')
+        ensure_directory(Path(checked), 0o700)
+    else:
+        ensure_directory(given, 0o700)
     if not args.apply:
         state_path = safe_path(state_dir / 'inspection-state.json')
     log_path = safe_path(state_dir / ('install.log' if args.apply else 'inspection.log'))
@@ -490,7 +508,12 @@ def _execute(args, root=ROOT):
             and Path(args.state_dir).expanduser() == DEFAULT_STATE
         ):
             persistent = Path(config['data_mount']) / 'installer' / 'state'
-            ensure_directory(persistent, 0o700)
+            # Made as the path with every link followed, once that is proved to lie on
+            # the SSD (ensure_directory refuses links on the way, so it is the same path).
+            checked = os.path.realpath(persistent)
+            if not checked.startswith(os.path.realpath(config['data_mount']) + os.sep):
+                raise InstallerError(f'The setup state folder must lie on the app SSD: {persistent}')
+            ensure_directory(Path(checked), 0o700)
             next_state = persistent / 'state.json'
             previous_persistent = read_json(next_state) if next_state.exists() else {}
             states = moved_states(previous_persistent, states, plan[: plan.index(name) + 1])

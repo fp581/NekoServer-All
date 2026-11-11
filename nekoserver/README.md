@@ -1,4 +1,4 @@
-# NekoServer v0.48.2
+# NekoServer v0.49.0
 
 NekoServer turns a PC running **Arch Linux**, **Nyarch**, **Debian**, **Ubuntu**, **Fedora**, **RHEL** (and Rocky Linux, AlmaLinux) or **openSUSE** into a home media server: your own Netflix-style video library, photo backup from your phone, music streaming, and a private cloud drive. One command sets up the apps, creates their accounts, connects them together, sets up your phone, makes them reachable from anywhere through **Tailscale** (privately, only for your own devices) and schedules backups.
 
@@ -327,6 +327,7 @@ Good to know:
 | Home and remote access, certificates | [GATEWAY.md](GATEWAY.md) |
 | TV setup (Steam, controllers) | [TV-SETUP.md](TV-SETUP.md) |
 | Music | [MUSIC.md](MUSIC.md) |
+| The AI assistant (optional) | [ASSISTANT.md](ASSISTANT.md) |
 | App updates and the monthly check | [MONTHLY-MAINTENANCE.md](MONTHLY-MAINTENANCE.md) |
 | Hardware video (graphics chip) | [HARDWARE-VIDEO.md](HARDWARE-VIDEO.md) |
 | Restoring from backup | [RECOVERY.md](RECOVERY.md) |

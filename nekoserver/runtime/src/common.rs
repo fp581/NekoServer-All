@@ -902,7 +902,7 @@ pub fn sanitize(text: &str) -> String {
 /// that fits (if that keeps most of it; it then ends with that sentence, no "…" after
 /// its full stop), else after its last whole word with "…", never in the middle of a
 /// word. A quote the cut leaves open is closed.
-fn shortened(text: &str, max: usize) -> String {
+pub(crate) fn shortened(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_string();
     }

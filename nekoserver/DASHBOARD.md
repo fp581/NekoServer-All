@@ -29,6 +29,7 @@ Installing needs the secure Tailscale address (https) or the server's own addres
 | Page | What you see |
 | --- | --- |
 | **Home** | Overall status (with the cat, below), the three most urgent things, apps, storage, uptime and live processor, memory, temperature and network. On a new server it says **Getting started** while the first backups are still to come and the server check isn't done: when the first backup is due, and to finish the check. That is information, not a problem, and it goes away once both are done. |
+| **Ask Neko** | Only with the AI assistant set up (ASSISTANT.md): ask what a reading means or what to do about a problem; each item under **Needs attention** has **Ask Neko about this**. A fix it suggests runs only when you press **Approve**; asking needs the PIN on every device, the server too. |
 | **Your apps** | Every installed app with its health, processor and memory use, and an Open link. Star favourites to keep them first. Right-click an app (on a phone, tap ⋯) to restart it. |
 | **Backups** | Each scheduled backup, whether its copies were checked and found intact, and whether a restore was tried. |
 | **Hardware** | Processor (total, each core, clock, waiting work), memory, every graphics card and AI chip, network traffic, drive activity, batteries and UPS. Updates every 4 seconds. |
@@ -58,6 +59,7 @@ Every page also has a smaller cat of its own beside its main section, shown on t
 | Page | Its cat |
 | --- | --- |
 | **Home** (beside "Your server at a glance", below Neko) | Sits and says hello |
+| **Ask Neko** | Listens |
 | **Your apps** | Peeks in at the apps, from the left |
 | **Backups** | Sleeps between runs, plays while one runs, is happy when one has just finished, and is worried when one needs a look |
 | **Hardware** | Lies back with a slow tail swish |
@@ -178,7 +180,7 @@ There is nothing to configure. The dashboard reads what Linux reports:
 To see everything the dashboard can read on this computer:
 
 ```bash
-/usr/local/lib/nekoserver-dashboard/v0.48.2/nekoserver-runtime hardware
+/usr/local/lib/nekoserver-dashboard/v0.49.0/nekoserver-runtime hardware
 ```
 
 ### Fan control in detail
@@ -222,7 +224,7 @@ The dashboard is part of the normal setup (the full profile installs it). To ins
 sudo bash install.sh --profile dashboard --apply
 ```
 
-Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.48.2` (one folder per release, and when a setup run has finished, the folders of earlier releases that no service uses any more are removed; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
+Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.49.0` (one folder per release, and when a setup run has finished, the folders of earlier releases that no service uses any more are removed; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
 
 ### What runs, and what it can see
 

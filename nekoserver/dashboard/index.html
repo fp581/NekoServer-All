@@ -29,6 +29,9 @@
           <a class="nav" href="#home" data-route="home"
             ><span class="nav-icon" aria-hidden="true">⌂</span><span class="nav-text">Home</span></a
           >
+          <a class="nav" href="#ask" data-route="ask" id="nav-ask" hidden
+            ><span class="nav-icon" aria-hidden="true">✧</span><span class="nav-text">Ask Neko</span></a
+          >
           <a class="nav" href="#apps" data-route="apps"
             ><span class="nav-icon" aria-hidden="true">▦</span><span class="nav-text">Your apps</span
             ><b class="count" data-count="apps">—</b></a
@@ -158,6 +161,27 @@
             <a href="#attention" class="text-link" data-only="home">View all →</a>
           </header>
           <div id="attention-list"><p class="empty">Waiting for a health snapshot.</p></div>
+        </section>
+
+        <section class="panel ask" data-page="ask">
+          <header class="section-head with-cat" data-cat="ask">
+            <div>
+              <span class="eyebrow">A LITTLE HELP</span>
+              <h2>Ask Neko</h2>
+            </div>
+          </header>
+          <p class="hint" id="ask-model"></p>
+          <div id="ask-log" class="ask-log" aria-live="polite"></div>
+          <form id="ask-form" class="ask-form">
+            <label class="field" for="ask-input">Your question</label>
+            <textarea id="ask-input" maxlength="500" rows="3" required></textarea>
+            <button class="button" type="submit" id="ask-send">Ask</button>
+          </form>
+          <p class="hint">
+            Neko answers from this server only: nothing you ask leaves your home, and passwords and keys are taken out
+            of what it reads. Nothing is kept: reloading or closing this page clears it. It changes nothing by itself; a
+            fix it suggests runs only when you approve it.
+          </p>
         </section>
 
         <section class="panel" data-page="home">
