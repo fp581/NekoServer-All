@@ -290,16 +290,56 @@ fn location_of(what: &str) -> (&'static str, Vec<&'static str>) {
 pub fn files_root(cfg: &serde_json::Value, what: &str) -> Result<PathBuf> {
     let (default, _) = location_of(what);
     let chosen = cfg["locations"][what].as_str().unwrap_or(default);
-    let key = match chosen {
-        "ssd" => "data_mount",
-        "media" => "media_mount",
-        _ => {
-            return Err(Error::new(&format!(
-                "locations.{what} must be \"ssd\" or \"media\""
-            )))
-        }
-    };
-    mount_path(cfg[key].as_str().unwrap_or(""))
+    drive_folder(cfg, chosen).ok_or_else(|| {
+        Error::new(&format!(
+            "locations.{what} must be \"ssd\", \"media\" or a drive under \"storage\""
+        ))
+    })
+}
+/// Where drives beyond the SSD and the media drive are mounted, each in a folder of its
+/// name (0.50.0, free placement; neko_common.EXTRA_MOUNTS).
+pub const EXTRA_MOUNTS: &str = "/mnt/nekoserver-drives";
+/// A drive beyond the two is listed under "storage" by a short name ("d3").
+pub fn extra_drive(cfg: &serde_json::Value, name: &str) -> bool {
+    let plain = !name.is_empty()
+        && name.len() <= 16
+        && name.starts_with(|c: char| c.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    plain && !["ssd", "media"].contains(&name) && cfg["storage"][name].is_object()
+}
+/// Where a drive is mounted: the app folder for "ssd", the media folder for "media",
+/// EXTRA_MOUNTS/<name> for another one under "storage"; None for anything else.
+pub fn drive_folder(cfg: &serde_json::Value, drive: &str) -> Option<PathBuf> {
+    match drive {
+        "ssd" => mount_path(cfg["data_mount"].as_str().unwrap_or("")).ok(),
+        "media" => mount_path(cfg["media_mount"].as_str().unwrap_or("")).ok(),
+        name if extra_drive(cfg, name) => Some(Path::new(EXTRA_MOUNTS).join(name)),
+        _ => None,
+    }
+}
+/// The extra drives something is placed on ("locations"): the ones every job checks.
+pub fn drives_in_use(cfg: &serde_json::Value) -> Vec<String> {
+    let mut found: Vec<String> = cfg["locations"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(_, drive)| drive.as_str())
+        .filter(|drive| extra_drive(cfg, drive))
+        .map(str::to_string)
+        .collect();
+    found.sort();
+    found.dedup();
+    found
+}
+/// The folder the films, the shows and their downloads are in: as setup said ("paths":
+/// "library", written only when they are off the media drive), else the media drive's.
+pub fn movies_library(cfg: &serde_json::Value) -> Result<PathBuf> {
+    if cfg["paths"]["library"].is_string() {
+        return saved_path(cfg, "library");
+    }
+    Ok(files_root(cfg, "movies")?.join("library"))
 }
 /// How many errors Linux has counted on the ext4 filesystem mounted from `source`
 /// (/dev/sdb1): kept in the filesystem itself until it is checked and repaired (e2fsck
@@ -322,13 +362,16 @@ pub fn ext4_errors(source: &str, sys: &Path) -> Option<u64> {
 pub fn saved_path(cfg: &serde_json::Value, what: &str) -> Result<PathBuf> {
     if let Some(path) = cfg["paths"][what].as_str() {
         let path = safe(Path::new(path))?;
-        let drives = ["data_mount", "media_mount"]
+        // On the SSD, the media drive, or another drive something is placed on.
+        let drives = ["ssd", "media"]
             .iter()
-            .filter_map(|k| cfg[*k].as_str().and_then(|m| mount_path(m).ok()))
+            .map(|d| d.to_string())
+            .chain(drives_in_use(cfg))
+            .filter_map(|d| drive_folder(cfg, &d))
             .collect::<Vec<_>>();
         if !drives.iter().any(|d| path.starts_with(d) && path != *d) {
             return Err(Error::new(&format!(
-                "paths.{what} is not on the SSD or the media drive"
+                "paths.{what} is not on the SSD, the media drive or a drive the settings place it on"
             )));
         }
         return Ok(path);
@@ -1322,6 +1365,66 @@ mod media_answer_tests {
         let without = json!({"media_apps": {"wanted": true}, "photos": {"deploy_immich": false}});
         assert!(!immich_wanted(&without));
         assert!(media_services(&without).is_empty());
+    }
+
+    /// Free placement (0.50.0): a row's data on any drive under "storage", by the folder
+    /// setup names (tests/test_placement.py has setup's side of the same rules).
+    #[test]
+    fn data_may_be_on_any_drive_the_settings_list() {
+        use super::{
+            drive_folder, drives_in_use, extra_drive, files_root, movies_library, saved_path,
+        };
+        use std::path::Path;
+        let cfg = json!({"data_mount": "/srv/nekoserver", "media_mount": "/mnt/nekoserver-media",
+            "storage": {"data_ssd": {"uuid": "a"}, "media_hdd": {"uuid": "b"}, "d3": {"uuid": "c", "fstype": "xfs"}},
+            "locations": {"photos": "d3", "movies": "d3"},
+            "paths": {"photos": "/mnt/nekoserver-drives/d3/photos/immich-library",
+                "library": "/mnt/nekoserver-drives/d3/library"}});
+        assert!(extra_drive(&cfg, "d3"));
+        for not_one in ["ssd", "media", "d4", "", "../x", "D3", "data_ssd!"] {
+            assert!(!extra_drive(&cfg, not_one), "{not_one}");
+        }
+        assert_eq!(
+            drive_folder(&cfg, "d3").unwrap(),
+            Path::new("/mnt/nekoserver-drives/d3")
+        );
+        assert_eq!(
+            drive_folder(&cfg, "media").unwrap(),
+            Path::new("/mnt/nekoserver-media")
+        );
+        assert!(drive_folder(&cfg, "d4").is_none());
+        assert_eq!(drives_in_use(&cfg), ["d3"]);
+        assert_eq!(
+            files_root(&cfg, "photos").unwrap(),
+            Path::new("/mnt/nekoserver-drives/d3")
+        );
+        assert_eq!(
+            files_root(&cfg, "music").unwrap(),
+            Path::new("/srv/nekoserver")
+        );
+        assert_eq!(
+            saved_path(&cfg, "photos").unwrap(),
+            Path::new("/mnt/nekoserver-drives/d3/photos/immich-library")
+        );
+        assert_eq!(
+            movies_library(&cfg).unwrap(),
+            Path::new("/mnt/nekoserver-drives/d3/library")
+        );
+        // The films where they always were: the media drive's library, with no "paths" entry.
+        let plain =
+            json!({"data_mount": "/srv/nekoserver", "media_mount": "/mnt/nekoserver-media"});
+        assert_eq!(
+            movies_library(&plain).unwrap(),
+            Path::new("/mnt/nekoserver-media/library")
+        );
+        assert!(drives_in_use(&plain).is_empty());
+        // A folder on a drive nothing is placed on is refused, and so is a drive not listed.
+        let mut stray = cfg.clone();
+        stray["paths"]["photos"] = json!("/mnt/nekoserver-drives/d9/photos");
+        assert!(saved_path(&stray, "photos").is_err());
+        let mut unknown = cfg.clone();
+        unknown["locations"]["photos"] = json!("d9");
+        assert!(files_root(&unknown, "photos").is_err());
     }
 
     /// The three groups (neko_common.media_group and tests/test_media_groups.py): each

@@ -426,15 +426,30 @@ fn short_of_space(media: &Path, have: u128, needed: u128) -> String {
 /// the media drive (the choice since 0.46.0) qBittorrent binds the music downloads
 /// folder there beside the library itself; only the library as a whole was taken on
 /// that drive, so every nightly app backup failed.
-fn covered(mount: &Value, own: &Path, data: &Path, media: &Path) -> bool {
+fn covered(mount: &Value, own: &Path, drives: &[&Path]) -> bool {
     if mount["RW"] != true {
         return true;
     }
     let source = Path::new(mount["Source"].as_str().unwrap_or(""));
     mount["Type"] == "bind"
         && (source == own
-            || source.starts_with(data.join("library"))
-            || source.starts_with(media.join("library")))
+            || drives
+                .iter()
+                .any(|drive| source.starts_with(drive.join("library"))))
+}
+/// The drives a library may be on: the SSD, the media drive, and wherever the settings
+/// place the films or the music (0.50.0).
+fn library_drives(cfgpath: &Path, data: &Path, media: &Path) -> Vec<PathBuf> {
+    let cfg = common::json(cfgpath, 64000);
+    let mut drives = vec![data.to_path_buf(), media.to_path_buf()];
+    for what in ["movies", "music"] {
+        if let Ok(root) = common::files_root(&cfg, what) {
+            if !drives.contains(&root) {
+                drives.push(root);
+            }
+        }
+    }
+    drives
 }
 fn snapshot(
     cfgpath: &Path,
@@ -444,6 +459,8 @@ fn snapshot(
 ) -> Result<backup::Outcome> {
     let mut containers = vec![];
     let mut running = vec![];
+    let library_drives = library_drives(cfgpath, data, media);
+    let library_drives: Vec<&Path> = library_drives.iter().map(PathBuf::as_path).collect();
     for name in names {
         let project = format!("label=com.docker.compose.project=neko-{name}");
         let service = format!("label=com.docker.compose.service={name}");
@@ -484,7 +501,10 @@ fn snapshot(
             return Err(Error::new("Persistent application mount missing"));
         }
         // Refuse extra writable state: it would make a backup silently incomplete.
-        if mounts.iter().any(|m| !covered(m, &expected, data, media)) {
+        if mounts
+            .iter()
+            .any(|m| !covered(m, &expected, &library_drives))
+        {
             return Err(Error::new("Unmanaged writable container state"));
         }
         let row = json!({"id":ids[0],"service":name,"image":v["Image"],"was_running":v["State"]["Running"]==true});
@@ -646,7 +666,10 @@ mod tests {
             "/mnt/media/library/downloads/music",
             "/srv/nekoserver/library/downloads/music",
         ] {
-            assert!(covered(&bind(source, true), &own, data, media), "{source}");
+            assert!(
+                covered(&bind(source, true), &own, &[data, media]),
+                "{source}"
+            );
         }
         for source in [
             "/mnt/media/cloud/files",
@@ -654,14 +677,17 @@ mod tests {
             "/srv/nekoserver/appdata/sonarr",
             "/home/neko",
         ] {
-            assert!(!covered(&bind(source, true), &own, data, media), "{source}");
             assert!(
-                covered(&bind(source, false), &own, data, media),
+                !covered(&bind(source, true), &own, &[data, media]),
+                "{source}"
+            );
+            assert!(
+                covered(&bind(source, false), &own, &[data, media]),
                 "read-only"
             );
         }
         let volume = json!({"Type": "volume", "Source": "/mnt/media/library", "RW": true});
-        assert!(!covered(&volume, &own, data, media));
+        assert!(!covered(&volume, &own, &[data, media]));
     }
     #[test]
     fn a_full_hdd_message_says_what_is_free_and_needed() {

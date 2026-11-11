@@ -284,14 +284,27 @@ def saved_paths(config):
     """The folders setup decided for the apps' files, written down for the runtime: it reads
     them and never works them out again (common::saved_path), so the two halves can't
     disagree. Every settings file the runtime reads carries them."""
-    from neko_common import cloud_files, music_downloads, music_library, photo_library
+    from neko_common import (
+        LOCATIONS,
+        cloud_files,
+        location,
+        movies_library,
+        music_downloads,
+        music_library,
+        photo_library,
+    )
 
-    return {
+    paths = {
         'photos': str(photo_library(config)),
         'music': str(music_library(config)),
         'downloads': str(music_downloads(config)),
         'cloud': str(cloud_files(config)),
     }
+    if location(config, 'movies') != LOCATIONS['movies'][0]:
+        # The films and shows placed off the media drive (0.50.0): said only then, so a
+        # server that has them where they always were keeps the settings files it has.
+        paths['library'] = str(movies_library(config))
+    return paths
 
 
 def storage_config(config):

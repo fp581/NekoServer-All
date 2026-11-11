@@ -3166,9 +3166,14 @@ pub fn check_drives(a: &crate::Args) -> Result<()> {
             "data_ssd" => "data_mount",
             "media_hdd" => "media_mount",
             "usb" => "external_backup_mount",
+            // A drive beyond the two that something is placed on (0.50.0).
+            name if common::extra_drive(&cfg, name) => "",
             _ => return Err(Error::new("Unknown drive")),
         };
-        let path = common::mount_path(cfg[mount].as_str().unwrap_or(""))?;
+        let path = match common::drive_folder(&cfg, key).filter(|_| mount.is_empty()) {
+            Some(extra) => extra,
+            None => common::mount_path(cfg[mount].as_str().unwrap_or(""))?,
+        };
         let uuid = if *key == "usb" {
             checked_drive(&usb_spec(&cfg), "usb", &path)?
         } else {
@@ -3272,6 +3277,18 @@ pub fn guard(cfgpath: &Path, data: &Path, media: &Path) -> Result<()> {
     }
     if ids[0] == ids[1] {
         return Err(Error::new("Distinct backup filesystems required"));
+    }
+    // Every other drive something is placed on is the one setup chose, too: a job never
+    // reads or writes a folder of a drive that is away (the empty folder left on the
+    // system disk) or of another drive mounted in its place.
+    for name in common::drives_in_use(&c) {
+        let folder = common::drive_folder(&c, &name)
+            .ok_or_else(|| Error::new("Unknown drive in the settings"))?;
+        let id = checked_drive(&c, &name, &folder)?;
+        if ids.contains(&id) {
+            return Err(Error::new("Each drive must be a filesystem of its own"));
+        }
+        ids.push(id);
     }
     Ok(())
 }

@@ -17,6 +17,7 @@ from pathlib import Path
 from neko_common import (
     LOCATIONS,
     app_ports,
+    files_root,
     safe_path,
     local_opener,
     checked_settings,
@@ -821,7 +822,8 @@ def chosen_actions(args, root, config, apps, selected):
                 'root folders',
                 lambda: configure_root_folders(
                     root,
-                    args.media_root or config['media_mount'],
+                    # The drive the films and shows are on: the media drive unless placed elsewhere.
+                    args.media_root or str(files_root(config, 'movies')),
                     args.apply,
                     apps,
                     music_library(

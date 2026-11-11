@@ -25,6 +25,7 @@ from neko_common import (
     atomic_json,
     checked_settings,
     default_settings,
+    files_root,
     local_opener,
     music_library,
     safe_path,
@@ -173,7 +174,10 @@ def main(argv=None):
         if pending:
             print('Startup wait ended; still unavailable:', ', '.join(pending))
     music = music_library({**config, 'data_mount': str(root), 'media_mount': str(media)})
-    findings = report(root, media, not a.skip_http, apps, music)
+    # The films and shows are looked for on the drive they are placed on (the media drive
+    # unless placed elsewhere, or the folder given by hand).
+    films = media if a.media_root else files_root({**config, 'data_mount': str(root)}, 'movies')
+    findings = report(root, films, not a.skip_http, apps, music)
     output = root / 'reports' / 'onboarding.json'
     safe_report(output, findings)
     for r in findings:
@@ -271,7 +275,7 @@ def main(argv=None):
         provider_results = seerr_providers.configure(root, a.apply, apps)
         for r in provider_results:
             print(f"{r['status']:>11}  {r['check']}" + (': ' + r['reason'] if r.get('reason') else ''))
-    findings = report(root, media, not a.skip_http, apps, music)
+    findings = report(root, films, not a.skip_http, apps, music)
     findings += source_results
     findings += library_results
     findings += provider_results

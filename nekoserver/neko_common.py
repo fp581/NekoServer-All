@@ -849,18 +849,61 @@ LOCATIONS = {what: (place['default'], tuple(place['folders'])) for what, place i
 DRIVE_KEYS = {'ssd': 'data_mount', 'media': 'media_mount'}
 
 
+# A drive beyond the app SSD and the media drive (0.50.0, free placement): listed under
+# "storage" by a short name of its own ("d3"), and mounted at /mnt/nekoserver-drives/d3.
+# A row's data may be put on one ("locations": {"photos": "d3"}).
+EXTRA_MOUNTS = Path('/mnt/nekoserver-drives')
+DRIVE_NAME = re.compile(r'[a-z][a-z0-9]{0,15}')
+OLD_STORAGE_KEYS = ('data_ssd', 'media_hdd')
+
+
+def extra_drives(config):
+    """{name: its record} of the drives under "storage" beyond the SSD and the media drive."""
+    storage = config.get('storage')
+    if not isinstance(storage, dict):
+        return {}
+    return {
+        name: record
+        for name, record in storage.items()
+        if name not in OLD_STORAGE_KEYS and name not in DRIVE_KEYS and isinstance(record, dict)
+    }
+
+
+def drive_folder(config, drive):
+    """Where a drive is mounted: /srv/nekoserver for "ssd", /mnt/nekoserver-media for
+    "media", /mnt/nekoserver-drives/<name> for another one under "storage"."""
+    if drive in DRIVE_KEYS:
+        return mount_path(config[DRIVE_KEYS[drive]])
+    if drive not in extra_drives(config) or not DRIVE_NAME.fullmatch(str(drive)):
+        raise RuntimeError(f'"{drive}" is not a drive under "storage" in my-config.json')
+    return EXTRA_MOUNTS / drive
+
+
 def location(config, what):
-    """'ssd' or 'media': the drive that holds `what` (photos, music, cloud)."""
+    """The drive that holds `what` (photos, music, cloud, movies): 'ssd', 'media', or the
+    name of another drive under "storage"."""
     default, _ = LOCATIONS[what]
     chosen = (config.get('locations') or {}).get(what, default)
-    if chosen not in DRIVE_KEYS:
-        raise RuntimeError(f'locations.{what} must be "ssd" or "media"')
+    if chosen not in DRIVE_KEYS and chosen not in extra_drives(config):
+        raise RuntimeError(f'locations.{what} must be "ssd", "media" or a drive under "storage"')
     return chosen
 
 
 def files_root(config, what):
-    """The drive's folder (/srv/nekoserver or /mnt/nekoserver-media) that holds `what`."""
-    return mount_path(config[DRIVE_KEYS[location(config, what)]])
+    """The drive's folder (/srv/nekoserver, /mnt/nekoserver-media or another drive's) that
+    holds `what`."""
+    return drive_folder(config, location(config, what))
+
+
+def movies_library(config):
+    """The folder the films, the shows and their downloads are in (library/movies,
+    library/tv, library/downloads): on the media drive unless placed elsewhere."""
+    return files_root(config, 'movies') / 'library'
+
+
+def drives_in_use(config):
+    """The extra drives something is placed on: the ones setup mounts and every job checks."""
+    return sorted({drive for drive in (config.get('locations') or {}).values() if drive in extra_drives(config)})
 
 
 def photo_library(config):
@@ -1723,6 +1766,9 @@ def verify_storage(config, keys=('data_ssd', 'media_hdd'), ask=None):
 
     import native_runtime
 
+    if tuple(keys) == OLD_STORAGE_KEYS:
+        # ... and every other drive something is placed on (0.50.0).
+        keys = (*keys, *drives_in_use(config))
     settings = {k: config.get(k) for k in ('data_mount', 'media_mount', 'external_backup_mount', 'storage')}
     photos = config.get('photos') or {}
     settings['photos'] = {

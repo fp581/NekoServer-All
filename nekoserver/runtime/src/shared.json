@@ -12,6 +12,14 @@
     "cloud": {
       "default": "media",
       "folders": ["cloud/files"]
+    },
+    "movies": {
+      "default": "media",
+      "folders": [
+        "library/movies",
+        "library/tv",
+        "library/downloads"
+      ]
     }
   },
   "nas_watch": {

@@ -20,7 +20,7 @@ settings on whatever drive the table names. This module says which drive that is
 folders belong to a row, and which rows share a drive; it changes nothing by itself.
 """
 
-from neko_common import APP_GROUPS, LOCATIONS, MEDIA_GROUPS, media_group
+from neko_common import APP_GROUPS, LOCATIONS, MEDIA_GROUPS, extra_drives, media_group
 
 # The two drives every server before 0.50.0 has, by the names the table uses for them,
 # and where each is in the settings ("storage") and mounted.
@@ -50,7 +50,7 @@ CORE_FOLDERS = ('docker-engine', 'installer', 'reports', 'secrets', 'appdata/ass
 # What a row's data drive holds, as folders of the drive it is on by default.
 DATA_FOLDERS = {
     'photos': LOCATIONS['photos'][1],
-    'movies': ('library/movies', 'library/tv', 'library/downloads'),
+    'movies': LOCATIONS['movies'][1],
     'music': LOCATIONS['music'][1],
     CLOUD: LOCATIONS['cloud'][1],
     BACKUP: ('backups', 'photos/archive'),
@@ -58,13 +58,13 @@ DATA_FOLDERS = {
 # Where a row's data is when nothing says otherwise: as every server before 0.50.0 has it.
 DEFAULT_DATA = {
     'photos': LOCATIONS['photos'][0],
-    'movies': MEDIA,
+    'movies': LOCATIONS['movies'][0],
     'music': LOCATIONS['music'][0],
     CLOUD: LOCATIONS['cloud'][0],
     BACKUP: MEDIA,
 }
 # The rows whose data place a server before 0.50.0 chose itself ("locations").
-OLD_LOCATIONS = {'photos': 'photos', 'music': 'music', CLOUD: 'cloud'}
+OLD_LOCATIONS = {'photos': 'photos', 'movies': 'movies', 'music': 'music', CLOUD: 'cloud'}
 
 
 def apps_of(row):
@@ -116,6 +116,9 @@ def derived_drives(config):
         record = storage.get(key)
         if isinstance(record, dict) and record.get('uuid'):
             drives[name] = {k: record[k] for k in ('uuid', 'fstype', 'network', 'subvolume') if record.get(k)}
+    # Every other drive listed under "storage" (0.50.0), by the name it has there.
+    for name, record in extra_drives(config).items():
+        drives[name] = {k: record[k] for k in ('uuid', 'fstype', 'network', 'subvolume') if record.get(k)}
     photos = config.get('photos', {})
     if photos.get('external_backup_uuid'):
         drives[OFFLINE_DRIVE] = {

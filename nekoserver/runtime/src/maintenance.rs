@@ -457,11 +457,11 @@ fn valid_model(model: &Value, name: &str, data: &Path, media: &Path, cfg: &Value
     let places = Places {
         name,
         data,
-        media,
         photos: common::saved_path(&view, "photos")?,
         cloud: common::saved_path(&view, "cloud")?,
         music: common::saved_path(&view, "music")?,
         downloads: common::saved_path(&view, "downloads")?,
+        library: common::movies_library(&view)?,
     };
     let services = model["services"]
         .as_object()
@@ -719,12 +719,13 @@ fn isolated(name: &str, service: &str, v: &Value) -> bool {
 struct Places<'a> {
     name: &'a str,
     data: &'a Path,
-    media: &'a Path,
     photos: PathBuf,
     cloud: PathBuf,
     /// The music library and the downloaded music (common::saved_path "music", "downloads").
     music: PathBuf,
     downloads: PathBuf,
+    /// The films, the shows and their downloads (common::movies_library).
+    library: PathBuf,
 }
 impl Places<'_> {
     fn volume_ok(&self, service: &str, volume: &Value) -> Result<()> {
@@ -757,11 +758,11 @@ impl Places<'_> {
     fn bind_ok(&self, p: &Path) -> bool {
         let name = self.name;
         let own = self.data.join("appdata").join(name);
-        let library = self.media.join("library");
+        let library = &self.library;
         p.starts_with(&own)
             || (name == "immich" && p == self.photos)
             || (name == "nextcloud" && p == self.cloud)
-            || (["radarr", "sonarr", "qbittorrent"].contains(&name) && p == library)
+            || (["radarr", "sonarr", "qbittorrent"].contains(&name) && p == library.as_path())
             || (name == "jellyfin" && ["movies", "tv"].iter().any(|n| p == library.join(n)))
             || (name == "navidrome" && p == self.music)
             // Lidarr sees the folder both music folders are in (it moves downloads in).

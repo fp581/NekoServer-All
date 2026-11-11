@@ -259,6 +259,9 @@ def _run(context):
         raise RuntimeError('Media UIs must stay localhost-only behind the configured gateway')
     project_root = Path(__file__).resolve().parents[1]
     compose_dir = data / 'compose'
+    # The drive that holds the films, the shows and their downloads ("locations": the
+    # media drive unless placed elsewhere): what the apps are given as their library.
+    films = files_root(context.config, 'movies')
     # The drive that holds the music and its downloads, as setup chose it ("locations").
     music = files_root(context.config, 'music')
     configs = data / 'appdata'
@@ -271,7 +274,7 @@ def _run(context):
         if dest.is_symlink():
             raise RuntimeError(f'Refusing symlink manifest: {dest}')
         template = (project_root / 'compose' / f'{name}.yaml').read_text(encoding='utf-8')
-        values = (data, media, uid, gid, tz, bind, music)
+        values = (data, films, uid, gid, tz, bind, music)
         rendered = render(template, *values)
         desired = adapt_to_host(name, rendered, peer_port=torrent_port(settings))
         if dest.exists() and dest.read_text(encoding='utf-8') != desired:
@@ -284,13 +287,13 @@ def _run(context):
             if path.is_symlink():
                 raise RuntimeError(f'Refusing symlink path: {path}')
     context.log('Prepared all media Compose manifests without touching existing projects')
-    ensure_directory(media / 'library', 0o755)
+    ensure_directory(films / 'library', 0o755)
     ensure_directory(music / 'library', 0o755)
     # The music folders setup decided (neko_common, from shared.json's locations).
     for target in (music_library(context.config), music_downloads(context.config)):
         library_folder(safe_path(target), uid, gid, context.log)
     for folder in ('movies', 'tv', 'downloads'):
-        target = media / 'library' / folder
+        target = films / 'library' / folder
         safe_path(target)
         if target.is_symlink():
             raise RuntimeError(f'Refusing symlink media directory: {target}')

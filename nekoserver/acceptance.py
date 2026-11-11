@@ -307,10 +307,8 @@ def containers(config, photos=False):
                     mounts = bound(str(Path(config['data_mount']) / 'appdata' / app), (destination,))
                     if app in ('jellyfin', 'navidrome', 'sonarr', 'radarr', 'lidarr', 'qbittorrent'):
                         library = (
-                            files_root(config, 'music')
-                            if app in ('navidrome', 'lidarr')
-                            else Path(config['media_mount'])
-                        ) / 'library'
+                            files_root(config, 'music' if app in ('navidrome', 'lidarr') else 'movies') / 'library'
+                        )
                         if app == 'jellyfin':
                             needed = [('movies', '/data/movies', True), ('tv', '/data/tv', True)]
                         elif app == 'navidrome':

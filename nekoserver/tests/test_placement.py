@@ -173,5 +173,113 @@ class SavedTableTests(unittest.TestCase):
             placement.table(self.saved(backup={'data': None}))
 
 
+class DataOnAnyDriveTests(unittest.TestCase):
+    """Step 2: a row's data may be on any drive listed under "storage", by an explicit
+    folder that setup hands to every job (not by a mount inside another drive's folder),
+    and the films and shows have a place like the photos and the music."""
+
+    def placed(self, **locations):
+        config = configuration('defaults')
+        config['storage']['d3'] = {'uuid': 'third-drive-0001', 'fstype': 'xfs'}
+        config['locations'] = locations
+        return config
+
+    def test_the_films_have_a_place_and_it_is_the_media_drive_unless_placed_elsewhere(self):
+        config = configuration('defaults')
+        self.assertEqual(neko_common.movies_library(config), Path(config['media_mount']) / 'library')
+        self.assertEqual(placement.table(config)['movies'], {'install': 'ssd', 'data': 'media'})
+        moved = self.placed(movies='d3')
+        self.assertEqual(neko_common.movies_library(moved), Path('/mnt/nekoserver-drives/d3/library'))
+        self.assertEqual(placement.table(moved)['movies']['data'], 'd3')
+        self.assertEqual(placement.drives(moved)['d3'], {'uuid': 'third-drive-0001', 'fstype': 'xfs'})
+
+    def test_photos_music_and_cloud_files_follow_to_a_third_drive(self):
+        config = self.placed(photos='d3', music='d3', cloud='d3')
+        drive = Path('/mnt/nekoserver-drives/d3')
+        self.assertEqual(neko_common.photo_library(config), drive / 'photos/immich-library')
+        self.assertEqual(neko_common.music_library(config), drive / 'library/music')
+        self.assertEqual(neko_common.music_downloads(config), drive / 'library/downloads/music')
+        self.assertEqual(neko_common.cloud_files(config), drive / 'cloud/files')
+        self.assertEqual(neko_common.drives_in_use(config), ['d3'])
+        self.assertEqual(placement.used(config)['d3'], [('photos', 'data'), ('music', 'data'), ('cloud', 'data')])
+
+    def test_a_place_that_is_no_drive_of_this_server_stops_with_the_reason(self):
+        import config_checks
+
+        for wrong in ('d4', '../etc', 'D3', 'usb'):
+            config = self.placed(photos=wrong)
+            with self.subTest(drive=wrong), self.assertRaisesRegex(RuntimeError, 'a drive under "storage"'):
+                neko_common.files_root(config, 'photos')
+        with self.assertRaisesRegex(RuntimeError, 'each "ssd", "media" or a drive under "storage"'):
+            config_checks.validate(self.placed(photos='d4'), [])
+        config_checks.validate(self.placed(photos='d3', movies='media'), [])
+        # A name that could leave the drives' folder is never one, even when listed.
+        config = self.placed()
+        config['storage']['../x'] = {'uuid': 'u' * 12, 'fstype': 'ext4'}
+        with self.assertRaisesRegex(RuntimeError, 'is not a drive under "storage"'):
+            neko_common.drive_folder(config, '../x')
+
+    def test_setup_mounts_only_the_drives_something_is_placed_on(self):
+        from modules import storage
+
+        unused = self.placed()
+        self.assertEqual([spec[0] for spec in storage.mount_specs(unused)], ['data_ssd', 'media_hdd'])
+        used = self.placed(movies='d3')
+        specs = storage.mount_specs(used)
+        self.assertEqual(specs[2], ('d3', 'third-drive-0001', 'xfs', '/mnt/nekoserver-drives/d3', None))
+        # The same rules as the two: a filesystem of its own, a Linux one.
+        clone = self.placed(movies='d3')
+        clone['storage']['d3']['uuid'] = golden.HDD_UUID
+        with self.assertRaisesRegex(RuntimeError, 'different UUIDs'):
+            storage.mount_specs(clone)
+        wrong = self.placed(movies='d3')
+        wrong['storage']['d3']['fstype'] = 'ntfs'
+        with self.assertRaisesRegex(RuntimeError, 'storage.d3.fstype must be ext4, xfs or btrfs'):
+            storage.mount_specs(wrong)
+
+    def test_every_job_is_told_the_folders_and_checks_the_drive(self):
+        import native_runtime
+
+        config = self.placed(photos='d3', movies='d3')
+        told = native_runtime.storage_config(config)
+        self.assertEqual(told['paths']['photos'], '/mnt/nekoserver-drives/d3/photos/immich-library')
+        self.assertEqual(told['paths']['library'], '/mnt/nekoserver-drives/d3/library')
+        self.assertEqual(told['storage']['d3'], {'uuid': 'third-drive-0001', 'fstype': 'xfs'})
+        self.assertEqual(told['locations'], {'photos': 'd3', 'movies': 'd3'})
+        # A server with the films where they always were is told what it always was.
+        self.assertNotIn('library', native_runtime.storage_config(configuration('defaults'))['paths'])
+        # The drive check every step makes covers the third drive.
+        asked = []
+
+        def ask(root, config, args):
+            asked.append(args)
+            return 0, 'ok'
+
+        neko_common.verify_storage(config, ask=ask)
+        self.assertEqual(asked[0][-1], 'data_ssd,media_hdd,d3')
+        neko_common.verify_storage(configuration('defaults'), ask=ask)
+        self.assertEqual(asked[1][-1], 'data_ssd,media_hdd')
+
+    def test_the_apps_are_given_the_library_of_the_drive_it_is_on(self):
+        from modules import media
+
+        template = (ROOT / 'compose/sonarr.yaml').read_text()
+        config = self.placed(movies='d3')
+        films = neko_common.files_root(config, 'movies')
+        rendered = media.render(template, '/srv/nekoserver', films, 1000, 1000, 'UTC', '127.0.0.1')
+        self.assertIn('- "/mnt/nekoserver-drives/d3/library:/data"', rendered)
+        self.assertIn('- "/srv/nekoserver/appdata/sonarr:/config"', rendered)
+        source = (ROOT / 'modules/media.py').read_text()
+        self.assertIn("films = files_root(context.config, 'movies')", source)
+        self.assertIn('values = (data, films, uid, gid, tz, bind, music)', source)
+
+    def test_the_runtime_has_the_same_rules(self):
+        common = (ROOT / 'runtime/src/common.rs').read_text()
+        self.assertIn('pub const EXTRA_MOUNTS: &str = "/mnt/nekoserver-drives";', common)
+        self.assertEqual(str(neko_common.EXTRA_MOUNTS), '/mnt/nekoserver-drives')
+        guard = (ROOT / 'runtime/src/backup.rs').read_text()
+        self.assertIn('for name in common::drives_in_use(&c) {', guard)
+
+
 if __name__ == '__main__':
     unittest.main()

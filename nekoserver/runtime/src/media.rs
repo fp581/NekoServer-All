@@ -735,6 +735,8 @@ pub fn run(a: &Args) -> Result<()> {
     let data = common::mount_path(text(&cfg["data_mount"]))?;
     let media = common::mount_path(text(&cfg["media_mount"]))?;
     let music = common::files_root(&cfg, "music")?;
+    // The drive the films and shows are on (the media drive unless placed elsewhere).
+    let films = common::files_root(&cfg, "movies")?;
     backup::guard(&config, &data, &media)?;
     let output = common::safe(&a.path("output")?)?;
     if output != data.join("reports/media/latest.json") {
@@ -764,7 +766,7 @@ pub fn run(a: &Args) -> Result<()> {
     let mut integrations = json!({});
     let checking = a.flag("checking");
     for app in &selected {
-        services[app]=inspect(app,&data,&media,&music,checking).unwrap_or_else(|_|json!({"result":"fail","reason":"Container, mounts or local HTTP inspection failed"}));
+        services[app]=inspect(app,&data,&films,&music,checking).unwrap_or_else(|_|json!({"result":"fail","reason":"Container, mounts or local HTTP inspection failed"}));
     }
     for app in ["sonarr", "radarr", "lidarr", "prowlarr"]
         .iter()

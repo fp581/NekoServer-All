@@ -53,7 +53,7 @@ def check(config, modules):
         for category in ('movies', 'tv', 'music', 'downloads'):
             inspect(
                 'media:' + category,
-                (files_root(config, 'music') if category == 'music' else media) / 'library' / category,
+                files_root(config, 'music' if category == 'music' else 'movies') / 'library' / category,
                 uid,
                 {gid},
                 True,

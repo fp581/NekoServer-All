@@ -710,10 +710,29 @@ def mount_specs(config):
         if Path(target).is_symlink():
             raise RuntimeError(f'Mount path must not be symlink: {target}')
         specs.append((key, uuid, fstype, target, subvolume_of(record)))
+    specs += extra_specs(config)
     if Path(specs[0][3]) in Path(specs[1][3]).parents or Path(specs[1][3]) in Path(specs[0][3]).parents:
         raise RuntimeError('Data and media mountpoints must not be nested')
     if len({s[1] for s in specs}) != len(specs) or len({s[3] for s in specs}) != len(specs):
         raise RuntimeError('Data and media require different UUIDs and mountpoints')
+    return specs
+
+
+def extra_specs(config):
+    """The drives beyond the SSD and the media drive that something is placed on (0.50.0,
+    "locations" naming a drive under "storage"): each mounted at its own folder under
+    /mnt/nekoserver-drives, by the same rules as the two."""
+    from neko_common import EXTRA_MOUNTS, drives_in_use, extra_drives
+
+    specs = []
+    for name in drives_in_use(config):
+        record = extra_drives(config)[name]
+        uuid, fstype = str(record.get('uuid', '')).strip(), str(record.get('fstype', '')).strip()
+        if not re.fullmatch(r'[A-Za-z0-9-]{8,80}', uuid):
+            raise RuntimeError(f'storage.{name}.uuid must be explicitly configured from lsblk -f')
+        if not shared_folder(record, name) and fstype not in ('ext4', 'xfs', 'btrfs'):
+            raise RuntimeError(f'storage.{name}.fstype must be ext4, xfs or btrfs')
+        specs.append((name, uuid, fstype, str(EXTRA_MOUNTS / name), subvolume_of(record)))
     return specs
 
 
