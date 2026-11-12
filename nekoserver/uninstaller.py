@@ -566,8 +566,12 @@ class Plan:
         the exclusion would be gone. /run is emptied at every start, so they go then."""
         found = []
         for path in sorted(self.root.glob('run/nekoserver-*')):
-            if not path.name.endswith(LOCK_SUFFIX) and (path.exists() or path.is_symlink()):
+            if path.name.endswith(LOCK_SUFFIX) or not (path.exists() or path.is_symlink()):
+                continue
+            try:
                 found.extend(without_locks(path))
+            except OSError:  # setup's folder in /run is root's own (a dry run without sudo, gate run B8)
+                self.could_not_look(path)
         return found
 
     def shortcuts(self):
@@ -582,8 +586,17 @@ class Plan:
                     if folder is not None and self.folder_here(folder):
                         found.extend(p for p in folder.glob('nekoserver-*.desktop') if self.ours(p))
                 except OSError:  # not readable by this account (a dry run without sudo)
-                    self.warnings.append('Could not look in ' + str(folder) + ' (run with sudo for the whole plan)')
+                    self.could_not_look(folder)
         return sorted(set(found))
+
+    def could_not_look(self, folder):
+        """Said once in the plan: a folder this account may not read (a dry run without sudo)."""
+        said = (
+            'Could not look in ' + str(folder) + ' without sudo, so what is in it is not listed '
+            '(run with sudo for the whole plan)'
+        )
+        if said not in self.warnings:
+            self.warnings.append(said)
 
     def setup_state(self):
         """Setup's records on the system disk (SETUP_STATE), when there are any."""
@@ -591,7 +604,7 @@ class Plan:
         try:
             return [folder] if self.folder_here(folder) and not folder.is_symlink() else []
         except OSError:  # not readable by this account (a dry run without sudo)
-            self.warnings.append('Could not look in ' + str(folder) + ' (run with sudo for the whole plan)')
+            self.could_not_look(folder)
             return []
 
     def kept(self):
@@ -2176,22 +2189,44 @@ def main(argv):
         print(blocked, file=sys.stderr)
         return 1
     settings, source = find_settings()
+    if dry:
+        return dry_run(settings, source)
     plan = Plan(settings)
     print('Settings: ' + source)
-    if dry:
-        print('Dry run: what each choice would remove. Nothing is changed.')
-        if os.geteuid() != 0:
-            print(
-                '(Not running as root: what this account may not look at is left out. For the whole plan:  sudo bash uninstall.sh --dry-run)'
-            )
-        print(plan.describe({key for key, *_ in CHOICES}))
-        print('')
-        print(PACKAGES_LEFT)
-        return 0
     print('This removes NekoServer from this PC. Nothing is formatted; what you keep stays as it is.')
     # With a desktop, the setup window asks the same questions and either place answers.
     with window_session(settings):
         return removal(plan)
+
+
+NEEDS_SUDO = (
+    'This account may not look at {where}, which NekoServer keeps private. '
+    'Run it with sudo:  sudo bash uninstall.sh --dry-run   (still nothing is changed)'
+)
+
+
+def dry_run(settings, source, plan_of=None, out=None):
+    """What each choice would remove; nothing is changed, and no password is needed. What
+    this account may not read is left out and said so; should something still be out of
+    reach, the person is told to run it with sudo, never shown a traceback (gate run B8)."""
+    out = out or print
+    out('Settings: ' + source)
+    try:
+        plan = (plan_of or Plan)(settings)
+        said = plan.describe({key for key, *_ in CHOICES})
+    except PermissionError as exc:
+        out(NEEDS_SUDO.format(where=exc.filename or 'one of its folders'))
+        return 1
+    out('Dry run: what each choice would remove. Nothing is changed.')
+    if os.geteuid() != 0:
+        out(
+            '(Not running as root: what this account may not look at is left out. '
+            'For the whole plan:  sudo bash uninstall.sh --dry-run)'
+        )
+    out(said)
+    out('')
+    out(PACKAGES_LEFT)
+    return 0
 
 
 def window_session(settings):

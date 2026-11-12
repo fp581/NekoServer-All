@@ -1366,14 +1366,15 @@ class OnboardingCompletionTests(unittest.TestCase):
             self.assertIn('Playback verification pending', logs[-1])
             out = []
             states = {'onboarding': {'status': 'success'}}
-            wizard.finishing_screen({'data_mount': d, 'profiles': {'full': ['onboarding']}}, states, output=out.append)
+            config = {'data_mount': d, 'profiles': {'full': ['onboarding']}, 'media': {'services': ['jellyfin']}}
+            wizard.finishing_screen(config, states, output=out.append)
             text = '\n'.join(out)
             self.assertIn('NekoServer is ready!', text)
             self.assertIn('Playback verification pending', text)
             onboarding.witness_playback(ctx, checkpoint=lambda *a, **k: True)
             self.assertTrue(onboarding.playback_record(ctx.config).exists())
             out = []
-            wizard.finishing_screen({'data_mount': d, 'profiles': {'full': ['onboarding']}}, states, output=out.append)
+            wizard.finishing_screen(config, states, output=out.append)
             self.assertNotIn('Playback verification pending', '\n'.join(out))
 
 

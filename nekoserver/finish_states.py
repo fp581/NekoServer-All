@@ -23,7 +23,16 @@ import os
 import time
 from pathlib import Path
 
-from neko_common import APPS, app_port, atomic_json, immich_wanted, media_services, mount_path
+from neko_common import (
+    APPS,
+    app_port,
+    atomic_json,
+    immich_wanted,
+    media_group,
+    media_services,
+    mount_path,
+    music_backed_up,
+)
 
 DONE, FAILED, NOT_TESTED, WAITING = 'done', 'failed', 'not_tested', 'waiting'
 READY, PENDING, ATTENTION = 'ready', 'pending', 'attention'
@@ -63,6 +72,8 @@ RESTORES = (
     ('cloud_restore', 'photo_backup'),
 )
 TESTS_FILE = ('reports', 'setup', 'person-tests.json')
+# Written by the TV step only when it set the TV up (modules/tv.REPORT).
+TV_REPORT = ('reports', 'tv-setup.json')
 RUNNING_STATES = ('running',)
 BROKEN_STEP = ('failed', 'blocked', 'running', 'missing')
 LONGEST_FILE = 2_000_000
@@ -180,7 +191,7 @@ def backup_rows(facts):
     found = []
     for step, report in BACKUPS:
         state = facts['steps'].get(step)
-        if state in (None, 'unavailable'):
+        if state in (None, 'unavailable') or step in facts.get('off', ()):
             continue  # not part of this server
         if state == 'needs_setup':
             made = row(WAITING, 'step_waits_for_you', do='finish_step', step=step)
@@ -220,7 +231,8 @@ def restore_rows(facts):
     """Each restore a person can try on this server. A backup that exists says nothing here."""
     found = []
     for test, step in RESTORES:
-        if facts['steps'].get(step) != 'success':
+        # A backup step that is switched off finishes too, with nothing to restore from.
+        if facts['steps'].get(step) != 'success' or step in facts.get('off', ()):
             continue
         word = {'pass': SEEN, 'fail': NOT_WORKING}.get(facts['witnessed'].get(test)) or facts['person'].get(test)
         if word == SEEN:
@@ -236,8 +248,9 @@ def restore_rows(facts):
 
 
 def tv_rows(facts):
-    """Picture, sound, controller and Steam on the TV, each seen on its own."""
-    if facts['steps'].get('tv') != 'success':
+    """Picture, sound, controller and Steam on the TV, each seen on its own: only on a
+    server whose TV was set up (the TV step also finishes when it is left out or skipped)."""
+    if facts['steps'].get('tv') != 'success' or not facts.get('tv', True):
         return []
     return [{'id': test, **tried(facts, test)} for test in TV_TESTS]
 
@@ -375,6 +388,42 @@ def chosen_apps(config, links=None):
     return found
 
 
+def app_backup_off(config):
+    """The nightly app backup is of the media apps: off when none of them is set up."""
+    services = config.get('media', {}).get('services')
+    none_listed = isinstance(services, list) and not media_services(config)
+    return none_listed or not (media_group(config, 'movies') or media_group(config, 'music'))
+
+
+def offline_backup_off(config):
+    """The offline copy has nothing to copy, or no removable drive was chosen for it."""
+    if not immich_wanted(config) and config.get('nextcloud', {}).get('enabled') is not True:
+        return True
+    photos = config.get('photos', {})
+    return photos.get('external_backup_wanted') is False and not photos.get('external_backup_uuid')
+
+
+def switched_off(config):
+    """The backup steps that finish with nothing to do, as their app or switch is off
+    (the dashboard's backups page says "Switched off" for the same ones: collect.rs retired)."""
+    off = {
+        'app_backup': app_backup_off(config),
+        'music_backup': not music_backed_up(config),
+        'photo_preservation': not immich_wanted(config),
+        'photo_backup': offline_backup_off(config),
+    }
+    return sorted(step for step, is_off in off.items() if is_off)
+
+
+def tv_set_up(config, data):
+    """The TV step set the TV up: Movies and shows is on, the TV was not turned down, and
+    the step wrote its report."""
+    if not media_group(config, 'movies') or config.get('tv', {}).get('wanted') is False:
+        return False
+    report = below(data, TV_REPORT)
+    return report is not None and report.is_file()
+
+
 def step_statuses(data):
     states = read_object(below(data, ('installer', 'state', 'state.json')))
     return {
@@ -479,6 +528,8 @@ def collect(config, plan, read=None):
         'apps': apps,
         'plan': list(plan),
         'steps': step_statuses(data),
+        'off': switched_off(config),
+        'tv': tv_set_up(config, data),
         'containers': asked('containers', lambda: container_states(config)),
         'logins': asked('logins', lambda: login_states(config)),
         'answers': asked('answers', lambda: answering(apps)),

@@ -26,6 +26,7 @@ from neko_common import (
     VERSION,
     atomic_json,
     dashboard_port,
+    media_services,
     mount_path,
     safe_path,
     settings_path,
@@ -882,9 +883,11 @@ def show_end(config, data, plan, states, page, output):
         output('Phone setup page:   ' + str(page) + '  (open it in a browser on this PC)')
     if not waiting('dashboard'):
         show_dashboard(config, output)
+    # Asked for only where there is a player (modules/onboarding.witness_playback).
     if (
         'onboarding' in plan
         and states['onboarding'].get('status') == 'success'
+        and 'jellyfin' in media_services(config)
         and not (data / 'reports/onboarding/playback.json').exists()
     ):
         output('\nPlayback verification pending: the apps are set up and their automatic checks')
