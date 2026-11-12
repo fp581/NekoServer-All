@@ -602,6 +602,22 @@ def signs_in(config, app, client_factory=Client):
         client.close()
 
 
+def what_to_do(config, app, entry):
+    """What to do about an app that did not take its saved login, in plain words."""
+    name = store.APPS[app][0]
+    try:
+        own_account = not entry.get('allow_create') or not store.fresh(config, app)
+    except (RuntimeError, OSError):
+        own_account = True
+    if own_account:
+        return (
+            f'{name} has an account of its own: run  sudo bash install.sh  again, choose c when it asks about '
+            f'{name}, and type the login {name} has now (the list of app passwords in a backup has it: '
+            'sudo bash install.sh --recover, "The list of app passwords").'
+        )
+    return f'Run  sudo bash install.sh  again: setup tries {name} again once it answers.'
+
+
 def provision(config, apps, output=print, client_factory=Client):
     pending = []
     for app in apps:
@@ -644,12 +660,9 @@ def provision(config, apps, output=print, client_factory=Client):
             store.update(config, app, state='needs_setup')
             pending.append(app)
             # The reason, never the password: the checks' own messages name no values.
-            output(
-                store.APPS[app][0]
-                + ': not verified ('
-                + (str(exc) or type(exc).__name__)
-                + '); the saved login is kept'
-            )
+            reason = str(exc) or type(exc).__name__
+            advice = what_to_do(config, app, entry)
+            output(f'{store.APPS[app][0]}: not verified ({reason}); the saved login is kept. {advice}')
         finally:
             client.close()
             if extra:

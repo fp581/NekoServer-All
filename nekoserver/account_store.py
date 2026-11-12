@@ -351,14 +351,96 @@ EXISTING = 'This app has data already: enter its current login. The account in t
 
 
 def fresh(config, app):
-    """The app has no data on the SSD yet, so its first account is made by setup. With
-    data there already, the login of the account it has is entered instead."""
+    """The app has no data yet, so its first account is made by setup. With data there
+    already, the login of the account it has is entered instead. Its data is looked for
+    on the SSD and, for an app installed on a drive of its own (placement, 0.50.0), on
+    that drive too: the accounts page is asked before setup mounts that drive's folder at
+    the SSD's place, and an app whose settings were kept there (the SSD replaced, gate
+    run C10) must never be given a login it does not know."""
     actual_app = 'navidrome' if app == 'navidrome_listener' else app
     data = safe_path(Path(config['data_mount']) / 'appdata' / actual_app)
     # Looked at only once it is proved to lie on the SSD (its path comes from the settings).
     if not os.path.realpath(data).startswith(os.path.realpath(config['data_mount']) + os.sep):
         raise RuntimeError(OUTSIDE)
-    return not data.exists() or (data.is_dir() and not any(data.iterdir()))
+    kept = kept_elsewhere(config, actual_app)
+    places = [data] + ([kept] if kept else [])
+    return all(not place.exists() or (place.is_dir() and not any(place.iterdir())) for place in places)
+
+
+def kept_elsewhere(config, app):
+    """Where an app installed on a drive of its own keeps its settings on that drive
+    (<drive>/nekoserver/appdata/<app>, which setup mounts at the SSD's place), or None for
+    an app on the SSD. Checked to lie on that drive."""
+    import placement
+    from neko_common import drive_folder
+
+    drive = placement.apps_elsewhere(config).get(app)
+    if not drive:
+        return None
+    root = os.path.realpath(drive_folder(config, drive))
+    folder = os.path.realpath(os.path.join(root, 'nekoserver', 'appdata', app))
+    if not folder.startswith(root + os.sep):
+        raise RuntimeError(OUTSIDE)
+    return Path(folder)
+
+
+# Where the recovery menu unpacks a list of app passwords ("The list of app passwords"):
+# a new folder of root's, /root/nekoserver-passwords-<time>.
+RESTORED = Path('/root')
+RESTORED_GLOB = 'nekoserver-passwords-*/secrets/accounts/credentials.json'
+
+
+def restored_login(app, root=RESTORED):
+    """The login `app` had in the newest list of app passwords the recovery menu restored
+    (root's own and private), as (username, password); None without one."""
+    try:
+        lists = sorted(root.glob(RESTORED_GLOB), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return None
+    for path in lists:
+        try:
+            private(path)
+            entry = json.loads(path.read_text()).get('apps', {}).get(app)
+            if isinstance(entry, dict):
+                validate_login(app, entry['username'], entry['password'], existing=True)
+                return entry['username'], entry['password']
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError):
+            continue  # a list that can't be read, or without this app: the next one
+    return None
+
+
+LIST_IN_BACKUP = (
+    '  A list of your app passwords is in a backup: to look this login up, run  sudo bash install.sh --recover  '
+    'and choose "The list of app passwords"; run setup again after that, and the login is taken from it.'
+)
+
+
+def existing_login(config, app, value, prompt, password_prompt, output, on_page=False):
+    """The login an app with data already has: from a list of app passwords the recovery
+    menu restored, when it holds this app; otherwise typed, after saying where a backup's
+    list is when there is one. Never one made up: the app would not know it."""
+    found = restored_login(app)
+    if found:
+        output(f'  Its login is taken from the list of app passwords you restored: username {found[0]}.')
+        return found
+    if password_lists(config):
+        output(LIST_IN_BACKUP)
+    return ask_login(app, True, value, prompt, password_prompt, output, on_page=on_page)
+
+
+# Where the backups keep the lists of app passwords on the HDD (recovery_wizard.py
+# MONTHLY_DIR and PASSWORD_LISTS: each list is <run>/secrets.tar.cms). Only looked at here:
+# the recovery menu itself is started by  install.sh --recover  alone.
+PASSWORD_LIST_FOLDERS = ('backups/monthly', 'backups/password-lists')
+
+
+def password_lists(config):
+    """There is a list of app passwords in a backup on the HDD, for the recovery menu to open."""
+    try:
+        media = Path(config['media_mount'])
+        return any(any(media.joinpath(folder).glob('*/secrets.tar.cms')) for folder in PASSWORD_LIST_FOLDERS)
+    except (OSError, KeyError, TypeError):
+        return False
 
 
 def accounts_page(config, apps, others=()):
@@ -396,7 +478,12 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
             if not entry or entry['state'] != 'needs_setup':
                 continue
             output(APPS[app][0] + ': saved login was not verified.')
-            if entry['allow_create']:
+            if entry['allow_create'] and not fresh(config, app):
+                output(
+                    f'  {APPS[app][0]} has its own account from before (its settings were kept), so the login setup '
+                    'made for it is not one it knows. Choose c and type the login it has now.'
+                )
+            elif entry['allow_create']:
                 # Account creation did not finish. If you completed the app's first-run
                 # setup yourself with another login, switch to that existing account.
                 output(
@@ -409,7 +496,7 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
                     break
                 output('Press Enter alone, or type c.')
             if answer == 'c':
-                username, password = ask_login(app, True, value, prompt, password_prompt, output)
+                username, password = existing_login(config, app, value, prompt, password_prompt, output)
                 entry.update(
                     username=username, password=password, state='planned', source='custom-existing', allow_create=False
                 )
@@ -418,7 +505,13 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
         # The PIN and the shared folders' password chosen on the page before the approval.
         value.setdefault('others', {}).update({k: v for k, v in AHEAD['others'].items() if v})
     missing = [app for app in apps if app not in value['apps']]
-    ahead = {app: AHEAD['apps'][app] for app in missing if app in AHEAD.get('apps', {})}
+    # A login made on the accounts page for an app found since to have data of its own
+    # (its drive mounted by the storage step meanwhile) is not one the app knows: asked.
+    ahead = {
+        app: AHEAD['apps'][app]
+        for app in missing
+        if app in AHEAD.get('apps', {}) and not (AHEAD['apps'][app]['allow_create'] and not fresh(config, app))
+    }
     if ahead:
         # Chosen on the accounts page before the approval: saved now, nothing is asked.
         value['mode'] = AHEAD.get('mode', value['mode'])
@@ -427,10 +520,14 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
     if not missing:
         save(config, value)  # Repair a missing human-readable export from JSON.
         return
-    # The first time: one page for the choice and every app's row (accounts_page).
+    # The first time: one page for the choice and every app's row (accounts_page). The
+    # choice made on the accounts page before the approval is not asked again.
     first = not value['apps']
+    chosen = AHEAD.get('mode') in ('generate', 'custom')
+    if first and chosen:
+        value['mode'] = AHEAD['mode']
     with accounts_page(config, missing) if first else contextlib.nullcontext():
-        if first:
+        if first and not chosen:
             while True:
                 answer = setup_progress.page_field('mode', prompt, questions.terminal('logins_who')).strip()
                 # Enter alone takes the first, the recommended one (gate run B1).
@@ -452,8 +549,10 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
                     f'  Made and saved: username {username}, with a strong password. Wherever setup asks you to '
                     'sign in, "Show login" shows it (in the setup window, or as a question in the terminal).'
                 )
+            elif not is_fresh:
+                username, password = existing_login(config, app, value, prompt, password_prompt, output, on_page=first)
             else:
-                username, password = ask_login(app, not is_fresh, value, prompt, password_prompt, output, on_page=first)
+                username, password = ask_login(app, False, value, prompt, password_prompt, output, on_page=first)
             value['apps'][app] = {
                 'username': username,
                 'password': password,
@@ -540,8 +639,10 @@ def ask_ahead(config, prompt=input, password_prompt=getpass.getpass, output=prin
             if mode == 'generate' and is_fresh:
                 username, password = generate(app)
                 output(f'  Made: username {username}, with a strong password. "Show login" shows it.')
+            elif not is_fresh:
+                username, password = existing_login(config, app, stored, prompt, password_prompt, output, on_page=True)
             else:
-                username, password = ask_login(app, not is_fresh, stored, prompt, password_prompt, output, on_page=True)
+                username, password = ask_login(app, False, stored, prompt, password_prompt, output, on_page=True)
             AHEAD['apps'][app] = {
                 'username': username,
                 'password': password,

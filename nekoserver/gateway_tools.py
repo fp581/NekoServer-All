@@ -987,7 +987,10 @@ def _apply_tailnet(config):
         raise RuntimeError('Malformed gateway ownership journal preserved; review it locally')
     # NekoServer's routes are recognised by port and handler, so a renamed server, a
     # dashboard on another port or a route of your own on another port changes nothing.
-    mine = ours(state, owned)
+    # A route exactly as NekoServer sets it now (the same port, to the same app on this
+    # PC) is its own too: its journal is on the app SSD, and a replaced SSD lost it (gate
+    # run C10). Taking such a route over changes nothing in it.
+    mine = ours(state, owned) | ours(state, target)
     theirs = set(state['TCP']) - mine
     needed = sorted(theirs & set(target['TCP']))
     if needed:
