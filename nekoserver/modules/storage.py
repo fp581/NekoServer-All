@@ -23,6 +23,8 @@ from neko_common import (
 )
 
 DEPENDENCIES = ['system', 'network_storage']
+# The two roles every server has: (its record under "storage", the setting that says where it is mounted).
+OLD_ROLES = (('data_ssd', 'data_mount'), ('media_hdd', 'media_mount'))
 DESCRIPTION = 'Inspect disks; --apply mounts explicitly identified data SSD and media HDD by UUID'
 
 
@@ -470,6 +472,49 @@ def new_drive(record, device):
         record['network'] = {'transport': 'iscsi', 'wwn': device.get('wwn')}
 
 
+def role_drive(config, key, label, found, asking):
+    """The drive of one role, by its UUID: the one in the settings, checked, or one
+    chosen now. None when the role has no drive of its own to count: it is kept on the
+    disk Linux runs from, or nothing is chosen in a run that only looks.
+    `found`: (the filesystems setup may use, the drive list, lsblk's listing);
+    `asking`: (apply, interactive, input_fn, out_fn)."""
+    items, table, inventory = found
+    apply, interactive, input_fn, out_fn = asking
+    record = config['storage'][key]
+    uuid = record.get('uuid', '').strip()
+    if uuid:
+        uuid = saved_choice(
+            record,
+            uuid,
+            items,
+            key,
+            label,
+            apply,
+            inventory=inventory,
+            config=config,
+            interactive=interactive,
+            out_fn=out_fn,
+            table=table,
+        )
+    if uuid:
+        return uuid
+    if not apply:
+        out_fn(f'{key} is not configured; {len(items)} formatted candidates discovered (dry-run only)')
+        return None
+    if not interactive:
+        raise RuntimeError(
+            f'No drive is chosen for {label} yet. Run  sudo bash install.sh  in a terminal on the server to choose it.'
+        )
+    row = choose_new(config, table, key, input_fn, out_fn)
+    if row['system']:
+        on_system_disk(record, key)
+        return None
+    device = whole(unlocked(row['device']))
+    local_ssd(key, device)
+    new_drive(record, device)
+    return device['uuid']
+
+
 def resolve_storage_identity(config, inventory, apply=False, interactive=False, input_fn=input, out_fn=print):
     """Identify disks by verified UUID. Explicit confirmation is required for unknown devices."""
     import drive_table
@@ -483,43 +528,15 @@ def resolve_storage_identity(config, inventory, apply=False, interactive=False, 
     for key, label, _ in DRIVES:
         label = drive_label(config, key, label)
         record = configured.setdefault(key, {})
-        uuid = record.get('uuid', '').strip()
         if shared_folder(record, key):
             # A folder the NAS shares (NFS): no disk to look for here; network_storage
             # tried it out, and mounting it below shows whether it is still there.
-            selected.add(uuid)
+            selected.add(record.get('uuid', '').strip())
             continue
         if system_folder(record, key):
             continue  # a folder of the disk Linux runs from: checked when it is mounted
-        if uuid:
-            uuid = saved_choice(
-                record,
-                uuid,
-                items,
-                key,
-                label,
-                apply,
-                inventory=inventory,
-                config=config,
-                interactive=interactive,
-                out_fn=out_fn,
-                table=table,
-            )
-        if not uuid and apply:
-            if not interactive:
-                raise RuntimeError(
-                    f'No drive is chosen for {label} yet. Run  sudo bash install.sh  in a terminal on the server to choose it.'
-                )
-            row = choose_new(config, table, key, input_fn, out_fn)
-            if row['system']:
-                on_system_disk(record, key)
-                continue
-            device = whole(unlocked(row['device']))
-            local_ssd(key, device)
-            new_drive(record, device)
-            uuid = device['uuid']
-        elif not uuid:
-            out_fn(f'{key} is not configured; {len(items)} formatted candidates discovered (dry-run only)')
+        uuid = role_drive(config, key, label, (items, table, inventory), (apply, interactive, input_fn, out_fn))
+        if uuid is None:
             continue
         if uuid in selected:
             raise RuntimeError('SSD and HDD cannot use the same filesystem')
@@ -822,22 +839,26 @@ def network_uuids(config):
     )
 
 
+def role_spec(config, key, mount_key):
+    """What to mount for one of the two roles, from the settings, checked: (the role, the
+    UUID, the filesystem type, where it is mounted, its Btrfs subvolume or None)."""
+    record = config.get('storage', {}).get(key, {})
+    uuid = record.get('uuid', '').strip()
+    fstype = record.get('fstype', '').strip()
+    target = str(mount_path(config[mount_key]))
+    if not uuid or not re.fullmatch(r'[A-Za-z0-9-]{8,80}', uuid):
+        raise RuntimeError(f'storage.{key}.uuid must be explicitly configured from lsblk -f')
+    if not shared_folder(record, key) and fstype not in ('ext4', 'xfs', 'btrfs'):
+        raise RuntimeError(f'storage.{key}.fstype must be ext4, xfs or btrfs')
+    if not Path(target).is_absolute() or str(Path(target)) in ('/', '/mnt', '/srv', '/home', '/var'):
+        raise RuntimeError(f'Unsafe mount location: {target}')
+    if Path(target).is_symlink():
+        raise RuntimeError(f'Mount path must not be symlink: {target}')
+    return key, uuid, fstype, target, subvolume_of(record)
+
+
 def mount_specs(config):
-    specs = []
-    for key, mount_key in [('data_ssd', 'data_mount'), ('media_hdd', 'media_mount')]:
-        record = config.get('storage', {}).get(key, {})
-        uuid = record.get('uuid', '').strip()
-        fstype = record.get('fstype', '').strip()
-        target = str(mount_path(config[mount_key]))
-        if not uuid or not re.fullmatch(r'[A-Za-z0-9-]{8,80}', uuid):
-            raise RuntimeError(f'storage.{key}.uuid must be explicitly configured from lsblk -f')
-        if not shared_folder(record, key) and fstype not in ('ext4', 'xfs', 'btrfs'):
-            raise RuntimeError(f'storage.{key}.fstype must be ext4, xfs or btrfs')
-        if not Path(target).is_absolute() or str(Path(target)) in ('/', '/mnt', '/srv', '/home', '/var'):
-            raise RuntimeError(f'Unsafe mount location: {target}')
-        if Path(target).is_symlink():
-            raise RuntimeError(f'Mount path must not be symlink: {target}')
-        specs.append((key, uuid, fstype, target, subvolume_of(record)))
+    specs = [role_spec(config, key, mount_key) for key, mount_key in OLD_ROLES]
     specs += extra_specs(config)
     if Path(specs[0][3]) in Path(specs[1][3]).parents or Path(specs[1][3]) in Path(specs[0][3]).parents:
         raise RuntimeError('Data and media mountpoints must not be nested')
@@ -1167,6 +1188,25 @@ def shared_folder_line(lines, mountpoint, entry, connected=drive_connected, note
     )
 
 
+def line_for(spec, lines, kinds, notes):
+    """(the fstab line for one drive to mount, the index of the line of `lines` it takes
+    the place of or None): a folder of the disk Linux runs from, a folder a NAS shares,
+    or a drive by its UUID. `kinds`: (the UUIDs on a NAS, {identity: address} of the
+    shared folders, {mountpoint: folder} of the roles on the system disk)."""
+    import nfs_exports
+
+    _, uuid, fstype, mountpoint, subvolume = spec
+    network, exports, folders = kinds
+    if mountpoint in folders:
+        entry = bind_line(folders[mountpoint], mountpoint)
+        return entry, bind_line_index(lines, mountpoint, entry, notes=notes)
+    if uuid in exports:
+        entry = nfs_exports.fstab_line(exports[uuid], mountpoint, fstype)
+        return entry, shared_folder_line(lines, mountpoint, entry, notes=notes)
+    entry = fstab_line(uuid, fstype, mountpoint, subvolume, network=uuid in network)
+    return entry, existing_line(lines, uuid, mountpoint, entry, notes=notes)
+
+
 def install_fstab(specs, path=Path('/etc/fstab'), log=None, network=frozenset(), exports=None, folders=None):
     """Add (or bring up to date) the lines that mount the SSD and HDD at boot: NekoServer's
     own line with older options, or for a drive that is gone (replaced), is rewritten. A
@@ -1174,32 +1214,21 @@ def install_fstab(specs, path=Path('/etc/fstab'), log=None, network=frozenset(),
     `network`: the UUIDs of the drives on a NAS, mounted once it can be reached;
     `exports`: {identity: address} of the drives that are folders a NAS shares (NFS);
     `folders`: {mountpoint: folder} of the roles kept on the disk Linux runs from."""
-    import nfs_exports
-
     exports = exports or {}
     folders = folders or {}
     path = safe_path(path)
     existing = path.read_text() if path.exists() else ''
     lines = existing.splitlines()
     additions, upgraded, notes = [], False, []
-    for _, uuid, fstype, mountpoint, subvolume in specs:
-        if mountpoint in folders:
-            entry = bind_line(folders[mountpoint], mountpoint)
-            index = bind_line_index(lines, mountpoint, entry, notes=notes)
-        elif uuid in exports:
-            entry = nfs_exports.fstab_line(exports[uuid], mountpoint, fstype)
-            index = shared_folder_line(lines, mountpoint, entry, notes=notes)
-        else:
-            entry = fstab_line(uuid, fstype, mountpoint, subvolume, network=uuid in network)
-            index = existing_line(lines, uuid, mountpoint, entry, notes=notes)
+    for spec in specs:
+        entry, index = line_for(spec, lines, (network, exports, folders), notes)
         if index is None:
             additions.append(entry)
         elif lines[index].split() != entry.split():
             lines[index] = entry
             upgraded = True
-    for note in notes:
-        if log:
-            log(note)
+    for note in notes if log else ():
+        log(note)
     if not additions and not upgraded:
         return False
     backup = safe_path(path.with_name(path.name + '.nekoserver.bak'))
@@ -2102,57 +2131,70 @@ def free_gb(folder):
 DRIVE_WORDS = {'ssd': 'the SSD', 'media': 'the media drive'}
 
 
+def taken_place(context, words, place):
+    """The place chosen for a kind of files, as "locations" names it: "ssd", "media", or
+    the name of a drive of their own, which is then listed under "storage"."""
+    if isinstance(place, dict):
+        context.log(f'{words.capitalize()}: on {drive_table_said(place)}, a drive of their own')
+        return placed_on(context.config, place)
+    context.log(f'{words.capitalize()}: on {DRIVE_WORDS[place]}')
+    return place
+
+
+def place_of(context, kind, asking):
+    """One kind of files given its place in "locations". `kind`: its row of WHERE;
+    `asking`: (the question to ask with, or False with nobody there; (room, on_nas);
+    the drives beyond the two). Returns True when the settings changed."""
+    import setup_progress
+
+    what, words, threshold = kind
+    asks, drives, others = asking
+    config = context.config
+    chosen = config['locations']
+    kept = kept_location(config, what)
+    if chosen.get(what) in DRIVE_WORDS:
+        same_place(context, what, words, chosen[what], kept)
+        return False
+    if chosen.get(what) in extra_drives(config):
+        return False  # on a drive of its own, as chosen before
+    # Chosen on the storage page before the approval (choose_ahead); files found now win.
+    wish = None if kept else drive_table_places().get(what)
+    if what == 'movies' and (kept or set_up_before(config) or (wish is None and not asks)):
+        # Where every server before 0.50.0 has them (the media drive): not written
+        # down unless someone chose, so a server that is set up keeps its settings.
+        setup_progress.page_answer(what)
+        return False
+    if kept:
+        chosen[what] = where_kept(context, what, words, kept)
+        setup_progress.page_answer(what)  # not a choice here: the files are where they are
+        return True
+    place = wish
+    if place is None:
+        place = new_place(context, what, (words, threshold), drives, asks, key=what, others=others)
+    chosen[what] = taken_place(context, words, place)
+    return True
+
+
 def choose_locations(context, input_fn=None, interactive=None, inventory=None):
     """Where each app keeps your files, asked once (saved as "locations"): the SSD, the
     media drive (the better one pre-selected), or another drive connected to this PC
     (`inventory`: what lsblk lists; such a drive is added under "storage" and mounted
     by the caller). The backups, restores and checks all follow the choice
     (neko_common.files_root). A place already holding files stays as it is."""
-    import setup_progress
-
     config = context.config
     chosen = config.setdefault('locations', {})
     interactive = sys.stdin.isatty() if interactive is None else interactive
     room = {'ssd': free_gb(config['data_mount']), 'media': free_gb(config['media_mount'])}
     on_nas = bool(config.get('storage', {}).get('media_hdd', {}).get('network'))
     others = data_drives(config, inventory) if interactive and inventory else []
-    changed = False
-    for what, words, threshold in WHERE:
-        if not asked_where(config, what):
-            continue  # its app is not part of this server: asked if it is added later
-        kept = kept_location(config, what)
-        if chosen.get(what) in DRIVE_WORDS:
-            same_place(context, what, words, chosen[what], kept)
-            continue
-        if chosen.get(what) in extra_drives(config):
-            continue  # on a drive of its own, as chosen before
-        asks = interactive and (input_fn or input)
-        # Chosen on the storage page before the approval (choose_ahead); files found now win.
-        wish = None if kept else drive_table_places().get(what)
-        if what == 'movies' and (kept or set_up_before(config) or (wish is None and not asks)):
-            # Where every server before 0.50.0 has them (the media drive): not written
-            # down unless someone chose, so a server that is set up keeps its settings.
-            setup_progress.page_answer(what)
-            continue
-        if kept:
-            chosen[what] = where_kept(context, what, words, kept)
-            setup_progress.page_answer(what)  # not a choice here: the files are where they are
-        else:
-            place = wish
-            if place is None:
-                place = new_place(context, what, (words, threshold), (room, on_nas), asks, key=what, others=others)
-            if isinstance(place, dict):
-                chosen[what] = placed_on(config, place)
-                context.log(f'{words.capitalize()}: on {drive_table_said(place)}, a drive of their own')
-            else:
-                chosen[what] = place
-                context.log(f'{words.capitalize()}: on {DRIVE_WORDS[place]}')
-        changed = True
+    asking = (interactive and (input_fn or input), (room, on_nas), others)
+    # A kind whose app is not part of this server is asked about if it is added later.
+    changes = [place_of(context, kind, asking) for kind in WHERE if asked_where(config, kind[0])]
     if chosen.get('photos') == 'media' and asked_where(config, 'photos'):
         context.log(PHOTOS_ON_MEDIA)
     if chosen.get('music') == 'media' and 'music' in backed_up_beside(config) and asked_where(config, 'music'):
         context.log(MUSIC_ON_MEDIA)
-    if changed and hasattr(context, 'persist_config'):
+    if any(changes) and hasattr(context, 'persist_config'):
         context.persist_config()
 
 
@@ -2300,19 +2342,26 @@ def asked_location(context, words, best, room, on_nas, input_fn=None, key=None, 
         context.log(f'  {n}) a drive of their own: {drive_table.brief(row)}')
     for _ in range(3):
         answer = drive_table.field(key or 'place', input_fn or input, 'Number (Enter for the recommended one): ')
-        if answer in DRIVE_WORDS:
-            return answer
-        if answer.startswith('drive:'):
-            # The window names the row of the list.
-            named = next((row for row in others if str(row['number']) == answer[len('drive:') :]), None)
-            if named is not None:
-                return named
-        elif answer in ('', '1', '2'):
-            return options[int(answer) - 1] if answer else best
-        elif answer.isdigit() and 3 <= int(answer) < 3 + len(others):
-            return others[int(answer) - 3]
+        place = place_answered(answer, options, others)
+        if place is not None:
+            return place
         context.log(f'Type a number from 1 to {2 + len(others)}, or press Enter.')
     return best
+
+
+def place_answered(answer, options, others):
+    """The place an answer names: "ssd" or "media" (the window's words), a row of `others`
+    ("drive:4" from the window, or its number in the terminal's list), the first of
+    `options` for Enter alone. None for an answer that names none."""
+    if answer in DRIVE_WORDS:
+        return answer
+    if answer.startswith('drive:'):
+        return next((row for row in others if str(row['number']) == answer[len('drive:') :]), None)
+    if answer in ('', '1', '2'):
+        return options[int(answer) - 1] if answer else options[0]
+    if answer.isdigit() and 3 <= int(answer) < 3 + len(others):
+        return others[int(answer) - 3]
+    return None
 
 
 def choose_usb(context):
