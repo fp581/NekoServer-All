@@ -1590,7 +1590,7 @@ class UsbPickerTests(unittest.TestCase):
         # Worded as the SSD and HDD lists are, not as UUIDs and mount points (seen on a Debian VM).
         self.assertIn('  4) sdc1: 1.0 TB drive, exfat', shown)
         self.assertIn(
-            'Now choose the drive for the weekly copy of your photos and files (the USB backup drive).', shown
+            'Now choose the drive for the weekly copy of your files (the USB backup drive).', shown
         )
         self.assertNotIn('UUID=', offered)
 

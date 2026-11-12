@@ -18,18 +18,14 @@ import shutil
 import subprocess
 
 import setup_progress
-from neko_common import extra_drives, media_apps_wanted, typed
+from neko_common import extra_drives, typed
 
-# The roles a drive can have: (what setup calls it, what goes on it, the same with the
-# media apps left out).
+# The roles a drive can have, by what setup calls them; what goes on each is
+# neko_common.drive_holds, for the apps this server has.
 ROLES = {
-    'data_ssd': ('the app SSD', 'your apps, photos and music', 'your apps and their settings'),
-    'media_hdd': (
-        'the media HDD',
-        'your movies, shows, Nextcloud files and the backups',
-        'your Nextcloud files and the backups',
-    ),
-    'usb': ('the USB backup drive', 'the weekly copy of your photos and files', 'the weekly copy of your files'),
+    'data_ssd': ('the app SSD',),
+    'media_hdd': ('the media HDD',),
+    'usb': ('the USB backup drive',),
 }
 NAMES_CHANGE = (
     'The short names (sdb1, nvme0n1p2) are Linux\'s own and can change at the next start. NekoServer '
@@ -59,7 +55,9 @@ def role(key):
 
 def holds(config, key):
     """What goes on the drive of this role, on this server."""
-    return ROLES[key][1 if media_apps_wanted(config) else 2]
+    from neko_common import drive_holds
+
+    return drive_holds(config, key)
 
 
 def asked_for(config, key):

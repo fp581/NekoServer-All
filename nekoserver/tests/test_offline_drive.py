@@ -97,3 +97,26 @@ class AskedAgainTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DriveWordsTests(unittest.TestCase):
+    """Gate run C: "the drive for your apps, photos and music" with Photos off, and the
+    weekly copy "of your photos and Nextcloud files" with neither."""
+
+    def test_the_words_name_only_what_this_server_has(self):
+        from neko_common import drive_holds
+
+        everything = {
+            'media_apps': {'photos': True, 'movies': True, 'music': True},
+            'photos': {'deploy_immich': True},
+            'nextcloud': {'enabled': True},
+        }
+        self.assertEqual(drive_holds(everything, 'data_ssd'), 'your apps, photos and music')
+        self.assertEqual(drive_holds(everything, 'media_hdd'), 'your movies, shows, Nextcloud files and the backups')
+        self.assertEqual(drive_holds(everything, 'usb'), 'the weekly copy of your photos and Nextcloud files')
+        films = {'media_apps': {'photos': False, 'movies': True, 'music': False}, 'nextcloud': {'enabled': False}}
+        self.assertEqual(drive_holds(films, 'data_ssd'), 'your apps')
+        self.assertEqual(drive_holds(films, 'media_hdd'), 'your movies, shows and the backups')
+        none = {'media_apps': {'photos': False, 'movies': False, 'music': False}}
+        self.assertEqual(drive_holds(none, 'media_hdd'), 'the backups')
+        self.assertEqual(drive_holds(none, 'usb'), 'the weekly copy of your files')

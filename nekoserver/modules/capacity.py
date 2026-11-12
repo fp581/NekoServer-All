@@ -16,7 +16,7 @@ import questions
 from neko_common import cloud_files, photo_library, regular_files, sha256_file, usb_mount_options, version_parts
 
 DEPENDENCIES = ['storage']
-DESCRIPTION = 'Check there is enough space on the SSD, HDD and USB drive before installing'
+DESCRIPTION = 'Check there is enough space on the drives before installing'
 
 GIB = 1024**3
 # (hard minimum, recommended) free space in GiB.
@@ -300,9 +300,12 @@ def assess(
     drives is the monthly checksum check's job."""
     data, media = Path(config['data_mount']), Path(config['media_mount'])
     stop, warn = [], []
+    from neko_common import drive_holds
+
+    # What each drive holds on this server only (gate run C).
     checks = (
-        ('SSD', data, SSD, 'apps, photos and music'),
-        ('HDD', media, HDD, 'movies, shows, Nextcloud files and backups'),
+        ('SSD', data, SSD, drive_holds(config, 'data_ssd')),
+        ('HDD', media, HDD, drive_holds(config, 'media_hdd')),
     )
     if same_filesystem(data, media):
         # Both kept on one filesystem (the disk Linux runs from, 0.50.0): its room is
@@ -349,11 +352,24 @@ def assess(
         if free_now < needed:
             warn.append(
                 f'The USB drive has {gib(free_now)} free. The next weekly copy still has to add '
-                f'{gib(pending)} (photos and versions from the HDD archive, photos not archived yet, Nextcloud files and a database copy); '
+                f'{gib(pending)} ({usb_pending_words(config)}); '
                 f'{gib(needed)} or more free is recommended so it fits and has room to grow. '
                 'Free up space on it or use a bigger one.'
             )
     return stop, warn
+
+
+def usb_pending_words(config):
+    """What the next weekly copy still has to add, naming only what this server has."""
+    from neko_common import immich_wanted, listed
+
+    photos = immich_wanted(config)
+    cloud = bool(config.get('nextcloud', {}).get('enabled', False))
+    return listed(
+        ['photos and versions from the HDD archive', 'photos not archived yet'] * photos
+        + ['Nextcloud files'] * cloud
+        + ['a database copy'] * photos
+    )
 
 
 def installed_elsewhere(config, free=free_bytes):

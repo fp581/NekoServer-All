@@ -837,7 +837,7 @@ class DriveSizeTests(unittest.TestCase):
         self.assertEqual(config['storage']['data_ssd']['uuid'], 'ssd-0001')
         self.assertIn(
             'Drive 3 (sdb1: 16 GB drive, Cruzer, named "SSD"), the drive saved as the app SSD, is too small: it '
-            'needs a drive of at least 22 GB (20 GB free once formatted). Choose the SSD (apps, photos and music) again:',
+            'needs a drive of at least 22 GB (20 GB free once formatted). Choose the SSD (your apps, photos and music) again:',
             out,
         )
 

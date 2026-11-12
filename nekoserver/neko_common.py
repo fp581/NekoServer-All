@@ -1425,6 +1425,28 @@ def media_apps_wanted(config):
     return any(media_group(config, group) for group in MEDIA_GROUPS)
 
 
+def listed(parts):
+    """'a', 'a and b', 'a, b and c'."""
+    return ', '.join(parts[:-1]) + ' and ' + parts[-1] if len(parts) > 1 else ''.join(parts)
+
+
+def drive_holds(config, key):
+    """What goes on the drive of this role ('data_ssd', 'media_hdd', 'usb'), naming only
+    what this server has (gate run C: "your apps, photos and music" with Photos off)."""
+    cloud = bool(config.get('nextcloud', {}).get('enabled', False))
+    if key == 'data_ssd':
+        return listed(
+            ['your apps']
+            + ['photos'] * media_group(config, 'photos')
+            + ['music'] * media_group(config, 'music')
+        )
+    if key == 'media_hdd':
+        kept = ['movies', 'shows'] * media_group(config, 'movies') + ['Nextcloud files'] * cloud
+        return 'your ' + listed([*kept, 'the backups']) if kept else 'the backups'
+    copied = ['photos'] * immich_wanted(config) + ['Nextcloud files'] * cloud
+    return 'the weekly copy of your ' + (listed(copied) or 'files')
+
+
 def app_wanted(config, app):
     """Every group the app belongs to is on (an app in no group is not a media app)."""
     return all(media_group(config, group) for group in APP_GROUPS.get(app, ()))

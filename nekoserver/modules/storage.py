@@ -380,18 +380,15 @@ DRIVES = (
     ('data_ssd', 'the SSD (apps, photos and music)', 'the SSD'),
     ('media_hdd', 'the HDD (movies, shows, Nextcloud files and backups)', 'the HDD'),
 )
-# What the drives hold with the media apps left out: no films, shows, photos or music.
-WITHOUT_MEDIA = {
-    'data_ssd': 'the SSD (the apps and their settings)',
-    'media_hdd': 'the HDD (Nextcloud files and the backups)',
-}
 
 
 def drive_label(config, key, label):
     """What setup calls a drive when it asks for it: what goes on it on this server."""
-    from neko_common import media_apps_wanted
+    from neko_common import drive_holds
 
-    return label if media_apps_wanted(config) else WITHOUT_MEDIA[key]
+    # What goes on it on this server only (gate run C).
+    return label.split(' (')[0] + ' (' + drive_holds(config, key) + ')'
+
 
 
 GIB = 1024**3
