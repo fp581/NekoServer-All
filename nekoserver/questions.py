@@ -90,9 +90,9 @@ Q = {
         'screen': 'Your drives',
         'title': 'Is the drive that {apps} are installed on lost?',
         'hint': (
-            'It is not connected (UUID {uuid}). If it is only unplugged, answer no, connect it and run setup '
-            'again. Yes sets these apps up again on the drive of NekoServer, with empty settings; '
-            'sudo bash install.sh --recover brings their settings back from a backup.'
+            'It is not connected. If it is only unplugged, connect it and run setup again. If it is lost, '
+            'these apps are set up again on NekoServer\'s own drive with empty settings, and the recovery menu '
+            '(sudo bash install.sh --recover) can bring their settings back from a backup.'
         ),
         'kind': 'yesno',
         'yes': 'It is lost: set them up again',
@@ -130,7 +130,7 @@ Q = {
     'nas_login_needed': {
         'screen': 'A NAS (a storage device on your home network)',
         'title': 'Does your NAS ask for a user name and password for this disk?',
-        'hint': 'Most do not. If you set one up on the NAS (it calls it CHAP), choose yes. The disk is {iqn}.',
+        'hint': 'Most do not: only if you gave this disk a password on the NAS (the NAS calls it CHAP). The disk is {iqn}.',
         'kind': 'yesno',
         'yes': 'Yes, it has a password',
         'no': 'No password',
