@@ -102,23 +102,37 @@ DRIVE_MENU = [
 
 
 def menu(config):
-    """Section 1's list as this server has it. With the media apps left out ("Install the media
-    apps too?" answered no), the two items that only hold their backups (Immich's photo
-    archive, the nightly app snapshots) are offered only while such a backup is there to
-    restore: a server that had the apps keeps everything it had, its backups too."""
+    """Section 1's list as this server has it: only what it has (gate run C10: "Nextcloud
+    files" on a server without Nextcloud). With the media apps left out ("Install the
+    media apps too?" answered no), the two items that only hold their backups (Immich's
+    photo archive, the nightly app snapshots) are offered only while such a backup is
+    there to restore: a server that had the apps keeps everything it had, its backups
+    too. Nextcloud switched off is not offered (as modules/nextcloud.py runs it: on
+    unless "enabled" is false)."""
+    media = Path(config['media_mount'])
     # Whether the apps an item restores are part of this server (the groups of 0.50.0).
     on = {
         'photos': media_group(config, 'photos'),
         'apps': media_group(config, 'movies') or media_group(config, 'music'),
+        'cloud': nextcloud_on(config),
     }
-    if all(on.values()):
-        return MENU
-    media = Path(config['media_mount'])
     held = {
         'photos': media / config.get('photos', {}).get('archive_dir', ARCHIVE_DIR),
         'apps': media / 'backups/media-applications',
     }
-    return [(key, words) for key, words in MENU if key not in held or on[key] or has_entries(held[key])]
+
+    def offered(key):
+        if on.get(key, True):
+            return True
+        return key in held and has_entries(held[key])
+
+    return [(key, words) for key, words in MENU if offered(key)]
+
+
+def nextcloud_on(config):
+    """Nextcloud is part of this server: on unless its "enabled" is false."""
+    section = config.get('nextcloud')
+    return not (isinstance(section, dict) and section.get('enabled') is False)
 
 
 def has_entries(folder):

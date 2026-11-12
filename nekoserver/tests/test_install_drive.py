@@ -325,12 +325,35 @@ class GivenUpTests(unittest.TestCase):
             storage.installation_drives_connected(config, str(self.root) + '/no-such-')
         said = str(stopped.exception)
         self.assertIn('The drive that Immich are installed on is not connected (UUID fast-0003).', said)
-        self.assertIn('take "photos" out of "install" and "d3" out of "storage"', said)
+        self.assertIn('If it is lost, run  sudo bash install.sh  in a terminal on the server: it asks', said)
+        self.assertNotIn('my-config.json', said)
         self.assertIn('it restores into a new folder, never over an app', said)
         # Connected, or nothing placed: setup goes on.
         (self.root / 'by-fast-0003').write_text('')
         storage.installation_drives_connected(config, str(self.root) + '/by-')
         storage.installation_drives_connected(settings(), str(self.root) + '/no-such-')
+
+    def test_a_lost_drive_is_given_up_when_the_person_says_so(self):
+        # Gate run C10: the person is asked, never told to edit the settings file.
+        asked = []
+
+        def lost(apps, uuid):
+            asked.append((apps, uuid))
+            return True
+
+        config = settings(install={'photos': 'd3', 'music': 'd3'})
+        storage.installation_drives_connected(config, str(self.root) + '/no-such-', asked=lost)
+        self.assertEqual(asked, [('Immich, Lidarr, Navidrome', 'fast-0003')])
+        self.assertEqual((config['install'], sorted(config['storage'])), ({}, ['data_ssd', 'media_hdd']))
+        # Files of an app still kept there: the drive stays named (its mount says it is missing).
+        config = settings(install={'photos': 'd3'}, locations={'movies': 'd3'})
+        storage.installation_drives_connected(config, str(self.root) + '/no-such-', asked=lost)
+        self.assertEqual((config['install'], 'd3' in config['storage']), ({}, True))
+        # "No, I will connect it": setup stops and nothing is changed.
+        config = settings(install={'photos': 'd3'})
+        with self.assertRaises(RuntimeError):
+            storage.installation_drives_connected(config, str(self.root) + '/no-such-', asked=lambda a, u: False)
+        self.assertEqual(config, settings(install={'photos': 'd3'}))
 
 
 class SpaceTests(unittest.TestCase):
@@ -430,7 +453,6 @@ class UninstallTests(unittest.TestCase):
             self.uninstaller._unmount_extra(self.plan, busy, self.said.append, left)
         self.assertEqual(left, ['/mnt/nekoserver-drives/d3 (still mounted)'])
         self.assertTrue(drive.is_dir())
-
 
 
 class SealedMountFolderTests(unittest.TestCase):

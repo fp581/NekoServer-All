@@ -635,7 +635,8 @@ class ReasonsReachTheLogTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'my-config.json'
             path.write_text('{}')
-            ctx = installer.Context({'a': 1}, lambda m: None, apply=True, config_path=path)
+            # Read from the file as {}; the run then sets "a" (only a change is saved).
+            ctx = installer.Context({'a': 1}, lambda m: None, apply=True, config_path=path, saved={})
             chowned = []
             with (
                 mock.patch('os.geteuid', return_value=0),

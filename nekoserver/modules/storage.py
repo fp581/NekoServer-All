@@ -390,7 +390,6 @@ def drive_label(config, key, label):
     return label.split(' (')[0] + ' (' + drive_holds(config, key) + ')'
 
 
-
 GIB = 1024**3
 UNITS = {'B': 0, 'K': 1, 'M': 2, 'G': 3, 'T': 4, 'P': 5}
 
@@ -779,21 +778,20 @@ def saved_choice(
     """A drive already in the settings: it must be connected, of the same type and, when
     setup goes on to mount it, unlocked by Linux at every start as a newly chosen one must
     be (settings reused after a reinstall may name an encrypted drive opened by hand).
-    Returns its UUID, or '' when it is too small and setup asks for the drive again."""
+    Returns its UUID, or '' when setup asks for the drive again: it is too small, or it
+    is not connected (replaced, gate run C10) and someone is at the keyboard."""
     matches = [d for d in items if d['uuid'] == uuid]
-    if len(matches) != 1:
-        reason = not_offered(inventory or {}, uuid) if len(matches) == 0 else None
-        if reason:
-            raise RuntimeError(
-                f'The drive chosen as {label} (UUID {uuid}) is connected, but {reason}. Choose another: '
-                f'take "uuid" out of "{key}" under "storage" in my-config.json (next to the installer) and run '
-                'setup again: it asks for the drive anew. Nothing is formatted.'
-            )
-        raise RuntimeError(
-            f'The drive chosen as {label} (UUID {uuid}) is not connected, or is not formatted ext4, xfs or btrfs. '
-            f'Connect it and run setup again. If you replaced that drive, take "uuid" out of "{key}" under "storage" in '
-            'my-config.json (next to the installer) and run setup again: it asks for the drive anew. Nothing is formatted.'
-        )
+    if len(matches) > 1:
+        raise RuntimeError(f'Two connected drives have the UUID {uuid} of {label}. Disconnect one and run setup again.')
+    if not matches:
+        asking = apply and interactive
+        said = gone_said(key, uuid, not_offered(inventory or {}, uuid), asking)
+        if not asking:
+            raise RuntimeError(said)
+        out_fn(said)
+        record.pop('uuid', None)
+        record.pop('fstype', None)
+        return ''
     if apply and too_small(matches[0], key, label, config or {}, interactive, out_fn):
         record.pop('uuid', None)
         record.pop('fstype', None)
@@ -807,6 +805,28 @@ def saved_choice(
         said_last_time(table, uuid, key, out_fn)
     record['fstype'] = matches[0]['fstype']
     return uuid
+
+
+HELD = {'data_ssd': 'the apps', 'media_hdd': 'the media files and the backups'}
+
+
+def gone_said(key, uuid, reason, asking):
+    """A saved drive that setup cannot use now, in plain words: the drive that held the
+    apps is not connected (or is connected but cannot be used, `reason`), and what to do:
+    choose the new one now when setup asks (`asking`), else in a terminal. Nothing is
+    formatted either way. "(UUID ...) is not connected" is what known_fixes.py knows."""
+    drive = f'The drive that held {HELD.get(key, "your files")} (UUID {uuid})'
+    if asking:
+        unplugged, choose = 'stop here (Ctrl+C), connect it', 'choose the new one below'
+    else:
+        unplugged = 'connect it'
+        choose = 'run  sudo bash install.sh  in a terminal on the server and choose the new one'
+    if reason:
+        return f'{drive} is connected, but {reason}. To use another one, {choose}. Nothing is formatted.'
+    return (
+        f'{drive} is not connected. If it is only unplugged, {unplugged} and run setup again. '
+        f'If you replaced it, {choose}. Nothing is formatted.'
+    )
 
 
 def said_last_time(table, uuid, key, out_fn):
@@ -854,9 +874,8 @@ def too_small(device, key, label, config, interactive, out_fn):
     if device.get('mountpoint') and device['mountpoint'] == folder:
         raise RuntimeError(
             f'{said} To choose another, take it out first:  sudo umount {folder} , take the line with '
-            f"UUID={device['uuid']} out of /etc/fstab (sudo nano /etc/fstab), take \"uuid\" out of \"{key}\" "
-            'under "storage" in my-config.json, then run  sudo bash install.sh  again: it asks for the '
-            'drive anew. Nothing on the drive is changed.'
+            f"UUID={device['uuid']} out of /etc/fstab (sudo nano /etc/fstab), then run  sudo bash install.sh  "
+            'again in a terminal: it asks for the drive anew. Nothing on the drive is changed.'
         )
     if not interactive:
         raise RuntimeError(f'{said} Run  sudo bash install.sh  in a terminal to choose another one.')
@@ -1334,9 +1353,10 @@ def run(context):
 def place_drives(context, inventory):
     """The drives chosen, checked and mounted, then where each app keeps your files and
     the drive of the weekly offline copy."""
-    resolve_storage_identity(context.config, inventory, apply=True, interactive=sys.stdin.isatty(), out_fn=context.log)
+    interactive = sys.stdin.isatty()
+    resolve_storage_identity(context.config, inventory, apply=True, interactive=interactive, out_fn=context.log)
     remember_subvolumes(context.config)
-    installation_drives_connected(context.config)
+    installation_drives_connected(context.config, asked=lost_drive_asked if interactive else None)
     specs = mount_specs(context.config)
     checked_before_mount(context.config, specs)
     # Saved for unattended reruns only once the choice passed these checks: a wrong pick
@@ -1473,16 +1493,18 @@ def given_up(text, binds, log, run=subprocess.run):
 
 LOST_DRIVE = (
     'The drive that {apps} are installed on is not connected (UUID {uuid}). If it is only unplugged, connect it and '
-    'run setup again. If it is lost: take "{rows}" out of "install" and "{drive}" out of "storage" in my-config.json '
-    '(next to the installer) and run setup again. The apps are then set up on the drive of NekoServer with empty '
-    'settings; bring their settings back from a backup with  sudo bash install.sh --recover  (it restores into a new '
-    'folder, never over an app; RECOVERY.md says how to put them in place). Nothing was changed.'
+    'run setup again. If it is lost, run  sudo bash install.sh  in a terminal on the server: it asks, and sets these '
+    'apps up again on the drive of NekoServer with empty settings; bring their settings back from a backup with  '
+    'sudo bash install.sh --recover  (it restores into a new folder, never over an app; RECOVERY.md says how to put '
+    'them in place). Nothing was changed.'
 )
 
 
-def installation_drives_connected(config, by_uuid=None):
-    """Every drive a group's apps are installed on is connected, or setup stops with what
-    to do: wait for the drive, or give it up and restore the apps' settings from a backup."""
+def installation_drives_connected(config, by_uuid=None, asked=None):
+    """Every drive a group's apps are installed on is connected. A drive that is not:
+    `asked` (someone at the keyboard) says whether it is lost, and a lost one is given up
+    (its groups are set up again on the drive of NekoServer, their settings brought back
+    from a backup by the recovery menu). Otherwise setup stops and says what to do."""
     import placement
     from neko_common import APPS
 
@@ -1490,9 +1512,29 @@ def installation_drives_connected(config, by_uuid=None):
         uuid = str(extra_drives(config)[drive].get('uuid', ''))
         if Path((by_uuid or BY_UUID) + uuid).exists():
             continue
-        apps = [APPS[app][0] for app, on in sorted(placement.apps_elsewhere(config).items()) if on == drive]
-        rows = [row for row, on in sorted((config.get('install') or {}).items()) if on == drive]
-        raise RuntimeError(LOST_DRIVE.format(apps=', '.join(apps), uuid=uuid, rows='", "'.join(rows), drive=drive))
+        apps = ', '.join(APPS[app][0] for app, on in sorted(placement.apps_elsewhere(config).items()) if on == drive)
+        if asked is None or not asked(apps, uuid):
+            raise RuntimeError(LOST_DRIVE.format(apps=apps, uuid=uuid))
+        give_up_drive(config, drive)
+
+
+def give_up_drive(config, drive):
+    """A lost drive taken out of the settings: the groups installed on it go back to the
+    drive of NekoServer, and the drive is no longer one of the server's, unless files of
+    an app are kept there too (then the step that mounts it says it is missing)."""
+    install = config.get('install') if isinstance(config.get('install'), dict) else {}
+    for row in [row for row, on in install.items() if on == drive]:
+        install.pop(row)
+    places = config.get('locations') if isinstance(config.get('locations'), dict) else {}
+    if drive not in places.values():
+        config.get('storage', {}).pop(drive, None)
+
+
+def lost_drive_asked(apps, uuid):
+    """The person's answer: True when the drive is lost and its apps are set up again."""
+    import questions
+
+    return questions.yes_no('install_drive_lost', apps=apps, uuid=uuid) is True
 
 
 def mount_installed(context, fstab=FSTAB):
@@ -1563,7 +1605,10 @@ def choose_ahead(config, log):
     if not sys.stdin.isatty():
         return chosen
     draft = copy.deepcopy(config)
-    if page_fields(config):
+    import install_state
+
+    # A saved drive that is not connected (replaced, gate run C10) is asked for here too.
+    if page_fields(config) or install_state.missing_drives(config, BY_UUID):
         drives_ahead(draft, chosen, log)
     else:
         # The drives are known (a run after the first, an update): the films question,

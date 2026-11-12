@@ -851,9 +851,11 @@ class DriveSizeTests(unittest.TestCase):
         for step in (
             'sudo umount /nonexistent/nekoserver-test',
             'UUID=small-0001 out of /etc/fstab',
-            '"uuid" out of "data_ssd"',
+            'it asks for the drive anew',
         ):
             self.assertIn(step, message)
+        # Gate run C10: never "edit my-config.json"; unmounted, the next run asks for the drive.
+        self.assertNotIn('my-config.json', message)
 
     def test_the_drive_lines_leave_out_loop_devices_swap_and_tiny_ones(self):
         line = storage.disk_line(self.INVENTORY)

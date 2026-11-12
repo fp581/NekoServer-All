@@ -86,6 +86,19 @@ Q = {
         'yes': 'Go on',
         'no': 'Stop, I will change the drive',
     },
+    'install_drive_lost': {
+        'screen': 'Your drives',
+        'title': 'Is the drive that {apps} are installed on lost?',
+        'hint': (
+            'It is not connected (UUID {uuid}). If it is only unplugged, answer no, connect it and run setup '
+            'again. Yes sets these apps up again on the drive of NekoServer, with empty settings; '
+            'sudo bash install.sh --recover brings their settings back from a backup.'
+        ),
+        'kind': 'yesno',
+        'yes': 'It is lost: set them up again',
+        'no': 'No, I will connect it',
+        'example': {'apps': 'Navidrome, Lidarr', 'uuid': '2ed112dc-0000-4000-8000-000000000000'},
+    },
     # ---- a NAS
     'nas_address': {
         'screen': 'A NAS (a storage device on your home network)',
