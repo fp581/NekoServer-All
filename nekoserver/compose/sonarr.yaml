@@ -10,6 +10,17 @@ services:
     volumes:
       - "${NEKO_DATA}/appdata/sonarr:/config"
       - "${NEKO_MEDIA}/library:/data"
+      # Media you already have (existing_media.py): the folders setup mounts under
+      # library/existing are seen at /data/existing/<kind>, the path Jellyfin and Navidrome
+      # use. A mount of its own with rslave: a share that comes back, or a folder chosen
+      # after this app started, is seen without a restart. Whether it can be written is
+      # the mount's own setting (read-only unless new files are saved there).
+      - type: bind
+        source: "${NEKO_MEDIA}/library/existing"
+        target: /data/existing
+        bind:
+          propagation: rslave
+          create_host_path: true
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

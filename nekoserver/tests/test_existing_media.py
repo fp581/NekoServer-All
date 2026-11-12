@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -162,7 +163,13 @@ class CheckTests(unittest.TestCase):
 
     def test_new_files_need_a_write_by_the_apps_account(self):
         found, asked = self.pc.check(new_files=True)
-        self.assertEqual(found['new_files'], {'ok': True})
+        self.assertTrue(found['new_files']['ok'])
+        # No hard link is promised: the download is copied in, and needs room twice meanwhile.
+        self.assertFalse(found['hardlinks'])
+        note = found['new_files']['note']
+        self.assertIn(f"downloaded to {self.pc.media / 'library' / 'downloads'} first", note)
+        self.assertIn(f'then copied into {self.pc.films}', note)
+        self.assertIn('needs room in both places', note)
         self.assertEqual([write for *_, write in asked], [False, True])
 
     def test_a_read_only_folder_is_still_used_but_takes_no_new_files(self):
@@ -371,7 +378,8 @@ class MountTests(unittest.TestCase):
         earlier = self.pc.fstab.read_text()
         rows = self.use(config)
         point = self.pc.media / 'library' / 'existing' / 'movies'
-        self.assertEqual(rows, [{'holds': 'movies', 'path': str(self.pc.films), 'mounted': True, 'reason': None}])
+        mounted = {'holds': 'movies', 'use': 'in_place', 'path': str(self.pc.films), 'mounted': True, 'reason': None}
+        self.assertEqual(rows, [mounted])
         self.assertEqual(self.ran, [['systemctl', 'daemon-reload'], ['mount', str(point)]])
         written = self.pc.fstab.read_text()
         self.assertTrue(written.startswith(earlier), 'the lines that were there stay, in order')
@@ -446,10 +454,8 @@ class Jellyfin:
         self.calls.append((method, endpoint))
         if method == 'GET':
             return self.libraries
-        query = dict(part.split('=') for part in endpoint.split('?')[1].split('&'))
-        self.libraries.append(
-            {'Name': query['name'].replace('+', ' '), 'Locations': [query['paths'].replace('%2F', '/')], 'ItemId': '9'}
-        )
+        query = {name: values[0] for name, values in urllib.parse.parse_qs(endpoint.split('?')[1]).items()}
+        self.libraries.append({'Name': query['name'], 'Locations': [query['paths']], 'ItemId': '9'})
         return {}
 
 
@@ -575,6 +581,385 @@ class CopyTests(unittest.TestCase):
         with self.assertRaises(Refused) as caught:
             self.preview()
         self.assertEqual(caught.exception.code, 'not_mounted')
+
+
+class NewFilesTests(unittest.TestCase):
+    """ "Save new ones here too": the place new films, shows and music are saved."""
+
+    def setUp(self):
+        self.pc = Server(self)
+        self.new = self.pc.nas / 'new-films'
+        self.new.mkdir()
+
+    def both(self):
+        """The films used in place (read-only), and a folder of its own for the new ones."""
+        config = self.pc.chosen()
+        found, _ = self.pc.check(folder=self.new, new_files=True)
+        entry = existing_media.entry_for('movies', found, use=existing_media.NEW)
+        return existing_media.with_choice(config, entry)
+
+    def test_a_read_only_folder_is_kept_and_new_files_get_a_folder_of_their_own(self):
+        config = self.both()
+        self.assertEqual(
+            [(e['use'], Path(e['path']).name, e['new_files']) for e in existing_media.extras(config)],
+            [('in_place', 'films', False), ('new_files', 'new-films', True)],
+        )
+        # The apps are given the folder for new files; the films' own stays read-only.
+        self.assertEqual(existing_media.new_files_folder(config, 'movies'), '/data/existing/movies-new')
+        self.assertEqual(existing_media.new_files_folder(config, 'tv'), '/data/tv')
+        library = self.pc.media / 'library' / 'existing'
+        first, second = (line.split() for line in existing_media.fstab_lines(config))
+        self.assertEqual((first[1], first[3].split(',')[1]), (str(library / 'movies'), 'ro'))
+        self.assertEqual((second[:2], second[3].split(',')[1]), ([str(self.new), str(library / 'movies-new')], 'rw'))
+
+    def test_there_is_one_place_for_new_files(self):
+        config = self.both()
+        # The films' folder made writable after all: it takes the new files, the other goes.
+        again = self.pc.chosen(new_files=True)['placement']['movies']['extra'][0]
+        one = existing_media.with_choice(config, again)
+        self.assertEqual([(e['use'], e['new_files']) for e in existing_media.extras(one)], [('in_place', True)])
+        self.assertEqual(existing_media.new_files_folder(one, 'movies'), '/data/existing/movies')
+        # And back: a folder of their own takes them from the films' folder.
+        found, _ = self.pc.check(folder=self.new, new_files=True)
+        back = existing_media.with_choice(one, existing_media.entry_for('movies', found, use=existing_media.NEW))
+        self.assertEqual(
+            [(e['use'], e['new_files']) for e in existing_media.extras(back)],
+            [('in_place', False), ('new_files', True)],
+        )
+        only = existing_media.without_choice(back, 'movies', existing_media.NEW)
+        self.assertEqual([e['use'] for e in existing_media.extras(only)], ['in_place'])
+        self.assertEqual(existing_media.new_files_folder(only, 'movies'), '/data/movies')
+
+    def test_a_folder_that_cannot_be_written_never_becomes_the_place_for_new_files(self):
+        found, _ = self.pc.check(folder=self.new, new_files=True, flags=os.ST_RDONLY)
+        with self.assertRaises(RuntimeError):
+            existing_media.entry_for('movies', found, use=existing_media.NEW)
+        found, _ = self.pc.check(folder=self.new)  # not even tried
+        with self.assertRaises(RuntimeError):
+            existing_media.entry_for('movies', found, use=existing_media.NEW)
+        # Nor by a settings file changed by hand.
+        config = self.both()
+        entries = config['placement']['movies']['extra']
+        for changed in (
+            [{**entries[0], 'new_files': True}, entries[1]],  # two places
+            [entries[0], {**entries[1], 'new_files': False}],
+            [entries[0], {**entries[1], 'use': 'anything'}],
+            [entries[1], entries[1]],
+        ):
+            bad = existing_media.without_choice(config, 'movies')
+            bad['placement']['movies']['extra'] = changed
+            with self.assertRaises(RuntimeError, msg=changed):
+                existing_media.extras(bad)
+
+    def test_the_apps_are_told_only_while_the_folder_is_there(self):
+        config = self.both()
+        how = self.pc.how()
+        self.assertIsNone(existing_media.new_files_ready(self.pc.config, 'movies', **how))
+        with self.assertRaises(Away):  # chosen, not mounted into the library yet
+            existing_media.new_files_ready(config, 'movies', **how)
+        for use in existing_media.USES:
+            self.pc.bound[str(existing_media.mount_point(config, 'movies', use))] = '80'
+        self.assertEqual(existing_media.new_files_ready(config, 'movies', **how), '/data/existing/movies-new')
+        del self.pc.mounts[str(self.pc.nas)]  # the share goes away
+        with self.assertRaises(Away) as caught:
+            existing_media.new_files_ready(config, 'movies', **how)
+        self.assertIn('Nothing is written in their place', str(caught.exception))
+
+    def test_jellyfin_gets_a_library_for_the_new_ones_too(self):
+        config = self.both()
+        for use in existing_media.USES:
+            self.pc.bound[str(existing_media.mount_point(config, 'movies', use))] = '80'
+        client = Jellyfin()
+        rows = existing_media.jellyfin_libraries(client, config, True, **self.pc.how())
+        self.assertEqual(
+            [(row['check'], row['status']) for row in rows],
+            [('jellyfin:existing:movies', 'pass'), ('jellyfin:existing:movies-new', 'pass')],
+        )
+        self.assertEqual(
+            sorted((x['Name'], x['Locations'][0]) for x in client.libraries),
+            [
+                ('Movies (new, your folder)', '/data/existing/movies-new'),
+                ('Movies (your folder)', '/data/existing/movies'),
+            ],
+        )
+
+    def test_the_download_and_import_apps_see_the_same_path(self):
+        for app, drive in (('sonarr', 'MEDIA'), ('radarr', 'MEDIA'), ('lidarr', 'MUSIC'), ('qbittorrent', 'MEDIA')):
+            text = (ROOT / 'compose' / f'{app}.yaml').read_text()
+            block = text[text.index('      - type: bind') :]
+            self.assertIn(f'        source: "${{NEKO_{drive}}}/library/existing"\n', block, app)
+            self.assertIn('        target: /data/existing\n', block, app)
+            self.assertIn('          propagation: rslave\n', block, app)
+            # They write there when the mount allows it: not read-only in the app itself.
+            self.assertNotIn('read_only', block, app)
+
+
+def load(name, file):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(name, ROOT / file)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class RootFolderTests(unittest.TestCase):
+    """media-connect.py --root-folders: Sonarr, Radarr and Lidarr are given the person's
+    folder for new files as a library folder of theirs, through their API."""
+
+    def setUp(self):
+        self.pc = Server(self)
+        self.connect = load('media_connect_existing', 'media-connect.py')
+        (self.pc.media / 'library' / 'tv').mkdir()
+        self.music = self.pc.ssd / 'library' / 'music'
+        self.music.mkdir(parents=True)
+        self.folders = {'sonarr': [], 'radarr': [], 'lidarr': []}
+        self.posted = []
+
+    def request(self, app, key, endpoint, method='GET', payload=None):
+        if endpoint != '/rootfolder':
+            return [{'id': 1, 'name': 'Any'}]  # Lidarr's profiles
+        if method == 'POST':
+            self.posted.append((app, payload['path'], payload.get('name')))
+            self.folders[app].append({**payload, 'accessible': True})
+        return self.folders[app]
+
+    def configure(self, config, apps=('sonarr', 'radarr', 'lidarr')):
+        real = existing_media.available
+
+        def available(settings, **how):
+            return real(settings, **self.pc.how())
+
+        with (
+            mock.patch.object(self.connect, 'app_key', return_value='k'),
+            mock.patch.object(self.connect, 'request', self.request),
+            mock.patch.object(existing_media, 'available', available),
+            mock.patch('builtins.print'),
+        ):
+            self.connect.configure_root_folders(self.pc.ssd, self.pc.media, True, apps, self.music, config)
+
+    def chosen(self):
+        """New films in the films' own folder, new music in a folder of the person's."""
+        config = self.pc.chosen(new_files=True)
+        (self.pc.nas / 'music').mkdir(exist_ok=True)
+        found, _ = self.pc.check(folder=self.pc.nas / 'music', new_files=True, category='music')
+        config = existing_media.with_choice(config, existing_media.entry_for('music', found, True))
+        for entry in existing_media.extras(config):
+            self.pc.bound[str(existing_media.mount_point(config, entry['holds'], entry['use']))] = '81'
+        return config
+
+    def test_each_app_gets_the_persons_folder_beside_nekoservers_own(self):
+        self.configure(self.chosen())
+        self.assertEqual(
+            self.posted,
+            [
+                ('sonarr', '/data/tv', None),  # nothing chosen for shows
+                ('radarr', '/data/movies', None),
+                ('radarr', '/data/existing/movies', None),
+                ('lidarr', '/data/music', 'Neko Music'),
+                ('lidarr', '/data/existing/music', 'Neko Music (your folder)'),
+            ],
+        )
+        # Run again: both are there, nothing is added twice.
+        self.posted.clear()
+        self.configure(self.chosen())
+        self.assertEqual(self.posted, [])
+
+    def test_without_a_folder_of_the_persons_it_is_as_before(self):
+        self.configure(self.pc.config)
+        self.assertEqual([path for _, path, _ in self.posted], ['/data/tv', '/data/movies', '/data/music'])
+
+    def test_a_share_that_is_away_is_not_handed_to_the_app(self):
+        config = self.chosen()
+        del self.pc.mounts[str(self.pc.nas)]
+        with self.assertRaises(RuntimeError) as caught:
+            self.configure(config)
+        self.assertIn('are not there now', str(caught.exception))
+        self.assertIn('radarr', str(caught.exception))
+        # NekoServer's own folders are still given; the person's are not, so no app makes
+        # a folder in the bare mount point.
+        self.assertEqual([path for _, path, _ in self.posted], ['/data/tv', '/data/movies', '/data/music'])
+
+
+class Answer:
+    def __init__(self, value):
+        self.data = __import__('json').dumps(value).encode()
+
+    def read(self, limit=None):
+        return self.data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *left):
+        return False
+
+
+class Navidrome:
+    """Navidrome's sign-in and library API, as a stand-in opener."""
+
+    def __init__(self, admin=True, libraries=True):
+        self.admin, self.libraries, self.seen = admin, libraries, []
+        self.have = [{'id': 1, 'name': 'Music Library', 'path': '/music'}]
+
+    def open(self, asked, timeout=None):
+        import json
+        import urllib.error
+
+        path = asked.full_url.split('4533', 1)[1]
+        body = json.loads(asked.data) if asked.data else None
+        self.seen.append((asked.get_method(), path, body, asked.get_header('X-nd-authorization')))
+        if path == '/auth/login':
+            if body['password'] != 'right':
+                raise urllib.error.HTTPError(asked.full_url, 401, 'no', {}, None)
+            return Answer({'token': 'tok', 'isAdmin': self.admin})
+        if not self.libraries:
+            raise urllib.error.HTTPError(asked.full_url, 404, 'no', {}, None)
+        if asked.get_method() == 'POST':
+            self.have.append({'id': 2, **body})
+        return Answer(self.have)
+
+
+class MusicTests(unittest.TestCase):
+    """An existing music folder, played by Navidrome from where it is."""
+
+    def setUp(self):
+        self.pc = Server(self)
+        (self.pc.nas / 'music').mkdir()
+        found, _ = self.pc.check(folder=self.pc.nas / 'music', category='music')
+        self.config = existing_media.with_choice(self.pc.config, existing_media.entry_for('music', found))
+        self.pc.bound[str(self.pc.ssd / 'library/existing/music')] = '78'
+
+    def libraries(self, navidrome, saved, config=None):
+        def api(username, password):
+            return existing_media.navidrome_api(username, password, 'http://127.0.0.1:4533', navidrome)
+
+        with mock.patch.object(existing_media.account_store, 'get', return_value=saved) as asked:
+            rows = existing_media.music_libraries(config or self.config, True, api, **self.pc.how())
+        return rows, asked
+
+    def test_navidrome_is_signed_in_to_as_its_administrator_and_given_the_folder(self):
+        navidrome = Navidrome()
+        rows, asked = self.libraries(navidrome, {'username': 'neko', 'password': 'right'})
+        self.assertEqual(rows, [{'check': 'navidrome:existing:music', 'status': 'pass'}])
+        asked.assert_called_once_with(self.config, 'navidrome', verified=True)
+        self.assertEqual(navidrome.seen[0], ('POST', '/auth/login', {'username': 'neko', 'password': 'right'}, None))
+        added = {'name': 'Music (your folder)', 'path': '/data/existing/music'}
+        self.assertIn(('POST', '/api/library', added, 'Bearer tok'), navidrome.seen)
+        # Every request after the sign-in carries the token, never the password.
+        self.assertTrue(all(token == 'Bearer tok' for *_, token in navidrome.seen[1:]))
+        self.assertEqual([x['path'] for x in navidrome.have], ['/music', '/data/existing/music'])
+        # The folder is mounted read-only for Navidrome: one line, at the music drive.
+        (line,) = existing_media.fstab_lines(self.config)
+        self.assertEqual(line.split()[1], str(self.pc.ssd / 'library/existing/music'))
+        self.assertEqual(line.split()[3].split(',')[1], 'ro')
+
+    def test_what_is_in_the_way_is_a_step_left_with_its_reason(self):
+        for navidrome, saved, said in (
+            (Navidrome(), None, 'administrator login is not set up yet'),
+            (Navidrome(), {'username': 'neko', 'password': 'wrong'}, 'did not accept its administrator login'),
+            (Navidrome(admin=False), {'username': 'neko', 'password': 'right'}, 'not an administrator'),
+            (Navidrome(libraries=False), {'username': 'neko', 'password': 'right'}, 'version 0.58'),
+        ):
+            (row,), _ = self.libraries(navidrome, saved)
+            self.assertEqual(row['status'], 'needs_setup', said)
+            self.assertIn(said, row['reason'])
+            self.assertEqual(len(navidrome.have), 1, 'nothing was added')
+
+    def test_no_music_folder_and_navidrome_is_not_asked_anything(self):
+        navidrome = Navidrome()
+        rows, asked = self.libraries(navidrome, {'username': 'neko', 'password': 'right'}, self.pc.config)
+        self.assertEqual((rows, navidrome.seen), ([], []))
+        asked.assert_not_called()
+
+    def test_a_share_that_is_away_makes_no_library(self):
+        del self.pc.mounts[str(self.pc.nas)]
+        navidrome = Navidrome()
+        (row,), _ = self.libraries(navidrome, {'username': 'neko', 'password': 'right'})
+        self.assertEqual(row['status'], 'needs_setup')
+        self.assertIn('are not there now', row['reason'])
+        self.assertEqual(len(navidrome.have), 1)
+
+
+class CopyNowTests(unittest.TestCase):
+    """Copy instead of use in place: after the preview, the copy, the source kept."""
+
+    def setUp(self):
+        self.pc = Server(self)
+        self.runs = []
+
+    def run_import(self, config, sources, apply=False, verify=None, again=False):
+        import json
+
+        self.runs.append((sources, apply, again))
+        verify()
+        report = self.pc.ssd / 'reports'
+        report.mkdir(exist_ok=True)
+        row = {'source_number': 1, 'category': 'movies', 'status': 'copied', 'copied': 2, 'bytes': 600}
+        (report / 'source-import.json').write_text(json.dumps({'apply': apply, 'sources': [row]}))
+        return 0
+
+    def copy(self, free=10**9):
+        verified = []
+        result = existing_media.copy_now(
+            self.pc.config,
+            'movies',
+            str(self.pc.films),
+            run=self.run_import,
+            verify=verified.append,
+            find=self.pc.find,
+            kind=self.pc.kind,
+            fstab=self.pc.fstab,
+            usage=lambda root: SimpleNamespace(free=free),
+        )
+        return result, verified
+
+    def test_the_copy_is_the_imports_own_with_this_one_folder(self):
+        import json
+
+        result, verified = self.copy()
+        entry = {'type': 'remote', 'category': 'movies', 'copy_to_library': True, 'mounted_path': str(self.pc.films)}
+        self.assertEqual(self.runs, [([entry], True, False)])
+        self.assertEqual(verified, [self.pc.config], 'the drives are checked as the import asks')
+        self.assertEqual((result['status'], result['copied']), ('copied', 2))
+        self.assertEqual((result['source'], result['source_kept']), (str(self.pc.films), True))
+        # The folder is in the source list, once, however often it is copied.
+        self.copy()
+        saved = json.loads((self.pc.ssd / 'config' / 'media-sources.json').read_text())
+        self.assertEqual(saved, {'schema_version': 1, 'sources': [entry]})
+
+    def test_too_little_room_is_said_with_the_sizes_before_anything_is_copied(self):
+        with self.assertRaises(RuntimeError) as caught:
+            self.copy(free=599)
+        self.assertIn('needs 600 bytes', str(caught.exception))
+        self.assertIn('has 599 bytes free, so nothing was copied', str(caught.exception))
+        self.assertEqual(self.runs, [])
+        self.assertFalse((self.pc.ssd / 'config').exists())
+        self.assertEqual(existing_media.size_words(1_500_000_000), '1.5 GB')
+
+    def test_a_share_that_is_away_is_refused_and_nothing_runs(self):
+        del self.pc.mounts[str(self.pc.nas)]
+        with self.assertRaises(Refused):
+            self.copy()
+        self.assertEqual(self.runs, [])
+
+    @unittest.skipUnless(os.geteuid() == 0, 'the copy hands the files to the apps\' account: root')
+    def test_the_real_copy_keeps_the_source_and_the_librarys_own_files(self):
+        self.pc.mounts[str(self.pc.nas)] = ('/dev/sdd1', 'ext4')  # a local drive: read as a folder
+        self.pc.fstab.write_text(f'UUID=9 {self.pc.nas} ext4 defaults 0 2\n')
+        library = self.pc.media / 'library' / 'movies'
+        (library / 'Brazil (1985)').mkdir()
+        (library / 'Brazil (1985)' / 'Brazil.mkv').write_bytes(b'another cut')
+        before = tree(self.pc.films)
+        shown = existing_media.copy_preview(
+            self.pc.config, 'movies', str(self.pc.films), find=self.pc.find, kind=self.pc.kind, fstab=self.pc.fstab
+        )
+        row = source_import.copy_source(shown['entry'], self.pc.media, True, 1000, 1000)
+        self.assertEqual((row['status'], row['copied'], row['bytes']), ('copied', shown['files'], shown['bytes']))
+        self.assertEqual(row['kept_library_version'], 1)
+        self.assertEqual((library / 'Alien (1979)' / 'Alien.mkv').read_bytes(), b'film' * 100)
+        self.assertEqual((library / 'Brazil (1985)' / 'Brazil.mkv').read_bytes(), b'another cut')
+        self.assertEqual(tree(self.pc.films), before, 'the source is as it was')
 
 
 if __name__ == '__main__':

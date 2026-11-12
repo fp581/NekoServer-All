@@ -25,6 +25,7 @@ from neko_common import (
     music_library,
     remember_answer,
 )
+import existing_media
 import qbit_setup
 import questions
 import account_store
@@ -781,13 +782,25 @@ def kept(app, key, path):
     )
 
 
-def root_folder(app, root, media, apply, music=None):
-    """One app's library folder, made in the app when it is missing."""
+def root_folder(app, root, media, apply, music=None, config=None, ready=existing_media.new_files_ready):
+    """One app's library folders, made in the app when missing: NekoServer's own
+    (/data/tv), and the person's folder for new files when one was chosen
+    (/data/existing/tv; `config`: the settings that name it). The person's folder is added
+    only while it is there: with its share away the app would make the folder inside the
+    bare mount folder, so nothing is asked of the app then and the step says why."""
     category = ROOT_CATEGORY[app]
     path = '/data/' + category
     if not library_host(category, root, media, music).is_dir():
         raise RuntimeError('Host library directory missing')
     key = app_key(app, root)
+    one_root_folder(app, key, path, 'Neko Music', apply)
+    yours = ready(config, category) if config else None
+    if yours and yours != path:
+        one_root_folder(app, key, yours, 'Neko Music (your folder)', apply)
+
+
+def one_root_folder(app, key, path, name, apply):
+    """The root folder `path` in one app: left alone when it is there, else added."""
     found = next((r for r in request(app, key, ROOT_FOLDERS) if r.get('path', '').rstrip('/') == path), None)
     if found:
         if found.get('accessible') is False:
@@ -796,7 +809,7 @@ def root_folder(app, root, media, apply, music=None):
         return
     payload = {'path': path}
     if app == 'lidarr':
-        payload.update(name='Neko Music', defaultTags=[], **lidarr_profiles(app, key))
+        payload.update(name=name, defaultTags=[], **lidarr_profiles(app, key))
     print(f'{app}: root folder {path}', 'APPLY' if apply else 'PREVIEW')
     if apply:
         request(app, key, ROOT_FOLDERS, 'POST', payload)
@@ -804,11 +817,11 @@ def root_folder(app, root, media, apply, music=None):
             raise RuntimeError('Root folder was not retained or is inaccessible')
 
 
-def configure_root_folders(root, media, apply, apps=('sonarr', 'radarr', 'lidarr'), music=None):
+def configure_root_folders(root, media, apply, apps=('sonarr', 'radarr', 'lidarr'), music=None, config=None):
     failures = []
     for app in apps:
         try:
-            root_folder(app, root, media, apply, music)
+            root_folder(app, root, media, apply, music, config)
         except (RuntimeError, ValueError, OSError, KeyError) as exc:
             print(f'{app}: root folder incomplete ({exc})')
             failures.append(f'{app} ({exc})')
@@ -832,6 +845,7 @@ def chosen_actions(args, root, config, apps, selected):
                     music_library(
                         {**config, 'data_mount': str(root), 'media_mount': args.media_root or config['media_mount']}
                     ),
+                    config,
                 ),
             )
         )
