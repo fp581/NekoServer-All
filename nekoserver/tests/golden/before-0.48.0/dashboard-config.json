@@ -70,7 +70,7 @@
   "assistant": {
     "wanted": false
   },
-  "acceptance_scope": "13f39881cdadecee283884617162cf5e2fc83fdbaafbee6bbc0da5baccaa268a",
+  "acceptance_scope": "45eb33ace29a1c20f17781ce0f0d2a5f3d272521d5bb594a72254cf11d5a45e2",
   "acceptance_profiles": [
     "accounts",
     "app_backup",

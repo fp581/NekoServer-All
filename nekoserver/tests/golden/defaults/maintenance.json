@@ -408,7 +408,7 @@
     "monthly": "02:30"
   },
   "app_backup": {
-    "keep_snapshots": 7
+    "keep_snapshots": 3
   },
   "notifications": {
     "endpoint": "",
@@ -429,7 +429,7 @@
     "samba": true,
     "extra_paths": [],
     "minimum_free_gb": 2,
-    "keep_snapshots": 7
+    "keep_snapshots": 3
   },
   "heartbeat": {
     "interval_seconds": 300
@@ -470,6 +470,7 @@
   "assistant": {
     "model": "auto"
   },
+  "backup_counts_reviewed": true,
   "paths": {
     "photos": "/srv/nekoserver/photos/immich-library",
     "music": "/srv/nekoserver/library/music",

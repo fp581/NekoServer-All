@@ -89,6 +89,8 @@ def media_drive():
     cfg['dashboard'].update(fan_control=False, rgb=False, port=8790, interval_seconds=120, smart_interval_seconds=3600)
     cfg['host_backup'].update(steam=False, extra_paths=['/srv/nekoserver/notes'], keep_snapshots=14, minimum_free_gb=4)
     cfg['app_backup']['keep_snapshots'] = 0
+    # Both counts are from before 0.50.0 (outside 1 to 7): kept, and marked as the earlier setting.
+    cfg['host_backup']['keep_snapshots_earlier'] = cfg['app_backup']['keep_snapshots_earlier'] = True
     cfg['maintenance'].update(keep_snapshots=0, update_day='Sat', nekoserver_channel='stable', settle_days=3)
     cfg['network_storage'] = {
         'wanted': True,

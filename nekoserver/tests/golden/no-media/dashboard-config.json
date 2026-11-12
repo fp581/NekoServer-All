@@ -61,7 +61,7 @@
   "assistant": {
     "wanted": false
   },
-  "acceptance_scope": "dfecb55a40f2b3ec3ae02bcfa1ffc1aeb2520fce8b1f548aeeb5cbf3bbd70f3f",
+  "acceptance_scope": "a4a2f9d81439c4279b795f3eaea891ae49cdcacfbadac2e80a1ffc6026306249",
   "acceptance_profiles": [
     "accounts",
     "app_backup",

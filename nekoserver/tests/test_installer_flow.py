@@ -213,9 +213,10 @@ class InstallerFlowTests(unittest.TestCase):
                 template['photos']['database_keep'],
                 template['maintenance']['keep_snapshots'],
             ),
-            (7, 7, 4, 3),
+            (3, 3, 4, 3),  # 0.50.0: 3 nightly backups of each kind, 1 to 7 at most
         )
         config = json.loads(self.config.read_text())
+        config.pop('backup_counts_reviewed', None)  # a settings file from before 0.50.0
         config['app_backup']['keep_snapshots'] = 14
         config['host_backup']['keep_snapshots'] = 14
         config['photos']['database_keep'] = 8
@@ -240,7 +241,11 @@ class InstallerFlowTests(unittest.TestCase):
                 ),
                 (14, 14, 8),
             )
+            # Marked as the earlier setting, so the jobs keep to it; still to be asked about.
+            self.assertIs(saved['app_backup']['keep_snapshots_earlier'], True)
+            self.assertNotIn('backup_counts_reviewed', saved)
         self.assertIn('the newest 14 nightly app backups stay kept', '\n'.join(logged))
+        self.assertIn('the newest 8 weekly Immich database copies stay kept', '\n'.join(logged))
 
     def test_the_earlier_defaults_are_asked_about_once_and_the_answer_kept(self):
         config = {
@@ -248,7 +253,7 @@ class InstallerFlowTests(unittest.TestCase):
             'host_backup': {'keep_snapshots': 14},
             'photos': {'database_keep': 8},
         }
-        answers = iter([True, False, True])  # fewer app backups and copies, keep 14 host backups
+        answers = iter([True])  # fewer database copies (the nightly counts: review_backup_counts)
         _, changed = installer.retire_old_defaults(config, ask=lambda question: next(answers))
         self.assertTrue(changed)
         self.assertEqual(
@@ -257,13 +262,13 @@ class InstallerFlowTests(unittest.TestCase):
                 config['host_backup']['keep_snapshots'],
                 config['photos']['database_keep'],
             ),
-            (7, 14, 4),
+            (14, 14, 4),
         )
         self.assertTrue(config[installer.RETENTION_REVIEWED])
-        # Reviewed: a 14 seen later is a choice, never asked about or changed again.
-        config['app_backup']['keep_snapshots'] = 14
+        # Reviewed: an 8 seen later is a choice, never asked about or changed again.
+        config['photos']['database_keep'] = 8
         self.assertEqual(installer.retire_old_defaults(config, ask=lambda q: self.fail('asked again')), ([], False))
-        self.assertEqual(config['app_backup']['keep_snapshots'], 14)
+        self.assertEqual(config['photos']['database_keep'], 8)
         # Nothing at an earlier default: marked as reviewed without a question.
         fresh = {'app_backup': {'keep_snapshots': 7}}
         self.assertEqual(installer.retire_old_defaults(fresh, ask=lambda q: self.fail('asked')), ([], True))

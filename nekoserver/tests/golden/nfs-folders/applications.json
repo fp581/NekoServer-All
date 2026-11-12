@@ -40,6 +40,6 @@
     ]
   },
   "app_backup": {
-    "keep_snapshots": 7
+    "keep_snapshots": 3
   }
 }

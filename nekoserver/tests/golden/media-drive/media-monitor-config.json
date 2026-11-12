@@ -410,7 +410,8 @@
     "monthly": "02:30"
   },
   "app_backup": {
-    "keep_snapshots": 0
+    "keep_snapshots": 0,
+    "keep_snapshots_earlier": true
   },
   "notifications": {
     "endpoint": "",
@@ -433,7 +434,8 @@
       "/srv/nekoserver/notes"
     ],
     "minimum_free_gb": 4,
-    "keep_snapshots": 14
+    "keep_snapshots": 14,
+    "keep_snapshots_earlier": true
   },
   "heartbeat": {
     "interval_seconds": 600
@@ -473,6 +475,7 @@
   "assistant": {
     "model": "auto"
   },
+  "backup_counts_reviewed": true,
   "locations": {
     "photos": "media",
     "music": "media",
