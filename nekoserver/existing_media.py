@@ -44,6 +44,7 @@ from neko_common import (
     folder_answers,
     local_opener,
     music_downloads,
+    real_path,
     verify_storage,
 )
 
@@ -425,9 +426,14 @@ def listed_extras(saved, row):
 def usable_saved_path(config, holds, path):
     """The path as saved must be the real folder check() returned, outside the system's
     and NekoServer's own folders: checked again, it is only a settings value."""
-    real = os.path.realpath(path)
-    unsafe = real != path or not path.startswith('/') or any(ord(c) < 32 or c == '\\' for c in path)
-    if unsafe or real == '/' or any(within(real, top) for top in (*SYSTEM, *own_folders(config))):
+    plain = isinstance(path, str) and path.startswith('/') and os.path.normpath(path) == path
+    if not plain or any(ord(c) < 32 or c == '\\' for c in path):
+        raise RuntimeError(f'The "extra" folder for {holds} in my-config.json is not a folder that may be used')
+    # Asked with a time limit: with its share away, a look at the folder waits for it.
+    # Then it is judged by its words for now (checked by check() when it was chosen):
+    # nothing is done with a folder that is away but saying so.
+    real = real_path(path) or path
+    if real != path or real == '/' or any(within(real, top) for top in (*SYSTEM, *own_folders(config))):
         raise RuntimeError(f'The "extra" folder for {holds} in my-config.json is not a folder that may be used')
 
 

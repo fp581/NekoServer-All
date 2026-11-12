@@ -8,7 +8,7 @@ use serde_json::json;
 use std::{
     fs,
     os::unix::fs::MetadataExt,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 /// A file changed in the last 10 minutes may still be being written (a download or an
 /// import): it waits for the next run, and the rest of the library is backed up now.
@@ -68,7 +68,17 @@ fn sources(cfg: &serde_json::Value, library: PathBuf) -> Result<Vec<(String, Pat
     let mut found = vec![(String::new(), library)];
     for extra in cfg["music_extra"].as_array().into_iter().flatten() {
         let slot = extra["slot"].as_str().unwrap_or("");
-        let path = common::safe(Path::new(extra["path"].as_str().unwrap_or("")))?;
+        // Judged by its words, with the folders around it checked on the disk: the folder
+        // itself is the person's share mounted there, and while the share is away any look
+        // at it waits for it. It is looked at only once it answers (own_folders_there).
+        let path = PathBuf::from(extra["path"].as_str().unwrap_or(""));
+        let plain = path.is_absolute()
+            && path
+                .components()
+                .all(|c| matches!(c, Component::RootDir | Component::Normal(_)));
+        if !plain || path.parent().is_none_or(|up| common::safe(up).is_err()) {
+            return Err(Error::new("Invalid music folder to back up"));
+        }
         // Only a folder setup mounts under library/existing (existing_media.mount_point).
         let under_existing = path
             .parent()
@@ -93,6 +103,8 @@ fn own_folders_there(sources: &[(String, PathBuf)], there: &dyn Fn(&Path) -> boo
                 path.display()
             )));
         }
+        // It answers: now it may be looked at, and it must not be a link to elsewhere.
+        common::safe(path)?;
     }
     Ok(())
 }
@@ -254,6 +266,18 @@ mod tests {
             said.contains("the last backup stays the newest one"),
             "{said}"
         );
+        // A link in place of the folder is refused once it answers; ".." never passes.
+        let linked = top.join("library/existing/music");
+        if linked.exists() || linked.is_symlink() {
+            let _ = fs::remove_dir_all(&linked);
+            let _ = fs::remove_file(&linked);
+        }
+        fs::create_dir_all(linked.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink("/etc", &linked).unwrap();
+        let rows = vec![("own/music/".to_string(), linked.clone())];
+        assert!(own_folders_there(&rows, &|_| true).is_err());
+        let away = json!({"music_extra": [{"slot": "music", "path": format!("{}/../etc/music", top.display())}]});
+        assert!(sources(&away, library.clone()).is_err());
         // The library alone needs no share: never checked.
         let alone = sources(&json!({}), library.clone()).unwrap();
         assert!(own_folders_there(&alone, &|_| false).is_ok());
