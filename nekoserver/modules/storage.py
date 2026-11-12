@@ -1606,6 +1606,7 @@ def others_ahead(draft, log):
 def drives_ahead(draft, chosen, log):
     """The storage page on the copy of the settings: the drives, where each app keeps its
     files and is installed, the offline drive, and films already there."""
+    import drive_table
     import existing_page
 
     context = types.SimpleNamespace(config=draft, log=log, apply=True, config_path=None)
@@ -1617,9 +1618,21 @@ def drives_ahead(draft, chosen, log):
         installs = wished_installs(context, inventory)
         if installs:
             chosen['installs'] = installs
-        choose_usb(context)
+        # A drive just chosen for files or installs is not the offline copy too (gate run C).
+        drive_table.TAKEN_AHEAD[:] = taken_rows(chosen['places'], installs)
+        try:
+            choose_usb(context)
+        finally:
+            drive_table.TAKEN_AHEAD.clear()
         existing_page.ask(context, output=log)
     chosen['lines'] = ahead_lines(draft, inventory, chosen['places'], chosen.get('installs') or {})
+
+
+def taken_rows(places, installs):
+    """The UUIDs of the drives the storage page chose for files or installs (rows of the
+    drive list; 'ssd' and 'media' are not rows)."""
+    rows = [*places.values(), *(installs or {}).values()]
+    return [row['uuid'] for row in rows if isinstance(row, dict) and row.get('uuid')]
 
 
 def keys_changed(old, new):
@@ -2485,7 +2498,12 @@ def choose_usb(context):
     photos = context.config.setdefault('photos', {})
     if photos.get('external_backup_uuid') or not sys.stdin.isatty() or photos.get(OFFLINE_WANTED) is False:
         return
-    from modules.photo_backup import select_external
+    from modules.photo_backup import copies, select_external
+
+    if not any(copies(context.config)):
+        # No Immich and no Nextcloud: the weekly copy has nothing to take (gate run C7),
+        # so no drive is asked for it.
+        return
 
     inventory = inventory_now()
     try:
@@ -2498,7 +2516,7 @@ def choose_usb(context):
         photos[OFFLINE_WANTED] = False
         context.log(
             'Offline backup: none, as you chose. The weekly copy to a removable drive is left out. To add one '
-            f'later, take "{OFFLINE_WANTED}" out of "photos" in my-config.json and run  sudo bash install.sh  again.'
+            'later, connect it and run  sudo bash install.sh --module photo_backup'
         )
     if hasattr(context, 'persist_config'):
         context.persist_config()

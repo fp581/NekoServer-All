@@ -500,7 +500,7 @@ def _execute(args, root=ROOT):
         record_profile(safe_path(state_dir / PROFILE_FILE), args.profile, plan, previous, log)
     ctx = Context(config, log, apply=args.apply, config_path=args.config)
     ctx.plan = plan  # the steps of this run (the drives step asks the backup times only when one writes a timer)
-    ctx.plan = plan
+    ctx.only = args.module  # the one step asked for by name (install.sh --module), or None
     ctx.previous = dict(previous)  # each step as the last run left it
     save_profiles(ctx, added, profiles_changed, args.apply)
     review_retention(ctx, args.apply)

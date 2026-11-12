@@ -13,7 +13,7 @@ Everything connected to this PC:
        Can be the USB backup drive.
   5) sdd1: 15 GB USB drive, Cruzer Blade, named "stick"
        ext4, UUID small-0001; not open; about 3 % full
-       Can be the USB backup drive.
+       Cannot be used: it is too small: the media HDD needs a drive of at least 54 GB (50 GB free once formatted).
   6) sde: 932 GB HDD, ST1000DM010
        Cannot be used: it has no filesystem yet. To use it, format it as ext4 yourself with the Disks app (GNOME) or KDE Partition Manager, or in a terminal with  sudo mkfs.ext4 /dev/sde  (this erases what is on it; setup never formats a drive).
   7) sdf: 3.6 TB network disk (iSCSI), Synology LUN, named "nas-media"
@@ -58,7 +58,7 @@ Now choose the drive for the weekly copy of your photos and files (the USB backu
   2) sda1: 466 GB SSD, Samsung SSD 870, named "apps", ext4, about 1 % full  - not this one: it is already the app SSD
   3) sdb1: 1.8 TB HDD, WDC WD20EZRZ, named "media", ext4, about 40 % full, holds files  - not this one: it is already the media HDD
   4) sdc1: 29 GB USB drive, SanDisk Ultra, named "BACKUP", exfat  (recommended)
-  5) sdd1: 15 GB USB drive, Cruzer Blade, named "stick", ext4, about 3 % full
+  5) sdd1: 15 GB USB drive, Cruzer Blade, named "stick", ext4, about 3 % full  - not this one: it is too small: the offline backup needs at least 16 GB
   6) sde: 932 GB HDD, ST1000DM010  - not this one: it has no filesystem yet
   7) sdf: 3.6 TB network disk (iSCSI), Synology LUN, named "nas-media", ext4
   8) nvme1n1p1: 233 GB NVMe SSD, KINGSTON SNV2S250G, xfs

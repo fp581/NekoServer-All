@@ -263,6 +263,13 @@ def same_nas_disk(photos, wwn):
     }
 
 
+def left_out_by_choice(ctx):
+    """The weekly copy left out: no removable drive was chosen for it."""
+    switch_off(ctx.log)
+    ctx.log('Offline backup: left out by choice (no removable drive was chosen)')
+    return {'status': 'unavailable', 'reason': 'Left out by choice: no removable drive for the weekly copy'}
+
+
 def chosen_drive(ctx, opts):
     """The USB drive's UUID: the saved one, or the one you pick now (saved for next
     time). None when it has to be picked and nobody is at the keyboard."""
@@ -396,12 +403,19 @@ def run(ctx):
         switch_off(ctx.log)
         ctx.log('USB backup: neither Immich nor Nextcloud is set up, so there is nothing for it to copy')
         return {'status': 'unavailable', 'reason': 'Nothing to copy: Immich and Nextcloud are both switched off'}
-    if opts.get('external_backup_wanted') is False and not str(opts.get('external_backup_uuid', '')).strip():
+    left_out = opts.get('external_backup_wanted') is False and not str(opts.get('external_backup_uuid', '')).strip()
+    # Asked for by name (install.sh --module photo_backup, the way to add it later; gate
+    # run B4): the drive is asked again, and "none for now" again keeps it left out.
+    again = left_out and getattr(ctx, 'only', None) == 'photo_backup' and sys.stdin.isatty()
+    if left_out and not again:
         # "None for now" on the storage page: left out by choice, and not asked about again.
-        switch_off(ctx.log)
-        ctx.log('Offline backup: left out by choice (no removable drive was chosen)')
-        return {'status': 'unavailable', 'reason': 'Left out by choice: no removable drive for the weekly copy'}
+        return left_out_by_choice(ctx)
+    if again:
+        opts.pop('external_backup_wanted')
     uuid = chosen_drive(ctx, opts)
+    if uuid is None and again:
+        opts['external_backup_wanted'] = False
+        return left_out_by_choice(ctx)
     if uuid is None:
         return {
             'status': 'needs_setup',

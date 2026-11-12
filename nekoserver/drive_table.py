@@ -47,6 +47,9 @@ PLACES_AHEAD = {}
 INSTALL_AHEAD = {}
 # ... and that the backups page was asked then ({'asked': True}): not asked again in the run.
 TIMES_AHEAD = {}
+# The UUIDs of drives the storage page chose for files or installs while it asks the
+# offline drive (not in the settings until the approval).
+TAKEN_AHEAD = []
 
 
 def role(key):
@@ -436,7 +439,9 @@ def verdict(row, key, config):
         return shared_verdict(row, config)
     if has and has != key:
         return f'it is already {role(has)}'
-    if row['uuid'] and any(record.get('uuid') == row['uuid'] for record in extra_drives(config).values()):
+    if row['uuid'] and (
+        row['uuid'] in TAKEN_AHEAD or any(record.get('uuid') == row['uuid'] for record in extra_drives(config).values())
+    ):
         return "it already holds an app's files (chosen as a drive of their own)"
     if row['export']:
         return 'it is a folder the NAS shares; the network storage step chooses those'
@@ -495,7 +500,7 @@ def backup_verdict(row, config):
     from modules.photo_backup import BACKUP_FILESYSTEMS, UNSUITABLE
 
     if row['backup'] is not None:
-        return ''
+        return backup_size_verdict(row)
     if row['fstype'] not in BACKUP_FILESYSTEMS:
         return (
             f"it is formatted {UNSUITABLE.get(row['fstype'], row['fstype'])}; a backup drive must be exFAT or ext4 "
@@ -509,6 +514,19 @@ def backup_verdict(row, config):
         'it must be a drive of its own: this one is on the same disk as the system, the app SSD or the media '
         'HDD, and one disk failing would then lose both copies'
     )
+
+
+def backup_size_verdict(row):
+    """Why a drive that could be the offline backup is too small for it, or '' (gate run
+    B4: an 8 GB drive was offered with nothing said)."""
+    from modules import storage
+    from modules.capacity import USB_MIN
+
+    found = storage.size_bytes(row['size'])
+    if found is None or found >= USB_MIN * storage.GIB:
+        return ''
+    counted = f" ({row['size_note']})" if row['size_note'] else ''
+    return f'it is too small{counted}: the offline backup needs at least {USB_MIN} GB'
 
 
 def usable(table, key, config):

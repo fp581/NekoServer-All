@@ -141,7 +141,8 @@ class TableTests(DriveListCase):
         # The disk Linux runs from (1) can hold the apps or the media, never the offline backup.
         self.assertEqual(can('data_ssd'), [1, 2, 3, 8])
         self.assertEqual(can('media_hdd'), [1, 2, 3, 7, 8])
-        self.assertEqual(can('usb'), [2, 3, 4, 5, 7, 8])  # a disk on the NAS may hold the backup
+        # A disk on the NAS may hold the backup; the 15 GB stick (5) is too small for it (gate run B4).
+        self.assertEqual(can('usb'), [2, 3, 4, 7, 8])
         self.assertEqual(drive_table.verdict(table[0], 'usb', config), drive_table.SYSTEM_NOT_OFFLINE)
         why = {row['number']: drive_table.verdict(row, 'data_ssd', config) for row in table}
         self.assertEqual(why[1], '')
