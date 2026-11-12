@@ -124,7 +124,8 @@ def assistant_choices(config, memory=None, own_use=None, apps_started=True, usag
     room = assistant.memory_for_model(total, available, own)
     reason = not_here(config, total, checks)
     choices = [
-        model_choice(config, name, spec, (total, room), apps_started, usage) for name, spec in zip(PLAIN_NAMES, assistant.MODELS)
+        model_choice(config, name, spec, (total, room), apps_started, usage)
+        for name, spec in zip(PLAIN_NAMES, assistant.MODELS)
     ]
     usable = [one for one in choices if one['fits'] != 'no' and one['room_on_drive']] if not reason else []
     if not reason and not usable:

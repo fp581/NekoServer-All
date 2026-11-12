@@ -455,7 +455,6 @@ def not_enough(total, room, need, model='a model'):
     return f'there is not enough free memory: {model} needs about {need} GB, and this PC has {room_said(total, room)}'
 
 
-
 # ---- installing it ----------------------------------------------------------------------
 
 
