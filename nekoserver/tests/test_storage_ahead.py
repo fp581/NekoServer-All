@@ -39,7 +39,10 @@ class ChangesTests(unittest.TestCase):
             storage.section_changes(before, after),
             {
                 'storage': ({'data_ssd': {'uuid': 'u1', 'fstype': 'ext4'}}, []),
-                'photos': ({'external_backup_uuid': 'u9', 'external_backup_fstype': 'ext4'}, ['external_backup_network']),
+                'photos': (
+                    {'external_backup_uuid': 'u9', 'external_backup_fstype': 'ext4'},
+                    ['external_backup_network'],
+                ),
                 existing_page.ASKED: True,
             },
         )
@@ -109,8 +112,8 @@ class AskedAheadTests(unittest.TestCase):
             chosen['lines'],
             [
                 'NekoServer and your apps: the drive chosen before',
-                'Your media and the backups: the drive chosen before',
-                "Immich's photos and videos: on the drive of your media and the backups",
+                'Backups: the drive chosen before',
+                "Immich's photos and videos: on the drive of the backups. " + storage.SAME_DRIVE_AS_BACKUP,
                 'Offline backup: none for now',
             ],
         )

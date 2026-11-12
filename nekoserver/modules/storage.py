@@ -1404,7 +1404,7 @@ def free_on(row):
     return int((size_bytes(row['size']) or 0) * (100 - (row['full'] or 0)) / 100) // 10**9
 
 
-PLACE_SAID = {'ssd': 'on the drive of NekoServer and your apps', 'media': 'on the drive of your media and the backups'}
+PLACE_SAID = {'ssd': 'on the drive of NekoServer and your apps', 'media': 'on the drive of the backups'}
 
 
 def ahead_lines(config, inventory, places):
@@ -1430,6 +1430,8 @@ def ahead_lines(config, inventory, places):
                 if isinstance(place, str)
                 else 'on ' + drive_table.brief(place) + ', a drive of their own'
             )
+            if place == 'media' and what in backed_up_beside(config):
+                said += '. ' + SAME_DRIVE_AS_BACKUP
             lines.append(f'{words[0].upper()}{words[1:]}: {said}')
     photos = config.get('photos', {})
     if photos.get('external_backup_uuid'):
@@ -1478,14 +1480,21 @@ PAGE_HINT = (
 # How the page names the drive roles and the places (the terminal's own words are drive_table's).
 PAGE_ROLES = {
     'data_ssd': 'NekoServer and your apps',
-    'media_hdd': 'Your media and the backups',
+    'media_hdd': 'Backups',
     'usb': 'Offline backup on a removable drive (optional)',
 }
 PAGE_PLACES = {
     '': 'Let setup choose (recommended)',
     'ssd': 'Same drive as NekoServer and your apps',
-    'media': 'Same drive as your media and the backups',
+    'media': 'Same drive as the backups',
 }
+# What the Backups line holds, as the page says it: your files are there too unless their
+# own line names another drive.
+BACKUPS_HOLD = 'every backup NekoServer makes, and your files where a line below says "Same drive as the backups"'
+SAME_DRIVE_AS_BACKUP = (
+    'Their backup is then on the same drive: it protects against a mistake, not against losing that drive. '
+    'Only the offline backup is a copy on another drive'
+)
 SMB_SAID = (
     'A drive on a network storage box is connected first (the switch on setup\'s first page): as a disk of its '
     'own (iSCSI) or a shared folder (NFS). Folders shared the Windows way (SMB) are not supported yet.'
@@ -1513,7 +1522,7 @@ def storage_page(context, inventory):
         {
             'key': key,
             'title': PAGE_ROLES[key],
-            'holds': drive_table.holds(config, key),
+            'holds': BACKUPS_HOLD if key == 'media_hdd' else drive_table.holds(config, key),
             'needs': drive_table.needs(key),
             'optional': key == 'usb',
             'rows': drive_table.for_window(table, key, config),
@@ -1532,6 +1541,8 @@ def storage_page(context, inventory):
             'key': what,
             'title': words[0].upper() + words[1:],
             'options': [list(option) for option in PAGE_PLACES.items()] + others,
+            # Said under the line while the backups' drive is chosen for it.
+            'beside_backup': SAME_DRIVE_AS_BACKUP + '.' if what in backed_up_beside(config) else '',
         }
         for what, words, _threshold in WHERE
         if what in asked
@@ -1829,6 +1840,8 @@ def choose_locations(context, input_fn=None, interactive=None, inventory=None):
         changed = True
     if chosen.get('photos') == 'media' and asked_where(config, 'photos'):
         context.log(PHOTOS_ON_MEDIA)
+    if chosen.get('music') == 'media' and 'music' in backed_up_beside(config) and asked_where(config, 'music'):
+        context.log(MUSIC_ON_MEDIA)
     if changed and hasattr(context, 'persist_config'):
         context.persist_config()
 
@@ -1839,6 +1852,19 @@ PHOTOS_ON_MEDIA = (
     "Immich's photos are on the media drive, and so is their weekly archive copy: it keeps older versions, "
     'but does not survive losing that drive. Your only copy on another drive is the weekly USB backup, so '
     'set it up (setup asks for the USB drive next).'
+)
+
+
+def backed_up_beside(config):
+    """The kinds of files whose backup copy is kept on the backups' drive: the photos
+    (their weekly archive) and, where the music backup is switched on, the music. Kept on
+    that same drive, the copy is lost with it."""
+    return ('photos', 'music') if config.get('music', {}).get('backup_enabled') is True else ('photos',)
+
+
+MUSIC_ON_MEDIA = (
+    'The music is on the media drive, and so is its backup: that protects against a mistake, not against '
+    'losing that drive.'
 )
 
 

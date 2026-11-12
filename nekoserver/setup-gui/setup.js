@@ -908,7 +908,15 @@
     }
     for (const place of page.places) {
       const options = place.options.map(([value, text]) => ({ value, text }));
-      rows.push(row(place.title, [chooser(place.key, place.title, options, page.fields[place.key])], ''));
+      const select = chooser(place.key, place.title, options, page.fields[place.key]);
+      // Files kept on the backups' drive: what that means for their backup, said while it is chosen.
+      const beside = el('small', { class: 'drive-facts', id: 'ask-page-' + place.key + '-facts' });
+      const say = () => {
+        beside.textContent = select.value === 'media' ? place.beside_backup || '' : '';
+      };
+      select.addEventListener('change', say);
+      say();
+      rows.push(row(place.title, [select], ''), beside);
     }
     rows.push(el('p', { class: 'drives-needs', text: page.network }));
     $('ask-page').replaceChildren(el('div', { class: 'storage' }, ...rows));

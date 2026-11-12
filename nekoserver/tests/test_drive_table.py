@@ -454,7 +454,7 @@ class StoragePageTests(DriveListCase):
                 [(role['key'], role['title'], role['optional']) for role in page['roles']],
                 [
                     ('data_ssd', 'NekoServer and your apps', False),
-                    ('media_hdd', 'Your media and the backups', False),
+                    ('media_hdd', 'Backups', False),
                     ('usb', 'Offline backup on a removable drive (optional)', True),
                 ],
             )
@@ -464,6 +464,16 @@ class StoragePageTests(DriveListCase):
             self.assertIn('it is too small: the app SSD needs a drive of at least 22 GB', ssd['rows'][4]['why'])
             self.assertEqual(ssd['rows'][1]['why'], '')
             self.assertEqual([place['key'] for place in page['places']], ['photos', 'movies', 'music', 'cloud'])
+            # Backups are a line of their own; files kept beside their backup are told so.
+            self.assertEqual(page['roles'][1]['holds'], storage.BACKUPS_HOLD)
+            self.assertEqual(page['places'][0]['options'][2], ['media', 'Same drive as the backups'])
+            # The photos always have a copy there; the music only where its backup is switched on.
+            music_backup = ctx.config.get('music', {}).get('backup_enabled') is True
+            self.assertEqual(
+                [bool(place['beside_backup']) for place in page['places']], [True, False, music_backup, False]
+            )
+            self.assertEqual(storage.backed_up_beside({'music': {'backup_enabled': True}}), ('photos', 'music'))
+            self.assertEqual(storage.backed_up_beside({}), ('photos',))
             # The two roles' drives, or a drive of their own: any other drive that could hold them.
             self.assertEqual(
                 [option[0] for option in page['places'][0]['options']],

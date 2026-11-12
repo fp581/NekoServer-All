@@ -805,12 +805,13 @@ class SetupWindowTests(unittest.TestCase):
             'roles': [
                 {'key': 'data_ssd', 'title': 'NekoServer and your apps', 'holds': 'your apps', 'needs': 'It needs 20 GB.',
                  'optional': False, 'rows': self.DRIVES},
-                {'key': 'media_hdd', 'title': 'Your media and the backups', 'holds': 'your films', 'needs': '',
+                {'key': 'media_hdd', 'title': 'Backups', 'holds': 'every backup', 'needs': '',
                  'optional': False, 'rows': [{**self.DRIVES[0]}, {**self.DRIVES[1]}, {**self.DRIVES[2], 'why': ''}]},
                 {'key': 'usb', 'title': 'Offline backup', 'holds': 'the weekly copy', 'needs': '', 'optional': True,
                  'rows': []},
             ],
-            'places': [{'key': 'photos', 'title': "Immich's photos and videos", 'options': places}],
+            'places': [{'key': 'photos', 'title': "Immich's photos and videos", 'options': places,
+                        'beside_backup': 'Their backup is then on the same drive.'}],
             'names': 'The short names are Linux\'s own.', 'network': 'SMB is not supported yet.',
         }  # fmt: skip
         question = 'Number of the drive for your apps (the app SSD) (Enter alone stops setup here): '
@@ -831,6 +832,11 @@ class SetupWindowTests(unittest.TestCase):
         )  # fmt: skip
         self.assertEqual(lists[2]['options'], [['', 'None for now', False]])  # the offline copy can wait
         self.assertEqual([option[0] for option in lists[3]['options']], ['', 'ssd', 'media'])
+        # Files kept on the backups' drive: what that means is said under the line, only then.
+        self.assertEqual(lists[3]['note'], '')
+        beside = {**page, 'fields': {**page['fields'], 'photos': 'media'}}
+        seen = self.page([self.asked(question, beside)])
+        self.assertEqual(seen['storage'][3]['note'], 'Their backup is then on the same drive.')
         # The recommended drive is chosen already when the page opens, and says so.
         ready = {**page, 'roles': [{**page['roles'][0], 'recommended': '2'}, *page['roles'][1:]]}
         seen = self.page([self.asked(question, ready)])
@@ -846,7 +852,7 @@ class SetupWindowTests(unittest.TestCase):
         seen = self.page([self.asked(question, page, fill=both)])
         self.assertEqual(
             (seen['posts'], seen['note']),
-            ([], 'One drive cannot be both “NekoServer and your apps” and “Your media and the backups”.'),
+            ([], 'One drive cannot be both “NekoServer and your apps” and “Backups”.'),
         )
         # Chosen: every line goes in one answer, the asked one as the terminal takes it.
         chosen = {'ask-page-data_ssd': '2', 'ask-page-media_hdd': '3', 'ask-page-photos': 'ssd'}
