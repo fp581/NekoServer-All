@@ -860,13 +860,17 @@ class SetupWindowTests(unittest.TestCase):
         # Nothing chosen for a line that needs a drive: said, not sent.
         seen = self.page([self.asked(question, page, leave=True)])
         self.assertEqual((seen['posts'], seen['note']), ([], 'Choose a drive for “NekoServer and your apps” first.'))
-        # One drive for two lines: said, not sent.
+        # The apps and the backups on one drive: sent (setup says what that means).
         both = {'ask-page-data_ssd': '2', 'ask-page-media_hdd': '2'}
         seen = self.page([self.asked(question, page, fill=both)])
-        self.assertEqual(
-            (seen['posts'], seen['note']),
-            ([], 'One drive cannot be both “NekoServer and your apps” and “Backups”.'),
-        )
+        self.assertEqual(seen['posts'][0][1]['fields']['media_hdd'], '2')
+        # The offline backup on a drive of another line: said, not sent.
+        offline = {'ask-page-data_ssd': '2', 'ask-page-media_hdd': '3', 'ask-page-usb': '2'}
+        usb_rows = [{**self.DRIVES[0]}, {**self.DRIVES[1]}, {**self.DRIVES[2], 'why': ''}]
+        with_usb = {**page, 'roles': [*page['roles'][:2], {**page['roles'][2], 'rows': usb_rows}]}
+        seen = self.page([self.asked(question, with_usb, fill=offline)])
+        self.assertEqual(seen['posts'], [])
+        self.assertIn('One drive cannot be both', seen['note'])
         # Chosen: every line goes in one answer, the asked one as the terminal takes it.
         chosen = {'ask-page-data_ssd': '2', 'ask-page-media_hdd': '3', 'ask-page-photos': 'ssd'}
         seen = self.page([self.asked(question, page, fill=chosen)])

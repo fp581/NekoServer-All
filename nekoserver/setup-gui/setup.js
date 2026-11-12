@@ -973,14 +973,18 @@
     $('ask-page').replaceChildren(el('div', { class: 'storage' }, ...rows));
   }
 
-  /* A role without a drive, or one drive chosen for two roles, is said before anything is sent. */
+  /* A role without a drive is said before anything is sent, and so is the offline backup on
+     a drive of another line: it must be a drive of its own. The apps and the backups may
+     share one drive (setup says what that means). */
   function storageProblem(page, values) {
     const chosen = {};
     for (const role of page.roles) {
       const value = values[role.key];
       if (!value && !role.optional) return 'Choose a drive for “' + role.title + '” first.';
-      if (value && chosen[value]) return 'One drive cannot be both “' + chosen[value] + '” and “' + role.title + '”.';
-      if (value) chosen[value] = role.title;
+      const shareable = role.key === 'media_hdd' && chosen[value] && chosen[value].key === 'data_ssd';
+      if (value && chosen[value] && !shareable)
+        return 'One drive cannot be both “' + chosen[value].title + '” and “' + role.title + '”.';
+      if (value && !chosen[value]) chosen[value] = role;
     }
     // A drive of its own for an app's files cannot be the removable drive of the offline backup.
     for (const place of page.places) {

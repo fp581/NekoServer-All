@@ -170,7 +170,14 @@ class DrivePickingTests(unittest.TestCase):
                     'name': 'sdb',
                     'type': 'disk',
                     'children': [
-                        {'name': 'sdb1', 'type': 'part', 'uuid': 'ssd-0001', 'fstype': 'ext4', 'mountpoint': None}
+                        {
+                            'name': 'sdb1',
+                            'type': 'part',
+                            'uuid': 'ssd-0001',
+                            'fstype': 'ext4',
+                            'mountpoint': None,
+                            'size': '40G',
+                        }
                     ],
                 },
                 {
@@ -212,7 +219,8 @@ class DrivePickingTests(unittest.TestCase):
         self.assertIn('drive 3 (sdc1: drive): it is formatted NTFS (Windows)', message)
         self.assertIn('drive 4 (sdd1: drive): it is in use at /mnt/films', message)
         self.assertIn('sudo umount /mnt/films', message)
-        self.assertIn('drive 2 (sdb1: drive): it is already the app SSD', message)
+        # The apps' drive could hold the backups too (0.50.0), but not at 40 GB.
+        self.assertIn('it is too small for both', message)
         self.assertIn(
             'drive 1 (nvme0n1: NVMe SSD): it has too little room: 0 GB free, and the media HDD needs at least 50 GB there',
             message,

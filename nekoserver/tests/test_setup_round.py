@@ -768,8 +768,9 @@ class DriveSizeTests(unittest.TestCase):
         self.assertTrue(
             any(line.startswith('Now choose the drive for your movies') and '50 GB' in line for line in out)
         )
-        # The drive just chosen keeps its number and is refused for the other role.
-        self.assertTrue(any(line.startswith('  4) sdc1') and 'it is already the app SSD' in line for line in out))
+        # The drive just chosen keeps its number, and may hold the media and backups too (0.50.0).
+        row = next(line for line in out if line.startswith('  4) sdc1') and 'media' not in line.split('(')[0])
+        self.assertNotIn('it is already the app SSD', row)
         # The UUID is shown in the list and never has to be typed.
         self.assertIn('       ext4, UUID ssd-0001; not open', out)
         self.assertFalse(any('UUID=' in line or 'mounted=' in line for line in out))

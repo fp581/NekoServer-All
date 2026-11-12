@@ -153,9 +153,11 @@ class TableTests(DriveListCase):
         self.assertIn('sudo mkfs.ext4 /dev/sde  (this erases what is on it; setup never formats a drive)', why[6])
         self.assertTrue(why[7].startswith('it is on the NAS, and the app SSD must be connected'))
         self.assertIn('copy its files elsewhere first', why[9])
-        # A drive is never two things: the role it has is why it cannot have another.
+        # The drive just chosen for the apps may hold the media and backups too (0.50.0: one
+        # drive works); it is never the offline backup as well.
         config['storage'] = {'data_ssd': {'uuid': 'ssd-0001'}}
-        self.assertEqual(drive_table.verdict(table[1], 'media_hdd', config), 'it is already the app SSD')
+        self.assertEqual(drive_table.verdict(table[1], 'media_hdd', config), '')
+        self.assertTrue(drive_table.verdict(table[1], 'usb', config))
         self.assertEqual(drive_table.verdict(table[1], 'data_ssd', config), '')
         self.assertEqual(drive_table.can_be(table[1], config), 'Chosen as the app SSD.')
 
@@ -252,7 +254,7 @@ class QuestionTests(DriveListCase):
         return config
 
     def test_the_whole_conversation_is_the_golden_text(self):
-        talk = Conversation(['5', '2', '2', '3', '9', '4', '1', '1'])
+        talk = Conversation(['5', '2', '3', '9', '4', '1', '1'])
         talk.heading('A first run: the list, then the app SSD, the media HDD and the USB backup drive')
         config = self.first_run(talk)
         photo_backup.select_external(config, INVENTORY, talk.ask, talk.out)
@@ -395,9 +397,9 @@ class WindowFormTests(DriveListCase):
         self.assertEqual((choose['rows'][0]['why'], choose['rows'][0]['caution']), ('', drive_table.SYSTEM_DISK))
         self.assertEqual(len(talk.pages), 2)  # two questions, no confirmation between them
         self.assertNotIn('confirm', choose)
-        # The media HDD's page: the drive just chosen says its role and cannot be chosen.
+        # The media HDD's page: the drive just chosen says its role, and may hold both.
         second = talk.pages[1]['rows'][1]
-        self.assertEqual((second['role'], second['why']), ('Chosen as the app SSD', 'it is already the app SSD'))
+        self.assertEqual((second['role'], second['why']), ('Chosen as the app SSD', ''))
 
     def test_the_usb_drive_page_can_be_skipped(self):
         talk = Conversation([''])

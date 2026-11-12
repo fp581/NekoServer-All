@@ -342,10 +342,23 @@ def inside(row):
 
 def system_roles(config):
     """The roles kept on the disk Linux runs from (a folder of it each)."""
+    from modules.storage import on_one_drive
+
     storage = config.get('storage', {})
     return [
-        key for key in ('data_ssd', 'media_hdd') if isinstance(storage.get(key), dict) and storage[key].get('folder')
+        key
+        for key in ('data_ssd', 'media_hdd')
+        if isinstance(storage.get(key), dict)
+        and storage[key].get('folder')
+        and not on_one_drive(storage[key].get('folder'))
     ]
+
+
+def shares_with_apps(row, key, config):
+    """The media and backups asked for on the drive just chosen for the apps (a new
+    choice in this run, not one set up already): both can be folders of it."""
+    apps = config.get('storage', {}).get('data_ssd') or {}
+    return key == 'media_hdd' and bool(row['uuid']) and apps.get('uuid') == row['uuid'] and not apps.get('subvolume')
 
 
 def role_of(row, config):
@@ -419,6 +432,8 @@ def verdict(row, key, config):
     if row['problem']:
         return row['problem']
     has = role_of(row, config)
+    if shares_with_apps(row, key, config):
+        return shared_verdict(row, config)
     if has and has != key:
         return f'it is already {role(has)}'
     if row['uuid'] and any(record.get('uuid') == row['uuid'] for record in extra_drives(config).values()):
@@ -426,6 +441,20 @@ def verdict(row, key, config):
     if row['export']:
         return 'it is a folder the NAS shares; the network storage step chooses those'
     return backup_verdict(row, config) if key == 'usb' else drive_verdict(row, key, config)
+
+
+def shared_verdict(row, config):
+    """Why the apps' drive cannot hold the media and the backups too, or '': it must have
+    room for what both need."""
+    from modules import storage
+
+    device = row['device'] or {}
+    if device.get('network'):
+        return 'it is on the NAS'
+    needed = storage.sizes('data_ssd')[0] + storage.sizes('media_hdd')[0]
+    if not storage.big_enough(device, needed):
+        return f'it is too small for both: the apps and the media and backups together need {needed} GB free'
+    return ''
 
 
 def drive_verdict(row, key, config):
@@ -654,13 +683,24 @@ def recommended(table, config):
     this PC before one on a NAS); the apps get an SSD among the others, the
     biggest, else any other drive; the offline backup gets a USB drive that is neither.
     With three drives that is the layout every server before 0.50.0 has. The disk Linux
-    runs from is recommended only where no drive of its own can have the role. A role
-    that has its drive already keeps it, and that drive is offered for no other."""
+    runs from is recommended only where no drive of its own can have the role; with one
+    drive of its own, both are on it. A role that has its drive already keeps it, and that
+    drive is offered for no other."""
     chosen = has_role_already(table, config)
     if chosen['media_hdd'] is None:
         chosen['media_hdd'] = best_for(table, 'media_hdd', config, chosen, in_this_pc_first)
     if chosen['data_ssd'] is None:
         chosen['data_ssd'] = best_for(table, 'data_ssd', config, chosen, ssd_first)
+        one = chosen['media_hdd']
+        if (chosen['data_ssd'] is None or chosen['data_ssd']['system']) and one is not None and not one['system']:
+            # No other drive of its own: both on that one drive, before the disk Linux runs from.
+            if not verdict(one, 'data_ssd', config) and not shared_verdict(one, config):
+                chosen['data_ssd'] = one
+    apps = chosen['data_ssd']
+    if (chosen['media_hdd'] is None or chosen['media_hdd']['system']) and apps is not None and not apps['system']:
+        # The apps' drive chosen, and no other drive of its own for the backups: that one, before the system disk.
+        if shares_with_apps(apps, 'media_hdd', config) and not shared_verdict(apps, config):
+            chosen['media_hdd'] = apps
     if chosen['usb'] is None:
         usb = [row for row in drives_of_their_own(table, 'usb', config, chosen) if row['type'] == 'USB drive']
         chosen['usb'] = usb[0] if usb else None
@@ -706,6 +746,8 @@ def say_taken(row, key, config, out_fn):
         out_fn(SYSTEM_DISK)
         if key == 'media_hdd' and 'data_ssd' in system_roles(config):
             out_fn(SAME_DISK_BACKUPS)
+    elif shares_with_apps(row, key, config):
+        out_fn(SAME_DISK_BACKUPS)
     return row
 
 

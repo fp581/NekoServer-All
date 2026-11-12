@@ -509,6 +509,11 @@ def role_drive(config, key, label, found, asking):
     if row['system']:
         on_system_disk(record, key)
         return None
+    other = config['storage'].get('data_ssd') or {}
+    if key == 'media_hdd' and row['uuid'] and other.get('uuid') == row['uuid']:
+        # The drive the apps were just given: both roles become folders of it.
+        on_one_drive_both(config, row)
+        return None
     device = whole(unlocked(row['device']))
     local_ssd(key, device)
     new_drive(record, device)
@@ -555,6 +560,23 @@ def resolve_storage_identity(config, inventory, apply=False, interactive=False, 
 # The folders are fixed, one for each role, and never one inside the other (the app
 # backup copies the app folder: the backups must not be in it).
 SYSTEM_FOLDERS = {'data_ssd': '/var/lib/nekoserver/apps', 'media_hdd': '/var/lib/nekoserver/media'}
+# Both roles on one drive of its own (0.50.0, the user: any number of drives works, one
+# drive included): the drive is mounted once here, and each role is a folder of it,
+# mounted at the role's usual place as on the disk Linux runs from.
+ONE_DRIVE = '/mnt/nekoserver-drives/one'
+ONE_DRIVE_KEY = 'one_drive'  # the drive's own line among the mounts (mount_specs)
+SHARED_FOLDERS = {'data_ssd': ONE_DRIVE + '/nekoserver/apps', 'media_hdd': ONE_DRIVE + '/nekoserver/media'}
+
+
+def on_one_drive(folder):
+    """The folder is a role's on a drive both roles share (not the disk Linux runs from)."""
+    return isinstance(folder, str) and folder in SHARED_FOLDERS.values()
+
+
+def inside_filesystem(folder):
+    """The folder as findmnt shows it inside its filesystem: /nekoserver/apps for one of
+    the shared drive's, the folder itself on the disk Linux runs from."""
+    return folder[len(ONE_DRIVE) :] if on_one_drive(folder) else folder
 
 
 def system_folder(record, key):
@@ -563,6 +585,8 @@ def system_folder(record, key):
     and that constant is what is used."""
     if not isinstance(record, dict) or record.get('folder') is None:
         return None
+    if key in SHARED_FOLDERS and record['folder'] == SHARED_FOLDERS[key]:
+        return SHARED_FOLDERS[key]
     if key not in SYSTEM_FOLDERS or record['folder'] != SYSTEM_FOLDERS[key]:
         raise RuntimeError(
             f'"folder" of "{key}" under "storage" in my-config.json must be {SYSTEM_FOLDERS.get(key, "left out")}: '
@@ -594,6 +618,28 @@ def system_free_gb():
     return shutil.disk_usage('/').free // 10**9
 
 
+def on_one_drive_both(config, row):
+    """Both roles placed on the drive in this row of the list (the media role chosen on
+    the drive the apps were just given): each a folder of it."""
+    device = whole(unlocked(row['device']))
+    for key in ('data_ssd', 'media_hdd'):
+        record = config['storage'].setdefault(key, {})
+        record.clear()
+        record.update(uuid=device['uuid'], fstype=device['fstype'], folder=SHARED_FOLDERS[key])
+
+
+def shared_with(config):
+    """(the shared drive's UUID, its filesystem type) when both roles are on one drive of
+    its own; None otherwise."""
+    storage = config.get('storage', {})
+    records = [storage.get(key) if isinstance(storage.get(key), dict) else {} for key in ('data_ssd', 'media_hdd')]
+    if all(on_one_drive(record.get('folder')) for record in records) and records[0].get('uuid') == records[1].get(
+        'uuid'
+    ):
+        return records[0]['uuid'], records[0].get('fstype', '')
+    return None
+
+
 def on_system_disk(record, key):
     """The settings of a role just placed on the disk Linux runs from."""
     uuid, fstype = system_filesystem()
@@ -613,14 +659,21 @@ def validate_system_folder(uuid, fstype):
 
 
 def bind_line(folder, mountpoint):
-    """The fstab line that mounts a folder of the system disk at a role's place."""
+    """The fstab line that mounts a folder of the system disk, or of the drive both roles
+    share (once that drive is mounted), at a role's place."""
     if any(c.isspace() for c in mountpoint):
         raise RuntimeError('Mountpoint cannot contain whitespace')
+    if on_one_drive(folder):
+        return f'{folder} {mountpoint} none bind,x-systemd.requires-mounts-for={ONE_DRIVE} 0 0'
     return f'{folder} {mountpoint} none bind 0 0'
 
 
 def own_bind_line(found):
-    return len(found) == 6 and found[0] in SYSTEM_FOLDERS.values() and found[2:] == ['none', 'bind', '0', '0']
+    if len(found) != 6 or found[2] != 'none' or found[4:] != ['0', '0']:
+        return False
+    if found[0] in SYSTEM_FOLDERS.values():
+        return found[3] == 'bind'
+    return on_one_drive(found[0]) and found[3] == f'bind,x-systemd.requires-mounts-for={ONE_DRIVE}'
 
 
 def bind_line_index(lines, mountpoint, entry, connected=None, notes=None):
@@ -858,10 +911,13 @@ def role_spec(config, key, mount_key):
 
 
 def mount_specs(config):
-    specs = [role_spec(config, key, mount_key) for key, mount_key in OLD_ROLES]
-    specs += extra_specs(config)
-    if Path(specs[0][3]) in Path(specs[1][3]).parents or Path(specs[1][3]) in Path(specs[0][3]).parents:
+    roles = [role_spec(config, key, mount_key) for key, mount_key in OLD_ROLES]
+    if Path(roles[0][3]) in Path(roles[1][3]).parents or Path(roles[1][3]) in Path(roles[0][3]).parents:
         raise RuntimeError('Data and media mountpoints must not be nested')
+    shared = shared_with(config)
+    # One drive for both roles: the drive itself first, then the two folders of it.
+    specs = [(ONE_DRIVE_KEY, shared[0], shared[1], ONE_DRIVE, None)] if shared else []
+    specs += roles + extra_specs(config)
     # Two roles kept on the system disk are two folders of one filesystem: the same UUID,
     # told apart by their folders. Two drives of their own are two filesystems.
     drives = [s[1] for s in specs if s[3] not in system_folders(config)]
@@ -1730,7 +1786,7 @@ def room_ahead(config, table):
         record = config.get('storage', {}).get(key) or {}
         if findmnt('SOURCE', str(mount_path(config[mount_key]))) is not None:
             room[name] = free_gb(config[mount_key])
-        elif system_folder(record, key):
+        elif system_folder(record, key) and not on_one_drive(system_folder(record, key)):
             room[name] = system_free_gb()
         else:
             room[name] = free_on(
@@ -1804,7 +1860,8 @@ def ahead_lines(config, inventory, places, installs=None):
     lines = []
     for key in ('data_ssd', 'media_hdd'):
         record = config.get('storage', {}).get(key) or {}
-        where = 'the disk Linux runs from' if system_folder(record, key) else named(record.get('uuid'))
+        folder = system_folder(record, key)
+        where = 'the disk Linux runs from' if folder and not on_one_drive(folder) else named(record.get('uuid'))
         lines.append(f'{PAGE_ROLES[key]}: {where}')
     lines += [place_line(config, what, words, places[what]) for what, words, _ in WHERE if what in places]
     for what, row in (installs or {}).items():
@@ -1817,7 +1874,7 @@ def checked_before_mount(config, specs):
     exports = shared_folders(config)
     folders = system_folders(config)
     for _, uuid, fstype, target, _ in specs:
-        if target in folders:
+        if target in folders and not on_one_drive(folders[target]):
             validate_system_folder(uuid, fstype)
         elif uuid not in exports:
             validate_device(uuid, fstype)  # raises if the drive identity is wrong
@@ -2012,7 +2069,7 @@ def mount_all(context, specs, fstab=Path('/etc/fstab')):
         note = raid_note(target)
         if note:
             context.log(note)
-        if found != subvolume:
+        if found != subvolume and key in context.config['storage']:
             context.config['storage'][key]['subvolume'] = found
             pinned.append((key, uuid, fstype, target, found))
             context.log(
@@ -2112,7 +2169,7 @@ def mount_and_check(uuid, target, subvolume, fstype='btrfs', log=None, folder=No
         raise RuntimeError(f'Post-mount validation failed for {target}')
     found = mounted_subvolume(target)
     if folder:
-        if not found or not found.endswith(folder):
+        if not found or not found.endswith(inside_filesystem(folder)):
             raise RuntimeError(
                 f'{target} should be the folder {folder} of the disk Linux runs from, but something else is '
                 f'mounted there ({found or "a whole filesystem"}). Unmount it (sudo umount {target}) and run setup again'

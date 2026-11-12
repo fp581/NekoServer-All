@@ -43,7 +43,7 @@ Number of the drive for your apps, photos and music (the app SSD) (Enter for 2, 
 Drive 2 (sda1: 466 GB SSD, Samsung SSD 870, named "apps") is the app SSD. Nothing on it is changed by choosing it.
 Now choose the drive for your movies, shows, Nextcloud files and the backups (the media HDD). It needs at least 50 GB free, so a drive of 54 GB or more (500 GB or more is recommended).
   1) nvme0n1: 477 GB NVMe SSD, WD SN770
-  2) sda1: 466 GB SSD, Samsung SSD 870, named "apps", ext4, about 1 % full  - not this one: it is already the app SSD
+  2) sda1: 466 GB SSD, Samsung SSD 870, named "apps", ext4, about 1 % full
   3) sdb1: 1.8 TB HDD, WDC WD20EZRZ, named "media", ext4, about 40 % full, holds files  (recommended)
   4) sdc1: 29 GB USB drive, SanDisk Ultra, named "BACKUP", exfat  - not this one: it is formatted exFAT, which Linux apps can't keep their files on
   5) sdd1: 15 GB USB drive, Cruzer Blade, named "stick", ext4, about 3 % full  - not this one: it is too small: the media HDD needs a drive of at least 54 GB (50 GB free once formatted)
@@ -51,8 +51,6 @@ Now choose the drive for your movies, shows, Nextcloud files and the backups (th
   7) sdf: 3.6 TB network disk (iSCSI), Synology LUN, named "nas-media", ext4
   8) nvme1n1p1: 233 GB NVMe SSD, KINGSTON SNV2S250G, xfs
   9) sdg1: 238 GB SSD, Crucial MX500, named "Windows", ntfs  - not this one: it is formatted NTFS (Windows), which Linux apps can't keep their files on
-Number of the drive for your movies, shows, Nextcloud files and the backups (the media HDD) (Enter for 3, the recommended one): [2]
-Drive 2 (sda1: 466 GB SSD, Samsung SSD 870, named "apps") cannot be the media HDD: it is already the app SSD. Choose another one from the list.
 Number of the drive for your movies, shows, Nextcloud files and the backups (the media HDD) (Enter for 3, the recommended one): [3]
 Drive 3 (sdb1: 1.8 TB HDD, WDC WD20EZRZ, named "media") is the media HDD. Nothing on it is changed by choosing it.
 Now choose the drive for the weekly copy of your photos and files (the USB backup drive).

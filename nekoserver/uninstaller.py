@@ -411,7 +411,9 @@ class Plan:
         self.uuids = {
             str(v.get('uuid'))
             for v in storage.values()
-            if isinstance(v, dict) and v.get('uuid') and not v.get('folder')
+            if isinstance(v, dict)
+            and v.get('uuid')
+            and (not v.get('folder') or str(v.get('folder')).startswith(ONE_DRIVE + '/'))
         }
         photos = settings.get('photos', {}) if isinstance(settings.get('photos'), dict) else {}
         expected = {
@@ -1782,6 +1784,8 @@ FSTAB_BLOCKS = (
 )
 # Where the drives beyond the two are mounted, each in a folder of its name (neko_common.EXTRA_MOUNTS).
 EXTRA_MOUNTS = '/mnt/nekoserver-drives'
+# The one drive that holds both roles as folders (modules/storage.ONE_DRIVE).
+ONE_DRIVE = EXTRA_MOUNTS + '/one'
 
 
 def fstab_blocks(text):
@@ -1866,7 +1870,6 @@ def _remove_mounts(plan, path, call, out):
             + ')'
         )
     _unmount_inside(plan, inside, call, out, left)
-    _unmount_extra(plan, call, out, left)
     for folder in (plan.external, plan.media, plan.data):
         if not plan.mounted(folder):
             continue
@@ -1877,6 +1880,8 @@ def _remove_mounts(plan, path, call, out):
             left.append(folder + ' (still mounted)')
             continue
         _remove_mount_folder(plan, folder, out, left)
+    # Last: the drives under EXTRA_MOUNTS, one of which may hold the two roles as folders.
+    _unmount_extra(plan, call, out, left)
     return left
 
 
