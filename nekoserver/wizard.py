@@ -480,7 +480,7 @@ def choose_storage(path, output):
 
 def keep_storage(path, chosen):
     """The storage page's choices written to the settings file, now that they are approved."""
-    if not chosen['settings'] and not chosen['places'] and not chosen.get('installs'):
+    if not chosen['settings'] and not chosen['places'] and not chosen.get('installs') and not chosen.get('lost'):
         return
     from modules import storage
 
@@ -841,6 +841,8 @@ def finishing_screen(config, states, page=None, output=print, checkup=None, ran=
     show_steps('Needs a look (optional: everything else works without it):', optional, states, 'did not finish', output)
     show_steps('Not available on this system:', by_status['unavailable'], states, 'not available', output)
     show_checkup(checkup, output)
+    for line in started_empty_lines():
+        output('\n' + line)
     if summary:
         for text in states_lines(summary):
             output(text)
@@ -909,10 +911,27 @@ MISSING_NEXT = (
 )
 
 
+# The finishing page's line for a group set up again on the drive that replaced its lost
+# one (modules/storage.settings_start_empty, gate run C17).
+STARTED_EMPTY_SAID = (
+    '{what}: set up again on the drive that replaced the lost one, with empty settings. To bring their settings '
+    'back from a backup: sudo bash install.sh --recover, then "App settings, from a nightly backup".'
+)
+
+
+def started_empty_lines():
+    """The groups this run set up again with empty settings, in words."""
+    import drive_table
+
+    return [STARTED_EMPTY_SAID.format(what=said['what']) for said in drive_table.STARTED_EMPTY.values()]
+
+
 def found_said(found):
     """The lines under the title: what is on this PC. A drive of the settings that is not
     connected comes first (gate run C10: a replaced SSD was not noticed)."""
     missing = [MISSING_SAID[key] for key in found.get('missing') or () if key in MISSING_SAID]
+    # A drive of a group's own (gate run C17): named by what it holds.
+    missing += [f'The drive for {words} is not connected.' for words in (found.get('missing_groups') or {}).values()]
     if missing:
         missing.append(MISSING_NEXT)
     return missing + what_found(found)
