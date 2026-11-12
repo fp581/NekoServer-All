@@ -645,6 +645,11 @@ def wanted(ctx, section, question, explain=(), prompt=None, output=None):
     return options['wanted']
 
 
+# "Change any of these answers?" as answered on the pages before the approval
+# ({'again': True | False}; modules/storage.others_ahead), for the steps after it.
+OPTIONAL_AGAIN = {}
+
+
 def optional_kept(ctx, asked, prompt=None, output=None):
     """Setup run again: shows the last answer to every optional question (the backup
     times, the download sources, the indexers, the playback test) and asks once in the
@@ -658,7 +663,9 @@ def optional_kept(ctx, asked, prompt=None, output=None):
     shown = [question for question in asked if question in kept]
     if not shown:
         return []
-    again = getattr(ctx, 'ask_optional_again', None)
+    # Asked once in the run: the pages before the approval and the steps after it have
+    # contexts of their own (gate run D asked it twice), so the answer is kept here too.
+    again = getattr(ctx, 'ask_optional_again', OPTIONAL_AGAIN.get('again'))
     if again is None:
         prompt = prompt or input
         output = output or print

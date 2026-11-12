@@ -1565,11 +1565,24 @@ def choose_ahead(config, log):
     draft = copy.deepcopy(config)
     if page_fields(config):
         drives_ahead(draft, chosen, log)
+    else:
+        # The drives are known (a run after the first, an update): the films question,
+        # new in 0.50.0, is still asked before the approval, never after (gate run D).
+        existing_ahead(draft, log)
     # The backups page and the accounts page: asked before the approval too (the user:
     # after it, only what needs the running server asks).
     others_ahead(draft, log)
     chosen['settings'] = section_changes(config, draft)
     return chosen
+
+
+def existing_ahead(draft, log):
+    """The films, shows and music already there (existing_page), on the copy of the
+    settings, when the storage page has nothing else to ask."""
+    import existing_page
+
+    context = types.SimpleNamespace(config=draft, log=log, apply=True, config_path=None)
+    existing_page.ask(context, output=log)
 
 
 def others_ahead(draft, log):
@@ -1589,6 +1602,8 @@ def others_ahead(draft, log):
             times['data_mount'] = scratch
         context = types.SimpleNamespace(config=times, log=log, apply=True, config_path=None, plan=None, previous=None)
         guided_setup.choose_backup_times(context)
+        if hasattr(context, 'ask_optional_again'):
+            guided_setup.OPTIONAL_AGAIN['again'] = context.ask_optional_again
         for key in AHEAD_KEYS:
             if key in times:
                 draft[key] = times[key]

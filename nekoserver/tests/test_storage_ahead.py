@@ -4,6 +4,8 @@ person approves, and the storage step of the same run then asks nothing again.""
 
 import copy
 import sys
+import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -80,6 +82,33 @@ class AskedAheadTests(unittest.TestCase):
         others = mock.patch.object(storage, 'others_ahead')
         others.start()
         self.addCleanup(others.stop)
+        existing = mock.patch.object(storage, 'existing_ahead')
+        self.existing = existing.start()
+        self.addCleanup(existing.stop)
+
+    def test_with_the_drives_known_the_films_question_is_still_before_the_approval(self):
+        # Gate run D (an update from 0.48.2): "Do you already have films...?" came after it.
+        with (
+            mock.patch.object(storage.sys.stdin, 'isatty', return_value=True),
+            mock.patch.object(storage, 'page_fields', return_value={}),
+        ):
+            storage.choose_ahead(settings(), print)
+        self.existing.assert_called_once()
+
+    def test_the_films_answer_made_ahead_goes_into_the_settings(self):
+        import existing_page
+
+        def answered(context, output=print):
+            context.config[existing_page.ASKED] = True
+            return True
+
+        self.existing.side_effect = lambda draft, log: answered(mock.Mock(config=draft))
+        with (
+            mock.patch.object(storage.sys.stdin, 'isatty', return_value=True),
+            mock.patch.object(storage, 'page_fields', return_value={}),
+        ):
+            chosen = storage.choose_ahead(settings(), print)
+        self.assertIs(chosen['settings'][existing_page.ASKED], True)
 
     def test_nothing_is_asked_with_nobody_there_or_nothing_left_to_ask(self):
         nothing = {'settings': {}, 'places': {}, 'lines': []}
@@ -237,3 +266,22 @@ class WindowStageTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class AskedOnceTests(unittest.TestCase):
+    """Gate run D: "Change any of these answers?" was asked before the approval and again
+    by the onboarding step after it."""
+
+    def test_the_answer_before_the_approval_stands_for_the_steps_after_it(self):
+        import guided_setup
+
+        self.addCleanup(guided_setup.OPTIONAL_AGAIN.clear)
+        guided_setup.OPTIONAL_AGAIN['again'] = False
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / 'secrets').mkdir()
+            ctx = types.SimpleNamespace(config={'data_mount': folder}, log=lambda _: None)
+            import neko_common
+
+            with mock.patch.object(neko_common, 'optional_answers', return_value={'backup_times': 'daily 04:15'}):
+                kept = guided_setup.optional_kept(ctx, ['backup_times'], prompt=mock.Mock(side_effect=AssertionError))
+        self.assertEqual(kept, ['backup_times'])
