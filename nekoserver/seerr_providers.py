@@ -64,12 +64,18 @@ def profiles(value):
 
 
 def choose(values, label, prompt):
+    """The profile picked by its number. In the setup window the list is a page to pick
+    from (as Lidarr's profiles are), never a number typed in a box."""
+    import setup_progress
+
     if len(values) == 1:
         return values[0]
     print(label + ':')
     for index, item in enumerate(values, 1):
         print(f"  {index}. {item['name']}")
-    answer = prompt('Choose a number (Enter alone skips): ').strip()
+    with setup_progress.page('pick', {'choice': ''}, what=label, items=[{'label': item['name']} for item in values]):
+        setup_progress.page_asks('choice')
+        answer = prompt('Choose a number (Enter alone skips): ').strip()
     if not answer:
         raise SetupRequired(
             'No quality profile was chosen for requests (Enter skips it). Run  sudo bash install.sh  again and choose one'

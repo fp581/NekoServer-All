@@ -113,5 +113,26 @@ class FolderTests(unittest.TestCase):
             provider(seerr, apply=False, verify_only=True)
 
 
+class ProfileChoiceTests(unittest.TestCase):
+    def test_the_request_profile_is_a_page_to_pick_from_in_the_window(self):
+        """Seen on the 0.50.0 gate: Seerr's request profile was a number typed in a box."""
+        import setup_progress
+
+        values = [{'id': 1, 'name': 'Any'}, {'id': 4, 'name': 'HD-1080p'}]
+        shown = []
+
+        def prompt(question):
+            shown.append(setup_progress.page_shown())
+            return '2'
+
+        with mock.patch('builtins.print'):
+            self.assertEqual(sp.choose(values, 'Sonarr request quality profile', prompt)['name'], 'HD-1080p')
+        self.assertEqual(shown[0]['form'], 'pick')
+        self.assertEqual(shown[0]['what'], 'Sonarr request quality profile')
+        self.assertEqual([item['label'] for item in shown[0]['items']], ['Any', 'HD-1080p'])
+        # One profile only: nothing is asked.
+        self.assertEqual(sp.choose(values[:1], 'x', mock.Mock(side_effect=AssertionError))['id'], 1)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -1518,7 +1518,6 @@ def immich_wanted(config):
 OPTIONAL_QUESTIONS = {
     MEDIA_SECTION: 'Media apps',
     'backup_times': 'Backup times',
-    'sources': 'Download sources',
     'indexers': 'Indexers (Prowlarr)',
     'playback': 'Playback test',
 }

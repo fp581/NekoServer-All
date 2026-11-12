@@ -63,9 +63,9 @@ def run(ctx):
             and set(services) & {'sonarr', 'radarr'}
         ):
             cmd.append('--request-providers')
+        # Media a person already has is asked on setup's storage page (existing_page.py),
+        # used where it is or copied: the connecting step no longer asks for "sources".
         optional = []
-        if settings.get('collect_sources', True):
-            optional.append('sources')
         if settings.get('configure_indexers', True) and 'prowlarr' in services:
             optional.append('indexers')
         if not playback_record(ctx.config).exists():

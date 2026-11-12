@@ -405,11 +405,11 @@ class OptionalAnswersTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(neko_common.optional_answers(d), {})  # the first run: nothing kept
-            neko_common.remember_answer(d, 'sources', 'none added')
+            neko_common.remember_answer(d, 'backup_times', 'kept')
             neko_common.remember_answer(d, 'indexers', 'none chosen')
             neko_common.remember_answer(d, 'playback', 'skipped')
             kept = json.loads(neko_common.optional_answers_file(d).read_text())
-            self.assertEqual(kept, {'sources': 'none added', 'indexers': 'none chosen', 'playback': 'skipped'})
+            self.assertEqual(kept, {'backup_times': 'kept', 'indexers': 'none chosen', 'playback': 'skipped'})
             neko_common.optional_answers_file(d).write_text(
                 json.dumps({'sources': 7, 'odd': 'x', 'playback': 'skipped'})
             )
@@ -509,7 +509,8 @@ class OptionalAnswersTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             # The first run: nothing kept, every question asked, nothing extra said.
             cmd, printed, asked, logs = self.gate(d, None, [])
-            self.assertIn('--sources', cmd)
+            # Media a person has is asked on the storage page (0.50.0), not here.
+            self.assertNotIn('--sources', cmd)
             self.assertIn('--indexers', cmd)
             self.assertEqual(asked, ['Test playback (optional)'])
             self.assertFalse([line for line in printed if 'Last time' in line])
@@ -524,7 +525,7 @@ class OptionalAnswersTests(unittest.TestCase):
             self.assertIn('--libraries', cmd)  # not a question: still done
             self.assertEqual(asked, [])
             self.assertIn('Last time, the optional questions were answered this way:', printed)
-            self.assertIn('  Download sources: none added', printed)
+            self.assertNotIn('  Download sources: none added', printed)
             self.assertIn('  Indexers (Prowlarr): none chosen', printed)
             self.assertIn('  Playback test: skipped', printed)
             self.assertTrue(any('Change any of these answers?' in line for line in printed), printed)
@@ -533,7 +534,7 @@ class OptionalAnswersTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             # Yes: asked as on the first run.
             cmd, printed, asked, logs = self.gate(d, kept, ['yes'])
-            self.assertIn('--sources', cmd)
+            self.assertNotIn('--sources', cmd)
             self.assertIn('--indexers', cmd)
             self.assertEqual(asked, ['Test playback (optional)'])
             self.assertIn('Optional questions: asked again', logs)
