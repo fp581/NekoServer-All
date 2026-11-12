@@ -940,6 +940,10 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertIsNotNone(
             recovery_wizard.folder_problem(self.media / 'photos', recovery_wizard.backup_trees(self.config))
         )
+        # A place that cannot be looked into is said, never a traceback.
+        with mock.patch.object(Path, 'lstat', side_effect=PermissionError(13, 'Permission denied')):
+            said = recovery_wizard.folder_problem(self.root / 'nas/restored')
+        self.assertIn('cannot be opened from this PC (Permission denied)', said)
 
     def test_nextcloud_restore_lists_users_from_the_usb(self):
         usb = self.root / 'usb'

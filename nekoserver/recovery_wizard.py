@@ -299,8 +299,14 @@ def folder_problem(path, avoid=(), refuse=(), made_later=None):
             return (
                 f'That folder is inside (or around) a backup ({tree}); a restore there would mix with it. Pick another.'
             )
-    if path.exists():
+    try:
+        path.lstat()
         return 'That folder already exists; restoring never overwrites anything. Pick another.'
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        # A place this PC may not look into (a NAS folder that refuses root, say): said, not a crash.
+        return f'That folder cannot be opened from this PC ({exc.strerror or exc}). Pick a folder on one of its own drives.'
     if not path.parent.is_dir() and path.parent != made_later:
         return 'The folder it would be in does not exist. Pick another.'
     return None
