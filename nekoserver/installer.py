@@ -2,6 +2,7 @@
 """NekoServer modular, standard-library-only orchestration framework."""
 
 import argparse
+import copy
 import fcntl
 import stat
 import datetime as dt
@@ -55,21 +56,55 @@ class InstallerError(Exception):
 
 
 class Context:
-    def __init__(self, config, logger, apply=False, config_path=None):
+    def __init__(self, config, logger, apply=False, config_path=None, saved=None):
         self.config = config
         self.log = logger
         self.apply = apply
         self.config_path = Path(config_path) if config_path else None
         self.original_config_path = self.config_path
+        # The settings as the file had them when this run read it (or last saved it): what
+        # differs from these is what the run changed.
+        self.saved = copy.deepcopy(config if saved is None else saved)
 
     def persist_config(self):
-        """Save the settings (drives chosen, say) to the settings file. The file keeps its
-        owner: the wizard makes my-config.json yours to edit, and setup runs as root."""
+        """Save what this run changed in the settings (drives chosen, say) into the settings
+        file as it is now. A change made to the file meanwhile is kept: the run never writes
+        back the settings it read at the start over it (gate run C10: a fix made while the
+        run went on was undone, and "Retry this step" failed again). The file keeps its
+        owner, and setup runs as root."""
         for path in dict.fromkeys(p for p in (self.original_config_path, self.config_path) if p is not None):
             owner = (path.stat().st_uid, path.stat().st_gid) if path.exists() else None
-            atomic_json(path, self.config)
+            now = file_settings(path)
+            atomic_json(path, self.config if now is None else merged(self.saved, self.config, now))
             if owner is not None and os.geteuid() == 0:
                 os.chown(path, *owner, follow_symlinks=False)
+        self.saved = copy.deepcopy(self.config)
+
+
+def file_settings(path):
+    """The settings file as it is now, or None when it is missing or can't be read."""
+    try:
+        value = json.loads(Path(path).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def merged(before, after, now):
+    """`now` (the file) with what changed from `before` to `after` (this run) put in, key
+    by key inside sections: what the run did not change stays as the file has it."""
+    result = copy.deepcopy(now)
+    for key in [key for key in before if key not in after]:
+        result.pop(key, None)
+    for key, value in after.items():
+        if key in before and before[key] == value:
+            continue
+        old, here = before.get(key), result.get(key)
+        if isinstance(old, dict) and isinstance(value, dict) and isinstance(here, dict):
+            result[key] = merged(old, value, here)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
 
 
 def read_json(path):
@@ -390,6 +425,7 @@ def record_profile(path, profile, plan, previous, log):
 
 def _execute(args, root=ROOT):
     config = read_json(Path(args.config))
+    as_read = copy.deepcopy(config)  # what the run changes is saved on the file as it is then
     validate_config(config)
     # A settings file keeps the profiles it was made with: the steps a newer release added
     # are added now (said in the log, and saved with --apply, once the log is open below).
@@ -498,7 +534,7 @@ def _execute(args, root=ROOT):
 
     if args.apply and not (args.module or args.retry_failed or getattr(args, 'retry_step', None)):
         record_profile(safe_path(state_dir / PROFILE_FILE), args.profile, plan, previous, log)
-    ctx = Context(config, log, apply=args.apply, config_path=args.config)
+    ctx = Context(config, log, apply=args.apply, config_path=args.config, saved=as_read)
     ctx.plan = plan  # the steps of this run (the drives step asks the backup times only when one writes a timer)
     ctx.only = args.module  # the one step asked for by name (install.sh --module), or None
     ctx.previous = dict(previous)  # each step as the last run left it

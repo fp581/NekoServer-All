@@ -899,8 +899,27 @@ JOBS_CUT_OFF = {
 }
 
 
+MISSING_SAID = {
+    'data_ssd': 'The drive that held the apps is not connected.',
+    'media_hdd': 'The drive that held the media files and the backups is not connected.',
+}
+MISSING_NEXT = (
+    'If it is only unplugged, connect it and run setup again. If you replaced it, choose the new one: '
+    'setup asks for it on the storage page.'
+)
+
+
 def found_said(found):
-    """The lines under the title: what is on this PC."""
+    """The lines under the title: what is on this PC. A drive of the settings that is not
+    connected comes first (gate run C10: a replaced SSD was not noticed)."""
+    missing = [MISSING_SAID[key] for key in found.get('missing') or () if key in MISSING_SAID]
+    if missing:
+        missing.append(MISSING_NEXT)
+    return missing + what_found(found)
+
+
+def what_found(found):
+    """What kind of NekoServer is on this PC, in words."""
     kind, job = found['kind'], found.get('job') or {}
     if kind == 'unfinished' and job.get('kind') in JOBS_CUT_OFF:
         return [JOBS_CUT_OFF[job['kind']]]
@@ -909,7 +928,9 @@ def found_said(found):
         return ['Setup was started here and stopped before it finished.' + where]
     if kind == 'installed':
         version = f" {found['version']}" if found.get('version') else ''
-        place = f" Its apps and files are on {found['location']}." if found.get('location') else ''
+        # Not "its apps are on /srv/nekoserver" when the drive mounted there is not connected.
+        shown = found.get('location') and 'data_ssd' not in (found.get('missing') or ())
+        place = f" Its apps and files are on {found['location']}." if shown else ''
         lines = [f'NekoServer{version} is set up on this PC.{place}']
         waiting = found.get('waiting') or []
         if waiting:

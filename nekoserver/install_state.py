@@ -37,6 +37,8 @@ CONTINUE, CHANGE, UPDATE, RESTORE = 'continue', 'change', 'update', 'restore'
 SETUP, UPGRADE, DRIVE_MOVE = 'setup', 'upgrade', 'drive_move'
 
 MIGRATE_JOURNAL = Path('/etc/nekoserver-backups/migrate.json')  # migrate.py JOURNAL
+BY_UUID = Path('/dev/disk/by-uuid')  # each connected filesystem by its UUID (storage.BY_UUID)
+DRIVE_ROLES = ('data_ssd', 'media_hdd')  # the two drives of the settings (storage.DRIVES)
 JOURNALS = ((UPGRADE, RECOVERY['upgrade'][0]), (DRIVE_MOVE, MIGRATE_JOURNAL))
 RELEASE = re.compile(r'v(\d{1,9})\.(\d{1,9})\.(\d{1,9})')
 RELEASE_IN_UNIT = re.compile(r'/v(\d{1,9})\.(\d{1,9})\.(\d{1,9})/')  # as upgrade.RELEASE_IN_PATH
@@ -181,6 +183,26 @@ def drives_named(config):
     )
 
 
+def own_disk(record):
+    """The UUID of the disk a drive's saved record names, or '' for none: no drive chosen,
+    a folder of the system disk, or a folder a NAS shares (NFS), which has no disk here."""
+    if not isinstance(record, dict) or record.get('folder') is not None:
+        return ''
+    network = record.get('network') if isinstance(record.get('network'), dict) else {}
+    if network.get('export'):
+        return ''
+    uuid = record.get('uuid')
+    return uuid.strip() if isinstance(uuid, str) and '/' not in uuid else ''
+
+
+def missing_drives(config, by_uuid=BY_UUID):
+    """The drive roles ('data_ssd', 'media_hdd') whose saved disk is not connected now:
+    unplugged, broken, or replaced by another one."""
+    storage = config.get('storage') if isinstance(config.get('storage'), dict) else {}
+    found = [(key, own_disk(storage.get(key))) for key in DRIVE_ROLES]
+    return [key for key, uuid in found if uuid and not (Path(by_uuid) / uuid).exists()]
+
+
 def planned_steps(config, states, root):
     """The steps this server's setup is meant to run, in their order (config_checks), or
     the recorded ones when the settings cannot say."""
@@ -193,7 +215,7 @@ def planned_steps(config, states, root):
     return [step for step in wanted if isinstance(step, str)] or sorted(states)
 
 
-def look(root=ROOT, settings=None, units=SYSTEMD_UNITS, default_state=None, journals=JOURNALS):
+def look(root=ROOT, settings=None, units=SYSTEMD_UNITS, default_state=None, journals=JOURNALS, by_uuid=BY_UUID):
     """What is on this PC, read and not judged. `settings`: the settings file this run
     uses (my-config.json beside setup when not given). `default_state`: where setup keeps
     its record before the app drive is chosen (installer.DEFAULT_STATE)."""
@@ -223,6 +245,7 @@ def look(root=ROOT, settings=None, units=SYSTEMD_UNITS, default_state=None, jour
         'optional': sorted(optional_steps()),
         'jobs': cut_off_jobs(journals),
         'drives_named': drives_named(known),
+        'missing': missing_drives(known, by_uuid),
     }
 
 
@@ -318,6 +341,7 @@ def judge(seen):
      'job': None, or {'kind': setup | upgrade | drive_move, 'step': the step setup goes
             on at (setup only), 'left': the steps that did not finish},
      'waiting': the steps that wait for the person (a server works without them),
+     'missing': the drives the settings name that are not connected ('data_ssd', 'media_hdd'),
      'choices': the choices that apply, in the order to show them,
      'default': the one chosen when the person only presses Continue, or None}
     """
@@ -336,11 +360,12 @@ def judge(seen):
         'settings_from': words(older[0]) if older else None,
         'job': job,
         'waiting': steps_left(seen)[1] if kind in (UNFINISHED, INSTALLED) else [],
+        'missing': list(seen.get('missing') or []) if kind != NOTHING else [],
         'choices': choices,
         'default': choices[0] if choices else None,
     }
 
 
-def found(root=ROOT, settings=None, units=SYSTEMD_UNITS, default_state=None, journals=JOURNALS):
+def found(root=ROOT, settings=None, units=SYSTEMD_UNITS, default_state=None, journals=JOURNALS, by_uuid=BY_UUID):
     """What this PC has, and the choices that apply (`judge` of `look`)."""
-    return judge(look(root, settings, units, default_state, journals))
+    return judge(look(root, settings, units, default_state, journals, by_uuid))

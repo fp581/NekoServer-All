@@ -53,6 +53,8 @@ modules/notifications.py
     alert_arrived
 modules/samba.py
     Password for the shared folders (account {user})
+modules/storage.py
+    install_drive_lost
 modules/tv.py
     tv_worked
 music-setup.py
