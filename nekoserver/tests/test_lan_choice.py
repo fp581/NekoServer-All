@@ -357,6 +357,20 @@ class SambaPasswordTests(unittest.TestCase):
         self.assertFalse(done)
         self.assertEqual(calls, [])
 
+    def test_a_smbpasswd_that_hangs_is_said_not_a_traceback(self):
+        import subprocess
+
+        said = []
+
+        def run(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, 60)
+
+        chosen = 'chosen-' + 'y' * 9  # made here, not a literal
+        typed = iter([chosen, chosen])
+        done = samba.samba_password('neko', run=run, ask=lambda prompt: next(typed), output=said.append)
+        self.assertFalse(done)
+        self.assertEqual(said, ['Samba did not take that password: smbpasswd gave no answer within a minute'])
+
     def test_a_password_samba_refuses_is_said_and_sets_nothing(self):
         done, calls, said = self.password(['same', 'same'], code=1)
         self.assertFalse(done)
