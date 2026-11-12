@@ -211,29 +211,35 @@ def load(config):
         raise RuntimeError('Account store exceeds expected size')
     try:
         value = json.loads(path.read_text())
-        if (
-            value.get('format') != 1
-            or value.get('mode') not in ('generate', 'custom', 'per-app')
-            or not isinstance(value.get('apps'), dict)
-        ):
-            raise ValueError
-        others = value.get('others', {})
-        if not isinstance(others, dict) or any(key not in OTHERS for key in others):
-            raise ValueError
-        for key, secret in others.items():
-            validate_other(key, secret)
-        for app, entry in value['apps'].items():
-            if (
-                app not in APPS
-                or not isinstance(entry, dict)
-                or entry.get('state') not in STATES
-                or type(entry.get('allow_create')) is not bool
-            ):
-                raise ValueError
-            validate_login(app, entry['username'], entry['password'], existing=not entry['allow_create'])
+        check_store(value)
     except (ValueError, KeyError, TypeError, AttributeError):
         raise RuntimeError('Invalid private account store; contents preserved') from None
     return value
+
+
+def check_store(value):
+    """The account store as read from its file, checked entry by entry (ValueError,
+    KeyError, TypeError or AttributeError when it is not one setup wrote)."""
+    if (
+        value.get('format') != 1
+        or value.get('mode') not in ('generate', 'custom', 'per-app')
+        or not isinstance(value.get('apps'), dict)
+    ):
+        raise ValueError
+    others = value.get('others', {})
+    if not isinstance(others, dict) or any(key not in OTHERS for key in others):
+        raise ValueError
+    for key, secret in others.items():
+        validate_other(key, secret)
+    for app, entry in value['apps'].items():
+        if (
+            app not in APPS
+            or not isinstance(entry, dict)
+            or entry.get('state') not in STATES
+            or type(entry.get('allow_create')) is not bool
+        ):
+            raise ValueError
+        validate_login(app, entry['username'], entry['password'], existing=not entry['allow_create'])
 
 
 def save(config, value):
@@ -308,27 +314,40 @@ def selected(config, plan):
     return [app for app in APPS if app in result]
 
 
+# The accounts page's fields of one row: its user name, its password and that password again.
+NAME_KEY = 'user:'
+TYPED_KEY = 'pass:'
+AGAIN_KEY = 'again:'
+
+
+def typed_login(app, name, prompt, password_prompt, on_page):
+    """One try at an app's login: the user name (or email), the password and the password
+    again, as typed."""
+    key = 'login_email' if app in EMAIL_LOGINS else 'login_name'
+    if on_page:
+        username = setup_progress.page_field(NAME_KEY + app, prompt, questions.terminal(key, app=name)).strip()
+        password = setup_progress.page_field(
+            TYPED_KEY + app, password_prompt, f'Password for {name} (it is not shown while you type): '
+        )
+        confirmation = setup_progress.page_field(AGAIN_KEY + app, password_prompt, 'The same password once more: ')
+        return username, password, confirmation
+    username = questions.ask(key, prompt, app=name).strip()
+    # In the setup window the password and its second entry are one page.
+    with setup_progress.password_page(name + ': password'):
+        password = setup_progress.page_field(
+            'password', password_prompt, f'Password for {name} (it is not shown while you type): '
+        )
+        confirmation = setup_progress.page_field('again', password_prompt, 'The same password once more: ')
+    return username, password, confirmation
+
+
 def ask_login(app, existing, value, prompt, password_prompt, output, on_page=False):
     """A login typed in: the user name (or email), the password and the password again.
     `on_page`: the accounts page is open (accounts_page), where the window shows every
     app's row at once and sends them together; alone, each entry is a page of its own."""
     name = APPS[app][0]
     while True:
-        key = 'login_email' if app in EMAIL_LOGINS else 'login_name'
-        if on_page:
-            username = setup_progress.page_field('user:' + app, prompt, questions.terminal(key, app=name)).strip()
-            password = setup_progress.page_field(
-                'pass:' + app, password_prompt, f'Password for {name} (it is not shown while you type): '
-            )
-            confirmation = setup_progress.page_field('again:' + app, password_prompt, 'The same password once more: ')
-        else:
-            username = questions.ask(key, prompt, app=name).strip()
-            # In the setup window the password and its second entry are one page.
-            with setup_progress.password_page(name + ': password'):
-                password = setup_progress.page_field(
-                    'password', password_prompt, f'Password for {name} (it is not shown while you type): '
-                )
-                confirmation = setup_progress.page_field('again', password_prompt, 'The same password once more: ')
+        username, password, confirmation = typed_login(app, name, prompt, password_prompt, on_page)
         try:
             validate_login(app, username, password, existing=existing)
             if app == 'navidrome_listener' and value['apps'].get('navidrome', {}).get('username') == username:
@@ -453,11 +472,11 @@ def accounts_page(config, apps, others=()):
     fields = {'mode': '', 'problem': ''}
     rows = []
     for app in apps:
-        fields.update({'user:' + app: '', 'pass:' + app: '', 'again:' + app: ''})
+        fields.update({NAME_KEY + app: '', TYPED_KEY + app: '', AGAIN_KEY + app: ''})
         rows.append({'id': app, 'name': APPS[app][0], 'email': app in EMAIL_LOGINS, 'existing': not fresh(config, app)})
     for key in others:
         # A secret of the server: a password (or a PIN) and nothing else to type.
-        fields.update({'user:' + key: '', 'pass:' + key: '', 'again:' + key: ''})
+        fields.update({NAME_KEY + key: '', TYPED_KEY + key: '', AGAIN_KEY + key: ''})
         rows.append({'id': key, 'name': OTHERS[key], 'secret_only': True, 'pin': key == 'dashboard_pin'})
     return setup_progress.page(
         'accounts',
@@ -587,7 +606,7 @@ def others_wanted(config):
     return wanted
 
 
-def asked_other(key, mode, prompt, password_prompt, output):
+def asked_other(key, mode, password_prompt, output):
     """A server secret on the accounts page: made for you, or typed twice (a PIN may be
     left empty: no PIN)."""
     if mode == 'generate':
@@ -595,9 +614,9 @@ def asked_other(key, mode, prompt, password_prompt, output):
         return generate_other(key)
     for _ in range(3):
         value = setup_progress.page_field(
-            'pass:' + key, password_prompt, f'{OTHERS[key]} (it is not shown while you type): '
+            TYPED_KEY + key, password_prompt, f'{OTHERS[key]} (it is not shown while you type): '
         )
-        again = setup_progress.page_field('again:' + key, password_prompt, 'The same once more: ')
+        again = setup_progress.page_field(AGAIN_KEY + key, password_prompt, 'The same once more: ')
         try:
             validate_other(key, value)
             if value != again:
@@ -637,30 +656,39 @@ def ask_ahead(config, prompt=input, password_prompt=getpass.getpass, output=prin
     AHEAD.update(mode=stored['mode'], apps={}, others={})
     with accounts_page(config, apps, others):
         if not stored['apps']:
-            while True:
-                answer = setup_progress.page_field('mode', prompt, questions.terminal('logins_who')).strip()
-                # Enter alone takes the first, the recommended one (gate run B1).
-                if answer in ('', '1', '2'):
-                    AHEAD['mode'] = 'custom' if answer == '2' else 'generate'
-                    break
-                output('Type 1 or 2.')
+            AHEAD['mode'] = asked_mode(prompt, output)
         mode = 'generate' if AHEAD['mode'] == 'generate' else 'custom'
         for app in apps:
-            output(APPS[app][0])
-            is_fresh = fresh(config, app)
-            if mode == 'generate' and is_fresh:
-                username, password = generate(app)
-                output(f'  Made: username {username}, with a strong password. "Show login" shows it.')
-            elif not is_fresh:
-                username, password = existing_login(config, app, stored, prompt, password_prompt, output, on_page=True)
-            else:
-                username, password = ask_login(app, False, stored, prompt, password_prompt, output, on_page=True)
-            AHEAD['apps'][app] = {
-                'username': username,
-                'password': password,
-                'state': 'planned',
-                'allow_create': is_fresh,
-                'source': mode if is_fresh else 'custom',
-            }
+            AHEAD['apps'][app] = login_ahead(config, app, mode, stored, prompt, password_prompt, output)
         for key in others:
-            AHEAD['others'][key] = asked_other(key, mode, prompt, password_prompt, output)
+            AHEAD['others'][key] = asked_other(key, mode, password_prompt, output)
+
+
+def asked_mode(prompt, output):
+    """The one choice of the accounts page: strong passwords made for you, or your own."""
+    while True:
+        answer = setup_progress.page_field('mode', prompt, questions.terminal('logins_who')).strip()
+        # Enter alone takes the first, the recommended one (gate run B1).
+        if answer in ('', '1', '2'):
+            return 'custom' if answer == '2' else 'generate'
+        output('Type 1 or 2.')
+
+
+def login_ahead(config, app, mode, stored, prompt, password_prompt, output):
+    """One new app's row of the accounts page: its login made, or typed in, as AHEAD keeps it."""
+    output(APPS[app][0])
+    is_fresh = fresh(config, app)
+    if mode == 'generate' and is_fresh:
+        username, password = generate(app)
+        output(f'  Made: username {username}, with a strong password. "Show login" shows it.')
+    elif not is_fresh:
+        username, password = existing_login(config, app, stored, prompt, password_prompt, output, on_page=True)
+    else:
+        username, password = ask_login(app, False, stored, prompt, password_prompt, output, on_page=True)
+    return {
+        'username': username,
+        'password': password,
+        'state': 'planned',
+        'allow_create': is_fresh,
+        'source': mode if is_fresh else 'custom',
+    }

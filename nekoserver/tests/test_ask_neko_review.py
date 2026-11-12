@@ -108,8 +108,9 @@ class ModelSpaceTests(unittest.TestCase):
     def test_another_model_than_the_one_there_counts_its_download(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = set_up_with(tmp, 'qwen3.5:4b')
+            eleven = free(11)
             with self.assertRaises(assistant.NotHere) as caught:
-                assistant.check_space(config, 'qwen3.5:8b', 6.6, free(11))
+                assistant.check_space(config, 'qwen3.5:8b', 6.6, eleven)
             said = str(caught.exception)
             self.assertIn('needs 17 GB free on the app SSD', said)
             self.assertIn('6.6 GB for the model qwen3.5:8b', said)
@@ -124,8 +125,11 @@ class ModelSpaceTests(unittest.TestCase):
             assistant.check_space(config, 'qwen3.5:4b', 3.3, free(11))
 
     def test_a_first_install_counts_the_image_and_the_model(self):
-        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(assistant.NotHere) as caught:
-            assistant.check_space({'data_mount': tmp}, 'qwen3.5:8b', 6.6, free(20))
+        twenty = free(20)
+        with tempfile.TemporaryDirectory() as tmp:
+            config = {'data_mount': tmp}
+            with self.assertRaises(assistant.NotHere) as caught:
+                assistant.check_space(config, 'qwen3.5:8b', 6.6, twenty)
         self.assertIn("for Ollama's image, 6.6 GB for the model qwen3.5:8b", str(caught.exception))
 
     def test_a_name_cannot_point_outside_ollamas_folder(self):

@@ -216,6 +216,16 @@ def signin(settings, app, output=print):
     return SIGNED_IN
 
 
+def deployed_apps(config):
+    """The chosen apps that setup has put on this server (each has its Compose file)."""
+    apps = []
+    for app in account_store.selected(config, ('media', 'photos', 'nextcloud')):
+        deployment = 'navidrome' if app == 'navidrome_listener' else app
+        if safe_path(Path(config['data_mount']) / 'compose' / deployment / 'compose.yaml').is_file():
+            apps.append(app)
+    return apps
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, epilog=SHOW_HELP)
     parser.add_argument(
@@ -245,11 +255,7 @@ def main():
     config = json.loads(safe_path(args.config).read_text())
     config['accounts'] = {**config.get('accounts', {}), 'enabled': True}
     verify_storage(config)
-    apps = []
-    for app in account_store.selected(config, ('media', 'photos', 'nextcloud')):
-        deployment = 'navidrome' if app == 'navidrome_listener' else app
-        if safe_path(Path(config['data_mount']) / 'compose' / deployment / 'compose.yaml').is_file():
-            apps.append(app)
+    apps = deployed_apps(config)
     if not apps:
         parser.error('No selected deployed app manifests found; run the installer first')
     before = account_store.get(config, 'qbittorrent')

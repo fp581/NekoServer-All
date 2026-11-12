@@ -80,9 +80,13 @@ def _token_header(token):
 
 def _not_sent(address, token):
     """What a test starts as: which of the two entries are acceptable, nothing sent yet."""
+    if token == '':
+        token_word = 'none'
+    else:
+        token_word = 'ok' if valid_token(token) else 'invalid'
     return {
         'address': 'ok' if endpoint(address) else 'invalid',
-        'token': 'none' if token == '' else 'ok' if valid_token(token) else 'invalid',
+        'token': token_word,
         'server': outside_request.NOT_SENT,
         'http_status': None,
     }
