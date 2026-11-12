@@ -515,19 +515,27 @@ def write_managed(path, text, mode, log):
 COLLECTOR_SETTINGS = Path('/etc/nekoserver-dashboard/config.json')
 
 
+def placed_on_other_drives(cfg):
+    """What the collector is told of a drive beyond the two that something is placed on
+    (0.50.0): which kinds of files and which apps are on it, so the drive has a card of
+    its own. Nothing on a server with no such drive, which keeps the file it had."""
+    from neko_common import drives_in_use
+
+    if not drives_in_use(cfg):
+        return {}
+    import placement
+
+    return {
+        'locations': {k: v for k, v in (cfg.get('locations') or {}).items() if isinstance(v, str)},
+        'installed': placement.apps_elsewhere(cfg),
+    }
+
+
 def collector_settings(cfg, smart, interval=60):
     """What the dashboard collector reads, including the fingerprint of the settings an
     acceptance report must match."""
     clean = {k: cfg[k] for k in ('data_mount', 'media_mount', 'external_backup_mount', 'storage')}
-    # A drive beyond the two that something is placed on (0.50.0) has a card of its own:
-    # the collector is told which, and what is on it. Said only then.
-    from neko_common import drives_in_use
-
-    if drives_in_use(cfg):
-        import placement
-
-        clean['locations'] = {k: v for k, v in (cfg.get('locations') or {}).items() if isinstance(v, str)}
-        clean['installed'] = placement.apps_elsewhere(cfg)
+    clean.update(placed_on_other_drives(cfg))
     clean['media'] = {'services': media_services(cfg)}
     # Whether any media group is on, and each group once one has an answer of its own (a
     # server with none keeps the file it had: "wanted" alone says it all).
