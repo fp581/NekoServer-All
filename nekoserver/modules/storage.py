@@ -28,6 +28,18 @@ OLD_ROLES = (('data_ssd', 'data_mount'), ('media_hdd', 'media_mount'))
 DESCRIPTION = 'Inspect disks; --apply mounts explicitly identified data SSD and media HDD by UUID'
 
 
+# How /etc/fstab names a drive by its UUID ("UUID=1234-..."), and the file itself.
+BY_UUID_WORD = 'UUID='
+FSTAB = Path('/etc/fstab')
+# How the setup window names a row of the drive list in an answer ("drive:4").
+WINDOW_ROW = 'drive:'
+
+
+def window_row(answer):
+    """The number of the row the setup window names ("drive:4" is "4"), or None."""
+    return answer.removeprefix(WINDOW_ROW) if answer.startswith(WINDOW_ROW) else None
+
+
 def call(argv, timeout=30):
     p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
     if p.returncode:
@@ -689,7 +701,7 @@ def bind_line_index(lines, mountpoint, entry, connected=None, notes=None):
     index, found = matches[0]
     if len(matches) == 1 and own_bind_line(found):
         return index
-    if len(matches) == 1 and own_line(found) and not connected(found[0][len('UUID=') :]):
+    if len(matches) == 1 and own_line(found) and not connected(found[0][len(BY_UUID_WORD) :]):
         if notes is not None:
             notes.append(
                 f'{mountpoint}: the earlier drive ({found[0]}) is not connected; its line in /etc/fstab '
@@ -1104,7 +1116,7 @@ def same_drive(source, uuid, resolve=uuid_of):
     plain = source.replace('"', '')
     if plain in (f'UUID={uuid}', BY_UUID + uuid):
         return True
-    if plain.startswith('UUID='):
+    if plain.startswith(BY_UUID_WORD):
         return False
     return plain.startswith(('LABEL=', 'PARTUUID=', 'PARTLABEL=', DEV)) and resolve(plain) == uuid
 
@@ -1120,7 +1132,7 @@ def own_line(found):
     options = found[3].split(',') if len(found) == 6 else []
     added = ('subvol=', '_netdev', 'x-systemd.requires=', NETWORK_EXT4.lstrip(','))
     base = ','.join(o for o in options if not o.startswith(added))
-    return found[0].startswith('UUID=') and found[4:] == ['0', '2'] and base in (MOUNT_OPTIONS, *OLDER_OPTIONS)
+    return found[0].startswith(BY_UUID_WORD) and found[4:] == ['0', '2'] and base in (MOUNT_OPTIONS, *OLDER_OPTIONS)
 
 
 def existing_line(lines, uuid, mountpoint, entry, resolve=uuid_of, connected=drive_connected, notes=None):
@@ -1148,7 +1160,7 @@ def existing_line(lines, uuid, mountpoint, entry, resolve=uuid_of, connected=dri
         and own_line(found)
         and fstab_folder(found[1]) == folder
         and found[0] != wanted[0]
-        and not connected(found[0][len('UUID=') :])
+        and not connected(found[0][len(BY_UUID_WORD) :])
     ):
         if notes is not None:
             notes.append(
@@ -1244,7 +1256,7 @@ def shared_folder_line(lines, mountpoint, entry, connected=drive_connected, note
     index, found = matches[0]
     if len(matches) == 1 and nfs_exports.own_line(found):
         return index
-    if len(matches) == 1 and own_line(found) and not connected(found[0][len('UUID=') :]):
+    if len(matches) == 1 and own_line(found) and not connected(found[0][len(BY_UUID_WORD) :]):
         if notes is not None:
             notes.append(
                 f'{mountpoint}: the earlier drive ({found[0]}) is not connected; its line in /etc/fstab '
@@ -1279,7 +1291,7 @@ def line_for(spec, lines, kinds, notes):
     return entry, existing_line(lines, uuid, mountpoint, entry, notes=notes)
 
 
-def install_fstab(specs, path=Path('/etc/fstab'), log=None, network=frozenset(), exports=None, folders=None):
+def install_fstab(specs, path=FSTAB, log=None, network=frozenset(), exports=None, folders=None):
     """Add (or bring up to date) the lines that mount the SSD and HDD at boot: NekoServer's
     own line with older options, or for a drive that is gone (replaced), is rewritten. A
     line for the same drive or folder that NekoServer didn't write stops setup instead.
@@ -1386,7 +1398,6 @@ def place_drives(context, inventory):
 # instead of starting over empty on the apps' drive.
 INSTALL_BEGIN = '# NekoServer: apps installed on another drive (written by setup from my-config.json)'
 INSTALL_END = '# NekoServer: end of apps installed on another drive'
-FSTAB = Path('/etc/fstab')
 
 
 def installed_binds(config):
@@ -1483,7 +1494,9 @@ def given_up(text, binds, log, run=subprocess.run):
         folder = safe_path(Path(target))
         if folder.is_dir():
             run(['chattr', '-i', str(folder)], capture_output=True, text=True, timeout=30, check=False)
-            os.chmod(folder, 0o755)
+            # Its owner and group only: the media step hands an empty folder of root's to the
+            # app's user, as it makes new app folders (0o750).
+            os.chmod(folder, 0o750)
             log(
                 f'{target}: the drive this app was installed on is no longer in the settings, so the app is set up '
                 'on the drive of NekoServer with empty settings. To bring its settings back from a backup, run  '
@@ -1902,9 +1915,9 @@ def asked_install(context, what, others):
         answer = drive_table.field('install_' + what, input, 'Number (Enter for the recommended one): ')
         if answer in ('', '1'):
             return None
-        if answer.startswith('drive:'):
+        if window_row(answer) is not None:
             # The window names the row of the list.
-            named = next((row for row in others if str(row['number']) == answer[len('drive:') :]), None)
+            named = next((row for row in others if str(row['number']) == window_row(answer)), None)
             if named is not None:
                 return named
         elif answer.isdigit() and 2 <= int(answer) < 2 + len(others):
@@ -1958,7 +1971,7 @@ def settle_installs(context):
 
     config = context.config
     data = mount_path(config['data_mount'])
-    for what, row in list(drive_table.INSTALL_AHEAD.items()):
+    for what, row in drive_table.INSTALL_AHEAD.items():
         name = INSTALLED_NAMES[what]
         if any(has_files(data / 'appdata' / app) for app in placement.apps_of(what)):
             context.log(f'{name}: kept on the drive of NekoServer and your apps, where its settings already are')
@@ -2069,19 +2082,25 @@ def checked_before_mount(config, specs):
             validate_device(uuid, fstype)  # raises if the drive identity is wrong
         if waits_for_first_use(target):
             continue  # a shared folder not opened since the start: mount_all opens and checks it
-        current = findmnt('SOURCE', target)
-        if current is not None:
-            mounted = current.split('[')[0]
-            if mounted_filesystem(target) != (uuid, fstype):
-                raise RuntimeError(f'Wrong filesystem already mounted at {target}: {mounted}')
-            if target not in folders:
-                only_a_folder(target, fstype, mounted_subvolume(target))
-        elif Path(target).exists() and not clear_leftovers(Path(target)):
-            raise RuntimeError(
-                f'Refusing mount over nonempty directory {target}: there are files in that folder (on the system '
-                'disk), and NekoServer never removes files. Move them elsewhere, or pick another drive, and run '
-                'setup again'
-            )
+        place_checked(target, uuid, fstype, target in folders)
+
+
+def place_checked(target, uuid, fstype, a_folder):
+    """What is at a drive's mount folder now is that drive (`a_folder`: a role kept in a
+    folder of the disk Linux runs from), or nothing but empty folders left by Docker."""
+    current = findmnt('SOURCE', target)
+    if current is not None:
+        mounted = current.split('[')[0]
+        if mounted_filesystem(target) != (uuid, fstype):
+            raise RuntimeError(f'Wrong filesystem already mounted at {target}: {mounted}')
+        if not a_folder:
+            only_a_folder(target, fstype, mounted_subvolume(target))
+    elif Path(target).exists() and not clear_leftovers(Path(target)):
+        raise RuntimeError(
+            f'Refusing mount over nonempty directory {target}: there are files in that folder (on the system '
+            'disk), and NekoServer never removes files. Move them elsewhere, or pick another drive, and run '
+            'setup again'
+        )
 
 
 def clear_leftovers(folder):
@@ -2262,7 +2281,7 @@ def save_storage(context):
         atomic_json(config_path, payload)
 
 
-def mount_all(context, specs, fstab=Path('/etc/fstab')):
+def mount_all(context, specs, fstab=FSTAB):
     """fstab written, the drives mounted and checked. A Btrfs drive mounted for the first
     time without a saved subvolume mounts the filesystem's default tree, which can be a
     subvolume (`btrfs subvolume set-default`, `/@data` say): that tree is saved as the
@@ -2364,6 +2383,30 @@ def mount_target(target, uuid, fstype, log=None):
             )
 
 
+def mounted_now(target, uuid, fstype, log):
+    """Mount a drive that is not mounted yet: its empty folder closed first (seal_extra).
+    A big drive replaying its journal after a power cut can take minutes."""
+    seal_extra(target)
+    try:
+        mount_target(target, uuid, fstype, log)
+    except subprocess.TimeoutExpired:
+        if findmnt('TARGET', target) is None:  # the kernel may still have finished it
+            raise RuntimeError(
+                f'Mounting {target} took longer than {MOUNT_WAIT // 60} minutes; check the drive '
+                '(sudo dmesg shows what it is doing) and run setup again'
+            ) from None
+
+
+def the_folder_mounted(target, folder, found):
+    """What findmnt shows at `target` is the folder of the disk Linux runs from the role
+    is kept in."""
+    if not found or not found.endswith(inside_filesystem(folder)):
+        raise RuntimeError(
+            f'{target} should be the folder {folder} of the disk Linux runs from, but something else is '
+            f'mounted there ({found or "a whole filesystem"}). Unmount it (sudo umount {target}) and run setup again'
+        )
+
+
 def mount_and_check(uuid, target, subvolume, fstype='btrfs', log=None, folder=None):
     """Mount the drive (unless it is) and make sure what is mounted is the drive, and the
     Btrfs subvolume, the settings name. Returns the subvolume mounted: with none saved
@@ -2375,27 +2418,14 @@ def mount_and_check(uuid, target, subvolume, fstype='btrfs', log=None, folder=No
     if folder:
         Path(folder).mkdir(parents=True, exist_ok=True)
     if findmnt('TARGET', target) is None:
-        seal_extra(target)
-        try:
-            # A big drive replaying its journal after a power cut can take minutes.
-            mount_target(target, uuid, fstype, log)
-        except subprocess.TimeoutExpired:
-            if findmnt('TARGET', target) is None:  # the kernel may still have finished it
-                raise RuntimeError(
-                    f'Mounting {target} took longer than {MOUNT_WAIT // 60} minutes; check the drive '
-                    '(sudo dmesg shows what it is doing) and run setup again'
-                ) from None
+        mounted_now(target, uuid, fstype, log)
     elif waits_for_first_use(target):
         open_shared_folder(target)
     if mounted_filesystem(target) != (uuid, fstype):
         raise RuntimeError(f'Post-mount validation failed for {target}')
     found = mounted_subvolume(target)
     if folder:
-        if not found or not found.endswith(inside_filesystem(folder)):
-            raise RuntimeError(
-                f'{target} should be the folder {folder} of the disk Linux runs from, but something else is '
-                f'mounted there ({found or "a whole filesystem"}). Unmount it (sudo umount {target}) and run setup again'
-            )
+        the_folder_mounted(target, folder, found)
     else:
         only_a_folder(target, fstype, found)
     if subvolume is not None and found != subvolume:
@@ -2527,7 +2557,11 @@ def choose_locations(context, input_fn=None, interactive=None, inventory=None):
     others = data_drives(config, inventory) if interactive and inventory else []
     asking = (interactive and (input_fn or input), (room, on_nas), others)
     # A kind whose app is not part of this server is asked about if it is added later.
-    changes = [place_of(context, kind, asking) for kind in WHERE if asked_where(config, kind[0])]
+    changes = [
+        place_of(context, (what, words, threshold), asking)
+        for what, words, threshold in WHERE
+        if asked_where(config, what)
+    ]
     if chosen.get('photos') == 'media' and asked_where(config, 'photos'):
         context.log(photos_on_media(config))
     if chosen.get('music') == 'media' and 'music' in backed_up_beside(config) and asked_where(config, 'music'):
@@ -2550,7 +2584,7 @@ def photos_on_media(config):
     B3: "your only copy on another drive is the weekly USB backup" with none chosen, on a
     server with one drive)."""
     photos = config.get('photos', {})
-    where = 'the one drive of this server' if one_place(config) else 'the media drive'
+    where = 'the one drive of this server' if one_place(config) else DRIVE_WORDS['media']
     said = (
         f"Immich's photos are on {where}, and so is their weekly archive copy: it keeps older versions, "
         'but does not survive losing that drive.'
@@ -2562,7 +2596,7 @@ def photos_on_media(config):
             ' No copy is on another drive: to add one, connect a drive you can unplug and run  '
             'sudo bash install.sh  again.'
         )
-    return PHOTOS_ON_MEDIA if where == 'the media drive' else said + ' Set up the offline backup (asked next).'
+    return PHOTOS_ON_MEDIA if where == DRIVE_WORDS['media'] else said + ' Set up the offline backup (asked next).'
 
 
 def one_place(config):
@@ -2724,6 +2758,15 @@ def asked_location(context, words, best, room, on_nas, input_fn=None, key=None, 
     first = len(options) + 1
     for n, row in enumerate(others, first):
         context.log(f'  {n}) a drive of their own: {drive_table.brief(row)}')
+    return place_asked(context, (options, others), input_fn, key)
+
+
+def place_asked(context, offered, input_fn, key):
+    """The place the person names among `offered` (the drives, the drives of their own),
+    asked three times at most; the recommended one (the first) after that."""
+    import drive_table
+
+    options, others = offered
     for _ in range(3):
         answer = drive_table.field(key or 'place', input_fn or input, 'Number (Enter for the recommended one): ')
         if len(options) == 1 and answer.isdigit() and int(answer) >= 2:
@@ -2733,7 +2776,7 @@ def asked_location(context, words, best, room, on_nas, input_fn=None, key=None, 
         if place is not None:
             return place
         context.log(f'Type a number from 1 to {len(options) + len(others)}, or press Enter.')
-    return best
+    return options[0]
 
 
 def place_answered(answer, options, others):
@@ -2742,8 +2785,8 @@ def place_answered(answer, options, others):
     `options` for Enter alone. None for an answer that names none."""
     if answer in DRIVE_WORDS:
         return answer
-    if answer.startswith('drive:'):
-        return next((row for row in others if str(row['number']) == answer[len('drive:') :]), None)
+    if window_row(answer) is not None:
+        return next((row for row in others if str(row['number']) == window_row(answer)), None)
     if answer in ('', '1', '2'):
         return options[int(answer) - 1] if answer else options[0]
     if answer.isdigit() and 3 <= int(answer) < 3 + len(others):

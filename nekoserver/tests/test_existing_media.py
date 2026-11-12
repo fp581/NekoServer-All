@@ -309,10 +309,11 @@ class SettingsTests(unittest.TestCase):
             {'new_files': 'yes'},
             {'mount': None},
         ):
+            wrong = with_entry(**changes)
             with self.assertRaises(RuntimeError, msg=changes):
-                existing_media.extras(with_entry(**changes))
+                existing_media.extras(wrong)
             with self.assertRaises(RuntimeError, msg=changes):
-                existing_media.fstab_lines(with_entry(**changes))
+                existing_media.fstab_lines(wrong)
         twice = existing_media.without_choice(good, 'movies')
         twice['placement']['movies']['extra'] = good['placement']['movies']['extra'] * 2
         with self.assertRaises(RuntimeError):
@@ -388,7 +389,7 @@ class MountTests(unittest.TestCase):
             [existing_media.BEGIN, *existing_media.fstab_lines(config), existing_media.END],
         )
         # The mount point is root's and closed: nothing can be written into the bare folder.
-        self.assertEqual(point.stat().st_mode & 0o777, 0o555)
+        self.assertEqual(point.stat().st_mode & 0o777, 0o500)
         self.assertEqual(list(point.iterdir()), [])
         # Nothing of the person's was copied, moved, renamed, chowned or chmodded.
         self.assertEqual(tree(self.pc.films), before)
@@ -409,8 +410,9 @@ class MountTests(unittest.TestCase):
         mine = 'UUID=7 /mnt/my-backups ext4 defaults 0 2'
         broken = '\n'.join(['UUID=1 / ext4 defaults 0 1', existing_media.BEGIN, 'old line', mine]) + '\n'
         self.pc.fstab.write_text(broken)
+        chosen = self.pc.chosen()
         with self.assertRaisesRegex(RuntimeError, 'Nothing was changed'):
-            self.use(self.pc.chosen())
+            self.use(chosen)
         self.assertEqual(self.pc.fstab.read_text(), broken, "the person's own mount is still there")
         self.assertEqual(self.ran, [])
 
@@ -430,7 +432,7 @@ class MountTests(unittest.TestCase):
         config = self.pc.chosen(new_files=True)
         del self.pc.mounts[str(self.pc.nas)]  # the NAS is off: its folder is the bare one
         rows = self.use(config)
-        self.assertEqual(rows[0]['mounted'], False)
+        self.assertIs(rows[0]['mounted'], False)
         self.assertIn('are not there now (nas:/tank is not connected)', rows[0]['reason'])
         self.assertNotIn(['mount', str(self.pc.media / 'library/existing/movies')], self.ran)
         # Another share mounted at the same place is not the one that was chosen either.
@@ -438,8 +440,9 @@ class MountTests(unittest.TestCase):
         self.assertFalse(self.use(config)[0]['mounted'])
         (state,) = existing_media.available(config, **self.pc.how())
         self.assertFalse(state['ready'])
+        how = self.pc.how()
         with self.assertRaises(Away):
-            existing_media.guard(config, 'movies', **self.pc.how())
+            existing_media.guard(config, 'movies', **how)
         existing_media.guard(config, 'tv', **self.pc.how())  # no existing folder for shows
 
     def test_a_share_that_does_not_answer_is_away_and_never_looked_at_here(self):

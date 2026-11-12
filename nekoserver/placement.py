@@ -115,7 +115,7 @@ def apps_elsewhere(config):
             continue
         drive = install_of(config, row)
         if drive != SSD:
-            found.update({app: drive for app in apps_of(row)})
+            found.update(dict.fromkeys(apps_of(row), drive))
     return found
 
 
@@ -224,18 +224,20 @@ def checked(saved, known):
         entry = saved.get(row)
         if not isinstance(entry, dict):
             raise RuntimeError(f'"placement" in my-config.json has no row "{row}" (or it is not an object)')
-        for choice, wanted in ((INSTALL, installs), (DATA, data is not None)):
-            if not wanted:
-                continue
-            drive = entry.get(choice)
-            if drive is None and row == OFFLINE:
-                continue
-            if drive not in known:
-                raise RuntimeError(
-                    f'"{choice}" of "{row}" under "placement" names the drive {drive!r}, which is not under "drives" '
-                    'in my-config.json'
-                )
+        for choice in [c for c, wanted in ((INSTALL, installs), (DATA, data is not None)) if wanted]:
+            drive_known(row, choice, entry.get(choice), known)
     return saved
+
+
+def drive_known(row, choice, drive, known):
+    """A row's choice names a drive that is listed (or none, for the offline backup alone)."""
+    if drive is None and row == OFFLINE:
+        return
+    if drive not in known:
+        raise RuntimeError(
+            f'"{choice}" of "{row}" under "placement" names the drive {drive!r}, which is not under "drives" '
+            'in my-config.json'
+        )
 
 
 def drive_of(config, row, choice):

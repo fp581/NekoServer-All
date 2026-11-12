@@ -675,8 +675,10 @@ def mounted_row(config, entry, tools, log):
     point = mount_point(config, entry['holds'], entry['use'])
     # Mounted already (the kernel's table says so): never looked at, it may be the share itself.
     if mounted(point) is None and not point.is_dir():
-        point.mkdir(parents=True, mode=0o555)
-        os.chmod(point, 0o555)  # root's and closed: the apps cannot write into the bare folder
+        point.mkdir(parents=True, mode=0o500)
+        # Root's and closed: the apps cannot write into the bare folder. Once mounted, the
+        # folder they see is the share's own, whatever this one's mode.
+        os.chmod(point, 0o500)
     row = {'holds': entry['holds'], 'use': entry['use'], 'path': entry['path'], 'mounted': False, 'reason': None}
     if not still_there(entry, find, kind):
         row['reason'] = away_words(entry)
@@ -749,6 +751,7 @@ def guard(config, category, **how):
 
 NAME_TAKEN = '{app} already has a library called "{name}" for another folder; rename it in {app}, then run setup again'
 API_FAILED = 'Library API/path check failed; existing settings preserved'
+NAVIDROME_LIBRARIES = '/api/library'  # Navidrome's list of libraries, read and added to
 TOO_OLD = (
     'This Navidrome cannot have a second music folder (it needs version 0.58 or newer); update it, then run setup again'
 )
@@ -825,7 +828,7 @@ def jellyfin_libraries(client, config, apply=False, **how):
 
 def navidrome_listed(call):
     """Navidrome's libraries, as its API lists them."""
-    listed = call('GET', '/api/library', None)
+    listed = call('GET', NAVIDROME_LIBRARIES, None)
     if not isinstance(listed, list) or any(not isinstance(x, dict) for x in listed):
         raise RuntimeError('Unsupported Navidrome library response')
     return listed
@@ -843,8 +846,8 @@ def navidrome_one(call, config, entry, apply, how):
         raise media_libraries.SetupRequired(NAME_TAKEN.format(app='Navidrome', name=name))
     if not apply:
         return media_libraries.row(check_name, 'needs_setup', 'Preview: library would be created')
-    call('POST', '/api/library', {'name': name, 'path': path})
-    again = call('GET', '/api/library', None)
+    call('POST', NAVIDROME_LIBRARIES, {'name': name, 'path': path})
+    again = call('GET', NAVIDROME_LIBRARIES, None)
     if not isinstance(again, list) or not any(isinstance(x, dict) and x.get('path') == path for x in again):
         raise RuntimeError('Library creation was not retained')
     return media_libraries.row(check_name, 'pass')

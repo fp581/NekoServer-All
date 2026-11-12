@@ -61,12 +61,19 @@ def words(version):
 
 
 def read_object(path):
-    """A JSON object from a file, or {} when it is missing, too big, or not one."""
+    """A JSON object from a file, or {} when it is missing, too big, or not one. Only a
+    .json file is read, by its real path (a settings file named on the command line
+    included): never another kind of file, and never through a link."""
     try:
-        path = Path(path)
-        if path.is_symlink() or path.stat().st_size > LONGEST_FILE:
+        if Path(path).is_symlink():
             return {}
-        value = json.loads(path.read_text())
+        real = os.path.realpath(path)
+        if not (real.startswith(os.sep) and real.endswith('.json')) or '\x00' in real:
+            return {}
+        if os.stat(real).st_size > LONGEST_FILE:
+            return {}
+        with open(real, encoding='utf-8') as handle:
+            value = json.loads(handle.read())
     except (OSError, ValueError):
         return {}
     return value if isinstance(value, dict) else {}

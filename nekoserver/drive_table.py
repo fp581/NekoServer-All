@@ -548,7 +548,7 @@ def verdict(row, key, config):
         return row['problem']
     has = role_of(row, config)
     if shares_with_apps(row, key, config):
-        return shared_verdict(row, config)
+        return shared_verdict(row)
     if has and has != key:
         return f'it is already {role(has)}'
     if row['uuid'] and (
@@ -560,7 +560,7 @@ def verdict(row, key, config):
     return backup_verdict(row, config) if key == 'usb' else drive_verdict(row, key, config)
 
 
-def shared_verdict(row, config):
+def shared_verdict(row):
     """Why the apps' drive cannot hold the media and the backups too, or '': it must have
     room for what both need."""
     from modules import storage
@@ -574,18 +574,25 @@ def shared_verdict(row, config):
     return ''
 
 
+def not_a_device(row):
+    """Why a filesystem setup found no usable device for cannot have a role."""
+    from modules import storage
+
+    if row['fstype'] in ('ext4', 'xfs', 'btrfs'):
+        return 'it is not a drive, a partition, an LVM volume, a RAID array or an encrypted drive'
+    return (
+        f"it is formatted {storage.NOT_LINUX.get(row['fstype'], row['fstype'])}, which Linux apps can't keep "
+        'their files on. To use it, copy its files elsewhere first, then ' + HOW_TO_FORMAT.format(name=row['name'])
+    )
+
+
 def drive_verdict(row, key, config):
     """Why a filesystem cannot be the app SSD or the media HDD, or ''."""
     from modules import storage
 
     device = row['device']
     if device is None:
-        if row['fstype'] in ('ext4', 'xfs', 'btrfs'):
-            return 'it is not a drive, a partition, an LVM volume, a RAID array or an encrypted drive'
-        return (
-            f"it is formatted {storage.NOT_LINUX.get(row['fstype'], row['fstype'])}, which Linux apps can't keep "
-            'their files on. To use it, copy its files elsewhere first, then ' + HOW_TO_FORMAT.format(name=row['name'])
-        )
+        return not_a_device(row)
     busy = in_use(row, config.get('data_mount' if key == 'data_ssd' else 'media_mount'))
     if busy:
         return busy
@@ -791,7 +798,7 @@ def best_for(table, key, config, chosen, order):
     """The first drive of its own in `order`; the disk Linux runs from only where there is none."""
     own = drives_of_their_own(table, key, config, chosen)
     if own:
-        return sorted(own, key=order)[0]
+        return min(own, key=order)
     return next((row for row in table if row['system'] and not verdict(row, key, config)), None)
 
 
@@ -801,6 +808,11 @@ def in_this_pc_first(row):
 
 def ssd_first(row):
     return 'SSD' not in row['type'], -size_bytes(row)
+
+
+def of_its_own(row):
+    """A drive was chosen, and it is not the disk Linux runs from."""
+    return row is not None and not row['system']
 
 
 def recommended(table, config):
@@ -819,20 +831,34 @@ def recommended(table, config):
         chosen['media_hdd'] = best_for(table, 'media_hdd', config, chosen, in_this_pc_first)
     if chosen['data_ssd'] is None:
         chosen['data_ssd'] = best_for(table, 'data_ssd', config, chosen, ssd_first)
-        one = chosen['media_hdd']
-        if (chosen['data_ssd'] is None or chosen['data_ssd']['system']) and one is not None and not one['system']:
-            # No other drive of its own: both on that one drive, before the disk Linux runs from.
-            if not verdict(one, 'data_ssd', config) and not shared_verdict(one, config):
-                chosen['data_ssd'] = one
-    apps = chosen['data_ssd']
-    if (chosen['media_hdd'] is None or chosen['media_hdd']['system']) and apps is not None and not apps['system']:
-        # The apps' drive chosen, and no other drive of its own for the backups: that one, before the system disk.
-        if shares_with_apps(apps, 'media_hdd', config) and not shared_verdict(apps, config):
-            chosen['media_hdd'] = apps
+        # No other drive of its own: both on that one drive, before the disk Linux runs from.
+        chosen['data_ssd'] = apps_beside_media(chosen['data_ssd'], chosen['media_hdd'], config)
+    # The apps' drive chosen, and no other drive of its own for the backups: that one, before the system disk.
+    chosen['media_hdd'] = media_beside_apps(chosen['media_hdd'], chosen['data_ssd'], config)
     if chosen['usb'] is None:
         usb = [row for row in drives_of_their_own(table, 'usb', config, chosen) if row['type'] == 'USB drive']
         chosen['usb'] = usb[0] if usb else None
     return chosen
+
+
+def apps_beside_media(apps, media, config):
+    """The apps' drive: the one found, or the media's drive of its own when no other
+    drive of its own was found for the apps and that one can hold both."""
+    if of_its_own(apps) or not of_its_own(media):
+        return apps
+    if verdict(media, 'data_ssd', config) or shared_verdict(media):
+        return apps
+    return media
+
+
+def media_beside_apps(media, apps, config):
+    """The media and backups' drive: the one found, or the apps' drive of its own when
+    no other drive of its own was found for them and it can hold both."""
+    if of_its_own(media) or not of_its_own(apps):
+        return media
+    if shares_with_apps(apps, 'media_hdd', config) and not shared_verdict(apps):
+        return apps
+    return media
 
 
 def field(key, input_fn, prompt):
@@ -910,28 +936,37 @@ def ask(table, key, config, input_fn=input, out_fn=print, attempts=3, skippable=
     mark = f"  {best['number']}) " if best is not None else None
     for line in listed(table, key, config):
         out_fn(line + ('  (recommended)' if mark and line.startswith(mark) else ''))
-    leave = 'Enter to skip for now' if skippable else 'Enter alone stops setup here'
-    if skippable:
-        best = None  # Enter leaves it for later
-    if best is not None:
-        # Enter takes the drive setup would choose; nothing is changed by choosing it.
-        leave = f"Enter for {best['number']}, the recommended one"
+    best, leave = what_enter_does(best, skippable)
     stopped = (
         f'No drive was chosen for {role(key)}. Run  sudo bash install.sh  again to choose it; nothing was changed.'
     )
     page, name = own_page(table, key, config, skippable)
     with page:
         for _ in range(attempts):
-            answer = field(name, input_fn, f'Number of {what} ({leave}): ')
-            if not answer and best is not None:
-                answer = str(best['number'])
-            if not answer and skippable:
-                return None
+            answer = field(name, input_fn, f'Number of {what} ({leave}): ') or (str(best['number']) if best else '')
             if not answer:
-                raise RuntimeError(stopped)
+                return none_chosen(skippable, stopped)
             row = answered(table, key, config, answer, out_fn)
             if row is not None:
                 return row
+    raise RuntimeError(stopped)
+
+
+def what_enter_does(best, skippable):
+    """(the drive Enter alone takes, or None; the words that say so). A role that may
+    be left for later is left by Enter; otherwise Enter takes the drive setup would
+    choose (nothing is changed by choosing it), or stops setup when there is none."""
+    if skippable:
+        return None, 'Enter to skip for now'
+    if best is None:
+        return None, 'Enter alone stops setup here'
+    return best, f"Enter for {best['number']}, the recommended one"
+
+
+def none_chosen(skippable, stopped):
+    """No drive chosen: None when the role may be left for later, else setup stops."""
+    if skippable:
+        return None
     raise RuntimeError(stopped)
 
 

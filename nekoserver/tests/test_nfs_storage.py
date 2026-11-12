@@ -204,12 +204,13 @@ class TryingOutTests(unittest.TestCase):
         self.assertIn('a restore would hand every file to the wrong account', said)
 
     def test_an_owner_or_permissions_the_nas_does_not_keep_are_refused(self):
-        with self.assertRaisesRegex(nfs.Refused, 'does not keep who owns a file .* "all squash"'):
-            with mock.patch.object(nfs.os, 'chown'):  # said yes, kept nothing
-                nfs.owner_kept(self.spot(), MEDIA, 4242, 4242)
-        with self.assertRaisesRegex(nfs.Refused, 'does not keep the permissions .* Windows-style'):
-            with mock.patch.object(nfs.os, 'chmod'):
-                nfs.owner_kept(self.spot('b'), MEDIA, *self.me)
+        first, second = self.spot(), self.spot('b')
+        with mock.patch.object(nfs.os, 'chown'):  # said yes, kept nothing
+            with self.assertRaisesRegex(nfs.Refused, 'does not keep who owns a file .* "all squash"'):
+                nfs.owner_kept(first, MEDIA, 4242, 4242)
+        with mock.patch.object(nfs.os, 'chmod'):
+            with self.assertRaisesRegex(nfs.Refused, 'does not keep the permissions .* Windows-style'):
+                nfs.owner_kept(second, MEDIA, *self.me)
 
     def spot(self, name='a'):
         made = self.folder / name
@@ -532,8 +533,9 @@ class DrivesStepTests(unittest.TestCase):
         }
 
     def test_the_apps_ssd_is_never_a_shared_folder(self):
+        record = media_record()
         with self.assertRaisesRegex(RuntimeError, 'The SSD for the apps cannot be a folder shared over NFS'):
-            storage.shared_folder(media_record(), 'data_ssd')
+            storage.shared_folder(record, 'data_ssd')
         config = self.config()
         config['storage']['data_ssd'] = media_record()
         with self.assertRaisesRegex(RuntimeError, 'cannot be a folder shared over NFS'):

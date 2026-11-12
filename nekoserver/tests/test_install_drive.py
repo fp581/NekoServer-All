@@ -61,8 +61,9 @@ class TableTests(unittest.TestCase):
 
     def test_the_settings_file_is_not_trusted(self):
         for install in ({'photos': 'd9'}, {'photos': 'media'}, {'core': 'd3'}, {'photos': ['d3']}, {'films': 'd3'}):
+            config = settings(install=install)
             with self.subTest(install=install), self.assertRaisesRegex(RuntimeError, 'under "install"'):
-                placement.apps_elsewhere(settings(install=install))
+                placement.apps_elsewhere(config)
         # Something that is no table at all places nothing.
         self.assertEqual(placement.apps_elsewhere(settings(install='d3')), {})
 
@@ -310,7 +311,7 @@ class GivenUpTests(unittest.TestCase):
         ran = mock.Mock()
         storage.given_up(self.text, [], self.said.append, ran)
         self.assertEqual(ran.call_args[0][0], ['chattr', '-i', str(self.target)])
-        self.assertEqual(self.target.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(self.target.stat().st_mode & 0o777, 0o750)
         self.assertIn('sudo bash install.sh --recover', self.said[0])
         # A group that is still placed is left as it is.
         os.chmod(self.target, 0o000)

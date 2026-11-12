@@ -158,8 +158,9 @@ class SavedTableTests(unittest.TestCase):
             '"install" of "core" under "placement" names the drive None': {'core': {}},
         }
         for words, change in cases.items():
+            saved = self.saved(**change)
             with self.subTest(words=words), self.assertRaisesRegex(RuntimeError, words):
-                placement.table(self.saved(**change))
+                placement.table(saved)
         config = self.saved()
         config['placement'] = ['ssd']
         with self.assertRaisesRegex(RuntimeError, '"placement" in my-config.json must be an object'):
@@ -169,8 +170,9 @@ class SavedTableTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, '"drives" in my-config.json must be an object of drives'):
             placement.table(config)
         # Only the offline backup may be none.
+        saved = self.saved(backup={'data': None})
         with self.assertRaisesRegex(RuntimeError, '"data" of "backup"'):
-            placement.table(self.saved(backup={'data': None}))
+            placement.table(saved)
 
 
 class DataOnAnyDriveTests(unittest.TestCase):
@@ -210,8 +212,9 @@ class DataOnAnyDriveTests(unittest.TestCase):
             config = self.placed(photos=wrong)
             with self.subTest(drive=wrong), self.assertRaisesRegex(RuntimeError, 'a drive under "storage"'):
                 neko_common.files_root(config, 'photos')
+        placed = self.placed(photos='d4')
         with self.assertRaisesRegex(RuntimeError, 'each "ssd", "media" or a drive under "storage"'):
-            config_checks.validate(self.placed(photos='d4'), [])
+            config_checks.validate(placed, [])
         config_checks.validate(self.placed(photos='d3', movies='media'), [])
         # A name that could leave the drives' folder is never one, even when listed.
         config = self.placed()

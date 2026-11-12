@@ -408,8 +408,9 @@ class QuestionTests(DriveListCase):
         bare = {'blockdevices': [INVENTORY['blockdevices'][7]]}
         table = self.table(inventory=bare)
         self.assertIsNone(drive_table.recommended(table, dict(FOLDERS))['data_ssd'])
+        folders, enter = dict(FOLDERS), Conversation(['']).ask
         with self.assertRaisesRegex(RuntimeError, 'No drive was chosen for the app SSD. Run  sudo bash install.sh'):
-            drive_table.ask(table, 'data_ssd', dict(FOLDERS), Conversation(['']).ask, lambda line: None)
+            drive_table.ask(table, 'data_ssd', folders, enter, lambda line: None)
         config = {**FOLDERS, 'storage': {'data_ssd': {'uuid': 'ssd-0001'}, 'media_hdd': {'uuid': 'hdd-0001'}}}
         # The offline backup is optional: Enter skips it, whatever is recommended.
         talk = Conversation([''])

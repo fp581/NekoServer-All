@@ -41,6 +41,7 @@ SNAPSHOT = re.compile(r'^snapshot-\d+-\d+$')
 DAYS = {'Mon': 'Monday', 'Tue': 'Tuesday', 'Wed': 'Wednesday', 'Thu': 'Thursday', 'Fri': 'Friday'}
 DAYS.update(Sat='Saturday', Sun='Sunday')
 NEVER_REMOVED = 'everything, in every version; nothing is ever removed to keep to a number'
+FROM_THE_FIRST = 'as far back as the first backup'  # how far back a copy that only adds reaches
 
 
 def count(config, group):
@@ -160,7 +161,7 @@ def covers(keep, every_days, unit):
     A count is a number of backups, not of days: a night the PC is off, or a backup that
     fails, adds none, so the same count then reaches further back."""
     if keep == 0:
-        return 'as far back as the first backup', None
+        return FROM_THE_FIRST, None
     days = keep * every_days
     return f'about the last {keep} {unit}{"" if keep == 1 else "s"}, when every backup runs', days
 
@@ -233,7 +234,7 @@ def table(config, held=None):
             (drive, photos.get('archive_dir', 'photos/archive')),
             often,
             NEVER_REMOVED,
-            ('as far back as the first backup', None),
+            (FROM_THE_FIRST, None),
             same=same_drive(config, 'photos', placement.DATA, drive),
         )
         keep = photos.get('database_keep', 4)
@@ -297,7 +298,7 @@ def music_row(config, times, drive, row):
         (drive, 'backups/music'),
         f"every night at {times['music']}",
         NEVER_REMOVED,
-        ('as far back as the first backup', None),
+        (FROM_THE_FIRST, None),
         same=same_drive(config, 'music', placement.DATA, drive),
     )
 
