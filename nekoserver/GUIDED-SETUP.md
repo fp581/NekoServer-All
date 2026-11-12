@@ -34,22 +34,20 @@ If it stops with an error here, it says what went wrong. Most often it is the in
 
 ### 2. Welcome, and the setup window
 
-When the PC is ready, the terminal shows a short welcome text and asks `Ready to start? [yes/no]`. On a PC with a desktop, a small **setup window** opens in your web browser at the same time. It shows the same questions as the terminal, with buttons. You can answer in either place.
+When the PC is ready, the terminal shows a short welcome text and setup's first page, **What would you like this server to do?** On a PC with a desktop, a small **setup window** opens in your web browser at the same time. It shows the same questions as the terminal, with buttons. You can answer in either place.
 
 ![The setup window](../docs/media/setup-window.webp)
 
 The window opens in the **Night** look, like the dashboard. The ☾ / ☀ button at its top right switches to **Lamplight** (light) and back; the browser remembers your choice.
 
-The window first lists the **optional extras**, each with a switch:
+The first page lists what this server can do, each with a switch that says yes or no (in the terminal: a numbered line; type its number to switch it):
 
-- **The media apps**, three switches: Photos (Immich), Movies and shows (Jellyfin, Seerr and the download apps), Music (Navidrome). Each is installed unless you switch it off; see [the media groups](#the-media-apps-three-groups-a-yes-or-no-each) below.
-- **A TV** connected to this PC (Steam Big Picture).
-- **Phone alerts** when something fails.
-- **Outage alerts** from outside, when the whole server goes quiet.
-- **Nextcloud**, your own cloud drive (installed unless you switch it off).
-- **An AI assistant** for the dashboard ("Ask Neko"), whose model runs on this server (off unless you switch it on; setup then offers the models that fit; see ASSISTANT.md).
+- **Apps**: Photos and phone backup (Immich), Movies and shows (Jellyfin), Music (Navidrome), Personal files (Nextcloud). Inside Movies and shows and inside Music is one more switch, **Also find and download new ones**, on unless you switch it off: off leaves Jellyfin, or Navidrome, alone; see [the media groups](#the-media-apps-three-groups-a-yes-or-no-each) below.
+- **Optional extras**, off until you switch them on: a TV connected to this PC (Steam Big Picture), alerts on your phone when something fails, a warning from outside when the server stops checking in, and a local AI assistant for the dashboard ("Ask Neko"; see ASSISTANT.md).
 
-Switch off what you don't want. Not sure? Leave the switches alone: setup asks about the media apps, the TV, the alerts and the AI assistant later, when it gets to them. Each card has a line **Installs N packages**: press it to see what that part adds to the PC. Choosing something never moves the rest of the page. Then press **Start setup** in the window, or type `yes` in the terminal.
+Each card has a line **Installs N packages** where it adds some: press it to see what that part adds to the PC. Choosing something never moves the rest of the page. **Continue** shows the review, **Ready to install NekoServer**: the apps that will be installed, the extras, what is left out, what is always set up, and what setup still stops to ask you. One button starts it, **Install selected apps** (in the terminal: type `yes`; Enter alone approves nothing). Every switch is saved with its answer then, so no step asks "install this?" again.
+
+On a PC that already has NekoServer, setup says so before this page: which release is set up and where, or that a setup was cut off and at which step, with the choices that apply (continue, review this update, change apps or settings, restore from a backup).
 
 ### 3. Tailscale: reaching your server from anywhere
 
@@ -65,15 +63,15 @@ Answer `no` to see the step again and reopen the page.
 
 #### The media apps: three groups, a yes or no each
 
-Before the drives, setup asks which media apps to install (unless you already chose in the window, where they are the first three switches). There are three groups, and each can be left out:
+The three media groups are on setup's first page, and each can be left out:
 
-- `Install Photos (Immich)? [yes/no]`: **Immich**, your own photo backup and gallery, with its archive and its weekly USB copy.
-- `Install Movies and shows (Jellyfin, Seerr and the download apps)? [yes/no]`: **Jellyfin** to watch your films and shows, **Seerr** to ask for new ones, and **Sonarr, Radarr and Prowlarr** with **qBittorrent**, which find and download them; with video on the graphics chip, the hourly check that these apps still work together, and the TV mode.
-- `Install Music (Navidrome)? [yes/no]`: **Navidrome**, your music player, with the music backup. With Movies and shows on as well, **Lidarr** finds and downloads music.
+- **Photos and phone backup**: **Immich**, your own photo backup and gallery, with its archive and its weekly offline copy.
+- **Movies and shows**: **Jellyfin** to watch your films and shows, with video on the graphics chip. With **Also find and download new ones** on (it is, unless you switch it off): **Seerr** to ask for new ones, and **Sonarr, Radarr and Prowlarr** with **qBittorrent**, which find and download them.
+- **Music**: **Navidrome**, your music player, with the music backup. With **Also find and download new ones** on: **Lidarr**, with Prowlarr and qBittorrent, finds and downloads music; it does not need Movies and shows.
 
-All three together take about 6 GB on the SSD and about 2 GB of memory when idle. Any combination works: all of them, photos alone, music alone, or none for a smaller server. Nextcloud, the dashboard, the backups, Tailscale, the shared folders, the alerts and the AI assistant are set up either way. A group you leave out is not asked about again in that run: no place for its files, no sign-in, no test.
+All three together take about 6 GB on the SSD and about 2 GB of memory when idle. Any combination works: all of them, photos alone, music alone, or none for a smaller server. The dashboard, the backups, Tailscale and the shared folders are set up either way. A group you leave out is not asked about again: no place for its files, no sign-in, no test.
 
-You can change your mind. Run `sudo bash install.sh` again, answer `yes` to `Ask these questions again?`, and answer a group the other way. **Yes later** installs its apps as on any server. **No later never deletes anything**: the apps of that group are stopped, and their settings, your photos, music and films and every backup stay where they are, so yes brings them back as they were.
+You can change your mind. Run `sudo bash install.sh` again and switch the line on the first page the other way. **Yes later** installs its apps as on any server. **No later never deletes anything**: the apps of that group are stopped, and their settings, your photos, music and films and every backup stay where they are, so yes brings them back as they were.
 
 #### Choosing the drives
 
@@ -96,11 +94,11 @@ Everything connected to this PC:
 The short names (`sda1`, `sdb1`) are Linux's own and can change at the next start. NekoServer remembers a drive by its UUID, which is shown and which you never have to type. Setup never formats a drive; for a new drive the list gives the command to run yourself.
 
 1. Each question names the role and what goes on that drive, for example `Number of the drive for your apps, photos and music (the app SSD)`. Type the drive's **number** from the list and press Enter. A drive that cannot have that role is in the list with the reason ("not this one: it is too small ..."); choosing it anyway says why and asks again.
-2. Setup asks you to type the drive's name back, for example `Type sda1 to confirm it is the app SSD (drive 2: 466 GB SSD, Samsung SSD 870, named "apps"):`. Type it exactly (`sda1`) and press Enter. This is a safety check, so the wrong drive is never used.
-3. The same follows for the media HDD, and then for the USB backup drive, with the same numbers. No USB drive yet? Press Enter to skip it; you will be asked again at the weekly backup step.
-4. **In the setup window** the list is a card for each drive. Click the one you want (a drive that cannot be used is dimmed and says why) and press **Use this drive**; the next page shows that drive alone and asks for its name, as the terminal does.
-5. **Setup run again** says which drives it uses: `Last time you chose drive 2 (sda1: 466 GB SSD, ...) as the app SSD (UUID 7fde…). It is used again.` Every later message about a drive names it this way, never by `sda1` alone.
-6. Then setup asks **when the backups run**: the time of the daily backups (`When should the daily backups run? (HH:MM, Enter for 04:15)`), the day and time of the weekly USB copy (Sunday 03:00 unless you say otherwise) and the time of the monthly check on the 1st (at night, 02:30 unless you say otherwise). Press Enter to keep the time shown; choose hours when nobody uses the server, because the apps pause for a moment while they are copied. Setup run again keeps your answers and asks only if you say yes to asking the optional questions again. In the setup window the three come as one page: a row each for the daily backups, the weekly USB copy (day and time) and the monthly check, with a line under each saying what runs then; **Save these times** sends all three, **Skip for now** keeps the times shown.
+2. Each line comes with a recommended drive, marked in the list: press Enter to take it. Nothing is typed back: choosing a drive formats nothing and changes nothing on it, and setup says the choice back in words (`Drive 2 (sda1: 466 GB SSD, Samsung SSD 870, named "apps") is the app SSD.`).
+3. The same follows for the media HDD. The disk Linux runs from can be chosen for either (a PC with one drive): setup then keeps that part in a folder of it and says first what that means (if that disk fails, both go together; a full disk stops Linux too).
+4. Then where Immich's photos, the films and shows, the music and Nextcloud's files are kept: the drive of the apps, the drive of the media, or another connected drive of their own. Enter takes the recommended place.
+5. Then the removable drive for the offline backup. It is optional: Enter (in the window, **None for now**) leaves it out, saved as your choice, and nothing asks about it again.
+6. **In the setup window** all of this is one page, **Where should NekoServer store your apps and files?**, with a list to choose from on every line and the recommended drive already chosen. A drive that cannot have a role is in the list with the reason and cannot be chosen. Press **Use these drives**.
 
 ### 5. Drive space
 
@@ -246,9 +244,9 @@ The rest of this page is the technical reference for the guided steps.
 
 ### The setup window, in detail
 
-Beside the terminal, `sudo bash install.sh` opens a **setup window** in the PC's own browser once the packages are installed and the runtime is built, at the `Ready to start?` question. It is served by setup itself, on this PC only (`127.0.0.1`, a port chosen at random, behind an address nobody can guess) and only while setup runs. Every question setup asks is asked in both places, and either can answer it. Only the account that runs setup (or root) can open it: another account on the PC that sees its address gets a page saying so.
+Beside the terminal, `sudo bash install.sh` opens a **setup window** in the PC's own browser once the packages are installed and the runtime is built, with setup's first page. It is served by setup itself, on this PC only (`127.0.0.1`, a port chosen at random, behind an address nobody can guess) and only while setup runs. Every question setup asks is asked in both places, and either can answer it. Only the account that runs setup (or root) can open it: another account on the PC that sees its address gets a page saying so.
 
-- **Before setup starts** it lists the optional parts (a TV, phone alerts, outage alerts, Nextcloud) with a plain explanation of each and what it installs, and switches to leave any of them out. A switch you press is saved to `my-config.json` at once (`"wanted"`, or Nextcloud's `"enabled"`): switched off, that step then counts as done without asking. A switch you leave alone decides nothing: setup asks about the TV, phone alerts and outage alerts when it gets to them, in the terminal and in the window. Nextcloud is on in the settings from the start, so it is installed unless you switch it off. **Start setup** in the window answers the terminal's "Ready to start?"; typing `yes` in the terminal works the same. Once setup has started (from either place) the choices are fixed: a switch pressed later, or a second **Start setup**, is refused (`409`) and the settings file is left as setup is writing it. A switch only ever changes its own setting, on the file as it is at that moment, so a value setup saved meanwhile (the drives it found) is never written back over.
+- **Before setup starts** it shows the first page as cards under headings, each with its switch and, where it adds packages, what it installs. A switch you press is saved to `my-config.json` at once. **Continue** shows the review; **Install selected apps** there answers the terminal's question, and typing `yes` in the terminal works the same. Every switch is then saved as it stands, so a step that finds its answer does not ask. Once setup has started (from either place) the choices are fixed for this run: a switch pressed later, or a second press of the button, is refused (`409`) and the settings file is left as setup is writing it.
 - **While it runs** it shows the step under way with a one-line explanation, the packages that step installs with what each one is for, the step's own messages, and the list of all steps with their state. **When setup asks something**, the window asks it too: the terminal's last lines (the numbered drives, the instructions for a phone step) as context, then the question with a text box, Yes/No buttons for a yes/no question, or a password box for a hidden entry (a password or PIN, which the window never shows and the terminal does not echo). A step you confirm yourself (it asks in its own words, such as "Did the Tailscale page say this server is connected?") also has **Skip for now**, which leaves the step pending and lets setup go on, as Ctrl+D in the terminal does. The answer can be given in the window or typed in the terminal, whichever comes first; the other side is told. An answer from the window travels only over this PC's loopback, to setup's own process.
 - **Every question is asked in the window too.** Up to 0.49.0 three steps (connecting the media apps, music listener setup and the shared-folder password) asked in the terminal only, and the window said **Answer this step in the terminal**. They now ask in both places. A hidden entry (a password, a PIN) typed in the window goes to setup over this PC's own loopback and is never written to a log or shown again.
 - **At the end** it shows the finishing screen (what is done, what still needs you, your app addresses).

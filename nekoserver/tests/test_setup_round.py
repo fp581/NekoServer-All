@@ -974,7 +974,7 @@ class DocsTests(unittest.TestCase):
         self.assertNotIn('Four drives', text)
         self.assertIn('Once you start, it first lists what it found on this computer', text)
         self.assertIn('opens again', text)
-        install = text[text.index('## Install') : text.index('Then the setup wizard explains')]
+        install = text[text.index('## Install') : text.index('Then the setup wizard shows')]
         # The useful part first; the details of each Linux folded away after it.
         self.assertLess(install.index('That\'s it'), install.index('<details>'))
         self.assertLess(install.index('<details>'), install.index('pacman -Syu'))
@@ -982,14 +982,14 @@ class DocsTests(unittest.TestCase):
         self.assertIn('> **First, in your router, reserve that address', text)
         # The questions in the order setup asks them: the PIN, then the phone, the home
         # network, and the backup password last.
-        steps = text[text.index('Then the setup wizard explains') : text.index('### Two ways to follow')]
+        steps = text[text.index('Then the setup wizard shows') : text.index('### Two ways to follow')]
         order = [
             steps.index(words)
             for words in (
-                'pick your SSD',
+                'where to store your apps and files',
                 'dashboard PIN',
-                'sets up your phone',
-                'home network',
+                'set up your phone',
+                'Uses your home network',
                 'backup password',
                 'first checkup',
             )
