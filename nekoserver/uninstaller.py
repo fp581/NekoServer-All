@@ -1272,8 +1272,10 @@ def _destroy(plan, chosen, out, tools, accounts, drives, jobs):
     # The person's own folders bound into a library: unmounted before anything around them
     # is deleted (a bind from the same drive looks like a plain folder). A path that still
     # holds one, or that may hold one that could not be checked, is kept.
-    held = _unbind_own_folders(plan, chosen, call, out, left) + unchecked_folders(plan, out)
-    left += _remove_files(plan, chosen, out, rmtree, drives, jobs.kept() | kept_folders(plan), held)
+    unchecked = unchecked_folders(plan, out)
+    held = _unbind_own_folders(plan, chosen, call, out, left) + unchecked
+    keep = jobs.kept() | kept_folders(plan, skip=set(unchecked))
+    left += _remove_files(plan, chosen, out, rmtree, drives, keep, held)
     # The lock last: released first, then its file (with the folder, when the SSD data goes).
     jobs.release()
     jobs.tidy('data' in chosen and plan.folder_of('data') / 'installer' in plan.groups['data']['paths'])
@@ -1288,13 +1290,15 @@ def _destroy(plan, chosen, out, tools, accounts, drives, jobs):
     return left
 
 
-def kept_folders(plan):
+def kept_folders(plan, skip=()):
     """The person's own folders as (device, inode): a library folder that goes never takes
     one with it, even where it is mounted inside that library from the same drive (a bind
     mount of the same filesystem has the same device number, so the other-drive check alone
-    would not stop there)."""
+    would not stop there). `skip`: the ones that did not answer (never looked at again)."""
     kept = set()
     for folder in getattr(plan, 'own_folders', ()):
+        if folder['path'] in skip:
+            continue
         try:
             found = os.stat(plan.at(folder['path']))
         except (OSError, RuntimeError):
@@ -1309,15 +1313,51 @@ def unchecked_folders(plan, out):
     not be told from what is NekoServer's. Said, so the person knows why something stayed."""
     held = []
     for folder in getattr(plan, 'own_folders', ()):
-        try:
-            os.stat(plan.at(folder['path']))
-        except (OSError, RuntimeError):
+        why = not_checked(plan, folder['path'])
+        if why:
             out(
-                '  your own folder ' + folder['path'] + ' could not be checked, so nothing around it (or around '
-                'the folders it is shown in) is removed'
+                '  your own folder ' + folder['path'] + ' ' + why + ', so it is kept and nothing around it (or '
+                'around the folders it is shown in) is removed'
             )
             held.append(folder['path'])
     return held + own_bind_targets(plan) if held else []
+
+
+# How long one of the person's folders (on a shared folder, perhaps) may take to answer.
+LOOK_SECONDS = 10
+NO_ANSWER = f'did not answer within {LOOK_SECONDS} seconds (its shared folder is off or not connected)'
+
+
+def not_checked(plan, path):
+    """Why the person's folder at `path` could not be checked now, or None."""
+    try:
+        place = plan.at(path)
+    except RuntimeError:
+        return 'could not be checked'
+    if not answers(place):
+        return NO_ANSWER
+    try:
+        os.stat(place)
+    except OSError:
+        return 'could not be checked'
+    return None
+
+
+def answers(path, seconds=LOOK_SECONDS, start=subprocess.Popen, now=time.monotonic, sleep=time.sleep):
+    """Whether `path` can be looked at (stat) within `seconds`. Looked at by a child
+    process: a shared folder that is away (an NFS hard mount) can hold a look for ever,
+    and then only the child waits, never the uninstaller."""
+    try:
+        child = start(['stat', '--', str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        return False
+    deadline = now() + seconds
+    while child.poll() is None:
+        if now() >= deadline:
+            child.kill()  # not waited for: it may stay stuck until the share answers
+            return False
+        sleep(0.05)
+    return True
 
 
 def own_bind_targets(plan):
@@ -1353,7 +1393,14 @@ def _unbind_own_folders(plan, chosen, call, out, left):
     stuck = []
     for target in sorted(set(own_bind_targets(plan)), key=len, reverse=True):
         place = plan.at(target)
-        if not any(holds(path, target, plan) for path in paths) or not os.path.ismount(str(place)):
+        if not any(holds(path, target, plan) for path in paths):
+            continue
+        if not answers(place):
+            # Shown from a shared folder that is away: left mounted, and the paths around it kept.
+            out('  your own folder shown at ' + target + ' ' + NO_ANSWER + ', so it is kept as it is')
+            stuck.append(target)
+            continue
+        if not os.path.ismount(str(place)):
             continue
         out('Unmounting ' + target + ' (your own folder, shown there: it stays where it is)')
         code, said = call(['umount', target], 120)
