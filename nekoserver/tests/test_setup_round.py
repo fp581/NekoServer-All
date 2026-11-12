@@ -959,16 +959,20 @@ class RootWarningTests(unittest.TestCase):
 class DocsTests(unittest.TestCase):
     """D3, D6, D17, D18, IT-11, D2: what the READMEs promise is what setup does."""
 
-    def test_both_readmes_give_the_drive_sizes_and_say_three_drives_besides_linuxs(self):
+    def test_both_readmes_say_one_drive_is_enough(self):
+        # 0.50.0 (the user: any number of drives works, one drive included).
         for path in (ROOT.parent / README, ROOT / README):
             if not path.exists():
                 continue  # (a copy of the nekoserver folder alone)
             with self.subTest(readme=path.name):
                 text = path.read_text()
-                for size in ('20 GB', '100 GB', '50 GB', '500 GB', '16 GB'):
-                    self.assertIn(size, text)
-                self.assertIn('three drives besides the disk linux is on', text.lower().replace('*', ''))
+                self.assertIn('one drive is enough', text.lower().replace('*', ''))
+                self.assertNotIn('three drives besides the disk linux is on', text.lower().replace('*', ''))
+                self.assertIn('16 GB', text)
                 self.assertIn('sudo apt install git', text)
+        guide = (ROOT / README).read_text()
+        for size in ('20 GB', '100 GB', '50 GB', '500 GB'):
+            self.assertIn(size, guide)
 
     def test_the_guide_promises_what_happens_when_it_happens(self):
         text = (ROOT / README).read_text()

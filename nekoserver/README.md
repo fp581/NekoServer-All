@@ -42,16 +42,15 @@ Also included: shared folders on your home network (Samba) and, if you want them
   - **openSUSE Leap 16** or newer, **Tumbleweed** or **Slowroll** (tried on Leap 16 and Tumbleweed in a test setup; see *openSUSE* below). Leap 15 is not enough: its Python is too old.
 - **8 GB of memory or more.** The apps use about 2 GB when idle, and more while Immich looks at new photos or Jellyfin converts a video; with less, those can be stopped for lack of memory. Setup shows what it found.
 - **Your phone**, to set up the apps on it during installation.
-- **Three drives besides the disk Linux is on** (four drives in all), each already formatted (ext4 is the safe choice). NekoServer never puts your files on the disk Linux runs from, so a mini PC with one internal disk needs the three as extra (USB) drives:
+- **One drive is enough**, already formatted (ext4 is the safe choice). Any number of drives works: one drive of its own, or the disk Linux runs from, can hold everything (about 70 GB free); with more, setup asks which one does what. The roles:
 
-| Drive | Used for | Size | Notes |
+| Role | Used for | Size | Notes |
 | --- | --- | --- | --- |
-| **System disk** | Linux itself | 5 GB free for the packages | Your existing disk. NekoServer does not use it for data. |
-| **SSD** | Apps, photos, music | At least 20 GB free; 100 GB or more recommended | Fast drive. |
-| **HDD** | Movies, shows, Nextcloud files, backups | At least 50 GB free; 500 GB or more recommended | Large drive. |
-| **USB drive** | Weekly copy of your photos and Nextcloud files | At least 16 GB, and room for those files | Can be exFAT or ext4. Keep it plugged in. |
+| **Apps** (the "SSD") | NekoServer, the apps' settings and databases, photos and music unless placed elsewhere | At least 20 GB free; 100 GB or more recommended | The fastest drive you have. |
+| **Media and backups** (the "HDD") | Movies, shows, Nextcloud files, backups | At least 50 GB free; 500 GB or more recommended | The biggest drive you have. Can be the same drive as the apps. |
+| **Offline backup** (optional) | Weekly copy of your photos and Nextcloud files | At least 16 GB, and room for those files | A drive you can take away: exFAT or ext4. "None for now" is an answer. |
 
-Setup checks the sizes when you pick the drives, before it mounts or saves anything: a drive that is too small is refused at once and you pick another one.
+Immich's photos, the films and shows, the music and Nextcloud's files can each be kept on a drive of their own; the apps themselves are installed together on the apps' drive. Setup checks the sizes when you pick the drives, before it mounts or saves anything: a drive that is too small is said at once with its numbers, and you pick another one. A backup on the same drive as what it protects is said so, once.
 
 The SSD and HDD can be ext4, XFS or Btrfs (a Btrfs pool over several drives counts as one), also inside an LVM volume, a software RAID array or an encrypted (LUKS) drive. An encrypted drive must be unlocked by Linux at every start (listed in `/etc/crypttab`), because setup mounts it then.
 
@@ -101,7 +100,7 @@ Then the setup wizard shows its first page, **What would you like this server to
 
 On a PC that already has NekoServer, setup first says what it found (the release that is set up, a setup that was cut off and where, or saved answers) and offers the choices that apply.
 
-**Where to store your apps and files** is asked before that yes. Setup lists every drive connected to the PC (size, kind, model, the name you gave it, how full it is) and asks for the drive for NekoServer and your apps, the drive for the backups, where Immich's photos, the films and shows, the music and Nextcloud's files are kept (the drive of the apps, the backups' drive, or a drive of their own), and an optional removable drive for the offline backup. Each line comes with a recommended drive: press Enter to take it, or type another drive's number. No drive's name is typed, and choosing a drive changes nothing on it; setup never formats one. A drive that cannot have a role is in the list with the reason, the sizes in numbers (the apps need at least 20 GB free, the media and backups 50 GB). The disk Linux runs from can be chosen too, so a PC with one drive works; setup says what that means first. Where the PC has a spare drive of its own, a group's apps (their settings and databases) can be installed there instead of on the drive of NekoServer.
+**Where to store your apps and files** is asked before that yes. Setup lists every drive connected to the PC (size, kind, model, the name you gave it, how full it is) and asks for the drive for NekoServer and your apps, the drive for the backups, where Immich's photos, the films and shows, the music and Nextcloud's files are kept (the drive of the apps, the backups' drive, or a drive of their own), and an optional removable drive for the offline backup. Each line comes with a recommended drive: press Enter to take it, or type another drive's number. No drive's name is typed, and choosing a drive changes nothing on it; setup never formats one. A drive that cannot have a role is in the list with the reason, the sizes in numbers (the apps need at least 20 GB free, the media and backups 50 GB). The disk Linux runs from can be chosen too, so a PC with one drive works; setup says what that means first. (An installation drive for one group's apps is not offered in 0.50.0; it moves to 0.51.x.)
 
 Then it asks **whether you already have films, shows or music**, and for their folder: used where it is (nothing is copied) or copied into the library, and whether new ones are saved there too.
 

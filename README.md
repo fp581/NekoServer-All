@@ -94,7 +94,7 @@ An optional AI assistant on the dashboard. It explains what the dashboard shows 
 ## Updating, and taking it off
 
 - **Update**: `git pull`, then `sudo bash install.sh` in the same folder. Your settings, accounts and files stay. A server keeps exactly the apps it has, and nothing is removed from its backups until you choose a number.
-- **Cloned before 0.40.0?** `git pull` does not work once; see [Updating from a clone made before 0.40.0](nekoserver/README.md#install).
+- **Cloned before 0.40.0?** `git pull` does not work once: clone it again and copy your `my-config.json` into the new folder; [Updating from a clone made before 0.40.0](nekoserver/README.md#install) shows the commands.
 - **Uninstall**: `sudo bash uninstall.sh`. It lists what it would remove, you choose, and it asks twice.
 
 ## Release channels
