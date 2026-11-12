@@ -298,7 +298,8 @@ STORAGE_HEADING = 'Where your apps and files are kept'
 INSTALL = 'Install selected apps'
 APPLY = 'Apply these changes'
 ALWAYS = (
-    'The dashboard, with a PIN you choose',
+    # The accounts page, before the review, has made or been given the PIN already.
+    'The dashboard, with the PIN from the accounts page',
     'Backups of your apps and settings, and a monthly checkup',
     'Tailscale: private access from your own devices, not from the internet',
     'Shared folders on your home network',
