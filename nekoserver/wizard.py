@@ -418,10 +418,13 @@ def review_answer(path, config, question, asking):
     line = line_or_start(question, prompt, output, window, stdin)
     if line is STARTED:
         return APPROVED
+    if line is BACK or line is CONTINUED:
+        # The window's Back (or a Continue left over from the first page): a button, not text.
+        return BACK
     answer = '' if line is None else line.strip().lower()
     if line is None or answer in ('no', 'n'):
         return STOPPED
-    if line is BACK or answer in ('back', 'b'):
+    if answer in ('back', 'b'):
         return BACK
     if answer in ('yes', 'y'):
         if explanations.states(read_json(path) or {}) != explanations.states(config):

@@ -273,6 +273,12 @@ class TerminalTests(Base):
         self.assertEqual(said.count('=== Ready to install NekoServer ==='), 2)
         self.assertEqual(saved['notifications'], {'wanted': True})
 
+    def test_back_pressed_in_the_window_on_the_review_shows_the_first_page_again(self):
+        # The window's Back reaches the review as a button, never as typed text.
+        started, asked, said, saved = self.run_page('', wizard.BACK, '', 'yes')
+        self.assertTrue(started)
+        self.assertEqual(said.count('=== Ready to install NekoServer ==='), 2)
+
     def test_the_drives_are_chosen_between_the_page_and_the_review(self):
         """The storage page comes after the first page and before the approval; what it
         chose is in the review, and is written only once the person approves."""
