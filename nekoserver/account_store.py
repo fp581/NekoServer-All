@@ -125,12 +125,13 @@ def validate_login(app, username, password, existing=False):
             if app in EMAIL_LOGINS
             else 'Username: start with a letter; use 1-32 letters, digits, underscores or hyphens'
         )
+    least = 1 if existing else 12  # a login the app has already may be as short as the app allows
     if (
         not isinstance(password, str)
-        or not (1 if existing else 12) <= len(password) <= 128
+        or not least <= len(password) <= 128
         or any(ord(ch) < 32 or ord(ch) == 127 for ch in password)
     ):
-        raise ValueError('Password must contain 12-128 characters and no control characters')
+        raise ValueError(f'Password must contain {least}-128 characters and no control characters')
 
 
 def generate_other(key):
@@ -577,7 +578,10 @@ def others_wanted(config):
         user = os.environ.get('SUDO_USER') or 'neko'
         known = ''
         if shutil.which('pdbedit'):
-            known = subprocess.run(['pdbedit', '-L', '-u', user], capture_output=True, text=True, timeout=15).stdout
+            try:
+                known = subprocess.run(['pdbedit', '-L', '-u', user], capture_output=True, text=True, timeout=15).stdout
+            except (OSError, subprocess.SubprocessError):
+                known = ''  # it could not be told: the password is asked for, as with none set
         if not any(line.startswith(user + ':') for line in known.splitlines()):
             wanted.append('shared_folders')
     return wanted
@@ -603,7 +607,15 @@ def asked_other(key, mode, prompt, password_prompt, output):
             setup_progress.page_set('problem', f'{OTHERS[key]}: {exc}')
             continue
         return value
+    output(f'  {OTHERS[key]}: {LEFT_FOR_LATER[key]}')
     return ''
+
+
+# Said when a server secret was typed wrong three times on the accounts page.
+LEFT_FOR_LATER = {
+    'dashboard_pin': 'left without a PIN for now. Run setup again to choose one.',
+    'shared_folders': 'not chosen yet; the shared folders step asks for it.',
+}
 
 
 def ask_ahead(config, prompt=input, password_prompt=getpass.getpass, output=print):

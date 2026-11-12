@@ -20,6 +20,9 @@ import setup_progress  # noqa: E402
 from modules import storage  # noqa: E402
 
 
+ORIGINAL_OTHERS_WANTED = account_store.others_wanted
+
+
 def settings(folder, **more):
     return {
         'data_mount': folder,
@@ -77,6 +80,30 @@ class AheadTests(unittest.TestCase):
             account_store.validate_other('dashboard_pin', '12ab')
         with self.assertRaisesRegex(ValueError, '12-128'):
             account_store.validate_other('shared_folders', 'short')
+
+    def test_three_wrong_tries_are_said_and_left_for_later(self):
+        typed = iter(['1234', '1234'] * 3)
+        got = account_store.asked_other('dashboard_pin', 'custom', None, lambda q='': next(typed), self.said.append)
+        self.assertEqual(got, '')
+        self.assertIn('  Dashboard PIN: left without a PIN for now. Run setup again to choose one.', self.said)
+
+    def test_a_login_the_app_has_already_is_told_its_own_limits(self):
+        with self.assertRaisesRegex(ValueError, 'Password must contain 1-128 characters'):
+            account_store.validate_login('jellyfin', 'mary', '', existing=True)
+        with self.assertRaisesRegex(ValueError, 'Password must contain 12-128 characters'):
+            account_store.validate_login('jellyfin', 'mary', 'short', existing=False)
+
+    def test_a_samba_tool_that_hangs_still_lets_the_page_ask(self):
+        import subprocess
+
+        hung = subprocess.TimeoutExpired(['pdbedit'], 15)
+        with (
+            mock.patch.object(account_store.Path, 'exists', return_value=True),  # a PIN is set already
+            mock.patch('shutil.which', return_value='/usr/bin/pdbedit'),
+            mock.patch('subprocess.run', side_effect=hung),
+        ):
+            wanted = ORIGINAL_OTHERS_WANTED({'samba': {'enabled': True}})
+        self.assertEqual(wanted, ['shared_folders'])
 
     def test_the_page_has_a_row_for_each_secret_with_no_user_name(self):
         with account_store.accounts_page(settings(self.folder), ['immich'], ['dashboard_pin', 'shared_folders']):
