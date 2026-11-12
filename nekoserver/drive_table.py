@@ -46,6 +46,9 @@ TIMES_AHEAD = {}
 # The UUIDs of drives the storage page chose for files or installs while it asks the
 # offline drive (not in the settings until the approval).
 TAKEN_AHEAD = []
+# The drives of a group's own given up as lost on the storage page (gate run C17), for the
+# finishing page: {name: {'what': the groups in words, 'apps': [...]}}.
+STARTED_EMPTY = {}
 
 
 def role(key):

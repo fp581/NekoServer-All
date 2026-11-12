@@ -89,7 +89,8 @@ def page(config, summary, pin_set=False):
         # The tests that belong to no app's card (the TV, a restore).
         'tests': [test for name, test in tests.items() if name not in in_apps],
         'attention': [item_said(item, names) for item in summary.get('attention', [])],
-        'waiting': [item_said(item, names) for item in summary.get('pending', [])],
+        # And each group set up again with empty settings on the drive that replaced its lost one.
+        'waiting': [item_said(item, names) for item in summary.get('pending', [])] + wizard.started_empty_lines(),
         'dashboard': dashboard_shown(config, pin_set),
         # The server's own secrets chosen on the accounts page, each with Show login.
         'secrets': secrets_shown(config),

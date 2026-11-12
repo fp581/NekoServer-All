@@ -203,6 +203,36 @@ def missing_drives(config, by_uuid=BY_UUID):
     return [key for key, uuid in found if uuid and not (Path(by_uuid) / uuid).exists()]
 
 
+def missing_group_drives(config, by_uuid=BY_UUID):
+    """{drive: what it holds, in words} for the drives of a group's own (a group's files or
+    apps placed on them, 0.50.0) that are not connected now. A folder a NAS shares is not
+    one: its NAS may only be off."""
+    try:
+        import placement
+        from neko_common import drives_in_use, extra_drives
+
+        found = {}
+        for name in drives_in_use(config):
+            record = extra_drives(config)[name]
+            uuid = str(record.get('uuid', ''))
+            network = record.get('network') if isinstance(record.get('network'), dict) else {}
+            if not uuid or network.get('transport') == 'nfs' or (Path(by_uuid) / uuid).exists():
+                continue
+            rows = sorted(
+                {
+                    row
+                    for section in ('locations', 'install')
+                    if isinstance(config.get(section), dict)
+                    for row, drive in config[section].items()
+                    if drive == name
+                }
+            )
+            found[name] = ' and '.join(placement.name_of(row) for row in rows)
+        return found
+    except (RuntimeError, KeyError, TypeError, ValueError, StopIteration):
+        return {}
+
+
 def planned_steps(config, states, root):
     """The steps this server's setup is meant to run, in their order (config_checks), or
     the recorded ones when the settings cannot say."""
@@ -246,6 +276,7 @@ def look(root=ROOT, settings=None, units=SYSTEMD_UNITS, default_state=None, jour
         'jobs': cut_off_jobs(journals),
         'drives_named': drives_named(known),
         'missing': missing_drives(known, by_uuid),
+        'missing_groups': missing_group_drives(known, by_uuid),
     }
 
 
@@ -361,6 +392,8 @@ def judge(seen):
         'job': job,
         'waiting': steps_left(seen)[1] if kind in (UNFINISHED, INSTALLED) else [],
         'missing': list(seen.get('missing') or []) if kind != NOTHING else [],
+        # The drives of a group's own that are not connected: {name: what they hold, in words}.
+        'missing_groups': dict(seen.get('missing_groups') or {}) if kind != NOTHING else {},
         'choices': choices,
         'default': choices[0] if choices else None,
     }

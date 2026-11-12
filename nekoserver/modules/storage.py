@@ -1530,6 +1530,102 @@ def give_up_drive(config, drive):
         config.get('storage', {}).pop(drive, None)
 
 
+# Said on the storage page for a drive of a group's own that is not connected (gate run
+# C17: the person was told to edit my-config.json).
+LOST_GROUP_DRIVE = (
+    'The drive for {what} (UUID {uuid}) is not connected. If it is only unplugged, stop here (Ctrl+C), connect '
+    'it and run setup again. If it was lost, choose the drive that replaces it below: {what} start again there '
+    'with empty settings, unless you bring them back from a backup afterwards (sudo bash install.sh --recover, '
+    '"App settings, from a nightly backup"). Nothing is formatted.'
+)
+
+
+def lost_placed_drives(config, by_uuid=None):
+    """The drives beyond the SSD and the HDD that something is placed on (a group's files
+    or apps) and that are not connected: {name: (what it holds, in words; the apps on it)}.
+    A shared folder on a NAS is never "lost" here (its NAS may only be off)."""
+    import install_state
+    import placement
+
+    found = {}
+    for name, words in install_state.missing_group_drives(config, by_uuid or BY_UUID).items():
+        uuid = str(extra_drives(config)[name].get('uuid', ''))
+        apps = [app for row in sorted(rows_on(config, name)) for app in placement.apps_of(row)]
+        found[name] = (words, uuid, list(dict.fromkeys(apps)))
+    return found
+
+
+def rows_on(config, name):
+    """The rows of the placement table (photos, movies, music, cloud) whose files or apps
+    the settings put on drive `name`."""
+    found = set()
+    for section in ('locations', 'install'):
+        saved = config.get(section) if isinstance(config.get(section), dict) else {}
+        found |= {row for row, drive in saved.items() if drive == name}
+    return found
+
+
+def give_up_placed(config, name):
+    """A lost drive taken out of the settings everywhere it is named: "storage",
+    "locations", "install" and the placement table, so the storage page asks where its
+    groups go now and nothing is left naming it (gate run C17)."""
+    import existing_page
+
+    config.get('storage', {}).pop(name, None)
+    for section in ('locations', 'install'):
+        saved = config.get(section) if isinstance(config.get(section), dict) else {}
+        for row in [row for row, drive in saved.items() if drive == name]:
+            saved.pop(row)
+    if isinstance(config.get('placement'), dict):
+        # Worked out again from the drives left, the person's own folders carried over.
+        existing_page.keep_table(config)
+
+
+def lost_ahead(draft, chosen, log, by_uuid=None):
+    """On the storage page: each lost drive of a group's own is said, and given up on the
+    copy of the settings, so the page asks for the drive that replaces it among the drive
+    list. Kept in `chosen` for the settings once the person approves (keep_ahead)."""
+    for name, (words, uuid, apps) in lost_placed_drives(draft, by_uuid).items():
+        log(LOST_GROUP_DRIVE.format(what=words, uuid=uuid))
+        give_up_placed(draft, name)
+        chosen.setdefault('lost', {})[name] = {'what': words, 'apps': apps}
+
+
+def settings_start_empty(lost, run=subprocess.run):
+    """After the approval: the apps of each lost drive's groups start again on the drive
+    that replaces it with empty settings. Their containers are removed now (never their
+    data), so the media step makes them again on the new drive instead of leaving them
+    running on the lost drive's empty folder; the finishing page says so (drive_table.STARTED_EMPTY)."""
+    import drive_table
+    from neko_common import EXTRA_MOUNTS
+
+    for name, said in lost.items():
+        for app in said['apps']:
+            ids = containers_of(app, run)
+            if ids:
+                run(['docker', 'rm', '-f', *ids], capture_output=True, text=True, timeout=120, check=False)
+        drive_table.STARTED_EMPTY[name] = said
+        # The lost drive's mount folder keeps its name (never given to a new drive), with
+        # the empty folders Docker made in it while the drive was away taken out.
+        if (EXTRA_MOUNTS / name).is_dir():
+            clear_leftovers(EXTRA_MOUNTS / name)
+
+
+def containers_of(app, run=subprocess.run):
+    """The ids of the containers of one app (its Compose project neko-<app>)."""
+    try:
+        found = run(
+            ['docker', 'ps', '-aq', '--filter', f'label=com.docker.compose.project=neko-{app}'],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return found.stdout.split() if found.returncode == 0 else []
+
+
 def lost_drive_asked(apps, uuid):
     """The person's answer: True when the drive is lost and its apps are set up again."""
     import questions
@@ -1608,7 +1704,7 @@ def choose_ahead(config, log):
     import install_state
 
     # A saved drive that is not connected (replaced, gate run C10) is asked for here too.
-    if page_fields(config) or install_state.missing_drives(config, BY_UUID):
+    if page_fields(config) or install_state.missing_drives(config, BY_UUID) or lost_placed_drives(config):
         drives_ahead(draft, chosen, log)
     else:
         # The drives are known (a run after the first, an update): the films question,
@@ -1675,6 +1771,7 @@ def drives_ahead(draft, chosen, log):
     context = types.SimpleNamespace(config=draft, log=log, apply=True, config_path=None)
     inventory = inventory_now()
     log(disk_line(inventory))
+    lost_ahead(draft, chosen, log)
     with storage_page(context, inventory):
         resolve_storage_identity(draft, inventory, apply=True, interactive=True, out_fn=log)
         chosen['places'] = wished_places(context, inventory)
@@ -1735,6 +1832,11 @@ def keep_ahead(config, chosen):
         kept.update(added)
         for key in gone:
             kept.pop(key, None)
+    # A lost drive of a group's own, given up on the page: out of the settings everywhere,
+    # and its groups' apps made again on the drive that replaces it.
+    for name in chosen.get('lost') or {}:
+        give_up_placed(config, name)
+    settings_start_empty(chosen.get('lost') or {})
     drive_table.PLACES_AHEAD.clear()
     drive_table.PLACES_AHEAD.update(chosen['places'])
     drive_table.INSTALL_AHEAD.clear()
@@ -1974,11 +2076,31 @@ def checked_before_mount(config, specs):
                 raise RuntimeError(f'Wrong filesystem already mounted at {target}: {mounted}')
             if target not in folders:
                 only_a_folder(target, fstype, mounted_subvolume(target))
-        elif Path(target).exists() and any(Path(target).iterdir()):
+        elif Path(target).exists() and not clear_leftovers(Path(target)):
             raise RuntimeError(
-                f'Refusing mount over nonempty directory {target}: something is already in that folder '
-                f'(on the system disk). Move it elsewhere, or pick another drive, and run setup again'
+                f'Refusing mount over nonempty directory {target}: there are files in that folder (on the system '
+                'disk), and NekoServer never removes files. Move them elsewhere, or pick another drive, and run '
+                'setup again'
             )
+
+
+def clear_leftovers(folder):
+    """The folder a drive is mounted at, with nothing mounted there: the empty folders
+    left in it are removed (Docker made them while the drive was away, gate run C16).
+    Nothing else is touched: no file, no link, nothing on another filesystem. True when
+    the folder is empty now."""
+    if os.path.ismount(folder) or folder.is_symlink():
+        return False
+    device = folder.lstat().st_dev
+    for root, _dirs, files in os.walk(folder, topdown=False, followlinks=False):
+        here = Path(root)
+        if here == folder or files or here.lstat().st_dev != device or os.path.ismount(here):
+            continue
+        try:
+            here.rmdir()  # an empty folder only: rmdir refuses anything else
+        except OSError:
+            continue
+    return not any(folder.iterdir())
 
 
 # false under "photos": no removable drive for the weekly offline copy, by choice (the storage page).
@@ -2492,10 +2614,19 @@ def placed_on(config, row):
     for name, record in extra_drives(config).items():
         if record.get('uuid') == row['uuid']:
             return name
-    name = next(f'd{n}' for n in range(3, 100) if f'd{n}' not in storage)
+    name = next(f'd{n}' for n in range(3, 100) if f'd{n}' not in storage and not used_before(f'd{n}'))
     storage[name] = {}
     new_drive(storage[name], whole(unlocked(row['device'])))
     return name
+
+
+def used_before(name):
+    """A drive name whose mount folder is still there (a lost drive's): never given to a
+    new drive, so the apps' Compose files name the new one and their containers are made
+    again on it (gate run C17: Lidarr kept running on the lost drive's empty folder)."""
+    from neko_common import EXTRA_MOUNTS
+
+    return (EXTRA_MOUNTS / name).exists()
 
 
 def drive_table_places():
