@@ -916,7 +916,29 @@
       };
       select.addEventListener('change', say);
       say();
-      rows.push(row(place.title, [select], ''), beside);
+      if (place.install) {
+        // A row of the table: the drive the group's apps are installed on, and the drive its files are on.
+        const options = place.install.options.map(([value, text]) => ({ value, text }));
+        const installed = chooser(
+          place.install.key,
+          place.group + ': installed on',
+          options,
+          page.fields[place.install.key]
+        );
+        rows.push(
+          row(
+            place.group,
+            [
+              el('span', { class: 'pair-title', text: 'Installed on' }),
+              installed,
+              el('span', { class: 'pair-title', text: place.title + ' on' }),
+              select
+            ],
+            ''
+          ),
+          beside
+        );
+      } else rows.push(row(place.title, [select], ''), beside);
     }
     rows.push(el('p', { class: 'drives-needs', text: page.network }));
     $('ask-page').replaceChildren(el('div', { class: 'storage' }, ...rows));

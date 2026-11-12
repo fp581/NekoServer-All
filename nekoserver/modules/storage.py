@@ -1263,6 +1263,7 @@ def place_drives(context, inventory):
     remember_media_apps(context)
     before = drives_in_use(context.config)
     choose_locations(context, inventory=inventory)
+    settle_installs(context)
     if drives_in_use(context.config) != before:
         # A drive of its own chosen for an app's files: checked, saved and mounted like the two.
         specs = mount_specs(context.config)
@@ -1417,10 +1418,13 @@ def choose_ahead(config, log):
     with storage_page(context, inventory):
         resolve_storage_identity(draft, inventory, apply=True, interactive=True, out_fn=log)
         chosen['places'] = wished_places(context, inventory)
+        installs = wished_installs(context, inventory)
+        if installs:
+            chosen['installs'] = installs
         choose_usb(context)
         existing_page.ask(context, output=log)
     chosen['settings'] = section_changes(config, draft)
-    chosen['lines'] = ahead_lines(draft, inventory, chosen['places'])
+    chosen['lines'] = ahead_lines(draft, inventory, chosen['places'], chosen.get('installs') or {})
     return chosen
 
 
@@ -1460,6 +1464,8 @@ def keep_ahead(config, chosen):
             kept.pop(key, None)
     drive_table.PLACES_AHEAD.clear()
     drive_table.PLACES_AHEAD.update(chosen['places'])
+    drive_table.INSTALL_AHEAD.clear()
+    drive_table.INSTALL_AHEAD.update(chosen.get('installs') or {})
 
 
 def wished_places(context, inventory):
@@ -1485,6 +1491,95 @@ def wished_places(context, inventory):
         best = recommended(room['ssd'], threshold)
         places[what] = asked_location(context, words, best, room, on_nas, key=what, others=others)
     return places
+
+
+# What a group's apps are called when the page asks where they are installed.
+INSTALLED_NAMES = {
+    'photos': 'Immich',
+    'movies': 'Jellyfin and the apps with it',
+    'music': 'Navidrome',
+    'cloud': 'Nextcloud',
+}
+INSTALL_HERE = 'Same drive as NekoServer and your apps (recommended)'
+
+
+def install_drives(config, inventory):
+    """The drives a group's apps may be installed on besides the apps' own: connected to
+    this PC itself (never a storage box), with a filesystem Linux apps can use, and with
+    no role of their own."""
+    import drive_table
+
+    return [row for row in data_drives(config, inventory) if not drive_table.drive_verdict(row, 'data_ssd', config)]
+
+
+def asked_install(context, what, others):
+    """The drive a group's apps keep their settings and databases on, asked: the apps'
+    drive (Enter, and the answer when nothing else is said) or one of `others`, returned
+    as its row of the drive list. None for the apps' drive."""
+    import drive_table
+
+    name = INSTALLED_NAMES[what]
+    context.log(f'Where should {name} be installed (the settings and the database)?')
+    context.log('  1) the same drive as NekoServer and your apps  (recommended)')
+    for n, row in enumerate(others, 2):
+        context.log(f'  {n}) a drive of its own: {drive_table.brief(row)}')
+    for _ in range(3):
+        answer = drive_table.field('install_' + what, input, 'Number (Enter for the recommended one): ')
+        if answer in ('', '1'):
+            return None
+        if answer.startswith('drive:'):
+            # The window names the row of the list.
+            named = next((row for row in others if str(row['number']) == answer[len('drive:') :]), None)
+            if named is not None:
+                return named
+        elif answer.isdigit() and 2 <= int(answer) < 2 + len(others):
+            return others[int(answer) - 2]
+        context.log(f'Type a number from 1 to {1 + len(others)}, or press Enter.')
+    return None
+
+
+def wished_installs(context, inventory):
+    """Where each group's apps are to be installed, asked before the drives are mounted:
+    {'photos': a row of the drive list} for the groups given a drive of their own.
+    Nothing is asked on a PC with no drive that could be one."""
+    config = context.config
+    others = install_drives(config, inventory)
+    if not others:
+        return {}
+    installs = {}
+    for what in installs_asked(config):
+        row = asked_install(context, what, others)
+        if row is not None:
+            installs[what] = row
+    return installs
+
+
+def installs_asked(config):
+    """The groups whose installation drive the page asks for: the ones it asks a place
+    for (their app is new to this server), unless their settings name a drive already."""
+    asked = page_fields(config)
+    named = config.get('install') if isinstance(config.get('install'), dict) else {}
+    return [what for what, _words, _threshold in WHERE if what in asked and what not in named]
+
+
+def settle_installs(context):
+    """The installation drives chosen on the storage page, now that the apps' drive is
+    mounted. A group with settings on the apps' drive already stays there, and that is
+    said: an app that is set up is never moved. Any other is written to "install" in the
+    settings, its drive listed under "storage"; the caller mounts it."""
+    import drive_table
+    import placement
+
+    config = context.config
+    data = mount_path(config['data_mount'])
+    for what, row in list(drive_table.INSTALL_AHEAD.items()):
+        name = INSTALLED_NAMES[what]
+        if any(has_files(data / 'appdata' / app) for app in placement.apps_of(what)):
+            context.log(f'{name}: kept on the drive of NekoServer and your apps, where its settings already are')
+            continue
+        config.setdefault('install', {})[what] = placed_on(config, row)
+        context.log(f'{name}: installed on {drive_table.brief(row)}, a drive of its own')
+    drive_table.INSTALL_AHEAD.clear()
 
 
 def room_ahead(config, table):
@@ -1513,7 +1608,7 @@ def free_on(row):
 PLACE_SAID = {'ssd': 'on the drive of NekoServer and your apps', 'media': 'on the drive of the backups'}
 
 
-def ahead_lines(config, inventory, places):
+def ahead_lines(config, inventory, places, installs=None):
     """The storage page's choices in words, for the review before the approval."""
     import drive_table
 
@@ -1539,6 +1634,8 @@ def ahead_lines(config, inventory, places):
             if place == 'media' and what in backed_up_beside(config):
                 said += '. ' + SAME_DRIVE_AS_BACKUP
             lines.append(f'{words[0].upper()}{words[1:]}: {said}')
+    for what, row in (installs or {}).items():
+        lines.append(f'{INSTALLED_NAMES[what]}: installed on {drive_table.brief(row)}, a drive of its own')
     photos = config.get('photos', {})
     if photos.get('external_backup_uuid'):
         lines.append('Offline backup: ' + named(photos['external_backup_uuid']))
@@ -1652,6 +1749,13 @@ def storage_page(context, inventory):
         [f"drive:{row['number']}", f"On a drive of their own: {row['number']} · {drive_table.words(row)}"]
         for row in data_drives(config, inventory)
     ]
+    # A group's line is a row of the table: the drive its apps are installed on, and the
+    # drive its files are on. The first is offered only where there is a drive for it.
+    install_on = [['', INSTALL_HERE]] + [
+        [f"drive:{row['number']}", f"On a drive of its own: {row['number']} · {drive_table.words(row)}"]
+        for row in install_drives(config, inventory)
+    ]
+    installs = installs_asked(config) if len(install_on) > 1 else []
     places = [
         {
             'key': what,
@@ -1659,10 +1763,16 @@ def storage_page(context, inventory):
             'options': [list(option) for option in PAGE_PLACES.items()] + others,
             # Said under the line while the backups' drive is chosen for it.
             'beside_backup': SAME_DRIVE_AS_BACKUP + '.' if what in backed_up_beside(config) else '',
+            **(
+                {'group': INSTALLED_NAMES[what], 'install': {'key': 'install_' + what, 'options': install_on}}
+                if what in installs
+                else {}
+            ),
         }
         for what, words, _threshold in WHERE
         if what in asked
     ]
+    asked = {**asked, **{'install_' + what: '' for what in installs}}
     with setup_progress.page(
         drive_table.STORAGE_PAGE,
         asked,

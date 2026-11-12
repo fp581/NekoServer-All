@@ -458,7 +458,7 @@ def choose_storage(path, output):
 
 def keep_storage(path, chosen):
     """The storage page's choices written to the settings file, now that they are approved."""
-    if not chosen['settings'] and not chosen['places']:
+    if not chosen['settings'] and not chosen['places'] and not chosen.get('installs'):
         return
     from modules import storage
 

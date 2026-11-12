@@ -204,6 +204,75 @@ class DockerTests(unittest.TestCase):
             self.assertIn('BindsTo=srv-nekoserver.mount mnt-nekoserver-media.mount\n', text)
 
 
+ROW = {'number': 4, 'uuid': 'fast-0003', 'name': 'sdd1', 'size': '238.5G', 'type': 'SSD', 'model': 'Fast', 'label': ''}
+
+
+class PageTests(unittest.TestCase):
+    """The storage page asks where a group's apps are installed, only where there is a
+    drive for it; the answer is kept for the run and written once the apps' drive is open."""
+
+    def setUp(self):
+        import drive_table
+
+        self.drive_table = drive_table
+        self.addCleanup(drive_table.INSTALL_AHEAD.clear)
+        self.said = []
+        self.context = SimpleNamespace(config=settings(), log=self.said.append)
+
+    def ask(self, *answers, others=(ROW,)):
+        given = iter(answers)
+        with (
+            mock.patch.object(storage, 'install_drives', return_value=list(others)),
+            mock.patch.object(storage, 'page_fields', return_value={'photos': '', 'cloud': ''}),
+            mock.patch.object(self.drive_table, 'field', side_effect=lambda key, ask, prompt: next(given)),
+            mock.patch.object(self.drive_table, 'brief', return_value='drive 4 (sdd1: 238 GB SSD, Fast)'),
+        ):
+            return storage.wished_installs(self.context, {'blockdevices': []})
+
+    def test_enter_keeps_the_apps_drive_and_a_number_or_the_windows_answer_takes_another(self):
+        self.assertEqual(self.ask('', ''), {})
+        self.assertIn('Where should Immich be installed (the settings and the database)?', self.said)
+        self.assertIn('  1) the same drive as NekoServer and your apps  (recommended)', self.said)
+        self.assertIn('  2) a drive of its own: drive 4 (sdd1: 238 GB SSD, Fast)', self.said)
+        self.assertEqual(self.ask('2', '1'), {'photos': ROW})
+        self.assertEqual(self.ask('', 'drive:4'), {'cloud': ROW})
+        # Not a number of the list: said, asked again, and the apps' drive in the end.
+        self.assertEqual(self.ask('9', 'x', 'drive:7', ''), {})
+        self.assertIn('Type a number from 1 to 2, or press Enter.', self.said)
+
+    def test_nothing_is_asked_without_a_drive_for_it_or_for_a_group_already_placed(self):
+        never = mock.Mock(side_effect=AssertionError('asked'))
+        with mock.patch.object(self.drive_table, 'field', never):
+            self.assertEqual(self.ask(others=()), {})
+        with mock.patch.object(storage, 'page_fields', return_value={'photos': '', 'cloud': ''}):
+            self.assertEqual(storage.installs_asked(settings()), ['photos', 'cloud'])
+            self.assertEqual(storage.installs_asked(settings(install={'photos': 'd3'})), ['cloud'])
+
+    def test_the_choice_is_written_once_the_apps_drive_is_open_and_never_moves_an_app(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.context.config['data_mount'] = folder
+            (Path(folder) / 'appdata' / 'nextcloud').mkdir(parents=True)
+            (Path(folder) / 'appdata' / 'nextcloud' / 'config.php').write_text('x')
+            self.drive_table.INSTALL_AHEAD.update(photos=ROW, cloud=ROW)
+            with (
+                mock.patch.object(storage, 'placed_on', return_value='d3') as placed,
+                mock.patch.object(self.drive_table, 'brief', return_value='drive 4 (sdd1: 238 GB SSD, Fast)'),
+            ):
+                storage.settle_installs(self.context)
+        placed.assert_called_once_with(self.context.config, ROW)
+        self.assertEqual(self.context.config['install'], {'photos': 'd3'})
+        self.assertIn('Immich: installed on drive 4 (sdd1: 238 GB SSD, Fast), a drive of its own', self.said)
+        self.assertIn(
+            'Nextcloud: kept on the drive of NekoServer and your apps, where its settings already are', self.said
+        )
+        self.assertEqual(self.drive_table.INSTALL_AHEAD, {})
+
+    def test_the_review_names_the_drive(self):
+        with mock.patch.object(self.drive_table, 'brief', return_value='drive 4 (sdd1: 238 GB SSD, Fast)'):
+            lines = storage.ahead_lines(settings(storage={}), {'blockdevices': []}, {}, {'photos': ROW})
+        self.assertIn('Immich: installed on drive 4 (sdd1: 238 GB SSD, Fast), a drive of its own', lines)
+
+
 class UninstallTests(unittest.TestCase):
     """The uninstaller takes setup's own blocks out of /etc/fstab, unmounts what is mounted
     inside the drives before the drives, and opens the folders setup closed."""

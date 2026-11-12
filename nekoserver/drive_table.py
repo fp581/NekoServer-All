@@ -43,6 +43,8 @@ NEVER_FORMATS = 'Setup never formats a drive and changes nothing by showing this
 # 'media' | a row of this list}. Kept here because the installer loads its steps as
 # modules of their own, and this one is shared by all of them.
 PLACES_AHEAD = {}
+# ... and the drive a group's apps are installed on, when not the apps' own: {'photos': a row of this list}.
+INSTALL_AHEAD = {}
 
 
 def role(key):

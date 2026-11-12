@@ -169,9 +169,14 @@ const review = { hidden: elements.review?.hidden ?? null, appsHidden: elements['
   title: elements['review-title']?.textContent ?? '', note: elements['review-note']?.textContent ?? '',
   sections: (elements['review-sections']?.children ?? []).map((part) => [part.children[0].textContent, part.children[1].children.map((li) => li.textContent)]) };
 const storage = (elements['ask-page']?.children?.[0]?.className === 'storage' ? elements['ask-page'].children[0].children : [])
-  .filter((row) => row.className === 'row').map((row) => { const select = row.children[1].children[0];
+  .filter((row) => row.className === 'row').map((row) => {
+    // A row of the table has two lists: the drive of the files is the one reported, as on every other row.
+    const lists = row.children[1].children.filter((child) => String(child.id ?? '').startsWith('ask-page-'));
+    const select = lists[lists.length - 1];
     return { key: select.id.replace('ask-page-', ''), title: row.children[0].textContent, value: select.value,
       note: elements[select.id + '-facts']?.textContent ?? '',
+      install: lists.length > 1 ? { key: lists[0].id.replace('ask-page-', ''), value: lists[0].value,
+        options: lists[0].children.map((option) => [option.value, option.textContent]) } : null,
       options: select.children.map((option) => [option.value, option.textContent, !!option.disabled]) }; });
 // The accounts page: [the app, whether its entries are shown, whether "made for you" is shown].
 const accounts = (elements['ask-page-accounts']?.children ?? []).map((row) => [row.children[0].textContent, !row.children[1].hidden, !row.children[2].hidden]);

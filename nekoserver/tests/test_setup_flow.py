@@ -837,6 +837,19 @@ class SetupWindowTests(unittest.TestCase):
         beside = {**page, 'fields': {**page['fields'], 'photos': 'media'}}
         seen = self.page([self.asked(question, beside)])
         self.assertEqual(seen['storage'][3]['note'], 'Their backup is then on the same drive.')
+        # A group's row of the table, where there is a drive for it: the list of where its
+        # apps are installed beside the list of where its files are, both sent with the page.
+        install = {'key': 'install_photos', 'options': [['', 'Same drive as NekoServer and your apps'],
+                                                        ['drive:3', 'On a drive of its own: 3']]}  # fmt: skip
+        table = {**page, 'fields': {**page['fields'], 'install_photos': 'drive:3'},
+                 'places': [{**page['places'][0], 'group': 'Immich', 'install': install}]}  # fmt: skip
+        seen = self.page([self.asked(question, table)])
+        row = seen['storage'][3]
+        self.assertEqual((row['key'], row['title']), ('photos', 'Immich'))
+        self.assertEqual(row['install']['key'], 'install_photos')
+        self.assertEqual(row['install']['value'], 'drive:3')
+        self.assertEqual([option[0] for option in row['install']['options']], ['', 'drive:3'])
+        self.assertIsNone(lists[3]['install'])  # no such drive: the line as it always was
         # The recommended drive is chosen already when the page opens, and says so.
         ready = {**page, 'roles': [{**page['roles'][0], 'recommended': '2'}, *page['roles'][1:]]}
         seen = self.page([self.asked(question, ready)])
