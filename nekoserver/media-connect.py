@@ -374,6 +374,27 @@ def already_there(existing, selected):
     )
 
 
+ELSEWHERE = (
+    'To add other download sources, open Prowlarr (on the dashboard) and choose Indexers, then Add Indexer.'
+)
+
+
+def standard_indexers(schemas, existing, names=None):
+    """The download sources added without asking (the user: after "Install selected apps"
+    only the Tailscale sign-in, the drive-space warning and the phone page ask; the
+    fresh install of the gate's J01 run stopped at the picker): the recommended ones,
+    only while Prowlarr has none. A server with sources of its own keeps them as they are."""
+    if existing:
+        print('Download sources: the ones Prowlarr has are kept. ' + ELSEWHERE)
+        return []
+    found = recommended_among(schemas, recommended_names() if names is None else names)
+    picked = [schemas[number - 1] for number in found]
+    if picked:
+        print('Download sources: the recommended ones are added: ' + ', '.join(indexer_name(s) for s in picked) + '.')
+    print(ELSEWHERE)
+    return picked
+
+
 def configure_indexers(root, apply, config=None):
     """Prowlarr's download sources: chosen several at once from its own catalogue (no list
     of NekoServer's own, apart from the names marked recommended), then added one by one.
@@ -386,7 +407,7 @@ def configure_indexers(root, apply, config=None):
     profiles = request('prowlarr', key, '/appprofile')
     print(f'Prowlarr catalog: {len(schemas)} definitions; {len(existing)} configured indexers')
     added, rejected = [], []
-    for selected in chosen_indexers(schemas, recommended_names()):
+    for selected in standard_indexers(schemas, existing):
         if already_there(existing, selected):
             print(indexer_name(selected) + ': already configured; skipping duplicate')
             continue

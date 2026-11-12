@@ -184,7 +184,7 @@ class AddingTests(unittest.TestCase):
         with (
             mock.patch.object(connect, 'app_key', return_value='k'),
             mock.patch.object(connect, 'request', prowlarr),
-            mock.patch.object(connect, 'chosen_indexers', return_value=chosen),
+            mock.patch.object(connect, 'standard_indexers', return_value=chosen),
             mock.patch.object(connect, 'provider_account_ready', return_value=True),
             mock.patch.object(connect, 'finished_in_prowlarr', return_value=finished) as by_hand,
             mock.patch.object(
@@ -294,7 +294,7 @@ class AddingTests(unittest.TestCase):
 
     def test_a_provider_account_not_ready_skips_only_that_one(self):
         prowlarr = Prowlarr()
-        with mock.patch.object(connect, 'chosen_indexers', return_value=[CATALOGUE[1], CATALOGUE[0]]):
+        with mock.patch.object(connect, 'standard_indexers', return_value=[CATALOGUE[1], CATALOGUE[0]]):
             with (
                 mock.patch.object(connect, 'app_key', return_value='k'),
                 mock.patch.object(connect, 'request', prowlarr),
@@ -330,3 +330,18 @@ class AddingTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class NothingAskedAfterTheApprovalTests(unittest.TestCase):
+    """The gate's J01 run stopped after "Install selected apps" at "Looking for a download
+    source by name?": the recommended sources are added without asking instead."""
+
+    def test_the_recommended_ones_while_prowlarr_has_none(self):
+        schemas = [{'name': 'The Pirate Bay'}, {'name': 'Other'}, {'name': 'YTS'}]
+        with mock.patch('builtins.input', side_effect=AssertionError('asked')), mock.patch('builtins.print'):
+            picked = connect.standard_indexers(schemas, [], ['the pirate bay', 'yts', 'eztv'])
+        self.assertEqual([s['name'] for s in picked], ['The Pirate Bay', 'YTS'])
+
+    def test_sources_of_its_own_are_kept_as_they_are(self):
+        with mock.patch('builtins.print'):
+            self.assertEqual(connect.standard_indexers([{'name': 'YTS'}], [{'name': 'Mine'}], ['yts']), [])
