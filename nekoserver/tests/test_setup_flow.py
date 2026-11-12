@@ -687,16 +687,18 @@ class SetupWindowTests(unittest.TestCase):
 
     DRIVES = [
         {
-            'number': 1, 'name': 'nvme0n1', 'what': '477 GB NVMe SSD, WD SN770', 'inside': '', 'role': '',
+            'number': 1, 'name': 'nvme0n1', 'what': 'WD SN770, 477 GB NVMe SSD', 'state': 'the disk Linux runs from',
+            'details': 'Details: nvme0n1', 'role': '',
             'why': 'it is the disk Linux runs from, which NekoServer never uses for your files',
         },
         {
-            'number': 2, 'name': 'sda1', 'what': '466 GB SSD, Samsung SSD 870, named "apps"',
-            'inside': 'ext4, UUID ssd-0001; not open; about 1 % full', 'role': '', 'why': '',
+            'number': 2, 'name': 'sda1', 'what': 'Samsung SSD 870, 466 GB SSD, named "apps"', 'state': 'ready to use',
+            'details': 'Details: sda1 on sda; ext4, UUID ssd-0001; not open; about 1 % full', 'role': '', 'why': '',
         },
         {
-            'number': 3, 'name': 'sdb1', 'what': '1.8 TB HDD, WDC WD20EZRZ, named "media"',
-            'inside': 'ext4, UUID hdd-0001; not open', 'role': 'Chosen as the media HDD',
+            'number': 3, 'name': 'sdb1', 'what': 'WDC WD20EZRZ, 1.8 TB HDD, named "media"',
+            'state': 'chosen as the media HDD', 'details': 'Details: sdb1 on sdb; ext4, UUID hdd-0001; not open',
+            'role': 'Chosen as the media HDD',
             'why': 'it is already the media HDD',
         },
     ]  # fmt: skip
@@ -720,20 +722,21 @@ class SetupWindowTests(unittest.TestCase):
         self.assertEqual(
             seen['drives'],
             [
+                # In plain words; the filesystem and the ID are in each card's Details only.
                 {
-                    'name': '1 · nvme0n1 · 477 GB NVMe SSD, WD SN770',
+                    'name': '1 · WD SN770, 477 GB NVMe SSD',
                     'facts': ['Not this one: it is the disk Linux runs from, which NekoServer never uses for your files'],
-                    'off': True, 'radioHidden': False,
+                    'details': 'nvme0n1', 'off': True, 'radioHidden': False,
                 },
                 {
-                    'name': '2 · sda1 · 466 GB SSD, Samsung SSD 870, named "apps"',
-                    'facts': ['ext4, UUID ssd-0001; not open; about 1 % full'],
-                    'off': False, 'radioHidden': False,
+                    'name': '2 · Samsung SSD 870, 466 GB SSD, named "apps"',
+                    'facts': ['ready to use'],
+                    'details': 'sda1 on sda; ext4, UUID ssd-0001; not open; about 1 % full', 'off': False, 'radioHidden': False,
                 },
                 {
-                    'name': '3 · sdb1 · 1.8 TB HDD, WDC WD20EZRZ, named "media"',
-                    'facts': ['ext4, UUID hdd-0001; not open', 'Chosen as the media HDD', 'Not this one: it is already the media HDD'],
-                    'off': True, 'radioHidden': False,
+                    'name': '3 · WDC WD20EZRZ, 1.8 TB HDD, named "media"',
+                    'facts': ['Not this one: it is already the media HDD'],
+                    'details': 'sdb1 on sdb; ext4, UUID hdd-0001; not open', 'off': True, 'radioHidden': False,
                 },
             ],
         )  # fmt: skip
@@ -825,12 +828,17 @@ class SetupWindowTests(unittest.TestCase):
             lists[0]['options'],
             [
                 ['', 'Choose a drive…', False],
-                ['1', '1 · 477 GB NVMe SSD, WD SN770 (not this one: it is the disk Linux runs from, which '
+                ['1', '1 · WD SN770, 477 GB NVMe SSD (not this one: it is the disk Linux runs from, which '
                  'NekoServer never uses for your files)', True],
-                ['2', '2 · 466 GB SSD, Samsung SSD 870, named "apps"', False],
-                ['3', '3 · 1.8 TB HDD, WDC WD20EZRZ, named "media" (not this one: it is already the media HDD)', True],
+                ['2', '2 · Samsung SSD 870, 466 GB SSD, named "apps"', False],
+                ['3', '3 · WDC WD20EZRZ, 1.8 TB HDD, named "media" (not this one: it is already the media HDD)', True],
             ],
         )  # fmt: skip
+        # The drive chosen: how it stands under its line, its filesystem and ID behind Details.
+        ready = {**page, 'fields': {**page['fields'], 'data_ssd': '2'}}
+        chosen = self.page([self.asked(question, ready)])['storage'][0]
+        self.assertEqual(chosen['note'], 'ready to use')
+        self.assertEqual(chosen['details'], 'sda1 on sda; ext4, UUID ssd-0001; not open; about 1 % full')
         self.assertEqual(lists[2]['options'], [['', 'None for now', False]])  # the offline copy can wait
         self.assertEqual([option[0] for option in lists[3]['options']], ['', 'ssd', 'media'])
         # Files kept on the backups' drive: what that means is said under the line, only then.
@@ -856,7 +864,7 @@ class SetupWindowTests(unittest.TestCase):
         seen = self.page([self.asked(question, ready)])
         self.assertEqual((seen['storage'][0]['value'], seen['storage'][1]['value']), ('2', ''))
         self.assertEqual(
-            seen['storage'][0]['options'][2][1], '2 · 466 GB SSD, Samsung SSD 870, named "apps" (recommended)'
+            seen['storage'][0]['options'][2][1], '2 · Samsung SSD 870, 466 GB SSD, named "apps" (recommended)'
         )
         # Nothing chosen for a line that needs a drive: said, not sent.
         seen = self.page([self.asked(question, page, leave=True)])

@@ -940,6 +940,19 @@ a.button {
   color: var(--muted);
   font-size: 12.5px;
 }
+/* a drive's filesystem and ID: there when asked for, never in its main line */
+.drive-details {
+  grid-column: 2;
+  font-size: 12px;
+  color: var(--muted);
+}
+.drive-details summary {
+  cursor: pointer;
+  width: max-content;
+}
+.drive-details small {
+  display: block;
+}
 /* related questions on one page (the backup times, a password typed twice): a row per time, its note under it */
 .rows {
   display: grid;

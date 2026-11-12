@@ -28,8 +28,8 @@ ROLES = {
     'usb': ('the USB backup drive',),
 }
 NAMES_CHANGE = (
-    'The short names (sdb1, nvme0n1p2) are Linux\'s own and can change at the next start. NekoServer '
-    'remembers a drive by its UUID, which you never have to type.'
+    'The details give each drive Linux\'s own name for it (sdb1, nvme0n1p2), which can change at the next start. '
+    'NekoServer remembers a drive by the ID in its details, which you never have to type.'
 )
 NEVER_FORMATS = 'Setup never formats a drive and changes nothing by showing this list.'
 
@@ -313,6 +313,7 @@ def rows(inventory, config, items=None, look=None):
 def numbered_rows(found):
     """The rows with the number each is chosen by, and what every message calls it after."""
     on_disks = {row['uuid']: row['disks'] for row in found if row['uuid']}
+    told_apart(found)
     for number, row in enumerate(found, 1):
         row['number'] = number
         row['on_disks'] = on_disks  # every drive's disks: two roles never share one
@@ -331,24 +332,93 @@ def size_of(row):
     return size_words(row.get('size')) if row.get('size') else ''
 
 
-def words(row):
-    """What the drive is: its size and type, its model, the name it was given (its label)."""
+def plain_words(row):
+    """What the drive is in plain words, without what tells two identical ones apart."""
     if row['export']:
-        return 'a folder the NAS shares (NFS)'
-    said = [' '.join(part for part in (size_of(row), row['type']) if part)]
-    if row['model']:
-        said.append(row['model'])
-    if row['label']:
-        said.append(f'named "{row["label"]}"')
+        # Its folder on the NAS tells two of them apart; the NAS's address is in its details.
+        return f"a folder the NAS shares ({row['export'].partition(':')[2] or row['export']})"
+    named = f'named "{row["label"]}"' if row['label'] else ''
+    said = [row['model'] or named, ' '.join(part for part in (size_of(row), row['type']) if part)]
+    if row['model'] and named:
+        said.append(named)
     if len(row['disks']) > 1:
-        said.append('over ' + ' and '.join(row['disks']))
-    return ', '.join(said)
+        said.append(f"over {len(row['disks'])} disks")
+    return ', '.join(part for part in said if part) or 'a drive'
+
+
+def told_apart(found):
+    """Drives that read the same (two of one model and size): each gets the end of its
+    ID in its main line, the same ID its details show in full."""
+    seen = {}
+    for row in found:
+        seen.setdefault(plain_words(row), []).append(row)
+    for same in seen.values():
+        endings = id_endings([row['uuid'] or row['name'] for row in same])
+        for row, ending in zip(same, endings):
+            row['twin'] = f'ID ending {ending}' if len(same) > 1 else ''
+
+
+def id_endings(ids):
+    """The shortest ends of these IDs that differ: their last 4 characters (enough for
+    real filesystem IDs), else whole dash-separated parts of them, never half a word."""
+    ends = [each[-4:] for each in ids]
+    parts = 1
+    while len(set(ends)) < len(ids) and parts <= max(each.count('-') for each in ids):
+        parts += 1
+        ends = ['-'.join(each.split('-')[-parts:]) for each in ids]
+    return ends if len(set(ends)) == len(ids) else ids
+
+
+def words(row):
+    """What the drive is: its model or the name it was given (its label), its size and
+    kind. Never its filesystem or its ID, which are in its details (`details`), unless two
+    drives would read the same."""
+    twin = row.get('twin')
+    return plain_words(row) + (f', {twin}' if twin else '')
+
+
+def details(row):
+    """The drive's details, shown under it and behind the window's Details: Linux's name
+    for it, the disk it is on, the filesystem and its ID, where it is open, how full it is."""
+    if row['export']:
+        return f"Details: the NAS shares it at {row['export']}"
+    disk = row['disks'][0] if row['disks'] else ''
+    name = row['name'] + (f' on {disk}' if disk and disk != row['name'] else '')
+    return '; '.join(part for part in (f'Details: {name}', inside(row)) if part)
+
+
+def state(row, config):
+    """How the drive stands, after its name: chosen already, ready to use, holding files
+    that are kept, or why it cannot be used (the first sentence of it: the way to make it
+    usable is said under it, and when it is chosen all the same)."""
+    has = role_of(row, config)
+    if has:
+        return f'chosen as {role(has)}'
+    if not any(not verdict(row, key, config) for key in ROLES):
+        return "can't be used: " + first_sentence(verdict(row, 'media_hdd', config))
+    if row['system']:
+        return 'the disk Linux runs from'
+    return 'has files: kept as they are' if row['files'] else 'ready to use'
+
+
+def first_sentence(text):
+    return text.split('. ')[0].rstrip('.')
+
+
+def how_to(row, config):
+    """The line under a drive's name: the roles it can have, or how to make it usable."""
+    if role_of(row, config):
+        return ''
+    roles = [role(key) for key in ROLES if not verdict(row, key, config)]
+    if roles:
+        return 'Can be ' + (', '.join(roles[:-1]) + ' or ' + roles[-1] if len(roles) > 1 else roles[0]) + '.'
+    rest = verdict(row, 'media_hdd', config).split('. ', 1)[1:]
+    return rest[0].rstrip('.') + '.' if rest else ''
 
 
 def brief(row):
-    """The drive as every message after the list names it: its number there, its Linux
-    name and what it is."""
-    return f"drive {row['number']} ({row['name']}: {words(row)})"
+    """The drive as every message after the list names it: its number there and what it is."""
+    return f"drive {row['number']} ({words(row)})"
 
 
 def said(device, first=False):
@@ -612,10 +682,10 @@ def shown(table, config):
     """The full list as the terminal prints it before the first drive question."""
     lines = ['Everything connected to this PC:']
     for row in table:
-        lines.append(f"  {row['number']}) {row['name']}: {words(row)}")
-        if inside(row):
-            lines.append('       ' + inside(row))
-        lines.append('       ' + can_be(row, config))
+        lines.append(f"  {row['number']}) {words(row)} - {state(row, config)}")
+        if how_to(row, config):
+            lines.append('       ' + how_to(row, config))
+        lines.append('       ' + details(row))
     return [*lines, NAMES_CHANGE, NEVER_FORMATS]
 
 
@@ -638,13 +708,10 @@ def listed(table, key, config):
     lines = [' '.join(part for part in (f'Now choose {asked_for(config, key)}.', needs(key)) if part)]
     for row in table:
         why = verdict(row, key, config)
-        facts = ', '.join(
-            part for part in (words(row), row['fstype'] if not row['export'] else '', fullness(row)) if part
-        )
+        facts = ', '.join(part for part in (words(row), fullness(row)) if part)
         # The reason in short: how to make the drive usable is in the full list above, and
         # said again when that drive is chosen all the same.
-        short = why.split('. ')[0]
-        lines.append(f"  {row['number']}) {row['name']}: {facts}" + (f'  - not this one: {short}' if why else ''))
+        lines.append(f"  {row['number']}) {facts}" + (f'  - not this one: {first_sentence(why)}' if why else ''))
     return lines
 
 
@@ -655,7 +722,8 @@ def for_window(table, key, config):
             'number': row['number'],
             'name': row['name'],
             'what': words(row),
-            'inside': inside(row),
+            'state': state(row, config),
+            'details': details(row),
             'role': (f'Chosen as {role(has)}' if (has := role_of(row, config)) else ''),
             'why': verdict(row, key, config),
             # What choosing it means, said before it is chosen (the disk Linux runs from).
@@ -870,7 +938,7 @@ def ask(table, key, config, input_fn=input, out_fn=print, attempts=3, skippable=
 def last_time(row, key):
     """What a rerun says about a drive chosen before."""
     chosen = brief(row)
-    return f"Last time you chose {chosen} as {role(key)} (UUID {row['uuid']}). It is used again."
+    return f'Last time you chose {chosen} as {role(key)}. It is used again.'
 
 
 def saved_row(table, uuid):
