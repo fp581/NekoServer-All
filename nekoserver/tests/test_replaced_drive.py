@@ -203,6 +203,36 @@ class RetryReadsAgainTests(unittest.TestCase):
         self.assertEqual((code, seen), (0, [{'fstype': 'ext4'}]))
 
 
+class PlainWordsTests(unittest.TestCase):
+    """The texts a person meets on the normal path name what setup asks on a rerun, never
+    an edit of the settings file."""
+
+    def test_no_assistant_points_to_the_first_page_switch(self):
+        from modules import assistant
+
+        said = []
+        ctx = mock.Mock(config={}, log=said.append)
+        with mock.patch.object(assistant.guided_setup, 'save_settings'):
+            assistant.save_choice(ctx, False, 'auto')
+        self.assertIn('choose "Add a local AI assistant" on the first page', said[0])
+        self.assertNotIn('my-config.json', said[0])
+        import explanations
+
+        titles = [extra['title'] for extra in explanations.EXTRAS if extra['section'] == 'assistant']
+        self.assertEqual(titles, ['Add a local AI assistant'])
+
+    def test_the_dashboard_port_note_names_no_file(self):
+        from modules import dashboard
+
+        said = []
+        ctx = mock.Mock(config={}, log=said.append)
+        with mock.patch.object(dashboard, 'port_free', side_effect=lambda port: port != 8090):
+            spare = dashboard.choose_port(ctx, 8090, running=1)  # the dashboard is not running yet
+        self.assertNotEqual(spare, 8090)
+        self.assertIn('kept in the settings', said[0])
+        self.assertNotIn('my-config.json', said[0])
+
+
 class RecoveryMenuTests(unittest.TestCase):
     """3. The recovery menu offers only what this server has."""
 

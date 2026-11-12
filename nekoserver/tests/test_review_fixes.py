@@ -264,7 +264,8 @@ class NotificationTopicTests(unittest.TestCase):
         self.assertEqual(self.switch(True, self.OLD, ('yes',)), (self.NEW, 'tk_new'))
         kept = self.switch(True, self.OLD, ('no',))
         self.assertEqual(kept['status'], 'needs_setup')
-        self.assertIn('Put it back in notifications.endpoint', kept['reason'])
+        self.assertIn('run setup again and answer yes when it asks', kept['reason'])
+        self.assertNotIn('my-config.json', kept['reason'])  # gate run C10: never "edit the file"
         unattended = self.switch(False, self.OLD)
         self.assertEqual(unattended['status'], 'needs_setup')
         self.assertIn('--module notifications --apply', unattended['reason'])

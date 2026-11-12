@@ -181,15 +181,15 @@ def switch(context, configured, current, token, prompt=None, ask=None):
         if current:
             return {
                 'status': 'needs_setup',
-                'reason': 'The ntfy topic in my-config.json differs from the one alerts go '
+                'reason': 'The ntfy topic in the settings differs from the one alerts go '
                 'to now. To switch, run  sudo bash install.sh --module notifications --apply  in a terminal',
             }
         return configured, token
     if current and not questions.yes_no('alerts_switch', prompt):
         return {
             'status': 'needs_setup',
-            'reason': 'Alerts still go to the earlier ntfy topic. Put it back in '
-            'notifications.endpoint in my-config.json, or run setup again and answer yes to switch',
+            'reason': 'Alerts still go to the earlier ntfy topic. To switch to the new one, run setup again '
+            'and answer yes when it asks',
         }
     return configured, ask_token(ask)
 

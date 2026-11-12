@@ -174,7 +174,7 @@ def choose_port(ctx, port, running=None):
             f'Port {port} is used by another program on this PC, and none of the spare ports {SPARE_PORTS.start}-{SPARE_PORTS.stop - 1} is free either; set "port" under "dashboard" in my-config.json to a free port'
         )
     ctx.log(
-        f'Dashboard: port {port} is used by another program on this PC, so the dashboard uses port {spare} instead (kept in my-config.json, "port" under "dashboard")'
+        f'Dashboard: port {port} is used by another program on this PC, so the dashboard uses port {spare} instead (kept in the settings, so its address stays the same)'
     )
     ctx.config.setdefault('dashboard', {})['port'] = spare
     if hasattr(ctx, 'persist_config'):
