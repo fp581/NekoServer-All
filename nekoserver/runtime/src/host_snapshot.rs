@@ -536,7 +536,16 @@ fn snapshot(
             probe_absent(&["pgrep", "-x", "smbd|winbindd|nmbd|samba"])?;
         }
         let manifest = json!({"format":"neko-host-snapshot-v1","version":VERSION,"created_at":common::now(),"files":files,"sources":cfg["host_backup"]["sources"],"missing_optional":missing,"left_out":left_out,"skipped":skipped,"smb_was_active":active,"links_are_inert":true,"application_consistency":if left_out.is_empty() {"Steam closed; managed Samba stopped; other files checked for changes"} else {"Steam open: its files left out; managed Samba stopped; other files checked for changes"}});
-        let keep = cfg["host_backup"]["keep_snapshots"].as_u64().unwrap_or(7);
+        // 1 to 7 (0.50.0), or the earlier count setup marked; a count that is neither
+        // removes nothing, and the journal says so.
+        let (keep, refused) = backup::keep_count(
+            &cfg["host_backup"]["keep_snapshots"],
+            &cfg["host_backup"]["earlier"],
+            "host_backup",
+        );
+        if let Some(why) = refused {
+            println!("Host snapshot: {why}");
+        }
         // A run that left Steam out never retires the last snapshot that has it.
         let protected = if left_out.is_empty() {
             None

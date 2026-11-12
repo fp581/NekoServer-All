@@ -596,9 +596,14 @@ fn snapshot(
         unchanged_since_listing(data, names, device, &files, &skipped)?;
         verify_staged(payload, &files)?;
         let manifest = json!({"format":"neko-media-snapshot-v1","version":VERSION,"created_at":common::now(),"containers":containers,"files":files,"skipped":skipped,"storage":common::json(cfgpath,64000)["storage"]});
-        let keep = common::json(cfgpath, 64000)["app_backup"]["keep_snapshots"]
-            .as_u64()
-            .unwrap_or(7);
+        // 1 to 7 (0.50.0), or the earlier count setup marked; a count that is neither
+        // removes nothing and is reported.
+        let settings = common::json(cfgpath, 64000);
+        let (keep, refused) = backup::keep_count(
+            &settings["app_backup"]["keep_snapshots"],
+            &settings["app_backup"]["earlier"],
+            "app_backup",
+        );
         backup::publish_snapshot(
             &root,
             &stage,
@@ -610,7 +615,14 @@ fn snapshot(
         )?;
         // Snapshots removed early for room, leaving fewer than the settings keep: the
         // run is done in part, so the dashboard says the history is shorter.
-        backup::short_history(&root, &removed, keep)
+        let short = backup::short_history(&root, &removed, keep)?;
+        Ok(match refused {
+            Some(why) => {
+                println!("Application backup: {why}");
+                Some(json!([why]))
+            }
+            None => short,
+        })
     })();
     let restarted = resume();
     let partial = result.and_then(|partial| restarted.map(|()| partial))?;

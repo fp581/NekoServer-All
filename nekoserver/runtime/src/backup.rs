@@ -3020,6 +3020,24 @@ pub fn publish_snapshot(
     common::prune_snapshots(root, keep, Some(&stage.name), protected)?;
     Ok(())
 }
+/// How many snapshots a nightly job keeps (0.50.0): a whole number from 1 to 7 (`keep`,
+/// from the job's settings, where setup wrote it). A count from before 0.50.0 outside
+/// that (up to 3650; 0 kept every snapshot) is kept to as before, but only when setup
+/// marked it as the earlier setting (`earlier` is true). Anything else is refused: the
+/// count comes back as 0, which removes nothing, with the reason to report. The backup
+/// itself still runs: a wrong number must never cost a night's backup, nor a backup.
+pub fn keep_count(keep: &Value, earlier: &Value, setting: &str) -> (u64, Option<String>) {
+    match keep.as_u64() {
+        Some(count) if (1..=7).contains(&count) => (count, None),
+        Some(count) if earlier.as_bool() == Some(true) && count <= 3650 => (count, None),
+        _ => (
+            0,
+            Some(format!(
+                "the number of backups to keep ({setting}.keep_snapshots) is {keep}, not a whole number from 1 to 7, so no older backup was removed; run  sudo bash install.sh  to set it"
+            )),
+        ),
+    }
+}
 /// Room in `root` for a new snapshot: `needed` bytes free (its files plus a reserve).
 /// While the drive is short, the oldest snapshots are removed first, but the newest
 /// complete one always stays, as the one good backup. Still short: the error `short`
@@ -7438,6 +7456,119 @@ mod tests {
         let error = make_room_with(&root, 100, &free, &short).unwrap_err();
         assert_eq!(error.to_string(), "short: 90 free");
         assert_eq!(names(&root), ["snapshot-300-1"]);
+        let _ = fs::remove_dir_all(root);
+    }
+    /// A finished snapshot in `root`, as a job publishes it.
+    fn finished(root: &Path, name: &str) {
+        fs::create_dir_all(root.join(name)).unwrap();
+        fs::set_permissions(root.join(name), fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(root.join(name).join("manifest.json"), b"{}").unwrap();
+    }
+    /// The wizard specification's T20: older backups are removed only once a new one is
+    /// finished and published, and the last usable one never goes.
+    #[test]
+    fn older_snapshots_go_only_after_a_new_one_is_published_and_never_the_last_one() {
+        let root = scratch("prune-after");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        for name in ["snapshot-100-1", "snapshot-200-1", "snapshot-300-1"] {
+            finished(&root, name);
+        }
+        let old = ["snapshot-100-1", "snapshot-200-1", "snapshot-300-1"];
+        // A run that fails before it is published (here: its last check of the drives)
+        // removes nothing, though the settings keep only one.
+        let stage = stage_snapshot(&root).unwrap();
+        let failed = publish_snapshot(
+            &root,
+            &stage,
+            &[],
+            || Err(Error::new("the drive went away")),
+            &json!({}),
+            1,
+            None,
+        );
+        assert!(failed.is_err());
+        assert_eq!(
+            common::complete_snapshots(&root)
+                .unwrap()
+                .iter()
+                .map(|(_, name)| name.as_str())
+                .collect::<Vec<_>>(),
+            old
+        );
+        // Starting the next run clears the half-made one, and still none of the finished ones.
+        let stage = stage_snapshot(&root).unwrap();
+        assert_eq!(common::complete_snapshots(&root).unwrap().len(), 3);
+        // The run that succeeds: only now the older ones go, and the new one is the one kept.
+        publish_snapshot(&root, &stage, &[], || Ok(()), &json!({}), 1, None).unwrap();
+        assert_eq!(names(&root), [stage.name.clone()]);
+        // With one backup left and a run that fails, that one stays: the count never
+        // takes the last usable backup.
+        let next = stage_snapshot(&root).unwrap();
+        assert!(publish_snapshot(
+            &root,
+            &next,
+            &[],
+            || Err(Error::new("no")),
+            &json!({}),
+            1,
+            None
+        )
+        .is_err());
+        assert_eq!(common::complete_snapshots(&root).unwrap().len(), 1);
+        assert!(root.join(&stage.name).join("manifest.json").is_file());
+        // Nor does pruning by itself, with nothing new published, go below what is kept,
+        // or ever remove the newest (a count of 1 with the newest named or not).
+        assert!(common::prune_snapshots(&root, 1, None, None)
+            .unwrap()
+            .is_empty());
+        assert!(common::prune_snapshots(&root, 1, Some(&stage.name), None)
+            .unwrap()
+            .is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn the_count_is_one_to_seven_and_an_earlier_count_only_when_setup_marked_it() {
+        let (yes, no) = (json!(true), Value::Null);
+        for count in 1..=7u64 {
+            assert_eq!(keep_count(&json!(count), &no, "app_backup"), (count, None));
+        }
+        // From before 0.50.0, marked by setup: kept to as it was (0: every snapshot).
+        for count in [0u64, 8, 14, 3650] {
+            assert_eq!(keep_count(&json!(count), &yes, "app_backup"), (count, None));
+        }
+        // Not marked, or no count at all: refused, and nothing is removed (0).
+        for wrong in [
+            json!(0),
+            json!(8),
+            json!(3650),
+            json!(-1),
+            json!(3.5),
+            json!("3"),
+            Value::Null,
+        ] {
+            let (keep, why) = keep_count(&wrong, &no, "host_backup");
+            assert_eq!(keep, 0, "{wrong}");
+            let why = why.unwrap();
+            assert!(
+                why.contains(&format!(
+                    "(host_backup.keep_snapshots) is {wrong}, not a whole number from 1 to 7"
+                )),
+                "{why}"
+            );
+            assert!(why.contains("no older backup was removed"), "{why}");
+        }
+        assert_eq!(keep_count(&json!(3651), &yes, "app_backup").0, 0);
+        // A refused count removes nothing even from a folder full of snapshots.
+        let root = scratch("refused-count");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        for name in ["snapshot-100-1", "snapshot-200-1", "snapshot-300-1"] {
+            finished(&root, name);
+        }
+        let (keep, _) = keep_count(&json!(30), &no, "app_backup");
+        assert!(common::prune_snapshots(&root, keep, None, None)
+            .unwrap()
+            .is_empty());
+        assert_eq!(common::complete_snapshots(&root).unwrap().len(), 3);
         let _ = fs::remove_dir_all(root);
     }
     #[test]
