@@ -1844,6 +1844,7 @@ def _unmount_extra(plan, call, out, left):
                 out('  could not unmount (busy' + (': ' + said if said else '') + '): sudo umount ' + folder)
                 left.append(folder + ' (still mounted)')
                 continue
+        call(['chattr', '-i', str(plan.at(folder))], 30)  # closed by setup before the drive was mounted
         _remove_mount_folder(plan, folder, out, left)
     try:
         top.rmdir()

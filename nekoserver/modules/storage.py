@@ -2151,6 +2151,18 @@ def pool_lacks_a_drive(uuid):
     return any(line.strip().startswith('***') and 'missing' in line for line in shown.splitlines())
 
 
+def seal_extra(target, run=subprocess.run):
+    """The empty folder a drive beyond the two is mounted on, closed before it is mounted:
+    while that drive is away nothing can be made in its place (gate runs C9 and C16:
+    Docker made the apps' folders on the system disk, and Lidarr started there)."""
+    from neko_common import EXTRA_MOUNTS
+
+    place = Path(target)
+    if place.parent != Path(EXTRA_MOUNTS) or any(place.iterdir()):
+        return
+    unwritable(place, run)
+
+
 def mount_target(target, uuid, fstype, log=None):
     """`mount target` (fstab's line), or, for a Btrfs pool missing a drive, the same with
     `degraded` added: a rerun of setup on a server whose mirror lost a drive goes on, and
@@ -2179,6 +2191,7 @@ def mount_and_check(uuid, target, subvolume, fstype='btrfs', log=None, folder=No
     if folder:
         Path(folder).mkdir(parents=True, exist_ok=True)
     if findmnt('TARGET', target) is None:
+        seal_extra(target)
         try:
             # A big drive replaying its journal after a power cut can take minutes.
             mount_target(target, uuid, fstype, log)

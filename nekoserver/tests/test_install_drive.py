@@ -409,7 +409,8 @@ class UninstallTests(unittest.TestCase):
         left = []
         with mock.patch.object(self.uninstaller.os.path, 'ismount', side_effect=lambda path: path == str(drive)):
             self.uninstaller._unmount_extra(self.plan, self.call, self.said.append, left)
-        self.assertEqual(self.calls, [['umount', '/mnt/nekoserver-drives/d3']])
+        # The folder setup closed before mounting the drive is opened, then removed.
+        self.assertEqual(self.calls, [['umount', '/mnt/nekoserver-drives/d3'], ['chattr', '-i', str(drive)]])
         self.assertEqual(self.said, ['Unmounting /mnt/nekoserver-drives/d3'])
         self.assertFalse((self.root / 'mnt/nekoserver-drives').exists())
         # One that stays busy is said and listed, and its folder stays.
@@ -419,6 +420,29 @@ class UninstallTests(unittest.TestCase):
             self.uninstaller._unmount_extra(self.plan, busy, self.said.append, left)
         self.assertEqual(left, ['/mnt/nekoserver-drives/d3 (still mounted)'])
         self.assertTrue(drive.is_dir())
+
+
+
+class SealedMountFolderTests(unittest.TestCase):
+    """Gate runs C9 and C16: with the drive of a group away at the start, Docker made the
+    apps' folders on the system disk under its mount folder, and Lidarr started there."""
+
+    def test_the_empty_folder_of_a_drive_beyond_the_two_is_closed_before_mounting(self):
+        calls = []
+        run = lambda argv, **how: calls.append(argv) or mock.Mock(returncode=0)  # noqa: E731
+        with tempfile.TemporaryDirectory() as root:
+            drives = Path(root) / 'mnt/nekoserver-drives'
+            (drives / 'd3').mkdir(parents=True)
+            with mock.patch.object(neko_common, 'EXTRA_MOUNTS', drives):
+                storage.seal_extra(str(drives / 'd3'), run)
+                self.assertEqual(calls, [['chattr', '+i', str(drives / 'd3')]])
+                # Not one with something in it, and not the two drives' own folders.
+                (drives / 'd4').mkdir()
+                (drives / 'd4' / 'left').write_text('x')
+                storage.seal_extra(str(drives / 'd4'), run)
+                (Path(root) / 'srv/nekoserver').mkdir(parents=True)
+                storage.seal_extra(str(Path(root) / 'srv/nekoserver'), run)
+            self.assertEqual(len(calls), 1)
 
 
 if __name__ == '__main__':
