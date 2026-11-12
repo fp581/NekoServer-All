@@ -845,8 +845,8 @@ def finishing_screen(config, states, page=None, output=print, checkup=None, ran=
     show_steps('Needs a look (optional: everything else works without it):', optional, states, 'did not finish', output)
     show_steps('Not available on this system:', by_status['unavailable'], states, 'not available', output)
     show_checkup(checkup, output)
-    for line in started_empty_lines():
-        output('\n' + line)
+    for said in started_empty_lines():
+        output('\n' + said)
     if summary:
         for text in states_lines(summary):
             output(text)
