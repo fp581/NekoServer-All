@@ -51,11 +51,19 @@
 
   async function post(route, payload) {
     const response = await fetch(route, { method: 'POST', headers: HEADERS, body: JSON.stringify(payload) });
+    if (response.status === 403) {
+      // The address was opened again in another window: that one works now, and this
+      // window says so at once (not "could not reach setup").
+      stopped = true;
+      showGone('moved');
+      throw new Error('opened elsewhere');
+    }
     return response.json();
   }
 
   /* ---- before setup starts: what this server is to do, then the review of it */
 
+  let stopped = false; // this window was opened again elsewhere: it asks nothing more
   let saving = Promise.resolve(); // the last switch on its way to setup's server
 
   async function save(changes) {
@@ -1566,8 +1574,9 @@
     badge(why === 'moved' ? 'Opened elsewhere' : 'Setup ended', 'off');
   }
 
-  let stopped = false;
   async function poll() {
+    if (stopped) return;
+    let state = null;
     try {
       const response = await fetch('api/state', { cache: 'no-store' });
       if (response.status === 403) {
@@ -1577,12 +1586,20 @@
         return;
       }
       if (!response.ok) throw new Error(response.status);
+      state = await response.json();
       misses = 0;
-      render(await response.json());
     } catch {
       // Setup's server answers until setup ends; a few misses in a row mean it is gone.
       misses += 1;
       if (misses >= 4) showGone('ended');
+    }
+    // Setup answered: a mistake in drawing its state is this page's, never "setup ended".
+    if (state) {
+      try {
+        render(state);
+      } catch (error) {
+        console.error('The setup window could not show this state:', error);
+      }
     }
     if (!stopped)
       setTimeout(

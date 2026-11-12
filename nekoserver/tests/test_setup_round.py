@@ -408,6 +408,18 @@ class WindowPageTests(unittest.TestCase):
         self.assertEqual(seen['shown'], ['moved'])
         self.assertEqual(seen['badge'], 'Opened elsewhere')
 
+    def test_a_button_pressed_in_a_window_opened_again_elsewhere_says_so(self):
+        seen = self.page([self.state('choose', postFail=403), self.state('choose')], 'start')
+        self.assertEqual(seen['shown'], ['moved'])
+        self.assertEqual(seen['badge'], 'Opened elsewhere')
+
+    def test_a_state_the_page_cannot_draw_is_not_setup_ending(self):
+        # No list of steps: drawing it fails, every time, while setup still answers.
+        broken = {'version': 'x', 'phase': 'running', 'total': 3, 'current': 'docker'}
+        seen = self.page([self.state('running'), broken, broken, broken, broken, broken])
+        self.assertNotIn('gone', seen['shown'])
+        self.assertNotEqual(seen['badge'], 'Setup ended')
+
     def test_setup_stopped_before_it_began_has_no_step_count(self):
         seen = self.page(
             [

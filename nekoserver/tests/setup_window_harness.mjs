@@ -40,9 +40,12 @@ let poll = 0;
 // {"refuseStart": "why"} in any state: Start setup is answered as the server's 409 is.
 const refusal = states.find((state) => state.refuseStart)?.refuseStart;
 let failures = states.find((state) => state.failAnswer)?.failAnswer ?? 0;
+// {"postFail": 403} in any state: every button press is answered with that status.
+const postFail = states.find((state) => state.postFail)?.postFail;
 globalThis.fetch = async (route, options) => {
   if (options?.method === 'POST') {
     posts.push([route, JSON.parse(options.body)]);
+    if (postFail) return { ok: false, status: postFail, json: async () => { throw new SyntaxError('not JSON'); } };
     if (route === 'api/start' && refusal) return { json: async () => ({ ok: false, reason: refusal }) };
     // {"login": {...}} in any state: what Show login is answered with.
     if (route === 'api/login') return { json: async () => states.find((state) => state.login)?.login ?? { ok: false } };
