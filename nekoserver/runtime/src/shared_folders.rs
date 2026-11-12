@@ -145,6 +145,33 @@ fn decide(shares: &[Share], ready: &[bool], held_before: &[String]) -> (Vec<Stri
     (stop, start)
 }
 
+/// The apps this check holds stopped from now on, so it starts them again later: those
+/// it stopped now (`took`) or held already, and those it could not start again yet
+/// (`started` false: tried again in a minute). An app that was not running when its share
+/// went away (stopped by hand) is never held, so it is never started for the person.
+fn still_held(
+    stop: &[String],
+    took: &[bool],
+    held_before: &[String],
+    start: &[String],
+    started: &[bool],
+) -> Vec<String> {
+    let mut held: Vec<String> = stop
+        .iter()
+        .zip(took)
+        .filter(|(app, took)| **took || held_before.contains(app))
+        .map(|(app, _)| app.clone())
+        .collect();
+    held.extend(
+        start
+            .iter()
+            .zip(started)
+            .filter(|(_, ok)| !**ok)
+            .map(|(app, _)| app.clone()),
+    );
+    held
+}
+
 /// The check, at start and every minute. Never fails its caller: what goes wrong is said.
 pub(crate) fn check(cfg: &Value) {
     if common::setup_running() {
@@ -169,12 +196,9 @@ pub(crate) fn check(cfg: &Value) {
     }
     let ready: Vec<bool> = shares.iter().map(bring_back).collect();
     let (stop, start) = decide(&shares, &ready, &held_before);
-    for app in &stop {
-        stop_app(app);
-    }
-    for app in &start {
-        start_app(app);
-    }
+    let took: Vec<bool> = stop.iter().map(|app| stop_app(app)).collect();
+    let started: Vec<bool> = start.iter().map(|app| start_app(app)).collect();
+    let held = still_held(&stop, &took, &held_before, &start, &started);
     let rows: Vec<Value> = shares
         .iter()
         .zip(&ready)
@@ -182,7 +206,7 @@ pub(crate) fn check(cfg: &Value) {
             json!({"holds": s.holds, "path": s.path, "share": s.share, "ready": ok, "apps": s.apps})
         })
         .collect();
-    let saved = json!({"at": common::now(), "shares": rows, "held": stop});
+    let saved = json!({"at": common::now(), "shares": rows, "held": held});
     if let Err(e) = common::atomic_json(&report, &saved) {
         println!("Shared folders: the report could not be saved ({e})");
     }
@@ -228,10 +252,13 @@ fn containers(app: &str, all: bool) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn stop_app(app: &str) {
+/// Stops the app's running containers. True when it was running (so this holds it
+/// stopped), also when the stop failed and is tried again in a minute; false when it was
+/// not running at all.
+fn stop_app(app: &str) -> bool {
     let running = containers(app, false);
     if running.is_empty() {
-        return;
+        return false;
     }
     let mut args = vec!["docker", "stop"];
     args.extend(running.iter().map(String::as_str));
@@ -241,19 +268,25 @@ fn stop_app(app: &str) {
         }
         _ => println!("Shared folders: {app} could not be stopped; tried again in a minute"),
     }
+    true
 }
 
-fn start_app(app: &str) {
+/// Starts the app's containers again. False when that failed (tried again in a minute);
+/// an app with no containers any more has nothing to start.
+fn start_app(app: &str) -> bool {
     let all = containers(app, true);
     if all.is_empty() {
-        return;
+        return true;
     }
     let mut args = vec!["docker", "start"];
     args.extend(all.iter().map(String::as_str));
-    match common::command(&args, 180) {
-        Ok((0, _)) => println!("Shared folders: {app} started again"),
-        _ => println!("Shared folders: {app} could not be started; tried again in a minute"),
+    let ok = matches!(common::command(&args, 180), Ok((0, _)));
+    if ok {
+        println!("Shared folders: {app} started again");
+    } else {
+        println!("Shared folders: {app} could not be started; tried again in a minute");
     }
+    ok
 }
 
 #[cfg(test)]
@@ -366,5 +399,29 @@ mod tests {
         assert_eq!((stop, start), (names(&["jellyfin"]), vec![]));
         // Nothing stopped before, all there: nothing to do.
         assert_eq!(decide(&both, &[true, true], &[]), (vec![], vec![]));
+    }
+    /// An app the person had stopped themselves before the share went away is not held, so
+    /// it is not started for them when the share answers again; one that failed to start
+    /// stays held and is tried again.
+    #[test]
+    fn only_apps_this_stopped_are_started_again_and_a_failed_start_is_kept() {
+        let names = |list: &[&str]| list.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        let stop = names(&["jellyfin", "radarr"]);
+        // Jellyfin was running and is stopped now; Radarr was already stopped by hand.
+        assert_eq!(
+            still_held(&stop, &[true, false], &[], &[], &[]),
+            names(&["jellyfin"])
+        );
+        // A minute later Radarr is not running either, but this stopped it before: still held.
+        assert_eq!(
+            still_held(&stop, &[true, false], &names(&["radarr"]), &[], &[]),
+            stop
+        );
+        // Back again: Jellyfin starts, Sonarr's start fails and stays held for the next try.
+        let start = names(&["jellyfin", "sonarr"]);
+        assert_eq!(
+            still_held(&[], &[], &start, &start, &[true, false]),
+            names(&["sonarr"])
+        );
     }
 }
