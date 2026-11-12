@@ -102,6 +102,11 @@ UPDATE_WELCOME = [
 ]
 
 
+def welcome(config):
+    """The welcome: a first install's, or the short one of a server set up already."""
+    return UPDATE_WELCOME if neko_common.server_exists(config or {}) else WELCOME
+
+
 def sudo_account():
     name = os.environ.get('SUDO_USER', '')
     if not name or name == 'root':
@@ -1156,7 +1161,8 @@ def run(execute, default_state, prompt=input, output=print, root=ROOT, config=No
     if settings is None:
         return 2
     path, created = settings
-    for line in WELCOME if not neko_common.server_exists(config) else UPDATE_WELCOME:
+    # `config` is None on a PC with no settings yet (a first install).
+    for line in welcome(config):
         output(line)
     output(
         '\nYour settings are in '

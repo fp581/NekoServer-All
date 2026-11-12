@@ -42,6 +42,16 @@ class UpdateWordsTests(unittest.TestCase):
         self.assertIn('nothing changes until you approve', said)
         self.assertNotIn('Have ready', said)
 
+    def test_a_first_install_has_no_settings_yet_and_gets_the_full_welcome(self):
+        # The fresh install of the gate's J01 run stopped here: the settings were None.
+        import wizard
+
+        with mock.patch.object(neko_common, 'server_exists', return_value=False) as exists:
+            self.assertIs(wizard.welcome(None), wizard.WELCOME)
+        exists.assert_called_once_with({})
+        with mock.patch.object(neko_common, 'server_exists', return_value=True):
+            self.assertIs(wizard.welcome({'data_mount': '/srv/nekoserver'}), wizard.UPDATE_WELCOME)
+
 
 if __name__ == '__main__':
     unittest.main()
