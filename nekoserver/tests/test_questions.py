@@ -37,13 +37,10 @@ class WordsTests(unittest.TestCase):
             'Type yes or no, then press Enter. ',
         )
         # A choice lists what each number means, in the buttons' words.
-        self.assertEqual(
-            questions.terminal('login_who', app='Jellyfin'),
-            '\nWho picks the login for Jellyfin?\n'
-            '  1) NekoServer makes one for me (recommended)\n'
-            "  2) I'll choose my own\n"
-            'Type the number of your choice, then press Enter. ',
-        )
+        asked = questions.terminal('logins_who')
+        self.assertIn('How would you like to set up your app accounts?', asked)
+        self.assertIn('  1) Create strong passwords for me (recommended)\n  2) Choose my own logins\n', asked)
+        self.assertTrue(asked.endswith('Type 1 or 2, then press Enter. '))
         # Something that can wait says what Enter alone does.
         self.assertTrue(questions.terminal('monitor_address').endswith('Press Enter alone to skip this for now. '))
         self.assertIn('It is not shown while you type.', questions.terminal('monitor_address'))
@@ -67,10 +64,10 @@ class WordsTests(unittest.TestCase):
 
     def test_asked_in_both_places_and_the_answer_is_what_the_code_always_read(self):
         person = Asked('2')
-        self.assertEqual(questions.ask('login_who', person, app='Immich'), '2')
+        self.assertEqual(questions.ask('logins_who', person), '2')
         self.assertEqual(person.pages[0]['form'], 'ask')
-        self.assertEqual(person.pages[0]['title'], 'Who picks the login for Immich?')
-        self.assertEqual(person.prompts[0], questions.terminal('login_who', app='Immich'))
+        self.assertEqual(person.pages[0]['title'], 'How would you like to set up your app accounts?')
+        self.assertEqual(person.prompts[0], questions.terminal('logins_who'))
         self.assertIsNone(setup_progress.page_shown())  # the page ends with the question
         # Yes or no: True, False, a wrong word asked again, Ctrl+D left.
         said = []

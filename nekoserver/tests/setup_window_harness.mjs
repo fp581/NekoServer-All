@@ -87,6 +87,12 @@ async function step(i) {
       input.fire('change');
     }
   }
+  // A radio button or tick box by its id: {"check": ["ask-page-mode-2"]}, before any fill.
+  for (const id of states[i].check ?? []) {
+    for (const other of Object.values(elements)) if (other.type === 'radio' && other.name === elements[id].name) other.checked = false;
+    elements[id].checked = true;
+    elements[id].fire('change');
+  }
   // The first page's Continue ({"continue": true}) and the review's Back ({"back": true}).
   if (states[i].phase === 'choose' && states[i].continue) {
     elements.continue.fire('click');
@@ -166,7 +172,9 @@ const storage = (elements['ask-page']?.children?.[0]?.className === 'storage' ? 
   .filter((row) => row.className === 'row').map((row) => { const select = row.children[1].children[0];
     return { key: select.id.replace('ask-page-', ''), title: row.children[0].textContent,
       options: select.children.map((option) => [option.value, option.textContent, !!option.disabled]) }; });
-console.log(JSON.stringify({ posts, parts, subs, review, storage, title: elements['finish-title']?.textContent ?? '', shown,
+// The accounts page: [the app, whether its entries are shown, whether "made for you" is shown].
+const accounts = (elements['ask-page-accounts']?.children ?? []).map((row) => [row.children[0].textContent, !row.children[1].hidden, !row.children[2].hidden]);
+console.log(JSON.stringify({ posts, parts, subs, review, storage, accounts, title: elements['finish-title']?.textContent ?? '', shown,
   badge: elements['phase-badge']?.textContent ?? '', label: elements['finish-label']?.textContent ?? '', lines: elements['finish-lines']?.textContent ?? '',
   marks: marks(elements['steps-final']), progressHidden: elements.progress?.hidden ?? null, cards,
   pageHidden: elements['ask-page']?.hidden ?? null, answerHidden: elements['ask-answer']?.hidden ?? null,

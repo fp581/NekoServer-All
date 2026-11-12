@@ -396,6 +396,19 @@
     note: page => page.names
   };
 
+  // The logins of the apps: one choice, and a row for each app that is typed in only
+  // where the choice or the app needs it.
+  PAGES.accounts = {
+    prompt: page => page.title,
+    build: buildAccounts,
+    values: accountsValues,
+    problem: accountsProblem,
+    send: () => 'Save these logins',
+    skip: false,
+    note: () =>
+      'Hidden here and in the terminal, and written to no log. Wherever setup asks you to sign in, Show login shows the saved login.'
+  };
+
   // Where everything is stored: a line for each role with the drives to choose from, a
   // line for where each app keeps your files, and the removable drive of the offline copy.
   PAGES.storage = {
@@ -691,6 +704,94 @@
     }
     const parts = [page.needs ? el('p', { class: 'drives-needs', text: page.needs }) : null, list];
     $('ask-page').replaceChildren(...parts.filter(Boolean));
+  }
+
+  /* The accounts page. The choice is two radio buttons; under it a row for each app. With
+     strong passwords made for you a row only says so, unless the app has data already:
+     then its current login is typed in, as in every row with your own logins. */
+  let accountRows = [];
+  function buildAccounts(page) {
+    pickInputs = [];
+    pageInputs = {};
+    accountRows = [];
+    const choice = el('div', { class: 'ask-choices accounts-mode', role: 'radiogroup', 'aria-label': page.title });
+    for (const [value, label] of page.choices) {
+      const input = el('input', { type: 'radio', name: 'accounts-mode', value, id: 'ask-page-mode-' + value });
+      input.checked = (page.fields.mode || '1') === value;
+      input.addEventListener('change', showAccountRows);
+      pickInputs.push(input);
+      choice.append(el('label', { class: 'pick-row' }, input, el('span', { class: 'pick-name', text: label })));
+    }
+    const rows = el('div', { class: 'storage accounts', id: 'ask-page-accounts' });
+    for (const app of page.apps) {
+      const user = el('input', {
+        type: app.email ? 'email' : 'text',
+        id: 'ask-page-user:' + app.id,
+        autocomplete: 'off',
+        spellcheck: 'false',
+        placeholder: app.email ? 'Email used to sign in to ' + app.name : 'User name',
+        'aria-label': (app.email ? 'Email used to sign in to ' : 'User name for ') + app.name
+      });
+      user.value = page.fields['user:' + app.id] || '';
+      const password = hiddenInput('pass:' + app.id, 'Password for ' + app.name);
+      const again = hiddenInput('again:' + app.id, 'The same password again for ' + app.name);
+      password.placeholder = 'Password';
+      again.placeholder = 'The same again';
+      const made = el('small', { text: 'A strong password is made and saved for you.' });
+      const typed = el('span', { class: 'row-inputs account-inputs' }, user, password, again);
+      const node = el(
+        'div',
+        { class: 'row' },
+        el('span', { class: 'row-title', text: app.name }),
+        typed,
+        made,
+        app.existing ? el('small', { text: page.existing }) : null
+      );
+      accountRows.push({ app, user, password, again, typed, made });
+      // Off with the other controls while the answer is on its way.
+      Object.assign(pageInputs, { ['user:' + app.id]: user, ['pass:' + app.id]: password, ['again:' + app.id]: again });
+      rows.append(node);
+    }
+    const problem = el('p', { class: 'drives-needs account-problem', text: page.fields.problem || '' });
+    $('ask-page').replaceChildren(el('p', { class: 'drives-needs', text: page.hint }), choice, rows, problem);
+    showAccountRows();
+  }
+
+  function accountsMode() {
+    return (pickInputs.find(input => input.checked) || {}).value || '';
+  }
+
+  /* A row is typed in with your own logins, and always for an app that has data already. */
+  function showAccountRows() {
+    for (const row of accountRows) {
+      const typed = accountsMode() === '2' || row.app.existing;
+      row.typed.hidden = !typed;
+      row.made.hidden = typed;
+    }
+  }
+
+  function accountsValues() {
+    const values = { mode: accountsMode() };
+    for (const row of accountRows) {
+      values['user:' + row.app.id] = row.user.value;
+      values['pass:' + row.app.id] = row.password.value;
+      values['again:' + row.app.id] = row.again.value;
+    }
+    return values;
+  }
+
+  function accountsProblem(page, values) {
+    if (!values.mode) return 'Choose one of the two first.';
+    for (const row of accountRows) {
+      if (row.typed.hidden) continue;
+      const name = row.app.name;
+      if (!values['user:' + row.app.id].trim())
+        return name + ': type the ' + (row.app.email ? 'email' : 'user name') + '.';
+      if (!values['pass:' + row.app.id]) return name + ': type a password.';
+      if (values['pass:' + row.app.id] !== values['again:' + row.app.id])
+        return name + ': the two passwords are not the same.';
+    }
+    return '';
   }
 
   /* A list to choose from; an option that cannot be chosen says why and is off. */

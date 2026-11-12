@@ -679,6 +679,55 @@ class SetupWindowTests(unittest.TestCase):
         seen = self.page([self.asked(question, {**page, 'skippable': True}, skipPage=True)])
         self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '', 'skip': True}]])
 
+    def test_the_accounts_page_is_one_choice_and_a_row_for_each_app(self):
+        """0.50.0, the wizard (P04): no question per app; a row is typed in only with your
+        own logins, or for an app that has data already."""
+        page = {
+            'form': 'accounts', 'asking': 'mode',
+            'fields': {'mode': '', 'problem': '', 'user:jellyfin': '', 'pass:jellyfin': '', 'again:jellyfin': '',
+                       'user:immich': '', 'pass:immich': '', 'again:immich': ''},
+            'title': 'How would you like to set up your app accounts?', 'hint': 'Each selected app has a separate account.',
+            'choices': [['1', 'Create strong passwords for me (recommended)'], ['2', 'Choose my own logins']],
+            'apps': [
+                {'id': 'jellyfin', 'name': 'Jellyfin administrator', 'email': False, 'existing': False},
+                {'id': 'immich', 'name': 'Immich administrator', 'email': True, 'existing': True},
+            ],
+            'existing': 'This app has data already: enter its current login.',
+        }  # fmt: skip
+        question = 'How would you like to set up your app accounts? Type 1 or 2, then press Enter. '
+        typed = 'typed-' + 'x' * 12
+        seen = self.page([self.asked(question, page)])
+        self.assertEqual((seen['prompt'], seen['send'], seen['skipHidden']), (page['title'], 'Save these logins', True))
+        # Strong passwords made for you is chosen to begin with: Jellyfin's row only says so;
+        # Immich has data already, so its current login is typed in whatever the choice.
+        self.assertEqual(
+            seen['accounts'], [['Jellyfin administrator', False, True], ['Immich administrator', True, False]]
+        )
+        seen = self.page([self.asked(question, page, leave=True)])
+        self.assertEqual((seen['posts'], seen['note']), ([], 'Immich administrator: type the email.'))
+        # Your own logins: every row is typed in, and two passwords that differ are said.
+        seen = self.page([self.asked(question, page, check=['ask-page-mode-2'])])
+        self.assertEqual(
+            seen['accounts'], [['Jellyfin administrator', True, False], ['Immich administrator', True, False]]
+        )
+        entries = {
+            'ask-page-user:jellyfin': 'dana', 'ask-page-pass:jellyfin': typed, 'ask-page-again:jellyfin': typed + '!',
+            'ask-page-user:immich': 'dana@example.org', 'ask-page-pass:immich': typed, 'ask-page-again:immich': typed,
+        }  # fmt: skip
+        seen = self.page([self.asked(question, page, check=['ask-page-mode-2'], fill=entries)])
+        self.assertEqual(
+            (seen['posts'], seen['note']), ([], 'Jellyfin administrator: the two passwords are not the same.')
+        )
+        # All in order: one answer carries the choice and every row.
+        entries['ask-page-again:jellyfin'] = typed
+        seen = self.page([self.asked(question, page, check=['ask-page-mode-2'], fill=entries)])
+        sent = seen['posts'][0][1]
+        self.assertEqual((sent['text'], sent['fields']['mode']), ('2', '2'))
+        self.assertEqual(
+            (sent['fields']['user:immich'], sent['fields']['pass:jellyfin'], sent['fields']['again:jellyfin']),
+            ('dana@example.org', typed, typed),
+        )
+
     def test_the_storage_page_has_a_list_for_every_line_and_sends_them_together(self):
         """0.50.0, the wizard (P02): every drive question on one page; a drive is chosen
         in a list, no name is typed, and a drive that cannot have a role says why."""
@@ -819,10 +868,11 @@ class SetupWindowTests(unittest.TestCase):
         seen = self.page([asked('tailscale_connected', leave=True, skipPage=True)])
         self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '', 'skip': True}]])
         # A choice: a button for each, sending what the terminal would be given.
-        seen = self.page([asked('login_who', pressChoice=2)])
-        self.assertEqual(seen['prompt'], 'Who picks the login for Jellyfin?')
+        seen = self.page([asked('logins_who', pressChoice=2)])
+        self.assertEqual(seen['prompt'], 'How would you like to set up your app accounts?')
         self.assertEqual(
-            [label for label, _ in seen['choices']], ['NekoServer makes one for me (recommended)', "I'll choose my own"]
+            [label for label, _ in seen['choices']],
+            ['Create strong passwords for me (recommended)', 'Choose my own logins'],
         )
         self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '2'}]])
         self.assertEqual(seen['skipHidden'], True)

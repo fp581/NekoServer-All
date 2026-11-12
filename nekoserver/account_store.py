@@ -1,5 +1,6 @@
 """Private, durable installer credentials; never put secrets in public reports."""
 
+import contextlib
 import getpass
 import json
 import os
@@ -175,7 +176,7 @@ def load(config):
         value = json.loads(path.read_text())
         if (
             value.get('format') != 1
-            or value.get('mode') not in ('generate', 'per-app')
+            or value.get('mode') not in ('generate', 'custom', 'per-app')
             or not isinstance(value.get('apps'), dict)
         ):
             raise ValueError
@@ -258,16 +259,27 @@ def selected(config, plan):
     return [app for app in APPS if app in result]
 
 
-def ask_login(app, existing, value, prompt, password_prompt, output):
+def ask_login(app, existing, value, prompt, password_prompt, output, on_page=False):
+    """A login typed in: the user name (or email), the password and the password again.
+    `on_page`: the accounts page is open (accounts_page), where the window shows every
+    app's row at once and sends them together; alone, each entry is a page of its own."""
+    name = APPS[app][0]
     while True:
         key = 'login_email' if app in EMAIL_LOGINS else 'login_name'
-        username = questions.ask(key, prompt, app=APPS[app][0]).strip()
-        # In the setup window the password and its second entry are one page.
-        with setup_progress.password_page(APPS[app][0] + ': password'):
+        if on_page:
+            username = setup_progress.page_field('user:' + app, prompt, questions.terminal(key, app=name)).strip()
             password = setup_progress.page_field(
-                'password', password_prompt, f'Password for {APPS[app][0]} (it is not shown while you type): '
+                'pass:' + app, password_prompt, f'Password for {name} (it is not shown while you type): '
             )
-            confirmation = setup_progress.page_field('again', password_prompt, 'The same password once more: ')
+            confirmation = setup_progress.page_field('again:' + app, password_prompt, 'The same password once more: ')
+        else:
+            username = questions.ask(key, prompt, app=name).strip()
+            # In the setup window the password and its second entry are one page.
+            with setup_progress.password_page(name + ': password'):
+                password = setup_progress.page_field(
+                    'password', password_prompt, f'Password for {name} (it is not shown while you type): '
+                )
+                confirmation = setup_progress.page_field('again', password_prompt, 'The same password once more: ')
         try:
             validate_login(app, username, password, existing=existing)
             if app == 'navidrome_listener' and value['apps'].get('navidrome', {}).get('username') == username:
@@ -276,8 +288,51 @@ def ask_login(app, existing, value, prompt, password_prompt, output):
                 raise ValueError('Passwords did not match; try again')
         except ValueError as exc:
             output(str(exc))
+            if on_page:
+                setup_progress.page_set('problem', f'{name}: {exc}')  # said on the page, beside its rows
             continue
         return username, password
+
+
+PAGE_TITLE = 'How would you like to set up your app accounts?'
+PAGE_HINT = (
+    'Each selected app has a separate account. NekoServer stores its required credentials privately so it can '
+    'connect and check the apps.'
+)
+EXISTING = 'This app has data already: enter its current login. The account in the app is not changed or reset.'
+
+
+def fresh(config, app):
+    """The app has no data on the SSD yet, so its first account is made by setup. With
+    data there already, the login of the account it has is entered instead."""
+    actual_app = 'navidrome' if app == 'navidrome_listener' else app
+    data = safe_path(Path(config['data_mount']) / 'appdata' / actual_app)
+    # Looked at only once it is proved to lie on the SSD (its path comes from the settings).
+    if not os.path.realpath(data).startswith(os.path.realpath(config['data_mount']) + os.sep):
+        raise RuntimeError(OUTSIDE)
+    return not data.exists() or (data.is_dir() and not any(data.iterdir()))
+
+
+def accounts_page(config, apps):
+    """While this is active, the logins of these apps are one page in the setup window:
+    the one choice (strong passwords made for you, or your own logins) and a row for
+    each app, typed in only where the choice or the app needs it. The window sends them
+    together; the terminal is asked one at a time. No password is ever in an event: the
+    page's fields carry no values."""
+    fields = {'mode': '', 'problem': ''}
+    rows = []
+    for app in apps:
+        fields.update({'user:' + app: '', 'pass:' + app: '', 'again:' + app: ''})
+        rows.append({'id': app, 'name': APPS[app][0], 'email': app in EMAIL_LOGINS, 'existing': not fresh(config, app)})
+    return setup_progress.page(
+        'accounts',
+        fields,
+        title=PAGE_TITLE,
+        hint=PAGE_HINT,
+        choices=[list(choice) for choice in questions.Q['logins_who']['choices']],
+        apps=rows,
+        existing=EXISTING,
+    )
 
 
 def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=print, allow_corrections=True):
@@ -311,46 +366,38 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
     if not missing:
         save(config, value)  # Repair a missing human-readable export from JSON.
         return
-    if not value['apps']:
-        while True:
-            answer = questions.ask('logins_who', prompt).strip()
-            if answer in ('1', '2'):
-                value['mode'] = 'generate' if answer == '1' else 'per-app'
-                break
-            output('Type 1 or 2.')
-    for app in missing:
-        output(APPS[app][0])
-        actual_app = 'navidrome' if app == 'navidrome_listener' else app
-        data = safe_path(Path(config['data_mount']) / 'appdata' / actual_app)
-        # Looked at only once it is proved to lie on the SSD (its path comes from the settings).
-        if not os.path.realpath(data).startswith(os.path.realpath(config['data_mount']) + os.sep):
-            raise RuntimeError(OUTSIDE)
-        fresh = not data.exists() or (data.is_dir() and not any(data.iterdir()))
-        mode = value['mode']
-        if not fresh:
-            output('  Existing app data: enter the current login; it will not be reset.')
-            mode = 'custom'
-        if mode == 'per-app':
+    # The first time: one page for the choice and every app's row (accounts_page).
+    first = not value['apps']
+    with accounts_page(config, missing) if first else contextlib.nullcontext():
+        if first:
             while True:
-                answer = questions.ask('login_who', prompt, app=APPS[app][0]).strip()
+                answer = setup_progress.page_field('mode', prompt, questions.terminal('logins_who')).strip()
                 if answer in ('1', '2'):
-                    mode = 'generate' if answer == '1' else 'custom'
+                    value['mode'] = 'generate' if answer == '1' else 'custom'
                     break
                 output('Type 1 or 2.')
-        if mode == 'generate':
-            username, password = generate(app)
-            output(
-                f'  Made and saved: username {username}, with a strong password. Wherever setup asks you to sign in, '
-                '"Show login" shows it (in the setup window, or as a question in the terminal).'
-            )
-        else:
-            username, password = ask_login(app, not fresh, value, prompt, password_prompt, output)
-        value['apps'][app] = {
-            'username': username,
-            'password': password,
-            'state': 'planned',
-            'allow_create': fresh,
-            'source': mode,
-        }
-        save(config, value)
+        for app in missing:
+            output(APPS[app][0])
+            is_fresh = fresh(config, app)
+            # One choice for all of them ("per-app", asked app by app until 0.50.0, reads as your own).
+            mode = 'generate' if value['mode'] == 'generate' else 'custom'
+            if not is_fresh:
+                output('  Existing app data: enter the current login; it will not be reset.')
+                mode = 'custom'
+            if mode == 'generate':
+                username, password = generate(app)
+                output(
+                    f'  Made and saved: username {username}, with a strong password. Wherever setup asks you to '
+                    'sign in, "Show login" shows it (in the setup window, or as a question in the terminal).'
+                )
+            else:
+                username, password = ask_login(app, not is_fresh, value, prompt, password_prompt, output, on_page=first)
+            value['apps'][app] = {
+                'username': username,
+                'password': password,
+                'state': 'planned',
+                'allow_create': is_fresh,
+                'source': mode,
+            }
+            save(config, value)
     output('Account choices saved privately; passwords are not printed or written to installer logs.')

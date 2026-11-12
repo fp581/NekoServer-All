@@ -167,23 +167,13 @@ Q = {
     # ---- logins for the apps
     'logins_who': {
         'screen': 'Logins for your apps',
-        'title': 'Who picks the logins for your apps?',
-        'hint': 'Each app gets its own user name and password. You can see them on this PC whenever you need them.',
+        'title': 'How would you like to set up your app accounts?',
+        'hint': 'Each selected app has a separate account. NekoServer stores its required credentials privately so '
+        'it can connect and check the apps.',
         'kind': 'choice',
-        'choices': [
-            ('1', 'NekoServer makes a strong one for each app (recommended)'),
-            ('2', "I'll decide app by app"),
-        ],
-        'old': 'Logins for the apps: 1 = NekoServer makes a strong username and password for each app '
-        '(recommended; you can see them later), 2 = you choose them app by app. Type 1 or 2:',
-    },
-    'login_who': {
-        'screen': 'Logins for your apps',
-        'title': 'Who picks the login for {app}?',
-        'kind': 'choice',
-        'choices': [('1', 'NekoServer makes one for me (recommended)'), ('2', "I'll choose my own")],
-        'example': {'app': 'Jellyfin'},
-        'old': '[1] generate random login/password [2] enter username/password:',
+        'choices': [('1', 'Create strong passwords for me (recommended)'), ('2', 'Choose my own logins')],
+        'how': 'Type 1 or 2, then press Enter.',
+        'old': 'Choose 1 or 2:',
     },
     'login_name': {
         'screen': 'Logins for your apps',
@@ -196,7 +186,7 @@ Q = {
     'login_email': {
         'screen': 'Logins for your apps',
         'title': 'What email address do you want to sign in to {app} with?',
-        'hint': 'It is only a name to sign in with.',
+        'hint': 'This identifies your account. Email delivery and password recovery depend on how {app} is configured.',
         'kind': 'text',
         'send': 'Next',
         'example': {'app': 'Immich'},
