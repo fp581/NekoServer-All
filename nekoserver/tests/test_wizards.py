@@ -169,7 +169,11 @@ class WizardFlowTests(unittest.TestCase):
         out = []
         with mock.patch('first_checkup.run', side_effect=KeyboardInterrupt):
             code = wizard.run(
-                mock.Mock(return_value=0), self.root / 'state', prompt=answers('', 'yes'), output=out.append, root=self.root
+                mock.Mock(return_value=0),
+                self.root / 'state',
+                prompt=answers('', 'yes'),
+                output=out.append,
+                root=self.root,
             )
         self.assertIn(code, (0, 1))
         self.assertTrue(any('First checkup stopped.' in line and 'sudo bash install.sh' in line for line in out))

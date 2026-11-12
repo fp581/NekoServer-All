@@ -906,9 +906,9 @@ class AskNekoPageTests(unittest.TestCase):
         as typed. The page keeps the server's copy of the question (secrets removed)."""
         typed = 'Jellyfin refuses ' + '-'.join(('Blue', 'Horse', '77')) + ': why?'
         kept = 'Jellyfin refuses <removed> why?'
-        flow = page(
-            ('askFlow', {'typed': typed, 'kept': kept, 'answer': 'It is a bug.\nBUG REPORT: the login step.'})
-        )[0]
+        flow = page(('askFlow', {'typed': typed, 'kept': kept, 'answer': 'It is a bug.\nBUG REPORT: the login step.'}))[
+            0
+        ]
         # The question goes to the server as typed, once, through the PIN-checked path.
         self.assertEqual(flow['sent'][0], ['/api/control/ask', {'question': typed}])
         self.assertEqual(flow['sent'][1][0], '/api/ask/abc')
@@ -947,9 +947,9 @@ class AskNekoPageTests(unittest.TestCase):
         text = 'Restart it.\nACTION: restart_app:jellyfin\nBUG REPORT: the retention st'
         failed = 'Neko is not available right now: the answer was cut off before it ended; ask again'
         # Even if a repair came with it, a failed answer never offers one.
-        cut = page(
-            ('cutOffEntry', {'text': text, 'done': False, 'failed': failed, 'repair': 'restart_app:jellyfin'})
-        )[0]
+        cut = page(('cutOffEntry', {'text': text, 'done': False, 'failed': failed, 'repair': 'restart_app:jellyfin'}))[
+            0
+        ]
         self.assertEqual(cut['sent'], [], 'the server is not asked about a repair')
         self.assertIsNone(cut['repair'])
         self.assertIsNone(cut['report'])

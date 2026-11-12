@@ -1035,9 +1035,13 @@ main > section {
 /* What the chosen drive holds, under its line: the line is kept when it is empty, so
    choosing a drive moves nothing. */
 /* A group's row of the storage table: a caption over each of its two lists. */
+.storage .row-inputs:has(.pair-title) {
+  display: grid;
+  grid-template-columns: minmax(0, 15em) minmax(0, 1fr);
+  gap: 6px 10px;
+  align-items: center;
+}
 .storage .pair-title {
-  display: block;
-  margin: 6px 0 2px;
   font-size: 12px;
   color: var(--muted);
 }

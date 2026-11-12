@@ -305,8 +305,8 @@ ALWAYS = (
 )
 # Until each of these has its own page before the review, setup asks about it when it
 # gets there (the pages of 0.50.0 are built one by one; this list shrinks with them).
+# The drives are not among them any more: the storage page comes before the review.
 ASKED_DURING = {
-    'drives': 'which drive is for the apps, which for your files and which for backups',
     'logins': 'whether to make a password for each app or use ones you choose',
     'backup_times': 'when the backups run',
     'notifications': 'the address of your alerts topic',
