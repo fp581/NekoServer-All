@@ -33,7 +33,7 @@ installer.py
     {said} Keep the newest {backup_plan.DEFAULT} {what} from now on?
 media-connect.py
     source_filter
-    {question} (Enter alone skips):
+    {question} (Enter alone takes the ticked ones): | (Enter alone skips):
     {row['label']} (Enter alone keeps its default):
     qbit_password
     qbit_user
