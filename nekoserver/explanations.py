@@ -307,8 +307,6 @@ ALWAYS = (
 # gets there (the pages of 0.50.0 are built one by one; this list shrinks with them).
 # The drives are not among them any more: the storage page comes before the review.
 ASKED_DURING = {
-    'logins': 'whether to make a password for each app or use ones you choose',
-    'backup_times': 'when the backups run',
     'notifications': 'the address of your alerts topic',
     'heartbeat': 'the check-in address of your outage service',
     'assistant': 'which AI model to use',

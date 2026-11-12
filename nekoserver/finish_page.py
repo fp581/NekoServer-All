@@ -91,7 +91,18 @@ def page(config, summary, pin_set=False):
         'attention': [item_said(item, names) for item in summary.get('attention', [])],
         'waiting': [item_said(item, names) for item in summary.get('pending', [])],
         'dashboard': dashboard_shown(config, pin_set),
+        # The server's own secrets chosen on the accounts page, each with Show login.
+        'secrets': secrets_shown(config),
     }
+
+
+def secrets_shown(config):
+    """The dashboard PIN and the shared folders' password the account store keeps."""
+    import account_store
+
+    return [
+        {'name': name, 'login': key} for key, name in account_store.OTHERS.items() if account_store.other(config, key)
+    ]
 
 
 def offered(shown):
@@ -100,4 +111,5 @@ def offered(shown):
         return set(), set()
     apps = shown.get('apps', [])
     tests = [app['test']['id'] for app in apps if app.get('test')] + [test['id'] for test in shown.get('tests', [])]
-    return {app['login'] for app in apps if app.get('login')}, set(tests)
+    logins = {app['login'] for app in apps if app.get('login')} | {s['login'] for s in shown.get('secrets', [])}
+    return logins, set(tests)

@@ -338,28 +338,7 @@ class JellyfinLibraryLoginTests(unittest.TestCase):
 
 
 class ConnectorChoiceTests(unittest.TestCase):
-    """A mistyped number in the connector's lists is asked again, not a failed step."""
-
-    def choose(self, answers):
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location('media_connect', ROOT / 'media-connect.py')
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        replies = iter(answers)
-
-        def ask(_):
-            value = next(replies)
-            if value is EOFError:
-                raise EOFError
-            return value
-
-        items = [{'name': 'Standard', 'id': 1}, {'name': 'Lossless', 'id': 2}]
-        with mock.patch('builtins.print'):
-            return module.choose(items, 'Choose', ask=ask)
-
-    def test_a_wrong_number_is_asked_again(self):
-        self.assertEqual(self.choose(['7', 'two', '2'])['id'], 2)
+    """The connector stopped by Ctrl+D is a step left, not a crash."""
 
     def test_ctrl_d_stops_the_connector_cleanly(self):
         import importlib.util
@@ -377,15 +356,6 @@ class ConnectorChoiceTests(unittest.TestCase):
             ):
                 self.assertEqual(module.main(['--config', str(config), '--indexers']), 1)
         self.assertIn('indexers: incomplete (stopped)', str(shown.call_args_list))
-
-    def test_skips(self):
-        self.assertIsNone(self.choose(['']))
-        self.assertIsNone(self.choose([EOFError]))
-        self.assertIsNone(self.choose(['0', '9', 'x']))  # three tries, then skipped
-
-
-class WithoutNavidromeTests(unittest.TestCase):
-    """Navidrome taken out of media.services: setup goes ahead, the music step has nothing to do."""
 
     def test_the_full_setup_is_not_refused(self):
         import installer

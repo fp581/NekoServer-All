@@ -422,6 +422,12 @@ def choose_pin(binary, log, ask=getpass.getpass):
     without a keyboard. Only a slow salted hash is kept."""
     if (CONTROL_CONFIG / 'pin.json').exists():
         return False
+    import account_store
+
+    chosen = account_store.AHEAD.get('others', {}).get('dashboard_pin')
+    if chosen:
+        # Chosen on the accounts page before the approval: set, nothing is asked.
+        return save_pin(binary, log, chosen)
     if not sys.stdin.isatty():
         log(
             'Dashboard: no PIN chosen, so fans and lights change on the server only and apps can\'t be restarted or closed from it (run setup in a terminal to choose one)'
@@ -452,21 +458,29 @@ def asked_pin(binary, log, ask):
         if setup_progress.page_field('again', ask, 'Same PIN again: ').strip() != pin:
             print('The two PINs differ.')
             continue
-        saved = subprocess.run(
-            [str(binary), 'control', '--set-pin'],
-            input=pin + '\n',
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=120,
-        )
-        if saved.returncode:
-            print('That PIN was not accepted (' + (saved.stderr.strip() or 'no reason given') + '). Try another.')
-            continue
-        log('Dashboard: PIN saved')
-        return True
+        if save_pin(binary, log, pin, said=print):
+            return True
     log('Dashboard: no PIN chosen; fans and lights change on the server only, and app controls stay off')
     return False
+
+
+def save_pin(binary, log, pin, said=None):
+    """The PIN handed to the control service, which keeps only its slow salted hash: True
+    once saved. A refusal is said (`said`, else the log)."""
+    saved = subprocess.run(
+        [str(binary), 'control', '--set-pin'],
+        input=pin + '\n',
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    if saved.returncode:
+        why = saved.stderr.strip() or 'no reason given'
+        (said or log)('That PIN was not accepted (' + why + ').' + (' Try another.' if said else ''))
+        return False
+    log('Dashboard: PIN saved')
+    return True
 
 
 def runtime_binary():

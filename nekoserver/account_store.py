@@ -38,6 +38,13 @@ APPS = {
 }
 EMAIL_LOGINS = {'immich', 'seerr'}
 STATES = {'planned', 'started', 'verified', 'needs_setup'}
+# Secrets of the server itself, chosen on the accounts page with the app logins (0.50.0):
+# made for you, or typed, and shown again with "Show login". {key: what it is}.
+OTHERS = {'dashboard_pin': 'Dashboard PIN', 'shared_folders': 'Shared folders password'}
+# The accounts page asked before the one approval (ask_ahead), for the steps of the same
+# run: {'mode', 'apps': {app: entry}, 'others': {key: value}}. Written to the store once
+# the app drive is mounted (collect), never before.
+AHEAD = {}
 
 
 def enabled(config):
@@ -126,6 +133,35 @@ def validate_login(app, username, password, existing=False):
         raise ValueError('Password must contain 12-128 characters and no control characters')
 
 
+def generate_other(key):
+    """A PIN of 8 digits, or a password of 32 letters and digits."""
+    if key == 'dashboard_pin':
+        return ''.join(secrets.choice(string.digits) for _ in range(8))
+    return generate('shared')[1]
+
+
+def validate_other(key, value):
+    """The dashboard PIN: 6 to 8 digits (0-9), or nothing (no PIN). The shared folders'
+    password: 12 to 128 characters and no control characters."""
+    if key == 'dashboard_pin':
+        if value and not re.fullmatch(r'\d{6,8}', value, re.ASCII):
+            raise ValueError('A PIN is 6 to 8 digits (0-9)')
+        return
+    if not isinstance(value, str) or not 12 <= len(value) <= 128 or control(value):
+        raise ValueError('Password must contain 12-128 characters and no control characters')
+
+
+def other(config, key):
+    """A server secret chosen on the accounts page: in this run's answers, else in the
+    store; None when there is none."""
+    if key in AHEAD.get('others', {}):
+        return AHEAD['others'][key] or None
+    try:
+        return load(config).get('others', {}).get(key) or None
+    except (RuntimeError, OSError, KeyError):
+        return None
+
+
 def generate(app):
     username = 'neko_' + secrets.token_hex(6)
     if app in EMAIL_LOGINS:
@@ -180,6 +216,11 @@ def load(config):
             or not isinstance(value.get('apps'), dict)
         ):
             raise ValueError
+        others = value.get('others', {})
+        if not isinstance(others, dict) or any(key not in OTHERS for key in others):
+            raise ValueError
+        for key, secret in others.items():
+            validate_other(key, secret)
         for app, entry in value['apps'].items():
             if (
                 app not in APPS
@@ -230,10 +271,17 @@ def save(config, value):
                 '',
             ]
         )
+    for key, secret in value.get('others', {}).items():
+        if secret:
+            lines.extend([f'=== {OTHERS[key]} ===', f'Secret: {secret}', ''])
     atomic_write(root / 'APP-CREDENTIALS.txt', '\n'.join(lines) + '\n', 0o600)
 
 
 def get(config, app, verified=False):
+    """An app's saved login; for a server secret (OTHERS) its value as the password."""
+    if app in OTHERS:
+        secret = other(config, app)
+        return {'username': '', 'password': secret, 'state': 'verified'} if secret else None
     entry = load(config)['apps'].get(app)
     if entry and (not verified or entry['state'] == 'verified'):
         return entry
@@ -313,7 +361,7 @@ def fresh(config, app):
     return not data.exists() or (data.is_dir() and not any(data.iterdir()))
 
 
-def accounts_page(config, apps):
+def accounts_page(config, apps, others=()):
     """While this is active, the logins of these apps are one page in the setup window:
     the one choice (strong passwords made for you, or your own logins) and a row for
     each app, typed in only where the choice or the app needs it. The window sends them
@@ -324,6 +372,10 @@ def accounts_page(config, apps):
     for app in apps:
         fields.update({'user:' + app: '', 'pass:' + app: '', 'again:' + app: ''})
         rows.append({'id': app, 'name': APPS[app][0], 'email': app in EMAIL_LOGINS, 'existing': not fresh(config, app)})
+    for key in others:
+        # A secret of the server: a password (or a PIN) and nothing else to type.
+        fields.update({'user:' + key: '', 'pass:' + key: '', 'again:' + key: ''})
+        rows.append({'id': key, 'name': OTHERS[key], 'secret_only': True, 'pin': key == 'dashboard_pin'})
     return setup_progress.page(
         'accounts',
         fields,
@@ -362,7 +414,16 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
                     username=username, password=password, state='planned', source='custom-existing', allow_create=False
                 )
                 save(config, value)
+    if AHEAD.get('others'):
+        # The PIN and the shared folders' password chosen on the page before the approval.
+        value.setdefault('others', {}).update({k: v for k, v in AHEAD['others'].items() if v})
     missing = [app for app in apps if app not in value['apps']]
+    ahead = {app: AHEAD['apps'][app] for app in missing if app in AHEAD.get('apps', {})}
+    if ahead:
+        # Chosen on the accounts page before the approval: saved now, nothing is asked.
+        value['mode'] = AHEAD.get('mode', value['mode'])
+        value['apps'].update(ahead)
+        missing = [app for app in missing if app not in ahead]
     if not missing:
         save(config, value)  # Repair a missing human-readable export from JSON.
         return
@@ -401,3 +462,90 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
             }
             save(config, value)
     output('Account choices saved privately; passwords are not printed or written to installer logs.')
+
+
+def others_wanted(config):
+    """The server secrets this server has not chosen yet: the dashboard PIN (none set) and
+    the shared folders' password (the shared folders switched on and no password yet)."""
+    import shutil
+    import subprocess
+
+    wanted = []
+    if not Path('/etc/nekoserver-control/pin.json').exists():
+        wanted.append('dashboard_pin')
+    if config.get('samba', {}).get('enabled', True) is not False:
+        user = os.environ.get('SUDO_USER') or 'neko'
+        known = ''
+        if shutil.which('pdbedit'):
+            known = subprocess.run(['pdbedit', '-L', '-u', user], capture_output=True, text=True, timeout=15).stdout
+        if not any(line.startswith(user + ':') for line in known.splitlines()):
+            wanted.append('shared_folders')
+    return wanted
+
+
+def asked_other(key, mode, prompt, password_prompt, output):
+    """A server secret on the accounts page: made for you, or typed twice (a PIN may be
+    left empty: no PIN)."""
+    if mode == 'generate':
+        output(f'  {OTHERS[key]}: made and saved for you; "Show login" shows it.')
+        return generate_other(key)
+    for _ in range(3):
+        value = setup_progress.page_field(
+            'pass:' + key, password_prompt, f'{OTHERS[key]} (it is not shown while you type): '
+        )
+        again = setup_progress.page_field('again:' + key, password_prompt, 'The same once more: ')
+        try:
+            validate_other(key, value)
+            if value != again:
+                raise ValueError('The two did not match; try again')
+        except ValueError as exc:
+            output(str(exc))
+            setup_progress.page_set('problem', f'{OTHERS[key]}: {exc}')
+            continue
+        return value
+    return ''
+
+
+def ask_ahead(config, prompt=input, password_prompt=getpass.getpass, output=print):
+    """The accounts page, asked before the one approval (the user: nothing typed after it
+    but what needs the running server): the choice, each new app's login and the server's
+    own secrets, kept in AHEAD for collect(). Nothing is written. A server whose apps all
+    have their logins asks only for a secret it lacks."""
+    if not enabled(config):
+        return
+    try:
+        stored = load(config)
+    except RuntimeError:
+        return  # a store that cannot be read is said by the accounts step itself
+    apps = [app for app in selected(config, ('media', 'photos', 'nextcloud')) if app not in stored['apps']]
+    others = others_wanted(config)
+    if not apps and not others:
+        return
+    AHEAD.clear()
+    AHEAD.update(mode=stored['mode'], apps={}, others={})
+    with accounts_page(config, apps, others):
+        if not stored['apps']:
+            while True:
+                answer = setup_progress.page_field('mode', prompt, questions.terminal('logins_who')).strip()
+                if answer in ('1', '2'):
+                    AHEAD['mode'] = 'generate' if answer == '1' else 'custom'
+                    break
+                output('Type 1 or 2.')
+        mode = 'generate' if AHEAD['mode'] == 'generate' else 'custom'
+        for app in apps:
+            output(APPS[app][0])
+            is_fresh = fresh(config, app)
+            if mode == 'generate' and is_fresh:
+                username, password = generate(app)
+                output(f'  Made: username {username}, with a strong password. "Show login" shows it.')
+            else:
+                username, password = ask_login(app, not is_fresh, stored, prompt, password_prompt, output, on_page=True)
+            AHEAD['apps'][app] = {
+                'username': username,
+                'password': password,
+                'state': 'planned',
+                'allow_create': is_fresh,
+                'source': mode if is_fresh else 'custom',
+            }
+        for key in others:
+            AHEAD['others'][key] = asked_other(key, mode, prompt, password_prompt, output)

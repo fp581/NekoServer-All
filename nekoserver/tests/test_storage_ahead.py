@@ -74,6 +74,13 @@ class ChangesTests(unittest.TestCase):
 
 
 class AskedAheadTests(unittest.TestCase):
+    def setUp(self):
+        # The drives here; the backups and accounts pages asked with them are tested in
+        # tests/test_accounts_ahead.py.
+        others = mock.patch.object(storage, 'others_ahead')
+        others.start()
+        self.addCleanup(others.stop)
+
     def test_nothing_is_asked_with_nobody_there_or_nothing_left_to_ask(self):
         nothing = {'settings': {}, 'places': {}, 'lines': []}
         with mock.patch.object(storage, 'inventory_now', side_effect=AssertionError('looked at the drives')):

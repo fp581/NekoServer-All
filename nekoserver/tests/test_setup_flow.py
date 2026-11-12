@@ -412,7 +412,7 @@ class SetupWindowTests(unittest.TestCase):
         seen = self.page([self.asked(question, page, secret=True, kind='secret')])
         self.assertEqual([row[0] for row in seen['rows']], [page['what'], 'The same again'])
         self.assertEqual(seen['fieldTypes'], [['password'], ['password']])
-        self.assertEqual(seen['prompt'], page['what'] + ': choose it and type it twice.')
+        self.assertEqual(seen['prompt'], page['what'] + ': choose one, and enter it in both fields.')
         self.assertEqual((seen['send'], seen['skipHidden'], seen['answerHidden']), ('Save', True, True))
         self.assertIn('written to no log', seen['note'])
         # Two that differ are not sent.
@@ -770,7 +770,7 @@ class SetupWindowTests(unittest.TestCase):
             seen['accounts'], [['Jellyfin administrator', False, True], ['Immich administrator', True, False]]
         )
         seen = self.page([self.asked(question, page, leave=True)])
-        self.assertEqual((seen['posts'], seen['note']), ([], 'Immich administrator: type the email.'))
+        self.assertEqual((seen['posts'], seen['note']), ([], 'Immich administrator: fill in the email.'))
         # Your own logins: every row is typed in, and two passwords that differ are said.
         seen = self.page([self.asked(question, page, check=['ask-page-mode-2'])])
         self.assertEqual(

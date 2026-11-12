@@ -45,6 +45,8 @@ NEVER_FORMATS = 'Setup never formats a drive and changes nothing by showing this
 PLACES_AHEAD = {}
 # ... and the drive a group's apps are installed on, when not the apps' own: {'photos': a row of this list}.
 INSTALL_AHEAD = {}
+# ... and that the backups page was asked then ({'asked': True}): not asked again in the run.
+TIMES_AHEAD = {}
 
 
 def role(key):

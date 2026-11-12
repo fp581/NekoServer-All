@@ -178,7 +178,11 @@ def samba_password(user, run=subprocess.run, ask=None, output=print):
     terminal only. False when no password was chosen or Samba refused it (said)."""
     import guided_setup
 
-    password = guided_setup.new_password(f'Password for the shared folders (account {user})', ask, output)
+    import account_store
+
+    password = account_store.AHEAD.get('others', {}).get('shared_folders')
+    if not password:
+        password = guided_setup.new_password(f'Password for the shared folders (account {user})', ask, output)
     if password is None:
         return False
     done = run(
@@ -345,11 +349,15 @@ def run(context):
                 'status': 'needs_setup',
                 'reason': 'Run interactively to create the Samba password, or use sudo smbpasswd -a ' + user,
             }
-        # NekoServer does not store or log the password: it goes straight to Samba.
-        print(
-            '\nShared folders: choose a password for opening the server\'s folders from other '
-            'computers (user: ' + user + '). Type it twice; nothing is shown while you type.'
-        )
+        # The password chosen on the accounts page goes straight to Samba, in no log (the
+        # account store keeps it privately, for "Show login").
+        import account_store
+
+        if not account_store.AHEAD.get('others', {}).get('shared_folders'):
+            print(
+                '\nShared folders: choose a password for opening the server\'s folders from other '
+                'computers (user: ' + user + '). Type it twice; nothing is shown while you type.'
+            )
         if not samba_password(user):
             return {
                 'status': 'needs_setup',

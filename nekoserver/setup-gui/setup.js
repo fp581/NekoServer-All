@@ -297,7 +297,7 @@
     },
     // A password or PIN chosen now: two hidden fields that must match.
     new_password: {
-      prompt: page => page.what + ': choose it and type it twice.',
+      prompt: page => page.what + ': choose one, and enter it in both fields.',
       build: buildNewPassword,
       values: inputValues,
       problem: newPasswordProblem,
@@ -824,9 +824,14 @@
       user.value = page.fields['user:' + app.id] || '';
       const password = hiddenInput('pass:' + app.id, 'Password for ' + app.name);
       const again = hiddenInput('again:' + app.id, 'The same password again for ' + app.name);
-      password.placeholder = 'Password';
+      password.placeholder = app.pin ? 'PIN (6 to 8 digits)' : 'Password';
       again.placeholder = 'The same again';
-      const made = el('small', { text: 'A strong password is made and saved for you.' });
+      // A secret of the server itself (the dashboard PIN, the shared folders' password): no user name.
+      if (app.secret_only) user.hidden = true;
+      const madeWords = app.pin
+        ? 'A PIN is made for you. It lets you restart apps from the dashboard; Show login shows it at the end.'
+        : 'A strong password is made and saved for you.';
+      const made = el('small', { text: madeWords });
       const typed = el('span', { class: 'row-inputs account-inputs' }, user, password, again);
       const node = el(
         'div',
@@ -874,9 +879,11 @@
     for (const row of accountRows) {
       if (row.typed.hidden) continue;
       const name = row.app.name;
-      if (!values['user:' + row.app.id].trim())
-        return name + ': type the ' + (row.app.email ? 'email' : 'user name') + '.';
-      if (!values['pass:' + row.app.id]) return name + ': type a password.';
+      if (!row.app.secret_only && !values['user:' + row.app.id].trim())
+        return name + ': fill in the ' + (row.app.email ? 'email' : 'user name') + '.';
+      // No PIN is a choice: phones can then only look at the dashboard.
+      if (row.app.pin && !values['pass:' + row.app.id] && !values['again:' + row.app.id]) continue;
+      if (!values['pass:' + row.app.id]) return name + ': fill in a ' + (row.app.pin ? 'PIN' : 'password') + '.';
       if (values['pass:' + row.app.id] !== values['again:' + row.app.id])
         return name + ': the two passwords are not the same.';
     }
@@ -1437,6 +1444,21 @@
           )
         : null
     ];
+    if ((page.secrets || []).length) {
+      const rows = page.secrets.map(secret => {
+        const login = loginParts(secret.login);
+        return el(
+          'div',
+          { class: 'finish-test' },
+          el('span', { text: secret.name }),
+          el('div', { class: 'row-inputs' }, login.button, login.note),
+          login.shown
+        );
+      });
+      more.push(
+        el('div', { class: 'retry' }, el('div', { class: 'row-title', text: 'Your PIN and passwords' }), ...rows)
+      );
+    }
     if (page.dashboard) {
       more.push(
         el(

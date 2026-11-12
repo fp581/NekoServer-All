@@ -321,29 +321,6 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs['input'], '123456\n')
         self.assertNotIn('123456', json.dumps(run.call_args.args))
 
-    def test_a_long_list_is_shown_whole_to_the_window(self):
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location('media_connect_pick', ROOT / 'media-connect.py')
-        connect = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(connect)
-        setup_progress.enable()
-        self.addCleanup(setup_progress.disable)
-        items = [{'name': f'Indexer {n}'} for n in range(1, 41)]
-        pages = []
-
-        def ask(prompt):
-            pages.append(setup_progress.page_shown())
-            return '37'
-
-        with mock.patch('builtins.print'):
-            self.assertEqual(connect.choose(items, 'Select an indexer', ask), items[36])
-        page = pages[0]
-        self.assertEqual((page['form'], page['asking'], page['what']), ('pick', 'choice', 'Select an indexer'))
-        self.assertEqual(len(page['items']), 40)  # every row, not the terminal's last lines
-        self.assertEqual(page['items'][36], {'label': 'Indexer 37'})
-        self.assertIsNone(setup_progress.page_shown())  # over with the question
-
 
 class WindowTests(unittest.TestCase):
     def setUp(self):

@@ -1496,7 +1496,9 @@ def existing_media_asked(context):
 # into the settings file once the person approves. Where each app keeps its files is kept
 # for this run only (drive_table.PLACES_AHEAD): only the mounted drives show whether such
 # files are there already, and those stay where they are (choose_locations).
-AHEAD_SECTIONS = ('storage', 'photos', 'placement')
+AHEAD_SECTIONS = ('storage', 'photos', 'placement', 'app_backup', 'host_backup')
+# Top-level answers asked before the approval too: the backups page's times and its counts.
+AHEAD_KEYS = ('backup_times', 'backup_counts_reviewed')
 
 
 def choose_ahead(config, log):
@@ -1505,11 +1507,51 @@ def choose_ahead(config, log):
     go, 'lines': the choices in words, for the review}; all empty when nothing is left to
     ask or nobody is at the keyboard. Nothing is mounted, written or saved here."""
     chosen = {'settings': {}, 'places': {}, 'lines': []}
-    if not sys.stdin.isatty() or not page_fields(config):
+    if not sys.stdin.isatty():
         return chosen
+    draft = copy.deepcopy(config)
+    if page_fields(config):
+        drives_ahead(draft, chosen, log)
+    # The backups page and the accounts page: asked before the approval too (the user:
+    # after it, only what needs the running server asks).
+    others_ahead(draft, log)
+    chosen['settings'] = section_changes(config, draft)
+    return chosen
+
+
+def others_ahead(draft, log):
+    """The backups page (times and counts) and the accounts page, on the copy of the
+    settings. The answers to optional questions are kept on the app drive: one that is not
+    mounted yet gets them in a folder of its own, left behind once the run ends."""
+    import tempfile
+
+    import account_store
+    import drive_table
+    import guided_setup
+
+    mounted = findmnt('SOURCE', str(mount_path(draft['data_mount']))) is not None
+    with tempfile.TemporaryDirectory(prefix='neko-ahead-') as scratch:
+        times = copy.deepcopy(draft)
+        if not mounted:
+            times['data_mount'] = scratch
+        context = types.SimpleNamespace(config=times, log=log, apply=True, config_path=None, plan=None, previous=None)
+        guided_setup.choose_backup_times(context)
+        for key in AHEAD_KEYS:
+            if key in times:
+                draft[key] = times[key]
+        for section in ('app_backup', 'host_backup'):
+            if section in times:
+                draft[section] = times[section]
+    drive_table.TIMES_AHEAD.clear()
+    drive_table.TIMES_AHEAD.update(asked=True)
+    account_store.ask_ahead(draft, output=log)
+
+
+def drives_ahead(draft, chosen, log):
+    """The storage page on the copy of the settings: the drives, where each app keeps its
+    files and is installed, the offline drive, and films already there."""
     import existing_page
 
-    draft = copy.deepcopy(config)
     context = types.SimpleNamespace(config=draft, log=log, apply=True, config_path=None)
     inventory = inventory_now()
     log(disk_line(inventory))
@@ -1521,9 +1563,7 @@ def choose_ahead(config, log):
             chosen['installs'] = installs
         choose_usb(context)
         existing_page.ask(context, output=log)
-    chosen['settings'] = section_changes(config, draft)
     chosen['lines'] = ahead_lines(draft, inventory, chosen['places'], chosen.get('installs') or {})
-    return chosen
 
 
 def keys_changed(old, new):
@@ -1541,8 +1581,9 @@ def section_changes(before, after):
 
     found = {section: keys_changed(before.get(section), after.get(section)) for section in AHEAD_SECTIONS}
     changes = {section: change for section, change in found.items() if change[0] or change[1]}
-    # The films question's two answers of their own: that it was asked, and the folders to copy.
-    for key in (existing_page.ASKED, existing_page.COPIES):
+    # The films question's two answers of their own (that it was asked, the folders to
+    # copy), and the backups page's.
+    for key in (existing_page.ASKED, existing_page.COPIES, *AHEAD_KEYS):
         if after.get(key) and after.get(key) != before.get(key):
             changes[key] = after[key]
     return changes
@@ -2428,7 +2469,16 @@ def remember_media_apps(context):
 
 def choose_backup_times(context):
     """When the backups run (daily, weekly, monthly), asked here with the drives so the
-    person answers every question at the start (guided_setup.choose_backup_times)."""
+    person answers every question at the start (guided_setup.choose_backup_times). Asked
+    before the approval already in this run: kept as chosen, nothing asked again."""
+    import drive_table
+
+    if drive_table.TIMES_AHEAD.get('asked'):
+        from neko_common import BACKUP_TIMES, backup_times_said, remember_answer
+
+        remember_answer(context.config['data_mount'], BACKUP_TIMES, backup_times_said(context.config))
+        context.log('Backup times: as chosen before the approval, ' + backup_times_said(context.config))
+        return
     plan = getattr(context, 'plan', None)
     if isinstance(plan, (list, tuple)) and not JOB_STEPS & set(plan):
         return

@@ -107,6 +107,9 @@ class PageTests(unittest.TestCase):
     def test_the_buttons_it_has_are_the_only_ones_answered(self):
         self.assertEqual(finish_page.offered(self.page), ({'jellyfin'}, {'play_video', 'tv_picture'}))
         self.assertEqual(finish_page.offered(None), (set(), set()))
+        # The PIN and the shared folders' password, when the store has them, have Show login too.
+        with_secrets = {**self.page, 'secrets': [{'name': 'Dashboard PIN', 'login': 'dashboard_pin'}]}
+        self.assertIn('dashboard_pin', finish_page.offered(with_secrets)[0])
 
 
 class WindowTests(unittest.TestCase):
