@@ -204,5 +204,86 @@ class DockerTests(unittest.TestCase):
             self.assertIn('BindsTo=srv-nekoserver.mount mnt-nekoserver-media.mount\n', text)
 
 
+class UninstallTests(unittest.TestCase):
+    """The uninstaller takes setup's own blocks out of /etc/fstab, unmounts what is mounted
+    inside the drives before the drives, and opens the folders setup closed."""
+
+    def setUp(self):
+        import uninstaller
+
+        self.uninstaller = uninstaller
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(os.path.realpath(folder.name))
+        self.plan = SimpleNamespace(
+            data='/srv/nekoserver',
+            media='/mnt/nekoserver-media',
+            at=lambda path: self.root / str(path).lstrip('/'),
+        )
+        self.calls, self.said = [], []
+
+    def call(self, argv, timeout=0):
+        self.calls.append(argv)
+        return 0, ''
+
+    def test_the_blocks_are_the_ones_setup_writes(self):
+        import existing_media
+
+        self.assertEqual(
+            self.uninstaller.FSTAB_BLOCKS,
+            ((existing_media.BEGIN, existing_media.END), (storage.INSTALL_BEGIN, storage.INSTALL_END)),
+        )
+        self.assertEqual(self.uninstaller.EXTRA_MOUNTS, str(neko_common.EXTRA_MOUNTS))
+
+    def test_a_whole_block_is_taken_and_nothing_else(self):
+        theirs = [
+            'UUID=abc / ext4 defaults 0 1',
+            '# NekoServer: a note someone wrote',
+            'UUID=def /home ext4 defaults 0 2',
+        ]
+        block = [
+            storage.INSTALL_BEGIN,
+            '/mnt/nekoserver-drives/d3/nekoserver/appdata/immich /srv/nekoserver/appdata/immich none bind,nofail 0 0',
+            storage.INSTALL_END,
+        ]
+        lines, folders = self.uninstaller.fstab_blocks('\n'.join(theirs[:2] + block + theirs[2:]) + '\n')
+        self.assertEqual(lines, block)
+        self.assertEqual(folders, ['/srv/nekoserver/appdata/immich'])
+        # A block that never ends is not setup's for certain: nothing of it is taken.
+        self.assertEqual(self.uninstaller.fstab_blocks('\n'.join(theirs + block[:2]) + '\n'), ([], []))
+        self.assertEqual(self.uninstaller.fstab_blocks(''), ([], []))
+
+    def test_the_closed_folder_is_opened_and_goes_and_other_folders_are_left_alone(self):
+        closed = self.root / 'srv/nekoserver/appdata/immich'
+        closed.mkdir(parents=True)
+        elsewhere = self.root / 'home/someone/films'
+        elsewhere.mkdir(parents=True)
+        left = []
+        self.uninstaller._unmount_inside(
+            self.plan, ['/srv/nekoserver/appdata/immich', '/home/someone/films'], self.call, self.said.append, left
+        )
+        self.assertEqual(self.calls, [['chattr', '-i', str(closed)]])
+        self.assertFalse(closed.exists())
+        self.assertTrue(elsewhere.is_dir())
+        self.assertEqual(left, [])
+
+    def test_the_drives_beyond_the_two_are_unmounted_and_their_folders_go(self):
+        drive = self.root / 'mnt/nekoserver-drives/d3'
+        drive.mkdir(parents=True)
+        left = []
+        with mock.patch.object(self.uninstaller.os.path, 'ismount', side_effect=lambda path: path == str(drive)):
+            self.uninstaller._unmount_extra(self.plan, self.call, self.said.append, left)
+        self.assertEqual(self.calls, [['umount', '/mnt/nekoserver-drives/d3']])
+        self.assertEqual(self.said, ['Unmounting /mnt/nekoserver-drives/d3'])
+        self.assertFalse((self.root / 'mnt/nekoserver-drives').exists())
+        # One that stays busy is said and listed, and its folder stays.
+        drive.mkdir(parents=True)
+        busy = lambda argv, timeout=0: (32, 'target is busy')  # noqa: E731
+        with mock.patch.object(self.uninstaller.os.path, 'ismount', side_effect=lambda path: path == str(drive)):
+            self.uninstaller._unmount_extra(self.plan, busy, self.said.append, left)
+        self.assertEqual(left, ['/mnt/nekoserver-drives/d3 (still mounted)'])
+        self.assertTrue(drive.is_dir())
+
+
 if __name__ == '__main__':
     unittest.main()

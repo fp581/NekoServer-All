@@ -1767,11 +1767,92 @@ def replace_system_file(path, text):
     return backup
 
 
+# The blocks setup writes in /etc/fstab for folders mounted inside its drives (0.50.0),
+# each from its first line to its last: a person's own media used where it is
+# (existing_media.py) and the apps installed on another drive (modules/storage.py).
+FSTAB_BLOCKS = (
+    (
+        '# NekoServer: existing media used where it is (written by setup from my-config.json)',
+        '# NekoServer: end of existing media',
+    ),
+    (
+        '# NekoServer: apps installed on another drive (written by setup from my-config.json)',
+        '# NekoServer: end of apps installed on another drive',
+    ),
+)
+# Where the drives beyond the two are mounted, each in a folder of its name (neko_common.EXTRA_MOUNTS).
+EXTRA_MOUNTS = '/mnt/nekoserver-drives'
+
+
+def fstab_blocks(text):
+    """(the lines of setup's own blocks in /etc/fstab, their first and last lines
+    included; the folders those lines mount). A block without its last line is not
+    taken: nothing after it is setup's for certain."""
+    lines = text.splitlines()
+    taken, folders = [], []
+    for begin, end in FSTAB_BLOCKS:
+        marks = [line.strip() for line in lines]
+        if begin not in marks or end not in marks[marks.index(begin) :]:
+            continue
+        first = marks.index(begin)
+        last = marks.index(end, first)
+        taken += lines[first : last + 1]
+        folders += [line.split()[1] for line in lines[first + 1 : last] if len(line.split()) >= 2]
+    return taken, folders
+
+
+def _unmount_inside(plan, folders, call, out, left):
+    """What setup mounted inside its drives, the deepest first: a drive with something
+    mounted in it cannot be unmounted. The closed folder that was underneath an app's
+    mount is opened again and removed when it is empty."""
+    drives = (plan.data, plan.media)
+    for folder in sorted(set(folders), key=len, reverse=True):
+        if not any(folder.startswith(drive.rstrip('/') + '/') for drive in drives):
+            continue  # not a folder of NekoServer's drives: left alone
+        place = plan.at(folder)
+        if os.path.ismount(str(place)):
+            out('Unmounting ' + folder)
+            code, said = call(['umount', folder], 120)
+            if code != 0:
+                out('  could not unmount (busy' + (': ' + said if said else '') + '): sudo umount ' + folder)
+                left.append(folder + ' (still mounted)')
+                continue
+        if place.is_dir() and not os.path.ismount(str(place)):
+            call(['chattr', '-i', str(place)], 30)  # closed by setup while its drive was away
+            try:
+                place.rmdir()
+            except OSError:
+                pass  # it holds files, or it goes with the drive's own folder: both are said there
+
+
+def _unmount_extra(plan, call, out, left):
+    """The drives beyond the two (an app's files or settings on a drive of their own):
+    each unmounted and its empty mount folder removed, then the folder that held them."""
+    top = plan.at(EXTRA_MOUNTS)
+    if not top.is_dir():
+        return
+    for place in sorted(top.iterdir()):
+        folder = EXTRA_MOUNTS + '/' + place.name
+        if os.path.ismount(str(place)):
+            out('Unmounting ' + folder)
+            code, said = call(['umount', folder], 120)
+            if code != 0:
+                out('  could not unmount (busy' + (': ' + said if said else '') + '): sudo umount ' + folder)
+                left.append(folder + ' (still mounted)')
+                continue
+        _remove_mount_folder(plan, folder, out, left)
+    try:
+        top.rmdir()
+    except OSError:
+        pass  # a drive is still mounted there, or a folder stayed: said above
+
+
 def _remove_mounts(plan, path, call, out):
     """The drives' lines out of /etc/fstab, then each drive unmounted and its empty folder
     removed. Returns what stayed (a drive still in use, say)."""
     left = []
-    lines = plan.fstab_lines()
+    block, inside = fstab_blocks(path.read_text()) if path.is_file() else ([], [])
+    lines = plan.fstab_lines() + block
     if lines:
         kept = [line for line in path.read_text().splitlines() if line not in lines]
         backup = replace_system_file(path, '\n'.join(kept) + '\n')
@@ -1784,6 +1865,8 @@ def _remove_mounts(plan, path, call, out):
             + backup.name
             + ')'
         )
+    _unmount_inside(plan, inside, call, out, left)
+    _unmount_extra(plan, call, out, left)
     for folder in (plan.external, plan.media, plan.data):
         if not plan.mounted(folder):
             continue
