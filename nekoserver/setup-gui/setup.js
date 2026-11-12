@@ -714,7 +714,22 @@
         el('div', { class: 'choice' }, caption, el('label', { class: 'switch' }, input, el('span')))
       );
     });
-    $('ask-page').replaceChildren(...cards);
+    // What setup checked itself, above the steps: passed, not yet, or not known (never
+    // shown as passed), each with its reason and what to do next.
+    const marks = { pass: '✓', fail: '✕', unknown: '?' };
+    const status = (page.status || []).map(line =>
+      el(
+        'div',
+        { class: 'status-row ' + (marks[line.status] ? line.status : 'unknown') },
+        el('span', { class: 'status-mark', text: marks[line.status] || '?' }),
+        el('b', { text: line.title }),
+        el('span', { text: line.reason }),
+        line.next ? el('small', { text: line.next }) : null,
+        line.shows ? el('small', { text: line.shows }) : null
+      )
+    );
+    const checked = status.length ? [el('div', { class: 'status-rows', id: 'ask-page-status' }, ...status)] : [];
+    $('ask-page').replaceChildren(...checked, ...cards);
   }
 
   /* Yes when every switch is on; the steps marked go along either way. */

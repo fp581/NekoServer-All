@@ -27,6 +27,12 @@ def phone_steps(ctx, result, done=()):
     earlier run for these same addresses, which are not asked for again. Returns the ids
     of the steps confirmed; the phone is set up when that is all of them (phone_ids)."""
     links = result['links']
+    # What setup can see for itself, before anyone is asked anything (phone_status.py).
+    status = phone_rows(ctx)
+    if any(row['id'] == 'phone' and row['status'] == 'pass' for row in status) and 'tailscale' not in done:
+        # A phone is signed in to the account: that step is seen, not asked about.
+        done = [*done, 'tailscale']
+        ctx.log('Phone: a phone is signed in to your Tailscale account (seen by setup, not asked)')
     try:
         page = phone_guide.write_page(ctx.config, links)
         page_target = [('page', str(page))]
@@ -72,19 +78,86 @@ def phone_steps(ctx, result, done=()):
             'lines': [
                 'Turn OFF Wi-Fi on the phone so it uses mobile data. Keep Tailscale on.',
                 'Open one or two of the apps and load something new: a photo, a song or a video.',
-                'If that works, your apps work anywhere. Turn Wi-Fi back on.',
+                'If that works, the phone reached this server without your home Wi-Fi. Turn Wi-Fi back on.',
+                'Setup cannot see this for you: only you can say that it worked.',
             ],
         }
     )
-    return guided_setup.part(
+    confirmed = guided_setup.part(
         ctx,
-        'Set up your phone',
+        'Use your apps away from home',
         steps,
         PHONE_QUESTION,
         done=done,
-        intro=[first],
+        intro=[first, *status_lines(status)],
         targets=[*page_target, ('url', phone_guide.TAILSCALE_DOWNLOAD)],
+        status=status,
     )
+    if AWAY in confirmed and AWAY not in done:
+        observed(ctx, links)
+    return confirmed
+
+
+# What each status row is called on the phone page (an app's row has its own title).
+STATUS_TITLES = {
+    'server': 'This server is signed in to Tailscale',
+    'https': 'Private HTTPS addresses',
+    'phone': 'A phone in your Tailscale account',
+}
+STATUS_MARKS = {'pass': 'OK', 'fail': 'NOT YET', 'unknown': 'NOT KNOWN'}
+
+
+def phone_rows(ctx):
+    """The phone page's status rows, as setup checked them just now: this server signed
+    in, the private HTTPS addresses, a phone in the account, each app. Every row is
+    pass, fail or unknown with its reason and what to do next; unknown is never shown as
+    a pass. [] when the check itself cannot run (said in the log, never a failure of
+    the step)."""
+    import phone_status
+
+    try:
+        rows = phone_status.check(ctx.config)['rows']
+    except (OSError, RuntimeError, ValueError, KeyError) as exc:
+        ctx.log(
+            f'Phone: setup could not check the connection itself ({type(exc).__name__}); the steps are shown as they are'
+        )
+        return []
+    return [
+        {
+            'id': row['id'],
+            'status': row['status'],
+            'title': STATUS_TITLES.get(row['id']) or row.get('title') or row['id'],
+            'reason': row.get('reason', ''),
+            'next': row.get('next', ''),
+            'shows': row.get('shows', ''),
+        }
+        for row in rows
+    ]
+
+
+def status_lines(rows):
+    """The status rows as the terminal lists them."""
+    lines = []
+    for row in rows:
+        lines.append(f"  [{STATUS_MARKS.get(row['status'], 'NOT KNOWN')}] {row['title']}: {row['reason']}")
+        for more in (row['next'], row['shows']):
+            if more:
+                lines.append('        ' + more)
+    return ['What setup checked itself:', *lines] if lines else []
+
+
+def observed(ctx, links):
+    """The person said an app opened on the phone with Wi-Fi off: kept as their
+    observation (phone_status), which no check of setup's can stand in for."""
+    import phone_status
+
+    try:
+        addresses = {app: links[app] for app in gateway_tools.selected(ctx.config) if app in links}
+        phone_status.record_observation(ctx.config, True, addresses)
+    except (OSError, RuntimeError, ValueError, KeyError):
+        ctx.log(
+            'Phone: your "it worked away from home" could not be saved for the status page; it is asked again next time'
+        )
 
 
 AWAY = 'away_from_home'

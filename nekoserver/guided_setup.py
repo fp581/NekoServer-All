@@ -428,7 +428,7 @@ def checkpoint(
 CONFIRM_STEP = 'confirm_step'
 
 
-def part(ctx, title, steps, question, done=(), intro=(), targets=(), prompt=None, output=None):
+def part(ctx, title, steps, question, done=(), intro=(), targets=(), prompt=None, output=None, status=()):
     """Several steps about one thing (setting up the phone, the TV), shown as one part
     with ONE question at the end, instead of a yes/no after every step.
     `steps`: [{'id', 'title', 'lines', 'logins'}]; `done`: the ids confirmed in an
@@ -437,7 +437,9 @@ def part(ctx, title, steps, question, done=(), intro=(), targets=(), prompt=None
     them. The setup window gives each step a sliding "yes" of its own and one Continue:
     with every one on yes the part is confirmed; with some still off, those stay for the
     next run and the ones marked are remembered. No (or Ctrl+D) keeps the part for the
-    next run. Returns the ids confirmed, `done` among them."""
+    next run. Returns the ids confirmed, `done` among them. `status`: rows setup
+    checked itself ([{'status', 'title', 'reason', 'next', 'shows'}]), shown above the
+    steps in the window (the terminal lists them in `intro`)."""
     import setup_progress
 
     confirmed = {step['id'] for step in steps if step['id'] in done}
@@ -466,7 +468,13 @@ def part(ctx, title, steps, question, done=(), intro=(), targets=(), prompt=None
 
     asked = questions.words(question)  # the part's one question, by its key in questions.py
     with setup_progress.page(
-        'part', {'answer': '', 'done': ''}, title=title, question=asked['title'], hint=asked['hint'], steps=shown
+        'part',
+        {'answer': '', 'done': ''},
+        title=title,
+        question=asked['title'],
+        hint=asked['hint'],
+        steps=shown,
+        status=list(status),
     ):
         setup_progress.page_asks('answer')
         answer = yes_no('\n' + asked['title'], prompt, output, how='\n' + asked['how'] + ' ')

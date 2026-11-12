@@ -855,6 +855,49 @@ class SetupWindowTests(unittest.TestCase):
         ],
     }  # fmt: skip
 
+    def test_a_part_shows_what_setup_checked_itself_above_its_steps(self):
+        """0.50.0, the wizard (P08): passed, not yet, or not known (never shown as passed)."""
+        status = [
+            {'id': 'server', 'status': 'pass', 'title': 'This server is signed in to Tailscale',
+             'reason': 'This server is signed in to Tailscale.', 'next': '', 'shows': ''},
+            {'id': 'https', 'status': 'unknown', 'title': 'Private HTTPS addresses',
+             'reason': 'No certificate could be checked.', 'next': 'Check again.', 'shows': ''},
+            {'id': 'phone', 'status': 'fail', 'title': 'A phone in your Tailscale account',
+             'reason': 'No phone is signed in yet.', 'next': 'Install Tailscale on the phone.',
+             'shows': 'Setup cannot see whether a phone is on Wi-Fi or on mobile data.'},
+        ]  # fmt: skip
+        question = self.PART['question'] + ' [yes/no]: '
+        seen = self.page([self.asked(question, {**self.PART, 'status': status}, kind='yesno')])
+        self.assertEqual(
+            seen['status'],
+            [
+                [
+                    'status-row pass',
+                    '✓',
+                    'This server is signed in to Tailscale',
+                    'This server is signed in to Tailscale.',
+                ],
+                [
+                    'status-row unknown',
+                    '?',
+                    'Private HTTPS addresses',
+                    'No certificate could be checked.',
+                    'Check again.',
+                ],
+                [
+                    'status-row fail',
+                    '✕',
+                    'A phone in your Tailscale account',
+                    'No phone is signed in yet.',
+                    'Install Tailscale on the phone.',
+                    'Setup cannot see whether a phone is on Wi-Fi or on mobile data.',
+                ],
+            ],
+        )
+        self.assertEqual(len(seen['part']), 3)  # the steps are under the rows, as they were
+        # Without rows the page is as before.
+        self.assertEqual(self.page([self.asked(question, self.PART, kind='yesno')])['status'], [])
+
     def test_a_part_is_one_page_with_a_sliding_yes_for_each_step(self):
         """0.50.0, item 13: the phone was up to eight questions in a row, each a yes/no."""
         question = self.PART['question'] + ' [yes/no]: '

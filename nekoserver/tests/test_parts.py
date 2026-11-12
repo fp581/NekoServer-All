@@ -200,7 +200,7 @@ class PhoneTests(unittest.TestCase):
             Path(folder, 'reports').mkdir()
             outcome, report, writes = self.run_step(folder, part)
         [(title, ids, question, done, more)] = calls  # one part, not a question per app
-        self.assertEqual(title, 'Set up your phone')
+        self.assertEqual(title, 'Use your apps away from home')
         self.assertEqual(ids, ['tailscale', 'jellyfin', 'immich', 'away_from_home'])
         self.assertEqual(question, 'phone_ready')  # its words are in questions.py
         self.assertEqual(done, [])

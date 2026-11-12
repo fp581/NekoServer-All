@@ -974,6 +974,38 @@ main > section {
   min-height: 1.4em;
   color: var(--amber);
 }
+/* The rows setup checked itself (the phone page): a mark, what it is, the reason. */
+.status-rows {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+}
+.status-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 2px 8px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+}
+.status-row > * {
+  grid-column: 2;
+}
+.status-row .status-mark {
+  grid-column: 1;
+  grid-row: 1;
+  font-weight: 700;
+}
+.status-row.pass .status-mark {
+  color: var(--green, #7fc8a0);
+}
+.status-row.fail .status-mark,
+.status-row.unknown .status-mark {
+  color: var(--amber);
+}
+.status-row small {
+  color: var(--muted);
+}
 /* The backups page's table: what is backed up, when, how many are kept. */
 .backup-table {
   display: grid;

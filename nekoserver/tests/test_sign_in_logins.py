@@ -289,7 +289,7 @@ class StepTests(unittest.TestCase):
         self.assertNotIn('APP-CREDENTIALS.txt', by_title['Finish Jellyfin administrator'][1])
         # The phone is one part (0.50.0): each of its steps names the login it means.
         [(title, steps)] = parts
-        self.assertEqual(title, 'Set up your phone')
+        self.assertEqual(title, 'Use your apps away from home')
         logins = {step['title']: step.get('logins', []) for step in steps}
         self.assertEqual(logins['Jellyfin: movies and shows'], ['jellyfin'])
         # Navidrome's login on the phone is the one this server gives the person (item 11).

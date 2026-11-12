@@ -187,6 +187,7 @@ console.log(JSON.stringify({ posts, parts, subs, review, storage, accounts, titl
   pickCount: elements['ask-pick-count']?.textContent ?? '',
   choices: (elements['ask-choices']?.children ?? []).map((button) => [button.textContent, button.className]),
   sendHidden: elements['ask-page-send']?.hidden ?? null, skipLabel: elements['ask-page-skip']?.textContent ?? '',
+  status: (elements['ask-page-status']?.children ?? []).map((line) => [line.className, ...line.children.map((part) => part.textContent)]),
   part: (elements['ask-page']?.children ?? []).filter((card) => (card.className ?? '').includes('part-step')).map((card) => { const choice = card.children[card.children.length - 1]; const input = choice.children[1].children[0]; return { title: card.children[0].textContent, lines: card.children.length === 3 ? card.children[1].children.map((line) => line.textContent) : [], caption: choice.children[0].textContent, on: input.checked, off: input.disabled, role: input.role, label: input['aria-label'] }; }),
   skipShown: elements['ask-skip'] ? !elements['ask-skip'].hidden : null,
   askOff: ['ask-send', 'ask-page-send', 'ask-page-skip', 'ask-yes', 'ask-no'].filter((id) => elements[id]?.disabled),
