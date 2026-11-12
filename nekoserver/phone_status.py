@@ -155,15 +155,10 @@ def _answers(addresses, routes, status, probe):
     return found
 
 
-def private_https(status, addresses, routes, probe=gateway_tools.https_answers, why=None):
-    """Row 2. `addresses`: app_addresses; `routes`: read_routes. `why()` gives Tailscale's
-    own reason for a missing certificate ('' when it says none); default: its log.
-
-    Extra fields: 'name_service' (MagicDNS on), 'certificates_allowed' (HTTPS switched on
-    for the account), 'certificate' (one was really presented for this server's name),
-    each pass / fail / unknown, and 'answers': {app: pass / fail / unknown}.
-    """
-    parts = {'name_service': UNKNOWN, 'certificates_allowed': UNKNOWN, 'certificate': UNKNOWN, 'answers': {}}
+def account_not_ready(status, parts):
+    """The row for an account that is not ready for private addresses yet: this server
+    not signed in, MagicDNS off or unknown, HTTPS certificates not switched on. None once
+    all three are there. `parts`: the row's extra fields, filled in as far as it gets."""
     if status is None or status['BackendState'] != 'Running':
         return row(
             'https',
@@ -200,6 +195,21 @@ def private_https(status, addresses, routes, probe=gateway_tools.https_answers, 
             'name then appears in a public list of certificates (the name only: no files, no apps). Then check again.',
             **parts,
         )
+    return None
+
+
+def private_https(status, addresses, routes, probe=gateway_tools.https_answers, why=None):
+    """Row 2. `addresses`: app_addresses; `routes`: read_routes. `why()` gives Tailscale's
+    own reason for a missing certificate ('' when it says none); default: its log.
+
+    Extra fields: 'name_service' (MagicDNS on), 'certificates_allowed' (HTTPS switched on
+    for the account), 'certificate' (one was really presented for this server's name),
+    each pass / fail / unknown, and 'answers': {app: pass / fail / unknown}.
+    """
+    parts = {'name_service': UNKNOWN, 'certificates_allowed': UNKNOWN, 'certificate': UNKNOWN, 'answers': {}}
+    early = account_not_ready(status, parts)
+    if early is not None:
+        return early
     parts['answers'] = _answers(addresses, routes, status, probe)
     tried = [answer for answer in parts['answers'].values() if answer != UNKNOWN]
     if not addresses or not tried:

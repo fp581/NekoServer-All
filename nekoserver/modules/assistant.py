@@ -386,20 +386,25 @@ def ask_model(ctx, total, room, cores, prompt=None, output=None):
     switched_on = options(ctx.config).get('wanted') is True
     default = str(len(fits(room))) if switched_on else '0'
     last = len(answers) - 2
+    listed = [(number, model if model != 'none' else 'No assistant') for number, model in answers.items() if number]
+    kept = answers[default] if switched_on else 'no assistant'
     while True:
-        try:
-            listed = [
-                (number, model if model != 'none' else 'No assistant') for number, model in answers.items() if number
-            ]
-            kept = answers[default] if switched_on else 'no assistant'
-            typed = questions.ask('assistant_model', prompt, choices=listed, default=kept)
-        except EOFError:
+        typed = model_typed(prompt, listed, kept)
+        if typed is None:
             output('')
             return None
-        typed = typed.strip() or default
+        typed = typed or default
         if typed in answers:
             return answers[typed]
         output(f'Type a number from 0 to {last}, or press Enter.')
+
+
+def model_typed(prompt, listed, kept):
+    """What was typed at the model question; None when it was left (Ctrl+D)."""
+    try:
+        return questions.ask('assistant_model', prompt, choices=listed, default=kept).strip()
+    except EOFError:
+        return None
 
 
 def save_choice(ctx, wanted, model):

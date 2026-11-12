@@ -316,12 +316,10 @@ ASKED_DURING = {
 }
 
 
-def review(config):
-    """What pressing Install will do, as headed lists, from the settings as they stand:
-    [(heading, [line])]. The same in the window and in the terminal."""
+def apps_to_install(config, now):
+    """The apps the switches as they stand (`now`) install, each with what it is for."""
     import neko_common
 
-    now = states(config)
     apps = []
     if now['media_photos'] and config.get('photos', {}).get('deploy_immich', True) is True:
         apps.append('Immich: your photos, with a backup from your phone')
@@ -334,6 +332,14 @@ def review(config):
         apps.append(f'{name}: {role[0].lower()}{role[1:]}')
     if now['nextcloud']:
         apps.append('Nextcloud: your files on your own devices')
+    return apps
+
+
+def review(config):
+    """What pressing Install will do, as headed lists, from the settings as they stand:
+    [(heading, [line])]. The same in the window and in the terminal."""
+    now = states(config)
+    apps = apps_to_install(config, now)
     extras = [extra['title'] for extra in EXTRAS if extra['part'] in ('extras', 'storage') and now[extra['id']]]
     left_out = [
         extra['title']

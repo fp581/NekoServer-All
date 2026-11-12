@@ -282,6 +282,26 @@ def phone_done(earlier, links):
     return same and set(links) - set(earlier) <= {'dashboard'}
 
 
+def phone_confirmed(ctx, earlier, result):
+    """Whether the phone is set up for these addresses: confirmed in an earlier run (not
+    asked again), or every phone step confirmed now. The steps done so far are kept in
+    `result` for the next run when some are left."""
+    links = result.get('links') or {}
+    if phone_done(earlier, links):
+        try:
+            phone_guide.write_page(ctx.config, result['links'])
+        except (OSError, RuntimeError):
+            pass
+        ctx.log('Phone: already set up for these addresses; not asking again')
+        return True
+    done = phone_steps(ctx, result, steps_done_before(ctx.config, links))
+    confirmed = all(step in done for step in phone_ids(links))
+    if not confirmed:
+        # Kept for the next run, with what is done already.
+        result['phone_steps_done'] = [step for step in phone_ids(links) if step in done]
+    return confirmed
+
+
 def run(ctx):
     gateway_tools.selected(ctx.config)
     if not ctx.apply:
@@ -296,20 +316,7 @@ def run(ctx):
         keep_confirmed(ctx.config, earlier)
         return result
     ctx.log('Private application links saved in reports/gateway-tailnet.json')
-    if phone_done(earlier, result.get('links') or {}):
-        try:
-            phone_guide.write_page(ctx.config, result['links'])
-        except (OSError, RuntimeError):
-            pass
-        ctx.log('Phone: already set up for these addresses; not asking again')
-        confirmed = True
-    else:
-        links = result.get('links') or {}
-        done = phone_steps(ctx, result, steps_done_before(ctx.config, links))
-        confirmed = all(step in done for step in phone_ids(links))
-        if not confirmed:
-            # Kept for the next run, with what is done already.
-            result['phone_steps_done'] = [step for step in phone_ids(links) if step in done]
+    confirmed = phone_confirmed(ctx, earlier, result)
     result['client_acceptance'] = 'user_confirmed' if confirmed else 'needs_setup'
     result['client_acceptance_evidence'] = 'Confirmed by you in the terminal; no independent phone probe'
     atomic_json(report_path(ctx.config), result)

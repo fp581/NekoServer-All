@@ -92,6 +92,20 @@ BUTTON_STAGE = {'continue': 'apps', 'back': 'review'}
 STORAGE_AHEAD = 'Where should NekoServer store your apps and files?'
 
 
+def question_shown(question):
+    """The question setup is waiting on, as the window is told it; None when there is none."""
+    if question is None:
+        return None
+    return {
+        'seq': question['seq'],
+        'text': question['text'],
+        'secret': question['secret'],
+        'kind': question.get('form', 'text'),
+        'context': question.get('context', []),
+        'page': question.get('page'),
+    }
+
+
 def save_choices(path, config, changes, settle=False):
     """The first page's switches written to the settings file (its owner kept): the ones
     in `changes` ({id: on}), and with `settle` every one as it stands, so that no step
@@ -381,16 +395,7 @@ class Window:
         finished = setup_progress.last('finished')
         phase = self._phase(finished, steps)
         current = next((s for s in steps if s['status'] == 'running'), None)
-        question = setup_progress.pending_question()
-        if question is not None:
-            question = {
-                'seq': question['seq'],
-                'text': question['text'],
-                'secret': question['secret'],
-                'kind': question.get('form', 'text'),
-                'context': question.get('context', []),
-                'page': question.get('page'),
-            }
+        question = question_shown(setup_progress.pending_question())
         if phase == 'finished':
             self.delivered.set()
         # Counted as the terminal's summary and the log count them: steps done, out of the

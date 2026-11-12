@@ -260,7 +260,11 @@ def rows(inventory, config, items=None, look=None):
             found.append(entry(top, top, system=True, fstype='', uuid='', label='', mountpoint=None))
         else:
             found += rows_of(top, seen, usable, backups, look)
-    found += shared_rows(config)
+    return numbered_rows(found + shared_rows(config))
+
+
+def numbered_rows(found):
+    """The rows with the number each is chosen by, and what every message calls it after."""
     on_disks = {row['uuid']: row['disks'] for row in found if row['uuid']}
     for number, row in enumerate(found, 1):
         row['number'] = number
