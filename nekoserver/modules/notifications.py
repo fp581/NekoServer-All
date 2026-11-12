@@ -388,21 +388,25 @@ def run(context):
         return chosen
     address, token = chosen
     if not address:
-        chosen = first_destination(context)
-        if chosen is None:
-            context.log('Phone alerts: skipped by choice')
-            return
-        if isinstance(chosen, dict):
-            return chosen
-        address, token = chosen
-        if address:
-            # Just typed in: saved, then tried for real before anything calls it set up.
-            return install(context, address, token) or test_alert(context, address, token)
-    if not address:
-        return set_up_later()
+        return typed_in(context)
     if outside_request.wrong_address(private) and guided_setup.interactive(context):
         return asked_again(context)
     return install(context, address, token) or tested_again(context, private, address, token)
+
+
+def typed_in(context):
+    """No destination saved yet: the one asked for now, saved, then tried for real before
+    anything calls it set up; or left for later."""
+    chosen = first_destination(context)
+    if chosen is None:
+        context.log('Phone alerts: skipped by choice')
+        return None
+    if isinstance(chosen, dict):
+        return chosen
+    address, token = chosen
+    if not address:
+        return set_up_later()
+    return install(context, address, token) or test_alert(context, address, token)
 
 
 def tested_again(context, private, address, token):

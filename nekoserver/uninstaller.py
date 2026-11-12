@@ -258,20 +258,34 @@ def own_folders(settings):
     row of the placement table) and the shared folders they are on: [{'path', 'what',
     'share', 'mount'}]. Never removed, whatever is chosen; read here only to say so and
     to keep them (nothing is ever deleted because the settings name it)."""
-    found = []
-    for row in _section(settings, 'placement').values():
-        listed = row.get('extra') if isinstance(row, dict) else None
-        for entry in listed if isinstance(listed, list) else ():
-            if isinstance(entry, dict) and isinstance(entry.get('path'), str) and entry['path'].startswith('/'):
-                found.append(
-                    {
-                        'path': entry['path'],
-                        'what': str(entry.get('holds') or 'media'),
-                        'share': entry.get('share') if isinstance(entry.get('share'), str) else '',
-                        'mount': entry.get('mount') if isinstance(entry.get('mount'), str) else '',
-                    }
-                )
-    return found
+    return [
+        own_folder(entry)
+        for row in _section(settings, 'placement').values()
+        for entry in listed_extra(row)
+        if isinstance(entry, dict) and isinstance(entry.get('path'), str) and entry['path'].startswith('/')
+    ]
+
+
+def listed_extra(row):
+    """The "extra" folders a row of the placement table lists; none when it lists none."""
+    listed = row.get('extra') if isinstance(row, dict) else None
+    return listed if isinstance(listed, list) else []
+
+
+def own_folder(entry):
+    """One of the person's folders, as the uninstaller says it."""
+    text = lambda key: entry.get(key) if isinstance(entry.get(key), str) else ''  # noqa: E731
+    return {
+        'path': entry['path'],
+        'what': str(entry.get('holds') or 'media'),
+        'share': text('share'),
+        'mount': text('mount'),
+    }
+
+
+def ours(drive, name, known):
+    """A name at the top of a drive that is NekoServer's own (or the filesystem's)."""
+    return name in known or name in FILESYSTEM_OWN or (drive == 'external' and name.startswith('.neko-'))
 
 
 # The weekly USB copy: the photo archive's two sections, Nextcloud's files, the Immich
@@ -850,21 +864,18 @@ class Plan:
             known[EXTRA + name] = {n for key, *_ in CHOICES for n in self.group_drive_names(name, key)}
         found = []
         for drive in self.drives:
-            folder = self.folder_of(drive)
-            if not self.identified[drive] or not folder.is_dir():
-                continue
-            try:
-                entries = sorted(folder.iterdir())
-            except OSError:
-                continue
-            found.extend(
-                p
-                for p in entries
-                if p.name not in known[drive]
-                and p.name not in FILESYSTEM_OWN
-                and not (drive == 'external' and p.name.startswith('.neko-'))
-            )
+            found.extend(p for p in self.listed(drive) if not ours(drive, p.name, known[drive]))
         return found
+
+    def listed(self, drive):
+        """What is at the top of a drive setup identified; nothing when it cannot be read."""
+        folder = self.folder_of(drive)
+        if not self.identified[drive] or not folder.is_dir():
+            return []
+        try:
+            return sorted(folder.iterdir())
+        except OSError:
+            return []
 
     def mounted(self, mountpoint):
         """Whether one of NekoServer's drives (a folder mount_folder accepted) is mounted."""

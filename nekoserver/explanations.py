@@ -343,11 +343,7 @@ def review(config):
     # A server set up already (an update, gate run D): its apps are there, its PIN chosen.
     again = neko_common.server_exists(config)
     extras = [extra['title'] for extra in EXTRAS if extra['part'] in ('extras', 'storage') and now[extra['id']]]
-    left_out = [
-        extra['title']
-        for extra in EXTRAS
-        if extra['part'] == 'apps' and not extra.get('under') and not now[extra['id']]
-    ]
+    left_out = left_out_titles(now)
     asked = [words for key, words in ASKED_DURING.items() if key not in now or now[key]]
     sections = [('Apps on this server' if again else 'Apps to install', apps or ['None: only what is always set up'])]
     if extras:
@@ -356,19 +352,38 @@ def review(config):
         sections.append(
             ('Left out', [title + ' (stopped if this server has it; its data is kept)' for title in left_out])
         )
+    sections += kept_or_made(again)
+    sections.append(('Setup stops to ask you', [words[0].upper() + words[1:] for words in asked]))
+    return sections
+
+
+# What the review says is always set up and what happens next: a first install's words,
+# or those of a server set up already (an update, gate run D).
+UPDATE_HAPPENS = (
+    'This takes a few minutes, longer when new app versions are downloaded. Your accounts, settings and files are kept.'
+)
+FIRST_HAPPENS = 'Setup takes about an hour. It installs the apps, makes an account in each one and connects them.'
+
+
+def left_out_titles(now):
+    """The first page's app cards switched off (not the switches inside a card)."""
+    return [
+        extra['title']
+        for extra in EXTRAS
+        if extra['part'] == 'apps' and not extra.get('under') and not now[extra['id']]
+    ]
+
+
+def kept_or_made(again):
+    """The review's "Always set up" and "What happens next" sections."""
     always = list(ALWAYS)
     if again:
         always[0] = 'The dashboard, with the PIN it has'
-    sections.append(('Always set up', always))
-    happens = (
-        'This takes a few minutes, longer when new app versions are downloaded. Your accounts, settings and '
-        'files are kept.'
-        if again
-        else 'Setup takes about an hour. It installs the apps, makes an account in each one and connects them.'
-    )
-    sections.append(('What happens next', [happens, 'It never formats a drive and never deletes your files.']))
-    sections.append(('Setup stops to ask you', [words[0].upper() + words[1:] for words in asked]))
-    return sections
+    happens = UPDATE_HAPPENS if again else FIRST_HAPPENS
+    return [
+        ('Always set up', always),
+        ('What happens next', [happens, 'It never formats a drive and never deletes your files.']),
+    ]
 
 
 def _section(config, name):

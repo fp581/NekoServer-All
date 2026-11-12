@@ -937,6 +937,19 @@ def found_said(found):
     return missing + what_found(found)
 
 
+def installed_found(found):
+    """What setup says of a NekoServer that is set up here: its version, where its apps
+    and files are (not when the drive mounted there is not connected), what still waits."""
+    version = f" {found['version']}" if found.get('version') else ''
+    shown = found.get('location') and 'data_ssd' not in (found.get('missing') or ())
+    place = f" Its apps and files are on {found['location']}." if shown else ''
+    lines = [f'NekoServer{version} is set up on this PC.{place}']
+    waiting = found.get('waiting') or []
+    if waiting:
+        lines.append(f'{len(waiting)} things still wait for you: ' + ', '.join(title(step) for step in waiting) + '.')
+    return lines
+
+
 def what_found(found):
     """What kind of NekoServer is on this PC, in words."""
     kind, job = found['kind'], found.get('job') or {}
@@ -946,17 +959,7 @@ def what_found(found):
         where = f" It stopped at: {title(job['step'])}." if job.get('step') else ''
         return ['Setup was started here and stopped before it finished.' + where]
     if kind == 'installed':
-        version = f" {found['version']}" if found.get('version') else ''
-        # Not "its apps are on /srv/nekoserver" when the drive mounted there is not connected.
-        shown = found.get('location') and 'data_ssd' not in (found.get('missing') or ())
-        place = f" Its apps and files are on {found['location']}." if shown else ''
-        lines = [f'NekoServer{version} is set up on this PC.{place}']
-        waiting = found.get('waiting') or []
-        if waiting:
-            lines.append(
-                f'{len(waiting)} things still wait for you: ' + ', '.join(title(step) for step in waiting) + '.'
-            )
-        return lines
+        return installed_found(found)
     if kind == 'older_folder':
         return [
             f"An earlier copy of NekoServer ({found.get('settings_from') or 'an earlier release'}) on this PC still "

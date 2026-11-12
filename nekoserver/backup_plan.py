@@ -258,38 +258,48 @@ def table(config, held=None):
         same=same_drive(config, placement.CORE, placement.INSTALL, drive),
         note='This count is its own (3 on a new server); the 1-to-7 number does not apply to it.',
     )
-    offline = placement.drive_of(config, placement.OFFLINE, placement.DATA)
-    cloud = placement.CLOUD in placement.rows(config)
-    copied = ['your photos and videos'] * media_group(config, 'photos') + ['your Nextcloud files'] * cloud
-    # The weekly copy runs only with something to take (photo_backup: Immich or Nextcloud);
-    # a drive chosen without them gets no timer, so no copy is promised (gate run C7).
-    takes = any(photo_backup.copies(config))
-    row(
-        'offline',
-        'A second copy on a drive you can unplug: ' + ', '.join(copied + ['the app password lists']),
-        (offline, None),
-        weekly(times) if offline and takes else 'never: ' + ('no such drive is set up' if takes else NOTHING_TO_COPY),
-        NEVER_REMOVED if offline and takes else 'nothing',
-        ('as far back as the first copy', None) if offline and takes else ('nothing', None),
-        note=None if offline or not takes else OFFLINE_MISSING + (CLOUD_UNPROTECTED if cloud else ''),
-    )
+    offline_row(config, times, row)
     if music_backed_up(config):
-        import existing_media
-
-        own = ' and your own music folder on the network share' if existing_media.backed_up(config) else ''
-        row(
-            'music',
-            'Your music (the library' + own + ')',
-            (drive, 'backups/music'),
-            f"every night at {times['music']}",
-            NEVER_REMOVED,
-            ('as far back as the first backup', None),
-            same=same_drive(config, 'music', placement.DATA, drive),
-        )
+        music_row(config, times, drive, row)
     for key, what, why in not_copied(config):
         # The page then shows only "never" and why.
         row(key, what, (None, None), 'never', None, (None, None), note=why)
     return rows
+
+
+def offline_row(config, times, row):
+    """The offline copy's row: weekly only with a drive and something to take (photo_backup:
+    Immich or Nextcloud); a drive chosen without them gets no timer, so no copy is promised
+    (gate run C7)."""
+    offline = placement.drive_of(config, placement.OFFLINE, placement.DATA)
+    cloud = placement.CLOUD in placement.rows(config)
+    copied = ['your photos and videos'] * media_group(config, 'photos') + ['your Nextcloud files'] * cloud
+    what = 'A second copy on a drive you can unplug: ' + ', '.join(copied + ['the app password lists'])
+    takes = any(photo_backup.copies(config))
+    if offline and takes:
+        row('offline', what, (offline, None), weekly(times), NEVER_REMOVED, ('as far back as the first copy', None))
+        return
+    when = 'never: ' + ('no such drive is set up' if takes else NOTHING_TO_COPY)
+    note = None
+    if takes and not offline:
+        note = OFFLINE_MISSING + (CLOUD_UNPROTECTED if cloud else '')
+    row('offline', what, (offline, None), when, 'nothing', ('nothing', None), note=note)
+
+
+def music_row(config, times, drive, row):
+    """The nightly music copy's row (G7: with the person's own folder on a share when asked)."""
+    import existing_media
+
+    own = ' and your own music folder on the network share' if existing_media.backed_up(config) else ''
+    row(
+        'music',
+        'Your music (the library' + own + ')',
+        (drive, 'backups/music'),
+        f"every night at {times['music']}",
+        NEVER_REMOVED,
+        ('as far back as the first backup', None),
+        same=same_drive(config, 'music', placement.DATA, drive),
+    )
 
 
 NOTHING_TO_COPY = 'there is nothing for it to copy (no Immich, no Nextcloud)'
@@ -315,7 +325,9 @@ def not_copied(config):
     if media_group(config, 'music') and not music_backed_up(config):
         found.append(('not_copied_music', 'Your music (the library)', MUSIC_NOT_COPIED))
     for category, folder, why in existing_media.not_backed_up(config):
-        found.append((f'not_copied_own_{category}', f'Your own folder of {category}: {folder}', 'Not backed up: ' + why))
+        found.append(
+            (f'not_copied_own_{category}', f'Your own folder of {category}: {folder}', 'Not backed up: ' + why)
+        )
     return found
 
 
