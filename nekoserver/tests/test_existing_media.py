@@ -405,6 +405,15 @@ class MountTests(unittest.TestCase):
         self.use(self.pc.config)
         self.assertEqual(self.pc.fstab.read_text(), earlier)
 
+    def test_a_block_without_its_end_line_stops_before_any_line_is_lost(self):
+        mine = 'UUID=7 /mnt/my-backups ext4 defaults 0 2'
+        broken = '\n'.join(['UUID=1 / ext4 defaults 0 1', existing_media.BEGIN, 'old line', mine]) + '\n'
+        self.pc.fstab.write_text(broken)
+        with self.assertRaisesRegex(RuntimeError, 'Nothing was changed'):
+            self.use(self.pc.chosen())
+        self.assertEqual(self.pc.fstab.read_text(), broken, "the person's own mount is still there")
+        self.assertEqual(self.ran, [])
+
     def test_a_share_made_permanent_is_added_once_outside_the_block(self):
         self.pc.fstab.write_text('UUID=1 / ext4 defaults 0 1\n')
         found, _ = self.pc.check()

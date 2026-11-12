@@ -598,11 +598,22 @@ def fstab_with(text, lines, extra=()):
             inside = False
         elif not inside:
             kept.append(line)
+    if inside:
+        # Without its end line, every line after NekoServer's first one would look like its
+        # own and be dropped, the person's own mounts with them.
+        raise RuntimeError(FSTAB_UNENDED)
     have = {tuple(line.split()[:2]) for line in kept}
     kept += [line for line in extra if tuple(line.split()[:2]) not in have]
     if lines:
         kept += [BEGIN, *lines, END]
     return '\n'.join(kept) + '\n'
+
+
+FSTAB_UNENDED = (
+    "/etc/fstab has NekoServer's line for your own folders (" + BEGIN + ') but not the line that ends that part ('
+    + END + '), so setup cannot tell which lines below it are its own. Nothing was changed. Put the end line back '
+    "after NekoServer's lines (or delete NekoServer's lines), then run setup again."
+)
 
 
 def still_there(entry, find=findmnt, kind=source_import.share_type):
