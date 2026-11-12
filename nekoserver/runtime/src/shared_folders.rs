@@ -14,6 +14,7 @@
 //! started again after a restart as well.
 use crate::common;
 use serde_json::{json, Value};
+use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 /// An app NekoServer knows (the shared catalogue), as the settings may name one to stop.
@@ -66,15 +67,19 @@ fn share_of(cfg: &Value, entry: &Value) -> Option<Share> {
             .all(|c| matches!(c, Component::RootDir | Component::Normal(_)));
         (p.is_absolute() && clean && !value.contains('\n') && !value.contains('\0')).then_some(p)
     };
-    // The library's own folder, on a drive of this PC: checked on the disk too.
-    let path = |key: &str| plain(key).filter(|p| common::safe(p).is_ok());
+    // The library's folder the share is shown in, on a drive of this PC: the folders
+    // around it are checked on the disk, the folder itself only by its words. While the
+    // share is mounted there and away, looking at that folder waits for the share, and
+    // the check would hang before it stops anything. It is checked on the disk right
+    // before anything is mounted on it (fit_to_mount), when nothing is mounted there.
+    let in_place = |p: &PathBuf| p.parent().is_some_and(|up| common::safe(up).is_ok());
     let apps: Vec<String> = entry["apps"]
         .as_array()?
         .iter()
         .map(|a| a.as_str().unwrap_or("").to_string())
         .collect();
     let share = text("share");
-    let point = path("point")?;
+    let point = plain("point").filter(in_place)?;
     let fine = !share.is_empty() && apps.iter().all(|a| known_app(a)) && in_a_library(cfg, &point);
     fine.then_some(Share {
         holds: text("holds"),
@@ -233,6 +238,13 @@ fn bring_back(s: &Share) -> bool {
     }
     if !bound(&s.point) {
         let shown = s.point.to_string_lossy();
+        if !fit_to_mount(&s.point) {
+            println!(
+                "Shared folders: {shown} is not a plain folder (a link?), so {} is not mounted there; run  sudo bash install.sh  to put it right",
+                s.share
+            );
+            return false;
+        }
         match common::command(&["mount", &shown], 60) {
             Ok((0, _)) => println!(
                 "Shared folders: {} answers again; mounted into {shown}",
@@ -245,6 +257,12 @@ fn bring_back(s: &Share) -> bool {
         }
     }
     bound(&s.point)
+}
+
+/// The library's folder, with nothing mounted on it, is a folder of its own: never a
+/// link (mount would follow it and mount the share somewhere else).
+fn fit_to_mount(point: &Path) -> bool {
+    common::safe(point).is_ok() && fs::symlink_metadata(point).is_ok_and(|m| m.is_dir())
 }
 
 /// The containers of one app (its Compose project neko-<app>), all of them (`-a`) or
@@ -369,6 +387,34 @@ mod tests {
             wrong["shared_folders"][0]["path"] = json!(bad);
             assert!(listed(&wrong).is_empty(), "{bad}");
         }
+    }
+
+    /// The library's folder itself is not looked at while listing (with the share away
+    /// and mounted there, that look waits for it), but nothing is mounted on a link.
+    #[test]
+    fn the_library_folder_is_judged_by_its_words_and_checked_before_a_mount() {
+        let top = std::env::temp_dir().join(format!("neko-sf-point-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&top);
+        let existing = top.join("library/existing");
+        fs::create_dir_all(&existing).unwrap();
+        let movies = existing.join("movies");
+        std::os::unix::fs::symlink("/etc", &movies).unwrap();
+        let mut cfg = settings(&movies.to_string_lossy(), json!(["jellyfin"]));
+        cfg["media_mount"] = json!(top.to_string_lossy());
+        assert_eq!(listed(&cfg).len(), 1, "still guarded");
+        assert!(!fit_to_mount(&movies), "a link is never mounted on");
+        fs::remove_file(&movies).unwrap();
+        fs::create_dir(&movies).unwrap();
+        assert!(fit_to_mount(&movies));
+        // A link in the folders around it is refused, as before.
+        let elsewhere = top.join("elsewhere");
+        fs::create_dir_all(elsewhere.join("library/existing")).unwrap();
+        let linked = top.join("linked");
+        std::os::unix::fs::symlink(&elsewhere, &linked).unwrap();
+        let mut around = settings(&linked.join("library/existing/movies").to_string_lossy(), json!(["jellyfin"]));
+        around["media_mount"] = json!(linked.to_string_lossy());
+        assert!(listed(&around).is_empty());
+        let _ = fs::remove_dir_all(&top);
     }
 
     #[test]
