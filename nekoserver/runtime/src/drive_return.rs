@@ -220,6 +220,7 @@ pub fn run(a: &Args) -> Result<()> {
         let fstype = cfg["storage"][drive]["fstype"].as_str().unwrap_or("");
         drives.push((path, uuid.to_string(), fstype.to_string()));
     }
+    let watched = with_one_drive(&cfg, &drives);
     // systemd can start this before the drive is back: anything that asks for the drive
     // (Docker woken by a command, say) pulls this in at once. A drive still missing is
     // then waited for, so the services are started again once it returns. `recovering`
@@ -229,7 +230,7 @@ pub fn run(a: &Args) -> Result<()> {
     let mut told = false;
     loop {
         let mut waiting = false;
-        for (path, uuid, fstype) in &drives {
+        for (path, uuid, fstype) in &watched {
             let shown = path.to_string_lossy().into_owned();
             match step_for(path, connected(export, uuid))? {
                 Step::Nothing => {}
@@ -287,6 +288,27 @@ pub fn run(a: &Args) -> Result<()> {
     start_again(&cfgpath, &paths[0], &paths[1], "Drive return")?;
     start_failed_apps("Drive return");
     Ok(())
+}
+
+/// The mounts to look at, in order: with one drive for both the apps and the media
+/// (common::one_drive), that drive's own mount first, then the two folders mounted from
+/// it at the roles' places; otherwise the two drives.
+fn with_one_drive(
+    cfg: &serde_json::Value,
+    roles: &[(PathBuf, String, String)],
+) -> Vec<(PathBuf, String, String)> {
+    let mut watched = vec![];
+    if common::one_drive(cfg) {
+        if let Some((_, uuid, fstype)) = roles.first() {
+            watched.push((
+                PathBuf::from(common::ONE_DRIVE),
+                uuid.clone(),
+                fstype.clone(),
+            ));
+        }
+    }
+    watched.extend(roles.iter().cloned());
+    watched
 }
 
 /// A drive is connected: a folder a NAS shares (its identity "nfs-...") when the NAS
@@ -599,6 +621,47 @@ mod tests {
             ]
         );
         assert!(failed_to_start(&serde_json::json!(null)).is_empty());
+    }
+    /// Gate run B: one drive holds the apps and the media (each a folder of it, mounted
+    /// at the role's place). Its own mount comes back first, then the two from it.
+    #[test]
+    fn one_drive_for_everything_is_brought_back_before_its_folders() {
+        let role = |folder: &str, kept: &str| serde_json::json!({"uuid": "one-1", "fstype": "ext4", "folder": folder, "subvolume": kept});
+        let roles = vec![
+            (
+                PathBuf::from("/srv/nekoserver"),
+                "one-1".to_string(),
+                "ext4".to_string(),
+            ),
+            (
+                PathBuf::from("/mnt/nekoserver-media"),
+                "one-1".to_string(),
+                "ext4".to_string(),
+            ),
+        ];
+        let one = serde_json::json!({"storage": {
+            "data_ssd": role("/mnt/nekoserver-drives/one/nekoserver/apps", "/nekoserver/apps"),
+            "media_hdd": role("/mnt/nekoserver-drives/one/nekoserver/media", "/nekoserver/media")}});
+        let watched: Vec<String> = with_one_drive(&one, &roles)
+            .iter()
+            .map(|(path, _, _)| path.display().to_string())
+            .collect();
+        assert_eq!(
+            watched,
+            [
+                "/mnt/nekoserver-drives/one",
+                "/srv/nekoserver",
+                "/mnt/nekoserver-media"
+            ]
+        );
+        // Two drives, or both on the disk Linux runs from: only the two roles.
+        let two =
+            serde_json::json!({"storage": {"data_ssd": {"uuid": "a"}, "media_hdd": {"uuid": "b"}}});
+        assert_eq!(with_one_drive(&two, &roles), roles);
+        let system = serde_json::json!({"storage": {
+            "data_ssd": role("/var/lib/nekoserver/apps", "/var/lib/nekoserver/apps"),
+            "media_hdd": role("/var/lib/nekoserver/media", "/var/lib/nekoserver/media")}});
+        assert_eq!(with_one_drive(&system, &roles), roles);
     }
     #[test]
     fn a_drives_uuid_is_used_only_when_it_is_plain() {

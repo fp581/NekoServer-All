@@ -3846,11 +3846,13 @@ fn room(
     };
     let (ssd, hdd) = space_needed(app_bytes, media_bytes, image_bytes(names)?);
     // The USB drive is not used by monthly maintenance.
-    for (root, needed, what) in [(data, ssd, "SSD"), (media, hdd, "HDD")] {
+    let one = common::same_filesystem(data, media);
+    for (root, needed, what) in space_checks(one, (data, ssd), (media, hdd)) {
         let (mut have, drive) = drive_space(root)?;
         let reserve = reserve_for(setting, drive);
         let wanted = needed.saturating_add(reserve);
-        if have < wanted && what == "HDD" && audit {
+        let snapshots_here = root == media;
+        if have < wanted && snapshots_here && audit {
             have = make_room(media, &mut retention, wanted)?;
         }
         // An update: its own undone updates' snapshots (HDD) and their failed app data (SSD).
@@ -3863,7 +3865,7 @@ fn room(
             have = drive_space(root)?.0;
         }
         if have < wanted {
-            let unfinished = if what == "HDD" {
+            let unfinished = if snapshots_here {
                 let runs: Vec<String> = retention["incomplete_not_removed"]
                     .as_array()
                     .into_iter()
@@ -3886,6 +3888,20 @@ fn room(
         }
     }
     Ok(retention)
+}
+/// The room checks of a run: the SSD for what it needs there, the HDD for what it needs
+/// there; or, with both on one filesystem (one drive for everything, or the disk Linux
+/// runs from), that one for the two together, so its free space is counted once.
+fn space_checks<'a>(
+    one: bool,
+    (data, ssd): (&'a Path, u64),
+    (media, hdd): (&'a Path, u64),
+) -> Vec<(&'a Path, u64, &'static str)> {
+    if one {
+        vec![(media, ssd.saturating_add(hdd), "drive")]
+    } else {
+        vec![(data, ssd, "SSD"), (media, hdd, "HDD")]
+    }
 }
 fn no_room(
     what: &str,
@@ -7520,6 +7536,30 @@ mod tests {
         assert!(!image_id(&format!("sha256:{}", "a".repeat(63))));
         assert!(!image_id(&format!("sha256:{}", "g".repeat(64))));
         assert!(!image_id(&"a".repeat(71)));
+    }
+    /// Gate run B: with one filesystem for the apps and the media, its free space is
+    /// counted once, for what the run needs on both; two drives are checked each alone.
+    #[test]
+    fn one_drive_is_checked_once_for_what_both_need() {
+        let (data, media) = (
+            Path::new("/srv/nekoserver"),
+            Path::new("/mnt/nekoserver-media"),
+        );
+        assert_eq!(
+            space_checks(true, (data, 3), (media, 5)),
+            [(media, 8, "drive")]
+        );
+        assert_eq!(
+            space_checks(false, (data, 3), (media, 5)),
+            [(data, 3, "SSD"), (media, 5, "HDD")]
+        );
+        assert_eq!(
+            space_checks(true, (data, u64::MAX), (media, 5))[0].1,
+            u64::MAX
+        );
+        let source = include_str!("maintenance.rs");
+        let room = &source[source.find("fn room(").unwrap()..];
+        assert!(room.contains("common::same_filesystem(data, media)"));
     }
     /// Gate runs C14 and C15: the Music group installed on a drive of its own (d3), its
     /// music and downloads there, and the person's own folders (library/existing) of both

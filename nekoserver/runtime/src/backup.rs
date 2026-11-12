@@ -3178,7 +3178,7 @@ pub fn check_drives(a: &crate::Args) -> Result<()> {
     let cfg = common::json(&a.path("config")?, 2_000_000);
     let keys = a.get("drives").unwrap_or("data_ssd,media_hdd");
     let keys: Vec<&str> = keys.split(',').collect();
-    let mut seen: Vec<String> = vec![];
+    let mut seen: Vec<(&str, String)> = vec![];
     for key in &keys {
         let mount = match *key {
             "data_ssd" => "data_mount",
@@ -3197,16 +3197,27 @@ pub fn check_drives(a: &crate::Args) -> Result<()> {
         } else {
             checked_drive(&cfg, key, &path)?
         };
-        if seen.contains(&uuid) {
+        let shared = seen
+            .iter()
+            .find(|(other, id)| *id == uuid && !may_share(&cfg, other, key));
+        if shared.is_some() {
             return Err(Error::new(
                 "The SSD and the HDD must be two different filesystems",
             ));
         }
-        seen.push(uuid);
+        seen.push((key, uuid));
     }
     crate::startup::copies_of(&cfg, &keys)?;
     println!("ok");
     Ok(())
+}
+/// Two drives of the settings may be one filesystem: the apps' and the media's, when
+/// the settings keep each as a folder of it on purpose (common::roles_share_one_filesystem:
+/// one drive for everything, or the disk Linux runs from). Every other pair, the USB
+/// drive and any drive something else is placed on, must be a drive of its own.
+fn may_share(cfg: &Value, a: &str, b: &str) -> bool {
+    let roles = ["data_ssd", "media_hdd"];
+    a != b && roles.contains(&a) && roles.contains(&b) && common::roles_share_one_filesystem(cfg)
 }
 /// The USB backup drive as a drive to check: its UUID and filesystem from the photo
 /// settings, and its NAS disk (WWN) when it is one: the check the weekly copy makes.
@@ -3325,7 +3336,7 @@ fn main_drives(c: &Value, data: &Path, media: &Path) -> Result<Vec<String>> {
     for (key, path) in [("data_ssd", data), ("media_hdd", media)] {
         ids.push(checked_drive(c, key, path)?);
     }
-    if ids[0] == ids[1] && !common::share_system_disk(c) {
+    if ids[0] == ids[1] && !common::roles_share_one_filesystem(c) {
         return Err(Error::new("Distinct backup filesystems required"));
     }
     Ok(ids)
@@ -5202,6 +5213,46 @@ mod tests {
         assert!(installed_in_place(&c, &data, &["d3".to_string()]).is_ok());
         // Another drive away is no reason to pass: lidarr's own drive is checked.
         assert!(installed_in_place(&c, &data, &["d4".to_string()]).is_err());
+    }
+    /// Gate run B0d: one drive for the apps, the media and the backups, chosen on
+    /// purpose, passes the drive check; any other pair of drives with one UUID does not.
+    #[test]
+    fn two_roles_may_be_one_filesystem_only_on_purpose() {
+        let role = |folder: &str, kept: &str| json!({"uuid": "one-1", "fstype": "ext4", "folder": folder, "subvolume": kept});
+        let one = json!({"storage": {
+            "data_ssd": role("/mnt/nekoserver-drives/one/nekoserver/apps", "/nekoserver/apps"),
+            "media_hdd": role("/mnt/nekoserver-drives/one/nekoserver/media", "/nekoserver/media")}});
+        let system = json!({"storage": {
+            "data_ssd": role("/var/lib/nekoserver/apps", "/var/lib/nekoserver/apps"),
+            "media_hdd": role("/var/lib/nekoserver/media", "/var/lib/nekoserver/media")}});
+        // Two drives (a copy of one carries its UUID): no folders kept, so never one filesystem.
+        let two = json!({"storage": {"data_ssd": {"uuid": "one-1", "fstype": "ext4"},
+            "media_hdd": {"uuid": "one-1", "fstype": "ext4"}}});
+        for cfg in [&one, &system] {
+            assert!(may_share(cfg, "data_ssd", "media_hdd"));
+            assert!(may_share(cfg, "media_hdd", "data_ssd"));
+            // The USB drive, or a drive something else is placed on, is a drive of its own.
+            assert!(!may_share(cfg, "data_ssd", "usb"));
+            assert!(!may_share(cfg, "media_hdd", "d3"));
+            assert!(!may_share(cfg, "data_ssd", "data_ssd"));
+        }
+        assert!(!may_share(&two, "data_ssd", "media_hdd"));
+        // Each role is still told apart by its folder: the apps' folder mounted at the
+        // media's place is refused by the drive check itself.
+        let wrong = drive_check(
+            &one,
+            "media_hdd",
+            Path::new("/mnt/nekoserver-media"),
+            "one-1 ext4 /dev/sdc[/nekoserver/apps]",
+        );
+        assert!(wrong.is_err());
+        let right = drive_check(
+            &one,
+            "media_hdd",
+            Path::new("/mnt/nekoserver-media"),
+            "one-1 ext4 /dev/sdc[/nekoserver/media]",
+        );
+        assert_eq!(right.unwrap(), "one-1");
     }
     fn scratch(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("neko-backup-{name}-{}", std::process::id()));
