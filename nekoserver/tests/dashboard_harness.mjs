@@ -228,7 +228,7 @@ function keptPage() {
   };
   globalThis.document = { createElement: element, getElementById: byIdOf, body: element('body') };
   globalThis.setTimeout = (run, wait) => {
-    if (wait <= 1000) Promise.resolve().then(run); // the wait between two looks at an answer
+    if (wait <= 1000) void Promise.resolve().then(run); // the wait between two looks at an answer
     return 0; // the longer ones (a request's time limit, a message fading) never come
   };
   globalThis.clearTimeout = () => undefined;
@@ -350,9 +350,12 @@ SPECIAL.cutOffEntry = async argument => {
 };
 
 /* One call after the other: the four above each bring their own page and server. */
-const answers = [];
-for (const [name, argument] of calls) {
+function called([name, argument]) {
   if (!CALLS.has(name) && !DETAILED.has(name)) throw new Error('Not a function the harness offers: ' + name);
-  answers.push(await (SPECIAL[name] ?? app[name])(argument));
+  return (SPECIAL[name] ?? app[name])(argument);
 }
+const answers = await calls.reduce(
+  (done, call) => done.then(async list => [...list, await called(call)]),
+  Promise.resolve([])
+);
 process.stdout.write(JSON.stringify(answers));

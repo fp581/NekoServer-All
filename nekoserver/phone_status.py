@@ -91,6 +91,9 @@ NOT_ASKED = (
     'Setup could not ask Tailscale how it is doing.',
     f'{SETUP_AGAIN}: its Tailscale step installs and starts Tailscale. Then check again.',
 )
+# The step of a row that may be fine when asked again in a moment.
+WAIT_AGAIN = 'Wait a minute, then check again.'
+CHECK_AGAIN = 'Check again.'
 WHY_NOT_RUNNING = {
     'NeedsLogin': (
         FAIL,
@@ -108,8 +111,8 @@ WHY_NOT_RUNNING = {
         'Tailscale is switched off on this server.',
         'Run  sudo tailscale up  to switch it on. Then check again.',
     ),
-    'Starting': (UNKNOWN, 'Tailscale is still starting on this server.', 'Wait a minute, then check again.'),
-    'NoState': (UNKNOWN, 'Tailscale is still starting on this server.', 'Wait a minute, then check again.'),
+    'Starting': (UNKNOWN, 'Tailscale is still starting on this server.', WAIT_AGAIN),
+    'NoState': (UNKNOWN, 'Tailscale is still starting on this server.', WAIT_AGAIN),
 }
 
 
@@ -122,9 +125,9 @@ def server_signed_in(status):
         known = WHY_NOT_RUNNING.get(state)
         if known:
             return row('server', *known)
-        return row('server', UNKNOWN, 'Tailscale gave a state setup does not know.', 'Wait a minute, then check again.')
+        return row('server', UNKNOWN, 'Tailscale gave a state setup does not know.', WAIT_AGAIN)
     if not _own(status):
-        return row('server', UNKNOWN, 'Tailscale runs, but did not say which device this server is.', 'Check again.')
+        return row('server', UNKNOWN, 'Tailscale runs, but did not say which device this server is.', CHECK_AGAIN)
     return row('server', PASS, 'This server is signed in to Tailscale.')
 
 
@@ -155,6 +158,15 @@ def _answers(addresses, routes, status, probe):
     return found
 
 
+def name_service(switched, name):
+    """MagicDNS: on with a name for this server, off, or not known."""
+    if switched is True and name:
+        return PASS
+    if switched is False:
+        return FAIL
+    return UNKNOWN
+
+
 def account_not_ready(status, parts):
     """The row for an account that is not ready for private addresses yet: this server
     not signed in, MagicDNS off or unknown, HTTPS certificates not switched on. None once
@@ -170,7 +182,7 @@ def account_not_ready(status, parts):
     name = machine_name(status)
     tailnet = status.get('CurrentTailnet')
     switched = tailnet.get('MagicDNSEnabled') if isinstance(tailnet, dict) else None
-    parts['name_service'] = PASS if switched is True and name else FAIL if switched is False else UNKNOWN
+    parts['name_service'] = name_service(switched, name)
     if parts['name_service'] == FAIL:
         return row(
             'https',
@@ -291,18 +303,8 @@ def phone_in_tailnet(status):
     if peers is None:
         peers = {}  # Tailscale leaves the list out when no other device is signed in
     if not isinstance(peers, dict):
-        return row(
-            'phone', UNKNOWN, 'Tailscale did not list the other devices of your account.', 'Check again.', **extra
-        )
-    owner = _own(status).get('UserID')
-    kinds = []
-    for peer in peers.values():
-        system = peer.get('OS') if isinstance(peer, dict) else None
-        if isinstance(system, str) and system.lower() in PHONE_SYSTEMS:
-            kinds.append(PHONE_SYSTEMS[system.lower()])
-            extra['phones'] += 1
-            extra['connected_now'] += peer.get('Online') is True
-            extra['same_account'] += owner is not None and peer.get('UserID') == owner
+        return row('phone', UNKNOWN, 'Tailscale did not list the other devices of your account.', CHECK_AGAIN, **extra)
+    kinds = counted_phones(peers, _own(status).get('UserID'), extra)
     if not kinds:
         return row(
             'phone',
@@ -312,18 +314,40 @@ def phone_in_tailnet(status):
             'Then check again.',
             **extra,
         )
-    what = ' and '.join(sorted(set(kinds)))
+    reason, step = phone_words(' and '.join(sorted(set(kinds))), extra)
+    return row('phone', PASS, reason, step, **extra)
+
+
+def counted_phones(peers, owner, extra):
+    """The kinds of the phones and tablets among Tailscale's other devices ('peers'),
+    counted into `extra`: how many, how many connected now, how many signed in as the
+    person this server is signed in as (`owner`)."""
+    kinds = []
+    for peer in peers.values():
+        system = peer.get('OS') if isinstance(peer, dict) else None
+        if isinstance(system, str) and system.lower() in PHONE_SYSTEMS:
+            kinds.append(PHONE_SYSTEMS[system.lower()])
+            extra['phones'] += 1
+            extra['connected_now'] += peer.get('Online') is True
+            extra['same_account'] += owner is not None and peer.get('UserID') == owner
+    return kinds
+
+
+def phone_words(what, extra):
+    """(reason, step) of a passed phone row: connected now or not, and a phone signed in
+    as another person of the account."""
     if extra['connected_now']:
         reason = f'A phone is signed in to your Tailscale account and connected right now ({what}).'
+        step = ''
     else:
         reason = f'A phone is signed in to your Tailscale account ({what}). It is not connected at this moment.'
-    step = '' if extra['connected_now'] else 'To use the apps, switch Tailscale on in its app on the phone.'
+        step = 'To use the apps, switch Tailscale on in its app on the phone.'
     if not extra['same_account']:
         step = (step + ' ' if step else '') + (
             "It is signed in as another person of the account; that works when the account's rules let that "
             'person reach this server.'
         )
-    return row('phone', PASS, reason, step, **extra)
+    return reason, step
 
 
 # ----- row 4: each selected app
@@ -363,31 +387,41 @@ def app_rows(config, status, routes, answers=None):
     for app in gateway_tools.selected(config):
         title, _, port = gateway_tools.APPS[app]
         login, login_reason = login_check(config, app)
-        route = 'unknown' if routes is None else 'on' if str(port) in routes else 'off'
+        route = route_state(routes, port)
         more = {'app': app, 'title': title, 'address': addresses.get(app, ''), 'login': login, 'route': route}
-        answer = (answers or {}).get(app)
-        if login != PASS:
-            off = (
-                login_reason + ' Its address stays off until its login is verified.'
-                if route != 'on'
-                else login_reason + ' Its address is on from an earlier run; run setup again so the login is checked.'
-            )
-            step = f'{SETUP_AGAIN}: the accounts step checks the logins and says what is wrong with one.'
-            rows.append(row('app:' + app, login, off, step, route_reason=off if route != 'on' else '', **more))
-        elif route == 'unknown':
-            why = 'Setup could not read which addresses Tailscale has switched on.'
-            rows.append(row('app:' + app, UNKNOWN, why, 'Check again.', route_reason=why, **more))
-        elif route == 'off':
-            why = f'The login of {title} is verified. Its address is not switched on yet.'
-            step = f'{SETUP_AGAIN}: its phone step switches the address on.'
-            rows.append(row('app:' + app, FAIL, why, step, route_reason=why, **more))
-        elif answer == FAIL:
-            why = f'The address of {title} is on, but does not answer from this PC.'
-            rows.append(row('app:' + app, FAIL, why, 'See "private HTTPS addresses" above.', route_reason='', **more))
-        else:
-            why = f'{title}: login verified, address on' + (' and answering.' if answer == PASS else '.')
-            rows.append(row('app:' + app, PASS, why, route_reason='', **more))
+        rows.append(app_row(more, login_reason, (answers or {}).get(app)))
     return rows
+
+
+def route_state(routes, port):
+    """'on', 'off' or 'unknown' (Tailscale's routes could not be read) for an app's port."""
+    if routes is None:
+        return 'unknown'
+    return 'on' if str(port) in routes else 'off'
+
+
+def app_row(more, login_reason, answer):
+    """One app's row from its login check, its route and whether its address answered."""
+    app, title, login, route = more['app'], more['title'], more['login'], more['route']
+    if login != PASS:
+        if route == 'on':
+            off = login_reason + ' Its address is on from an earlier run; run setup again so the login is checked.'
+        else:
+            off = login_reason + ' Its address stays off until its login is verified.'
+        step = f'{SETUP_AGAIN}: the accounts step checks the logins and says what is wrong with one.'
+        return row('app:' + app, login, off, step, route_reason=off if route != 'on' else '', **more)
+    if route == 'unknown':
+        why = 'Setup could not read which addresses Tailscale has switched on.'
+        return row('app:' + app, UNKNOWN, why, CHECK_AGAIN, route_reason=why, **more)
+    if route == 'off':
+        why = f'The login of {title} is verified. Its address is not switched on yet.'
+        step = f'{SETUP_AGAIN}: its phone step switches the address on.'
+        return row('app:' + app, FAIL, why, step, route_reason=why, **more)
+    if answer == FAIL:
+        why = f'The address of {title} is on, but does not answer from this PC.'
+        return row('app:' + app, FAIL, why, 'See "private HTTPS addresses" above.', route_reason='', **more)
+    why = f'{title}: login verified, address on' + (' and answering.' if answer == PASS else '.')
+    return row('app:' + app, PASS, why, route_reason='', **more)
 
 
 def route_may_open(app_row):
@@ -436,10 +470,22 @@ def remember(config, rows, addresses, now=None):
         stands_on = depends_on(fresh['id'], addresses)
         old = before.get(fresh['id'])
         same = isinstance(old, dict) and old.get('stands_on') == stands_on
-        passed = moment if fresh['status'] == PASS else old.get('last_passed') if same else None
-        kept[fresh['id']] = {**fresh, 'stands_on': stands_on, 'checked_at': moment, 'last_passed': passed}
+        kept[fresh['id']] = {
+            **fresh,
+            'stands_on': stands_on,
+            'checked_at': moment,
+            'last_passed': last_passed(fresh, old if same else None, moment),
+        }
     atomic_json(saved_path(config), {**saved, 'format': 'neko-phone-status-v1', 'rows': kept})
     return [_shown(one) for one in kept.values()]
+
+
+def last_passed(fresh, old, moment):
+    """When a row last passed: now when it passed now, else the time kept from a check
+    that stood on the same addresses (`old`, None when there is none)."""
+    if fresh['status'] == PASS:
+        return moment
+    return old.get('last_passed') if old is not None else None
 
 
 def _shown(saved_row):

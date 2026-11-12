@@ -119,11 +119,40 @@
       const on = switches[card.extra.id] && offered;
       card.input.checked = on;
       card.input.disabled = !offered;
-      card.node.className = card.extra.under
-        ? 'sub-switch' + (offered ? '' : ' unavailable')
-        : 'extra' + (on ? ' on' : '') + (offered ? '' : ' unavailable');
+      card.node.className = cardClass(card.extra, on, offered);
       card.caption.textContent = on ? 'yes' : 'no';
     }
+  }
+
+  /* A card's look: a switch inside a card, or a card of its own (on or off), greyed when
+     what it needs is off. */
+  function cardClass(extra, on, offered) {
+    const away = offered ? '' : ' unavailable';
+    if (extra.under) return 'sub-switch' + away;
+    return 'extra' + (on ? ' on' : '') + away;
+  }
+
+  /* One card's own element: a line of the card it belongs to (finding and downloading,
+     `parent`), or a card of its own. */
+  function cardNode(extra, parent, input, caption) {
+    const toggle = el('label', { class: 'switch' }, input, el('span'));
+    if (parent)
+      return el(
+        'div',
+        { class: 'sub-switch', title: extra.explanation },
+        el('span', { class: 'sub-title', text: extra.title }),
+        caption,
+        toggle
+      );
+    const small = extra.small ? el('small', { class: 'card-small', text: extra.small }) : null;
+    return el(
+      'div',
+      { class: 'extra' },
+      el('h3', { text: extra.title }),
+      el('div', { class: 'choice' }, caption, toggle),
+      el('p', { text: extra.explanation }),
+      small
+    );
   }
 
   /* One card for each part a person can leave out, under the heading of its kind. */
@@ -140,23 +169,7 @@
       const input = el('input', { type: 'checkbox', 'aria-label': extra.title });
       const caption = el('span', { class: 'caption' });
       const parent = extra.under ? cards.find(card => card.extra.id === extra.under) : null;
-      // A switch inside a card (finding and downloading): a line of the card it belongs to.
-      const node = parent
-        ? el(
-            'div',
-            { class: 'sub-switch', title: extra.explanation },
-            el('span', { class: 'sub-title', text: extra.title }),
-            caption,
-            el('label', { class: 'switch' }, input, el('span'))
-          )
-        : el(
-            'div',
-            { class: 'extra' },
-            el('h3', { text: extra.title }),
-            el('div', { class: 'choice' }, caption, el('label', { class: 'switch' }, input, el('span'))),
-            el('p', { text: extra.explanation }),
-            extra.small ? el('small', { class: 'card-small', text: extra.small }) : null
-          );
+      const node = cardNode(extra, parent, input, caption);
       input.addEventListener('change', () => {
         switches[extra.id] = input.checked;
         chosen[extra.id] = input.checked;
@@ -465,6 +478,16 @@
   }
 
   /* Each row says what runs at its time (the same words setup says in the terminal). */
+  /* The weekly USB copy's row: only on a server that has the weekly copy (gate run B4);
+     its inputs keep their times. */
+  function weeklyRow(page, day) {
+    if (page.weekly_copy === false) return null;
+    const said = page.weekly_words
+      ? capital(page.weekly_words) + ', onto the USB drive.'
+      : "Your photos and Nextcloud files onto the USB drive, with Immich's database copy 45 minutes before it.";
+    return row('Weekly USB copy', [day, pageInputs.weekly], said);
+  }
+
   function buildBackupTimes(page) {
     const f = page.fields;
     const day = el('select', { id: 'ask-page-weekly_day', 'aria-label': 'Day of the weekly USB copy' });
@@ -525,16 +548,7 @@
           ? capital(page.daily_words) + '.'
           : "The media apps' snapshot at this time, the music copy 30 minutes before it and the copy of this PC's own settings an hour after it."
       ),
-      // Only on a server that has the weekly copy (gate run B4); its inputs keep their times.
-      page.weekly_copy === false
-        ? null
-        : row(
-            'Weekly USB copy',
-            [day, pageInputs.weekly],
-            page.weekly_words
-              ? capital(page.weekly_words) + ', onto the USB drive.'
-              : "Your photos and Nextcloud files onto the USB drive, with Immich's database copy 45 minutes before it."
-          ),
+      weeklyRow(page, day),
       row(
         'Monthly check and updates',
         [pageInputs.monthly],
@@ -834,47 +848,51 @@
       choice.append(el('label', { class: 'pick-row' }, input, el('span', { class: 'pick-name', text: label })));
     }
     const rows = el('div', { class: 'storage accounts', id: 'ask-page-accounts' });
-    for (const app of page.apps) {
-      const user = el('input', {
-        type: app.email ? 'email' : 'text',
-        id: 'ask-page-user:' + app.id,
-        autocomplete: 'off',
-        spellcheck: 'false',
-        placeholder: app.email ? 'Email used to sign in to ' + app.name : 'User name',
-        'aria-label': (app.email ? 'Email used to sign in to ' : 'User name for ') + app.name
-      });
-      user.value = page.fields['user:' + app.id] || '';
-      const password = hiddenInput('pass:' + app.id, 'Password for ' + app.name);
-      const again = hiddenInput('again:' + app.id, 'The same password again for ' + app.name);
-      password.placeholder = app.pin ? 'PIN (6 to 8 digits)' : 'Password';
-      again.placeholder = 'The same again';
-      // A secret of the server itself (the dashboard PIN, the shared folders' password): no user name.
-      if (app.secret_only) user.hidden = true;
-      const madeWords = app.pin
-        ? 'A PIN is made for you. It lets you restart apps from the dashboard; Show login shows it at the end.'
-        : 'A strong password is made and saved for you.';
-      const made = el('small', { text: madeWords });
-      const typed = el('span', { class: 'row-inputs account-inputs' }, user, password, again);
-      const node = el(
-        'div',
-        { class: 'row' },
-        el('span', { class: 'row-title', text: app.name }),
-        typed,
-        made,
-        app.existing ? el('small', { text: page.existing }) : null
-      );
-      accountRows.push({ app, user, password, again, typed, made });
-      // Off with the other controls while the answer is on its way.
-      Object.assign(pageInputs, { ['user:' + app.id]: user, ['pass:' + app.id]: password, ['again:' + app.id]: again });
-      rows.append(node);
-    }
+    for (const app of page.apps) rows.append(accountRow(page, app));
     const problem = el('p', { class: 'drives-needs account-problem', text: page.fields.problem || '' });
     $('ask-page').replaceChildren(el('p', { class: 'drives-needs', text: page.hint }), choice, rows, problem);
     showAccountRows();
   }
 
+  /* One app's row of the accounts page: its user name (or none, for a secret of the server
+     itself), the password typed twice, and what is made when it is not typed. */
+  function accountRow(page, app) {
+    const user = el('input', {
+      type: app.email ? 'email' : 'text',
+      id: 'ask-page-user:' + app.id,
+      autocomplete: 'off',
+      spellcheck: 'false',
+      placeholder: app.email ? 'Email used to sign in to ' + app.name : 'User name',
+      'aria-label': (app.email ? 'Email used to sign in to ' : 'User name for ') + app.name
+    });
+    user.value = page.fields['user:' + app.id] || '';
+    const password = hiddenInput('pass:' + app.id, 'Password for ' + app.name);
+    const again = hiddenInput('again:' + app.id, 'The same password again for ' + app.name);
+    password.placeholder = app.pin ? 'PIN (6 to 8 digits)' : 'Password';
+    again.placeholder = 'The same again';
+    // A secret of the server itself (the dashboard PIN, the shared folders' password): no user name.
+    if (app.secret_only) user.hidden = true;
+    const madeWords = app.pin
+      ? 'A PIN is made for you. It lets you restart apps from the dashboard; Show login shows it at the end.'
+      : 'A strong password is made and saved for you.';
+    const made = el('small', { text: madeWords });
+    const typed = el('span', { class: 'row-inputs account-inputs' }, user, password, again);
+    const node = el(
+      'div',
+      { class: 'row' },
+      el('span', { class: 'row-title', text: app.name }),
+      typed,
+      made,
+      app.existing ? el('small', { text: page.existing }) : null
+    );
+    accountRows.push({ app, user, password, again, typed, made });
+    // Off with the other controls while the answer is on its way.
+    Object.assign(pageInputs, { ['user:' + app.id]: user, ['pass:' + app.id]: password, ['again:' + app.id]: again });
+    return node;
+  }
+
   function accountsMode() {
-    return (pickInputs.find(input => input.checked) || {}).value || '';
+    return pickInputs.find(input => input.checked)?.value || '';
   }
 
   /* A row is typed in with your own logins, and always for an app that has data already. */
@@ -899,16 +917,23 @@
   function accountsProblem(page, values) {
     if (!values.mode) return 'Choose one of the two first.';
     for (const row of accountRows) {
-      if (row.typed.hidden) continue;
-      const name = row.app.name;
-      if (!row.app.secret_only && !values['user:' + row.app.id].trim())
-        return name + ': fill in the ' + (row.app.email ? 'email' : 'user name') + '.';
-      // No PIN is a choice: phones can then only look at the dashboard.
-      if (row.app.pin && !values['pass:' + row.app.id] && !values['again:' + row.app.id]) continue;
-      if (!values['pass:' + row.app.id]) return name + ': fill in a ' + (row.app.pin ? 'PIN' : 'password') + '.';
-      if (values['pass:' + row.app.id] !== values['again:' + row.app.id])
-        return name + ': the two passwords are not the same.';
+      const problem = row.typed.hidden ? '' : accountRowProblem(row.app, values);
+      if (problem) return problem;
     }
+    return '';
+  }
+
+  /* What is wrong with one typed-in row of the accounts page, or ''. */
+  function accountRowProblem(app, values) {
+    const user = values['user:' + app.id];
+    const password = values['pass:' + app.id];
+    const again = values['again:' + app.id];
+    if (!app.secret_only && !user.trim())
+      return app.name + ': fill in the ' + (app.email ? 'email' : 'user name') + '.';
+    // No PIN is a choice: phones can then only look at the dashboard.
+    if (app.pin && !password && !again) return '';
+    if (!password) return app.name + ': fill in a ' + (app.pin ? 'PIN' : 'password') + '.';
+    if (password !== again) return app.name + ': the two passwords are not the same.';
     return '';
   }
 
@@ -1014,7 +1039,7 @@
     for (const role of page.roles) {
       const value = values[role.key];
       if (!value && !role.optional) return 'Choose a drive for “' + role.title + '” first.';
-      const shareable = role.key === 'media_hdd' && chosen[value] && chosen[value].key === 'data_ssd';
+      const shareable = role.key === 'media_hdd' && chosen[value]?.key === 'data_ssd';
       if (value && chosen[value] && !shareable)
         return 'One drive cannot be both “' + chosen[value].title + '” and “' + role.title + '”.';
       if (value && !chosen[value]) chosen[value] = role;
@@ -1182,8 +1207,22 @@
 
   /* What Enter alone keeps, when the question names it: "[admin]", "(Enter for 04:15)". */
   function defaultOf(text) {
-    const named = /\bEnter (?:for|alone:) ([^)]+)\)/.exec(text) || /\[([^\]/]+)\]:?\s*$/.exec(text);
-    return named ? named[1].trim() : '';
+    const named = /\bEnter (?:for|alone:) ([^)]+)\)/.exec(text);
+    if (named) return named[1].trim();
+    return (bracketedDefault(text) ?? '').trim();
+  }
+
+  /* The value in brackets at the very end of a question ("User name [admin]: "): what
+     /\[([^\]/]+)\]:?\s*$/ found, step by step, so a long line never takes long. The
+     brackets hold at least one character and no "]" or "/". */
+  function bracketedDefault(text) {
+    let end = text.trimEnd();
+    if (end.endsWith(':')) end = end.slice(0, -1);
+    if (!end.endsWith(']')) return null;
+    const close = end.length - 1;
+    const after = Math.max(end.lastIndexOf(']', close - 1), end.lastIndexOf('/', close - 1));
+    const open = end.indexOf('[', after + 1);
+    return open !== -1 && open < close - 1 ? end.slice(open + 1, close) : null;
   }
 
   /* The numbered lines the terminal printed just before a question that asks for a

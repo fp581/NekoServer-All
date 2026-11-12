@@ -522,21 +522,25 @@ class Window:
         if route == 'api/test' and isinstance(body, dict):
             return self.tried(body.get('test'), body.get('word'))
         if route == 'api/answer' and isinstance(body, dict):
-            # The window's answer to the question setup is waiting on; the terminal may
-            # have answered first, in which case this says so.
-            taken = (
-                isinstance(body.get('seq'), int)
-                and isinstance(body.get('text'), str)
-                and len(body['text']) <= setup_progress.LONGEST_ANSWER
-                and setup_progress.answer_from_window(
-                    body['seq'],
-                    body['text'],
-                    skip=body.get('skip') is True,
-                    fields=body.get('fields') if isinstance(body.get('fields'), dict) else None,
-                )
-            )
-            return 200, json.dumps({'ok': bool(taken)}).encode(), JSON
+            return 200, json.dumps({'ok': self.answered(body)}).encode(), JSON
         return NOT_FOUND
+
+    @staticmethod
+    def answered(body):
+        """The window's answer to the question setup is waiting on: True when it was taken.
+        The terminal may have answered first, and then it is not."""
+        fields = body.get('fields')
+        return bool(
+            isinstance(body.get('seq'), int)
+            and isinstance(body.get('text'), str)
+            and len(body['text']) <= setup_progress.LONGEST_ANSWER
+            and setup_progress.answer_from_window(
+                body['seq'],
+                body['text'],
+                skip=body.get('skip') is True,
+                fields=fields if isinstance(fields, dict) else None,
+            )
+        )
 
     def login(self, app):
         """A saved login for the window's "Show login" button. Only for an app the question

@@ -70,8 +70,8 @@ class CheckTests(unittest.TestCase):
         self.assertEqual((found['blocking'], found['warnings']), ([], []))
         self.assertEqual([row['name'] for row in found['drives']], ['ssd', 'media'])
         ssd, media = found['drives']
-        self.assertEqual((ssd['least_gb'], ssd['recommended_gb']), capacity.SSD)
-        self.assertEqual((media['least_gb'], media['recommended_gb']), capacity.HDD)
+        self.assertEqual(capacity.SSD, (ssd['least_gb'], ssd['recommended_gb']))
+        self.assertEqual(capacity.HDD, (media['least_gb'], media['recommended_gb']))
         self.assertEqual(ssd['holds'], ['the apps, their settings, photos and music'])
         self.assertEqual(self.look.asked, ['download.docker.com', 'registry-1.docker.io', 'ghcr.io'])
 

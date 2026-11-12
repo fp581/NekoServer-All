@@ -161,7 +161,7 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(jellyfin['installed']['action'], {'do': 'retry_step', 'step': 'media'})
         # What depends on it waits; it is not counted as failed a second time.
         self.assertEqual(
-            (jellyfin['login']['state'], jellyfin['address']['state'], jellyfin['tried']['state']), (WAITING,) * 3
+            (WAITING,) * 3, (jellyfin['login']['state'], jellyfin['address']['state'], jellyfin['tried']['state'])
         )
         self.assertEqual(states_of(result, 'immich')['installed'], DONE)
         self.assertIn('step:media', {item['id'] for item in result['attention']})
