@@ -1158,7 +1158,7 @@
   function askNote(q, yesno) {
     if (q.secret) return 'Not shown in the terminal either.';
     if (yesno) return '';
-    return 'Enter alone sends an empty answer where setup allows one.';
+    return "Sending it empty keeps setup's suggestion, where it has one.";
   }
 
   /* What Enter alone keeps, when the question names it: "[admin]", "(Enter for 04:15)". */
@@ -1257,7 +1257,7 @@
     const input = $('ask-input');
     input.type = q.secret ? 'password' : 'text';
     input.value = '';
-    input.placeholder = q.secret || !defaultOf(q.text) ? '' : 'Enter alone keeps: ' + defaultOf(q.text);
+    input.placeholder = q.secret || !defaultOf(q.text) ? '' : 'Left empty, it keeps: ' + defaultOf(q.text);
     input.disabled = false;
     askControls(true);
     $('ask-note').textContent = page ? PAGES[page.form].note(page) : askNote(q, yesno);

@@ -520,7 +520,8 @@ class SetupWindowTests(unittest.TestCase):
             ('Which one does NekoServer use? [1/2] (Enter alone: 1): ', '1'),
         ):
             seen = self.page([self.asked(text)])
-            self.assertEqual(seen['placeholder'], 'Enter alone keeps: ' + kept, text)
+            # In the window's words: there is no Enter key to press alone there.
+            self.assertEqual(seen['placeholder'], 'Left empty, it keeps: ' + kept, text)
         for text in ('Listener username: ', 'Does the NAS ask for a CHAP user name and password? [y/N]: '):
             self.assertEqual(self.page([self.asked(text)])['placeholder'], '', text)
 
