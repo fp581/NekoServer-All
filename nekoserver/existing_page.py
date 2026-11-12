@@ -182,6 +182,8 @@ def mount(ctx):
         return []
     permanent = []
     for entry in wanted:
+        if not existing_media.folder_answers(entry['path']):
+            continue  # away now (its share does not answer): use_in_place says so, never waiting for it
         try:
             line = existing_media.check(config, entry['holds'], entry['path']).get('add_to_fstab')
         except existing_media.Refused:

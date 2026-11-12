@@ -267,6 +267,7 @@ class SetupTests(unittest.TestCase):
         line = 'nas:/tank /mnt/tank nfs4 hard,nofail 0 0'
         mounted = [{'holds': 'movies', 'path': '/mnt/tank/films', 'mounted': True, 'reason': None}]
         with (
+            mock.patch.object(existing_media, 'folder_answers', return_value=True),
             mock.patch.object(existing_media, 'check', return_value={**FOUND, 'add_to_fstab': line}),
             mock.patch.object(existing_media, 'use_in_place', return_value=mounted) as use,
         ):
@@ -284,7 +285,16 @@ class SetupTests(unittest.TestCase):
         ]
         gone = existing_media.Refused('not_a_folder', path='/mnt/tank/films')
         with (
+            mock.patch.object(existing_media, 'folder_answers', return_value=True),
             mock.patch.object(existing_media, 'check', side_effect=gone),
+            mock.patch.object(existing_media, 'use_in_place', return_value=away) as use,
+        ):
+            existing_page.mount(ctx)
+        self.assertEqual(use.call_args.args[1], [])
+        # A share that does not answer is never checked (the check would wait for it).
+        with (
+            mock.patch.object(existing_media, 'folder_answers', return_value=False),
+            mock.patch.object(existing_media, 'check', side_effect=AssertionError('looked at')),
             mock.patch.object(existing_media, 'use_in_place', return_value=away) as use,
         ):
             existing_page.mount(ctx)

@@ -1302,22 +1302,41 @@ def pull_images(argv, what, log=None, waits=PULL_RETRY_WAITS, sleep=time.sleep):
             sleep(wait)
 
 
-def answered_within(argv, seconds, start=subprocess.Popen, now=time.monotonic, sleep=time.sleep):
-    """The exit code of `argv`, or None when it does not end within `seconds`. For a look
-    at a folder a shared folder may hold: one mounted hard (as setup mounts them) holds
-    every look while the NAS is away, so only this child waits; it is killed, never
-    waited for (it may stay stuck until the share answers)."""
+def output_within(argv, seconds, start=subprocess.Popen, now=time.monotonic, sleep=time.sleep):
+    """(exit code, what it printed) of `argv`, or None when it does not end within
+    `seconds`. For a look at a folder a shared folder may hold: one mounted hard (as setup
+    mounts them) holds every look while the NAS is away, so only this child waits; it is
+    killed, never waited for (it may stay stuck until the share answers). For short
+    answers only (a path, a word)."""
     try:
-        child = start(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        child = start(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     except OSError:
         return None
     deadline = now() + seconds
     while child.poll() is None:
         if now() >= deadline:
             child.kill()
+            with contextlib.suppress(AttributeError, OSError):
+                child.stdout.close()
             return None
         sleep(0.05)
-    return child.returncode
+    said = child.stdout.read() if getattr(child, 'stdout', None) else ''
+    return child.returncode, said
+
+
+def answered_within(argv, seconds, start=subprocess.Popen, now=time.monotonic, sleep=time.sleep):
+    """The exit code of `argv`, or None when it does not end within `seconds` (output_within)."""
+    found = output_within(argv, seconds, start, now, sleep)
+    return None if found is None else found[0]
+
+
+def real_path(path, seconds=15):
+    """os.path.realpath(path), asked with a time limit (a share that is away holds every
+    look at its folders, the share's own folder too): None when no answer came."""
+    found = output_within(['realpath', '-m', '--', str(path)], seconds)
+    if found is None or found[0] != 0:
+        return None
+    return found[1].rstrip('\n') or None
 
 
 def folder_answers(path, seconds=15):

@@ -477,6 +477,19 @@ class MountTests(unittest.TestCase):
         self.assertTrue(neko_common.folder_answers(self.pc.films))
         self.assertFalse(neko_common.folder_answers(self.pc.films / 'not-there'))
 
+    def test_a_saved_folder_whose_share_does_not_answer_is_still_listed_by_its_words(self):
+        config = self.pc.chosen()
+        with mock.patch.object(existing_media, 'real_path', return_value=None):
+            (entry,) = existing_media.extras(config)
+            self.assertEqual(entry['path'], str(self.pc.films))
+            # Its words are still checked: a path that leaves its folder is refused.
+            config['placement']['movies']['extra'][0]['path'] = str(self.pc.films) + '/../../ssd'
+            with self.assertRaises(RuntimeError):
+                existing_media.extras(config)
+        import neko_common
+
+        self.assertEqual(neko_common.real_path(self.pc.films), os.path.realpath(self.pc.films))
+
     def test_ready_only_when_the_share_is_there_and_bound_into_the_library(self):
         config = self.pc.chosen()
         (state,) = existing_media.available(config, **self.pc.how())
