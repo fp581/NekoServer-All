@@ -1776,9 +1776,20 @@ def wished_installs(context, inventory):
     return installs
 
 
+# An installation drive for one group's apps (0.50.0, free placement) is not offered in
+# 0.50.0: its gate (runs C9, C16) failed with the group's drive away, so by the rule set
+# before the gate it moves to 0.51.x. The storage page offers one installation drive for
+# all the apps together, as 0.49.0 did. A server whose settings name one ("install") keeps
+# working with it; the code stays, only the offer is off.
+OFFER_GROUP_INSTALLS = False
+
+
 def installs_asked(config):
     """The groups whose installation drive the page asks for: the ones it asks a place
-    for (their app is new to this server), unless their settings name a drive already."""
+    for (their app is new to this server), unless their settings name a drive already.
+    None while OFFER_GROUP_INSTALLS is off."""
+    if not OFFER_GROUP_INSTALLS:
+        return []
     asked = page_fields(config)
     named = config.get('install') if isinstance(config.get('install'), dict) else {}
     return [what for what, _words, _threshold in WHERE if what in asked and what not in named]

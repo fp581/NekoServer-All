@@ -218,6 +218,16 @@ class PageTests(unittest.TestCase):
         self.addCleanup(drive_table.INSTALL_AHEAD.clear)
         self.said = []
         self.context = SimpleNamespace(config=settings(), log=self.said.append)
+        # The offer is off in 0.50.0 (moves to 0.51.x); the code it uses is tested with it on.
+        offer = mock.patch.object(storage, 'OFFER_GROUP_INSTALLS', True)
+        offer.start()
+        self.addCleanup(offer.stop)
+
+    def test_0_50_0_offers_no_installation_drive_for_one_group(self):
+        # Gate runs C9 and C16 failed on it: the page offers one drive for all the apps.
+        with mock.patch.object(storage, 'OFFER_GROUP_INSTALLS', False):
+            with mock.patch.object(storage, 'page_fields', return_value={'photos': 'x', 'music': 'x'}):
+                self.assertEqual(storage.installs_asked(settings()), [])
 
     def ask(self, *answers, others=(ROW,)):
         given = iter(answers)
