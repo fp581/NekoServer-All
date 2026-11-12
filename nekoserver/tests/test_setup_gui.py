@@ -1,5 +1,5 @@
 """The setup window: the words it shows, the events setup feeds it, its little server,
-and the wizard's "Ready to start?" that the window can answer."""
+and the wizard's approval that the window can answer."""
 
 import builtins
 import contextlib

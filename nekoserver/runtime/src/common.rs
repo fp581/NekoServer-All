@@ -1376,7 +1376,7 @@ mod media_answer_tests {
             .any(|group| media_group(cfg, group))
     }
     use serde_json::json;
-    /// Setup's "Install the media apps too?" (neko_common.media_apps_wanted): yes unless
+    /// "wanted" under "media_apps" (neko_common.media_apps_wanted): yes unless
     /// the answer is no, and no leaves the settings of the apps as they were.
     #[test]
     fn no_leaves_every_media_app_out_and_no_answer_keeps_them() {

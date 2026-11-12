@@ -664,7 +664,7 @@ def shared_folders(config):
 
 def choose_new(config, table, key, input_fn, out_fn):
     """The drive for `key`, asked for in the list of everything connected (drive_table.py):
-    by its number there, then confirmed by typing its name. A drive that cannot have the
+    by its number there (nothing is typed back; the choice is said in words). A drive that cannot have the
     role (the disk Linux runs from, one in use elsewhere, the USB backup drive, a disk on
     the NAS for the app SSD, one too small) is in the list with the reason, and refused."""
     import drive_table
@@ -1841,7 +1841,7 @@ JOB_STEPS = frozenset(
 
 
 def choose_media_apps(context):
-    """ "Install the media apps too?" (guided_setup.choose_media_apps)."""
+    """The media groups, for setup run without its first page (guided_setup.choose_media_apps)."""
     from guided_setup import choose_media_apps as ask
 
     ask(context)

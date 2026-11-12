@@ -1339,7 +1339,7 @@ def atomic_json(path, payload):
 
 
 # ---- The media apps, a part of their own (since 0.50.0) ----------------------------------
-# "Install the media apps too?" (guided_setup.choose_media_apps): Jellyfin with Seerr, the
+# The media apps (setup's first page; guided_setup.choose_media_apps without it): Jellyfin with Seerr, the
 # apps that find and download (Sonarr, Radarr, Lidarr, Prowlarr, qBittorrent), Immich,
 # Navidrome, video on the graphics chip, the hourly app check and the TV mode. The answer
 # is "wanted" under "media_apps"; nothing there means yes, as every server set up before

@@ -193,6 +193,42 @@ def shared_rows(config):
     ]
 
 
+def with_children(dev, disk):
+    """A device and everything under it, each with the disk it is on."""
+    yield dev, disk
+    for child in dev.get('children', []):
+        yield from with_children(child, disk)
+
+
+def rows_of(top, seen, usable, backups, look):
+    """The rows of one disk that is not the system's: every filesystem on it (one that
+    spans several disks once, under the first), or the disk itself with the reason when
+    nothing on it can be used."""
+    from modules import storage
+
+    found = []
+    for dev, _ in with_children(top, top):
+        fstype = dev.get('fstype')
+        if fstype and fstype not in PART_OF_ANOTHER:
+            identity = dev.get('uuid') or dev.get('name')
+            if identity not in seen:  # a pool or an array is listed under each of its disks
+                seen.add(identity)
+                found.append(filesystem_row(dev, top, usable, backups, look))
+        elif storage.empty_disk(dev):
+            how = HOW_TO_FORMAT.format(name=dev.get('name', ''))
+            found.append(entry(dev, top, problem='it has no filesystem yet. To use it, ' + how))
+    if not found and top.get('type') == 'disk':
+        found.append(entry(top, top, problem='nothing on it is a filesystem Linux apps can keep files on'))
+    return found
+
+
+def not_a_drive(top):
+    """A loop device, an optical drive, or an empty card-reader slot (a disk of no size)."""
+    return bool(
+        NOT_A_DRIVE.match(str(top.get('name', ''))) or top.get('type') in ('loop', 'rom') or top.get('size') == '0B'
+    )
+
+
 def rows(inventory, config, items=None, look=None):
     """Every drive connected to this PC, in lsblk's order, each with the number it is
     chosen by: the disk Linux runs from (one row), every filesystem on the other disks,
@@ -204,44 +240,17 @@ def rows(inventory, config, items=None, look=None):
     look = look or look_inside
     usable = {v['uuid']: v for v in (storage.discover_filesystems(inventory) if items is None else items)}
     backups = {v['uuid']: v for v in (eligible(config, inventory) if config.get('external_backup_mount') else [])}
-    placed = []
-
-    def place(dev, disk):
-        placed.append((dev, disk))
-        for child in dev.get('children', []):
-            place(child, disk)
-
-    for top in inventory.get('blockdevices', []):
-        place(top, top.get('name', ''))
+    tops = inventory.get('blockdevices', [])
+    placed = [pair for top in tops for pair in with_children(top, top.get('name', ''))]
     os_disks, _ = storage.system_disks(placed)
     found, seen = [], set()
-
-    def walk(dev, disk):
-        fstype = dev.get('fstype')
-        if fstype and fstype not in PART_OF_ANOTHER:
-            identity = dev.get('uuid') or dev.get('name')
-            if identity not in seen:  # a pool or an array is listed under each of its disks
-                seen.add(identity)
-                found.append(filesystem_row(dev, disk, usable, backups, look))
-        elif storage.empty_disk(dev):
-            name = dev.get('name', '')
-            found.append(
-                entry(dev, disk, problem='it has no filesystem yet. To use it, ' + HOW_TO_FORMAT.format(name=name))
-            )
-        for child in dev.get('children', []):
-            walk(child, disk)
-
-    for top in inventory.get('blockdevices', []):
-        name = str(top.get('name', ''))
-        if NOT_A_DRIVE.match(name) or top.get('type') in ('loop', 'rom') or top.get('size') == '0B':
-            continue  # an empty card-reader slot shows as a disk of no size
-        if name in os_disks:
-            found.append(entry(top, top, system=True, fstype='', uuid='', label='', mountpoint=None))
+    for top in tops:
+        if not_a_drive(top):
             continue
-        before = len(found)
-        walk(top, top)
-        if len(found) == before and top.get('type') == 'disk':
-            found.append(entry(top, top, problem='nothing on it is a filesystem Linux apps can keep files on'))
+        if str(top.get('name', '')) in os_disks:
+            found.append(entry(top, top, system=True, fstype='', uuid='', label='', mountpoint=None))
+        else:
+            found += rows_of(top, seen, usable, backups, look)
     found += shared_rows(config)
     on_disks = {row['uuid']: row['disks'] for row in found if row['uuid']}
     for number, row in enumerate(found, 1):
@@ -576,6 +585,52 @@ def numbered(table, answer):
 STORAGE_PAGE = 'storage'  # the page every drive question of the drives step is on (modules/storage.py)
 
 
+def size_bytes(row):
+    from modules import storage
+
+    return storage.size_bytes(row.get('size')) or 0
+
+
+def has_role_already(table, config):
+    """The drive each role has in the settings, where it is in the list: a role that has
+    its drive keeps it."""
+    saved = config.get('storage', {})
+    uuids = {
+        key: saved[key].get('uuid') if isinstance(saved.get(key), dict) else None for key in ('data_ssd', 'media_hdd')
+    }
+    uuids['usb'] = config.get('photos', {}).get('external_backup_uuid')
+    return {key: next((row for row in table if uuid and row['uuid'] == uuid), None) for key, uuid in uuids.items()}
+
+
+def free_for_a_role(row, chosen):
+    """Not chosen for another role, and on none of their disks."""
+    taken = [other for other in chosen.values() if other is not None]
+    return row not in taken and not any(set(row['disks']) & set(other['disks']) for other in taken)
+
+
+def drives_of_their_own(table, key, config, chosen):
+    """The drives besides the disk Linux runs from that may have the role and have none yet."""
+    return [
+        row for row in table if not row['system'] and free_for_a_role(row, chosen) and not verdict(row, key, config)
+    ]
+
+
+def best_for(table, key, config, chosen, order):
+    """The first drive of its own in `order`; the disk Linux runs from only where there is none."""
+    own = drives_of_their_own(table, key, config, chosen)
+    if own:
+        return sorted(own, key=order)[0]
+    return next((row for row in table if row['system'] and not verdict(row, key, config)), None)
+
+
+def in_this_pc_first(row):
+    return bool((row['device'] or {}).get('network')), -size_bytes(row)
+
+
+def ssd_first(row):
+    return 'SSD' not in row['type'], -size_bytes(row)
+
+
 def recommended(table, config):
     """The drive setup would choose for each role, so that a person who changes nothing
     gets a sensible layout: {'data_ssd': row or None, 'media_hdd': ..., 'usb': ...}.
@@ -586,40 +641,13 @@ def recommended(table, config):
     With three drives that is the layout every server before 0.50.0 has. The disk Linux
     runs from is recommended only where no drive of its own can have the role. A role
     that has its drive already keeps it, and that drive is offered for no other."""
-    from modules import storage
-
-    def size(row):
-        return storage.size_bytes(row.get('size')) or 0
-
-    saved = config.get('storage', {})
-    chosen = {}
-    for key in ('data_ssd', 'media_hdd'):
-        uuid = (saved.get(key) or {}).get('uuid') if isinstance(saved.get(key), dict) else None
-        chosen[key] = next((row for row in table if uuid and row['uuid'] == uuid), None)
-    usb_uuid = config.get('photos', {}).get('external_backup_uuid')
-    chosen['usb'] = next((row for row in table if usb_uuid and row['uuid'] == usb_uuid), None)
-
-    def free(row):
-        """Not chosen for another role, and on none of their disks."""
-        taken = [other for other in chosen.values() if other is not None]
-        return row not in taken and not any(set(row['disks']) & set(other['disks']) for other in taken)
-
-    def best(key, order):
-        own = [row for row in table if not row['system'] and free(row) and not verdict(row, key, config)]
-        if own:
-            return sorted(own, key=order)[0]
-        return next((row for row in table if row['system'] and not verdict(row, key, config)), None)
-
+    chosen = has_role_already(table, config)
     if chosen['media_hdd'] is None:
-        chosen['media_hdd'] = best('media_hdd', lambda row: (bool((row['device'] or {}).get('network')), -size(row)))
+        chosen['media_hdd'] = best_for(table, 'media_hdd', config, chosen, in_this_pc_first)
     if chosen['data_ssd'] is None:
-        chosen['data_ssd'] = best('data_ssd', lambda row: ('SSD' not in row['type'], -size(row)))
+        chosen['data_ssd'] = best_for(table, 'data_ssd', config, chosen, ssd_first)
     if chosen['usb'] is None:
-        usb = [
-            row
-            for row in table
-            if row['type'] == 'USB drive' and not row['system'] and free(row) and not verdict(row, 'usb', config)
-        ]
+        usb = [row for row in drives_of_their_own(table, 'usb', config, chosen) if row['type'] == 'USB drive']
         chosen['usb'] = usb[0] if usb else None
     return chosen
 
@@ -637,6 +665,50 @@ def field(key, input_fn, prompt):
     return answer
 
 
+def own_page(table, key, config, skippable):
+    """The page of a role asked alone; nothing more on the storage page, which shows
+    every role at once. Returns (the page, the name of this role's field on it)."""
+    shown = setup_progress.page_shown()
+    if shown and shown.get('form') == STORAGE_PAGE:
+        return contextlib.nullcontext(), key
+    page = setup_progress.page(
+        'drives',
+        {'choice': ''},
+        what=f'Choose {asked_for(config, key)}.',
+        needs=needs(key),
+        rows=for_window(table, key, config),
+        skippable=skippable,
+        names=NAMES_CHANGE,
+    )
+    return page, 'choice'
+
+
+def say_taken(row, key, config, out_fn):
+    """Say the choice back in words, with what the disk Linux runs from means."""
+    chosen = said({'said': brief(row)}, first=True)
+    out_fn(f'{chosen} is {role(key)}. Nothing on it is changed by choosing it.')
+    if row['system']:
+        out_fn(SYSTEM_DISK)
+        if key == 'media_hdd' and 'data_ssd' in system_roles(config):
+            out_fn(SAME_DISK_BACKUPS)
+    return row
+
+
+def answered(table, key, config, answer, out_fn):
+    """The row an answer names when it may have the role; None, with the reason said,
+    for a number that is not in the list or a drive that cannot have it."""
+    row = numbered(table, answer)
+    if row is None:
+        out_fn(f'Type a number from 1 to {len(table)}, as the list shows them.')
+        return None
+    why = verdict(row, key, config)
+    if why:
+        refused = said({'said': brief(row)}, first=True)
+        out_fn(f'{refused} cannot be {role(key)}: {why}. Choose another one from the list.')
+        return None
+    return say_taken(row, key, config, out_fn)
+
+
 def ask(table, key, config, input_fn=input, out_fn=print, attempts=3, skippable=False):
     """The drive for the role `key`, chosen by its number in the list. Nothing is typed
     back: choosing a drive formats nothing and changes nothing on it, and the choice is
@@ -650,55 +722,31 @@ def ask(table, key, config, input_fn=input, out_fn=print, attempts=3, skippable=
     its own."""
     what = asked_for(config, key)
     best = recommended(table, config).get(key)
+    mark = f"  {best['number']}) " if best is not None else None
     for line in listed(table, key, config):
-        out_fn(line + ('  (recommended)' if best is not None and line.startswith(f"  {best['number']}) ") else ''))
+        out_fn(line + ('  (recommended)' if mark and line.startswith(mark) else ''))
     leave = 'Enter to skip for now' if skippable else 'Enter alone stops setup here'
-    if best is not None and not skippable:
+    if skippable:
+        best = None  # Enter leaves it for later
+    if best is not None:
         # Enter takes the drive setup would choose; nothing is changed by choosing it.
         leave = f"Enter for {best['number']}, the recommended one"
     stopped = (
         f'No drive was chosen for {role(key)}. Run  sudo bash install.sh  again to choose it; nothing was changed.'
     )
-    shown = setup_progress.page_shown()
-    on_storage_page = bool(shown) and shown.get('form') == STORAGE_PAGE
-    name = key if on_storage_page else 'choice'
-    page = (
-        contextlib.nullcontext()
-        if on_storage_page
-        else setup_progress.page(
-            'drives',
-            {'choice': ''},
-            what=f'Choose {what}.',
-            needs=needs(key),
-            rows=for_window(table, key, config),
-            skippable=skippable,
-            names=NAMES_CHANGE,
-        )
-    )
+    page, name = own_page(table, key, config, skippable)
     with page:
         for _ in range(attempts):
             answer = field(name, input_fn, f'Number of {what} ({leave}): ')
-            if not answer and best is not None and not skippable:
+            if not answer and best is not None:
                 answer = str(best['number'])
+            if not answer and skippable:
+                return None
             if not answer:
-                if skippable:
-                    return None
                 raise RuntimeError(stopped)
-            row = numbered(table, answer)
-            if row is None:
-                out_fn(f'Type a number from 1 to {len(table)}, as the list shows them.')
-                continue
-            why = verdict(row, key, config)
-            if not why:
-                chosen = said({'said': brief(row)}, first=True)
-                out_fn(f'{chosen} is {role(key)}. Nothing on it is changed by choosing it.')
-                if row['system']:
-                    out_fn(SYSTEM_DISK)
-                    if key == 'media_hdd' and 'data_ssd' in system_roles(config):
-                        out_fn(SAME_DISK_BACKUPS)
+            row = answered(table, key, config, answer, out_fn)
+            if row is not None:
                 return row
-            refused = said({'said': brief(row)}, first=True)
-            out_fn(f'{refused} cannot be {role(key)}: {why}. Choose another one from the list.')
     raise RuntimeError(stopped)
 
 

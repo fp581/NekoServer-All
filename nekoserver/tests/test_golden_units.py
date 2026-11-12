@@ -134,7 +134,7 @@ def past_midnight():
 
 
 def no_media():
-    """(e) "Install the media apps too?" answered no (0.50.0): no Jellyfin, Seerr, the apps
+    """(e) The media apps left out ("media_apps.wanted": false, 0.50.0): no Jellyfin, Seerr, the apps
     that find and download, Immich, Navidrome, hardware video, media monitor or TV mode;
     Nextcloud, the dashboard, the backups and the USB copy of Nextcloud's files stay."""
     cfg = base()

@@ -364,7 +364,7 @@ def _run(context):
 
 
 def left_out(context, run=None):
-    """The media apps left out ("Install the media apps too?" answered no): none is set
+    """The media apps left out (every group switched off): none is set
     up, and any that were (a server answering no later) are stopped as an app taken out
     of media.services is, with their settings, data and media kept."""
     compose_dir = Path(context.config['data_mount']) / 'compose'

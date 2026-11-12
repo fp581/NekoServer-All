@@ -199,7 +199,7 @@ class WizardFlowTests(unittest.TestCase):
         path.write_text(json.dumps(settings))
 
     def setup_until_ready(self, *replies):
-        """The wizard run up to "Ready to start?", answered no; the questions it asked."""
+        """The wizard run up to its approval, answered no; the questions it asked."""
         asked, it = [], iter(replies + ('no',))
         out = []
 
@@ -308,7 +308,7 @@ class WizardFlowTests(unittest.TestCase):
         self.saved(self.root.parent / 'nekoserver-v0.30.0/my-config.json', 'old folder')
         self.saved(self.root / 'my-config.json', 'here')
         asked, _ = self.setup_until_ready()
-        self.assertEqual(len(asked), 1)  # only "Ready to start?"
+        self.assertEqual(len(asked), 1)  # only the approval
         self.assertEqual(self.settings_uuid(), 'here')
 
     def test_a_first_install_asks_nothing_more(self):
