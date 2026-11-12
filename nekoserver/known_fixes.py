@@ -18,6 +18,15 @@ import re
 
 RETRY = 'Then press Retry this step (or answer yes to "Retry this step now?" in the terminal).'
 
+# How a person finds the drive in setup's list (drive_table.py): by its name and size on
+# its row, and, for two that look alike, by the ID behind its Details (drive_table.details:
+# "UUID <id>"), the one the message above names.
+DRIVE_LIST_LOOK = (
+    'Run setup again and look for the drive in its list by its name and size. If two look alike, open '
+    'Details under each and compare the UUID there with the one the message above names.'
+)
+
+
 FIXES = (
     {
         'id': 'no_internet',
@@ -100,8 +109,7 @@ FIXES = (
         'steps': (
             'Check the drive named above: its cable at both ends, and its power when it has its own (a USB case, '
             'a dock). A drive that just woke up can take half a minute to appear.',
-            'See what Linux sees, in a second terminal (Ctrl+Alt+T):  lsblk -f  . The drive should be in the list, '
-            'with the ID the message above names in the UUID column.',
+            DRIVE_LIST_LOOK,
             'If you replaced that drive on purpose, do what the message above says to choose the new one.',
             RETRY,
         ),
