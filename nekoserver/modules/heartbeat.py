@@ -1,7 +1,6 @@
 """Configure an OS-local Rust heartbeat to an independently hosted monitor."""
 
 import guided_setup
-from modules.notifications import asked_privately
 import json
 import os
 from pathlib import Path
@@ -115,6 +114,87 @@ def set_up_later():
     }
 
 
+FORM_TITLE = 'Warn me if the server stops checking in'
+LATER = 'Leave the address empty, or press Skip for now, to set this up later. Nothing else waits for it.'
+ADDRESS_HINT = (
+    'That is not a check-in address. It starts with https:// and looks like https://hc-ping.com/1a2b3c4d-... '
+    "Copy the Ping URL from the check's details, not the web page's address."
+)
+
+
+def form_lines(config):
+    """What to do at the monitoring service, said with the form."""
+    timing = schedule(config)
+    return [
+        '1. Open an account at a monitoring service outside your home, such as Healthchecks.io (free).',
+        f"2. Add a check there. Period: {timing['interval_words']}. Grace time: {timing['grace_words']}. This server "
+        f"checks in every {timing['interval_words']}; the service warns you when no check-in came for about "
+        f"{timing['warns_after_words']}.",
+        '3. Tell the service how to reach you (email, or its phone app). NekoServer cannot do that for you.',
+        "4. Copy the check's Ping URL and put it in the box here.",
+        'Setup then sends one test check-in.',
+    ]
+
+
+def monitor_form(context, ask=None):
+    """The check-in address of the outside monitor, on one page with the steps: the
+    address, or '' when it is left for later. Typed hidden and in no log."""
+    import getpass
+    import setup_progress
+
+    ask = ask or getpass.getpass
+    lines = form_lines(context.config)
+    for line in lines:
+        print(line)
+    rows = [{'key': 'address', 'label': 'Check-in address (the Ping URL of your check)', 'secret': True}]
+    with setup_progress.page('fields', {'address': ''}, what=FORM_TITLE, rows=rows, lines=lines, note=LATER):
+        for _ in range(3):
+            try:
+                address = setup_progress.page_field(
+                    'address', ask, 'The check-in address (hidden; Enter alone sets this up later): '
+                )
+            except EOFError:
+                return ''
+            address = address.strip().rstrip('/')
+            if not address or endpoint(address):
+                return address
+            print(ADDRESS_HINT)
+    return ''
+
+
+# What each answer of the monitor means, in the person's words (send_test_checkin).
+TEST_SAID = {
+    'accepted': 'The monitor accepted a check-in. Open the check at the monitor and look for it in its log. '
+    'Whether its warning reaches you is not tested yet: pause this server for a while, or use the '
+    "monitor's own test, to see it.",
+    'rejected': "The monitor refused the check-in. Copy the Ping URL from the check's details again; it is not "
+    "the web page's address.",
+    'redirected': 'This address points somewhere else, and NekoServer does not follow that. Use the Ping URL itself.',
+    'timed_out': 'The monitor did not answer in time. If it keeps happening, check the address.',
+    'unreachable': "NekoServer could not reach the monitor. Check this server's internet connection and the "
+    'spelling of the address.',
+    'untrusted': "The monitor's security certificate could not be checked, so nothing was sent.",
+    'not_sent': 'No test check-in was sent: the address is not one NekoServer can send to.',
+}
+
+
+def test_checkin(context, address):
+    """One test check-in sent to the address just saved. None when the monitor took it
+    (said with what that does and does not show); a needs_setup result with the reason
+    when it did not."""
+    result = send_test_checkin(address)
+    said = TEST_SAID.get(result['server'], TEST_SAID['not_sent'])
+    context.log('Outage warning test: ' + said)
+    if result['server'] == 'accepted':
+        return None
+    return {
+        'status': 'needs_setup',
+        'reason': 'The check-in address is saved, but the test check-in was not taken. '
+        + said
+        + ' Then run  sudo bash install.sh  again.',
+    }
+
+
 def definitions(config, binary, private):
     return {
         'nekoserver-heartbeat.service': (
@@ -182,38 +262,14 @@ def run(context):
     ):
         context.log('Outage monitor: skipped by choice')
         return
+    fresh = False
     if not address and sys.stdin.isatty():
-        if not guided_setup.checkpoint(
-            context,
-            'Set up an independent outage monitor',
-            [
-                'Choose a monitor outside this PC, such as Healthchecks.io or your own independently hosted compatible service.',
-                'Create a periodic check and set the period to match heartbeat.interval_seconds '
-                '(default five minutes) with an appropriate grace period, such as ten minutes.',
-                'Configure its intended alert recipient/integration directly with the provider. '
-                'The installer does not choose a recipient or send a test message in this step.',
-                'Copy the base success-ping HTTPS URL. After confirming, paste it into the terminal (it is not shown). '
-                'Later verify pings in the provider and actual missed-ping/recovery alerts.',
-            ],
-            [('url', 'https://healthchecks.io/docs/')],
-            ask='monitor_ready',
-        ):
-            return {'status': 'needs_setup', 'reason': 'Independent monitor setup pending'}
-        context.log(
-            'Create an independent missing-ping monitor, set its period/grace and alert recipient, then enter its private success-ping HTTPS URL.'
-        )
-        address = asked_privately(
-            'monitor_address',
-            endpoint,
-            'That is not a ping URL. It starts with https:// and looks like '
-            'https://hc-ping.com/1a2b3c4d-... Copy it again from the monitor and paste it.',
-        )
+        address = monitor_form(context)
+        fresh = bool(address)
     if not address:
-        return {
-            'status': 'needs_setup',
-            'reason': 'Configure an independent monitor and enter its private ping URL through interactive heartbeat setup',
-        }
-    return install(context, address)
+        return set_up_later()
+    # An address just typed in is tried for real before anything calls it set up.
+    return install(context, address) or (test_checkin(context, address) if fresh else None)
 
 
 def install(context, address):

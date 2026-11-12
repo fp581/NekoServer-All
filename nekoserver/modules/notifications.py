@@ -1,5 +1,6 @@
 """Install private ntfy delivery with a Rust timer independent of SSD availability."""
 
+import getpass
 import guided_setup
 import questions
 import json
@@ -211,29 +212,120 @@ def first_destination(context):
         return None
     if not sys.stdin.isatty():
         return '', ''
-    if not guided_setup.checkpoint(
-        context,
-        'Set up phone notifications',
-        [
-            'Use your chosen access-controlled ntfy server/topic. The opened documentation explains phone subscriptions.',
-            'On your phone, install/open the ntfy client and subscribe to that topic with its required authentication.',
-            'Keep the full private HTTPS topic URL and access token ready. Enter them in the terminal after confirming.',
-            'No notification is sent by this browser step. Actual phone receipt must still be tested.',
-        ],
-        [('url', 'https://ntfy.sh/docs/subscribe/phone/')],
-        ask='alerts_phone_ready',
+    return alerts_form(context)
+
+
+FORM_TITLE = 'Send alerts to my phone'
+LATER = 'Leave the address empty, or press Skip for now, to set this up later. Nothing else waits for it.'
+ADDRESS_HINT = (
+    'That is not a topic address. It starts with https:// and ends with the topic name, '
+    'such as https://ntfy.example.com/my-server-alerts. Copy it again and paste it.'
+)
+TOKEN_HINT = (
+    'That is not an access token: it has only letters, digits, ".", "_" and "-" '
+    '(such as tk_abc123...). Copy it again from ntfy and paste it.'
+)
+
+
+def form_lines(suggested):
+    """What to do on the phone, said with the form (the terminal prints it, the window
+    shows it above the two boxes)."""
+    return [
+        '1. On your phone, install the free app "ntfy" and open it.',
+        '2. In the app, add a topic to follow. Its name is all that keeps others from reading your alerts '
+        'unless your ntfy server uses access tokens, so take a name nobody could guess. One made for you:',
+        '   ' + suggested,
+        '3. Put the same address in the first box here. If your ntfy server gave you an access token, put it '
+        'in the second box; most people leave that empty.',
+        'Setup then sends one test message, and asks you whether it arrived.',
+    ]
+
+
+def alerts_form(context, ask=None):
+    """The alerts topic and its access token, on one page: (address, token), or ('', '')
+    when it is left for later (Enter alone, the window's Skip, three entries that are not
+    an address). Both are typed hidden and are in no log."""
+    import setup_progress
+
+    ask = ask or getpass.getpass
+    lines = form_lines(topic_address(new_topic_name()))
+    for line in lines:
+        print(line)
+    rows = [
+        {'key': 'address', 'label': 'The address of your alerts topic', 'secret': True},
+        {'key': 'token', 'label': 'Access token (only if your ntfy server gave you one)', 'secret': True},
+    ]
+    with setup_progress.page(
+        'fields', {'address': '', 'token': ''}, what=FORM_TITLE, rows=rows, lines=lines, note=LATER
     ):
-        return {'status': 'needs_setup', 'reason': 'Notification subscription setup pending'}
-    context.log(
-        'Subscribe your phone to an access-controlled ntfy topic. Enter its full HTTPS URL; the access token stays outside your installer config.'
-    )
-    address = asked_privately(
-        'alerts_address',
-        endpoint,
-        'That is not a topic URL. It starts with https:// and ends with the topic name, '
-        'such as https://ntfy.example.com/my-server-alerts. Copy it again and paste it.',
-    )
-    return address, ask_token() if address else ''
+        for _ in range(3):
+            try:
+                address = setup_progress.page_field(
+                    'address', ask, 'The address of your alerts topic (hidden; Enter alone sets alerts up later): '
+                )
+                address = address.strip().rstrip('/')
+                if not address:
+                    return '', ''
+                token = setup_progress.page_field(
+                    'token', ask, 'Its access token (hidden; Enter alone when it has none): '
+                ).strip()
+            except EOFError:
+                return '', ''
+            if endpoint(address) and valid_token(token):
+                return address, token
+            print(TOKEN_HINT if endpoint(address) else ADDRESS_HINT)
+    return '', ''
+
+
+# What each answer of the alert server means, in the person's words (send_test).
+TEST_SAID = {
+    'accepted': 'The alert server accepted the test message.',
+    'wrong_token': 'The alert server did not recognise the access token. Copy it again from ntfy, or leave it empty '
+    'if your topic needs none.',
+    'not_allowed': 'The alert server knows this topic but does not let NekoServer send to it: it needs an access '
+    'token that is allowed to send to it.',
+    'refused': "The alert server answered no. Check that the address ends with your topic's name.",
+    'redirected': 'This address points somewhere else, and NekoServer does not follow that. Use the final address '
+    'of the topic.',
+    'timed_out': 'The alert server did not answer in time. If it keeps happening, check the address.',
+    'unreachable': "NekoServer could not reach the alert server. Check this server's internet connection and the "
+    'spelling of the address.',
+    'untrusted': "The alert server's security certificate could not be checked, so nothing was sent.",
+    'not_sent': 'No test was sent: the address is not one NekoServer can send to.',
+}
+OPEN_TOPIC = (
+    'Anyone who knows this address can read your alerts without signing in. A long random name makes it hard to '
+    'guess; it is not a lock.'
+)
+
+
+def test_alert(context, address, token, prompt=None):
+    """One test message sent to the topic just saved, and what came of it: the server's
+    answer (machine-checked), who may read the topic, and whether it arrived on the
+    phone (the person's own word, kept apart). None when the server took it; a
+    needs_setup result with the reason when it did not, so alerts are never shown as
+    working on the strength of a saved address."""
+    result = send_test(address, token)
+    said = TEST_SAID.get(result['server'], TEST_SAID['not_sent'])
+    context.log('Phone alerts test: ' + said)
+    if result['server'] != 'accepted':
+        return {
+            'status': 'needs_setup',
+            'reason': 'Phone alerts are saved, but the test message was not taken. '
+            + said
+            + ' Then run  sudo bash install.sh  again.',
+        }
+    if reading_test(address, token)['server'] == 'open':
+        context.log('Phone alerts: ' + OPEN_TOPIC)
+    if guided_setup.interactive(context):
+        seen = questions.yes_no('alert_arrived', prompt, said=said)
+        context.log(
+            'Phone alerts test: you saw it arrive on your phone'
+            if outside_request.observed(seen) == 'observed'
+            else 'Phone alerts test: not seen on a phone yet. Check that the ntfy app follows the same address, '
+            'and that the phone lets it show notifications'
+        )
+    return None
 
 
 def definitions(binary, config):
@@ -295,11 +387,11 @@ def run(context):
         if isinstance(chosen, dict):
             return chosen
         address, token = chosen
+        if address:
+            # Just typed in: saved, then tried for real before anything calls it set up.
+            return install(context, address, token) or test_alert(context, address, token)
     if not address:
-        return {
-            'status': 'needs_setup',
-            'reason': 'Set a private HTTPS ntfy topic through interactive notification setup; no destination was guessed',
-        }
+        return set_up_later()
     return install(context, address, token)
 
 

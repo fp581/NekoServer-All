@@ -42,8 +42,8 @@ class WordsTests(unittest.TestCase):
         self.assertIn('  1) Create strong passwords for me (recommended)\n  2) Choose my own logins\n', asked)
         self.assertTrue(asked.endswith('Type 1 or 2, then press Enter. '))
         # Something that can wait says what Enter alone does.
-        self.assertTrue(questions.terminal('monitor_address').endswith('Press Enter alone to skip this for now. '))
-        self.assertIn('It is not shown while you type.', questions.terminal('monitor_address'))
+        self.assertIn('Press Enter alone', questions.terminal('alerts_token'))
+        self.assertIn('It is not shown while you type.', questions.terminal('alerts_token'))
 
     def test_the_window_gets_a_title_a_hint_and_buttons_that_say_what_they_do(self):
         page = questions.window('earlier_settings')
@@ -51,9 +51,9 @@ class WordsTests(unittest.TestCase):
         self.assertEqual(
             page['choices'], [{'answer': 'yes', 'label': 'Keep them'}, {'answer': 'no', 'label': 'Start fresh'}]
         )
-        page = questions.window('monitor_address')
+        page = questions.window('alerts_token')
         self.assertEqual(
-            (page['kind'], page['send'], page['skip'], page['skip_label']), ('secret', 'Save', '', 'Skip for now')
+            (page['kind'], page['send'], page['skip'], page['skip_label']), ('secret', 'Save', '', 'It has none')
         )
         page = questions.window('nas_folder', words='your films')
         self.assertEqual(

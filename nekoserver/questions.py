@@ -311,23 +311,15 @@ Q = {
         'old': 'qBittorrent WebUI password (not saved by this connector):',
     },
     # ---- alerts
-    'alerts_phone_ready': {
+    'alert_arrived': {
         'screen': 'Alerts on your phone',
-        'title': 'Is the alerts app set up on your phone?',
-        'hint': 'Install "ntfy" on the phone and follow a topic there. Keep its address at hand for the next question.',
+        'title': 'Did the test message arrive on your phone?',
+        'hint': '{said} Look at your phone now: a message called "NekoServer test" should be there.',
         'kind': 'yesno',
-        'yes': 'Yes, it is',
+        'yes': 'Yes, it arrived',
         'no': 'Not yet',
+        'example': {'said': 'The alert server accepted the test message.'},
         'old': 'Have you completed this step successfully? [yes/no]:',
-    },
-    'alerts_address': {
-        'screen': 'Alerts on your phone',
-        'title': 'Paste the address of your alerts topic',
-        'hint': 'It starts with https:// and ends with the name you chose in the ntfy app. You can add it later.',
-        'kind': 'secret',
-        'send': 'Save',
-        'skip': '',
-        'old': 'Private ntfy topic URL (blank defers):',
     },
     'alerts_token': {
         'screen': 'Alerts on your phone',
@@ -350,25 +342,6 @@ Q = {
         '(notifications.endpoint) instead? [yes/no]:',
     },
     # ---- the outage monitor
-    'monitor_ready': {
-        'screen': 'A warning when the server is off',
-        'title': 'Did you make a check at your monitoring service?',
-        'hint': 'A service outside your home (such as Healthchecks.io) warns you when this server stops answering. '
-        'Make a check there and copy the address it gives you.',
-        'kind': 'yesno',
-        'yes': 'Yes, I copied the address',
-        'no': 'Not yet',
-        'old': 'Have you completed this step successfully? [yes/no]:',
-    },
-    'monitor_address': {
-        'screen': 'A warning when the server is off',
-        'title': 'Paste the address your monitor gave you',
-        'hint': 'It starts with https://. You can add it later from setup.',
-        'kind': 'secret',
-        'send': 'Save',
-        'skip': '',
-        'old': 'Private monitor ping URL (blank defers):',
-    },
     # ---- the assistant
     'assistant_model': {
         'screen': 'Ask Neko, the AI assistant',

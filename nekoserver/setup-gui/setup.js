@@ -354,7 +354,8 @@
     problem: () => '',
     send: () => 'Save',
     skip: true,
-    note: () =>
+    note: page =>
+      page.note ||
       'Leave a field empty to keep its default. Skip for now leaves this one out; the others are not affected.'
   };
 
@@ -1038,7 +1039,11 @@
       pageInputs[field.key] = input;
       return row(field.label, [input], field.secret ? 'Hidden, and written to no log.' : '');
     });
-    $('ask-page').replaceChildren(...rows);
+    // What to do first (the steps of a form), above its boxes.
+    const steps = (page.lines || []).length
+      ? [el('ul', { class: 'form-steps', id: 'ask-page-steps' }, ...page.lines.map(line => el('li', { text: line })))]
+      : [];
+    $('ask-page').replaceChildren(...steps, ...rows);
   }
 
   async function answerPage(q) {

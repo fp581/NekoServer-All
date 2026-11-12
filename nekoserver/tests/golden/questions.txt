@@ -40,8 +40,13 @@ modules/capacity.py
 modules/dashboard.py
     PIN:
     Same PIN again:
+modules/heartbeat.py
+    The check-in address (hidden; Enter alone sets this up later):
 modules/notifications.py
     alerts_switch
+    The address of your alerts topic (hidden; Enter alone sets alerts up later):
+    Its access token (hidden; Enter alone when it has none):
+    alert_arrived
 modules/samba.py
     Password for the shared folders (account {user})
 modules/tv.py

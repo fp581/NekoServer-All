@@ -974,6 +974,16 @@ main > section {
   min-height: 1.4em;
   color: var(--amber);
 }
+/* The steps of a form (alerts, the outage warning), above its boxes. */
+.form-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
 /* The rows setup checked itself (the phone page): a mark, what it is, the reason. */
 .status-rows {
   display: grid;

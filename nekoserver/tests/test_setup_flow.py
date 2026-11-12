@@ -987,15 +987,15 @@ class SetupWindowTests(unittest.TestCase):
         self.assertEqual(seen['prompt'], 'Which AI assistant do you want?')
         self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '1'}]])
         # Something to paste: a password box, Save, and a Skip that answers "not now".
-        seen = self.page([asked('monitor_address')])
-        self.assertEqual(seen['prompt'], 'Paste the address your monitor gave you')
+        seen = self.page([asked('alerts_token')])
+        self.assertEqual(seen['prompt'], 'Does your alerts topic have an access token? Paste it here')
         self.assertEqual(
             (seen['send'], seen['sendHidden'], seen['skipHidden'], seen['skipLabel']),
-            ('Save', False, False, 'Skip for now'),
+            ('Save', False, False, 'It has none'),
         )
-        seen = self.page([asked('monitor_address', fill={'ask-page-answer': 'https://example.org/x'})])
-        self.assertEqual(seen['posts'][0][1]['text'], 'https://example.org/x')
-        seen = self.page([asked('monitor_address', skipPage=True)])
+        seen = self.page([asked('alerts_token', fill={'ask-page-answer': 'pasted-here'})])
+        self.assertEqual(seen['posts'][0][1]['text'], 'pasted-here')
+        seen = self.page([asked('alerts_token', skipPage=True)])
         self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': ''}]])  # Enter alone, not Ctrl+D
         # A question about what was listed just before it keeps that list in view.
         seen = self.page([asked('drive_space')])
