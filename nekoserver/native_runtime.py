@@ -307,6 +307,39 @@ def saved_paths(config):
     return paths
 
 
+# The apps that see each kind of the person's folders (their Compose files bind
+# library/existing of that kind's drive): the ones stopped while its share is away.
+SHARE_APPS = {
+    'movies': ('jellyfin', 'radarr', 'sonarr', 'qbittorrent'),
+    'tv': ('jellyfin', 'radarr', 'sonarr', 'qbittorrent'),
+    'music': ('navidrome', 'lidarr'),
+}
+
+
+def shared_folders(config):
+    """The person's own folders on a network share (NFS, SMB) used where they are
+    (existing_media.py), as the runtime checks them: what it holds, the folder and the
+    share it is on, where it is mounted into the library, and the apps that see it."""
+    import existing_media
+    from neko_common import media_services
+
+    found = []
+    for entry in existing_media.extras(config):
+        if entry['fstype'] not in existing_media.NETWORK:
+            continue
+        found.append(
+            {
+                'holds': entry['holds'],
+                'path': entry['path'],
+                'mount': entry['mount'],
+                'share': entry['share'],
+                'point': str(existing_media.mount_point(config, entry['holds'], entry['use'])),
+                'apps': [app for app in SHARE_APPS[entry['holds']] if app in media_services(config)],
+            }
+        )
+    return found
+
+
 def storage_config(config):
     """The drives as the runtime's jobs read them, with where each app keeps its files."""
     found = {k: config[k] for k in ('data_mount', 'media_mount', 'storage')}
@@ -335,6 +368,11 @@ def storage_config(config):
     if extra:
         # The person's music folders the music backup copies too (G7; music_backup.rs).
         found['music_extra'] = extra
+    shares = shared_folders(config)
+    if shares:
+        # The person's own folders on a network share, used where they are (0.50.0): the
+        # apps that see one stay stopped while it does not answer (shared_folders.rs).
+        found['shared_folders'] = shares
     nas = config.get('network_storage') or {}
     if nas.get('wanted') is True:
         # The NAS check logs in again once the NAS answers (runtime nas_watch.rs).

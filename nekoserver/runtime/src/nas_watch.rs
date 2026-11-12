@@ -173,6 +173,8 @@ pub fn run(a: &crate::Args) -> Result<()> {
     // audit: a check already running wrote over the menu's note, and the apps the menu
     // stopped were never started).
     let _turn = state_lock()?;
+    // The person's own folders on a share (0.50.0): their apps stopped while it is away.
+    crate::shared_folders::check(&cfg);
     let drives = nas_drives(&cfg)?;
     let states: Vec<Health> = drives.iter().map(|(p, u, _)| health(p, u)).collect();
     // Logged in again when a drive is gone, or a target NekoServer uses has no session

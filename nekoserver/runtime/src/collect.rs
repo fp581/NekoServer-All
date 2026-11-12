@@ -2243,16 +2243,73 @@ fn held_apps(s: &Value) -> Vec<&str> {
         .into_iter()
         .flatten()
         .any(|d| d["id"] != "os" && d["status"] != "mounted");
-    if !away && !nas_held(s) {
-        return vec![];
-    }
+    // The apps stopped while a shared folder of yours does not answer (shared_folders.rs).
+    let for_shares: Vec<&str> = s["shared_folders"]["held"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    let any_stopped = away || nas_held(s);
     s["applications"]
         .as_array()
         .into_iter()
         .flatten()
         .filter(|a| ["exited", "created", "dead"].contains(&text(&a["state"])))
+        .filter(|a| any_stopped || for_shares.contains(&text(&a["id"])))
         .map(|a| text(&a["name"]))
         .filter(|n| !n.is_empty())
+        .collect()
+}
+/// What the check of your shared folders found (shared_folders.rs), from its report on
+/// the app SSD: each folder, the share it is on, whether it answers, and the apps it
+/// stopped. Null without one.
+fn shared_folders(data: &Path, ok: bool) -> Value {
+    if !ok {
+        return Value::Null;
+    }
+    let found = common::json(&data.join("reports/shared-folders.json"), 64000);
+    if found["shares"].is_array() {
+        found
+    } else {
+        Value::Null
+    }
+}
+/// The name the page uses for an app id ("jellyfin" is "Jellyfin").
+fn shown_app(id: &str) -> &str {
+    APPS.iter().find(|a| a.0 == id).map_or(id, |a| a.1)
+}
+/// One alert for each shared folder of yours that does not answer, naming the share,
+/// the folder and the apps stopped for it.
+fn share_alerts(s: &Value) -> Vec<(String, String, String)> {
+    s["shared_folders"]["shares"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|row| row["ready"] == false)
+        .map(|row| {
+            let apps: Vec<&str> = row["apps"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(shown_app)
+                .collect();
+            let stopped = if apps.is_empty() {
+                "Nothing is written in its place.".to_string()
+            } else {
+                format!("{} stopped until it is back, so nothing is written in its place.", apps.join(", "))
+            };
+            (
+                format!("share:{}", chars(text(&row["holds"]), 20)),
+                format!("Your shared folder {} does not answer", chars(text(&row["share"]), 80)),
+                format!(
+                    "{} on {} is not connected. {stopped} Switch the network storage box on (or check its network): the folder is connected again and the apps start by themselves within a minute.",
+                    chars(text(&row["path"]), 120),
+                    chars(text(&row["share"]), 80)
+                ),
+            )
+        })
         .collect()
 }
 /// Marks the apps stopped on purpose (`held`), so the page says the drive's one alert
@@ -2335,6 +2392,9 @@ pub(crate) fn alerts(s: &Value) -> Value {
     let mut add = |id: String, level: &str, title: String, detail: &str| {
         out.push(json!({"id":id,"level":level,"title":title,"detail":detail}))
     };
+    for (id, title, detail) in share_alerts(s) {
+        add(id, "critical", title, &detail);
+    }
     if s["backup_place"]["same_drive"] == true && s["backup_place"]["offline"] != true {
         add(
             "backup:same-drive".into(),
@@ -2941,6 +3001,7 @@ pub fn run(a: &Args) -> Result<()> {
     result["integrity"] = integrity(data, ok, away, text(&cfg["photos"]["external_backup_uuid"]));
     result["backup_key"] = json!(backup_key_ready());
     result["backup_place"] = backup_place(&cfg);
+    result["shared_folders"] = shared_folders(data, ok);
     result["tailscale"] = tailscale_login(now);
     result["network_storage"] = network_storage(&cfg, Path::new("/sys/class/iscsi_session"));
     result["arrays"] = arrays;
@@ -2991,6 +3052,45 @@ fn unwritable(result: &mut Value, why: &str) {
 #[cfg(test)]
 mod os_tests {
     use super::*;
+    /// Gate run C8: the share of your films does not answer: the page names it, the
+    /// folder and the apps stopped for it, and counts those as stopped on purpose.
+    #[test]
+    fn a_shared_folder_that_does_not_answer_is_named_with_its_apps() {
+        let s = json!({
+            "storage": [{"id": "data_ssd", "status": "mounted"}, {"id": "media_hdd", "status": "mounted"}],
+            "applications": [
+                {"id": "jellyfin", "name": "Jellyfin", "state": "exited"},
+                {"id": "radarr", "name": "Radarr", "state": "exited"},
+                {"id": "prowlarr", "name": "Prowlarr", "state": "running"},
+                {"id": "navidrome", "name": "Navidrome", "state": "exited"},
+            ],
+            "shared_folders": {"held": ["jellyfin", "radarr"], "shares": [
+                {"holds": "movies", "path": "/mnt/tank/films", "share": "nas:/tank", "ready": false, "apps": ["jellyfin", "radarr"]},
+                {"holds": "music", "path": "/mnt/tank/music", "share": "nas:/music", "ready": true, "apps": ["navidrome"]},
+            ]},
+        });
+        let shown = alerts(&s);
+        let found: Vec<&Value> = shown
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|a| text(&a["id"]).starts_with("share:"))
+            .collect();
+        assert_eq!(found.len(), 1, "{shown}");
+        assert_eq!(found[0]["id"], "share:movies");
+        assert_eq!(
+            found[0]["title"],
+            "Your shared folder nas:/tank does not answer"
+        );
+        let detail = text(&found[0]["detail"]);
+        assert!(detail.starts_with("/mnt/tank/films on nas:/tank is not connected. Jellyfin, Radarr stopped until it is back"), "{detail}");
+        // Held on purpose: those two; Navidrome, stopped for another reason, is not.
+        assert_eq!(held_apps(&s), ["Jellyfin", "Radarr"]);
+        // No report: nothing said, nothing held.
+        let plain = json!({"storage": s["storage"], "applications": s["applications"]});
+        assert!(held_apps(&plain).is_empty());
+        assert!(!alerts(&plain).to_string().contains("share:"));
+    }
     /// Gate run B3: with one drive for everything, the dashboard keeps saying that the
     /// backups are on it, until a USB drive takes a weekly copy (or setup moves them).
     #[test]

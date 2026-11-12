@@ -348,6 +348,7 @@ def on_a_nas(config):
     return (
         any(isinstance(r, dict) and r.get('network') for r in config.get('storage', {}).values())
         or config.get('network_storage', {}).get('wanted') is True
+        or bool(native_runtime.shared_folders(config))  # a folder of yours on a share
     )
 
 
