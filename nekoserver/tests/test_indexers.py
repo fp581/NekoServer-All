@@ -284,11 +284,41 @@ class AddingTests(unittest.TestCase):
         self.assertEqual(self.remembered(), 'Gamma')
 
     def test_one_already_there_is_not_added_twice(self):
-        prowlarr = Prowlarr(configured=[{'name': 'Alpha', 'implementation': 'Cardigann'}])
+        prowlarr = Prowlarr()
         error, said, _, _ = self.add(['Alpha', 'Alpha', 'Gamma', 'Gamma'], prowlarr)
         self.assertIsNone(error)
-        self.assertEqual([entry['name'] for entry in prowlarr.posted], ['Gamma'])
-        self.assertIn('Alpha: already configured; skipping duplicate', said)
+        self.assertEqual([entry['name'] for entry in prowlarr.posted], ['Alpha', 'Gamma'])
+
+    def test_sources_prowlarr_has_are_kept_and_the_picker_is_not_shown(self):
+        # An update or a rerun asks nothing after the approval (gate run D): with sources
+        # there, one line says they are kept and how to add more.
+        prowlarr = Prowlarr(configured=[{'name': 'Alpha', 'implementation': 'Cardigann'}])
+        said = []
+        with (
+            mock.patch.object(connect, 'app_key', return_value='k'),
+            mock.patch.object(connect, 'request', prowlarr),
+            mock.patch.object(connect, 'chosen_indexers', side_effect=AssertionError('the picker was shown')),
+            mock.patch('builtins.input', side_effect=AssertionError('asked')),
+            mock.patch('builtins.print', side_effect=lambda *words: said.append(' '.join(map(str, words)))),
+        ):
+            connect.configure_indexers(Path(self.tmp.name), True, {'data_mount': self.tmp.name})
+        self.assertIn(
+            'Your download sources are kept (Alpha). To add more, open Prowlarr from the dashboard: Indexers, '
+            'then Add Indexer.',
+            said,
+        )
+        self.assertEqual(prowlarr.posted, [])
+        self.assertEqual(self.remembered(), 'Alpha')
+
+    def test_with_none_yet_the_picker_is_shown(self):
+        with (
+            mock.patch.object(connect, 'app_key', return_value='k'),
+            mock.patch.object(connect, 'request', Prowlarr()),
+            mock.patch.object(connect, 'chosen_indexers', return_value=[]) as picker,
+            mock.patch('builtins.print'),
+        ):
+            connect.configure_indexers(Path(self.tmp.name), True, {'data_mount': self.tmp.name})
+        picker.assert_called_once()
 
     def test_none_chosen_is_remembered_as_such(self):
         error, _, _, _ = self.add([], Prowlarr())

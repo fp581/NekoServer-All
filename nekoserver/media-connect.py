@@ -390,6 +390,15 @@ def already_there(existing, selected):
     )
 
 
+def sources_kept(existing):
+    """The line said instead of the picker when Prowlarr has download sources already."""
+    names = ', '.join(str(row.get('name') or '(unnamed)') for row in existing)
+    return (
+        f'Your download sources are kept ({names}). To add more, open Prowlarr from the dashboard: '
+        'Indexers, then Add Indexer.'
+    )
+
+
 def configure_indexers(root, apply, config=None):
     """Prowlarr's download sources: chosen several at once from its own catalogue (no list
     of NekoServer's own, apart from the names marked recommended), then added one by one.
@@ -402,6 +411,13 @@ def configure_indexers(root, apply, config=None):
     profiles = request('prowlarr', key, '/appprofile')
     print(f'Prowlarr catalog: {len(schemas)} definitions; {len(existing)} configured indexers')
     added, rejected = [], []
+    if existing:
+        # Prowlarr has sources already (an update, a rerun): they stay, and the picker is
+        # not shown; it comes only while there are none (an update asks nothing after the
+        # approval, gate run D).
+        print(sources_kept(existing))
+        remember_answer(root, 'indexers', ', '.join(str(row.get('name')) for row in existing))
+        return
     for selected in chosen_indexers(schemas, recommended_names(), existing=existing):
         if already_there(existing, selected):
             print(indexer_name(selected) + ': already configured; skipping duplicate')
