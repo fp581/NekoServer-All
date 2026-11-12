@@ -863,6 +863,21 @@ def drive_folder(config, drive):
     return EXTRA_MOUNTS / drive
 
 
+def music_backed_up(config):
+    """The nightly music copy runs on this server: Music is on, and its switch is on, or
+    the music is on a drive of its own (gate run C7: every place that holds data is in a
+    backup; the copy goes to the backups' drive, so a library beside them stays a
+    "not backed up" row of the backups page)."""
+    if not media_group(config, 'music'):
+        return False
+    if config.get('music', {}).get('backup_enabled', True) is not False:
+        return True
+    try:
+        return location(config, 'music') not in DRIVE_KEYS
+    except RuntimeError:
+        return False
+
+
 def location(config, what):
     """The drive that holds `what` (photos, music, cloud, movies): 'ssd', 'media', or the
     name of another drive under "storage"."""

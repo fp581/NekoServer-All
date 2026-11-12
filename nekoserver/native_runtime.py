@@ -406,7 +406,9 @@ def acceptance_checks(config, modules):
         jobs += [('nekoserver-maintenance.service', code, 'maintenance', False)]
     if 'app_backup' in modules:
         jobs += [('nekoserver-app-backup.service', code, 'app-snapshot', False)]
-    if 'music_backup' in modules and config.get('music', {}).get('backup_enabled', True):
+    from neko_common import music_backed_up
+
+    if 'music_backup' in modules and music_backed_up(config):
         jobs += [('nekoserver-music-backup.service', code, 'music-backup', True)]
     if 'photo_backup' in modules:
         jobs += [('nekoserver-photo-backup.service', code, 'weekly', True)]

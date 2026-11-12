@@ -25,7 +25,7 @@ from pathlib import Path
 
 import placement
 from modules import app_backup, host_backup, photo_backup
-from neko_common import job_times, media_group, media_services
+from neko_common import job_times, media_group, media_services, music_backed_up
 
 DEFAULT, LEAST, MOST = app_backup.KEEP_DEFAULT, app_backup.KEEP_LEAST, app_backup.KEEP_MOST
 # The backups the 1-to-7 count applies to: (what is counted, their folder on the backup drive).
@@ -299,7 +299,7 @@ def not_copied(config):
     found = []
     if media_group(config, 'movies'):
         found.append(('not_copied_movies', 'Your films and shows (the library)', DOWNLOADABLE))
-    if media_group(config, 'music') and config.get('music', {}).get('backup_enabled', True) is False:
+    if media_group(config, 'music') and not music_backed_up(config):
         found.append(('not_copied_music', 'Your music (the library)', MUSIC_NOT_COPIED))
     for category, folder, why in existing_media.not_backed_up(config):
         found.append((f'not_copied_{category}', f'Your own folder of {category}: {folder}', 'Not backed up: ' + why))

@@ -14,6 +14,7 @@ import neko_common
 from modules import docker as docker_module, tv
 from neko_common import (
     files_root,
+    music_backed_up,
     music_downloads,
     photo_library,
     VERSION,
@@ -559,7 +560,7 @@ def restore_tests(modules, config):
                 'Run  sudo bash install.sh --recover , choose "Nextcloud files" and restore one user into a new folder. Open a few files of different kinds and compare them with the originals. Uploading them back is your choice; nothing live is replaced.',
             )
         ]
-    if 'music_backup' in modules and config.get('music', {}).get('backup_enabled', True) is not False:
+    if 'music_backup' in modules and music_backed_up(config):
         out += [
             (
                 'music_restore',
@@ -985,7 +986,7 @@ def inspect(config, profile='full', now=None):
             selected.add('external')
         if 'app_backup' in modules:
             selected.add('applications')
-        if 'music_backup' in modules and config.get('music', {}).get('backup_enabled', True):
+        if 'music_backup' in modules and music_backed_up(config):
             selected.add('music')
         if 'host_backup' in modules:
             selected.add('host')
@@ -1055,7 +1056,7 @@ def inspect(config, profile='full', now=None):
         )
     for module, enabled, unit in (
         ('media_monitor', config.get('monitoring', {}).get('enabled', True), 'nekoserver-media-health.timer'),
-        ('music_backup', config.get('music', {}).get('backup_enabled', True), 'nekoserver-music-backup.timer'),
+        ('music_backup', music_backed_up(config), 'nekoserver-music-backup.timer'),
     ):
         if module in modules and not enabled:
             add(

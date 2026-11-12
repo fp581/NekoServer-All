@@ -1096,7 +1096,9 @@ def daily_words(config):
     parts = []
     if any(media_group(config, group) for group in ('movies', 'music')):
         parts.append("the media apps' snapshot at the time you choose")
-    if media_group(config, 'music') and config.get('music', {}).get('backup_enabled', True) is not False:
+    from neko_common import music_backed_up
+
+    if music_backed_up(config):
         parts.append('the music copy 30 minutes before it')
     parts.append("the copy of this PC's own settings " + ('an hour after it' if parts else 'at the time you choose'))
     if len(parts) == 1:

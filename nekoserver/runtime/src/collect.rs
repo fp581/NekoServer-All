@@ -1232,7 +1232,14 @@ fn parse_startup(out: &str) -> Vec<Value> {
 fn retired(cfg: &Value, key: &str) -> Option<&'static str> {
     let immich = common::immich_wanted(cfg);
     match key {
-        "music" if cfg["music"]["backup_enabled"] == false => {
+        // Music on a drive of its own is copied whatever the switch says (gate run C7,
+        // neko_common.music_backed_up).
+        "music"
+            if cfg["music"]["backup_enabled"] == false
+                && !cfg["locations"]["music"]
+                    .as_str()
+                    .is_some_and(|d| d != "ssd" && d != "media") =>
+        {
             Some("Switched off: the music backup is turned off in the settings")
         }
         "music" if !common::media_group(cfg, "music") => {
@@ -3160,6 +3167,15 @@ mod os_tests {
         ] {
             assert!(manual(key).is_some(), "{key}");
         }
+    }
+    #[test]
+    fn music_on_a_drive_of_its_own_is_backed_up_whatever_the_switch() {
+        let off = json!({"music": {"backup_enabled": false}});
+        assert!(retired(&off, "music").is_some());
+        let own = json!({"music": {"backup_enabled": false}, "locations": {"music": "d3"}});
+        assert!(retired(&own, "music").is_none());
+        let beside = json!({"music": {"backup_enabled": false}, "locations": {"music": "media"}});
+        assert!(retired(&beside, "music").is_some());
     }
     #[test]
     fn jobs_of_a_switched_off_app_are_retired_not_overdue() {
