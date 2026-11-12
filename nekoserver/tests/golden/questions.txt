@@ -9,6 +9,8 @@ account_store.py
     Password for {name} (it is not shown while you type):
     The same password once more:
     login_retry
+    {OTHERS[key]} (it is not shown while you type):
+    The same once more:
 backup_secrets.py
     Backup password:
     Same backup password again:
