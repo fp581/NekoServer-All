@@ -7521,6 +7521,107 @@ mod tests {
         assert!(!image_id(&format!("sha256:{}", "g".repeat(64))));
         assert!(!image_id(&"a".repeat(71)));
     }
+    /// Gate runs C14 and C15: the Music group installed on a drive of its own (d3), its
+    /// music and downloads there, and the person's own folders (library/existing) of both
+    /// groups, exactly as the settings place them (storage, locations, paths, installed).
+    #[test]
+    fn the_update_accepts_the_binds_the_placement_gives_and_nothing_else() {
+        let root = scratch("placed");
+        let (data, media) = (root.join("srv"), root.join("mnt"));
+        let d3 = Path::new(common::EXTRA_MOUNTS).join("d3");
+        // The monthly run reads the settings file as setup keeps it (my-config.json with
+        // "paths" added); the other jobs read the drives' file with "installed" too.
+        let settings = json!({
+            "storage": {"d3": {"uuid": "d3-uuid", "fstype": "ext4"}},
+            "locations": {"music": "d3"},
+        });
+        let mut jobs = settings.clone();
+        jobs["paths"] = json!({
+            "music": d3.join("library/music"),
+            "downloads": d3.join("library/downloads/music"),
+            "photos": data.join("photos/immich-library"),
+            "cloud": media.join("cloud/files"),
+        });
+        jobs["installed"] = json!({"navidrome": "d3", "lidarr": "d3"});
+        let port = json!([{"host_ip": "127.0.0.1", "published": "4533", "target": 4533}]);
+        let binds = |name: &str, sources: &[PathBuf]| {
+            let volumes: Vec<Value> = sources
+                .iter()
+                .map(|source| {
+                    json!({"type": "bind", "source": source, "target": format!("/v{}", source.display()),
+                        "bind": {"propagation": "rslave", "create_host_path": false}})
+                })
+                .collect();
+            json!({"services": {name: {"image": "sha256:1", "ports": port, "volumes": volumes}}})
+        };
+        for cfg in [&settings, &jobs] {
+            let check = |name: &str, sources: &[PathBuf]| {
+                valid_model(&binds(name, sources), name, &data, &media, cfg)
+            };
+            let own = |name: &str| data.join("appdata").join(name);
+            // Each app with every folder its Compose file binds on such a server.
+            for (name, sources) in [
+                (
+                    "navidrome",
+                    vec![
+                        own("navidrome"),
+                        d3.join("library/music"),
+                        d3.join("library/existing"),
+                    ],
+                ),
+                (
+                    "lidarr",
+                    vec![
+                        own("lidarr"),
+                        d3.join("library"),
+                        d3.join("library/existing"),
+                    ],
+                ),
+                (
+                    "qbittorrent",
+                    vec![
+                        own("qbittorrent"),
+                        media.join("library"),
+                        d3.join("library/downloads/music"),
+                        media.join("library/existing"),
+                    ],
+                ),
+                (
+                    "jellyfin",
+                    vec![
+                        own("jellyfin"),
+                        media.join("library/movies"),
+                        media.join("library/existing"),
+                    ],
+                ),
+            ] {
+                assert!(
+                    check(name, &sources).is_ok(),
+                    "{name}: {:?}",
+                    check(name, &sources)
+                );
+            }
+            // Anything else is still refused: another drive, the top of the music's drive, a
+            // group's folder seen by an app of the other group, a drive the settings do not name.
+            for (name, source) in [
+                ("navidrome", d3.join("library")),
+                ("lidarr", d3.clone()),
+                ("jellyfin", d3.join("library/existing")),
+                ("navidrome", media.join("library/existing")),
+                ("lidarr", Path::new(common::EXTRA_MOUNTS).join("d4/library")),
+                ("qbittorrent", d3.join("library/music")),
+                ("navidrome", data.join("library/music")),
+            ] {
+                let said = check(name, &[source.clone()]).unwrap_err().to_string();
+                assert_eq!(
+                    said,
+                    "Uncovered container bind mount",
+                    "{name} {}",
+                    source.display()
+                );
+            }
+        }
+    }
     #[test]
     fn the_update_refuses_models_that_leave_their_sandbox() {
         let root = scratch("sandbox");

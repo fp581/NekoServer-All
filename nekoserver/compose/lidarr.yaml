@@ -9,9 +9,17 @@ services:
       TZ: "${NEKO_TZ}"
     volumes:
       - "${NEKO_DATA}/appdata/lidarr:/config"
-      # Single SSD mount: /data/downloads/music and /data/music share one
+      # Your files on a drive (or a share) of their own are bound in the long form with
+      # create_host_path false: when the drive is away, Docker does not make the folder on
+      # the disk Linux runs from, and this app does not start (drive-return starts it
+      # once the drive is back).
+      # One mount: /data/downloads/music and /data/music share one
       # filesystem mount, so imports hardlink or move instead of copying.
-      - "${NEKO_MUSIC}/library:/data"
+      - type: bind
+        source: "${NEKO_MUSIC}/library"
+        target: /data
+        bind:
+          create_host_path: false
       # Media you already have (existing_media.py): the folders setup mounts under
       # library/existing are seen at /data/existing/<kind>, the path Jellyfin and Navidrome
       # use. A mount of its own with rslave: a share that comes back, or a folder chosen
@@ -22,7 +30,7 @@ services:
         target: /data/existing
         bind:
           propagation: rslave
-          create_host_path: true
+          create_host_path: false
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

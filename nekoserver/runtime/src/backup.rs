@@ -3286,35 +3286,70 @@ fn drive_check(c: &Value, key: &str, path: &Path, found: &str) -> Result<String>
 }
 pub fn guard(cfgpath: &Path, data: &Path, media: &Path) -> Result<()> {
     let c = common::json(cfgpath, 64000);
+    let mut ids = main_drives(&c, data, media)?;
+    // Every other drive something is placed on is the one setup chose, too: a job never
+    // reads or writes a folder of a drive that is away (the empty folder left on the
+    // system disk) or of another drive mounted in its place.
+    for name in common::drives_in_use(&c) {
+        let folder = placed_folder(&c, &name)?;
+        distinct(&mut ids, checked_drive(&c, &name, &folder)?)?;
+    }
+    installed_in_place(&c, data, &[])
+}
+/// The guard for bringing the apps back (drive_return.rs): the SSD and the HDD as
+/// `guard` checks them, and each other drive something is placed on either away (nothing
+/// mounted at its folder: its apps stay stopped, the others start) or the one setup
+/// chose. Another drive mounted in a placed drive's folder is still refused. Returns the
+/// names of the placed drives that are away.
+pub(crate) fn guard_present(cfgpath: &Path, data: &Path, media: &Path) -> Result<Vec<String>> {
+    let c = common::json(cfgpath, 64000);
+    let mut ids = main_drives(&c, data, media)?;
+    let mut away = vec![];
+    for name in common::drives_in_use(&c) {
+        let folder = placed_folder(&c, &name)?;
+        if matches!(common::drive_at(&folder, 10), Ok(None)) {
+            away.push(name);
+            continue;
+        }
+        distinct(&mut ids, checked_drive(&c, &name, &folder)?)?;
+    }
+    installed_in_place(&c, data, &away)?;
+    Ok(away)
+}
+/// The SSD and the HDD the settings name, mounted where they say: their identities.
+fn main_drives(c: &Value, data: &Path, media: &Path) -> Result<Vec<String>> {
     if c["data_mount"].as_str() != data.to_str() || c["media_mount"].as_str() != media.to_str() {
         return Err(Error::new("Backup paths must match verified configuration"));
     }
     let mut ids = vec![];
     for (key, path) in [("data_ssd", data), ("media_hdd", media)] {
-        ids.push(checked_drive(&c, key, path)?);
+        ids.push(checked_drive(c, key, path)?);
     }
-    if ids[0] == ids[1] && !common::share_system_disk(&c) {
+    if ids[0] == ids[1] && !common::share_system_disk(c) {
         return Err(Error::new("Distinct backup filesystems required"));
     }
-    // Every other drive something is placed on is the one setup chose, too: a job never
-    // reads or writes a folder of a drive that is away (the empty folder left on the
-    // system disk) or of another drive mounted in its place.
-    for name in common::drives_in_use(&c) {
-        let folder = common::drive_folder(&c, &name)
-            .ok_or_else(|| Error::new("Unknown drive in the settings"))?;
-        let id = checked_drive(&c, &name, &folder)?;
-        if ids.contains(&id) {
-            return Err(Error::new("Each drive must be a filesystem of its own"));
-        }
-        ids.push(id);
+    Ok(ids)
+}
+fn placed_folder(c: &Value, name: &str) -> Result<PathBuf> {
+    common::drive_folder(c, name).ok_or_else(|| Error::new("Unknown drive in the settings"))
+}
+/// `id` is a drive not among `ids` yet: added.
+fn distinct(ids: &mut Vec<String>, id: String) -> Result<()> {
+    if ids.contains(&id) {
+        return Err(Error::new("Each drive must be a filesystem of its own"));
     }
-    installed_in_place(&c, data)
+    ids.push(id);
+    Ok(())
 }
 /// Every app installed on another drive (0.50.0) has its settings folder there mounted
 /// at its usual place. With the mount missing, that place is the empty, closed folder of
-/// the app drive: no job may read it as the app's settings, or write into it.
-fn installed_in_place(c: &Value, data: &Path) -> Result<()> {
-    for (app, _) in c["installed"].as_object().into_iter().flatten() {
+/// the app drive: no job may read it as the app's settings, or write into it. The apps of
+/// the drives in `away` are left out (they stay stopped until their drive is back).
+fn installed_in_place(c: &Value, data: &Path, away: &[String]) -> Result<()> {
+    for (app, drive) in c["installed"].as_object().into_iter().flatten() {
+        if drive.as_str().is_some_and(|d| away.iter().any(|a| a == d)) {
+            continue;
+        }
         let base = common::installed_base(c, app)?
             .ok_or_else(|| Error::new("Unknown drive in the settings"))?;
         let place = data.join("appdata").join(app);
@@ -5147,6 +5182,26 @@ mod tests {
         ));
         assert!(!private_options("rw,relatime", "exfat"));
         assert!(private_options("rw,relatime", "ext4"));
+    }
+    /// Gate run C9: with the Music group's own drive away, the apps of the other groups
+    /// are brought back all the same; its own apps' settings are never read from the
+    /// empty folder left in its place, and with the drive here they must be on it.
+    #[test]
+    fn an_app_installed_on_a_drive_that_is_away_does_not_hold_the_others() {
+        let data = scratch("installed-away");
+        fs::create_dir_all(data.join("appdata/lidarr")).unwrap(); // the empty folder left behind
+        let c = json!({
+            "storage": {"d3": {"uuid": "d3-uuid", "fstype": "ext4"}},
+            "installed": {"lidarr": "d3"},
+        });
+        let said = installed_in_place(&c, &data, &[]).unwrap_err().to_string();
+        assert!(
+            said.contains("lidarr is installed on another drive"),
+            "{said}"
+        );
+        assert!(installed_in_place(&c, &data, &["d3".to_string()]).is_ok());
+        // Another drive away is no reason to pass: lidarr's own drive is checked.
+        assert!(installed_in_place(&c, &data, &["d4".to_string()]).is_err());
     }
     fn scratch(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("neko-backup-{name}-{}", std::process::id()));
