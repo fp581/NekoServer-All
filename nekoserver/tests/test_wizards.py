@@ -1942,6 +1942,16 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertIn('The USB drive is not looked at', out[0])
         self.assertEqual(restored[0][2], str(self.media / 'backups/monthly/1700000000000000-4'))
 
+    def test_a_mount_check_that_does_not_answer_is_said_in_words(self):
+        usb = recovery_wizard.Usb({**self.config, 'photos': {'external_backup_uuid': 'usb-11111'}})
+        hung = recovery_wizard.subprocess.TimeoutExpired(['findmnt'], 30)
+        with (
+            mock.patch.object(recovery_wizard.subprocess, 'run', side_effect=hung) as run,
+            self.assertRaisesRegex(RuntimeError, 'did not say within 30 seconds whether the USB drive is mounted'),
+        ):
+            usb.open()
+        self.assertEqual(run.call_args.kwargs['timeout'], 30)
+
     def test_a_backup_drive_already_mounted_is_checked_to_be_the_nas_disk_setup_chose(self):
         """The review of 0.46.3: a drive mounted there already skipped the WWN check."""
         config = {

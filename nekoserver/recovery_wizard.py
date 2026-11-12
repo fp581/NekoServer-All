@@ -1385,12 +1385,16 @@ class Usb:
     def open(self):
         if self.export:
             return self.open_shared_folder()
-        if (
-            subprocess.run(
-                ['findmnt', '-n', '--mountpoint', str(self.mount)], capture_output=True, check=False
-            ).returncode
-            != 0
-        ):
+        try:
+            listed = subprocess.run(
+                ['findmnt', '-n', '--mountpoint', str(self.mount)], capture_output=True, check=False, timeout=30
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                'this PC did not say within 30 seconds whether the USB drive is mounted at ' + str(self.mount) + '. '
+                'Check that the drive is plugged in, then try again'
+            ) from None
+        if listed.returncode != 0:
             link = Path('/dev/disk/by-uuid') / self.uuid
             if not link.exists():
                 return None
