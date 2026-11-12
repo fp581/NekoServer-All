@@ -874,7 +874,11 @@ mod tests {
             .unwrap();
         }
         fn members(&self, pids: &[u32]) {
-            let list = pids.iter().map(|p| format!("{p}\n")).collect::<String>();
+            use std::fmt::Write as _;
+            let list = pids.iter().fold(String::new(), |mut out, p| {
+                let _ = writeln!(out, "{p}");
+                out
+            });
             fs::write(
                 self.root
                     .join("cgroup")

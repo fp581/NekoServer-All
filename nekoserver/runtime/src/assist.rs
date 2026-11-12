@@ -966,7 +966,11 @@ fn new_id() -> std::result::Result<String, String> {
     std::fs::File::open("/dev/urandom")
         .and_then(|mut f| f.read_exact(&mut bytes))
         .map_err(|e| format!("no random numbers ({e})"))?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+    use std::fmt::Write as _;
+    Ok(bytes.iter().fold(String::new(), |mut out, b| {
+        let _ = write!(out, "{b:02x}");
+        out
+    }))
 }
 
 /// Start answering in the background (the turn is held until the answer has ended) and

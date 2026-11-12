@@ -1332,14 +1332,12 @@ mod tests {
             let mut bytes = [0u8; 16];
             bytes[10..12].copy_from_slice(&[0xff, 0xff]);
             bytes[12..].copy_from_slice(&[127, 0, 0, 1]);
-            let words = (0..4)
-                .map(|i| {
-                    format!(
-                        "{:08X}",
-                        u32::from_ne_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap())
-                    )
-                })
-                .collect::<String>();
+            use std::fmt::Write as _;
+            let words = (0..4).fold(String::new(), |mut out, i| {
+                let word = u32::from_ne_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
+                let _ = write!(out, "{word:08X}");
+                out
+            });
             format!("{words}:{port:04X}")
         };
         let v6 = format!(

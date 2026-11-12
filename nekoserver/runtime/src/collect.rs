@@ -67,7 +67,7 @@ fn made_on_this_drive(id: &str, s: &Value, usb: &str) -> bool {
     if id.starts_with("usb_") && !usb.is_empty() {
         return drive == Some(usb);
     }
-    !drive.is_some_and(|drive| drive != usb)
+    drive.is_none_or(|drive| drive == usb)
 }
 /// Every monitored job; notify.rs names an alert for each (checked by a test).
 pub(crate) const JOBS: [(&str, &str, &str, f64); 10] = [
@@ -976,10 +976,10 @@ fn applications(
     let selected = common::media_services(cfg);
     let mut out = vec![];
     for &(app, name, description, port) in APPS.iter() {
-        if !selected.contains(&app)
-            && !(app == "immich" && common::immich_wanted(cfg))
-            && !(app == "nextcloud" && cfg["nextcloud"]["enabled"] == true)
-        {
+        let wanted = selected.contains(&app)
+            || (app == "immich" && common::immich_wanted(cfg))
+            || (app == "nextcloud" && cfg["nextcloud"]["enabled"] == true);
+        if !wanted {
             continue;
         }
         let project = format!("neko-{app}");

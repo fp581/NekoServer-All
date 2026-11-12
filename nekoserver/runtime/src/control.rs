@@ -66,7 +66,11 @@ fn coded(code: &str) -> Value {
 fn random_hex(bytes: usize) -> Result<String> {
     let mut buf = vec![0u8; bytes];
     fs::File::open("/dev/urandom")?.read_exact(&mut buf)?;
-    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
+    use std::fmt::Write as _;
+    Ok(buf.iter().fold(String::new(), |mut out, b| {
+        let _ = write!(out, "{b:02x}");
+        out
+    }))
 }
 /// A salted, slow hash: guessing a short PIN offline takes real time per try.
 fn pin_hash(salt: &str, pin: &str, rounds: u32) -> String {
@@ -74,7 +78,11 @@ fn pin_hash(salt: &str, pin: &str, rounds: u32) -> String {
     for _ in 1..rounds {
         digest = Sha256::digest(digest);
     }
-    digest.iter().map(|b| format!("{b:02x}")).collect()
+    use std::fmt::Write as _;
+    digest.iter().fold(String::new(), |mut out, b| {
+        let _ = write!(out, "{b:02x}");
+        out
+    })
 }
 pub fn valid_pin(pin: &str) -> bool {
     (4..=8).contains(&pin.len()) && pin.bytes().all(|b| b.is_ascii_digit())
