@@ -8765,8 +8765,14 @@ mod tests {
             only.contains("checked_drive(&c, \"data_ssd\", data)") && !only.contains("media"),
             "{only}"
         );
-        let full = &source[source.find("pub fn guard(").unwrap()..];
-        assert!(full[..full.find("\n}\n").unwrap()].contains("checked_drive(&c, key, path)"));
+        // The full guard and the one for bringing the apps back share the SSD and HDD check.
+        let body = |start: &str| {
+            let from = &source[source.find(start).unwrap()..];
+            from[..from.find("\n}\n").unwrap()].to_string()
+        };
+        assert!(body("fn main_drives(").contains("checked_drive(c, key, path)"));
+        assert!(body("pub fn guard(").contains("main_drives(&c, data, media)?"));
+        assert!(body("pub(crate) fn guard_present(").contains("main_drives(&c, data, media)?"));
     }
     /// Seen as a week of "failed" on the dashboard: the 1st fell on the weekly day, the
     /// monthly run had copied the drive, and the weekly copy's giving way to it was
