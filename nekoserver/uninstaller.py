@@ -194,6 +194,86 @@ DRIVE_PLACES = {
     'cloud': (('media', top_folder('cloud')), ('data', top_folder('cloud'))),
     'backups': (('media', 'backups'), ('media', 'recovery-snapshots'), ('data', 'backups')),
 }
+
+# ---- a group's own drive (0.50.0, gate run C18) ------------------------------------------
+# "locations" and "install" in the settings place a group's files, or its apps' settings
+# and databases, on a drive of its own under "storage", mounted at EXTRA_MOUNTS/<name>.
+EXTRA = 'drive:'  # the plan's name for such a drive: drive:<name>
+GROUP_DRIVE_OWN = 'nekoserver'  # <drive>/nekoserver/appdata/<app> (modules/storage.installed_binds)
+INSTALL = 'install'  # in a drive's "holds": a group's apps are installed there
+# The kinds of files (shared.json "locations") each choice covers.
+CHOICE_HOLDS = {'photos': ('photos',), 'media': ('music', 'movies'), 'cloud': ('cloud',)}
+GROUP_NAMES = {'photos': 'Photos', 'movies': 'Movies and shows', 'music': 'Music', 'cloud': 'Nextcloud'}
+DRIVE_NAME = re.compile(r'[a-z][a-z0-9]{0,15}')  # neko_common.DRIVE_NAME
+NOT_GROUP_DRIVES = ('data_ssd', 'media_hdd', 'ssd', 'media', 'one')  # the two, and the one drive of both
+
+
+def _section(settings, name):
+    value = settings.get(name)
+    return value if isinstance(value, dict) else {}
+
+
+def group_drives(settings):
+    """{name: (its record under "storage", what is placed on it)} for each drive of its own
+    a group uses: what is placed on it is a list of kinds of files (photos, movies, music,
+    cloud) and INSTALL when apps keep their settings there. A drive named by nothing, a
+    folder of the system disk or one a NAS shares (NFS) is none."""
+    storage = _section(settings, 'storage')
+    placed = {}
+    named = [(drive, what) for what, drive in _section(settings, 'locations').items()]
+    named += [(drive, INSTALL) for drive in _section(settings, INSTALL).values()]
+    for drive, what in named:
+        if isinstance(drive, str):
+            placed.setdefault(drive, set()).add(what)
+    found = {}
+    for name, holds in placed.items():
+        record = storage.get(name)
+        usable = (
+            isinstance(record, dict)
+            and DRIVE_NAME.fullmatch(name)
+            and name not in NOT_GROUP_DRIVES
+            and isinstance(record.get('uuid'), str)
+            and record['uuid']
+            and record.get('folder') is None
+            and not _section(record, 'network').get('export')
+        )
+        if usable:
+            found[name] = (record, sorted(holds))
+    return found
+
+
+WHAT_WORDS = {'movies': 'your movies', 'tv': 'your shows', 'music': 'your music'}
+
+
+def held_words(holds):
+    """What is on a group's own drive, in words: "the settings of the apps installed there,
+    Music's files"."""
+    words = ["the settings and databases of the apps installed there"] if INSTALL in holds else []
+    words += [GROUP_NAMES.get(what, what) + "'s files" for what in holds if what != INSTALL]
+    return ', '.join(words)
+
+
+def own_folders(settings):
+    """The person's own folders setup uses where they are (existing media, "extra" in a
+    row of the placement table) and the shared folders they are on: [{'path', 'what',
+    'share', 'mount'}]. Never removed, whatever is chosen; read here only to say so and
+    to keep them (nothing is ever deleted because the settings name it)."""
+    found = []
+    for row in _section(settings, 'placement').values():
+        listed = row.get('extra') if isinstance(row, dict) else None
+        for entry in listed if isinstance(listed, list) else ():
+            if isinstance(entry, dict) and isinstance(entry.get('path'), str) and entry['path'].startswith('/'):
+                found.append(
+                    {
+                        'path': entry['path'],
+                        'what': str(entry.get('holds') or 'media'),
+                        'share': entry.get('share') if isinstance(entry.get('share'), str) else '',
+                        'mount': entry.get('mount') if isinstance(entry.get('mount'), str) else '',
+                    }
+                )
+    return found
+
+
 # The weekly USB copy: the photo archive's two sections, Nextcloud's files, the Immich
 # database copies, copies set aside as damaged, the encrypted app password lists
 # (backup.rs USB_PASSWORDS), and its ledger files (.neko-...).
@@ -421,8 +501,14 @@ class Plan:
             'media': storage.get('media_hdd') if isinstance(storage.get('media_hdd'), dict) else {},
             'external': {'uuid': photos.get('external_backup_uuid')},
         }
+        # A group's own drive (0.50.0, gate run C18): mounted at /mnt/nekoserver-drives/<name>
+        # and checked like the SSD and the HDD before anything on it goes.
+        self.placed = group_drives(settings)
+        expected.update({EXTRA + name: record for name, (record, _holds) in self.placed.items()})
         self.records = expected
+        self.drives = tuple(expected)
         self.identified = {drive: self._identify(drive) for drive in expected}
+        self.own_folders = own_folders(settings)  # the person's own folders and shares: never removed
         self.groups = {key: self._group(key) for key, *_ in CHOICES}
 
     def at(self, path):
@@ -676,13 +762,20 @@ class Plan:
         out = self.run(['docker', 'network', 'ls', '--format', '{{.Name}}'], 60)
         return sorted({line.strip() for line in out.splitlines() if line.strip().startswith(COMPOSE_PREFIX)})
 
+    def mount_of(self, drive):
+        """Where a drive is mounted, as the settings name it: the SSD, the HDD, the USB
+        drive, or a group's own drive (/mnt/nekoserver-drives/<name>)."""
+        if drive.startswith(EXTRA):
+            return EXTRA_MOUNTS + '/' + drive[len(EXTRA) :]
+        return {'data': self.data, 'media': self.media, 'external': self.external}[drive]
+
     def folder_of(self, drive):
-        return self.at({'data': self.data, 'media': self.media, 'external': self.external}[drive])
+        return self.at(self.mount_of(drive))
 
     def _identify(self, drive):
         """The drive mounted at this folder is the one the settings name: only then is
         anything on it planned for removal (and it is checked again right before)."""
-        folder = {'data': self.data, 'media': self.media, 'external': self.external}[drive]
+        folder = self.mount_of(drive)
         if not self.at(folder).is_dir():
             return False
         uuid = self.records[drive].get('uuid')
@@ -733,10 +826,19 @@ class Plan:
         return self.owned('external', USB_OWN + tuple(ledgers))
 
     def drive_paths(self, key):
-        if key == 'data':
-            return self.owned('data', SSD_DATA)
-        found = [p for drive, name in DRIVE_PLACES.get(key, ()) for p in self.owned(drive, (name,))]
+        found = self.owned('data', SSD_DATA) if key == 'data' else []
+        found += [p for drive, name in DRIVE_PLACES.get(key, ()) for p in self.owned(drive, (name,))]
+        for name in self.placed:
+            found += self.owned(EXTRA + name, self.group_drive_names(name, key))
         return found + (self.usb_paths() if key == 'backups' else [])
+
+    def group_drive_names(self, name, key):
+        """The top-level entries of a group's own drive that a choice covers: the apps'
+        settings and databases ('nekoserver', for the apps' data) and the top folder of each
+        kind of files placed there (photos, the library, Nextcloud's files)."""
+        holds = self.placed[name][1]
+        names = [GROUP_DRIVE_OWN] if key == 'data' and INSTALL in holds else []
+        return names + sorted({top_folder(what) for what in CHOICE_HOLDS.get(key, ()) if what in holds})
 
     def others(self):
         """What is on the drives but is none of NekoServer's: it stays, whatever is chosen."""
@@ -744,8 +846,10 @@ class Plan:
         for places in DRIVE_PLACES.values():
             for drive, name in places:
                 known[drive].add(name)
+        for name in self.placed:
+            known[EXTRA + name] = {n for key, *_ in CHOICES for n in self.group_drive_names(name, key)}
         found = []
-        for drive in ('data', 'media', 'external'):
+        for drive in self.drives:
             folder = self.folder_of(drive)
             if not self.identified[drive] or not folder.is_dir():
                 continue
@@ -910,6 +1014,16 @@ class Plan:
         for folder in (self.data, self.media, self.external):
             if self.mounted(folder):
                 notes.append('Unmount ' + folder + ' and remove the empty folder')
+        for name in sorted(self.placed):
+            if self.at(self.mount_of(EXTRA + name)).is_dir():
+                notes.append(
+                    'Unmount ' + self.mount_of(EXTRA + name) + ' (a drive of its own) and remove the empty folder'
+                )
+        if self.own_folders:
+            notes.append(
+                'Your own folders used where they are are unmounted from the library; the folders, and the '
+                "shares they are on, stay as they are"
+            )
         if self.docker_root():
             notes.append(
                 "Docker's data-root setting ("
@@ -956,9 +1070,35 @@ class Plan:
         )
         return bool(found.strip())
 
+    def places(self):
+        """Every drive and folder NekoServer uses, by name and with what is on it (gate run
+        C18: a group's own drive was never named). Only the drives can lose anything, and
+        only what the choices below list; the person's own folders and shares never do."""
+        lines = ['== The drives and folders NekoServer uses:']
+        for drive, words in (('data', 'the SSD: the apps'), ('media', 'the HDD: media files and backups')):
+            lines.append('   - ' + self.mount_of(drive) + ' (' + words + ')')
+        if self.records['external'].get('uuid'):
+            lines.append('   - ' + self.external + ' (the USB drive: the weekly copy, when it is plugged in)')
+        for name, (_record, holds) in sorted(self.placed.items()):
+            lines.append('   - ' + self.mount_of(EXTRA + name) + ' (a drive of its own: ' + held_words(holds) + ')')
+        for folder in self.own_folders:
+            shared = ':' in folder['share'] or folder['share'].startswith('//')
+            lines.append(
+                '   - '
+                + folder['path']
+                + ' ('
+                + WHAT_WORDS.get(folder['what'], folder['what'])
+                + (', on the shared folder ' + folder['share'] if shared else '')
+                + '): your own folder: kept, never removed'
+            )
+        for share, mount in sorted({(f['share'], f['mount']) for f in self.own_folders if ':' in f['share']}):
+            lines.append('   - ' + share + ' at ' + mount + ' (your own shared folder: kept, with its /etc/fstab line)')
+        return lines
+
     def describe(self, chosen):
         """The plan, in full, for the person to read before confirming."""
         lines = ['!! ' + w for w in self.warnings]
+        lines.extend(self.places())
         others = self.others()
         if others:
             lines.append('== Not NekoServer\'s, so these stay on the drives whatever you choose:')
@@ -1105,7 +1245,7 @@ def _destroy(plan, chosen, out, tools, accounts, drives, jobs):
         _tried(call, out, ['systemctl', 'unmask', *plan.unmask], left, 'the masks on ' + ', '.join(plan.unmask))
     _finish_packages(plan, call, out, reconcile)
     journal_limits = any('journald' in str(p) for p in plan.os_dropins())
-    left += _remove_files(plan, chosen, out, rmtree, drives, jobs.kept())
+    left += _remove_files(plan, chosen, out, rmtree, drives, jobs.kept() | kept_folders(plan))
     # The lock last: released first, then its file (with the folder, when the SSD data goes).
     jobs.release()
     jobs.tidy('data' in chosen and plan.folder_of('data') / 'installer' in plan.groups['data']['paths'])
@@ -1118,6 +1258,21 @@ def _destroy(plan, chosen, out, tools, accounts, drives, jobs):
             "NekoServer's log limits (until the next restart)",
         )
     return left
+
+
+def kept_folders(plan):
+    """The person's own folders as (device, inode): a library folder that goes never takes
+    one with it, even where it is mounted inside that library from the same drive (a bind
+    mount of the same filesystem has the same device number, so the other-drive check alone
+    would not stop there)."""
+    kept = set()
+    for folder in getattr(plan, 'own_folders', ()):
+        try:
+            found = os.stat(plan.at(folder['path']))
+        except (OSError, RuntimeError):
+            continue
+        kept.add((found.st_dev, found.st_ino))
+    return kept
 
 
 def _our_policy(policy):
@@ -1435,7 +1590,8 @@ def _drive_of(plan, path):
     """Which of NekoServer's drives a planned path is on ('data', 'media', 'external'), or
     None for a place of its own on the system disk. The plan lists a drive's entries
     right inside its mount folder."""
-    return next((drive for drive in DRIVES if plan.identified[drive] and path.parent == plan.folder_of(drive)), None)
+    drives = getattr(plan, 'drives', DRIVES)
+    return next((drive for drive in drives if plan.identified[drive] and path.parent == plan.folder_of(drive)), None)
 
 
 def _chosen_paths(plan, chosen):
@@ -1550,7 +1706,7 @@ def open_drives(plan, out):
     settings name now, right before anything on it is deleted. One that is not (another
     drive mounted there since the plan was made, or none): said, and nothing on it goes."""
     drives = {}
-    for drive in DRIVES:
+    for drive in getattr(plan, 'drives', DRIVES):
         if not plan.identified[drive]:
             continue
         handle, why = open_drive(plan, drive)
@@ -1573,7 +1729,10 @@ def _removed_on(drive, path, out, keep_inodes=()):
     failed, held = [], []
     _delete_at(drive.fd, path.name, drive.dev, (failed, str(path), set(keep_inodes), held))
     _say_failed(failed, path, out)
-    if held:  # only the jobs' lock is left in it, until it is released (JobsLock.tidy)
+    for where in held:
+        if not where.endswith('/' + '/'.join(JobsLock.PATH)):
+            out('  kept ' + where + ': your own folder, never removed')
+    if held:  # only the jobs' lock or the person's folders are left in it (JobsLock.tidy)
         return not failed
     try:
         os.stat(path.name, dir_fd=drive.fd, follow_symlinks=False)
@@ -1596,12 +1755,12 @@ def _delete_at(parent, name, dev, how):
     except OSError as exc:
         failed.append(where + ': ' + (exc.strerror or str(exc)))
         return
+    if (found.st_dev, found.st_ino) in keep:  # the jobs' lock, or a folder of the person's
+        held.append(where)
+        return
     subvolume = found.st_dev != dev
     if subvolume and not _nested_subvolume(parent, name, found):
         failed.append(where + ': ' + OTHER_DRIVE)
-        return
-    if (found.st_dev, found.st_ino) in keep:
-        held.append(where)
         return
     before = len(failed)
     _remove_found(parent, name, found, how)
@@ -1809,7 +1968,7 @@ def _unmount_inside(plan, folders, call, out, left):
     """What setup mounted inside its drives, the deepest first: a drive with something
     mounted in it cannot be unmounted. The closed folder that was underneath an app's
     mount is opened again and removed when it is empty."""
-    drives = (plan.data, plan.media)
+    drives = (plan.data, plan.media, EXTRA_MOUNTS)  # a group's own drive holds such mounts too
     for folder in sorted(set(folders), key=len, reverse=True):
         if not any(folder.startswith(drive.rstrip('/') + '/') for drive in drives):
             continue  # not a folder of NekoServer's drives: left alone
