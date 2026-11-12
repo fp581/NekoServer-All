@@ -30,15 +30,16 @@ their names are given here so the coverage map can point at them.
 **Lab (before a release, when the code it covers changed).** `lab/nas_lab.py`: the iSCSI
 interruption tests, which need a kernel with iSCSI and a VM; run by hand as root.
 
-## The eleven user journeys
+## The thirteen user journeys
 
-The same eleven journeys are run for every release (J10 and J11 since 0.50.0). Each has a record in
+The same thirteen journeys are run for every release (J10 to J13 since 0.50.0). Each has a record in
 `tests/journeys/<ID>-<name>.md` in the standard format below. A journey passes only when
 every expected result below is seen, not when a command exits 0.
 
 **J01 Fresh installation with default settings.** A blank PC (the VM from its clean
-snapshot, three blank drives), the README steps, `sudo bash install.sh`, Enter at every
-question, the phone confirmed. Expected: the finishing screen says `NekoServer is ready!`
+snapshot, three blank drives), the README steps, `sudo bash install.sh`, the first page as
+it comes, **Install selected apps** (in the terminal: `yes`), Enter at every question after
+it, the phone confirmed. Expected: the finishing screen says `NekoServer is ready!`
 and `Done: 32 of 32 steps.` (the count is the installer's plan, `wizard.finishing_screen`),
 then `Everything is set up. Backups and monthly updates run on their own;`, the line
 `Dashboard:          http://127.0.0.1:8787  (on this PC)` and `Dashboard PIN:      set`.
@@ -56,8 +57,8 @@ finishing screen, `systemctl list-timers 'nekoserver-*'`, the report files, a da
 screenshot. Cleanup: the VM goes back to the post-install snapshot.
 
 **J02 Installation with optional features disabled.** The TV, phone alerts, the outage
-monitor and Nextcloud switched off before Start (the window's switches, or `no` in the
-terminal). Expected: `"wanted": false` under each in `my-config.json`; no
+monitor and Nextcloud switched off on setup's first page (the window's switches, or each
+line's number in the terminal). Expected: `"wanted": false` under each in `my-config.json`; no
 `nekoserver-notifications.timer`, `nekoserver-heartbeat.timer` or Nextcloud container;
 those steps count as done, so the finishing screen still says `NekoServer is ready!`;
 the first checkup runs only the backups whose timers are enabled; the dashboard has no
@@ -125,15 +126,18 @@ and is named; a replaced HDD is refused while the settings name the old UUID, an
 replacement drive keeps nothing of the old one. Evidence: the checksum comparison, the
 menu's output, the refusal line.
 
-**J10 Installation without the media apps, then with them.** "Install the media apps
-too?" answered no on a blank PC, then yes on a later run, then no again with test data in
-the apps. Expected: with no, `"media_apps": {"wanted": false}`, no container, timer,
+**J10 Installation without the media apps, then with them.** Photos, Movies and shows
+and Music switched off on setup's first page on a blank PC, then on at a later run, then
+off again with test data in the apps. Expected: with all three off,
+a `false` for each group under `"media_apps"` in `my-config.json`, no container, timer,
 dashboard tile, address, shortcut, login, checkup check or recovery-menu entry of
 Jellyfin, Seerr, the apps that find and download, Immich or Navidrome, and
 `NekoServer is ready!` all the same; the app and music backups show as switched off,
-never overdue; yes later installs them as J01 does; no on a server that has them stops
-them and every file of theirs is byte for byte the same. Evidence: the settings file,
-`docker ps`, `systemctl list-timers`, the dashboard, checkdata.py. Cleanup: snapshot.
+never overdue; on at a later run installs them as J01 does; off on a server that has them
+stops them and every file of theirs is byte for byte the same. With **Also find and
+download new ones** off inside a card, Jellyfin (or Navidrome) is installed alone.
+Evidence: the settings file, `docker ps`, `systemctl list-timers`, the dashboard,
+checkdata.py. Cleanup: snapshot.
 
 **J11 The media drive and the backup drive as folders a NAS shares (NFS).** An NFS
 server on the test network with a good media export, a good backup export and one with
@@ -145,6 +149,30 @@ backup folder, passes and unmounts it; with the server stopped the PC still star
 once it answers again the folder is mounted and the apps start by themselves. Evidence:
 the setup log, `/etc/fstab`, `findmnt`, `external.json`, the journals of the NAS check
 and drive return. Cleanup: snapshot, the NFS server stopped.
+
+**J12 A PC with one drive.** The VM with no drive besides the disk Linux runs from,
+Photos alone, the terminal only. Expected: the storage page recommends the system disk
+for the apps and for the media and backups, and says first what that means; the two
+parts are the folders `/var/lib/nekoserver/apps` and `/var/lib/nekoserver/media`, each
+with its own `/etc/fstab` bind line, and the system's own lines are as they were; the
+room of the one disk is counted once; the offline backup is **None for now**, saved, and
+no weekly USB job exists; the backups being on the same disk as the apps is said once;
+the PC restarts into a running server; the nightly backup holds an uploaded photo; the
+uninstaller removes its own lines and folders and leaves the system's `/etc/fstab` lines
+alone. Evidence: the terminal log, `/etc/fstab` before and after, `findmnt`, the
+settings' drive records, `systemctl list-timers`. Cleanup: snapshot.
+
+**J13 Films you already have, used where they are (a folder shared over NFS).** A Linux
+box on the test network sharing a folder of films over NFS, mounted on the PC; that
+folder given at "Do you have films or shows already that this server should use?".
+Expected: the folder is read as the apps' account before it is accepted, and a folder
+that account cannot read is refused with who and where to fix it; nothing is copied or
+moved and nothing of the person's is changed; the folder is bound read-only into the
+library at every start, waiting for the share; Jellyfin has a library at that folder and
+shows the films; with the share away the PC starts, nothing is written into the empty
+folder, and the other apps run. Evidence: the setup log, the placement table in the
+settings, `/etc/fstab`, `findmnt`, Jellyfin's library page, a file list of the share
+before and after. Cleanup: snapshot, the NFS server stopped.
 
 ## The eight safety rules
 
@@ -382,7 +410,7 @@ Evidence: Browser result and received API request
 Cleanup: Close fixture and remove temporary state
 ```
 
-IDs: `J01`..`J11` for journeys, `S01`..`S08` for safety rules, `F01`..`F13` for
+IDs: `J01`..`J13` for journeys, `S01`..`S08` for safety rules, `F01`..`F13` for
 controlled failures, `UI-SETUP-nnn`, `UI-DASH-nnn`, `REC-nnn` for single cases, and
 `B-<release>-<nn>` for bugs (below). The record says what is manual.
 

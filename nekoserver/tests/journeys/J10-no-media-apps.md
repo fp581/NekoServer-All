@@ -2,13 +2,15 @@
 
 ```
 ID: J10
-Purpose: "Install the media apps too?" answered no gives a complete server (Nextcloud, the
-  dashboard, backups, Tailscale, shared folders) that asks for nothing it does not have;
-  yes later installs them as on any server; no on a server that has them deletes nothing
+Purpose: Photos, Movies and shows and Music switched off on setup's first page give a
+  complete server (Nextcloud, the dashboard, backups, Tailscale, shared folders) that asks
+  for nothing it does not have; on later installs them as on any server; off on a server
+  that has them deletes nothing
 Preconditions: NekoDebian VM at clean-debian13-desktop; blank drives
-Actions: (a) answer no at "Install the media apps too?" (the drives step, or the window's first
-  switch), Enter at every other question; (b) run setup again, "Ask these questions again?" yes,
-  answer yes; (c) put test data in the apps, run setup again and answer no
+Actions: (a) switch the three groups off on the first page (the window's switches, or each
+  line's number in the terminal), Install selected apps, Enter at every other question; (b) run
+  setup again, "Change apps or settings", switch them on; (c) put test data in the apps, run
+  setup again and switch them off
 Expected: see below
 Evidence: my-config.json ("media_apps"); docker ps; systemctl list-timers 'nekoserver-*';
   the dashboard's Home and Backups pages; the finishing screen; the phone guide;
@@ -18,13 +20,16 @@ Cleanup: restore the post-install snapshot
 
 ## Expected results
 
-**(a) No on a fresh install**
+**(a) Off on a fresh install**
 
-- The question comes once, at the drives step before the drives are chosen, with what the
-  apps are and what they cost (`choose_media_apps`, guided_setup.py:389;
-  `test_asked_once_explained_and_saved`, tests/test_media_apps.py:112;
+- The groups are chosen once, on the first page, and the review lists them under what is
+  left out (`test_a_new_server_is_offered_the_apps_on_and_the_extras_off`,
+  `test_settling_gives_every_part_an_answer_so_no_step_asks`, tests/test_first_page.py).
+  Setup run without that page (`installer.py` itself) asks them at the drives step, before
+  the drives are chosen (`asked_media_apps`, guided_setup.py;
+  `test_asked_once_explained_and_saved`,
   `test_the_drives_step_asks_it_before_the_drives_and_keeps_it_after`,
-  tests/test_media_apps.py:182). `my-config.json` holds `"media_apps": {"wanted": false}`;
+  tests/test_media_apps.py). `my-config.json` holds a `false` for each group under `"media_apps"`;
   `media.services` and `photos.deploy_immich` are as shipped
   (`test_the_setting_itself_is_never_emptied`, tests/test_media_apps.py:84).
 - The drive questions name the drives by what goes on them ("the HDD (Nextcloud files and
@@ -57,14 +62,14 @@ Cleanup: restore the post-install snapshot
   (`test_the_recovery_menu_offers_the_media_restores_only_with_a_backup_of_theirs`,
   tests/test_media_apps.py:330).
 
-**(b) Yes later**
+**(b) On later**
 
-- "Last time, the optional questions were answered this way: Media apps: no"; asked again
-  and answered yes, every media step runs as on a fresh install with the default answers
+- Setup says what it found on this PC first; with the groups switched on on the first
+  page, every media step runs as on a fresh install with the default answers
   (J01's expected results hold) (`test_a_rerun_keeps_the_answer_unless_asked_again`,
   tests/test_media_apps.py:154).
 
-**(c) No on a server that has them**
+**(c) Off on a server that has them**
 
 - The apps are stopped (`docker compose down`, never with volumes) and setup says so; every
   folder under the SSD's `appdata` and the HDD's library, photos and backups is still there,
@@ -78,5 +83,5 @@ Cleanup: restore the post-install snapshot
 
 ## Manual parts
 
-- Reading the question's text for plain words and the right sizes on the gate machine.
+- Reading the first page's cards for plain words and the right sizes on the gate machine.
 - Opening the dashboard and the phone guide to see that nothing names an app left out.
