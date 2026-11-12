@@ -1100,7 +1100,9 @@ def daily_words(config):
 
     if music_backed_up(config):
         parts.append('the music copy 30 minutes before it')
-    parts.append("the copy of this PC's own settings " + ('an hour after it' if parts else 'at the time you choose'))
+    # The settings copy runs an hour after the daily time on every server (job_times;
+    # gate run J06 said "at the time you choose" with no media apps).
+    parts.append("the copy of this PC's own settings " + ('an hour after it' if parts else 'an hour after the time you choose'))
     if len(parts) == 1:
         return parts[0]
     return ', '.join(parts[:-1]) + ' and ' + parts[-1]

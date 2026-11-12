@@ -708,7 +708,11 @@ class OnlyWhatTheServerHasTests(unittest.TestCase):
         both = {'media_apps': {'movies': True, 'music': True}}
         self.assertIn('the music copy 30 minutes before it', guided_setup.daily_words(both))
         neither = {'media_apps': {'movies': False, 'music': False}}
-        self.assertEqual(guided_setup.daily_words(neither), "the copy of this PC's own settings at the time you choose")
+        # It runs an hour after the time chosen (job_times), media apps or not (gate run J06).
+        self.assertEqual(
+            guided_setup.daily_words(neither), "the copy of this PC's own settings an hour after the time you choose"
+        )
+        self.assertEqual(neko_common.minutes_later('23:00', 60), job_times(settings(daily='23:00'))['host'])
 
     def test_no_weekly_question_without_a_weekly_copy(self):
         config = {
