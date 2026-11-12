@@ -166,8 +166,13 @@ def choose(title, options, prompt=input, output=print, leave='Back'):
     for number, (_, label) in enumerate(options, 1):
         output(f'  {number}. {label}')
     output(f'  0. {leave}')
+    # Enter alone takes the "(recommended)" one, as everywhere in setup (gate run B1).
+    best = next((n for n, (_, label) in enumerate(options, 1) if '(recommended)' in label), None)
+    asked = f'Choose a number (Enter for {best}): ' if best else 'Choose a number: '
     while True:
-        answer = prompt('Choose a number: ').strip()
+        answer = prompt(asked).strip()
+        if answer == '' and best:
+            return options[best - 1][0]
         if answer == '0':
             return None
         if answer.isdigit() and 1 <= int(answer) <= len(options):
