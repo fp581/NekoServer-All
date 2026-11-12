@@ -411,44 +411,61 @@ def without_choice(config, category, use=None):
     return changed
 
 
+def listed_extras(saved, row):
+    """The "extra" folders a row of the saved table lists; [] when it lists none."""
+    listed = (saved.get(row) or {}).get('extra') if isinstance(saved.get(row), dict) else None
+    if listed is None:
+        return []
+    if not isinstance(listed, list):
+        raise RuntimeError(f'"extra" of "{row}" under "placement" in my-config.json must be a list')
+    return listed
+
+
+def usable_saved_path(config, holds, path):
+    """The path as saved must be the real folder check() returned, outside the system's
+    and NekoServer's own folders: checked again, it is only a settings value."""
+    real = os.path.realpath(path)
+    unsafe = real != path or not path.startswith('/') or any(ord(c) < 32 or c == '\\' for c in path)
+    if unsafe or real == '/' or any(within(real, top) for top in (*SYSTEM, *own_folders(config))):
+        raise RuntimeError(f'The "extra" folder for {holds} in my-config.json is not a folder that may be used')
+
+
+def checked_extra(config, row, entry, seen, writable):
+    """One "extra" folder of a row, as far as a settings file can be trusted. `seen`:
+    the (kind, use) pairs taken already; `writable`: the kinds that have their place for
+    new files. Both are added to."""
+    if not isinstance(entry, dict) or entry.get('use') not in USES:
+        raise RuntimeError(f'An "extra" folder of "{row}" in my-config.json has no "use" NekoServer knows')
+    holds, path, use = entry.get('holds'), entry.get('path'), entry['use']
+    if holds not in CATEGORIES or CATEGORIES[holds][0] != row or (holds, use) in seen:
+        raise RuntimeError(f'"holds" of an "extra" folder of "{row}" in my-config.json is wrong or given twice')
+    new_files = entry.get('new_files', use == NEW)
+    if not isinstance(path, str) or type(new_files) is not bool or (use == NEW and not new_files):
+        raise RuntimeError(f'The "extra" folder for {holds} in my-config.json needs "path" and "new_files"')
+    if new_files and holds in writable:
+        raise RuntimeError(f'my-config.json names two places for new {holds}; there is one')
+    missing = [key for key in ('mount', 'share', 'fstype') if not isinstance(entry.get(key), str)]
+    if missing:
+        raise RuntimeError(f'The "extra" folder for {holds} in my-config.json needs "{missing[0]}"')
+    usable_saved_path(config, holds, path)
+    seen.add((holds, use))
+    if new_files:
+        writable.add(holds)
+    return {**entry, 'new_files': new_files}
+
+
 def extras(config):
     """The person's folders, from the settings, each checked as far as a settings file can
     be trusted: [{'path', 'holds', 'use', 'new_files', 'mount', 'share', 'fstype'}]."""
     saved = config.get('placement')
     if not isinstance(saved, dict):
         return []
-    found, seen, writable = [], set(), set()
-    for row in ('movies', 'music'):
-        listed = (saved.get(row) or {}).get('extra') if isinstance(saved.get(row), dict) else None
-        if listed is None:
-            continue
-        if not isinstance(listed, list):
-            raise RuntimeError(f'"extra" of "{row}" under "placement" in my-config.json must be a list')
-        for entry in listed:
-            if not isinstance(entry, dict) or entry.get('use') not in USES:
-                raise RuntimeError(f'An "extra" folder of "{row}" in my-config.json has no "use" NekoServer knows')
-            holds, path, use = entry.get('holds'), entry.get('path'), entry['use']
-            if holds not in CATEGORIES or CATEGORIES[holds][0] != row or (holds, use) in seen:
-                raise RuntimeError(f'"holds" of an "extra" folder of "{row}" in my-config.json is wrong or given twice')
-            new_files = entry.get('new_files', use == NEW)
-            if not isinstance(path, str) or type(new_files) is not bool or (use == NEW and not new_files):
-                raise RuntimeError(f'The "extra" folder for {holds} in my-config.json needs "path" and "new_files"')
-            if new_files and holds in writable:
-                raise RuntimeError(f'my-config.json names two places for new {holds}; there is one')
-            for key in ('mount', 'share', 'fstype'):
-                if not isinstance(entry.get(key), str):
-                    raise RuntimeError(f'The "extra" folder for {holds} in my-config.json needs "{key}"')
-            # The path as saved must be the real folder check() returned, outside the
-            # system's and NekoServer's own folders: checked again, it is only a settings value.
-            real = os.path.realpath(path)
-            unsafe = real != path or not path.startswith('/') or any(ord(c) < 32 or c == '\\' for c in path)
-            if unsafe or real == '/' or any(within(real, top) for top in (*SYSTEM, *own_folders(config))):
-                raise RuntimeError(f'The "extra" folder for {holds} in my-config.json is not a folder that may be used')
-            seen.add((holds, use))
-            if new_files:
-                writable.add(holds)
-            found.append({**entry, 'new_files': new_files})
-    return found
+    seen, writable = set(), set()
+    return [
+        checked_extra(config, row, entry, seen, writable)
+        for row in ('movies', 'music')
+        for entry in listed_extras(saved, row)
+    ]
 
 
 def slot(category, use=IN_PLACE):
@@ -614,25 +631,29 @@ def use_in_place(
     if after != before:
         atomic_write(fstab, after, 0o644)
         run(['systemctl', 'daemon-reload'], 60)
-    rows = []
-    for entry in wanted:
-        point = mount_point(config, entry['holds'], entry['use'])
-        if not point.is_dir():
-            point.mkdir(parents=True, mode=0o555)
-            os.chmod(point, 0o555)  # root's and closed: the apps cannot write into the bare folder
-        row = {'holds': entry['holds'], 'use': entry['use'], 'path': entry['path'], 'mounted': False, 'reason': None}
-        if not still_there(entry, find, kind):
-            row['reason'] = away_words(entry)
-            log(row['reason'])
-        else:
-            mode = 'rw' if entry['new_files'] else 'ro'
-            if mounted(point) is None:
-                run(['mount', str(point)], 120)
-            else:
-                run(['mount', '-o', f'remount,bind,{mode}', str(point)], 120)
-            row['mounted'] = True
-        rows.append(row)
-    return rows
+    return [mounted_row(config, entry, (run, find, kind, mounted), log) for entry in wanted]
+
+
+def mounted_row(config, entry, tools, log):
+    """One of the person's folders mounted where the apps see it (read-only unless it
+    takes the new files), or left for the next start when it is away: its row."""
+    run, find, kind, mounted = tools
+    point = mount_point(config, entry['holds'], entry['use'])
+    if not point.is_dir():
+        point.mkdir(parents=True, mode=0o555)
+        os.chmod(point, 0o555)  # root's and closed: the apps cannot write into the bare folder
+    row = {'holds': entry['holds'], 'use': entry['use'], 'path': entry['path'], 'mounted': False, 'reason': None}
+    if not still_there(entry, find, kind):
+        row['reason'] = away_words(entry)
+        log(row['reason'])
+        return row
+    mode = 'rw' if entry['new_files'] else 'ro'
+    if mounted(point) is None:
+        run(['mount', str(point)], 120)
+    else:
+        run(['mount', '-o', f'remount,bind,{mode}', str(point)], 120)
+    row['mounted'] = True
+    return row
 
 
 AWAY = (
@@ -691,13 +712,10 @@ def guard(config, category, **how):
 # ---- the libraries in the apps -------------------------------------------------------------
 
 
-NAME_TAKEN = (
-    '{app} already has a library called "{name}" for another folder; rename it in {app}, then run setup again'
-)
+NAME_TAKEN = '{app} already has a library called "{name}" for another folder; rename it in {app}, then run setup again'
 API_FAILED = 'Library API/path check failed; existing settings preserved'
 TOO_OLD = (
-    'This Navidrome cannot have a second music folder (it needs version 0.58 or newer); update it, then run '
-    'setup again'
+    'This Navidrome cannot have a second music folder (it needs version 0.58 or newer); update it, then run setup again'
 )
 
 
@@ -714,6 +732,43 @@ def ready_row(config, entry, how):
             raise Away(row['reason'])
 
 
+def library_row(check_name, make, too_old=()):
+    """One library's row: what `make()` returns, or why it could not be made. A folder
+    that is away and a step left for the person are said as they are; `too_old`: the
+    errors that mean the app has no such thing yet."""
+    try:
+        return make()
+    except (Away, media_libraries.SetupRequired) as exc:
+        return media_libraries.row(check_name, 'needs_setup', str(exc))
+    except too_old:
+        return media_libraries.row(check_name, 'needs_setup', TOO_OLD)
+    except (RuntimeError, ValueError, TypeError, KeyError):
+        return media_libraries.row(check_name, 'fail', API_FAILED)
+
+
+def jellyfin_library(client, config, entry, kind, apply, how):
+    """Jellyfin's library for one folder: there already, or made and read back."""
+    name, check_name = library_name(entry), f"jellyfin:existing:{slot(entry['holds'], entry['use'])}"
+    ready_row(config, entry, how)
+    path = container_path(entry['holds'], entry['use'])
+
+    def there():
+        return any(path in [str(p).rstrip('/') for p in x['Locations']] for x in media_libraries.folders(client))
+
+    values = media_libraries.folders(client)
+    if any(path in [str(p).rstrip('/') for p in x['Locations']] for x in values):
+        return media_libraries.row(check_name, 'pass')
+    if any(str(x.get('Name', '')).casefold() == name.casefold() for x in values):
+        raise media_libraries.SetupRequired(NAME_TAKEN.format(app='Jellyfin', name=name))
+    if not apply:
+        return media_libraries.row(check_name, 'needs_setup', 'Preview: library would be created')
+    asked = {'name': name, 'collectionType': kind, 'paths': path, 'refreshLibrary': 'true'}
+    client.call('/Library/VirtualFolders?' + urllib.parse.urlencode(asked), 'POST', {})
+    if not there():
+        raise RuntimeError('Library creation was not retained')
+    return media_libraries.row(check_name, 'pass')
+
+
 def jellyfin_libraries(client, config, apply=False, **how):
     """A Jellyfin library for each of the person's folders of films and shows, pointing at
     where Jellyfin sees it (/data/existing/movies). `client`: a media_libraries.Client
@@ -724,30 +779,40 @@ def jellyfin_libraries(client, config, apply=False, **how):
         kind = category_of(entry['holds'])[2]
         if kind is None:
             continue
-        name, check_name = library_name(entry), f"jellyfin:existing:{slot(entry['holds'], entry['use'])}"
-        try:
-            ready_row(config, entry, how)
-            path = container_path(entry['holds'], entry['use'])
-            values = media_libraries.folders(client)
-            if any(path in [str(p).rstrip('/') for p in x['Locations']] for x in values):
-                rows.append(media_libraries.row(check_name, 'pass'))
-                continue
-            if any(str(x.get('Name', '')).casefold() == name.casefold() for x in values):
-                raise media_libraries.SetupRequired(NAME_TAKEN.format(app='Jellyfin', name=name))
-            if not apply:
-                rows.append(media_libraries.row(check_name, 'needs_setup', 'Preview: library would be created'))
-                continue
-            asked = {'name': name, 'collectionType': kind, 'paths': path, 'refreshLibrary': 'true'}
-            query = urllib.parse.urlencode(asked)
-            client.call('/Library/VirtualFolders?' + query, 'POST', {})
-            if not any(path in [str(p).rstrip('/') for p in x['Locations']] for x in media_libraries.folders(client)):
-                raise RuntimeError('Library creation was not retained')
-            rows.append(media_libraries.row(check_name, 'pass'))
-        except (Away, media_libraries.SetupRequired) as exc:
-            rows.append(media_libraries.row(check_name, 'needs_setup', str(exc)))
-        except (RuntimeError, ValueError, TypeError, KeyError):
-            rows.append(media_libraries.row(check_name, 'fail', API_FAILED))
+        check_name = f"jellyfin:existing:{slot(entry['holds'], entry['use'])}"
+        rows.append(
+            library_row(
+                check_name, lambda entry=entry, kind=kind: jellyfin_library(client, config, entry, kind, apply, how)
+            )
+        )
     return rows
+
+
+def navidrome_listed(call):
+    """Navidrome's libraries, as its API lists them."""
+    listed = call('GET', '/api/library', None)
+    if not isinstance(listed, list) or any(not isinstance(x, dict) for x in listed):
+        raise RuntimeError('Unsupported Navidrome library response')
+    return listed
+
+
+def navidrome_one(call, config, entry, apply, how):
+    """Navidrome's library for one music folder: there already, or made and read back."""
+    name, path = library_name(entry), container_path('music', entry['use'])
+    check_name = f"navidrome:existing:{slot('music', entry['use'])}"
+    ready_row(config, entry, how)
+    listed = navidrome_listed(call)
+    if any(str(x.get('path', '')).rstrip('/') == path for x in listed):
+        return media_libraries.row(check_name, 'pass')
+    if any(str(x.get('name', '')).casefold() == name.casefold() for x in listed):
+        raise media_libraries.SetupRequired(NAME_TAKEN.format(app='Navidrome', name=name))
+    if not apply:
+        return media_libraries.row(check_name, 'needs_setup', 'Preview: library would be created')
+    call('POST', '/api/library', {'name': name, 'path': path})
+    again = call('GET', '/api/library', None)
+    if not isinstance(again, list) or not any(isinstance(x, dict) and x.get('path') == path for x in again):
+        raise RuntimeError('Library creation was not retained')
+    return media_libraries.row(check_name, 'pass')
 
 
 def navidrome_library(call, config, apply=False, **how):
@@ -760,36 +825,37 @@ def navidrome_library(call, config, apply=False, **how):
     for entry in extras(config):
         if entry['holds'] != 'music':
             continue
-        name, path = library_name(entry), container_path('music', entry['use'])
         check_name = f"navidrome:existing:{slot('music', entry['use'])}"
-        try:
-            ready_row(config, entry, how)
-            listed = call('GET', '/api/library', None)
-            if not isinstance(listed, list) or any(not isinstance(x, dict) for x in listed):
-                raise RuntimeError('Unsupported Navidrome library response')
-            if any(str(x.get('path', '')).rstrip('/') == path for x in listed):
-                rows.append(media_libraries.row(check_name, 'pass'))
-                continue
-            if any(str(x.get('name', '')).casefold() == name.casefold() for x in listed):
-                raise media_libraries.SetupRequired(NAME_TAKEN.format(app='Navidrome', name=name))
-            if not apply:
-                rows.append(media_libraries.row(check_name, 'needs_setup', 'Preview: library would be created'))
-                continue
-            call('POST', '/api/library', {'name': name, 'path': path})
-            again = call('GET', '/api/library', None)
-            if not isinstance(again, list) or not any(isinstance(x, dict) and x.get('path') == path for x in again):
-                raise RuntimeError('Library creation was not retained')
-            rows.append(media_libraries.row(check_name, 'pass'))
-        except (Away, media_libraries.SetupRequired) as exc:
-            rows.append(media_libraries.row(check_name, 'needs_setup', str(exc)))
-        except LookupError:
-            rows.append(media_libraries.row(check_name, 'needs_setup', TOO_OLD))
-        except (RuntimeError, ValueError, TypeError, KeyError):
-            rows.append(media_libraries.row(check_name, 'fail', API_FAILED))
+        rows.append(
+            library_row(check_name, lambda entry=entry: navidrome_one(call, config, entry, apply, how), (LookupError,))
+        )
     return rows
 
 
 NAVIDROME = f"http://127.0.0.1:{app_port('navidrome')}"
+
+
+def navidrome_send(opener, address, method, payload, headers):
+    """One request to Navidrome's API and its decoded answer. LookupError for a 404 (this
+    Navidrome has no such thing); RuntimeError for any other failure."""
+    body = json.dumps(payload).encode() if payload is not None else None
+    asked = urllib.request.Request(
+        address, data=body, method=method, headers={'Content-Type': 'application/json', **headers}
+    )
+    try:
+        with opener.open(asked, timeout=12) as answer:
+            data = answer.read(3_000_001)
+    except urllib.error.HTTPError as exc:
+        code = exc.code
+        exc.close()
+        if code == 404:
+            raise LookupError('navidrome: HTTP 404') from None
+        raise RuntimeError(f'navidrome: HTTP {code}') from None
+    except OSError:
+        raise RuntimeError('navidrome: unavailable') from None
+    if len(data) > 3_000_000:
+        raise RuntimeError('API response too large')
+    return json.loads(data) if data.strip() else {}
 
 
 def navidrome_api(username, password, base=NAVIDROME, opener=None):
@@ -798,29 +864,9 @@ def navidrome_api(username, password, base=NAVIDROME, opener=None):
     with every request; the password is not kept. Local only, no redirects or proxies.
     SetupRequired when the login is refused or is not an administrator's."""
     opener = opener or local_opener()
-
-    def send(method, endpoint, payload, headers):
-        body = json.dumps(payload).encode() if payload is not None else None
-        asked = urllib.request.Request(
-            base + endpoint, data=body, method=method, headers={'Content-Type': 'application/json', **headers}
-        )
-        try:
-            with opener.open(asked, timeout=12) as answer:
-                data = answer.read(3_000_001)
-        except urllib.error.HTTPError as exc:
-            code = exc.code
-            exc.close()
-            if code == 404:
-                raise LookupError('navidrome: HTTP 404') from None
-            raise RuntimeError(f'navidrome: HTTP {code}') from None
-        except OSError:
-            raise RuntimeError('navidrome: unavailable') from None
-        if len(data) > 3_000_000:
-            raise RuntimeError('API response too large')
-        return json.loads(data) if data.strip() else {}
-
     try:
-        signed = send('POST', '/auth/login', {'username': username, 'password': password}, {})
+        login = {'username': username, 'password': password}
+        signed = navidrome_send(opener, base + '/auth/login', 'POST', login, {})
     except (RuntimeError, LookupError):
         raise media_libraries.SetupRequired(
             'Navidrome did not accept its administrator login; run setup again once the saved login works'
@@ -828,7 +874,7 @@ def navidrome_api(username, password, base=NAVIDROME, opener=None):
     if not isinstance(signed, dict) or not signed.get('token') or signed.get('isAdmin') is not True:
         raise media_libraries.SetupRequired('Navidrome\'s saved login is not an administrator\'s; a library needs one')
     token = {'X-ND-Authorization': 'Bearer ' + str(signed['token'])}
-    return lambda method, endpoint, payload=None: send(method, endpoint, payload, token)
+    return lambda method, endpoint, payload=None: navidrome_send(opener, base + endpoint, method, payload, token)
 
 
 def music_libraries(config, apply=False, api=navidrome_api, **how):
