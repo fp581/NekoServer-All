@@ -455,19 +455,39 @@ INSTALL = (
 
 
 def status(base, run=subprocess.run):
-    """Nextcloud's own `occ status`, or None while it can't answer (still starting)."""
-    result = run(
-        base + ['exec', '-T', '-u', 'www-data', 'nextcloud', 'php', 'occ', 'status', '--output=json'],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
+    """Nextcloud's own `occ status`, or None while it can't answer (still starting, or
+    too busy starting to answer within 2 minutes)."""
+    try:
+        result = run(
+            base + ['exec', '-T', '-u', 'www-data', 'nextcloud', 'php', 'occ', 'status', '--output=json'],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return None
     text = result.stdout or ''
     try:
         return json.loads(text[text.index('{') :]) if result.returncode == 0 else None
     except ValueError:
         return None
+
+
+def last_log_lines(base, run=subprocess.run):
+    """The end of Nextcloud's container log; empty when Docker does not give it within a
+    minute (the wait for the install then simply goes on)."""
+    try:
+        read = run(
+            base + ['logs', '--no-color', '--tail', '300', 'nextcloud'],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return ''
+    return read.stdout or ''
 
 
 def finish_install(base, log, run=subprocess.run, wait=900, sleep=time.sleep, now=time.monotonic):
@@ -480,16 +500,7 @@ def finish_install(base, log, run=subprocess.run, wait=900, sleep=time.sleep, no
         found = status(base, run)
         if found and found.get('installed'):
             return False
-        logs = (
-            run(
-                base + ['logs', '--no-color', '--tail', '300', 'nextcloud'],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                check=False,
-            ).stdout
-            or ''
-        )
+        logs = last_log_lines(base, run)
         # Apache serving without an install means the image's attempt is over (given up,
         # then restarted); "failed!" is its own last word when it gives up.
         if found is not None and ('resuming normal operations' in logs or 'Installing of nextcloud failed' in logs):

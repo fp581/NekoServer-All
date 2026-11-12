@@ -171,6 +171,9 @@ def call(args, timeout=180):
     return p.stdout.strip()
 
 
+NO_ANSWER = 'gave no answer within a minute'
+
+
 def samba_password(user, run=subprocess.run, ask=None, output=print):
     """The shared folders' password: chosen through setup's own question (typed twice,
     hidden; in the setup window too), then handed to smbpasswd on its input (-s), never
@@ -185,14 +188,19 @@ def samba_password(user, run=subprocess.run, ask=None, output=print):
         password = guided_setup.new_password(f'Password for the shared folders (account {user})', ask, output)
     if password is None:
         return False
-    done = run(
-        ['smbpasswd', '-s', '-a', user],
-        input=f'{password}\n{password}\n',
-        text=True,
-        capture_output=True,
-        timeout=60,
-        check=False,
-    )
+    try:
+        done = run(
+            ['smbpasswd', '-s', '-a', user],
+            input=f'{password}\n{password}\n',
+            text=True,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        hung = isinstance(exc, subprocess.TimeoutExpired)
+        output('Samba did not take that password: smbpasswd ' + (NO_ANSWER if hung else 'could not be run'))
+        return False
     if done.returncode:
         output('Samba did not take that password: ' + last_words(done.stderr or done.stdout or 'no reason given'))
         return False

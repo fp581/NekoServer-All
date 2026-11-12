@@ -418,10 +418,13 @@ def review_answer(path, config, question, asking):
     line = line_or_start(question, prompt, output, window, stdin)
     if line is STARTED:
         return APPROVED
+    if line is BACK or line is CONTINUED:
+        # The window's Back (or a Continue left over from the first page): a button, not text.
+        return BACK
     answer = '' if line is None else line.strip().lower()
     if line is None or answer in ('no', 'n'):
         return STOPPED
-    if line is BACK or answer in ('back', 'b'):
+    if answer in ('back', 'b'):
         return BACK
     if answer in ('yes', 'y'):
         if explanations.states(read_json(path) or {}) != explanations.states(config):
@@ -842,8 +845,8 @@ def finishing_screen(config, states, page=None, output=print, checkup=None, ran=
     show_steps('Needs a look (optional: everything else works without it):', optional, states, 'did not finish', output)
     show_steps('Not available on this system:', by_status['unavailable'], states, 'not available', output)
     show_checkup(checkup, output)
-    for line in started_empty_lines():
-        output('\n' + line)
+    for said in started_empty_lines():
+        output('\n' + said)
     if summary:
         for text in states_lines(summary):
             output(text)
@@ -949,7 +952,8 @@ def installed_found(found):
     lines = [f'NekoServer{version} is set up on this PC.{place}']
     waiting = found.get('waiting') or []
     if waiting:
-        lines.append(f'{len(waiting)} things still wait for you: ' + ', '.join(title(step) for step in waiting) + '.')
+        count = '1 thing still waits' if len(waiting) == 1 else f'{len(waiting)} things still wait'
+        lines.append(count + ' for you: ' + ', '.join(title(step) for step in waiting) + '.')
     return lines
 
 

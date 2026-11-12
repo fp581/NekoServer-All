@@ -119,10 +119,9 @@ def phone_rows(ctx):
 
     try:
         rows = phone_status.check(ctx.config)['rows']
-    except (OSError, RuntimeError, ValueError, KeyError) as exc:
-        ctx.log(
-            f'Phone: setup could not check the connection itself ({type(exc).__name__}); the steps are shown as they are'
-        )
+    except (OSError, RuntimeError, ValueError, KeyError):
+        # Never Python's own name for the error: it means nothing to the person reading.
+        ctx.log('Phone: setup could not check the connection itself just now; the steps are shown as they are')
         return []
     return [
         {

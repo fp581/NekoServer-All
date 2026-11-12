@@ -763,6 +763,34 @@ class AccountSetupReasonTests(unittest.TestCase):
         self.assertIn('Jellyfin administrator: not verified (Local account API request failed (HTTP 503)', logged[-1])
         self.assertNotIn('hunter2', ' '.join(logged))
 
+    def test_a_reply_of_another_shape_is_not_verified_and_said_in_words(self):
+        import account_setup
+
+        class Client:
+            headers = {}
+
+            def call(self, *args, **kwargs):
+                return ['not', 'a', 'record']  # where Navidrome answers a sign-in with a record
+
+            def close(self):
+                pass
+
+        entry = {'username': 'admin', 'password': 'hunter2hunter2', 'state': 'planned', 'allow_create': False}
+        logged, updates = [], []
+        with (
+            mock.patch.object(account_setup.store, 'get', return_value=entry),
+            mock.patch.object(account_setup.store, 'update', side_effect=lambda *a, **k: updates.append(k)),
+            mock.patch.object(account_setup, 'verify_project'),
+            mock.patch.object(account_setup, 'wait'),
+        ):
+            pending = account_setup.provision(
+                {'data_mount': '/srv/x'}, ['navidrome'], output=logged.append, client_factory=lambda app: Client()
+            )
+        self.assertEqual(pending, ['navidrome'])
+        self.assertEqual(updates[-1], {'state': 'needs_setup'})
+        self.assertIn('not verified (the app answered in a form setup does not know)', logged[-1])
+        self.assertNotIn('hunter2', ' '.join(logged))
+
 
 class PortClashTests(unittest.TestCase):
     """Another program on an app's port (tried on AlmaLinux: a Jellyfin installed beside
@@ -2528,6 +2556,23 @@ class NextcloudFirstInstallTests(unittest.TestCase):
             self.assertRaisesRegex(RuntimeError, 'did not finish installing within 15 minutes.*docker logs'),
         ):
             nextcloud.finish_install(self.BASE, lambda m: None, run=run, sleep=lambda s: None, now=lambda: next(clock))
+        checked.assert_not_called()
+
+    def test_a_status_or_log_read_that_hangs_while_it_starts_is_waited_through(self):
+        import subprocess
+
+        from modules import nextcloud
+
+        answered = self.fake(True, '')[0]
+        hung = iter([True, True, False])  # the first status read, then its log read, hang
+
+        def run(argv, **kwargs):
+            if next(hung, False):
+                raise subprocess.TimeoutExpired(argv, kwargs.get('timeout'))
+            return answered(argv, **kwargs)
+
+        with mock.patch.object(nextcloud, 'checked_run') as checked:
+            self.assertFalse(nextcloud.finish_install(self.BASE, lambda m: None, run=run, sleep=lambda s: None))
         checked.assert_not_called()
 
 

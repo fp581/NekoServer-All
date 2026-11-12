@@ -107,7 +107,8 @@ class PhonePageTests(unittest.TestCase):
         ctx = SimpleNamespace(config={}, log=logs.append)
         with mock.patch.object(phone_status, 'check', side_effect=OSError('no reports folder')):
             self.assertEqual(gateway_tailnet.phone_rows(ctx), [])
-        self.assertTrue(any('could not check the connection itself' in line for line in logs))
+        self.assertTrue(any('could not check the connection itself just now' in line for line in logs))
+        self.assertFalse(any('Error' in line for line in logs), logs)
         self.assertEqual(gateway_tailnet.status_lines([]), [])
 
 

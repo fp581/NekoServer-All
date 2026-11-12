@@ -618,6 +618,9 @@ def what_to_do(config, app, entry):
     return f'Run  sudo bash install.sh  again: setup tries {name} again once it answers.'
 
 
+ODD_ANSWER = 'the app answered in a form setup does not know'
+
+
 def provision(config, apps, output=print, client_factory=Client):
     pending = []
     for app in apps:
@@ -656,11 +659,21 @@ def provision(config, apps, output=print, client_factory=Client):
                 )
             store.update(config, app, state='verified', allow_create=False)
             output(store.APPS[app][0] + ': ' + (note or 'verified'))
-        except (RuntimeError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+        except (
+            RuntimeError,
+            OSError,
+            ValueError,
+            KeyError,
+            TypeError,
+            AttributeError,
+            subprocess.SubprocessError,
+        ) as exc:
             store.update(config, app, state='needs_setup')
             pending.append(app)
             # The reason, never the password: the checks' own messages name no values.
-            reason = str(exc) or type(exc).__name__
+            # (A reply of another shape, a list where a record was expected, reaches here
+            # as AttributeError: said in words.)
+            reason = ODD_ANSWER if isinstance(exc, AttributeError) else str(exc) or type(exc).__name__
             advice = what_to_do(config, app, entry)
             output(f'{store.APPS[app][0]}: not verified ({reason}); the saved login is kept. {advice}')
         finally:

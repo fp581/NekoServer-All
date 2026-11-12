@@ -81,6 +81,31 @@ fn sources(cfg: &serde_json::Value, library: PathBuf) -> Result<Vec<(String, Pat
     }
     Ok(found)
 }
+/// Each of the person's own music folders is there now (`there`: mounted where setup puts
+/// it, and answering a listing within a time limit). With its share away the folder is the
+/// empty one left in its place: backing that up would save a "successful" inventory
+/// without their music, so the run stops instead and the last good one stays the newest.
+fn own_folders_there(sources: &[(String, PathBuf)], there: &dyn Fn(&Path) -> bool) -> Result<()> {
+    for (_, path) in sources.iter().filter(|(prefix, _)| !prefix.is_empty()) {
+        if !there(path) {
+            return Err(Error::new(&format!(
+                "Your own music folder (shown at {}) did not answer: its network share is off or not connected. The music backup waits for it; the last backup stays the newest one",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+/// A folder setup mounts is mounted (findmnt names it), and can be listed within 30
+/// seconds: a share that stopped answering never holds the run up for hours.
+fn mounted_and_answering(path: &Path) -> bool {
+    let mounted = matches!(
+        common::findmnt("TARGET", "--mountpoint", path, 10),
+        Ok(Some(_))
+    );
+    let shown = path.to_string_lossy();
+    mounted && common::command(&["ls", "-1", "--", &shown], 30).is_ok_and(|(code, _)| code == 0)
+}
 /// Every source listed: (rows sorted by path, files still being added).
 fn listing(sources: &[(String, PathBuf)]) -> Result<(Vec<serde_json::Value>, Vec<String>)> {
     let (mut rows, mut waiting) = (vec![], vec![]);
@@ -128,6 +153,7 @@ pub fn run(a: &Args) -> Result<()> {
         let cfg = common::json(&config, 64000);
         let source = common::safe(&common::music_library(&cfg)?)?;
         let from = sources(&cfg, source)?;
+        own_folders_there(&from, &mounted_and_answering)?;
         let root = common::safe(&media.join("backups/music"))?;
         let (rows, waiting) = listing(&from)?;
         common::directory(&root, 0o700)?;
@@ -218,6 +244,19 @@ mod tests {
         let elsewhere =
             json!({"music_extra": [{"slot": "music", "path": top.join("library/music")}]});
         assert!(sources(&elsewhere, library.clone()).is_err());
+        // With its share away, the run stops before anything is listed or saved.
+        assert!(own_folders_there(&from, &|_| true).is_ok());
+        let said = own_folders_there(&from, &|path| path != own.as_path())
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("Your own music folder"), "{said}");
+        assert!(
+            said.contains("the last backup stays the newest one"),
+            "{said}"
+        );
+        // The library alone needs no share: never checked.
+        let alone = sources(&json!({}), library.clone()).unwrap();
+        assert!(own_folders_there(&alone, &|_| false).is_ok());
         let _ = fs::remove_dir_all(&top);
     }
     #[test]

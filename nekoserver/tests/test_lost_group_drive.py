@@ -122,6 +122,17 @@ class LostGroupDriveTests(unittest.TestCase):
         ):
             self.assertEqual(finish_page.page(self.config, summary)['waiting'], lines)
 
+    def test_the_finishing_screen_still_ends_with_its_rule_after_the_started_empty_line(self):
+        drive_table.STARTED_EMPTY['d3'] = {'what': 'Music (Navidrome)'}
+        said = []
+        with (
+            mock.patch.object(wizard, 'show_end'),
+            mock.patch.object(wizard, 'planned', return_value=(['system'], {'system': {'status': 'success'}})),
+        ):
+            wizard.finishing_screen({'data_mount': '/srv/nekoserver'}, {}, output=said.append)
+        self.assertIn('\n' + wizard.started_empty_lines()[0], said)
+        self.assertEqual(said[-1], '=' * 64 + '\n')
+
     def test_the_new_drive_never_gets_the_lost_drives_name(self):
         drives = self.top / 'drives'
         (drives / 'd3').mkdir(parents=True)  # the lost drive's mount folder is still there
