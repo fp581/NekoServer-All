@@ -140,7 +140,7 @@ NOT_CONNECTED = (
 )
 
 
-def choose_lan(ctx, ask=input, interactive=None, output=print):
+def choose_lan(ctx, output=print):
     """The home-network address and subnet (gateway.lan_ip / lan_cidr), chosen once and
     shared by every step that needs it: LAN folder sharing (Samba) and the LAN HTTPS
     gateway. Nothing is asked: with several connections setup takes the cable before

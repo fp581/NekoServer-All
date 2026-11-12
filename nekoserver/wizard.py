@@ -316,6 +316,35 @@ def save_choices(path, window, changes, settle=False):
     return True
 
 
+APPROVED, STOPPED = 'approved', 'stopped'
+
+
+def approval(path, config, extras, question, asking):
+    """One answer to the first page's question: APPROVED, STOPPED, or the switches it
+    changes ({} to show the page again as it stands; None for an answer that is neither,
+    which is said and asked again). `asking`: (prompt, output, window, stdin)."""
+    prompt, output, window, stdin = asking
+    line = line_or_start(question, prompt, output, window, stdin)
+    if line is STARTED:
+        return APPROVED
+    answer = '' if line is None else line.strip().lower()
+    if line is None or answer in ('no', 'n'):
+        return STOPPED
+    if answer in ('yes', 'y'):
+        if explanations.states(read_json(path) or {}) != explanations.states(config):
+            # Approved is what was read: a switch pressed in the setup window since then
+            # is shown first.
+            output('A choice was changed in the setup window meanwhile. Here they are as they stand now.')
+            return {}
+        # False when the window's button was pressed in the same moment: it saved them.
+        save_choices(path, window, {}, settle=True)
+        return APPROVED
+    if not answer:
+        output('Type yes, no, or the number of a line. Enter alone does nothing here.')
+        return None
+    return switched(config, extras, answer, output)
+
+
 def wait_to_start(path, prompt, output, window, stdin=None):
     """The first page and its review, then the one approval: yes in the terminal, or
     Install pressed in the setup window. A number switches that line on or off and
@@ -330,28 +359,12 @@ def wait_to_start(path, prompt, output, window, stdin=None):
             + (' (or use the setup window)' if window is not None else '')
             + ': '
         )
-        changes = None
-        while changes is None:
-            line = line_or_start(question, prompt, output, window, stdin)
-            if line is STARTED:
-                return True
-            answer = '' if line is None else line.strip().lower()
-            if line is None or answer in ('no', 'n'):
-                return False
-            if answer in ('yes', 'y'):
-                if explanations.states(read_json(path) or {}) != explanations.states(config):
-                    # Approved is what was read: a switch pressed in the setup window
-                    # since then is shown first.
-                    output('A choice was changed in the setup window meanwhile. Here they are as they stand now.')
-                    changes = {}
-                    continue
-                # False when the window's button was pressed in the same moment: it saved them.
-                save_choices(path, window, {}, settle=True)
-                return True
-            changes = switched(config, extras, answer, output) if answer else None
-            if not answer:
-                output('Type yes, no, or the number of a line. Enter alone does nothing here.')
-        if changes and not save_choices(path, window, changes):
+        answer = None
+        while answer is None:
+            answer = approval(path, config, extras, question, (prompt, output, window, stdin))
+        if answer in (APPROVED, STOPPED):
+            return answer == APPROVED
+        if answer and not save_choices(path, window, answer):
             output('That could not be saved: the settings file cannot be read right now.')
 
 

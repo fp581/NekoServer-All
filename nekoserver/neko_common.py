@@ -1379,7 +1379,14 @@ def server_exists(config):
             return True
     except OSError:
         pass
-    return (Path(config.get('data_mount') or '/srv/nekoserver') / 'docker-engine').is_dir()
+    # The app drive's folder comes from the settings: looked at only once it is proved to
+    # be a mount folder, and Docker's folder to lie inside it with every link followed.
+    try:
+        data = os.path.realpath(mount_path(config.get('data_mount') or '/srv/nekoserver'))
+    except (RuntimeError, ValueError, TypeError):
+        return False
+    engine = os.path.realpath(os.path.join(data, 'docker-engine'))
+    return engine.startswith(data + os.sep) and os.path.isdir(engine)
 
 
 def media_group_chosen(config, group):

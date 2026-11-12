@@ -72,13 +72,13 @@ class LanChoiceTests(unittest.TestCase):
         """choose_lan on a PC with these connections: (the settings after, what was said, what was saved)."""
         ctx, saved = self.ctx(**(gateway or {'lan_ip': 'auto', 'lan_cidr': 'auto'}))
         shown = []
-        never = mock.Mock(side_effect=AssertionError('a question was asked'))
         with (
+            mock.patch('builtins.input', side_effect=AssertionError('a question was asked')),
             mock.patch.object(network_access, 'candidates', return_value=rows),
             mock.patch.object(network_access, 'wireless', lambda name, sys_net=None: name.startswith('wl')),
             mock.patch.object(network_access, 'default_route', return_value=route),
         ):
-            self.assertTrue(network_access.choose_lan(ctx, ask=never, output=shown.append, interactive=True))
+            self.assertTrue(network_access.choose_lan(ctx, output=shown.append))
         return ctx.config['gateway'], shown, saved
 
     def test_one_connection_is_used_and_said(self):
@@ -123,7 +123,7 @@ class LanChoiceTests(unittest.TestCase):
             mock.patch.object(network_access, 'wireless', lambda name, sys_net=None: name.startswith('wl')),
             mock.patch.object(network_access, 'default_route', return_value=None),
         ):
-            self.assertTrue(network_access.choose_lan(ctx, output=lambda *_: None, interactive=False))
+            self.assertTrue(network_access.choose_lan(ctx, output=lambda *_: None))
         self.assertEqual(ctx.config['gateway']['lan_ip'], '192.168.1.50')
         source = (ROOT / 'network_access.py').read_text()
         self.assertNotIn('questions.ask', source)

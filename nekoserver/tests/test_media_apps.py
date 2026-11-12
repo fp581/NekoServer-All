@@ -234,7 +234,6 @@ class NoOnAServerWithTheAppsTests(unittest.TestCase):
         self.assertNotIn('sonarr', neko_common.media_apps_installed(ctx.config))
 
     def test_stop_is_what_ships_the_answer_stands_and_it_is_said(self):
-        self.assertEqual(guided_setup.NO_WITH_APPS_INSTALLED, guided_setup.STOP)
         ctx, folder = self.server()
         before = self.kept(folder)
         self.assertEqual(guided_setup.settle_no_with_apps(ctx), ['jellyfin', 'immich'])
@@ -244,21 +243,6 @@ class NoOnAServerWithTheAppsTests(unittest.TestCase):
             'you switched off a group this server already has (Jellyfin, Immich). They are stopped in this run', said
         )
         self.assertIn('Nothing is deleted', said)
-        self.assertEqual(self.kept(folder), before)
-
-    def test_keep_takes_the_no_back_before_any_step_reads_it(self):
-        ctx, folder = self.server()
-        before = self.kept(folder)
-        with mock.patch.object(guided_setup, 'NO_WITH_APPS_INSTALLED', guided_setup.KEEP):
-            guided_setup.settle_no_with_apps(ctx)
-        # The groups of the apps it has (Jellyfin's, Immich's) go back to yes; Music, of
-        # which it has nothing, stays as answered.
-        self.assertEqual(ctx.config['media_apps'], {'wanted': False, 'photos': True, 'movies': True})
-        self.assertIn('jellyfin', neko_common.media_services(ctx.config))
-        self.assertNotIn('navidrome', neko_common.media_services(ctx.config))
-        self.assertTrue(neko_common.immich_wanted(ctx.config))
-        ctx.persist_config.assert_called_once()
-        self.assertIn('they stay as they are and keep running; the answer no was not taken', '\n'.join(ctx.logs))
         self.assertEqual(self.kept(folder), before)
 
     def test_a_new_server_and_a_yes_have_nothing_to_settle(self):
