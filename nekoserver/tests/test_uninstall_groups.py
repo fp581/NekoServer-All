@@ -143,6 +143,34 @@ class GroupDriveTests(unittest.TestCase):
         self.assertIn('your own folder ' + OWN_ON_D3 + ' could not be checked', said)
         self.assertIn(': your own folder ' + OWN_ON_D3 + ' is in it, so it was not removed', said)
 
+    def test_an_own_folder_whose_share_does_not_answer_keeps_the_library_around_it(self):
+        where = str(self.system.root) + OWN_ON_D3
+        real = uninstaller.answers
+        with mock.patch.object(uninstaller, 'answers', side_effect=lambda p: str(p) != where and real(p)):
+            self.remove_all()
+        self.assertTrue(self.there(OWN_ON_D3 + '/mine/old-song.flac'))
+        self.assertTrue(self.there(D3 + '/library/music/album/song.flac'), 'kept with the folder it holds')
+        self.assertFalse(self.there(D3 + '/nekoserver'), 'what holds none of them still goes')
+        said = '\n'.join(self.shown)
+        self.assertIn('your own folder ' + OWN_ON_D3 + ' did not answer within 10 seconds', said)
+
+    def test_a_look_that_hangs_is_given_up_after_its_time_and_the_child_is_not_waited_for(self):
+        class Stuck:
+            killed = False
+
+            def poll(self):
+                return None
+
+            def kill(self):
+                Stuck.killed = True
+
+        clock = iter(range(0, 100))
+        self.assertFalse(
+            uninstaller.answers('/mnt/away', 10, start=lambda *a, **k: Stuck(), now=lambda: next(clock), sleep=id)
+        )
+        self.assertTrue(Stuck.killed)
+        self.assertTrue(uninstaller.answers(self.system.root))  # a folder of this PC answers at once
+
     def test_an_own_folder_bound_into_the_library_is_unmounted_before_the_library_goes(self):
         with self.bound():
             self.remove_all()
