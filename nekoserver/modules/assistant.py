@@ -415,8 +415,8 @@ def save_choice(ctx, wanted, model):
     guided_setup.save_settings(ctx)
     if not wanted:
         ctx.log(
-            f'{TITLE}: none chosen. To add one later, set "wanted" to true under "assistant" in my-config.json '
-            'and run  sudo bash install.sh  again.'
+            f'{TITLE}: none chosen. To add one later, run  sudo bash install.sh  again and choose '
+            '"Add a local AI assistant" on the first page.'
         )
 
 
