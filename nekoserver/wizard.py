@@ -216,12 +216,40 @@ def setup_window(path, output):
     return window
 
 
-STARTED = object()  # the window's button was pressed while the terminal waited for a line
+STARTED = object()  # the window's Install button was pressed while the terminal waited for a line
+CONTINUED = object()  # its Continue button, on the first page
+BACK = object()  # its Back button, on the review
+PRESSED_SAID = {STARTED: 'yes', CONTINUED: 'Continue', BACK: 'Back'}
+
+
+def window_pressed(window):
+    """The button pressed in the setup window since the terminal last looked, or None."""
+    if window.started.is_set():
+        return STARTED
+    return {'continue': CONTINUED, 'back': BACK}.get(window.pressed())
+
+
+def typed_line(stdin, output, wait=0.5):
+    """(a line typed in the terminal, True), (None, True) for Ctrl+D or Ctrl+C,
+    (None, False) when nothing was typed in this half second. OSError or ValueError:
+    the terminal cannot be watched."""
+    try:
+        readable, _, _ = select.select([stdin], [], [], wait)
+    except KeyboardInterrupt:
+        output('')
+        return None, True
+    if not readable:
+        return None, False
+    line = stdin.readline()
+    if not line:  # Ctrl+D
+        output('')
+        return None, True
+    return line, True
 
 
 def line_or_start(question, prompt, output, window, stdin=None):
-    """One line typed in the terminal; STARTED when the setup window's Install button was
-    pressed meanwhile; None for Ctrl+D or Ctrl+C."""
+    """One line typed in the terminal; STARTED, CONTINUED or BACK when that button of the
+    setup window was pressed meanwhile; None for Ctrl+D or Ctrl+C."""
     if window is None or prompt is not builtins.input:
         try:
             return prompt(question)
@@ -231,33 +259,27 @@ def line_or_start(question, prompt, output, window, stdin=None):
     stdin = sys.stdin if stdin is None else stdin
     sys.stdout.write(question)
     sys.stdout.flush()
-    while not window.started.is_set():
+    pressed = window_pressed(window)
+    while pressed is None:
         try:
-            readable, _, _ = select.select([stdin], [], [], 0.5)
-        except KeyboardInterrupt:
-            output('')
-            return None
+            line, answered = typed_line(stdin, output)
         except (OSError, ValueError):
             return line_or_start('', prompt, output, None)
-        if readable:
-            line = stdin.readline()
-            if not line:  # Ctrl+D
-                output('')
-                return None
+        if answered:
             return line
+        pressed = window_pressed(window)
     # A line half-typed in the terminal meanwhile would be read as the next answer.
     try:
         termios.tcflush(stdin, termios.TCIFLUSH)
     except (termios.error, OSError, ValueError):
         pass
-    output('yes (pressed in the setup window)')
-    return STARTED
+    output(PRESSED_SAID[pressed] + ' (pressed in the setup window)')
+    return pressed
 
 
 def show_first_page(config, output):
-    """Setup's first page and the review after it, as the terminal shows them: every
-    part that can be left out on a numbered line with its mark, then what will be
-    installed. Returns the extras in the order of their numbers."""
+    """Setup's first page as the terminal shows it: every part that can be left out on
+    a numbered line with its mark. Returns the extras in the order of their numbers."""
     output('')
     output('=== ' + explanations.PAGE_TITLE + ' ===')
     output(explanations.PAGE_HINT)
@@ -273,17 +295,25 @@ def show_first_page(config, output):
         indent = '     ' if extra.get('under') else ''
         output(f"{indent} [{'x' if on else ' '}] {number:2d}. {extra['title']}")
         output(indent + '        ' + extra['explanation'])
+    return explanations.shown()
+
+
+def show_review(config, storage_lines, output):
+    """The review: what will be installed, where the apps and files are kept (as just
+    chosen), and what setup still stops to ask."""
     output('')
     output(
         '=== '
         + (explanations.REVIEW_TITLE_AGAIN if neko_common.server_exists(config) else explanations.REVIEW_TITLE)
         + ' ==='
     )
-    for heading, lines in explanations.review(config):
+    sections = explanations.review(config)
+    if storage_lines:
+        sections = [*sections, (explanations.STORAGE_HEADING, storage_lines)]
+    for heading, lines in sections:
         output(heading + ':')
         for line in lines:
             output('  - ' + line)
-    return explanations.shown()
 
 
 def switched(config, extras, answer, output):
@@ -293,7 +323,7 @@ def switched(config, extras, answer, output):
     now = explanations.states(config)
     for token in answer.replace(',', ' ').split():
         if not token.isdecimal() or not 1 <= int(token) <= len(extras):
-            output(f'Type yes, no, or the number of a line (1 to {len(extras)}).')
+            output(f'Type the number of a line (1 to {len(extras)}), press Enter to go on, or type no to stop.')
             return None
         extra = extras[int(token) - 1]
         if not explanations.offered(config, extra):
@@ -317,12 +347,50 @@ def save_choices(path, window, changes, settle=False):
 
 
 APPROVED, STOPPED = 'approved', 'stopped'
+GO_ON = 'go on'
 
 
-def approval(path, config, extras, question, asking):
-    """One answer to the first page's question: APPROVED, STOPPED, or the switches it
-    changes ({} to show the page again as it stands; None for an answer that is neither,
-    which is said and asked again). `asking`: (prompt, output, window, stdin)."""
+def first_answer(config, extras, question, asking):
+    """One answer on the first page: GO_ON (Enter, or Continue in the window), STOPPED,
+    the switches it changes, or None for an answer that is none of these (said)."""
+    prompt, output, window, stdin = asking
+    line = line_or_start(question, prompt, output, window, stdin)
+    if line in (CONTINUED, STARTED):
+        return GO_ON
+    if line is BACK:
+        return {}
+    answer = '' if line is None else line.strip().lower()
+    if line is None or answer in ('no', 'n'):
+        return STOPPED
+    if answer in ('', 'yes', 'y'):
+        return GO_ON
+    return switched(config, extras, answer, output)
+
+
+def first_page(path, asking):
+    """The first page, shown until the person goes on: a number switches that line on
+    or off (saved at once) and shows the page again. False when setup is to stop."""
+    _, output, window, _ = asking
+    question = (
+        '\nNothing is installed yet. Type the number of a line to switch it on or off, press Enter to go on, '
+        'or type no to stop' + (' (or use the setup window)' if window is not None else '') + ': '
+    )
+    while True:
+        config = read_json(path) or {}
+        show_stage(window, 'apps')
+        extras = show_first_page(config, output)
+        answer = None
+        while answer is None:
+            answer = first_answer(config, extras, question, asking)
+        if answer in (GO_ON, STOPPED):
+            return answer == GO_ON
+        if answer and not save_choices(path, window, answer):
+            output('That could not be saved: the settings file cannot be read right now.')
+
+
+def review_answer(path, config, question, asking):
+    """One answer on the review: APPROVED, STOPPED, BACK, or None for an answer that
+    is none of these (said). Approved is what was read."""
     prompt, output, window, stdin = asking
     line = line_or_start(question, prompt, output, window, stdin)
     if line is STARTED:
@@ -330,42 +398,96 @@ def approval(path, config, extras, question, asking):
     answer = '' if line is None else line.strip().lower()
     if line is None or answer in ('no', 'n'):
         return STOPPED
+    if line is BACK or answer in ('back', 'b'):
+        return BACK
     if answer in ('yes', 'y'):
         if explanations.states(read_json(path) or {}) != explanations.states(config):
-            # Approved is what was read: a switch pressed in the setup window since then
-            # is shown first.
+            # A switch changed since the review was read (another window): shown first.
             output('A choice was changed in the setup window meanwhile. Here they are as they stand now.')
-            return {}
+            return BACK
         # False when the window's button was pressed in the same moment: it saved them.
         save_choices(path, window, {}, settle=True)
         return APPROVED
-    if not answer:
-        output('Type yes, no, or the number of a line. Enter alone does nothing here.')
+    output('Type yes, back or no. Enter alone does nothing here.')
+    return None
+
+
+def review_page(path, chosen, asking):
+    """The review and the one approval: yes in the terminal, or Install pressed in the
+    setup window. APPROVED, STOPPED or BACK (to the first page)."""
+    _, output, window, _ = asking
+    config = read_json(path) or {}
+    show_review(config, chosen['lines'], output)
+    show_stage(window, 'review', chosen['lines'])
+    install = explanations.APPLY if neko_common.server_exists(config) else explanations.INSTALL
+    question = (
+        f'\n{install}? Type yes to go on, back to change your choices, or no to stop'
+        + (' (or use the setup window)' if window is not None else '')
+        + ': '
+    )
+    answer = None
+    while answer is None:
+        answer = review_answer(path, config, question, asking)
+    return answer
+
+
+def show_stage(window, stage, storage_lines=()):
+    if window is not None:
+        window.show(stage, storage_lines)
+
+
+NOTHING_AHEAD = {'settings': {}, 'places': {}, 'lines': []}
+
+
+def choose_storage(path, output):
+    """Setup's storage page, before the review (modules/storage.choose_ahead): asked in
+    the terminal and in the setup window. Nothing is mounted or saved. None when setup
+    cannot go on, with the reason said."""
+    from modules import storage
+
+    try:
+        with setup_progress.watching_prompts():
+            return storage.choose_ahead(read_json(path) or {}, output)
+    except RuntimeError as problem:
+        output(f'\nSetup stopped: {problem}')
         return None
-    return switched(config, extras, answer, output)
+    except (EOFError, KeyboardInterrupt):
+        output('')
+        return None
 
 
-def wait_to_start(path, prompt, output, window, stdin=None):
-    """The first page and its review, then the one approval: yes in the terminal, or
-    Install pressed in the setup window. A number switches that line on or off and
-    shows the page again. True when setup is to start; the switches are then saved as
-    they stand, each with an answer, so no step asks about one again."""
+def keep_storage(path, chosen):
+    """The storage page's choices written to the settings file, now that they are approved."""
+    if not chosen['settings'] and not chosen['places']:
+        return
+    from modules import storage
+
+    config = read_json(path)
+    if config:
+        storage.keep_ahead(config, chosen)
+        setup_gui.save_choices(path, config, {})
+
+
+def wait_to_start(path, prompt, output, window, stdin=None, storage=None):
+    """Setup's pages before anything is installed: the first page, the storage page
+    (`storage`: choose_storage; nothing is asked without it), then the review and the
+    one approval. Back on the review starts over at the first page. True when setup is
+    to start: the switches are then saved as they stand, each with an answer, and the
+    drives as chosen, so no step asks about them again."""
+    asking = (prompt, output, window, stdin)
     while True:
-        config = read_json(path) or {}
-        extras = show_first_page(config, output)
-        install = explanations.APPLY if neko_common.server_exists(config) else explanations.INSTALL
-        question = (
-            f'\n{install}? Type yes to go on, no to stop, or the number of a line to switch it on or off'
-            + (' (or use the setup window)' if window is not None else '')
-            + ': '
-        )
-        answer = None
-        while answer is None:
-            answer = approval(path, config, extras, question, (prompt, output, window, stdin))
-        if answer in (APPROVED, STOPPED):
-            return answer == APPROVED
-        if answer and not save_choices(path, window, answer):
-            output('That could not be saved: the settings file cannot be read right now.')
+        if not first_page(path, asking):
+            return False
+        show_stage(window, 'storage')
+        chosen = storage(path, output) if storage else NOTHING_AHEAD
+        if chosen is None:
+            return False
+        answer = review_page(path, chosen, asking)
+        if answer == APPROVED:
+            keep_storage(path, chosen)
+            return True
+        if answer == STOPPED:
+            return False
 
 
 def checked_path(value):
@@ -998,7 +1120,7 @@ def run(execute, default_state, prompt=input, output=print, root=ROOT, config=No
     setup_progress.enable()
     window = setup_window(path, output) if prompt is builtins.input else None
     try:
-        if wait_to_start(path, prompt, output, window):
+        if wait_to_start(path, prompt, output, window, storage=choose_storage if prompt is builtins.input else None):
             if window is not None:
                 window.freeze()
             default_state = checked_path(default_state)

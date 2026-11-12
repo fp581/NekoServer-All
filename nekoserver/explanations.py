@@ -294,6 +294,7 @@ def offered(config, extra):
 # ---- the review before anything is installed ("Ready to install NekoServer")
 REVIEW_TITLE = 'Ready to install NekoServer'
 REVIEW_TITLE_AGAIN = 'Review your changes'
+STORAGE_HEADING = 'Where your apps and files are kept'
 INSTALL = 'Install selected apps'
 APPLY = 'Apply these changes'
 ALWAYS = (

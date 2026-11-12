@@ -26,9 +26,8 @@
   const chosen = {}; // the switches pressed here that are not saved yet
   let switches = {}; // every switch as it stands: {id: on}
   let cards = []; // the cards of the first page
-  let reviewing = false; // the review is shown, not the switches
+  let stage = 'apps'; // the page before setup starts, as setup's server says: 'apps' or 'review'
   let startLabel = 'Install selected apps';
-  let lastState = null;
   let built = false;
   let misses = 0;
   let shownCurrent = null; // the running step the list was last scrolled to
@@ -181,8 +180,19 @@
   }
 
   function showStage() {
-    $('choose-apps').hidden = reviewing;
-    $('review').hidden = !reviewing;
+    $('choose-apps').hidden = stage !== 'apps';
+    $('review').hidden = stage !== 'review';
+  }
+
+  /* Continue and Back are setup's to follow: it asks for the drives between the two
+     pages, here and in the terminal, and then says which page is shown. */
+  async function press(route, note) {
+    try {
+      const answer = await post(route, {});
+      $(note).textContent = answer.ok === false && answer.reason ? answer.reason : '';
+    } catch {
+      $(note).textContent = 'That did not reach setup. Press it once more.';
+    }
   }
 
   /* Setup did not start (the settings file cannot be read right now, or setup has
@@ -206,24 +216,15 @@
   $('start').addEventListener('click', () => {
     void start();
   });
-  /* Continue: the review of what was chosen, read once the last switch has been saved. */
+  /* Continue: on to the drives and then the review, once the last switch has been saved. */
   $('continue').addEventListener('click', () => {
     void (async () => {
       await saving;
-      try {
-        const response = await fetch('api/state', { cache: 'no-store' });
-        if (response.ok) lastState = await response.json();
-      } catch {
-        /* the next poll brings it */
-      }
-      reviewing = true;
-      if (lastState && lastState.review) showReview(lastState.review);
-      showStage();
+      await press('api/continue', 'choose-note');
     })();
   });
   $('back').addEventListener('click', () => {
-    reviewing = false;
-    showStage();
+    void press('api/back', 'review-note');
   });
 
   /* ---- a question, answered here or in the terminal */
@@ -1257,11 +1258,11 @@
      except one pressed here that is still on its way. */
   function renderChoose(state) {
     badge('Ready when you are', '');
-    lastState = state;
     if (!built) buildChoices(state.extras);
     for (const extra of state.extras) if (!(extra.id in chosen)) switches[extra.id] = extra.on;
     showCards();
     if (state.review) showReview(state.review);
+    stage = state.stage === 'review' ? 'review' : 'apps';
     showStage();
   }
 

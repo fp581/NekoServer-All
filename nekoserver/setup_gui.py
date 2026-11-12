@@ -87,6 +87,11 @@ WINDOW = ('1180', '480')  # the small window's size; it is placed low on the scr
 LARGEST_BODY = 40_000  # a page of fields, each up to setup_progress.LONGEST_ANSWER
 
 
+# The window's buttons before setup starts, and the page each is on.
+BUTTON_STAGE = {'continue': 'apps', 'back': 'review'}
+STORAGE_AHEAD = 'Where should NekoServer store your apps and files?'
+
+
 def save_choices(path, config, changes, settle=False):
     """The first page's switches written to the settings file (its owner kept): the ones
     in `changes` ({id: on}), and with `settle` every one as it stands, so that no step
@@ -229,6 +234,12 @@ class Window:
         self.tables = tables
         self.packages = None  # this Linux's package names (family_packages), once asked
         self.started = threading.Event()  # Start was pressed in the window
+        # Before setup starts: 'apps' (the first page), 'storage' (the drives are being
+        # asked for), 'review'. The wizard says which (show); the window's Continue and
+        # Back are kept in `button` until the wizard takes them (pressed).
+        self.stage = 'apps'
+        self.button = None
+        self.storage_lines = []
         self.frozen = bool(session)  # setup has started (or this is a menu): the choices are fixed
         self.delivered = threading.Event()  # the page has shown the finishing screen
         self.lock = threading.Lock()
@@ -330,7 +341,10 @@ class Window:
             return {
                 'title': explanations.REVIEW_TITLE_AGAIN if again else explanations.REVIEW_TITLE,
                 'button': explanations.APPLY if again else explanations.INSTALL,
-                'sections': [{'title': title, 'lines': lines} for title, lines in explanations.review(self.config)],
+                'sections': [{'title': title, 'lines': lines} for title, lines in explanations.review(self.config)]
+                + (
+                    [{'title': explanations.STORAGE_HEADING, 'lines': self.storage_lines}] if self.storage_lines else []
+                ),
             }
 
     def _installs(self, extra):
@@ -358,6 +372,8 @@ class Window:
             return 'running'
         if self.frozen or self.started.is_set() or any(s['status'] != 'pending' for s in steps):
             return 'running'
+        if self.stage == 'storage':
+            return 'running'  # its questions are asked as a step's are
         return 'choose'
 
     def state(self):
@@ -380,9 +396,15 @@ class Window:
         # Counted as the terminal's summary and the log count them: steps done, out of the
         # steps this PC can have (one not available here counts in neither).
         here = [s for s in steps if s['status'] != 'unavailable']
+        # The storage page before setup starts: a page of its own, no steps and no count yet.
+        ahead = self.stage == 'storage' and not self.frozen
+        if ahead:
+            here = []
+        session = self.menu or (STORAGE_AHEAD if ahead else None)
         return {
             'version': self.version,
             'phase': phase,
+            'stage': self.stage,
             'extras': self._extras(),
             'review': self._review() if phase == 'choose' else None,
             'steps': steps,
@@ -391,12 +413,34 @@ class Window:
             'total': len(here),
             'question': question,
             # A menu of its own: its name and the terminal's last lines.
-            'session': {'title': self.menu, 'lines': setup_progress.recent_lines(30)} if self.menu else None,
+            'session': {'title': session, 'lines': setup_progress.recent_lines(30)} if session else None,
             'finish': finished['lines'] if finished else [],
             'title': (finished.get('title') or '') if finished else '',
             'stopped': bool(finished and finished.get('stopped') is True),
             'complete': bool(finished and finished.get('complete') is True),
         }
+
+    def show(self, stage, storage_lines=()):
+        """The page the window shows before setup starts, as the wizard goes through them."""
+        with self.lock:
+            self.stage = stage
+            self.storage_lines = list(storage_lines)
+            self.button = None
+
+    def press(self, button):
+        """Continue (on the first page) or Back (on the review) pressed in the window.
+        False once setup has started, or on a page that has no such button."""
+        with self.lock:
+            if self.frozen or self.stage != BUTTON_STAGE[button]:
+                return False
+            self.button = button
+            return True
+
+    def pressed(self):
+        """The button pressed since the wizard last asked, taken once."""
+        with self.lock:
+            button, self.button = self.button, None
+            return button
 
     def freeze(self):
         """Setup has started (in the terminal or the window): from now on the choices
@@ -459,6 +503,8 @@ class Window:
         """(status, body, content type) for a POST with its JSON body."""
         if route == 'api/choose' and isinstance(body, dict):
             return self._fixed_or_ok(self.choose(body))
+        if route in ('api/continue', 'api/back'):
+            return self._fixed_or_ok(self.press(route[len('api/') :]))
         if route == 'api/start':
             choices = body.get('choices') if isinstance(body, dict) else None
             return self._fixed_or_ok(self.choose(choices if isinstance(choices, dict) else {}, start=True))

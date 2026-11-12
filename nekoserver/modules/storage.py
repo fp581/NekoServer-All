@@ -1,6 +1,7 @@
 """Safe existing-filesystem mounting by explicitly configured UUID; never formats."""
 
 import contextlib
+import copy
 import json
 import math
 import os
@@ -8,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import types
 from pathlib import Path
 from neko_common import (
     atomic_json,
@@ -1284,6 +1286,163 @@ def existing_media_asked(context):
         context.persist_config()
 
 
+# ---- chosen before the approval (0.50.0) -------------------------------------------------
+# Setup's storage page comes before the review and the one approval (wizard.py), when
+# nothing of NekoServer is mounted yet. The choices are made on a copy of the settings.
+# The drives of the roles, the offline drive and the folders of films already there go
+# into the settings file once the person approves. Where each app keeps its files is kept
+# for this run only (drive_table.PLACES_AHEAD): only the mounted drives show whether such
+# files are there already, and those stay where they are (choose_locations).
+AHEAD_SECTIONS = ('storage', 'photos', 'placement')
+
+
+def choose_ahead(config, log):
+    """The storage page, asked before anything is installed. Returns {'settings': what
+    it changes in the settings file (section_changes), 'places': where each app's files
+    go, 'lines': the choices in words, for the review}; all empty when nothing is left to
+    ask or nobody is at the keyboard. Nothing is mounted, written or saved here."""
+    chosen = {'settings': {}, 'places': {}, 'lines': []}
+    if not sys.stdin.isatty() or not page_fields(config):
+        return chosen
+    import existing_page
+
+    draft = copy.deepcopy(config)
+    context = types.SimpleNamespace(config=draft, log=log, apply=True, config_path=None)
+    inventory = inventory_now()
+    log(disk_line(inventory))
+    with storage_page(context, inventory):
+        resolve_storage_identity(draft, inventory, apply=True, interactive=True, out_fn=log)
+        chosen['places'] = wished_places(context, inventory)
+        choose_usb(context)
+        existing_page.ask(context, output=log)
+    chosen['settings'] = section_changes(config, draft)
+    chosen['lines'] = ahead_lines(draft, inventory, chosen['places'])
+    return chosen
+
+
+def section_changes(before, after):
+    """What the storage page changed, section by section: {section: (the keys it set,
+    the keys it took out)}, and the one top-level answer of the films question."""
+    import existing_page
+
+    changes = {}
+    for section in AHEAD_SECTIONS:
+        old = before.get(section) if isinstance(before.get(section), dict) else {}
+        new = after.get(section) if isinstance(after.get(section), dict) else {}
+        added = {key: value for key, value in new.items() if old.get(key) != value}
+        gone = [key for key in old if key not in new]
+        if added or gone:
+            changes[section] = (added, gone)
+    if after.get(existing_page.ASKED) is True and before.get(existing_page.ASKED) is not True:
+        changes[existing_page.ASKED] = True
+    return changes
+
+
+def keep_ahead(config, chosen):
+    """The storage page's choices put into the settings as they are now (the first page's
+    switches were saved meanwhile), and the places kept for the storage step of this run."""
+    import drive_table
+
+    for section, change in chosen['settings'].items():
+        if change is True:
+            config[section] = True
+            continue
+        added, gone = change
+        kept = config.setdefault(section, {})
+        kept.update(added)
+        for key in gone:
+            kept.pop(key, None)
+    drive_table.PLACES_AHEAD.clear()
+    drive_table.PLACES_AHEAD.update(chosen['places'])
+
+
+def wished_places(context, inventory):
+    """Where each app is to keep your files, asked before the drives are mounted:
+    {'photos': 'ssd' | 'media' | a row of the drive list}. Files found on a drive that is
+    open already are not asked about: they stay where they are."""
+    import drive_table
+    import setup_progress
+
+    config = context.config
+    asked = page_fields(config)
+    table = drive_table.rows(inventory, config, discover_filesystems(inventory))
+    room = room_ahead(config, table)
+    on_nas = bool(config.get('storage', {}).get('media_hdd', {}).get('network'))
+    others = data_drives(config, inventory)
+    places = {}
+    for what, words, threshold in WHERE:
+        if what not in asked:
+            continue
+        if kept_location(config, what):
+            setup_progress.page_answer(what)  # not a choice: said once the drives are mounted
+            continue
+        best = recommended(room['ssd'], threshold)
+        places[what] = asked_location(context, words, best, room, on_nas, key=what, others=others)
+    return places
+
+
+def room_ahead(config, table):
+    """The room, in GB, on the drive of each role, whether it is open yet or not."""
+    room = {}
+    for name, key, mount_key in (('ssd', 'data_ssd', 'data_mount'), ('media', 'media_hdd', 'media_mount')):
+        record = config.get('storage', {}).get(key) or {}
+        if findmnt('SOURCE', str(mount_path(config[mount_key]))) is not None:
+            room[name] = free_gb(config[mount_key])
+        elif system_folder(record, key):
+            room[name] = system_free_gb()
+        else:
+            room[name] = free_on(
+                next((row for row in table if row['uuid'] and row['uuid'] == record.get('uuid')), None)
+            )
+    return room
+
+
+def free_on(row):
+    """The room on a drive of the list that is not open, from its size and how full it is."""
+    if row is None:
+        return 0
+    return int((size_bytes(row['size']) or 0) * (100 - (row['full'] or 0)) / 100) // 10**9
+
+
+PLACE_SAID = {'ssd': 'on the drive of NekoServer and your apps', 'media': 'on the drive of your media and the backups'}
+
+
+def ahead_lines(config, inventory, places):
+    """The storage page's choices in words, for the review before the approval."""
+    import drive_table
+
+    table = drive_table.rows(inventory, config, discover_filesystems(inventory))
+    by_uuid = {row['uuid']: row for row in table if row['uuid']}
+
+    def named(uuid):
+        return drive_table.brief(by_uuid[uuid]) if uuid in by_uuid else 'the drive chosen before'
+
+    lines = []
+    for key in ('data_ssd', 'media_hdd'):
+        record = config.get('storage', {}).get(key) or {}
+        where = 'the disk Linux runs from' if system_folder(record, key) else named(record.get('uuid'))
+        lines.append(f'{PAGE_ROLES[key]}: {where}')
+    for what, words, _threshold in WHERE:
+        if what in places:
+            place = places[what]
+            said = (
+                PLACE_SAID[place]
+                if isinstance(place, str)
+                else 'on ' + drive_table.brief(place) + ', a drive of their own'
+            )
+            lines.append(f'{words[0].upper()}{words[1:]}: {said}')
+    photos = config.get('photos', {})
+    if photos.get('external_backup_uuid'):
+        lines.append('Offline backup: ' + named(photos['external_backup_uuid']))
+    elif photos.get(OFFLINE_WANTED) is False:
+        lines.append('Offline backup: none for now')
+    import existing_media
+
+    for entry in existing_media.extras(config):
+        lines.append(f"Your {entry['holds']} in {entry['path']}: used where they are, nothing is copied")
+    return lines
+
+
 def checked_before_mount(config, specs):
     """Every drive to mount is the one the settings name, and nothing else is in its place."""
     exports = shared_folders(config)
@@ -1407,6 +1566,7 @@ def page_fields(config):
             asked_where(config, what)
             and places.get(what) not in DRIVE_WORDS
             and places.get(what) not in extra_drives(config)
+            and what not in drive_table_places()
         ):
             asked[what] = ''
     photos = config.get('photos', {})
@@ -1646,7 +1806,9 @@ def choose_locations(context, input_fn=None, interactive=None, inventory=None):
         if chosen.get(what) in extra_drives(config):
             continue  # on a drive of its own, as chosen before
         asks = interactive and (input_fn or input)
-        if what == 'movies' and (kept or not asks or set_up_before(config)):
+        # Chosen on the storage page before the approval (choose_ahead); files found now win.
+        wish = None if kept else drive_table_places().get(what)
+        if what == 'movies' and (kept or set_up_before(config) or (wish is None and not asks)):
             # Where every server before 0.50.0 has them (the media drive): not written
             # down unless someone chose, so a server that is set up keeps its settings.
             setup_progress.page_answer(what)
@@ -1655,7 +1817,9 @@ def choose_locations(context, input_fn=None, interactive=None, inventory=None):
             chosen[what] = where_kept(context, what, words, kept)
             setup_progress.page_answer(what)  # not a choice here: the files are where they are
         else:
-            place = new_place(context, what, (words, threshold), (room, on_nas), asks, key=what, others=others)
+            place = wish
+            if place is None:
+                place = new_place(context, what, (words, threshold), (room, on_nas), asks, key=what, others=others)
             if isinstance(place, dict):
                 chosen[what] = placed_on(config, place)
                 context.log(f'{words.capitalize()}: on {drive_table_said(place)}, a drive of their own')
@@ -1710,6 +1874,12 @@ def placed_on(config, row):
     storage[name] = {}
     new_drive(storage[name], whole(unlocked(row['device'])))
     return name
+
+
+def drive_table_places():
+    import drive_table
+
+    return drive_table.PLACES_AHEAD
 
 
 def drive_table_said(row):

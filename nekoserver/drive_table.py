@@ -38,6 +38,13 @@ NAMES_CHANGE = (
 NEVER_FORMATS = 'Setup never formats a drive and changes nothing by showing this list.'
 
 
+# Where each app keeps your files, as chosen on the storage page before the approval
+# (modules/storage.choose_ahead), for the storage step of the same run: {'photos': 'ssd' |
+# 'media' | a row of this list}. Kept here because the installer loads its steps as
+# modules of their own, and this one is shared by all of them.
+PLACES_AHEAD = {}
+
+
 def role(key):
     """'the app SSD', 'the media HDD' or 'the USB backup drive'."""
     return ROLES[key][0]

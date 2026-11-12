@@ -1146,16 +1146,16 @@ class ReadyToStartTests(unittest.TestCase):
         said = []
         with self.pipe('maybe\nno\n') as stdin, mock.patch('sys.stdout'):
             self.assertFalse(wizard.wait_to_start(self.path, builtins.input, said.append, window, stdin))
-        self.assertIn('Type yes, no, or the number of a line (1 to 11).', said)
+        self.assertIn('Type the number of a line (1 to 11), press Enter to go on, or type no to stop.', said)
         window.choose.assert_not_called()
-        with self.pipe('y\n') as stdin, mock.patch('sys.stdout'):
+        with self.pipe('\ny\n') as stdin, mock.patch('sys.stdout'):
             self.assertTrue(wizard.wait_to_start(self.path, builtins.input, lambda line: None, window, stdin))
         # Yes saves every switch as it stands and fixes them, through the window.
         window.choose.assert_called_once_with({}, start=True)
         with self.pipe('') as stdin, mock.patch('sys.stdout'):  # Ctrl+D
             self.assertFalse(wizard.wait_to_start(self.path, builtins.input, lambda line: None, window, stdin))
         # Enter alone approves nothing.
-        with self.pipe('\nno\n') as stdin, mock.patch('sys.stdout'):
+        with self.pipe('\n\nno\n') as stdin, mock.patch('sys.stdout'):
             self.assertFalse(wizard.wait_to_start(self.path, builtins.input, said.append, window, stdin))
         self.assertIn('Enter alone does nothing here.', said[-1])
 
@@ -1167,13 +1167,13 @@ class ReadyToStartTests(unittest.TestCase):
         window.choose.assert_called_once_with({'media_movies': False, 'tv': True}, start=False)
 
     def test_without_a_window_or_in_tests_the_plain_question_is_asked(self):
-        answers = iter(['yes'])
+        answers = iter(['', 'yes'])
         asked = []
         self.assertTrue(
             wizard.wait_to_start(self.path, lambda question: asked.append(question) or next(answers), print, None)
         )
-        self.assertIn('Install selected apps? Type yes to go on, no to stop, or the number of a line', asked[0])
-        self.assertNotIn('setup window', asked[0])
+        self.assertIn('Install selected apps? Type yes to go on, back to change your choices, or no to stop', asked[1])
+        self.assertNotIn('setup window', asked[0] + asked[1])
         answers = iter(['no'])
         self.assertFalse(
             wizard.wait_to_start(self.path, lambda question: next(answers), lambda line: None, mock.Mock())

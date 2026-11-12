@@ -234,19 +234,23 @@ class SetupWindowTests(unittest.TestCase):
         seen = self.page([{**state, 'pressInside': 'Music - Navidrome'}])
         self.assertEqual(seen['subs'][1], ['Music - Navidrome', 'sub-switch', 'no', False])
         self.assertEqual(seen['posts'], [['api/choose', {'music_downloads': False}]])
-        # Continue: the review, with what the button will do; nothing has started.
+        # Continue is setup's to follow (it asks for the drives next); nothing has started.
         seen = self.page([{**state, 'continue': True}])
+        self.assertEqual(seen['posts'], [['api/continue', {}]])
+        self.assertEqual((seen['review']['appsHidden'], seen['review']['hidden']), (False, True))
+        # The review, once setup says so, with what the button will do.
+        seen = self.page([{**state, 'stage': 'review'}])
         self.assertEqual((seen['review']['appsHidden'], seen['review']['hidden']), (True, False))
         self.assertEqual(seen['review']['title'], 'Ready to install NekoServer')
         self.assertEqual(seen['review']['sections'], [['Apps to install', ['Jellyfin: movies & shows']]])
         self.assertEqual(seen['start'], [False, 'Install selected apps'])
         self.assertEqual(seen['posts'], [])
-        # Back: the switches again.
-        seen = self.page([{**state, 'continue': True}, {**state, 'back': True}])
-        self.assertEqual((seen['review']['appsHidden'], seen['review']['hidden']), (False, True))
+        # Back: asked of setup, which shows the switches again.
+        seen = self.page([{**state, 'stage': 'review', 'back': True}])
+        self.assertEqual(seen['posts'], [['api/back', {}]])
         # A server that exists is changed, not installed.
         again = {**state, 'review': {**review, 'title': 'Review your changes', 'button': 'Apply these changes'}}
-        seen = self.page([{**again, 'continue': True}])
+        seen = self.page([{**again, 'stage': 'review'}])
         self.assertEqual((seen['review']['title'], seen['start'][1]), ('Review your changes', 'Apply these changes'))
 
     def backup_times_question(self, **changes):

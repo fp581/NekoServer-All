@@ -199,9 +199,11 @@ class TerminalTests(Base):
         return started, asked, said, json.loads(self.path.read_text())
 
     def test_the_same_page_and_review_then_one_approval(self):
-        started, asked, said, saved = self.run_page('yes')
+        started, asked, said, saved = self.run_page('', 'yes')
         self.assertTrue(started)
-        self.assertEqual(len(asked), 1)  # the one approval
+        self.assertEqual(len(asked), 2)  # Enter to go on from the first page, then the one approval
+        self.assertIn('Nothing is installed yet.', asked[0])
+        self.assertIn('Install selected apps? Type yes to go on, back to change your choices, or no to stop', asked[1])
         self.assertIn('=== What would you like this server to do? ===', said)
         self.assertIn(' [x]  2. Movies and shows - Jellyfin', said)
         self.assertIn('      [x]  3. Also find and download new ones', said)  # set in, under its card
@@ -216,21 +218,27 @@ class TerminalTests(Base):
         self.assertEqual(saved['tv'], {'wanted': False})
 
     def test_a_number_switches_its_line_and_the_page_is_shown_again(self):
-        started, asked, said, saved = self.run_page('3 8', 'yes')
+        started, asked, said, saved = self.run_page('3 8', '', 'yes')
         self.assertTrue(started)
         self.assertIn('      [ ]  3. Also find and download new ones', said)
         self.assertIn(' [x]  8. Send alerts to my phone', said)
-        # Jellyfin alone now: Sonarr is in the first review and not in the second.
-        self.assertEqual(said.count('  - Sonarr: manage your TV library'), 1)
+        # Jellyfin alone now: the review, which comes after the page, has no Sonarr.
+        self.assertIn('  - Jellyfin: movies & shows', said)
+        self.assertNotIn('  - Sonarr: manage your TV library', said)
         self.assertIs(saved['media_apps']['movies_downloads'], False)
         self.assertEqual(saved['notifications'], {'wanted': True})
 
     def test_no_stops_and_a_wrong_line_is_said(self):
-        started, asked, said, saved = self.run_page('12', '', 'no')
+        started, asked, said, saved = self.run_page('12', 'no')
         self.assertFalse(started)
-        self.assertIn('Type yes, no, or the number of a line (1 to 11).', said)
-        self.assertIn('Type yes, no, or the number of a line. Enter alone does nothing here.', said)
+        self.assertIn('Type the number of a line (1 to 11), press Enter to go on, or type no to stop.', said)
+        self.assertNotIn('=== Ready to install NekoServer ===', said)
         self.assertEqual(saved, settings())  # nothing was saved
+        # On the review, Enter alone approves nothing, and no stops with nothing saved.
+        started, asked, said, saved = self.run_page('', '', 'no')
+        self.assertFalse(started)
+        self.assertIn('Type yes, back or no. Enter alone does nothing here.', said)
+        self.assertEqual(saved, settings())
         # A card's own switch with the card off: said, not switched.
         self.path.write_text(json.dumps(settings(media_apps={'movies': False})))
         started, asked, said, saved = self.run_page('3', 'no')
@@ -241,13 +249,13 @@ class TerminalTests(Base):
         self.assertNotIn('movies_downloads', saved['media_apps'])
 
     def test_yes_approves_only_what_was_shown(self):
-        """A switch pressed in the setup window while the terminal waits: yes typed there
-        approves nothing yet; the page is shown again as it stands."""
-        answers, said = iter(['yes', 'yes']), []
+        """A switch changed in another window while the review waits: yes typed there
+        approves nothing yet; the pages are shown again as they stand."""
+        answers, said = iter(['', 'yes', '', 'yes']), []
 
         def prompt(question):
-            if not said.count('=== Ready to install NekoServer ===') > 1:
-                # The window saves a switch while the terminal's first question waits.
+            if 'Type yes to go on' in question and said.count('=== Ready to install NekoServer ===') == 1:
+                # A switch is saved while the review's question waits.
                 changed = json.loads(self.path.read_text())
                 changed.setdefault('assistant', {})['wanted'] = True
                 self.path.write_text(json.dumps(changed))
@@ -258,10 +266,58 @@ class TerminalTests(Base):
         self.assertIn(' [x] 10. Add a local AI assistant', said)
         self.assertEqual(said.count('=== Ready to install NekoServer ==='), 2)
 
+    def test_back_on_the_review_shows_the_first_page_again(self):
+        started, asked, said, saved = self.run_page('', 'back', '8', '', 'yes')
+        self.assertTrue(started)
+        self.assertEqual(said.count('=== What would you like this server to do? ==='), 3)
+        self.assertEqual(said.count('=== Ready to install NekoServer ==='), 2)
+        self.assertEqual(saved['notifications'], {'wanted': True})
+
+    def test_the_drives_are_chosen_between_the_page_and_the_review(self):
+        """The storage page comes after the first page and before the approval; what it
+        chose is in the review, and is written only once the person approves."""
+        chosen = {
+            'settings': {'storage': ({'data_ssd': {'uuid': 'u1', 'fstype': 'ext4'}}, [])},
+            'places': {},
+            'lines': ['NekoServer and your apps: drive 2 (sdb1: 466 GB SSD)'],
+        }
+        order = []
+
+        def storage(path, output):
+            order.append('drives')
+            return chosen
+
+        def run(*typed):
+            answers, said = iter(typed), []
+
+            def prompt(question):
+                order.append('approval' if 'Type yes to go on' in question else 'page')
+                return next(answers)
+
+            started = wizard.wait_to_start(self.path, prompt, said.append, None, storage=storage)
+            return started, said, json.loads(self.path.read_text())
+
+        started, said, saved = run('', 'no')
+        self.assertEqual(order, ['page', 'drives', 'approval'])
+        self.assertIn('Where your apps and files are kept:', said)
+        self.assertIn('  - NekoServer and your apps: drive 2 (sdb1: 466 GB SSD)', said)
+        self.assertFalse(started)
+        self.assertEqual(saved, settings())  # no: nothing of it was saved
+        started, said, saved = run('', 'yes')
+        self.assertTrue(started)
+        self.assertEqual(saved['storage']['data_ssd'], {'uuid': 'u1', 'fstype': 'ext4'})
+        # A page that cannot go on (no drive that can be used) stops setup before the review.
+        self.path.write_text(json.dumps(settings()))
+        said = []
+        self.assertFalse(
+            wizard.wait_to_start(self.path, lambda question: '', said.append, None, storage=lambda path, output: None)
+        )
+        self.assertNotIn('=== Ready to install NekoServer ===', said)
+
     def test_an_existing_server_is_asked_to_apply_changes(self):
         with mock.patch.object(neko_common, 'server_exists', return_value=True):
-            started, asked, said, saved = self.run_page('no')
-        self.assertIn('Apply these changes? Type yes to go on', asked[0])
+            started, asked, said, saved = self.run_page('', 'no')
+        self.assertIn('Apply these changes? Type yes to go on', asked[1])
         self.assertIn('=== Review your changes ===', said)
 
 
