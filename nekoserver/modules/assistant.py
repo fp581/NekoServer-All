@@ -152,7 +152,7 @@ def _run(ctx):
                 save_choice(ctx, False, 'auto')
                 return None
             save_choice(ctx, True, model)
-        model, size, memory = fitting(ctx.config, room)
+        model, size, memory = fitting(ctx.config, total, room)
         check_space(ctx.config, model, size)
         need_pin(ctx)
     except NotHere:
@@ -293,10 +293,28 @@ def size_gib(text):
     return float(found.group(1)) * {'K': 1024**-2, 'M': 1024**-1, 'G': 1}[found.group(2)]
 
 
+def reserve_gib(total):
+    """The memory kept for the other apps to grow into, in GiB."""
+    return max(RESERVE_GIB, total * RESERVE_SHARE)
+
+
 def memory_for_model(total, available, own=0):
-    """The memory left for a model, in GiB: what is free now (with the assistant's own use
-    counted as free) less the reserve the other apps keep."""
-    return available + own - max(RESERVE_GIB, total * RESERVE_SHARE)
+    """The memory left for a model, in GiB: what is free now (MemAvailable, the figure the
+    dashboard shows too, with the assistant's own use counted as free) less the reserve
+    the other apps keep."""
+    return available + own - reserve_gib(total)
+
+
+def room_said(total, room, running=True):
+    """The free memory, the reserve and what that leaves, in numbers (gate run B: "0.0 GB
+    free with your apps running" on a server that had 1.6 GB free and kept 2 GB of it for
+    the apps read as if the memory were measured wrongly)."""
+    kept = reserve_gib(total)
+    with_apps = ' with your apps running' if running else ''
+    return (
+        f'{max(room + kept, 0):.1f} GB free{with_apps}, and keeps {kept:.1f} GB for the apps to grow into, '
+        f'which leaves {max(room, 0):.1f} GB for the assistant'
+    )
 
 
 def downloaded(config, model):
@@ -348,8 +366,7 @@ def choices(total, room, cores):
     usable = fits(room)
     cpus = max(1, (cores or 1) // 2)
     lines = [
-        f'This PC has {total:.0f} GB of memory. With your apps running and room kept for them to grow, '
-        f'{max(room, 0):.1f} GB are free for the assistant.',
+        f'This PC has {total:.0f} GB of memory: {room_said(total, room)}.',
         '  0) No assistant (press Enter)',
     ]
     answers = {'0': 'none', '': 'none'}
@@ -364,8 +381,7 @@ def choices(total, room, cores):
         answers[str(number)] = model
     for model, _, need, _ in MODELS[len(usable) :]:
         lines.append(
-            f'  Not possible here: {model} needs about {need} GB free; this PC has {max(room, 0):.1f} GB free '
-            'with your apps running.'
+            f'  Not possible here: {model} needs about {need} GB; this PC has {room_said(total, room)}.'
         )
     return lines, answers
 
@@ -375,7 +391,7 @@ def ask_model(ctx, total, room, cores, prompt=None, output=None):
     Enter is "no assistant", unless the setup window's switch for it was turned on: then
     Enter takes the recommended model. NotHere when no model fits."""
     if not fits(room):
-        raise NotHere(not_enough(room, MODELS[0][2]))
+        raise NotHere(not_enough(total, room, MODELS[0][2]))
     prompt, output = prompt or input, output or print
     output(f'\n=== Optional: {TITLE} ("Ask Neko" in the dashboard) ===')
     for line in EXPLAIN:
@@ -420,7 +436,7 @@ def save_choice(ctx, wanted, model):
         )
 
 
-def fitting(config, room):
+def fitting(config, total, room):
     """(model, its download in GB, its memory limit like "5g") for the chosen model, when it
     fits in `room` now. NotHere when it does not (the other apps may have grown)."""
     named = options(config).get('model', 'auto')
@@ -428,18 +444,16 @@ def fitting(config, room):
     if named in known:
         model, download, need, _ = known[named]
         if need > room:
-            raise NotHere(not_enough(room, need, model))
+            raise NotHere(not_enough(total, room, need, model))
         return model, download, f'{need}g'
     if room < NAMED_MODEL_GIB:
-        raise NotHere(not_enough(room, NAMED_MODEL_GIB, named))
+        raise NotHere(not_enough(total, room, NAMED_MODEL_GIB, named))
     return named, UNKNOWN_MODEL_GB, f'{math.floor(room)}g'
 
 
-def not_enough(room, need, model='a model'):
-    return (
-        f'there is not enough free memory: {model} needs about {need} GB free, and this PC has '
-        f'{max(room, 0):.1f} GB free with your apps running and room kept for them'
-    )
+def not_enough(total, room, need, model='a model'):
+    return f'there is not enough free memory: {model} needs about {need} GB, and this PC has {room_said(total, room)}'
+
 
 
 # ---- installing it ----------------------------------------------------------------------

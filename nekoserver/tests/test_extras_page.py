@@ -71,8 +71,8 @@ class AssistantChoicesTests(Base):
         self.assertEqual(tight['suggested'], MEDIUM)
         self.assertEqual(
             tight['choices'][2]['why_not'],
-            'It needs about 9 GB of free memory. This PC has 5.5 GB free for it with your apps running '
-            'and room kept for them to grow.',
+            'It needs about 9 GB of free memory. This PC has 7.5 GB free with your apps running, and keeps '
+            '2.0 GB for the apps to grow into, which leaves 5.5 GB for the assistant.',
         )
         self.assertEqual(tight['suggested'], assistant.fits(5.5)[-1][0])  # the terminal's own rule
 

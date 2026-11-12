@@ -301,7 +301,7 @@ def memory_findings(config, look):
         )
     if model_gb(config)[2]:
         smallest = min(memory for _name, _size, memory, _words in assistant.MODELS)
-        room = total - max(assistant.RESERVE_GIB, total * assistant.RESERVE_SHARE)
+        room = total - assistant.reserve_gib(total)
         if room < smallest:
             found.append(
                 finding(
