@@ -34,8 +34,10 @@ def settings(**times):
 
 
 def answers(*values):
+    """What is typed at each question in turn; Enter alone once these run out (the last
+    question of the page, how many nightly backups are kept, unless a test answers it)."""
     given = iter(values)
-    return lambda question='': next(given)
+    return lambda question='': next(given, '')
 
 
 class Ctx:
@@ -252,7 +254,7 @@ class SetupQuestionTests(unittest.TestCase):
                 6: '21:00',
                 7: '06:30',
                 8: '01:00',
-            }[len(asked)]
+            }.get(len(asked), '')
 
         printed = []
         guided_setup.choose_backup_times(ctx, prompt=prompt, output=printed.append)
@@ -304,14 +306,17 @@ class SetupQuestionTests(unittest.TestCase):
             shown = setup_progress.page_shown()
             self.assertEqual(shown['form'], 'backup_times')
             self.assertEqual(
-                shown['fields'], {'daily': '04:15', 'weekly_day': 'Sun', 'weekly': '03:00', 'monthly': '02:30'}
+                shown['fields'],
+                {'daily': '04:15', 'weekly_day': 'Sun', 'weekly': '03:00', 'monthly': '02:30', 'keep_host_backup': '3'},
             )
             self.assertEqual((shown['asking'], shown['weekdays'][-1], shown['night_end']), ('daily', 'Sun', 6))
-            return self.window_prompt('23:30', page)(question)
+            return self.window_prompt('23:30', {**page, 'keep_host_backup': '5'})(question)
 
         guided_setup.choose_backup_times(ctx, prompt=prompt, output=printed.append)
         self.assertEqual(ctx.config['backup_times'], page)
-        self.assertEqual(sum('(from the setup window)' in line for line in printed), 3)
+        # How many settings backups are kept came with the page too (0.50.0: 1 to 7).
+        self.assertEqual(ctx.config['host_backup']['keep_snapshots'], 5)
+        self.assertEqual(sum('(from the setup window)' in line for line in printed), 4)
         self.assertIsNone(setup_progress.page_shown(), 'the page is over once the answers are saved')
 
     def test_the_windows_skip_for_now_keeps_the_times_shown(self):
@@ -329,10 +334,11 @@ class SetupQuestionTests(unittest.TestCase):
         ctx = Ctx(self.config())
         printed = []
         first = self.window_prompt('23:30', {'weekly_day': 'Sat', 'weekly': '21:00', 'monthly': '07:00'})
-        prompts = iter([first, answers('01:15')])
+        later = answers('01:15')
+        prompts = iter([first])
 
         def prompt(question=''):
-            return next(prompts)(question)
+            return next(prompts, later)(question)
 
         guided_setup.choose_backup_times(ctx, prompt=prompt, output=printed.append)
         self.assertEqual(
@@ -356,8 +362,11 @@ class SetupQuestionTests(unittest.TestCase):
         ctx = Ctx(self.config())
         printed = []
         first = self.window_prompt('23:30', {'weekly_day': 'Sat', 'weekly': '1٩:0٠', 'monthly': '01:00'})
-        prompts = iter([first, answers('21:15')])
-        guided_setup.choose_backup_times(ctx, prompt=lambda question='': next(prompts)(question), output=printed.append)
+        later = answers('21:15')
+        prompts = iter([first])
+        guided_setup.choose_backup_times(
+            ctx, prompt=lambda question='': next(prompts, later)(question), output=printed.append
+        )
         self.assertEqual(
             ctx.config['backup_times'], {'daily': '23:30', 'weekly_day': 'Sat', 'weekly': '21:15', 'monthly': '01:00'}
         )
@@ -523,7 +532,7 @@ class SetupQuestionTests(unittest.TestCase):
         printed = []
         guided_setup.choose_backup_times(ctx, prompt=prompt, output=printed.append)
         self.assertFalse(any('yes or no' in question for question in asked), 'not offered to keep')
-        self.assertEqual(len(asked), 4)
+        self.assertEqual(len(asked), 5)  # the three times, the day, and how many are kept
         self.assertIn(
             f'The backup times in the settings ({template}) are not the ones chosen last time ({old}), '
             'so they are asked again.',
@@ -642,7 +651,7 @@ class SetupQuestionTests(unittest.TestCase):
                 return ''
 
             guided_setup.choose_backup_times(ctx, prompt=prompt, output=lambda *_: None)
-            self.assertEqual(len(asked), 4, plan)
+            self.assertEqual(len(asked), 5, plan)
         self.assertTrue(guided_setup.revisits_every_job(Ctx({})), 'no plan known: asked')
 
     def test_nobody_at_the_terminal_changes_nothing(self):

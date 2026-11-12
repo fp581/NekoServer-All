@@ -309,6 +309,68 @@ class SetupWindowTests(unittest.TestCase):
             ],
         )
 
+    def test_the_backups_page_also_says_how_many_are_kept_and_what_goes_where(self):
+        """0.50.0, the wizard (P05): a number from 1 to 7 for each kind of nightly backup, and
+        the table of what is backed up, on the same page as the times."""
+        state = self.backup_times_question()
+        page = state['question']['page']
+        page['fields'].update(keep_app_backup='3', keep_host_backup='3')
+        page['counts'] = [
+            {'group': 'app_backup', 'what': 'nightly app backups', 'value': 3, 'least': 1, 'most': 7, 'review': None},
+            {
+                'group': 'host_backup',
+                'what': 'nightly settings backups',
+                'value': 3,
+                'least': 1,
+                'most': 7,
+                'review': None,
+            },
+        ]
+        page['table'] = [
+            {'key': 'app_backup', 'what': 'The media apps', 'drive': 'media', 'when': 'every night at 04:15',
+             'kept': 'the newest 3', 'covers': 'about the last 3 nights', 'same_drive': False, 'note': None},
+            {'key': 'offline', 'what': 'Photos and Nextcloud files', 'drive': None, 'when': '', 'kept': '', 'covers': '',
+             'same_drive': True, 'note': 'Not set up.'},
+        ]  # fmt: skip
+        seen = self.page([state])
+        self.assertEqual(
+            [row[0] for row in seen['rows']][3:],
+            ['Keep the latest nightly app backups', 'Keep the latest nightly settings backups'],
+        )
+        self.assertEqual([row[1] for row in seen['rows']][3:], [['3'], ['3']])
+        self.assertIn('An older one is removed only after a new backup has succeeded.', seen['rows'][3][2])
+        self.assertEqual(
+            seen['backups'],
+            [
+                ['The media apps', 'every night at 04:15 · the newest 3 · about the last 3 nights'],
+                [
+                    'Photos and Nextcloud files',
+                    '',
+                    'This backup is on the same drive as what it protects. If that drive fails, both are gone.',
+                    'Not set up.',
+                ],
+            ],
+        )
+        # A number outside the limits is said, not sent; within them it goes with the page.
+        seen = self.page([{**state, 'fill': {'ask-page-keep_app_backup': '14'}}])
+        self.assertEqual(
+            (seen['posts'], seen['note']), ([], 'Keep the latest nightly app backups: a whole number from 1 to 7.')
+        )
+        seen = self.page([{**state, 'fill': {'ask-page-keep_app_backup': '5'}}])
+        self.assertEqual(
+            (seen['posts'][0][1]['fields']['keep_app_backup'], seen['posts'][0][1]['fields']['keep_host_backup']),
+            ('5', '3'),
+        )
+        # A count from before that is no longer offered: its review is beside it, and empty leaves it.
+        page['counts'][0].update(review='This server keeps the newest 14 nightly app backups.')
+        page['fields']['keep_app_backup'] = ''
+        seen = self.page([{**state, 'fill': {'ask-page-daily': '23:30'}}])
+        self.assertIn(
+            'This server keeps the newest 14 nightly app backups. Leave it empty to leave them as they are.',
+            seen['rows'][3][2],
+        )
+        self.assertEqual(seen['posts'][0][1]['fields']['keep_app_backup'], '')
+
     def test_a_monthly_time_after_the_night_is_refused_on_the_page(self):
         seen = self.page([self.backup_times_question(fill={'ask-page-monthly': '06:00'})])
         self.assertEqual(seen['posts'], [])

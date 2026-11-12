@@ -19,6 +19,7 @@ guided_setup.py
     The same password again:
     ask_again
     install_group
+    How many {field['what']} should be kept? ({least} to {most}, Enter for {offered} | leaves them as they are):
     When should the daily backups run? (HH:MM, Enter for {now['app']}):
     On which day should the weekly USB copy run? ({days}; Enter for {now['usb_day']}):
     At what time on that day? (HH:MM, Enter for {now['usb']}):

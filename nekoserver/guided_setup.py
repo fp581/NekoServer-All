@@ -805,6 +805,8 @@ def ask_on_page(key, question, default, valid, hint, prompt=input, output=print,
         if kind == 'skip':
             return default
         value = value.strip()
+        if not value:
+            return default  # left empty in the window: what Enter alone is in the terminal
         if valid(value):
             output(f'{question}{value}  (from the setup window)')
             value = normalise(value)
@@ -868,9 +870,21 @@ def choose_backup_times(ctx, prompt=None, output=None):
     now = job_times(ctx.config)
     night_end = ctx.config.get('maintenance', {}).get('night_end_hour', 6)
     own = {'daily': now['app'], 'weekly_day': now['usb_day'], 'weekly': now['usb'], 'monthly': now['monthly']}
+    counts = backup_counts(ctx.config)
     shown = {**own, 'monthly': monthly_offered(now['monthly'], night_end)}
-    with setup_progress.page(BACKUP_TIMES, shown, weekdays=list(WEEKDAYS), night_end=night_end):
+    shown.update({KEEP_FIELD + field['group']: count_offered(field) for field in counts})
+    page = setup_progress.page(
+        BACKUP_TIMES,
+        shown,
+        weekdays=list(WEEKDAYS),
+        night_end=night_end,
+        counts=counts,
+        table=backup_rows(ctx.config),
+    )
+    with page:
         chosen = ask_backup_times(ctx, now, night_end, prompt, output)
+        kept = ask_backup_counts(ctx, counts, prompt, output)
+    keep_counts(ctx, kept, output)
     # Settings from before 0.48.0 (no "backup_times" yet) gave each job a time of its own.
     moved = jobs_moved(ctx.config, now, chosen) if backup_times(ctx.config) is None else []
     if moved and chosen == own:
@@ -884,6 +898,89 @@ def choose_backup_times(ctx, prompt=None, output=None):
     ctx.config[BACKUP_TIMES] = chosen
     save_settings(ctx)
     times_settled(ctx, output, 'chosen')
+
+
+# How many nightly backups are kept (0.50.0, the user: "7 backups is insane do max 7
+# default 3"): a number from 1 to 7 for the app backups and one for the settings backups,
+# on the same page as the times. The numbers, their limits and what a change does are
+# backup_plan's; a count from before that setup no longer offers stays as it is, and
+# nothing is removed, until a number is chosen here.
+KEEP_FIELD = 'keep_'
+
+
+def backup_counts(config):
+    """The "keep the latest [N]" fields this server has (backup_plan.count_field): the
+    app backups only with media apps, the settings backups always."""
+    import backup_plan
+
+    groups = [row['group'] for row in backup_plan.table(config) if row.get('group')]
+    return [backup_plan.count_field(config, group) for group in dict.fromkeys(groups)]
+
+
+def backup_rows(config):
+    """What is backed up, where it goes, when, and how many are kept: the page's table."""
+    import backup_plan
+
+    return [
+        {key: row.get(key) for key in ('key', 'what', 'drive', 'when', 'kept', 'covers', 'same_drive', 'note')}
+        for row in backup_plan.table(config)
+    ]
+
+
+def count_offered(field):
+    """What a count's question offers: the number it has, or nothing for an earlier count
+    outside the limits, so that Enter leaves it as it is."""
+    return '' if field['earlier'] else str(field['value'])
+
+
+def ask_backup_counts(ctx, counts, prompt, output):
+    """One question for each count, on the backups page: {group: the number typed, '' for
+    Enter on a count that stays as it is}."""
+    chosen = {}
+    for field in counts:
+        least, most = field['least'], field['most']
+        output(
+            f"Every night: the newest {field['what']} are kept, and an older one is removed only after a new "
+            f'backup has succeeded. From {least} to {most}. This never deletes your photos, films or music.'
+        )
+        if field['review']:
+            output(field['review'])
+        offered = count_offered(field)
+        chosen[field['group']] = ask_on_page(
+            KEEP_FIELD + field['group'],
+            f"How many {field['what']} should be kept? ({least} to {most}, Enter "
+            + (f'for {offered}' if offered else 'leaves them as they are')
+            + '): ',
+            offered,
+            lambda answer, least=least, most=most: answer.isdigit() and least <= int(answer) <= most,
+            f'Type a whole number from {least} to {most}.',
+            prompt,
+            output,
+        )
+    return chosen
+
+
+def keep_counts(ctx, chosen, output):
+    """The numbers chosen written to the settings (backup_plan.set_count), once, and said.
+    Nothing is removed here: the scheduled job does that after its next backup that
+    succeeds."""
+    import backup_plan
+
+    changed = False
+    for group, answer in chosen.items():
+        if not answer:
+            continue
+        keep, earlier = backup_plan.count(ctx.config, group)
+        if earlier or keep != int(answer):
+            backup_plan.set_count(ctx.config, group, int(answer))
+            changed = True
+            what = backup_plan.COUNTED[group][0]
+            output(
+                f'The newest {answer} {what} are kept from now on; nothing is removed before the next backup succeeds.'
+            )
+            ctx.log(f'Backups kept: {answer} {what}')
+    if changed:
+        save_settings(ctx)
 
 
 def times_settled(ctx, output, how):

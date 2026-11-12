@@ -974,6 +974,22 @@ main > section {
   min-height: 1.4em;
   color: var(--amber);
 }
+/* The backups page's table: what is backed up, when, how many are kept. */
+.backup-table {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+}
+.backup-row {
+  display: grid;
+  gap: 2px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+}
+.backup-row small {
+  color: var(--muted);
+}
 /* What the chosen drive holds, under its line: the line is kept when it is empty, so
    choosing a drive moves nothing. */
 .drive-facts {

@@ -461,6 +461,47 @@
       weekly: timeInput('weekly', f.weekly, 'Time of the weekly USB copy'),
       monthly: timeInput('monthly', f.monthly, 'Time of the monthly check')
     };
+    // How many nightly backups are kept: a number for each kind, within its limits.
+    const counts = (page.counts || []).map(count => {
+      const input = el('input', {
+        type: 'number',
+        id: 'ask-page-keep_' + count.group,
+        min: String(count.least),
+        max: String(count.most),
+        step: '1',
+        inputmode: 'numeric',
+        'aria-label': 'How many ' + count.what + ' are kept'
+      });
+      input.value = f['keep_' + count.group] ?? '';
+      pageInputs['keep_' + count.group] = input;
+      return row(
+        'Keep the latest ' + count.what,
+        [input],
+        'From ' +
+          count.least +
+          ' to ' +
+          count.most +
+          '. An older one is removed only after a new backup has succeeded. This never deletes your photos, films or music.' +
+          (count.review ? ' ' + count.review + ' Leave it empty to leave them as they are.' : '')
+      );
+    });
+    // What is backed up, where it goes and when: read, not changed here.
+    const table = el('div', { class: 'backup-table', id: 'ask-page-backups' });
+    for (const line of page.table || [])
+      table.append(
+        el(
+          'div',
+          { class: 'backup-row' },
+          el('b', { text: line.what }),
+          el('span', { text: [line.when, line.kept, line.covers].filter(Boolean).join(' · ') }),
+          line.same_drive
+            ? el('small', {
+                text: 'This backup is on the same drive as what it protects. If that drive fails, both are gone.'
+              })
+            : null,
+          line.note ? el('small', { text: line.note }) : null
+        )
+      );
     $('ask-page').replaceChildren(
       row(
         'Daily backups',
@@ -478,7 +519,9 @@
         'On the 1st: every backup copy checked, a snapshot of every app and a restore test; the weekly app updates start at this time too. It must start at night, before ' +
           nightEnd(page) +
           '.'
-      )
+      ),
+      ...counts,
+      table
     );
   }
 
@@ -487,6 +530,13 @@
       if (!/^\d\d:\d\d$/.test(values[key])) return 'Every time needs hours and minutes, as HH:MM.';
     if (Number(values.monthly.slice(0, 2)) >= (page.night_end ?? 6))
       return 'The monthly check must start at night, before ' + nightEnd(page) + '.';
+    for (const count of page.counts || []) {
+      const kept = (values['keep_' + count.group] ?? '').trim();
+      // Empty is an answer only where a count from before stays as it is.
+      if (kept === '' && count.review) continue;
+      if (!/^\d+$/.test(kept) || Number(kept) < count.least || Number(kept) > count.most)
+        return 'Keep the latest ' + count.what + ': a whole number from ' + count.least + ' to ' + count.most + '.';
+    }
     return '';
   }
 
