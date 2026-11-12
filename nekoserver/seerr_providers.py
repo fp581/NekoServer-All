@@ -1,11 +1,37 @@
 """Create missing standard Seerr request providers, preserving existing choices."""
 
+import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from media_libraries import NOT_NEEDED, REQUEST_PROVIDERS, Client, SetupRequired, open_seerr, row
 from neko_common import app_port, safe_path
 
 SPECS = {'sonarr': (app_port('sonarr'), '/data/tv'), 'radarr': (app_port('radarr'), '/data/movies')}
+
+
+# What each app's requests are for, as existing_media names the kinds.
+KINDS = {'sonarr': 'tv', 'radarr': 'movies'}
+OWN_FOLDER = re.compile(r'/data/existing/[a-z]+(-new)?')
+
+
+def request_folders(config):
+    """{app: the folder a request's files are saved in, as the apps see it}: the person's
+    own folder where one was chosen for new films or shows ("save new ones here too",
+    existing_media.new_files_folder), else the library's own."""
+    import existing_media
+
+    return {app: existing_media.new_files_folder(config, kind) for app, kind in KINDS.items()}
+
+
+def wanted_folder(app, folder, standard, verify_only):
+    """The folder the provider must save into. Told by the caller (`folder`), it is
+    that one. A check that was not told (the readiness check) takes the folder the
+    provider has when it is the library's own or a person's own folder."""
+    library = SPECS[app][1]
+    if folder:
+        return folder
+    has = str(standard[0].get('activeDirectory', '')).rstrip('/') if verify_only and standard else ''
+    return has if OWN_FOLDER.fullmatch(has) else library
 
 
 def app_key(root, app):
@@ -73,11 +99,12 @@ def connection_matches(value, connection):
 PROVIDER = 'seerr:provider:'
 
 
-def provider(seerr, manager, root, app, apply, prompt, verify_only=False):
-    port, directory = SPECS[app]
+def provider(seerr, manager, root, app, apply, prompt, verify_only=False, folder=None):
+    port, library = SPECS[app]
     endpoint = settings_of(app)
     initial = records(seerr.call(endpoint))
     standard = current_standard(initial)
+    directory = wanted_folder(app, folder, standard, verify_only)
     if verify_only and not standard:
         raise SetupRequired('No standard request provider is configured; rerun --request-providers')
     key = app_key(root, app)
@@ -138,6 +165,12 @@ def provider(seerr, manager, root, app, apply, prompt, verify_only=False):
         languages = profiles(tested.get('languageProfiles'))
     if standard:
         existing = standard[0]
+        if str(existing.get('activeDirectory', '')).rstrip('/') == library != directory:
+            # Chosen after the provider was made: its folder is the person's to change.
+            raise SetupRequired(
+                f'Requests are still saved in {library}. To save them in your own folder, open Seerr, Settings, '
+                f'Services, {app.capitalize()}, and choose the root folder {directory}'
+            )
         if str(existing.get('activeDirectory', '')).rstrip('/') != directory or not any(
             p['id'] == existing.get('activeProfileId') for p in available
         ):
@@ -186,7 +219,10 @@ def provider(seerr, manager, root, app, apply, prompt, verify_only=False):
     return row(PROVIDER + app, 'pass', 'Default provider created, read back and tested through Seerr')
 
 
-def configure(root, apply=False, apps=('seerr', 'sonarr', 'radarr'), factory=Client, prompt=input, verify_only=False):
+def configure(
+    root, apply=False, apps=('seerr', 'sonarr', 'radarr'), factory=Client, prompt=input, verify_only=False, folders=None
+):
+    """`folders`: where each app's requests are saved (request_folders); the library's own without it."""
     if verify_only and apply:
         raise ValueError('Read-only verification cannot apply changes')
     selected = [app for app in SPECS if app in apps]
@@ -208,7 +244,8 @@ def configure(root, apply=False, apps=('seerr', 'sonarr', 'radarr'), factory=Cli
             manager = factory(app)
             try:
                 try:
-                    results.append(provider(client, manager, root, app, apply, prompt, verify_only))
+                    folder = (folders or {}).get(app)
+                    results.append(provider(client, manager, root, app, apply, prompt, verify_only, folder))
                 except SetupRequired as exc:
                     results.append(row(PROVIDER + app, 'needs_setup', str(exc)))
                 except (RuntimeError, ValueError, TypeError, KeyError, EOFError):

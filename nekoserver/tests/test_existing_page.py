@@ -1,7 +1,8 @@
 """0.50.0, the wizard (P03): media you already have. The user's own case: a folder of films
 on a storage box was given to setup, and Jellyfin could not see it once it ran. Now the
 folder is asked for once, checked as the apps' account, mounted into the apps before they
-start, and given a library of its own in Jellyfin. Nothing is copied.
+start, and given a library of its own in Jellyfin (music: in Navidrome). The person may
+also have new ones saved there, or have the folder copied into the library instead.
 
 The checks, the mounting and the library are existing_media's
 (tests/test_existing_media.py); here: the page and where setup acts on the answer."""
@@ -49,9 +50,10 @@ def typed(*answers):
 
 class PageTests(unittest.TestCase):
     def test_only_a_server_that_plays_films_is_asked_and_only_once(self):
-        self.assertEqual(existing_page.kinds({}), [('movies', 'films'), ('tv', 'shows')])
-        self.assertEqual(existing_page.kinds({'media_apps': {'movies': False}}), [])
-        ctx = context(media_apps={'movies': False})
+        self.assertEqual(existing_page.kinds({}), [('movies', 'films'), ('tv', 'shows'), ('music', 'music')])
+        self.assertEqual(existing_page.kinds({'media_apps': {'movies': False}}), [('music', 'music')])
+        self.assertEqual(existing_page.kinds({'media_apps': {'movies': False, 'music': False}}), [])
+        ctx = context(media_apps={'movies': False, 'music': False})
         never = mock.Mock(side_effect=AssertionError('asked'))
         self.assertFalse(existing_page.ask(ctx, never, never))
         # Answered no: saved as answered, and not asked again.
@@ -68,9 +70,10 @@ class PageTests(unittest.TestCase):
         ctx = context()
         said = []
         with mock.patch.object(existing_media, 'check', return_value=dict(FOUND)) as check:
-            # Yes; the films' folder; no shows (Enter alone).
-            self.assertTrue(existing_page.ask(ctx, typed('yes', ' /mnt/tank/films ', ''), said.append))
-        check.assert_called_once_with(ctx.config, 'movies', '/mnt/tank/films')
+            # Yes; the films' folder, used where it is, new ones not saved there; no shows, no music.
+            answers = typed('yes', ' /mnt/tank/films ', '', 'no', '', '')
+            self.assertTrue(existing_page.ask(ctx, answers, said.append))
+        check.assert_called_once_with(ctx.config, 'movies', '/mnt/tank/films', False)
         self.assertIn(
             'Your films: /mnt/tank/films (nas:/tank). They are used where they are; nothing is copied or changed.', said
         )
@@ -89,26 +92,148 @@ class PageTests(unittest.TestCase):
         said = []
         ctx = context()
         with mock.patch.object(existing_media, 'check', side_effect=[refused, dict(FOUND)]):
-            entry = existing_page.folder_asked(
-                ctx.config, 'movies', 'films', typed('/mnt/tank/films', '/mnt/tank/films'), said.append
+            found = existing_page.folder_found(
+                ctx.config, 'movies', 'films', (typed('/mnt/tank/films', '/mnt/tank/films'), said.append)
             )
-        self.assertEqual(entry['path'], '/mnt/tank/films')
+        self.assertEqual(found['path'], '/mnt/tank/films')
         self.assertIn(str(refused), said)
         self.assertIn('/mnt/tank/films is not a folder on this PC.', str(refused))
         # Three folders that cannot be used: none is taken, and that is said.
         with mock.patch.object(existing_media, 'check', side_effect=refused):
             self.assertIsNone(
-                existing_page.folder_asked(ctx.config, 'movies', 'films', typed('a', 'b', 'c'), said.append)
+                existing_page.folder_found(ctx.config, 'movies', 'films', (typed('a', 'b', 'c'), said.append))
             )
         self.assertIn('No folder of films is used for now. Run setup again to give one.', said)
 
     def test_the_words(self):
         asked = questions.Q['existing_media']
-        self.assertEqual(asked['title'], 'Do you have films or shows already that this server should use?')
-        self.assertIn('nothing is copied, and nothing in your folder is changed', asked['hint'])
+        self.assertEqual(asked['title'], 'Do you already have films, shows or music that this server should use?')
+        self.assertIn('Nothing in your folder is changed', asked['hint'])
+        self.assertEqual(
+            [label for _, label in questions.Q['existing_use']['choices']],
+            ['Use the files where they are (nothing is copied)', 'Copy them into the NekoServer library'],
+        )
+        self.assertEqual(questions.Q['existing_new_files']['title'], 'Save new {what} here too?')
+        self.assertIn('Your existing files are not moved', questions.Q['existing_new_files']['hint'])
         self.assertEqual((asked['yes'], asked['no']), ('Yes, I have some', 'No, start empty'))
         self.assertIn('not its network address', questions.Q['existing_folder']['hint'])
         self.assertEqual(questions.Q['existing_folder']['skip_label'], 'I have none')
+
+
+def writable(found, ok=True, **more):
+    answer = {'ok': True, 'note': 'New films are downloaded first and then copied into the folder.'}
+    if not ok:
+        answer = {
+            'ok': False,
+            'code': 'read_only',
+            'reason': 'It is read-only here, so new films cannot be saved there.',
+        }
+    return {**found, **more, 'new_files': answer}
+
+
+class NewFilesTests(unittest.TestCase):
+    """ "Save new ones here too" (the user: the server should use that location for the
+    rest of the library's downloads as well)."""
+
+    def ask(self, checks, *answers, **settings):
+        ctx, said = context(storage=dict(DRIVES), **settings), []
+        with mock.patch.object(existing_media, 'check', side_effect=checks) as check:
+            existing_page.one_kind(ctx.config, 'movies', 'films', (typed(*answers), said.append))
+        return ctx.config, said, check
+
+    def test_yes_saves_the_folder_as_the_place_for_new_ones(self):
+        config, said, check = self.ask([dict(FOUND), writable(FOUND)], '/mnt/tank/films', '1', 'yes')
+        self.assertEqual(check.call_args_list[1], mock.call(config, 'movies', '/mnt/tank/films', new_files=True))
+        self.assertIn('New films are downloaded first and then copied into the folder.', said)
+        entry = existing_media.extras(config)[0]
+        self.assertEqual((entry['use'], entry['new_files']), ('in_place', True))
+        self.assertEqual(existing_media.new_files_folder(config, 'movies'), '/data/existing/movies')
+
+    def test_it_is_not_asked_on_a_server_that_downloads_nothing(self):
+        off = {'media_apps': {'movies_downloads': False}}
+        config, said, check = self.ask([dict(FOUND)], '/mnt/tank/films', '1', **off)
+        self.assertFalse(existing_media.extras(config)[0]['new_files'])
+        self.assertFalse(existing_page.downloads(off, 'tv'))
+        self.assertTrue(existing_page.downloads(off, 'music'))
+
+    def test_a_read_only_folder_is_still_used_and_another_place_is_asked_for(self):
+        # The library: the folder is used read-only, nothing more.
+        config, said, _ = self.ask([dict(FOUND), writable(FOUND, ok=False)], '/mnt/tank/films', '1', 'yes', '1')
+        self.assertIn('It is read-only here, so new films cannot be saved there.', said)
+        self.assertIn('New films are saved in the NekoServer library.', said)
+        self.assertEqual([(e['use'], e['new_files']) for e in existing_media.extras(config)], [('in_place', False)])
+        self.assertEqual(existing_media.new_files_folder(config, 'movies'), '/data/movies')
+        # Another folder of the person's: checked for writing, and the one place for new films.
+        other = writable(FOUND, path='/mnt/big/new-films', mount='/mnt/big', share='/dev/sdd1', fstype='ext4')
+        config, said, check = self.ask(
+            [dict(FOUND), writable(FOUND, ok=False), other], '/mnt/tank/films', '1', 'yes', '2', '/mnt/big/new-films'
+        )
+        self.assertEqual(check.call_args_list[2], mock.call(config, 'movies', '/mnt/big/new-films', True))
+        self.assertEqual(
+            [(e['path'], e['use'], e['new_files']) for e in existing_media.extras(config)],
+            [('/mnt/tank/films', 'in_place', False), ('/mnt/big/new-films', 'new_files', True)],
+        )
+        self.assertEqual(existing_media.new_files_folder(config, 'movies'), '/data/existing/movies-new')
+
+
+class CopyTests(unittest.TestCase):
+    """ "Copy them into the NekoServer library": chosen on the page, done once the library is there."""
+
+    SHOWN = {
+        'source': '/mnt/tank/films', 'destination': '/mnt/media/library/movies', 'files': 12,
+        'bytes': 12_300_000_000, 'free': 80_000_000_000, 'fits': True, 'conflicts': ['Old Film (1999).mkv'],
+    }  # fmt: skip
+
+    def test_the_choice_is_kept_until_the_copy_and_nothing_is_mounted_for_it(self):
+        ctx, said = context(), []
+        with mock.patch.object(existing_media, 'check', return_value=dict(FOUND)):
+            existing_page.one_kind(ctx.config, 'movies', 'films', (typed('/mnt/tank/films', '2'), said.append))
+        self.assertEqual(ctx.config[existing_page.COPIES], [{'holds': 'movies', 'path': '/mnt/tank/films'}])
+        self.assertNotIn('placement', ctx.config)
+        self.assertIn('copied into the NekoServer library once its drive is ready', said[-1])
+
+    def test_the_copy_says_what_it_will_do_then_copies_and_forgets_the_folder(self):
+        ctx = context(**{existing_page.COPIES: [{'holds': 'movies', 'path': '/mnt/tank/films'}]})
+        ctx.persist_config = mock.Mock()
+        with (
+            mock.patch.object(existing_media, 'copy_preview', return_value=dict(self.SHOWN)),
+            mock.patch.object(existing_media, 'copy_now', return_value={'status': 'copied', 'copied': 11}) as now,
+        ):
+            self.assertEqual(existing_page.copy(ctx), [])
+        now.assert_called_once_with(ctx.config, 'movies', '/mnt/tank/films')
+        self.assertEqual(
+            ctx.logs[0],
+            'Copying /mnt/tank/films to /mnt/media/library/movies: 12 files, 12.3 GB; 80.0 GB free. Your folder is '
+            'not changed. 1 files are already in the library with other content and are left as they are: '
+            'Old Film (1999).mkv',
+        )
+        self.assertEqual(ctx.logs[1], 'Copied into the library: 11 files from /mnt/tank/films')
+        self.assertNotIn(existing_page.COPIES, ctx.config)
+        ctx.persist_config.assert_called_once()
+
+    def test_a_copy_that_cannot_be_made_says_why_and_is_tried_again_next_time(self):
+        wanted = [{'holds': 'movies', 'path': '/mnt/tank/films'}, 'not a folder entry']
+        ctx = context(**{existing_page.COPIES: list(wanted)})
+        away = existing_media.Refused('not_a_folder', path='/mnt/tank/films')
+        with (
+            mock.patch.object(existing_media, 'copy_preview', side_effect=away),
+            mock.patch.object(existing_media, 'copy_now', side_effect=AssertionError('copied')),
+        ):
+            self.assertEqual(existing_page.copy(ctx), wanted)  # the step goes on
+        self.assertIn('was not copied: /mnt/tank/films is not a folder on this PC.', ctx.logs[0])
+        self.assertEqual(ctx.config[existing_page.COPIES], wanted)
+        # Nothing chosen: nothing looked at.
+        self.assertEqual(existing_page.copy(context()), [])
+
+
+class MusicTests(unittest.TestCase):
+    def test_navidrome_gets_its_library_where_the_libraries_are_made(self):
+        rows = [{'check': 'navidrome:existing:music', 'status': 'pass'}]
+        with mock.patch.object(existing_media, 'music_libraries', return_value=rows) as made:
+            self.assertEqual(existing_page.music_libraries({'a': 1}, True), rows)
+        made.assert_called_once_with({'a': 1}, True)
+        source = (ROOT / 'onboard.py').read_text()
+        self.assertIn('existing_page.music_libraries(config, a.apply)', source)
 
 
 class TableTests(unittest.TestCase):

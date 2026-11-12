@@ -13,7 +13,7 @@ backup_secrets.py
     Backup password:
     Same backup password again:
 existing_page.py
-    existing_folder
+    existing_new_files
     existing_media
 guided_setup.py
     Show a login now? Type its number (Enter alone: go on):

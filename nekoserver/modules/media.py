@@ -302,6 +302,8 @@ def _run(context):
         if target.is_symlink():
             raise RuntimeError(f'Refusing symlink media directory: {target}')
         library_folder(target, uid, gid, context.log)
+    # Folders the person chose to copy into the library: now that its folders are there.
+    existing_page.copy(context)
     # No recursive chown: preserve existing users and files. Create fresh appdata owned by configured user.
     for name in selected:
         target = configs / name

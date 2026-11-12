@@ -221,6 +221,8 @@ def main(argv=None):
         library_results = media_libraries.configure(
             root, media, a.apply, apps, more=existing_page.libraries(config, a.apply)
         )
+        # Navidrome's library for the person's own music folder, used where it is.
+        library_results += existing_page.music_libraries(config, a.apply)
         if a.request_providers:
             library_results = [r for r in library_results if r['check'] != 'seerr:request_providers']
         findings += library_results
@@ -228,7 +230,9 @@ def main(argv=None):
             print(f"{r['status']:>11}  {r['check']}" + (': ' + r['reason'] if r.get('reason') else ''))
     if a.report_only or not a.configure:
         if a.request_providers:
-            provider_results = seerr_providers.configure(root, a.apply, apps)
+            provider_results = seerr_providers.configure(
+                root, a.apply, apps, folders=seerr_providers.request_folders(config)
+            )
             findings += provider_results
             for r in provider_results:
                 print(f"{r['status']:>11}  {r['check']}" + (': ' + r['reason'] if r.get('reason') else ''))
@@ -276,7 +280,9 @@ def main(argv=None):
         result = run_program(script, cmd)
     provider_results = []
     if a.request_providers:
-        provider_results = seerr_providers.configure(root, a.apply, apps)
+        provider_results = seerr_providers.configure(
+            root, a.apply, apps, folders=seerr_providers.request_folders(config)
+        )
         for r in provider_results:
             print(f"{r['status']:>11}  {r['check']}" + (': ' + r['reason'] if r.get('reason') else ''))
     findings = report(root, films, not a.skip_http, apps, music)

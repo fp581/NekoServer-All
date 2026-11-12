@@ -304,9 +304,9 @@ Q = {
     # ---- the assistant
     'existing_media': {
         'screen': 'Media you already have',
-        'title': 'Do you have films or shows already that this server should use?',
-        'hint': 'On this PC, on another drive, or on a storage box whose folder is connected to this PC. They are '
-        'used where they are: nothing is copied, and nothing in your folder is changed.',
+        'title': 'Do you already have films, shows or music that this server should use?',
+        'hint': 'On this PC, on another drive, or on a storage box whose folder is connected to this PC. '
+        'Nothing in your folder is changed.',
         'kind': 'yesno',
         'yes': 'Yes, I have some',
         'no': 'No, start empty',
@@ -321,6 +321,46 @@ Q = {
         'skip': '',
         'skip_label': 'I have none',
         'how': 'Type the folder, then press Enter. Enter alone when you have none.',
+        'example': {'what': 'films'},
+    },
+    'existing_use': {
+        'screen': 'Media you already have',
+        'title': 'How should this server use your {what}?',
+        'hint': 'Your folder is kept as it is either way.',
+        'kind': 'choice',
+        'choices': [
+            ('1', 'Use the files where they are (nothing is copied)'),
+            ('2', 'Copy them into the NekoServer library'),
+        ],
+        'how': 'Type 1 or 2, then press Enter. Enter alone takes the first.',
+        'example': {'what': 'films'},
+    },
+    'existing_new_files': {
+        'screen': 'Media you already have',
+        'title': 'Save new {what} here too?',
+        'hint': 'New downloads will be saved in this folder. Your existing files are not moved.',
+        'kind': 'yesno',
+        'yes': 'Yes, save new ones here',
+        'no': 'No, in the NekoServer library',
+        'example': {'what': 'films'},
+    },
+    'existing_new_place': {
+        'screen': 'Media you already have',
+        'title': 'Where should new {what} be saved?',
+        'kind': 'choice',
+        'choices': [('1', 'In the NekoServer library'), ('2', 'In another folder of mine')],
+        'how': 'Type 1 or 2, then press Enter. Enter alone takes the first.',
+        'example': {'what': 'films'},
+    },
+    'existing_new_folder': {
+        'screen': 'Media you already have',
+        'title': 'Which folder should new {what} be saved in?',
+        'hint': 'The folder as this PC sees it. The apps must be able to write there.',
+        'kind': 'text',
+        'send': 'Use this folder',
+        'skip': '',
+        'skip_label': 'In the NekoServer library instead',
+        'how': 'Type the folder, then press Enter. Enter alone saves them in the NekoServer library.',
         'example': {'what': 'films'},
     },
     'assistant_model': {
