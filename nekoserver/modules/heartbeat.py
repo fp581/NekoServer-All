@@ -11,6 +11,7 @@ import subprocess
 import sys
 
 import native_runtime
+import outside_request
 from neko_common import VERSION, atomic_json, safe_path, check_units, write_units
 
 DEPENDENCIES = ['system', 'recovery']
@@ -38,6 +39,80 @@ def interval(config):
     if type(value) is not int or not 60 <= value <= 3600:
         raise RuntimeError('heartbeat interval must be 60..3600 seconds')
     return value
+
+
+def plain_time(seconds):
+    """A number of seconds as a person sets it at the monitor: "5 minutes", "90 seconds"."""
+    if seconds % 3600 == 0:
+        number, unit = seconds // 3600, 'hour'
+    elif seconds % 60 == 0:
+        number, unit = seconds // 60, 'minute'
+    else:
+        number, unit = seconds, 'second'
+    return f'{number} {unit}' + ('' if number == 1 else 's')
+
+
+def schedule(config):
+    """What to set at the outside monitor so it agrees with this server's check-ins.
+
+    The period is the timer's own (OnUnitInactiveSec in definitions, from
+    heartbeat.interval_seconds; five minutes unless changed). The grace time is twice
+    the period: one check-in may fail and the next one follows a period and up to 40
+    seconds later (the job's time limit), so a single lost check-in raises no warning.
+    The monitor warns about period + grace after the last check-in it got.
+
+    Returns {'interval_seconds', 'grace_seconds', 'interval_words', 'grace_words',
+             'warns_after_seconds', 'warns_after_words'}.
+    """
+    period = interval(config)
+    grace = 2 * period
+    return {
+        'interval_seconds': period,
+        'grace_seconds': grace,
+        'interval_words': plain_time(period),
+        'grace_words': plain_time(grace),
+        'warns_after_seconds': period + grace,
+        'warns_after_words': plain_time(period + grace),
+    }
+
+
+def send_test_checkin(address, opener=None):
+    """Send one check-in to the monitor's ping address, as the scheduled job does, and
+    say what the monitor answered.
+
+    Returns {'address': 'ok' | 'invalid',
+             'server': 'accepted' | 'rejected' | 'timed_out' | 'unreachable' | 'untrusted'
+                       | 'redirected' | 'not_sent',
+             'http_status': the answer's number, or None when there was no answer,
+             'timing': 'not_tested',
+             'warning': 'not_tested'}
+    "accepted" means the monitor took one check-in. Whether its period and grace time
+    are set as schedule() says, and whether its warning reaches the person, are theirs
+    to look at and are kept apart (outside_request.observed).
+    The address is in no log, no command line and not in the result.
+    """
+    result = {
+        'address': 'ok' if endpoint(address) else 'invalid',
+        'server': outside_request.NOT_SENT,
+        'http_status': None,
+        'timing': outside_request.NOT_TESTED,
+        'warning': outside_request.NOT_TESTED,
+    }
+    if result['address'] != 'ok':
+        return result
+    happened, status = outside_request.send(address, 'GET', None, None, opener)
+    result.update(server='rejected' if happened == outside_request.REFUSED else happened, http_status=status)
+    return result
+
+
+def set_up_later():
+    """The step's result when the person chooses "Set up outage warnings later": it stays
+    on the list of things still to do, nothing is installed and nothing is claimed."""
+    return {
+        'status': 'needs_setup',
+        'reason': 'Outage warnings are not set up yet. Everything else works without them. '
+        'Run setup again when you want them.',
+    }
 
 
 def definitions(config, binary, private):
@@ -138,6 +213,13 @@ def run(context):
             'status': 'needs_setup',
             'reason': 'Configure an independent monitor and enter its private ping URL through interactive heartbeat setup',
         }
+    return install(context, address)
+
+
+def install(context, address):
+    """Save the ping address (root-only) and start the check-in timer. For a caller that
+    has the address already (the setup window's outage form): nothing is asked."""
+    private = safe_path(PRIVATE)
     if not endpoint(address):
         raise RuntimeError('Invalid heartbeat destination')
     if not shutil.which('curl'):

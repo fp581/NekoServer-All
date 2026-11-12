@@ -363,6 +363,18 @@ def not_possible(ctx):
     return None
 
 
+def wanted_packages(opts, vendors, has_browser):
+    """The packages the TV step installs: Steam and its controller rules, the Vulkan
+    driver for Intel or AMD graphics (`vendors`: gpu.graphics), Firefox when the PC has
+    no browser yet, and Bluetooth unless tv.bluetooth is false."""
+    packages = ['steam', 'steam-devices', *vulkan_packages(vendors)]
+    if not has_browser:
+        packages.append('firefox')
+    if opts.get('bluetooth', True):
+        packages += ['bluez', 'bluez-utils']
+    return packages
+
+
 def run(ctx):
     if not ctx.apply:
         ctx.log('TV setup available through the tv/full profile with --apply')
@@ -421,11 +433,7 @@ def run(ctx):
             + (" (NVIDIA needs its maker's driver, installed your Linux's own way)" if 'nvidia' in vendors else '')
             + '; installing Steam without a Vulkan driver package'
         )
-    packages = ['steam', 'steam-devices', *vulkan_packages(vendors)]
-    if not browser():
-        packages.append('firefox')
-    if opts.get('bluetooth', True):
-        packages += ['bluez', 'bluez-utils']
+    packages = wanted_packages(opts, vendors, bool(browser()))
     missing = [p for p in packages if not family.installed(p)]
     unavailable = [p for p in missing if not family.available(p) or (p == 'steam' and not steam_ready(family))]
     if unavailable:

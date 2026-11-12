@@ -6,11 +6,14 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
+import string
 import subprocess
 import sys
 
 import native_runtime
+import outside_request
 from neko_common import VERSION, atomic_json, safe_path, check_units, write_units
 
 DEPENDENCIES = ['dashboard']
@@ -44,6 +47,111 @@ def endpoint(value):
 
 def valid_token(token):
     return isinstance(token, str) and len(token) <= 512 and re.fullmatch(r'[A-Za-z0-9._-]*', token) is not None
+
+
+# The public ntfy server, for people who run none of their own.
+PUBLIC_SERVER = 'https://ntfy.sh'
+# What the test says on the phone. Nothing about this server is in it.
+TEST_TITLE = 'NekoServer test'
+TEST_MESSAGE = 'This is a test from NekoServer setup. If you can read it on your phone, alerts will reach you.'
+
+
+def new_topic_name():
+    """A topic name nobody can guess, for people who have none: "neko-" and 24 random
+    letters and digits. A name that is hard to guess is not a lock: on a server where
+    anyone may read (reading_test says "open"), whoever learns the name reads the alerts."""
+    letters = string.ascii_lowercase + string.digits
+    return 'neko-' + ''.join(secrets.choice(letters) for _ in range(24))
+
+
+def topic_address(name, server=PUBLIC_SERVER):
+    """The full topic address for a topic name on a server, or '' when the two do not
+    make an acceptable one (endpoint)."""
+    if not isinstance(name, str) or not isinstance(server, str):
+        return ''
+    address = server.rstrip('/') + '/' + name
+    return address if endpoint(address) else ''
+
+
+def _token_header(token):
+    return {'Authorization': 'Bearer ' + token} if token else {}
+
+
+def _not_sent(address, token):
+    """What a test starts as: which of the two entries are acceptable, nothing sent yet."""
+    return {
+        'address': 'ok' if endpoint(address) else 'invalid',
+        'token': 'none' if token == '' else 'ok' if valid_token(token) else 'invalid',
+        'server': outside_request.NOT_SENT,
+        'http_status': None,
+    }
+
+
+def _answer_word(happened, status, yes):
+    """ntfy's answer in one word: 401 means it does not know the token (or wants one),
+    403 means it knows who asks and does not allow it."""
+    if happened == outside_request.ACCEPTED:
+        return yes
+    if status == 401:
+        return 'wrong_token'
+    if status == 403:
+        return 'not_allowed'
+    return happened
+
+
+def send_test(address, token='', opener=None):
+    """Send one test message to the topic and say what its server answered.
+
+    Returns {'address': 'ok' | 'invalid',
+             'token': 'ok' | 'invalid' | 'none',
+             'server': 'accepted' | 'wrong_token' | 'not_allowed' | 'refused' | 'redirected'
+                       | 'timed_out' | 'unreachable' | 'untrusted' | 'not_sent',
+             'http_status': the answer's number, or None when there was no answer,
+             'phone': 'not_tested'}
+    "accepted" means the server took the message, not that a phone showed it: whether it
+    arrived is the person's answer (outside_request.observed), kept apart from this.
+    The address and the token are in no log, no command line and not in the result.
+    """
+    result = {**_not_sent(address, token), 'phone': outside_request.NOT_TESTED}
+    if result['address'] != 'ok' or result['token'] == 'invalid':
+        return result
+    headers = {'Title': TEST_TITLE, 'Content-Type': 'text/plain; charset=utf-8', 'Priority': '3'}
+    headers.update(_token_header(token))
+    happened, status = outside_request.send(address, 'POST', headers, TEST_MESSAGE.encode(), opener)
+    result.update(server=_answer_word(happened, status, 'accepted'), http_status=status)
+    return result
+
+
+def reading_test(address, token='', opener=None):
+    """Ask the topic's server who may read the topic (ntfy answers that at <topic>/auth;
+    nothing is published).
+
+    With no token: 'open' means anyone who knows the address reads the alerts without
+    signing in. With a token: 'allowed' means that token may read, so it can be used in
+    the phone app; 'not_allowed' means it may only send, and must not be put in the phone.
+
+    Returns {'address': 'ok' | 'invalid',
+             'token': 'ok' | 'invalid' | 'none',
+             'server': 'open' | 'allowed' | 'wrong_token' | 'not_allowed' | 'refused'
+                       | 'redirected' | 'timed_out' | 'unreachable' | 'untrusted' | 'not_sent',
+             'http_status': the answer's number, or None when there was no answer}
+    """
+    result = _not_sent(address, token)
+    if result['address'] != 'ok' or result['token'] == 'invalid':
+        return result
+    happened, status = outside_request.send(address + '/auth', 'GET', _token_header(token), None, opener)
+    result.update(server=_answer_word(happened, status, 'allowed' if token else 'open'), http_status=status)
+    return result
+
+
+def set_up_later():
+    """The step's result when the person chooses "Set up alerts later": it stays on the
+    list of things still to do, nothing is installed and nothing is claimed."""
+    return {
+        'status': 'needs_setup',
+        'reason': 'Phone alerts are not set up yet. The dashboard on the server still shows '
+        'everything. Run setup again when you want them.',
+    }
 
 
 def asked_privately(key, valid, hint, ask=None):
@@ -163,7 +271,7 @@ def current_destination(context, private):
 
 
 def run(context):
-    timing = options(context.config)
+    options(context.config)
     if not context.apply:
         context.log('Background notifications available with --apply; configure your own HTTPS ntfy topic')
         return
@@ -192,6 +300,14 @@ def run(context):
             'status': 'needs_setup',
             'reason': 'Set a private HTTPS ntfy topic through interactive notification setup; no destination was guessed',
         }
+    return install(context, address, token)
+
+
+def install(context, address, token=''):
+    """Save the destination (root-only) and start the alert timer. For a caller that has
+    the address and the token already (the setup window's alerts form): nothing is asked."""
+    timing = options(context.config)
+    private = safe_path(PRIVATE_CONFIG)
     if not endpoint(address) or not valid_token(token):
         raise RuntimeError('Invalid private notification destination or token')
     project = Path(__file__).resolve().parents[1]
