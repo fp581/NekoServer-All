@@ -70,5 +70,3 @@ uninstaller.py
     Numbers to switch, "all" for everything, or Enter to go on:
     Remove everything listed above? Type yes to go on, anything else to stop:
     Type exactly {phrase} to go on:
-wizard.py
-    earlier_settings

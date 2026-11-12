@@ -46,10 +46,10 @@ class WordsTests(unittest.TestCase):
         self.assertIn('It is not shown while you type.', questions.terminal('alerts_token'))
 
     def test_the_window_gets_a_title_a_hint_and_buttons_that_say_what_they_do(self):
-        page = questions.window('earlier_settings')
-        self.assertEqual(page['title'], 'This PC already has a NekoServer server. Keep its settings?')
+        page = questions.window('alert_arrived', said='The alert server accepted the test message.')
+        self.assertEqual(page['title'], 'Did the test message arrive on your phone?')
         self.assertEqual(
-            page['choices'], [{'answer': 'yes', 'label': 'Keep them'}, {'answer': 'no', 'label': 'Start fresh'}]
+            page['choices'], [{'answer': 'yes', 'label': 'Yes, it arrived'}, {'answer': 'no', 'label': 'Not yet'}]
         )
         page = questions.window('alerts_token')
         self.assertEqual(

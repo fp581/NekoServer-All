@@ -45,15 +45,6 @@ SKIP = 'Skip for now'
 #   screen  where in setup it comes (the review page's order)
 Q = {
     # ---- before setup starts
-    'earlier_settings': {
-        'screen': 'Starting setup',
-        'title': 'This PC already has a NekoServer server. Keep its settings?',
-        'hint': 'Choose "Keep them" when you are updating. "Start fresh" asks for every drive and password again.',
-        'kind': 'yesno',
-        'yes': 'Keep them',
-        'no': 'Start fresh',
-        'old': 'Use them for this release (yes when updating)? [yes/no]:',
-    },
     'keep_fewer': {
         'screen': 'Starting setup',
         'title': 'Keep fewer old backups from now on?',

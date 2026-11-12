@@ -111,6 +111,22 @@ class WizardFlowTests(unittest.TestCase):
         account = mock.patch.object(wizard.pwd, 'getpwuid', return_value=pwd.getpwuid(os.getuid()))
         account.start()
         self.addCleanup(account.stop)
+        # What is on this PC is read from this test's own folders: no schedules of a server
+        # installed on the machine the tests run on, no job cut off.
+        import install_state
+
+        def here(root, config, default_state):
+            return install_state.found(
+                root=root,
+                settings=config,
+                units=Path(self.tmp.name) / 'no-units',
+                default_state=default_state,
+                journals=(),
+            )
+
+        found = mock.patch.object(wizard, 'what_is_here', here)
+        found.start()
+        self.addCleanup(found.stop)
         # The template names the real /srv/nekoserver: on a PC running NekoServer its setup
         # state there would be read (or refused to a normal user). This test's own folder.
         folder = mock.patch.object(wizard, 'data_folder', return_value=self.root / 'ssd')
@@ -243,8 +259,14 @@ class WizardFlowTests(unittest.TestCase):
         self.saved(self.root.parent / 'nekoserver-v0.30.0/my-config.json', 'kept')
         self.saved(self.root.parent / 'nekoserver-v0.29.0/my-config.json', 'older')
         self.saved(self.root / 'ssd/installer/releases/v0.30.0/config.json', 'ssd')
-        asked, out = self.setup_until_ready('yes')
-        self.assertIn('Keep its settings?', asked[0])
+        asked, out = self.setup_until_ready('')
+        # 0.50.0: said first, with the one choice that applies; Enter alone takes it.
+        self.assertIn('=== NekoServer was found on this PC. What would you like to do? ===', out)
+        self.assertTrue(
+            any('An earlier copy of NekoServer (0.30.0) on this PC still has your settings' in line for line in out)
+        )
+        self.assertIn('  1) Use these saved answers', out)
+        self.assertIn('Enter alone: 1, Use these saved answers', asked[0])
         self.assertTrue(any(str(self.root.parent / 'nekoserver-v0.30.0/my-config.json') in line for line in out))
         self.assertEqual(self.settings_uuid(), 'kept')
         self.assertEqual((self.root / 'my-config.json').stat().st_mode & 0o777, 0o600)
@@ -254,17 +276,22 @@ class WizardFlowTests(unittest.TestCase):
         self.saved(self.root / 'ssd/installer/releases/v0.29.0/config.json', 'older')
         self.saved(self.root / 'ssd/installer/releases/v0.31.0.old/config.json', 'set aside')
         (self.root.parent / 'nekoserver-v0.30.0').mkdir()  # left without settings
-        self.setup_until_ready('yes')
+        self.setup_until_ready()
         self.assertEqual(self.settings_uuid(), 'ssd')
 
-    def test_saying_no_starts_from_the_template(self):
+    def test_saying_no_there_changes_nothing_and_there_is_no_start_fresh(self):
         self.saved(self.root.parent / 'nekoserver-v0.30.0/my-config.json', 'kept')
-        asked, out = self.setup_until_ready('no')
-        self.assertTrue(any('asks for the drives and passwords again' in line for line in out))
-        self.assertEqual(self.settings_uuid(), '')
+        out = []
+        execute = mock.Mock()
+        code = wizard.run(execute, self.root / 'state', prompt=answers('no'), output=out.append, root=self.root)
+        self.assertEqual(code, 0)
+        execute.assert_not_called()
+        self.assertIn('Nothing was changed. Run  sudo bash install.sh  when you are ready.', out)
+        self.assertFalse((self.root / 'my-config.json').exists())  # no new settings file was made
+        self.assertFalse([line for line in out if 'Start fresh' in line or 'drives and passwords again' in line])
 
-    def test_stopping_at_that_question_keeps_them_for_the_next_run(self):
-        # Ctrl+C counted as "no": a new settings file was made, and since it then
+    def test_stopping_at_that_page_keeps_them_for_the_next_run(self):
+        # Ctrl+C counted as "no" once: a new settings file was made, and since it then
         # existed, no later run offered the earlier settings again.
         self.saved(self.root.parent / 'nekoserver-v0.30.0/my-config.json', 'kept')
 
@@ -272,10 +299,9 @@ class WizardFlowTests(unittest.TestCase):
             raise KeyboardInterrupt
 
         execute, state = mock.Mock(), self.root / 'state'
-        with self.assertRaises(KeyboardInterrupt):
-            wizard.run(execute, state, prompt=stopped, output=print, root=self.root)
+        self.assertEqual(wizard.run(execute, state, prompt=stopped, output=lambda line: None, root=self.root), 0)
         self.assertFalse((self.root / 'my-config.json').exists())
-        self.setup_until_ready('yes')
+        self.setup_until_ready('')
         self.assertEqual(self.settings_uuid(), 'kept')
 
     def test_settings_already_here_are_used_without_asking(self):

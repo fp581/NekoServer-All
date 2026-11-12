@@ -19,7 +19,6 @@ import termios
 import explanations
 import guided_setup
 import neko_common
-import questions
 import setup_gui
 import setup_progress
 from neko_common import (
@@ -175,21 +174,15 @@ def earlier_settings(root=ROOT, output=None):
     return None
 
 
-def take_earlier_settings(root=ROOT, account=None, prompt=input, output=print):
-    """Offer the settings earlier_settings finds; True when they were copied in as
-    my-config.json. Without them an update would set the server up from the start."""
+def take_earlier_settings(root=ROOT, account=None, output=print):
+    """The settings earlier_settings finds, copied in as my-config.json; True when they
+    were. Without them an update would set the server up from the start. Not asked
+    about here: the page before it (existing_installation) says what was found and
+    takes the person's choice."""
     source = earlier_settings(root, output)
     if source is None:
         return False
-    output('This PC already has a NekoServer server set up. Its settings are in ' + str(source) + '.')
-    answer = questions.yes_no('earlier_settings', prompt, output)
-    if answer is None:
-        # Stopped here (Ctrl+C, Ctrl+D): no new settings file, or the next run would
-        # never offer these again and ask for every drive and password from the start.
-        raise KeyboardInterrupt
-    if not answer:
-        output('A new settings file is made instead: setup asks for the drives and passwords again.')
-        return False
+    output('The settings of the server on this PC are in ' + str(source) + '.')
     path = Path(root) / SETTINGS
     atomic_json(path, read_json(source))
     if account is not None:
@@ -739,6 +732,113 @@ def show_end(config, data, plan, states, page, output):
         output('passed, but no real playback was tested yet. Play something once to be sure.')
 
 
+# ---- NekoServer is already on this PC (0.50.0, the wizard: P00) --------------------------
+# Shown only when something of a server, or saved answers, is found (install_state.py):
+# what it is, and the choices that apply. Never on a PC with nothing on it.
+EXISTING_TITLE = 'NekoServer was found on this PC. What would you like to do?'
+JOBS_CUT_OFF = {
+    'upgrade': 'An update of NekoServer was cut off part-way. It has to finish before anything else.',
+    'drive_move': 'Moving NekoServer to another drive was cut off part-way. It has to finish before anything else.',
+}
+
+
+def found_said(found):
+    """The lines under the title: what is on this PC."""
+    kind, job = found['kind'], found.get('job') or {}
+    if kind == 'unfinished' and job.get('kind') in JOBS_CUT_OFF:
+        return [JOBS_CUT_OFF[job['kind']]]
+    if kind == 'unfinished':
+        where = f" It stopped at: {title(job['step'])}." if job.get('step') else ''
+        return ['Setup was started here and stopped before it finished.' + where]
+    if kind == 'installed':
+        version = f" {found['version']}" if found.get('version') else ''
+        place = f" Its apps and files are on {found['location']}." if found.get('location') else ''
+        lines = [f'NekoServer{version} is set up on this PC.{place}']
+        waiting = found.get('waiting') or []
+        if waiting:
+            lines.append(
+                f'{len(waiting)} things still wait for you: ' + ', '.join(title(step) for step in waiting) + '.'
+            )
+        return lines
+    if kind == 'older_folder':
+        return [
+            f"An earlier copy of NekoServer ({found.get('settings_from') or 'an earlier release'}) on this PC still "
+            'has your settings. Nothing is installed from this copy yet.'
+        ]
+    return ['Your answers from an earlier start of setup are saved here. Nothing has been installed yet.']
+
+
+def choice_said(found, choice):
+    """(what a choice is called, the line under it)."""
+    job = found.get('job') or {}
+    if choice == 'continue' and job.get('kind') in JOBS_CUT_OFF:
+        return 'Finish what was cut off', 'Nothing else can be changed until this is finished.'
+    if choice == 'continue':
+        where = f' Goes on at "{title(job["step"])}".' if job.get('step') else ''
+        return 'Continue unfinished setup', 'What is already done stays done.' + where
+    if choice == 'update':
+        return (
+            'Review this NekoServer update',
+            f"From {found.get('version')} to {found.get('this_version')}. You see what changes before anything "
+            'is installed.',
+        )
+    if choice == 'change' and found['kind'] in ('settings_only', 'older_folder'):
+        return (
+            'Use these saved answers',
+            'Shows them first; you can change any of them before anything is installed.',
+        )
+    if choice == 'change':
+        return 'Change apps or settings', 'Shows your saved answers. You change only what you want; the rest stays.'
+    return (
+        'Restore from a backup',
+        'Brings files or settings back from a backup. Nothing is restored before you approve it.',
+    )
+
+
+def existing_installation(found, prompt=input, output=print):
+    """The page: what was found, and the choices that apply, by number. Returns the
+    choice ('continue', 'update', 'change', 'restore'), or None when the person stops
+    (no, Ctrl+D). Enter alone takes the first, which is said."""
+    choices = found.get('choices') or []
+    output('')
+    output('=== ' + EXISTING_TITLE + ' ===')
+    for line in found_said(found):
+        output(line)
+    if not choices:
+        return 'change'
+    for number, choice in enumerate(choices, 1):
+        name, under = choice_said(found, choice)
+        output(f'  {number}) {name}')
+        output('       ' + under)
+    first = choice_said(found, choices[0])[0]
+    question = f'Type its number, or no to stop (Enter alone: 1, {first}): '
+    for _ in range(3):
+        try:
+            answer = prompt(question).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            output('')
+            return None
+        if answer in ('no', 'n'):
+            return None
+        if not answer:
+            return choices[0]
+        if answer.isdecimal() and 1 <= int(answer) <= len(choices):
+            return choices[int(answer) - 1]
+        output(f'Type a number from 1 to {len(choices)}, or no.')
+    return None
+
+
+def what_is_here(root, config, default_state):
+    """install_state.found for this run, or None when the PC cannot be read (setup then
+    goes on as on a new PC, and says nothing it does not know)."""
+    import install_state
+
+    try:
+        return install_state.found(root=root, settings=config, default_state=default_state)
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+        return None
+
+
 def settings_for_run(config, root, prompt, output):
     """(path, created) of the settings this run uses, or None when a file named with
     --config is missing."""
@@ -749,7 +849,7 @@ def settings_for_run(config, root, prompt, output):
             return None
         return path, False
     if not (Path(root) / SETTINGS).exists():
-        take_earlier_settings(root, sudo_account(), prompt, output)
+        take_earlier_settings(root, sudo_account(), output)
     return prepare_settings(root, sudo_account())
 
 
@@ -858,6 +958,19 @@ def run(execute, default_state, prompt=input, output=print, root=ROOT, config=No
     if os.geteuid() != 0:
         output('Run it with sudo:  sudo bash install.sh')
         return 2
+    # Something of NekoServer on this PC already: said first, with the choices that apply.
+    found = what_is_here(root, config, default_state)
+    if found and found.get('show'):
+        choice = existing_installation(found, prompt, output)
+        if choice is None:
+            output('Nothing was changed. Run  sudo bash install.sh  when you are ready.')
+            return 0
+        if choice == 'restore':
+            # Restoring is a route of its own, never a turn inside setup (the recovery
+            # menu is started by install.sh --recover alone).
+            output('To restore from a backup, run:  sudo bash install.sh --recover')
+            output('Nothing was changed.')
+            return 0
     settings = settings_for_run(config, root, prompt, output)
     if settings is None:
         return 2
