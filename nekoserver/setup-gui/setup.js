@@ -305,7 +305,7 @@
     },
     // A password or PIN chosen now: two hidden fields that must match.
     new_password: {
-      prompt: page => page.what + ': choose one, and enter it in both fields.',
+      prompt: page => page.what + ': choose one, and fill it in in both boxes.',
       build: buildNewPassword,
       values: inputValues,
       problem: newPasswordProblem,
@@ -557,7 +557,7 @@
       // Empty is an answer only where a count from before stays as it is.
       if (kept === '' && count.review) continue;
       if (!/^\d+$/.test(kept) || Number(kept) < count.least || Number(kept) > count.most)
-        return 'Keep the latest ' + count.what + ': a whole number from ' + count.least + ' to ' + count.most + '.';
+        return 'Keep the latest ' + count.what + ': from ' + count.least + ' to ' + count.most + '.';
     }
     return '';
   }
@@ -571,7 +571,7 @@
     const again = hiddenInput('again', 'The same again');
     if (page.asking === 'again') {
       pageInputs = { again };
-      $('ask-page').replaceChildren(row('The same again', [again], 'The first one was typed in the terminal.'));
+      $('ask-page').replaceChildren(row('The same again', [again], 'The first one was given in the terminal.'));
       return;
     }
     pageInputs = { password: hiddenInput('password', page.what), again };
@@ -579,14 +579,14 @@
   }
 
   function newPasswordProblem(page, values) {
-    if (page.asking === 'again') return values.again ? '' : 'Type it once more.';
+    if (page.asking === 'again') return values.again ? '' : 'Fill it in once more.';
     if (page.optional && !values.password && !values.again) return '';
-    if (!values.password) return 'Type it in both fields.';
+    if (!values.password) return 'Fill it in in both boxes.';
     if (page.digits && !/^\d+$/.test(values.password)) return 'Use digits only (0-9).';
     if (values.password.length < (page.least ?? 1))
       return 'Use at least ' + page.least + (page.digits ? ' digits.' : ' characters.');
     if (page.most && values.password.length > page.most) return 'Use at most ' + page.most + ' digits.';
-    if (values.password !== values.again) return 'The two do not match. Type them again.';
+    if (values.password !== values.again) return 'The two do not match. Fill in both again.';
     return '';
   }
 
@@ -1265,7 +1265,7 @@
     context.scrollTop = context.scrollHeight; // the last lines matter most
     let prompt = q.text;
     if (page) prompt = PAGES[page.form].prompt(page);
-    else if (q.secret) prompt = q.text + ' (a hidden entry: type it here or in the terminal)';
+    else if (q.secret) prompt = q.text + ' (hidden while you fill it in, here or in the terminal)';
     $('ask-prompt').textContent = prompt;
     const yesno = q.kind === 'yesno' && !page; // a page has its own buttons
     $('ask-answer').hidden = yesno || !!page;
