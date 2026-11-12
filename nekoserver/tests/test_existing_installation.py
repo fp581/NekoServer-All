@@ -130,5 +130,40 @@ class RunTests(unittest.TestCase):
         self.assertIn('Nothing was changed. Run  sudo bash install.sh  when you are ready.', said)
 
 
+class ContinueTests(unittest.TestCase):
+    """Gate runs B7 and J03: "Continue unfinished setup" still showed the first page, the
+    USB question and "Change any of these answers?" before going on."""
+
+    def go(self, here):
+        execute = mock.Mock(return_value=0)
+        said = []
+        with (
+            tempfile.TemporaryDirectory() as folder,
+            mock.patch('os.geteuid', return_value=0),
+            mock.patch.object(wizard, 'what_is_here', return_value=here),
+            mock.patch.object(wizard, 'settings_for_run', return_value=(Path(folder) / 'my-config.json', False)),
+            mock.patch.object(wizard, 'wait_to_start', return_value=False) as pages,
+            mock.patch.object(wizard, 'checked_path', side_effect=lambda path: path),
+            mock.patch.object(wizard, 'after_setup', return_value=0),
+        ):
+            wizard.run(execute, Path(folder) / 'state', prompt=typed(''), output=said.append, root=folder)
+        return execute, pages, said
+
+    def test_it_goes_straight_to_the_steps_left(self):
+        here = found('installed', ['continue', 'change'], location='/srv/nekoserver')
+        here['waiting'] = ['gateway_tailnet']
+        execute, pages, said = self.go(here)
+        pages.assert_not_called()
+        self.assertIs(execute.call_args.args[0].retry_failed, True)
+        self.assertTrue(any(line.startswith('Going on with what was left: ') for line in said))
+
+    def test_a_run_that_was_cut_off_goes_the_usual_way(self):
+        here = found('unfinished', ['continue', 'change'], location='/srv/nekoserver')
+        here.update(waiting=['gateway_tailnet'], job={'kind': 'setup', 'step': 'media', 'left': ['media']})
+        execute, pages, _said = self.go(here)
+        pages.assert_called_once()
+        execute.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

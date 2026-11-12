@@ -1181,6 +1181,30 @@ def keep_window_open(output, stdin=None):
         return
 
 
+def chosen_here(found, prompt, output):
+    """The choice on the "NekoServer was found on this PC" page ('change' when it is not
+    shown); None, said, when the person stops; 'restore', said: restoring is a route of
+    its own, never a turn inside setup (install.sh --recover starts it)."""
+    if not (found and found.get('show')):
+        return 'change'
+    choice = existing_installation(found, prompt, output)
+    if choice is None:
+        output('Nothing was changed. Run  sudo bash install.sh  when you are ready.')
+    elif choice == 'restore':
+        output('To restore from a backup, run:  sudo bash install.sh --recover')
+        output('Nothing was changed.')
+    return choice
+
+
+def goes_straight_on(found, choice):
+    """Setup goes on with the steps left, asking nothing first: "Continue unfinished setup"
+    on a server whose last run finished with steps waiting for the person (the Tailscale
+    sign-in, say). A run that was cut off goes the usual way: the steps after the cut have
+    no state yet, and a cut-off update or drive move has a way of its own."""
+    found = found or {}
+    return choice == 'continue' and bool(found.get('waiting')) and not found.get('job')
+
+
 def run(execute, default_state, prompt=input, output=print, root=ROOT, config=None):
     """`execute` is installer.execute; injected so this module stays testable.
     `config`: a settings file chosen with --config; otherwise my-config.json here."""
@@ -1189,17 +1213,9 @@ def run(execute, default_state, prompt=input, output=print, root=ROOT, config=No
         return 2
     # Something of NekoServer on this PC already: said first, with the choices that apply.
     found = what_is_here(root, config, default_state)
-    if found and found.get('show'):
-        choice = existing_installation(found, prompt, output)
-        if choice is None:
-            output('Nothing was changed. Run  sudo bash install.sh  when you are ready.')
-            return 0
-        if choice == 'restore':
-            # Restoring is a route of its own, never a turn inside setup (the recovery
-            # menu is started by install.sh --recover alone).
-            output('To restore from a backup, run:  sudo bash install.sh --recover')
-            output('Nothing was changed.')
-            return 0
+    choice = chosen_here(found, prompt, output)
+    if choice in (None, 'restore'):
+        return 0
     settings = settings_for_run(config, root, prompt, output)
     if settings is None:
         return 2
@@ -1214,8 +1230,15 @@ def run(execute, default_state, prompt=input, output=print, root=ROOT, config=No
     )
     setup_progress.enable()
     window = setup_window(path, output) if prompt is builtins.input else None
+    # "Continue unfinished setup" goes straight to the steps left (gate runs B7 and J03:
+    # the first page, the drive questions and "Change any of these answers?" came first).
+    straight = goes_straight_on(found, choice)
+    if straight:
+        output('Going on with what was left: ' + ', '.join(title(step) for step in found.get('waiting') or []) + '.')
     try:
-        if wait_to_start(path, prompt, output, window, storage=choose_storage if prompt is builtins.input else None):
+        if straight or wait_to_start(
+            path, prompt, output, window, storage=choose_storage if prompt is builtins.input else None
+        ):
             if window is not None:
                 window.freeze()
             default_state = checked_path(default_state)
@@ -1223,7 +1246,7 @@ def run(execute, default_state, prompt=input, output=print, root=ROOT, config=No
                 all=False,
                 profile='full',
                 module=None,
-                retry_failed=False,
+                retry_failed=straight,
                 apply=True,
                 check=False,
                 dry_run=False,
