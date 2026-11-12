@@ -655,7 +655,8 @@ fn extra_drive_name(cfg: &Value, drive: &str) -> String {
 /// The drives the cards show: the disk Linux runs from, the two every server has, and
 /// every other drive something is placed on (0.50.0), each as (id, name, where it is
 /// mounted, the UUID it must have, its filesystem).
-fn storage_rows(cfg: &Value) -> Result<Vec<(String, String, PathBuf, Option<String>, String)>> {
+type DriveCard = (String, String, PathBuf, Option<String>, String);
+fn storage_rows(cfg: &Value) -> Result<Vec<DriveCard>> {
     let saved = |key: &str, field: &str| text(&cfg["storage"][key][field]).to_string();
     let mut rows = vec![
         (
