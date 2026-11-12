@@ -448,16 +448,7 @@ def part(ctx, title, steps, question, done=(), intro=(), targets=(), prompt=None
         return confirmed
     prompt = prompt or input
     output = output or print
-    output('\n=== ' + title + ' ===')
-    for line in intro:
-        output(line)
-    for number, step in enumerate(steps, 1):
-        mark = '  (done last time)' if step['id'] in confirmed else ''
-        output(f"\nStep {number} of {len(steps)}: {step['title']}{mark}")
-        if not mark:
-            for line in step['lines']:
-                output('  - ' + line)
-    output('\nDo the steps in order, then come back here. ' + KEYS)
+    part_said(title, intro, steps, confirmed, output)
     open_targets(ctx, list(targets), output)
     show_logins(ctx.config, [login for step in todo for login in step.get('logins', ())], prompt, output)
     shown = [
@@ -479,14 +470,55 @@ def part(ctx, title, steps, question, done=(), intro=(), targets=(), prompt=None
         setup_progress.page_asks('answer')
         answer = yes_no('\n' + asked['title'], prompt, output, how='\n' + asked['how'] + ' ')
         marked = setup_progress.page_answer('done')  # the window's switches, when it answered
-    if answer:
-        confirmed |= {step['id'] for step in todo}
-    elif marked and marked[0] == 'answer':
-        confirmed |= {step['id'] for step in todo if step['id'] in str(marked[1]).split()}
+    confirmed |= part_confirmed(todo, answer, marked)
     left = [step['title'] for step in steps if step['id'] not in confirmed]
     if left:
         output('Kept for the next run of setup. Still to do: ' + '; '.join(left) + '.')
     return confirmed
+
+
+def part_said(title, intro, steps, confirmed, output):
+    """A part as the terminal lists it: its title, what setup found, then every step in
+    order with its lines; one confirmed in an earlier run is only named."""
+    output('\n=== ' + title + ' ===')
+    for line in intro:
+        output(line)
+    for number, step in enumerate(steps, 1):
+        mark = '  (done last time)' if step['id'] in confirmed else ''
+        output(f"\nStep {number} of {len(steps)}: {step['title']}{mark}")
+        for line in () if mark else step['lines']:
+            output('  - ' + line)
+    output('\nDo the steps in order, then come back here. ' + KEYS)
+
+
+def part_confirmed(todo, answer, marked):
+    """The steps of a part confirmed by its one answer: all of them with yes; with
+    anything else, the ones the setup window's switches marked (when it answered)."""
+    if answer:
+        return {step['id'] for step in todo}
+    if marked and marked[0] == 'answer':
+        return {step['id'] for step in todo if step['id'] in str(marked[1]).split()}
+    return set()
+
+
+def typed_or_left(ask, question):
+    """An answer as typed, in small letters; None when the question was left (Ctrl+D)."""
+    try:
+        return ask(question).strip().lower()
+    except EOFError:
+        return None
+
+
+def retry_answer(answer, one, answers, leave):
+    """What a typed answer chooses on the retry page: "yes" for the one step, the number
+    of a step in the list, `leave`; None for an answer that is none of these."""
+    if one and answer in ('y', 'yes'):
+        return 'yes'
+    if answer in answers and not one:
+        return answer
+    if answer in ('', 'n', 'no', leave):
+        return leave
+    return None
 
 
 def retry_question(rows, leave='', ask=None, output=None):
@@ -510,16 +542,12 @@ def retry_question(rows, leave='', ask=None, output=None):
     with setup_progress.page('retry', {'answer': ''}, steps=rows, leave=leave):
         setup_progress.page_asks('answer')
         for _ in range(3):
-            try:
-                answer = ask(question).strip().lower()
-            except EOFError:
+            answer = typed_or_left(ask, question)
+            if answer is None:
                 return leave
-            if one and answer in ('y', 'yes'):
-                return 'yes'
-            if answer in answers and not one:
-                return answer
-            if answer in ('', 'n', 'no', leave):
-                return leave
+            chosen = retry_answer(answer, one, answers, leave)
+            if chosen is not None:
+                return chosen
             output('Type yes or no.' if one else 'Type one of the numbers above, or press Enter alone to finish.')
     return leave
 
@@ -698,14 +726,9 @@ def asked_media_apps(ctx, prompt=None, output=None):
     when setup runs without that page (installer.py itself), at the drives step, before
     the drives are chosen. A group left alone (Ctrl+D, or nobody at the terminal) is on
     and not saved, so it is asked again next time."""
-    from neko_common import FINDING, GROUP_NAMES, MEDIA_GROUPS, MEDIA_SECTION, media_group_chosen
+    from neko_common import GROUP_NAMES, MEDIA_GROUPS, media_group_chosen
 
-    options = ctx.config.setdefault(MEDIA_SECTION, {})
-    if not isinstance(options, dict):
-        raise RuntimeError('"media_apps" in my-config.json must be an object, such as {"photos": true}')
-    for key in ('wanted', *MEDIA_GROUPS, *FINDING.values()):
-        if key in options and type(options[key]) is not bool:
-            raise RuntimeError(f'"{key}" under "media_apps" must be true or false')
+    options = checked_media_options(ctx.config)
     if not interactive(ctx):
         return
     # A group chosen already (on setup's first page, or by hand in the settings) is not
@@ -719,17 +742,8 @@ def asked_media_apps(ctx, prompt=None, output=None):
     output('\n=== Optional: ' + MEDIA_QUESTION + ' ===')
     for line in MEDIA_EXPLAINED:
         output(line)
-    answered = {}
     names = GROUP_NAMES
-    for group in to_ask:
-        import questions
-
-        about = ' '.join(line for line in GROUP_EXPLAINED[group] if line)
-        answer = questions.yes_no('install_group', prompt, output, group=names[group], about=about)
-        if answer is None:
-            output('Left for now: it is set up (yes), and this is asked again next time.')
-            continue
-        answered[group] = answer
+    answered = groups_answered(to_ask, prompt, output)
     if not answered:
         return
     options.update(answered)
@@ -738,6 +752,37 @@ def asked_media_apps(ctx, prompt=None, output=None):
     save_settings(ctx)
     said = ', '.join(f"{names[group]}: {'yes' if on else 'no, left out'}" for group, on in answered.items())
     ctx.log('Media apps: ' + said)
+
+
+def checked_media_options(config):
+    """The "media_apps" section of the settings (made when it is not there), as far as a
+    settings file can be trusted: an object whose answers are true or false."""
+    from neko_common import FINDING, MEDIA_GROUPS, MEDIA_SECTION
+
+    options = config.setdefault(MEDIA_SECTION, {})
+    if not isinstance(options, dict):
+        raise RuntimeError('"media_apps" in my-config.json must be an object, such as {"photos": true}')
+    for key in ('wanted', *MEDIA_GROUPS, *FINDING.values()):
+        if key in options and type(options[key]) is not bool:
+            raise RuntimeError(f'"{key}" under "media_apps" must be true or false')
+    return options
+
+
+def groups_answered(to_ask, prompt, output):
+    """{group: yes or no} for the groups asked about now; one left alone (Ctrl+D) is not
+    among them: it is set up, and asked about again next time."""
+    import questions
+    from neko_common import GROUP_NAMES
+
+    answered = {}
+    for group in to_ask:
+        about = ' '.join(line for line in GROUP_EXPLAINED[group] if line)
+        answer = questions.yes_no('install_group', prompt, output, group=GROUP_NAMES[group], about=about)
+        if answer is None:
+            output('Left for now: it is set up (yes), and this is asked again next time.')
+            continue
+        answered[group] = answer
+    return answered
 
 
 def remember_media_apps(ctx):

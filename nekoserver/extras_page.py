@@ -34,6 +34,65 @@ def _gb(amount):
     return f'{amount:g} GB'
 
 
+def not_here(config, total, checks):
+    """Why no assistant can run on this PC at all; '' when one can."""
+    if checks is None:
+        checks = (assistant.processor_ok, lambda: assistant.port_free_for_us(config))
+    try:
+        for check in checks:
+            check()
+    except assistant.NotHere as exc:
+        return f'The assistant cannot run on this PC: {exc}.'
+    if total <= 0:
+        return 'Setup could not read how much memory this PC has, so it cannot tell which model fits.'
+    return ''
+
+
+def fits_memory(need, room, apps_started):
+    """('yes' | 'no' | 'unknown', why not or why it cannot be promised) for one model's memory."""
+    if need > room:
+        return 'no', (
+            f'It needs about {_gb(need)} of free memory. This PC has {max(room, 0):.1f} GB free for it'
+            + (' with your apps running' if apps_started else '')
+            + ' and room kept for them to grow.'
+        )
+    if apps_started:
+        return 'yes', ''
+    return 'unknown', (
+        'It fits now, but your apps are not running yet. Setup measures again when it installs the '
+        'assistant, and says so if this model no longer fits.'
+    )
+
+
+def model_choice(config, name, spec, room, apps_started, usage):
+    """One model as a person can judge it: its row of assistant_choices' "choices"."""
+    model, download, need, answers_like = spec
+    fits, why_not = fits_memory(need, room, apps_started)
+    one = {
+        'id': model,
+        'name': name,
+        'line': f'{name}: {answers_like}. Uses about {_gb(need)} of memory while it answers '
+        f'and {_gb(download)} of drive space.',
+        'technical': model,
+        'download_gb': download,
+        'memory_gb': need,
+        'downloaded': assistant.downloaded(config, model),
+        'room_on_drive': True,
+        'why_not': why_not,
+        'suggested': False,
+        'fits': fits,
+    }
+    try:
+        assistant.check_space(config, model, download, usage)
+    except assistant.NotHere as exc:
+        one['room_on_drive'] = False
+        one['why_not'] = (one['why_not'] + ' ' if one['fits'] == 'no' else '') + f'Not enough drive space: {exc}.'
+    except OSError:
+        one['room_on_drive'] = False
+        one['why_not'] = 'Setup could not read how much space the app drive has.'
+    return one
+
+
 def assistant_choices(config, memory=None, own_use=None, apps_started=True, usage=shutil.disk_usage, checks=None):
     """The models a person can pick from, each as they can judge it.
 
@@ -63,55 +122,10 @@ def assistant_choices(config, memory=None, own_use=None, apps_started=True, usag
     total, available = memory if memory is not None else assistant.memory_now()
     own = assistant.own_use_gib(config) if own_use is None else own_use
     room = assistant.memory_for_model(total, available, own)
-    reason = ''
-    try:
-        for check in (
-            checks if checks is not None else (assistant.processor_ok, lambda: assistant.port_free_for_us(config))
-        ):
-            check()
-    except assistant.NotHere as exc:
-        reason = f'The assistant cannot run on this PC: {exc}.'
-    if not reason and total <= 0:
-        reason = "Setup could not read how much memory this PC has, so it cannot tell which model fits."
-    choices = []
-    for name, (model, download, need, answers_like) in zip(PLAIN_NAMES, assistant.MODELS):
-        one = {
-            'id': model,
-            'name': name,
-            'line': f'{name}: {answers_like}. Uses about {_gb(need)} of memory while it answers '
-            f'and {_gb(download)} of drive space.',
-            'technical': model,
-            'download_gb': download,
-            'memory_gb': need,
-            'downloaded': assistant.downloaded(config, model),
-            'room_on_drive': True,
-            'why_not': '',
-            'suggested': False,
-        }
-        if need > room:
-            one['fits'] = 'no'
-            one['why_not'] = (
-                f'It needs about {_gb(need)} of free memory. This PC has {max(room, 0):.1f} GB free for it'
-                + (' with your apps running' if apps_started else '')
-                + ' and room kept for them to grow.'
-            )
-        elif apps_started:
-            one['fits'] = 'yes'
-        else:
-            one['fits'] = 'unknown'
-            one['why_not'] = (
-                'It fits now, but your apps are not running yet. Setup measures again when it installs the '
-                'assistant, and says so if this model no longer fits.'
-            )
-        try:
-            assistant.check_space(config, model, download, usage)
-        except assistant.NotHere as exc:
-            one['room_on_drive'] = False
-            one['why_not'] = (one['why_not'] + ' ' if one['fits'] == 'no' else '') + f'Not enough drive space: {exc}.'
-        except OSError:
-            one['room_on_drive'] = False
-            one['why_not'] = 'Setup could not read how much space the app drive has.'
-        choices.append(one)
+    reason = not_here(config, total, checks)
+    choices = [
+        model_choice(config, name, spec, room, apps_started, usage) for name, spec in zip(PLAIN_NAMES, assistant.MODELS)
+    ]
     usable = [one for one in choices if one['fits'] != 'no' and one['room_on_drive']] if not reason else []
     if not reason and not usable:
         reason = 'No model fits on this PC now. ' + choices[0]['why_not']
@@ -185,6 +199,23 @@ EARLIER_TV_CHECKS = {
 }
 
 
+def tv_installs(opts, vendors, has_browser):
+    """What the TV extra installs on this PC, in plain lines."""
+    lines = ['Steam, with its Big Picture mode for a TV and a controller.']
+    if tv.vulkan_packages(vendors):
+        lines.append('The graphics driver part games need (Vulkan) for this PC\'s graphics.')
+    if not has_browser:
+        lines.append('The Firefox browser (this PC has no browser yet).')
+    if opts.get('bluetooth', True):
+        lines.append('Bluetooth, switched on, for a wireless controller.')
+    lines.append('Two shortcuts: "NekoServer Steam Big Picture" and "NekoServer YouTube".')
+    if opts.get('keep_awake', True):
+        lines.append(
+            'A power setting so this PC does not go to sleep while it is plugged in (the server jobs keep running).'
+        )
+    return lines
+
+
 def tv_plan(config, family=None, has_desktop=None, vendors=None, has_browser=None):
     """What the TV extra will install on this PC, and what it cannot set up by itself.
 
@@ -220,20 +251,9 @@ def tv_plan(config, family=None, has_desktop=None, vendors=None, has_browser=Non
     has_browser = bool(tv.browser()) if has_browser is None else has_browser
     plan['possible'] = True
     plan['packages'] = tv.wanted_packages(opts, vendors, has_browser)
-    plan['installs'] = ['Steam, with its Big Picture mode for a TV and a controller.']
-    if tv.vulkan_packages(vendors):
-        plan['installs'].append('The graphics driver part games need (Vulkan) for this PC\'s graphics.')
-    elif 'nvidia' in vendors:
+    plan['installs'] = tv_installs(opts, vendors, has_browser)
+    if not tv.vulkan_packages(vendors) and 'nvidia' in vendors:
         plan['not_automatic'].append("NVIDIA graphics: its maker's driver, installed your Linux's own way.")
-    if not has_browser:
-        plan['installs'].append('The Firefox browser (this PC has no browser yet).')
-    if opts.get('bluetooth', True):
-        plan['installs'].append('Bluetooth, switched on, for a wireless controller.')
-    plan['installs'].append('Two shortcuts: "NekoServer Steam Big Picture" and "NekoServer YouTube".')
-    if opts.get('keep_awake', True):
-        plan['installs'].append(
-            'A power setting so this PC does not go to sleep while it is plugged in (the server jobs keep running).'
-        )
     if not tv.steam_ready(family) or not family.available('steam'):
         plan['needs_first'] = (
             'Steam is not offered by the software sources switched on here. To get it, '
