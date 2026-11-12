@@ -14,7 +14,7 @@
 //! started again after a restart as well.
 use crate::common;
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// An app NekoServer knows (the shared catalogue), as the settings may name one to stop.
 fn known_app(app: &str) -> bool {
@@ -55,11 +55,19 @@ pub(crate) fn listed(cfg: &Value) -> Vec<Share> {
 
 fn share_of(cfg: &Value, entry: &Value) -> Option<Share> {
     let text = |key: &str| entry[key].as_str().unwrap_or("").to_string();
-    let path = |key: &str| {
+    // A plain absolute path, by its words alone: the share's own folders are not looked
+    // at, since a share that is away cannot be read (gate run C8: every entry was dropped
+    // exactly then, so the apps it guards started).
+    let plain = |key: &str| {
         let value = text(key);
         let p = PathBuf::from(&value);
-        (p.is_absolute() && common::safe(&p).is_ok() && !value.contains('\n')).then_some(p)
+        let clean = p
+            .components()
+            .all(|c| matches!(c, Component::RootDir | Component::Normal(_)));
+        (p.is_absolute() && clean && !value.contains('\n') && !value.contains('\0')).then_some(p)
     };
+    // The library's own folder, on a drive of this PC: checked on the disk too.
+    let path = |key: &str| plain(key).filter(|p| common::safe(p).is_ok());
     let apps: Vec<String> = entry["apps"]
         .as_array()?
         .iter()
@@ -70,8 +78,8 @@ fn share_of(cfg: &Value, entry: &Value) -> Option<Share> {
     let fine = !share.is_empty() && apps.iter().all(|a| known_app(a)) && in_a_library(cfg, &point);
     fine.then_some(Share {
         holds: text("holds"),
-        path: path("path")?,
-        mount: path("mount")?,
+        path: plain("path")?,
+        mount: plain("mount")?,
         share,
         point,
         apps,
@@ -343,6 +351,24 @@ mod tests {
         );
         assert!(listed(&docker).is_empty());
         assert!(listed(&json!({})).is_empty());
+    }
+
+    /// Gate run C8: with the NAS off at the start, every entry was dropped (the share's own
+    /// folders were looked at, and could not be read), so the apps they guard started. The
+    /// share's folders are judged by their words: one that cannot be read is still listed.
+    #[test]
+    fn an_entry_whose_share_cannot_be_read_is_still_guarded() {
+        let point = "/mnt/nekoserver-media/library/existing/movies";
+        let mut away = settings(point, json!(["jellyfin"]));
+        away["shared_folders"][0]["path"] = json!("/mnt/nas-that-is-off/films");
+        away["shared_folders"][0]["mount"] = json!("/mnt/nas-that-is-off");
+        assert_eq!(listed(&away).len(), 1);
+        // A path that leaves its folder, or is not absolute, is never used.
+        for bad in ["/mnt/tank/../etc", "mnt/tank/films"] {
+            let mut wrong = settings(point, json!(["jellyfin"]));
+            wrong["shared_folders"][0]["path"] = json!(bad);
+            assert!(listed(&wrong).is_empty(), "{bad}");
+        }
     }
 
     #[test]
