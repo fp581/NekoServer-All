@@ -358,7 +358,7 @@ class SetupWindowTests(unittest.TestCase):
         # A number outside the limits is said, not sent; within them it goes with the page.
         seen = self.page([{**state, 'fill': {'ask-page-keep_app_backup': '14'}}])
         self.assertEqual(
-            (seen['posts'], seen['note']), ([], 'Keep the latest nightly app backups: a whole number from 1 to 7.')
+            (seen['posts'], seen['note']), ([], 'Keep the latest nightly app backups: from 1 to 7.')
         )
         seen = self.page([{**state, 'fill': {'ask-page-keep_app_backup': '5'}}])
         self.assertEqual(
@@ -412,15 +412,15 @@ class SetupWindowTests(unittest.TestCase):
         seen = self.page([self.asked(question, page, secret=True, kind='secret')])
         self.assertEqual([row[0] for row in seen['rows']], [page['what'], 'The same again'])
         self.assertEqual(seen['fieldTypes'], [['password'], ['password']])
-        self.assertEqual(seen['prompt'], page['what'] + ': choose one, and enter it in both fields.')
+        self.assertEqual(seen['prompt'], page['what'] + ': choose one, and fill it in in both boxes.')
         self.assertEqual((seen['send'], seen['skipHidden'], seen['answerHidden']), ('Save', True, True))
         self.assertIn('written to no log', seen['note'])
         # Two that differ are not sent.
         differ = {'ask-page-password': typed, 'ask-page-again': typed + 'y'}
         seen = self.page([self.asked(question, page, secret=True, kind='secret', fill=differ)])
-        self.assertEqual((seen['posts'], seen['note']), ([], 'The two do not match. Type them again.'))
+        self.assertEqual((seen['posts'], seen['note']), ([], 'The two do not match. Fill in both again.'))
         seen = self.page([self.asked(question, page, secret=True, kind='secret', fill={})])
-        self.assertEqual((seen['posts'], seen['note']), ([], 'Type it in both fields.'))
+        self.assertEqual((seen['posts'], seen['note']), ([], 'Fill it in in both boxes.'))
         # Two that match go together: the first as the answer, the second with it.
         same = {'ask-page-password': typed, 'ask-page-again': typed}
         seen = self.page([self.asked(question, page, secret=True, kind='secret', fill=same)])
@@ -439,7 +439,7 @@ class SetupWindowTests(unittest.TestCase):
         self.assertEqual(tried('12ab56', '12ab56')[0], 'Use digits only (0-9).')
         self.assertEqual(tried('12345', '12345')[0], 'Use at least 6 digits.')
         self.assertEqual(tried('123456789', '123456789')[0], 'Use at most 8 digits.')
-        self.assertEqual(tried('123456', '123457')[0], 'The two do not match. Type them again.')
+        self.assertEqual(tried('123456', '123457')[0], 'The two do not match. Fill in both again.')
         self.assertEqual(tried('123456', '123456')[1][0][1]['text'], '123456')
         # Optional: both left empty goes on without one, as Enter does in the terminal.
         self.assertEqual(
@@ -447,7 +447,7 @@ class SetupWindowTests(unittest.TestCase):
         )
         backup = {**self.PASSWORD, 'what': 'Backup password', 'least': 8}
         self.assertEqual(tried('short', 'short', backup)[0], 'Use at least 8 characters.')
-        self.assertEqual(tried('', '', backup)[0], 'Type it in both fields.')
+        self.assertEqual(tried('', '', backup)[0], 'Fill it in in both boxes.')
         # The first typed in the terminal: the page asks only for the second.
         again = {**backup, 'asking': 'again'}
         seen = self.page(
