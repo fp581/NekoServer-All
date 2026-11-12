@@ -207,16 +207,25 @@ pub(crate) fn check(cfg: &Value) {
     if shares.is_empty() && held_before.is_empty() {
         return;
     }
-    let ready: Vec<bool> = shares.iter().map(bring_back).collect();
+    // Whether each share itself answers, apart from whether it is shown in the library:
+    // its place there can be on a drive that is away (gate run C9), and the dashboard
+    // then says the drive's alert, not the share's.
+    let answering: Vec<bool> = shares.iter().map(answers).collect();
+    let ready: Vec<bool> = shares
+        .iter()
+        .zip(&answering)
+        .map(|(s, now)| bring_back(s, *now))
+        .collect();
     let (stop, start) = decide(&shares, &ready, &held_before);
     let took: Vec<bool> = stop.iter().map(|app| stop_app(app)).collect();
     let started: Vec<bool> = start.iter().map(|app| start_app(app)).collect();
     let held = still_held(&stop, &took, &held_before, &start, &started);
     let rows: Vec<Value> = shares
         .iter()
-        .zip(&ready)
-        .map(|(s, ok)| {
-            json!({"holds": s.holds, "path": s.path, "share": s.share, "ready": ok, "apps": s.apps})
+        .zip(ready.iter().zip(&answering))
+        .map(|(s, (ok, now))| {
+            json!({"holds": s.holds, "path": s.path, "share": s.share, "ready": ok,
+                   "answers": now, "point": s.point, "apps": s.apps})
         })
         .collect();
     let saved = json!({"at": common::now(), "shares": rows, "held": held});
@@ -227,8 +236,8 @@ pub(crate) fn check(cfg: &Value) {
 
 /// A share that answers is mounted into the library again when it is not. True when it
 /// answers and is mounted there.
-fn bring_back(s: &Share) -> bool {
-    if !answers(s) {
+fn bring_back(s: &Share, answering: bool) -> bool {
+    if !answering {
         println!(
             "Shared folders: {} ({}) does not answer; the apps that see it stay stopped, and nothing is written in its place",
             s.share,

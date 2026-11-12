@@ -2279,6 +2279,17 @@ fn shared_folders(data: &Path, ok: bool) -> Value {
 fn shown_app(id: &str) -> &str {
     APPS.iter().find(|a| a.0 == id).map_or(id, |a| a.1)
 }
+/// The share answers, and only its place in the library is missing, because that place
+/// is on one of the drives that is away (gate run C9): that drive's alert says it.
+fn only_its_drive_away(s: &Value, row: &Value) -> bool {
+    let point = text(&row["point"]);
+    row["answers"] == true
+        && !point.is_empty()
+        && s["storage"].as_array().into_iter().flatten().any(|d| {
+            let mount = text(&d["mount"]).trim_end_matches('/');
+            d["status"] != "mounted" && !mount.is_empty() && point.starts_with(&format!("{mount}/"))
+        })
+}
 /// One alert for each shared folder of yours that does not answer, naming the share,
 /// the folder and the apps stopped for it.
 fn share_alerts(s: &Value) -> Vec<(String, String, String)> {
@@ -2286,7 +2297,7 @@ fn share_alerts(s: &Value) -> Vec<(String, String, String)> {
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|row| row["ready"] == false)
+        .filter(|row| row["ready"] == false && !only_its_drive_away(s, row))
         .map(|row| {
             let apps: Vec<&str> = row["apps"]
                 .as_array()
@@ -3090,6 +3101,44 @@ mod os_tests {
         let plain = json!({"storage": s["storage"], "applications": s["applications"]});
         assert!(held_apps(&plain).is_empty());
         assert!(!alerts(&plain).to_string().contains("share:"));
+    }
+    /// Gate run C9: the music's own drive away and its share up says the drive's alert
+    /// only; the share away and the drive up says the share's alert only.
+    #[test]
+    fn a_share_shown_on_a_drive_that_is_away_is_the_drives_alert_not_the_shares() {
+        let point = "/mnt/nekoserver-drives/d3/library/existing/music";
+        let with = |answers: bool, drive: &str| {
+            json!({
+                "storage": [
+                    {"id": "data_ssd", "name": "App SSD", "mount": "/srv/nekoserver", "status": "mounted"},
+                    {"id": "media_hdd", "name": "Media HDD", "mount": "/mnt/nekoserver-media", "status": "mounted"},
+                    {"id": "d3", "name": "Drive d3", "mount": "/mnt/nekoserver-drives/d3", "status": drive},
+                ],
+                "applications": [{"id": "navidrome", "name": "Navidrome", "state": "exited"}],
+                "shared_folders": {"held": ["navidrome"], "shares": [
+                    {"holds": "music", "path": "/mnt/tank/music", "share": "nas:/music", "ready": false,
+                     "answers": answers, "point": point, "apps": ["navidrome"]},
+                ]},
+            })
+        };
+        let ids = |s: &Value| -> Vec<String> {
+            alerts(s)
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| text(&a["id"]).to_string())
+                .filter(|id| id.starts_with("share:") || id.starts_with("mount:"))
+                .collect()
+        };
+        assert_eq!(ids(&with(true, "missing")), ["mount:d3"]);
+        assert_eq!(ids(&with(false, "mounted")), ["share:music"]);
+        // An older report, with no "answers": as before, the share's alert.
+        let mut older = with(true, "missing");
+        older["shared_folders"]["shares"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("answers");
+        assert!(ids(&older).contains(&"share:music".to_string()));
     }
     /// Gate run B3: with one drive for everything, the dashboard keeps saying that the
     /// backups are on it, until a USB drive takes a weekly copy (or setup moves them).
