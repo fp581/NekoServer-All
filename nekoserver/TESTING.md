@@ -30,9 +30,9 @@ their names are given here so the coverage map can point at them.
 **Lab (before a release, when the code it covers changed).** `lab/nas_lab.py`: the iSCSI
 interruption tests, which need a kernel with iSCSI and a VM; run by hand as root.
 
-## The thirteen user journeys
+## The fourteen user journeys
 
-The same thirteen journeys are run for every release (J10 to J13 since 0.50.0). Each has a record in
+The same fourteen journeys are run for every release (J10 to J14 since 0.50.0). Each has a record in
 `tests/journeys/<ID>-<name>.md` in the standard format below. A journey passes only when
 every expected result below is seen, not when a command exits 0.
 
@@ -162,17 +162,38 @@ uninstaller removes its own lines and folders and leaves the system's `/etc/fsta
 alone. Evidence: the terminal log, `/etc/fstab` before and after, `findmnt`, the
 settings' drive records, `systemctl list-timers`. Cleanup: snapshot.
 
-**J13 Films you already have, used where they are (a folder shared over NFS).** A Linux
-box on the test network sharing a folder of films over NFS, mounted on the PC; that
-folder given at "Do you have films or shows already that this server should use?".
-Expected: the folder is read as the apps' account before it is accepted, and a folder
-that account cannot read is refused with who and where to fix it; nothing is copied or
-moved and nothing of the person's is changed; the folder is bound read-only into the
-library at every start, waiting for the share; Jellyfin has a library at that folder and
-shows the films; with the share away the PC starts, nothing is written into the empty
-folder, and the other apps run. Evidence: the setup log, the placement table in the
-settings, `/etc/fstab`, `findmnt`, Jellyfin's library page, a file list of the share
+**J13 Films, shows and music you already have (a folder shared over NFS).** A Linux
+box on the test network sharing folders of films and of music over NFS, mounted on the
+PC, and given at "Do you already have films, shows or music that this server should
+use?". Three ways, each with its own folder: (a) used where it is; (b) used where it is
+with **Save new ones here too?** yes, on a writable and on a read-only export; (c) copied
+into the NekoServer library. Expected: each folder is read as the apps' account before
+it is accepted, and one that account cannot read is refused with who and where to fix
+it; nothing of the person's is changed in any of the three; (a) the folder is bound
+read-only into the library at every start, waiting for the share, Jellyfin has a library
+at it and shows the films, Navidrome has a second library and plays a track; (b) Radarr
+and Sonarr list the person's folder as a root folder, a request made in Seerr lands
+there, the download is gone from the library's downloads afterwards, and the read-only
+export says why and asks for another place; (c) setup says what the copy will do, the
+files are in the library afterwards and the share is unchanged; with the share away the
+PC starts, nothing is written into the empty folder, and the other apps run. Evidence:
+the setup log, the placement table in the settings, `/etc/fstab`, `findmnt`, the
+libraries in Jellyfin and Navidrome, Radarr's root folders, a file list of the share
 before and after. Cleanup: snapshot, the NFS server stopped.
+
+**J14 A group's apps installed on a drive of their own.** The VM with a spare local
+drive besides the app drive and the backups' drive; on the storage page Movies and shows
+is installed on the spare drive. Expected: the review names that drive; each app's
+settings folder there is mounted at its usual place by a line in setup's own block of
+`/etc/fstab`; the nightly app backup holds those apps' settings; the monthly snapshot
+holds them; an update of one of them made to fail is rolled back, its settings as they
+were, on that drive; the dashboard has a card for the drive; with the drive detached the
+PC starts, Docker runs, that group's apps write nothing on the app drive, the other
+groups run, and every backup job stops with the app named; setup run then says what to
+do about a lost drive; the uninstaller leaves no line of the block in `/etc/fstab` and
+unmounts the drive. Evidence: the review, `/etc/fstab`, `findmnt`, the app snapshot's
+manifest, `tar -t` of the monthly snapshot, the rollback's log, the dashboard, the
+journal with the drive away. Cleanup: snapshot.
 
 ## The eight safety rules
 
@@ -410,7 +431,7 @@ Evidence: Browser result and received API request
 Cleanup: Close fixture and remove temporary state
 ```
 
-IDs: `J01`..`J13` for journeys, `S01`..`S08` for safety rules, `F01`..`F13` for
+IDs: `J01`..`J14` for journeys, `S01`..`S08` for safety rules, `F01`..`F13` for
 controlled failures, `UI-SETUP-nnn`, `UI-DASH-nnn`, `REC-nnn` for single cases, and
 `B-<release>-<nn>` for bugs (below). The record says what is manual.
 
