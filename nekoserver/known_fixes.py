@@ -100,8 +100,8 @@ FIXES = (
         'steps': (
             'Check the drive named above: its cable at both ends, and its power when it has its own (a USB case, '
             'a dock). A drive that just woke up can take half a minute to appear.',
-            'See what Linux sees, in a second terminal (Ctrl+Alt+T):  lsblk -f  . The drive should be in the list '
-            'with its UUID.',
+            'See what Linux sees, in a second terminal (Ctrl+Alt+T):  lsblk -f  . The drive should be in the list, '
+            'with the ID the message above names in the UUID column.',
             'If you replaced that drive on purpose, do what the message above says to choose the new one.',
             RETRY,
         ),
