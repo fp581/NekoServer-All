@@ -1268,6 +1268,20 @@ def place_drives(context, inventory):
         save_storage(context)
         mount_all(context, specs)
     choose_usb(context)
+    existing_media_asked(context)
+
+
+def existing_media_asked(context):
+    """Films and shows the person already has (existing_page.py): asked once, with
+    someone at the keyboard; the answer is saved with the drives."""
+    import existing_page
+
+    if not sys.stdin.isatty():
+        if existing_page.keep_table(context.config) and hasattr(context, 'persist_config'):
+            context.persist_config()
+        return
+    if existing_page.ask(context, output=context.log) and hasattr(context, 'persist_config'):
+        context.persist_config()
 
 
 def checked_before_mount(config, specs):

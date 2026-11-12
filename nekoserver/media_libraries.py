@@ -289,8 +289,17 @@ def ensure_readiness_key(client, root, log=print):
 
 
 def configure(
-    root, media, apply=False, apps=('jellyfin', 'seerr'), factory=Client, username=input, password=getpass.getpass
+    root,
+    media,
+    apply=False,
+    apps=('jellyfin', 'seerr'),
+    factory=Client,
+    username=input,
+    password=getpass.getpass,
+    more=None,
 ):
+    """`more`: called with Jellyfin's signed-in client for further libraries (the
+    person's own folders, existing_page.libraries); its rows are added to the results."""
     if 'jellyfin' not in apps:
         return [row('media_libraries', 'needs_setup', 'Jellyfin is required for this library workflow')]
     stored = account_store.get({'data_mount': str(root)}, 'jellyfin', verified=True)
@@ -301,6 +310,8 @@ def configure(
     try:
         try:
             results, server_id, ids = jellyfin(jf, media, apply, username, password)
+            if more is not None:
+                results += more(jf)
             if apply:
                 ensure_readiness_key(jf, root)
         except SetupRequired as exc:

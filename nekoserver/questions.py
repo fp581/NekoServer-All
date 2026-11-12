@@ -334,6 +334,29 @@ Q = {
     },
     # ---- the outage monitor
     # ---- the assistant
+    'existing_media': {
+        'screen': 'Media you already have',
+        'title': 'Do you have films or shows already that this server should use?',
+        'hint': 'On this PC, on another drive, or on a storage box whose folder is connected to this PC. They are '
+        'used where they are: nothing is copied, and nothing in your folder is changed.',
+        'kind': 'yesno',
+        'yes': 'Yes, I have some',
+        'no': 'No, start empty',
+        'old': 'Add a media source now? [yes/no]:',
+    },
+    'existing_folder': {
+        'screen': 'Media you already have',
+        'title': 'Which folder holds your {what}?',
+        'hint': 'The folder as this PC sees it, such as /mnt/tank/{what}. For a storage box that is where its '
+        'shared folder is connected here, not its network address.',
+        'kind': 'text',
+        'send': 'Use this folder',
+        'skip': '',
+        'skip_label': 'I have none',
+        'how': 'Type the folder, then press Enter. Enter alone when you have none.',
+        'example': {'what': 'films'},
+        'old': 'Already mounted local folder (blank to defer)',
+    },
     'assistant_model': {
         'screen': 'Ask Neko, the AI assistant',
         'title': 'Which AI assistant do you want?',

@@ -216,7 +216,11 @@ def main(argv=None):
     findings += source_results
     library_results = []
     if a.libraries:
-        library_results = media_libraries.configure(root, media, a.apply, apps)
+        import existing_page
+
+        library_results = media_libraries.configure(
+            root, media, a.apply, apps, more=existing_page.libraries(config, a.apply)
+        )
         if a.request_providers:
             library_results = [r for r in library_results if r['check'] != 'seerr:request_providers']
         findings += library_results

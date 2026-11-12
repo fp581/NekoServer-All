@@ -241,6 +241,10 @@ def _run(context):
     if data == media or str(data) == '/' or str(media) == '/':
         raise RuntimeError('Data and media must be distinct dedicated mounts')
     src_data, src_media = check_mount(data), check_mount(media)
+    # Folders of the person's own, used where they are: mounted before any app starts.
+    import existing_page
+
+    existing_page.mount(context)
     if src_data == src_media:
         raise RuntimeError('Data and media appear to share the same filesystem')
     verify_storage(context.config)
