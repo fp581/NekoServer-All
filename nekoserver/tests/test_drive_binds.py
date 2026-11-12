@@ -122,5 +122,62 @@ class DriveReturnUnitTests(unittest.TestCase):
         self.assertEqual(devices, ['device-aaaa-1111', 'device-bbbb-2222'])
 
 
+
+class SharedFolderTests(unittest.TestCase):
+    """Gate run C8: a folder of yours on a NAS, used where it is. The runtime is told which
+    one, where it is mounted into the library and which apps see it, so those stay stopped
+    while the NAS does not answer (shared_folders.rs); the every-minute check runs then."""
+
+    def config(self, fstype='nfs4', services=('jellyfin', 'radarr', 'sonarr', 'prowlarr', 'qbittorrent')):
+        entry = {
+            'path': '/mnt/tank/films',
+            'holds': 'movies',
+            'use': 'in_place',
+            'new_files': False,
+            'mount': '/mnt/tank',
+            'share': 'nas:/tank' if fstype.startswith('nfs') else '/dev/sdd1',
+            'fstype': fstype,
+        }
+        return {
+            'data_mount': DATA,
+            'media_mount': FILMS,
+            'storage': {
+                'data_ssd': {'uuid': 'aaaa-1111', 'fstype': 'ext4'},
+                'media_hdd': {'uuid': 'bbbb-2222', 'fstype': 'ext4'},
+            },
+            'media': {'services': list(services)},
+            'placement': {'movies': {'install': 'ssd', 'data': 'media', 'extra': [entry]}},
+        }
+
+    def test_the_runtime_is_told_the_share_its_library_folder_and_the_apps_that_see_it(self):
+        import native_runtime
+
+        self.assertEqual(
+            native_runtime.shared_folders(self.config()),
+            [
+                {
+                    'holds': 'movies',
+                    'path': '/mnt/tank/films',
+                    'mount': '/mnt/tank',
+                    'share': 'nas:/tank',
+                    'point': FILMS + '/library/existing/movies',
+                    'apps': ['jellyfin', 'radarr', 'sonarr', 'qbittorrent'],
+                }
+            ],
+        )
+        # Only the apps this server has.
+        only = native_runtime.shared_folders(self.config(services=('jellyfin',)))
+        self.assertEqual(only[0]['apps'], ['jellyfin'])
+        # A folder on a drive of this PC is no share: its drive's own checks cover it.
+        self.assertEqual(native_runtime.shared_folders(self.config(fstype='ext4')), [])
+        with mock.patch('native_runtime.saved_paths', return_value={}):
+            self.assertIn('shared_folders', native_runtime.storage_config(self.config()))
+            self.assertNotIn('shared_folders', native_runtime.storage_config(self.config(fstype='ext4')))
+
+    def test_the_every_minute_check_runs_on_a_server_with_one(self):
+        self.assertTrue(server_os.on_a_nas(self.config()))
+        self.assertFalse(server_os.on_a_nas(self.config(fstype='ext4')))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -264,6 +264,7 @@ pub fn run(a: &Args) -> Result<()> {
         // A drive of a group's own came back mounted by systemd, or this is an ordinary
         // start: an app Docker could not start while its drive was away starts now.
         start_failed_apps("Drive return");
+        crate::shared_folders::check(&cfg);
         return Ok(());
     }
     // A drive that "returns" while setup runs is setup's doing (a replaced HDD given its
@@ -287,6 +288,7 @@ pub fn run(a: &Args) -> Result<()> {
     let paths: Vec<PathBuf> = drives.into_iter().map(|(p, _, _)| p).collect();
     start_again(&cfgpath, &paths[0], &paths[1], "Drive return")?;
     start_failed_apps("Drive return");
+    crate::shared_folders::check(&cfg);
     Ok(())
 }
 
