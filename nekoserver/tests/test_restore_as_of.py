@@ -113,7 +113,7 @@ class RestoreAsOfTests(Restoring):
         )
 
     def test_as_of_the_last_backup_restores_only_the_live_set(self):
-        got, out = self.restore('1', 'yes', '1')
+        got, out = self.restore('1', '1', '1', 'yes')
         self.assertEqual(got, {'keep.txt': b'edited', 'new-name.txt': b'renamed'})
         self.assertIn('As of the last backup (2026-11-01 03:00 UTC)', out)
         self.assertIn('Restoring the 2 files you had', out)
@@ -135,20 +135,20 @@ class RestoreAsOfTests(Restoring):
         # The run noted itself as pending, copied later.txt and was cut off before any list.
         self.write(self.tree / 'alice/files/later.txt', b'later')
         self.last_run('20261108T030000Z', None, 'pending')
-        got, out = self.restore('1', 'yes', '1', 'yes')
+        got, out = self.restore('1', '1', '1', '1', 'yes')
         self.assertIn('did not finish: it was cut off part-way', out)
         self.assertNotIn('As of the last backup', out)
         self.assertEqual(got['later.txt'], b'later')
         # A note that says pending is never taken as complete, whatever list it names.
         self.last_run('20261108T030000Z', '20261101T030000Z.json.gz', 'pending')
-        _, out = self.restore('1', 'yes', '1', 'yes')
+        _, out = self.restore('1', '1', '1', '1', 'yes')
         self.assertIn('did not finish', out)
 
     def test_a_newest_backup_whose_list_failed_is_not_offered_as_the_last_backup(self):
         # The newest run copied later.txt, then its list could not be written.
         self.write(self.tree / 'alice/files/later.txt', b'later')
         self.last_run('20261108T030000Z', None)
-        got, out = self.restore('1', 'yes', '1', 'yes')
+        got, out = self.restore('1', '1', '1', '1', 'yes')
         self.assertNotIn('As of the last backup', out)
         self.assertIn('The newest backup (2026-11-08 03:00 UTC) did not finish', out)
         self.assertIn('The newest complete list is from 2026-11-01 03:00 UTC and leaves out', out)
@@ -156,22 +156,22 @@ class RestoreAsOfTests(Restoring):
         self.assertIn('As of 2026-11-01 03:00 UTC (an older list', out)
         self.assertEqual(got['later.txt'], b'later')
         # The older list is still there, by its date.
-        got, _ = self.restore('1', 'yes', '2')
+        got, _ = self.restore('1', '2', '1', 'yes')
         self.assertNotIn('later.txt', got)
 
     def test_a_normal_run_still_recommends_its_own_list(self):
         self.last_run('20261101T030000Z', '20261101T030000Z.json.gz')
-        got, out = self.restore('1', 'yes', '1')
+        got, out = self.restore('1', '1', '1', 'yes')
         self.assertIn('As of the last backup (2026-11-01 03:00 UTC)', out)
         self.assertEqual(got, {'keep.txt': b'edited', 'new-name.txt': b'renamed'})
         self.assertNotIn('has no list', out)
 
     def test_as_of_a_chosen_date(self):
-        got, _ = self.restore('1', 'yes', '2', '1')
+        got, _ = self.restore('1', '2', '1', '1', 'yes')
         self.assertEqual(got, {'keep.txt': b'first', 'gone.txt': b'gone', 'old-name.txt': b'renamed'})
 
     def test_everything_ever_kept_is_still_there(self):
-        got, _ = self.restore('1', 'yes', '3', 'yes')
+        got, _ = self.restore('1', '3', '1', '1', 'yes')
         self.assertEqual(
             got, {'keep.txt': b'edited', 'gone.txt': b'gone', 'old-name.txt': b'renamed', 'new-name.txt': b'renamed'}
         )
@@ -189,7 +189,7 @@ class RestoreAsOfTests(Restoring):
             self.tree / '.neko-ledger.json', json.dumps({'format': 'neko-ledger-v1', 'entries': entries}).encode()
         )
         (self.tree / 'alice/files/new-name.txt').unlink()
-        got, out = self.restore('1', 'yes', '1', 'yes')
+        got, out = self.restore('1', '1', '1', 'yes')
         self.assertEqual(got, {})
         listed = next((self.media / 'restored').iterdir()) / 'NOT-RESTORED.txt'
         self.assertEqual(
@@ -200,14 +200,14 @@ class RestoreAsOfTests(Restoring):
     def test_a_list_that_cannot_be_read_offers_everything(self):
         for path in (self.tree / '.neko-inventory').iterdir():
             path.write_bytes(b'not gzip')
-        got, out = self.restore('1', 'yes', '1', 'yes')
+        got, out = self.restore('1', '1', '1', '1', 'yes')
         self.assertIn('could not be read, so everything ever kept is offered', out)
         self.assertEqual(len(got), 4)
 
     def test_a_backup_without_lists_behaves_as_before_and_says_so(self):
         for path in list((self.tree / '.neko-inventory').iterdir()):
             path.unlink()
-        got, out = self.restore('1', 'yes', 'yes')
+        got, out = self.restore('1', '1', '1', 'yes')
         self.assertIn(recovery_wizard.NO_INVENTORY, out)
         self.assertEqual(len(got), 4)
 
@@ -225,7 +225,7 @@ class RestoreAsOfTests(Restoring):
         self.addCleanup(zone('Asia/Jerusalem'))
         self.assertEqual(recovery_wizard.readable('20261101T030000Z'), '2026-11-01 05:00 IST')
         self.assertEqual(recovery_wizard.when(1793502000 * 10**6), '2026-11-01 05:00 IST')
-        _, out = self.restore('1', 'yes', '1')
+        _, out = self.restore('1', '1', '1', 'yes')
         self.assertIn('As of the last backup (2026-11-01 05:00 IST)', out)
 
     def test_lists_are_newest_first_also_two_in_one_second(self):
@@ -281,11 +281,11 @@ class FileFolderFileTests(Restoring):
     def test_each_date_restores_the_content_it_had_then(self):
         self.lists(2)
         # Newest first: the last backup, then (choosing a date) the second and the first.
-        last, _ = self.restore('1', 'yes', '1')
+        last, _ = self.restore('1', '1', '1', 'yes')
         self.assertEqual(last, {'Projects': b'NEW CONTENT'})
-        second, _ = self.restore('1', 'yes', '2', '1')
+        second, _ = self.restore('1', '2', '1', '1', 'yes')
         self.assertEqual(second, {'Projects/notes.txt': b'notes'})
-        first, out = self.restore('1', 'yes', '2', '2')
+        first, out = self.restore('1', '2', '2', '1', 'yes')
         self.assertEqual(first, {'Projects': b'OLD CONTENT'})
         self.assertIn('Checksums matched for 1 file', out)
         self.assertNotIn('NOT restored', out)
@@ -293,7 +293,7 @@ class FileFolderFileTests(Restoring):
     def test_content_no_saved_copy_has_is_missing_never_another_file(self):
         self.lists(2)
         (self.tree / 'alice/neko-replaced/20261101T030000Z/Projects').unlink()
-        first, out = self.restore('1', 'yes', '2', '2', 'yes')
+        first, out = self.restore('1', '2', '2', '1', 'yes')
         self.assertEqual(first, {})
         self.assertIn('NOT restored (1 file)', out)
 
@@ -303,12 +303,12 @@ class FileFolderFileTests(Restoring):
         self.lists(2)
         self.ledger({'alice/files/Projects': sha(b'NEW CONTENT')})
         (self.tree / 'alice/neko-replaced').rename(self.root / 'aside')
-        first, _ = self.restore('1', 'yes', '2', '2', 'yes')
+        first, _ = self.restore('1', '2', '2', '1', 'yes')
         self.assertNotIn(b'NEW CONTENT', first.values())
 
     def test_an_older_list_without_checksums_leaves_such_a_file_out(self):
         self.lists(1)
-        first, out = self.restore('1', 'yes', '2', '2', 'yes')
+        first, out = self.restore('1', '2', '2', '1', 'yes')
         self.assertEqual(first, {})
         self.assertIn('can\'t be told', out)
         self.assertIn('Left out (1 file): they became a folder', out)
@@ -325,7 +325,7 @@ class FileFolderFileTests(Restoring):
                 ).encode()
             )
         )
-        first, _ = self.restore('1', 'yes', '2', '2', 'yes')
+        first, _ = self.restore('1', '2', '2', '1', 'yes')
         self.assertEqual(first, {'plain.txt': b'plain'})
 
     def test_lists_mixing_formats_or_with_bad_checksums_are_not_trusted(self):

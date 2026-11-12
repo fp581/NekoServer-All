@@ -401,59 +401,69 @@ Q = {
         'old': 'Have you completed this step successfully? [yes/no]:',
     },
     # ---- recovery
-    'restore_rest': {
+    # Section 2, "Review this restore": the one approval of a restore, asked under the
+    # review of what was chosen (recovery_wizard.review). Nothing is written before it.
+    'restore_approve': {
         'screen': 'Recovery',
-        'title': 'Restore everything else from this backup now?',
-        'hint': '"Stop" leaves the server as it is: nothing is restored.',
+        'title': 'Restore these items now?',
+        'hint': 'Nothing has been changed so far. "Go back" restores nothing.',
         'kind': 'yesno',
-        'yes': 'Restore it',
-        'no': 'Stop',
-        'old': 'Restore everything else from this backup now? ("no" stops, with nothing restored) [yes/no]:',
+        'yes': 'Restore selected items',
+        'no': 'Go back',
+        'how': 'Type yes to restore, or no to go back, then press Enter. Enter alone does nothing.',
+        'above': True,
+        'old': 'Use this folder? [yes/no]: and Restore everything else from this backup now? ("no" stops, with '
+        'nothing restored) [yes/no]:',
     },
-    'restore_newest': {
-        'screen': 'Recovery',
-        'title': 'Bring back only the newest version of each file?',
-        'hint': 'That is what most people want. The other choice also copies every older version, which takes longer and more room.',
-        'kind': 'yesno',
-        'yes': 'Only the newest (recommended)',
-        'no': 'Every version',
-        'old': 'Restore only the NEWEST version of each file? (recommended; "no" copies every version) [yes/no]:',
-    },
+    # Asked only when a monthly snapshot's app versions are not all on this PC (what the
+    # snapshot holds and what Docker has was looked at; "Is this a new server?" is gone).
     'restore_app_versions': {
         'screen': 'Recovery',
-        'title': 'Is this a new server?',
-        'hint': 'On a new server the apps themselves are put back from the backup too, so they are the versions your data was made with.',
+        'title': 'Put the app versions saved in this snapshot back on this PC too?',
+        'hint': '{found} The settings and databases in the snapshot were made with exactly these versions, so a '
+        'rebuilt server needs them. They are added to the program that runs the apps (Docker) and take '
+        '{size} there. No app is started or replaced.',
         'kind': 'yesno',
-        'yes': 'Yes, put the apps back too',
-        'no': 'No, the apps are here',
+        'yes': 'Yes, put them back too',
+        'no': 'No, only unpack the settings and databases',
+        'example': {
+            'found': '3 of the 9 app versions this snapshot was made with are not on this PC.',
+            'size': '6.2 GB',
+        },
         'old': 'Also load the saved app versions into Docker (needed on a new server)? [yes/no]:',
     },
-    'restore_folder_ok': {
-        'screen': 'Recovery',
-        'title': 'Put the restored files in this folder?',
-        'kind': 'yesno',
-        'yes': 'Use this folder',
-        'no': 'Choose another',
-        'old': 'Use this folder? [yes/no]:',
-    },
+    # Section 3, "Check or repair a drive". The check and the repair are two actions.
     'check_drive': {
         'screen': 'Recovery',
-        'title': 'Stop the apps and check the drive now?',
-        'hint': 'The apps are off while the drive is checked, and start again afterwards.',
+        'title': 'Stop every app and check this drive now?',
+        'hint': 'The check only looks: it changes nothing on the drive. The apps are off until it has finished.',
         'kind': 'yesno',
         'yes': 'Check it now',
         'no': 'Not now',
+        'how': 'Type yes to check, or no to leave everything as it is, then press Enter. Enter alone does nothing.',
+        'above': True,
         'old': 'Stop the apps and check the drive now? [yes/no]:',
     },
     'repair_drive': {
         'screen': 'Recovery',
-        'title': 'Repair the drive now?',
-        'hint': 'The check found damage. A repair rewrites parts of the filesystem on the drive, and a file that was '
-        'damaged can be lost. Copy what you still can first.',
-        'kind': 'yesno',
-        'yes': 'Repair it',
-        'no': 'Leave it',
+        'title': 'Stop every app and repair this drive now?',
+        'hint': 'A repair changes the drive and cannot be undone. You approve it with the drive\'s name: {name}',
+        'kind': 'text',
+        'send': 'Repair this drive',
+        'how': 'Type {name} and press Enter to repair. Anything else, or Enter alone, leaves the drive as it is.',
+        'above': True,
+        'example': {'name': 'sdb1'},
         'old': 'Check and repair its filesystem now (e2fsck: it changes only what is broken)? [yes/no]:',
+    },
+    'fix_copies': {
+        'screen': 'Recovery',
+        'title': 'Fix these backup copies now?',
+        'hint': 'Only the backup drives are changed. A damaged copy is moved aside on its drive, never deleted.',
+        'kind': 'yesno',
+        'yes': 'Fix them',
+        'no': 'Not now',
+        'how': 'Type yes to fix them, or no to leave them as they are, then press Enter. Enter alone does nothing.',
+        'above': True,
     },
 }
 
