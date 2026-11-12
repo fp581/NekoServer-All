@@ -679,5 +679,22 @@ class MusicOnTheMediaDriveTests(unittest.TestCase):
         self.assertEqual(roots, [self.media])
 
 
+# The connecting step asks Docker first (modules/onboarding.docker_running); these tests
+# run it on a PC that may have no Docker, so Docker answers here.
+_DOCKER = None
+
+
+def setUpModule():
+    global _DOCKER
+    from modules import onboarding as _onboarding
+
+    _DOCKER = mock.patch.object(_onboarding, 'docker_running')
+    _DOCKER.start()
+
+
+def tearDownModule():
+    _DOCKER.stop()
+
+
 if __name__ == '__main__':
     unittest.main()

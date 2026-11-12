@@ -24,6 +24,30 @@ DEPENDENCIES = ['media', 'recovery']
 DESCRIPTION = 'Wait for media startup, collect sources and run guided configuration/readiness reporting'
 
 
+DOCKER_DOWN = (
+    'Docker is not running, so none of the apps can be reached and nothing could be connected. '
+    'Start it (sudo systemctl start docker), then retry this step'
+)
+
+
+def docker_running(run=subprocess.run):
+    """Docker answers: the apps this step connects run in it. Asked first, so a Docker
+    that is down is said as that, with its fix, instead of each app as "unavailable"
+    (seen on the 0.50.0 gate with Docker stopped)."""
+    try:
+        done = run(
+            ['docker', 'info', '--format', '{{.ServerVersion}}'],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        done = None
+    if done is None or done.returncode != 0:
+        raise RuntimeError(DOCKER_DOWN)
+
+
 def run(ctx):
     settings = ctx.config.get('onboarding', {})
     if not ctx.apply or not settings.get('enabled', True):
@@ -36,6 +60,7 @@ def run(ctx):
             'Connecting the apps: Movies and shows and the downloads are switched off, so there is nothing to connect'
         )
         return
+    docker_running()
     if account_store.enabled(ctx.config) and 'accounts' in getattr(ctx, 'plan', ()):
         required = account_store.selected(ctx.config, ['media'])
         if any(not account_store.get(ctx.config, app, verified=True) for app in required):
