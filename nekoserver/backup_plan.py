@@ -24,7 +24,7 @@ import re
 from pathlib import Path
 
 import placement
-from modules import app_backup, host_backup
+from modules import app_backup, host_backup, photo_backup
 from neko_common import job_times, media_group, media_services
 
 DEFAULT, LEAST, MOST = app_backup.KEEP_DEFAULT, app_backup.KEEP_LEAST, app_backup.KEEP_MOST
@@ -261,16 +261,49 @@ def table(config, held=None):
     offline = placement.drive_of(config, placement.OFFLINE, placement.DATA)
     cloud = placement.CLOUD in placement.rows(config)
     copied = ['your photos and videos'] * media_group(config, 'photos') + ['your Nextcloud files'] * cloud
+    # The weekly copy runs only with something to take (photo_backup: Immich or Nextcloud);
+    # a drive chosen without them gets no timer, so no copy is promised (gate run C7).
+    takes = any(photo_backup.copies(config))
     row(
         'offline',
         'A second copy on a drive you can unplug: ' + ', '.join(copied + ['the app password lists']),
         (offline, None),
-        weekly(times) if offline else 'never: no such drive is set up',
-        NEVER_REMOVED if offline else 'nothing',
-        ('as far back as the first copy', None) if offline else ('nothing', None),
-        note=None if offline else OFFLINE_MISSING + (CLOUD_UNPROTECTED if cloud else ''),
+        weekly(times) if offline and takes else 'never: ' + ('no such drive is set up' if takes else NOTHING_TO_COPY),
+        NEVER_REMOVED if offline and takes else 'nothing',
+        ('as far back as the first copy', None) if offline and takes else ('nothing', None),
+        note=None if offline or not takes else OFFLINE_MISSING + (CLOUD_UNPROTECTED if cloud else ''),
     )
+    for key, what, why in not_copied(config):
+        # The page then shows only "never" and why.
+        row(key, what, (None, None), 'never', None, (None, None), note=why)
     return rows
+
+
+NOTHING_TO_COPY = 'there is nothing for it to copy (no Immich, no Nextcloud)'
+DOWNLOADABLE = (
+    'Not backed up: no backup job copies them (they are often larger than any backup drive). What Radarr '
+    'and Sonarr found can be downloaded again; keep your own copy of anything else.'
+)
+MUSIC_NOT_COPIED = (
+    'Not backed up: the nightly music copy is switched off on this server. What Lidarr found can be '
+    'downloaded again; keep your own copy of anything else.'
+)
+
+
+def not_copied(config):
+    """[(key, what, why)]: what this server keeps that no backup copies, said on the page
+    beside the backups (gate run C7: the films, shows and music were in no job and in no
+    list). The person's own folders are listed by existing_media.not_backed_up."""
+    import existing_media
+
+    found = []
+    if media_group(config, 'movies'):
+        found.append(('not_copied_movies', 'Your films and shows (the library)', DOWNLOADABLE))
+    if media_group(config, 'music') and config.get('music', {}).get('backup_enabled', True) is False:
+        found.append(('not_copied_music', 'Your music (the library)', MUSIC_NOT_COPIED))
+    for category, folder, why in existing_media.not_backed_up(config):
+        found.append((f'not_copied_{category}', f'Your own folder of {category}: {folder}', 'Not backed up: ' + why))
+    return found
 
 
 OFFLINE_MISSING = (

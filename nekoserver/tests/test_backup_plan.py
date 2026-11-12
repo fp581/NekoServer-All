@@ -245,7 +245,17 @@ class TableTests(unittest.TestCase):
     def test_the_table_of_a_new_server(self):
         rows = self.rows(template())
         self.assertEqual(
-            list(rows), ['app_backup', 'host_backup', 'photo_archive', 'photo_database', 'monthly', 'offline']
+            list(rows),
+            [
+                'app_backup',
+                'host_backup',
+                'photo_archive',
+                'photo_database',
+                'monthly',
+                'offline',
+                'not_copied_movies',
+                'not_copied_music',
+            ],
         )
         app = rows['app_backup']
         self.assertEqual(
@@ -349,7 +359,34 @@ class TableTests(unittest.TestCase):
     def test_a_server_without_some_apps_has_no_rows_for_them(self):
         config = template()
         config['media_apps'] = {'photos': False, 'movies': True, 'music': True}
-        self.assertEqual(list(self.rows(config)), ['app_backup', 'host_backup', 'monthly', 'offline'])
+        self.assertEqual(
+            list(self.rows(config)),
+            ['app_backup', 'host_backup', 'monthly', 'offline', 'not_copied_movies', 'not_copied_music'],
+        )
+
+    def test_what_no_backup_copies_is_listed_too(self):
+        # Gate run C7: the films, shows and music were in no job and in no list.
+        config = template()
+        rows = self.rows(config)
+        films, music = rows['not_copied_movies'], rows['not_copied_music']
+        self.assertEqual((films['when'], films['kept'], films['covers']), ('never', None, None))
+        self.assertIn('downloaded again', films['note'])
+        self.assertIn('music copy is switched off', music['note'])
+        # With the music copy on, the music is no longer listed; with Music off, neither.
+        config['music']['backup_enabled'] = True
+        self.assertNotIn('not_copied_music', self.rows(config))
+        config['media_apps'] = {'photos': True, 'movies': False, 'music': False}
+        self.assertFalse([key for key in self.rows(config) if key.startswith('not_copied')])
+
+    def test_an_offline_drive_with_nothing_to_copy_promises_no_weekly_copy(self):
+        # Gate run C7: the row said "every week" with no Immich and no Nextcloud, and no timer.
+        config = template()
+        config['photos']['external_backup_uuid'] = 'usb-0001'
+        config['photos']['deploy_immich'] = False
+        config['nextcloud'] = {'enabled': False}
+        offline = self.rows(config)['offline']
+        self.assertTrue(offline['when'].startswith('never: there is nothing for it to copy'), offline['when'])
+        self.assertEqual(offline['kept'], 'nothing')
 
 
 if __name__ == '__main__':

@@ -512,7 +512,7 @@ def new_files_folder(config, category):
 def not_backed_up(config):
     """[(category, folder, why)]: the person's own folders are never in a NekoServer backup
     (often larger than the backup drive). For the list of what no job copies
-    (placement.downloadable) and the dashboard."""
+    (backup_plan.not_copied) and the dashboard."""
     return [
         (e['holds'], e['path'], 'your own folder, used where it is: NekoServer does not copy it; keep your own copy')
         for e in extras(config)
