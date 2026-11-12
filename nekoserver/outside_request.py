@@ -8,11 +8,12 @@ command line) and returns only a word for what happened and the answer's number.
 """
 
 import http.client
+import json
 import ssl
 import urllib.error
 import urllib.request
 
-from neko_common import NoRedirect
+from neko_common import NoRedirect, atomic_json
 
 # The longest one request may take, as the scheduled jobs' own limit (curl --max-time 20).
 TIME_LIMIT_SECONDS = 20
@@ -27,6 +28,70 @@ UNTRUSTED = 'untrusted'  # the server's certificate could not be checked
 NOT_SENT = 'not_sent'  # nothing was sent (the address or the token was not acceptable)
 OBSERVED = 'observed'  # a person saw it happen
 NOT_TESTED = 'not_tested'  # nobody has seen it happen yet
+
+# What a "no" from the server means, told apart because each asks something else of the
+# person (gate run C12): only a wrong address asks for the address again.
+WRONG_ADDRESS = 'wrong_address'  # 404 or 410: nothing is at this address
+BUSY = 'busy'  # 429 or 503: the server asks to try again later
+SERVER_ERROR = 'server_error'  # any other 5xx: their server has a problem right now
+
+
+def kind(happened, status):
+    """The word for what happened, with a "no" told apart by its number: a wrong
+    address, a busy server, a server error. Any other "no" stays REFUSED, and a request
+    with no answer keeps its own word (TIMED_OUT, UNREACHABLE, UNTRUSTED)."""
+    if happened == ACCEPTED or status is None:
+        return happened
+    if status in (404, 410):
+        return WRONG_ADDRESS
+    if status in (429, 503):
+        return BUSY
+    if 500 <= status <= 599:
+        return SERVER_ERROR
+    return happened
+
+
+# What the last test of a saved address found is kept beside the address, in the same
+# root-only file, so that a retry tests it again instead of calling the step done
+# (gate run C12), and asks for the address again only when the address was wrong.
+
+
+def _saved(private):
+    try:
+        saved = json.loads(private.read_text())
+    except (OSError, ValueError):
+        return {}
+    return saved if isinstance(saved, dict) else {}
+
+
+def untested(private):
+    """The saved address has no passed test: a run cut off after saving it, a test the
+    server did not take, or a destination changed since. Addresses saved before 0.50.0
+    have no record either way: those stand."""
+    return _saved(private).get('tested') is False
+
+
+def wrong_address(private):
+    """The last test of the saved address found nothing at that address."""
+    return _saved(private).get('answer') == WRONG_ADDRESS
+
+
+def mark_tested(private, answer):
+    """Keep what the test of the saved address found (its word, never the address)."""
+    saved = _saved(private)
+    if not saved:
+        return
+    saved.update(tested=answer == ACCEPTED, answer=answer)
+    atomic_json(private, saved)
+
+
+def kept_test(private, **destination):
+    """The test record to save with `destination`: the earlier one when the destination
+    is the same as before, otherwise "not tested yet", so a new address is always tested."""
+    saved = _saved(private)
+    if saved and all(saved.get(key, '') == value for key, value in destination.items()):
+        return {key: saved[key] for key in ('tested', 'answer') if key in saved}
+    return {'tested': False}
 
 
 def observed(seen):

@@ -121,6 +121,7 @@ class AlertTestTests(unittest.TestCase):
             'wrong_token',
             'not_allowed',
             'refused',
+            'wrong_address',
             'redirected',
             'timed_out',
             'unreachable',
@@ -141,6 +142,7 @@ class AlertTestTests(unittest.TestCase):
                 'wrong_token',
                 'not_allowed',
                 'refused',
+                'wrong_address',
                 'redirected',
                 'timed_out',
                 'unreachable',
@@ -186,7 +188,16 @@ class OutageFormTests(unittest.TestCase):
 
     def test_a_check_in_the_monitor_refused_leaves_the_step_waiting(self):
         ctx, _ = context()
-        for server in ('rejected', 'redirected', 'timed_out', 'unreachable', 'untrusted'):
+        for server in (
+            'rejected',
+            'wrong_address',
+            'busy',
+            'server_error',
+            'redirected',
+            'timed_out',
+            'unreachable',
+            'untrusted',
+        ):
             with self.subTest(server=server):
                 with mock.patch.object(heartbeat, 'send_test_checkin', return_value={'server': server}):
                     result = heartbeat.test_checkin(ctx, PING)

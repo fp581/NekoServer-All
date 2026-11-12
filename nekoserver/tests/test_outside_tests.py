@@ -129,7 +129,11 @@ class AlertTestTests(unittest.TestCase):
         for status, word in (
             (401, 'wrong_token'),
             (403, 'not_allowed'),
-            (404, 'refused'),
+            (404, 'wrong_address'),
+            (410, 'wrong_address'),
+            (400, 'refused'),
+            (503, 'busy'),
+            (502, 'server_error'),
             (429, 'busy'),
             (500, 'server_error'),
             (301, 'redirected'),
@@ -187,7 +191,13 @@ class ReadingTestTests(unittest.TestCase):
         server = FakeServer(200)
         self.assertEqual(notifications.reading_test(address, token, opener=server)['server'], 'allowed')
         self.assertEqual(server.only.get_header('Authorization'), 'Bearer ' + token)
-        for status, word in ((403, 'not_allowed'), (401, 'wrong_token'), (404, 'refused'), (302, 'redirected')):
+        for status, word in (
+            (403, 'not_allowed'),
+            (401, 'wrong_token'),
+            (404, 'wrong_address'),
+            (400, 'refused'),
+            (302, 'redirected'),
+        ):
             result = notifications.reading_test(address, token, opener=FakeServer(status))
             self.assertEqual((result['server'], result['http_status']), (word, status))
         # A protected topic asked without a token: its server wants a sign-in.
@@ -227,7 +237,7 @@ class CheckInTestTests(unittest.TestCase):
     def test_rejected_timed_out_and_the_rest_are_told_apart(self):
         address = a_ping_address()
         for status, word in (
-            (404, 'rejected'),
+            (404, 'wrong_address'),
             (400, 'rejected'),
             (429, 'busy'),
             (503, 'busy'),
@@ -409,7 +419,7 @@ class SecretsStayOutTests(unittest.TestCase):
         self.run_everything()
         words = {
             'ok', 'invalid', 'none', 'accepted', 'open', 'allowed', 'wrong_token', 'not_allowed', 'refused',
-            'rejected', 'redirected', 'timed_out', 'unreachable', 'untrusted', 'not_sent', 'not_tested', 'busy', 'server_error',
+            'rejected', 'redirected', 'timed_out', 'unreachable', 'untrusted', 'not_sent', 'not_tested', 'busy', 'server_error', 'wrong_address',
         }  # fmt: skip
         for result in self.results:
             for key, value in result.items():
@@ -466,7 +476,7 @@ class NoGateTests(unittest.TestCase):
         address = a_ping_address()
         result, saved, ran, said = self.installed(heartbeat, address)
         self.assertIsNone(result)
-        self.assertEqual(saved, {'endpoint': address})
+        self.assertEqual(saved, {'endpoint': address, 'tested': False})
         self.assertIn(['systemctl', 'enable', '--now', 'nekoserver-heartbeat.timer'], ran)
         self.assertNotIn(address, repr(ran) + repr(said))
 
@@ -487,36 +497,184 @@ class NoGateTests(unittest.TestCase):
             self.assertIn('not set up yet', later['reason'])
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 class GateRunCTests(unittest.TestCase):
-    """Gate run C (VM3): a busy server (429) was told as a wrong topic, a server error (500)
-    as a wrong address, and a retry after a failed test called the step done with no
-    request sent."""
+    """Gate run C12 (VM3): a busy server (429) was told as a wrong topic, a server error
+    (500) as a wrong address, the finishing screen's retry of "Phone alerts" said PASS with
+    no request sent, and the retry of "Server heartbeat" sent its check-in to the alerts
+    address and said PASS on a 429."""
 
-    def test_busy_and_a_server_error_are_told_apart_from_a_wrong_address(self):
-        from modules import heartbeat, notifications
+    KINDS = ('wrong_address', 'busy', 'server_error', 'timed_out', 'unreachable')
 
-        self.assertEqual(notifications._answer_word('refused', 429, 'accepted'), 'busy')
-        self.assertEqual(notifications._answer_word('refused', 503, 'accepted'), 'busy')
-        self.assertEqual(notifications._answer_word('refused', 500, 'accepted'), 'server_error')
-        self.assertEqual(notifications._answer_word('refused', 404, 'accepted'), 'refused')
+    def test_each_kind_of_answer_has_its_own_word(self):
+        for status, word in (
+            (404, 'wrong_address'),
+            (410, 'wrong_address'),
+            (429, 'busy'),
+            (503, 'busy'),
+            (500, 'server_error'),
+            (502, 'server_error'),
+            (400, 'refused'),
+        ):
+            self.assertEqual(outside_request.kind('refused', status), word, status)
+        self.assertEqual(outside_request.kind('accepted', 200), 'accepted')
+        for word in ('timed_out', 'unreachable', 'untrusted'):
+            self.assertEqual(outside_request.kind(word, None), word)
+
+    def test_each_kind_of_answer_has_its_own_plain_words(self):
         for module in (notifications, heartbeat):
-            self.assertIn('try later', module.TEST_SAID['busy'])
-            self.assertIn('problem of its own', module.TEST_SAID['server_error'])
+            said = {kind: module.TEST_SAID[kind] for kind in self.KINDS}
+            self.assertEqual(len(set(said.values())), len(said), module.__name__)
+            self.assertIn('Try again in a few minutes', said['busy'])
+            self.assertIn('Their server has a problem right now', said['server_error'])
+            for kind in ('timed_out', 'unreachable'):
+                self.assertIn('network problem', said[kind])
+            # Only a wrong address asks for the address again.
+            self.assertIn('enter it again', said['wrong_address'])
+            for kind, words in module.TEST_SAID.items():
+                if kind != 'wrong_address':
+                    self.assertNotIn('enter it again', words, (module.__name__, kind))
+                    self.assertNotIn('spelling of the address', words, (module.__name__, kind))
 
-    def test_a_saved_address_whose_test_was_not_taken_is_tested_again(self):
-        from modules import notifications
-
+    def test_the_test_record_follows_the_saved_destination(self):
         with tempfile.TemporaryDirectory() as folder:
             private = Path(folder) / 'config.json'
-            private.write_text(json.dumps({'endpoint': 'https://ntfy.example/topic'}))
-            self.assertFalse(notifications.untested(private))  # saved before 0.50.0: it stands
-            notifications.mark_tested(private, False)
-            self.assertTrue(notifications.untested(private))
-            notifications.mark_tested(private, True)
-            self.assertFalse(notifications.untested(private))
-            self.assertEqual(json.loads(private.read_text())['endpoint'], 'https://ntfy.example/topic')
-            self.assertFalse(notifications.untested(Path(folder) / 'missing.json'))
+            missing = Path(folder) / 'missing.json'
+            address = 'https://alerts.example/' + notifications.new_topic_name()
+            private.write_text(json.dumps({'endpoint': address}))
+            self.assertFalse(outside_request.untested(private))  # saved before 0.50.0: it stands
+            self.assertEqual(outside_request.kept_test(private, endpoint=address), {})
+            outside_request.mark_tested(private, 'busy')
+            self.assertTrue(outside_request.untested(private))
+            self.assertFalse(outside_request.wrong_address(private))
+            outside_request.mark_tested(private, 'wrong_address')
+            self.assertTrue(outside_request.wrong_address(private))
+            outside_request.mark_tested(private, 'accepted')
+            self.assertFalse(outside_request.untested(private))
+            self.assertEqual(json.loads(private.read_text())['endpoint'], address)
+            # the same destination keeps its record; another one is not tested yet
+            self.assertTrue(outside_request.kept_test(private, endpoint=address)['tested'])
+            self.assertEqual(outside_request.kept_test(private, endpoint=address + 'x'), {'tested': False})
+            self.assertEqual(outside_request.kept_test(missing, endpoint=address), {'tested': False})
+            self.assertFalse(outside_request.untested(missing))
+
+
+class FinishRetryTests(unittest.TestCase):
+    """The finishing screen's "Retry this step" runs the step's module again
+    (wizard.retry_unfinished, then installer with retry_step): here that run, with the
+    system parts faked and the two private files in a folder of the test's own."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = Path(folder.name)
+        self.files = {
+            notifications.PRIVATE_CONFIG: self.folder / 'alerts.json',
+            heartbeat.PRIVATE: self.folder / 'heartbeat.json',
+        }
+        _, self.topic, self.token = a_topic()
+        self.ping = a_ping_address()
+        self.context = mock.Mock(apply=True, config={}, log=lambda line: None)
+        patches = [
+            mock.patch('modules._schedules.switched_off', return_value=False),
+            mock.patch('modules._schedules.installed', return_value=True),
+            mock.patch('os.geteuid', return_value=0),
+            mock.patch.object(notifications.shutil, 'which', return_value='/usr/bin/curl'),
+            mock.patch.object(notifications.guided_setup, 'interactive', return_value=False),
+            mock.patch.object(heartbeat.sys, 'stdin', mock.Mock(isatty=mock.Mock(return_value=False))),
+        ]
+        for module in (notifications, heartbeat):
+            patches += [
+                mock.patch.object(module, 'safe_path', side_effect=lambda p: self.files[str(p)]),
+                mock.patch.object(module.native_runtime, 'deploy', return_value='/usr/local/lib/neko/runtime'),
+                mock.patch.object(module, 'check_units'),
+                mock.patch.object(module, 'write_units'),
+                mock.patch.object(module, 'subprocess'),
+            ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def save(self, key, record):
+        self.files[key].write_text(json.dumps(record))
+
+    def retry(self, module, answer):
+        server = FakeServer(answer)
+        with (
+            mock.patch.object(outside_request, 'careful_opener', return_value=server),
+            mock.patch.object(heartbeat, 'saved_endpoint', return_value=self.ping),
+            mock.patch.object(notifications, 'reading_test', return_value={'server': 'allowed'}),
+        ):
+            result = module.run(self.context)
+        return installer.outcome(result, 'complete'), server
+
+    def test_an_alerts_retry_sends_the_test_and_passes_only_on_a_good_answer(self):
+        for answer in (429, 500, 404, 400, ConnectionRefusedError, TimeoutError):
+            with self.subTest(answer=answer):
+                self.save(notifications.PRIVATE_CONFIG, {'endpoint': self.topic, 'token': self.token, 'tested': False})
+                state, server = self.retry(notifications, answer)
+                self.assertEqual(server.only.full_url, self.topic)
+                self.assertEqual(state['status'], 'needs_setup')
+                self.assertTrue(outside_request.untested(self.files[notifications.PRIVATE_CONFIG]))
+        state, server = self.retry(notifications, 200)
+        self.assertEqual((server.only.get_method(), server.only.full_url), ('POST', self.topic))
+        self.assertEqual(state['status'], 'complete')
+        self.assertFalse(outside_request.untested(self.files[notifications.PRIVATE_CONFIG]))
+
+    def test_a_run_cut_off_after_saving_is_tested_at_the_retry(self):
+        # install saved the address (not tested yet), then the run stopped: no pass unseen.
+        notifications.install(self.context, self.topic, self.token)
+        self.assertTrue(outside_request.untested(self.files[notifications.PRIVATE_CONFIG]))
+        state, server = self.retry(notifications, 503)
+        self.assertEqual(len(server.requests), 1)
+        self.assertEqual(state['status'], 'needs_setup')
+        self.assertIn('Try again in a few minutes', state['reason'])
+
+    def test_the_heartbeat_retry_goes_to_the_heartbeat_address(self):
+        self.save(notifications.PRIVATE_CONFIG, {'endpoint': self.topic, 'token': self.token, 'tested': True})
+        self.save(heartbeat.PRIVATE, {'endpoint': self.ping, 'tested': False, 'answer': 'busy'})
+        state, server = self.retry(heartbeat, 429)
+        self.assertEqual((server.only.get_method(), server.only.full_url), ('GET', self.ping))
+        self.assertNotEqual(server.only.full_url, self.topic)
+        self.assertEqual(state['status'], 'needs_setup')
+        self.assertIn('Try again in a few minutes', state['reason'])
+        state, server = self.retry(heartbeat, 200)
+        self.assertEqual(server.only.full_url, self.ping)
+        self.assertEqual(state['status'], 'complete')
+        # passed once and unchanged: a later run sends nothing and stays passed
+        state, server = self.retry(heartbeat, 500)
+        self.assertEqual((server.requests, state['status']), ([], 'complete'))
+
+    def test_a_server_error_or_no_answer_on_the_heartbeat_retry_is_not_a_pass(self):
+        for answer in (500, 503, ConnectionRefusedError, 404, 400):
+            with self.subTest(answer=answer):
+                self.save(heartbeat.PRIVATE, {'endpoint': self.ping, 'tested': False})
+                state, server = self.retry(heartbeat, answer)
+                self.assertEqual(len(server.requests), 1)
+                self.assertEqual(state['status'], 'needs_setup')
+
+    def test_only_a_wrong_address_asks_for_it_again(self):
+        alerts = self.files[notifications.PRIVATE_CONFIG]
+        self.save(notifications.PRIVATE_CONFIG, {'endpoint': self.topic, 'token': self.token})
+        outside_request.mark_tested(alerts, 'busy')
+        notifications.guided_setup.interactive.return_value = True
+        with mock.patch.object(notifications, 'alerts_form', return_value=('', '')) as form:
+            self.retry(notifications, 429)
+            form.assert_not_called()
+            outside_request.mark_tested(alerts, 'wrong_address')
+            state, server = self.retry(notifications, 200)
+            form.assert_called_once()
+        self.assertEqual(server.requests, [])
+        self.assertEqual(state['status'], 'needs_setup')
+        # the outage monitor the same way: asked again, then tested at the new address
+        self.save(heartbeat.PRIVATE, {'endpoint': self.ping, 'tested': False, 'answer': 'wrong_address'})
+        heartbeat.sys.stdin.isatty.return_value = True
+        new_ping = a_ping_address()
+        with mock.patch.object(heartbeat, 'monitor_form', return_value=new_ping) as form:
+            state, server = self.retry(heartbeat, 200)
+        form.assert_called_once()
+        self.assertEqual(server.only.full_url, new_ping)
+        self.assertEqual(state['status'], 'complete')
+
+
+if __name__ == '__main__':
+    unittest.main()

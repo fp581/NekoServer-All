@@ -97,37 +97,7 @@ def _answer_word(happened, status, yes):
         return 'wrong_token'
     if status == 403:
         return 'not_allowed'
-    return busy_or_broken(status) or happened
-
-
-def busy_or_broken(status):
-    """'busy' for an answer that says to try later (429, 503), 'server_error' for any
-    other server error (5xx); None for anything else."""
-    if status in (429, 503):
-        return 'busy'
-    if isinstance(status, int) and 500 <= status <= 599:
-        return 'server_error'
-    return None
-
-
-def untested(private):
-    """The address saved has no passed test yet: a run cut off after saving it, or a
-    test that was not taken (gate run C: a retry then called the step done without any
-    request). Addresses saved before 0.50.0 have no record either way: those stand."""
-    try:
-        return private.exists() and json.loads(private.read_text()).get('tested') is False
-    except (OSError, ValueError, AttributeError):
-        return False
-
-
-def mark_tested(private, passed):
-    """What the test of the saved address showed, kept beside it."""
-    try:
-        saved = json.loads(private.read_text())
-    except (OSError, ValueError):
-        return
-    saved['tested'] = bool(passed)
-    atomic_json(private, saved)
+    return outside_request.kind(happened, status)
 
 
 def send_test(address, token='', opener=None):
@@ -135,8 +105,9 @@ def send_test(address, token='', opener=None):
 
     Returns {'address': 'ok' | 'invalid',
              'token': 'ok' | 'invalid' | 'none',
-             'server': 'accepted' | 'wrong_token' | 'not_allowed' | 'refused' | 'redirected'
-                       | 'timed_out' | 'unreachable' | 'untrusted' | 'not_sent',
+             'server': 'accepted' | 'wrong_token' | 'not_allowed' | 'wrong_address' | 'busy'
+                       | 'server_error' | 'refused' | 'redirected' | 'timed_out' | 'unreachable'
+                       | 'untrusted' | 'not_sent',
              'http_status': the answer's number, or None when there was no answer,
              'phone': 'not_tested'}
     "accepted" means the server took the message, not that a phone showed it: whether it
@@ -314,15 +285,20 @@ TEST_SAID = {
     'if your topic needs none.',
     'not_allowed': 'The alert server knows this topic but does not let NekoServer send to it: it needs an access '
     'token that is allowed to send to it.',
-    'refused': "The alert server answered no. Check that the address ends with your topic's name.",
-    'busy': 'The alert server is busy and asked to try later. Retry this step in a few minutes.',
-    'server_error': 'The alert server had a problem of its own (it answered with an error). Retry this step later; '
-    'the address may be right.',
+    'wrong_address': "The alert server has no topic at this address (it answered \"not found\"). Copy the "
+    "address again from the ntfy app: it ends with your topic's name. Then enter it again.",
+    'refused': 'The alert server turned the test message down. Try again in a few minutes; if it keeps happening, '
+    "look at the topic's settings in the ntfy app or on the server's website.",
+    'busy': 'The alert server is busy right now. Try again in a few minutes: retry this step then. Your address '
+    'can stay as it is.',
+    'server_error': 'Their server has a problem right now (the alert server answered with an error). This is not '
+    'your mistake: retry this step later. Your address can stay as it is.',
     'redirected': 'This address points somewhere else, and NekoServer does not follow that. Use the final address '
     'of the topic.',
-    'timed_out': 'The alert server did not answer in time. If it keeps happening, check the address.',
-    'unreachable': "NekoServer could not reach the alert server. Check this server's internet connection and the "
-    'spelling of the address.',
+    'timed_out': 'The alert server did not answer in time. That is usually a network problem: check that this '
+    'server is connected to the internet, then retry this step.',
+    'unreachable': 'NekoServer got no answer from the alert server: a network problem. Check that this server is '
+    'connected to the internet, then retry this step.',
     'untrusted': "The alert server's security certificate could not be checked, so nothing was sent.",
     'not_sent': 'No test was sent: the address is not one NekoServer can send to.',
 }
@@ -341,7 +317,7 @@ def test_alert(context, address, token, prompt=None):
     result = send_test(address, token)
     said = TEST_SAID.get(result['server'], TEST_SAID['not_sent'])
     context.log('Phone alerts test: ' + said)
-    mark_tested(safe_path(PRIVATE_CONFIG), result['server'] == 'accepted')
+    outside_request.mark_tested(safe_path(PRIVATE_CONFIG), result['server'])
     if result['server'] != 'accepted':
         return {
             'status': 'needs_setup',
@@ -424,9 +400,27 @@ def run(context):
             return install(context, address, token) or test_alert(context, address, token)
     if not address:
         return set_up_later()
-    # Saved at an earlier run whose test was not taken: tried again, never passed unseen.
-    again = untested(private)
-    return install(context, address, token) or (test_alert(context, address, token) if again else None)
+    if outside_request.wrong_address(private) and guided_setup.interactive(context):
+        return asked_again(context)
+    return install(context, address, token) or tested_again(context, private, address, token)
+
+
+def tested_again(context, private, address, token):
+    """A saved destination whose test did not pass (cut off, not taken, or changed since:
+    install keeps the record only for the same destination) is tested again: a retry
+    never passes without a request the server took."""
+    if outside_request.untested(private):
+        return test_alert(context, address, token)
+    return None
+
+
+def asked_again(context):
+    """The alert server had no topic at the saved address: the form again, then a test."""
+    context.log('Phone alerts: the saved address was not found at the alert server, so it is asked again.')
+    address, token = alerts_form(context)
+    if not address:
+        return set_up_later()
+    return install(context, address, token) or test_alert(context, address, token)
 
 
 def install(context, address, token=''):
@@ -444,7 +438,8 @@ def install(context, address, token=''):
         raise RuntimeError('Install curl and system CA certificates before enabling HTTPS delivery')
     units = definitions(binary, private)
     check_units(units, 'notification')
-    atomic_json(private, {'endpoint': address, 'token': token, **timing})
+    kept = outside_request.kept_test(private, endpoint=address, token=token)
+    atomic_json(private, {'endpoint': address, 'token': token, **timing, **kept})
     write_units(units)
     for cmd in (['systemctl', 'daemon-reload'], ['systemctl', 'enable', '--now', 'nekoserver-notifications.timer']):
         subprocess.run(cmd, check=True, capture_output=True, timeout=30)
