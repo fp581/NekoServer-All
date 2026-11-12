@@ -1428,19 +1428,21 @@ def choose_ahead(config, log):
     return chosen
 
 
+def keys_changed(old, new):
+    """(the keys `new` sets or changes, the keys it no longer has) of one section; each a
+    dictionary, anything else counting as empty."""
+    old = old if isinstance(old, dict) else {}
+    new = new if isinstance(new, dict) else {}
+    return {key: value for key, value in new.items() if old.get(key) != value}, [key for key in old if key not in new]
+
+
 def section_changes(before, after):
     """What the storage page changed, section by section: {section: (the keys it set,
     the keys it took out)}, and the top-level answers of the films question as they are."""
     import existing_page
 
-    changes = {}
-    for section in AHEAD_SECTIONS:
-        old = before.get(section) if isinstance(before.get(section), dict) else {}
-        new = after.get(section) if isinstance(after.get(section), dict) else {}
-        added = {key: value for key, value in new.items() if old.get(key) != value}
-        gone = [key for key in old if key not in new]
-        if added or gone:
-            changes[section] = (added, gone)
+    found = {section: keys_changed(before.get(section), after.get(section)) for section in AHEAD_SECTIONS}
+    changes = {section: change for section, change in found.items() if change[0] or change[1]}
     # The films question's two answers of their own: that it was asked, and the folders to copy.
     for key in (existing_page.ASKED, existing_page.COPIES):
         if after.get(key) and after.get(key) != before.get(key):
@@ -1608,6 +1610,48 @@ def free_on(row):
 PLACE_SAID = {'ssd': 'on the drive of NekoServer and your apps', 'media': 'on the drive of the backups'}
 
 
+def place_line(config, what, words, place):
+    """Where one kind of files is kept, as the review says it."""
+    import drive_table
+
+    if isinstance(place, str):
+        said = PLACE_SAID[place]
+    else:
+        said = 'on ' + drive_table.brief(place) + ', a drive of their own'
+    if place == 'media' and what in backed_up_beside(config):
+        said += '. ' + SAME_DRIVE_AS_BACKUP
+    return f'{words[0].upper()}{words[1:]}: {said}'
+
+
+def own_folder_lines(config):
+    """What happens to each folder of the person's own, as the review says it."""
+    import existing_media
+    import existing_page
+
+    lines = []
+    for entry in existing_media.extras(config):
+        what = existing_media.WHAT[entry['holds']]
+        if entry['use'] == existing_media.NEW:
+            lines.append(f"New {what} are saved in {entry['path']}")
+            continue
+        new = ', and new ones are saved there' if entry['new_files'] else ''
+        lines.append(f"Your {what} in {entry['path']}: used where they are{new}")
+    for wanted in config.get(existing_page.COPIES) or []:
+        what = existing_media.WHAT[wanted['holds']]
+        lines.append(
+            f"Your {what} in {wanted['path']}: copied into the NekoServer library; your folder is kept as it is"
+        )
+    return lines
+
+
+def offline_line(config, named):
+    """The offline backup's drive, or that there is none by choice; nothing when it is not chosen yet."""
+    photos = config.get('photos', {})
+    if photos.get('external_backup_uuid'):
+        return ['Offline backup: ' + named(photos['external_backup_uuid'])]
+    return ['Offline backup: none for now'] if photos.get(OFFLINE_WANTED) is False else []
+
+
 def ahead_lines(config, inventory, places, installs=None):
     """The storage page's choices in words, for the review before the approval."""
     import drive_table
@@ -1623,39 +1667,10 @@ def ahead_lines(config, inventory, places, installs=None):
         record = config.get('storage', {}).get(key) or {}
         where = 'the disk Linux runs from' if system_folder(record, key) else named(record.get('uuid'))
         lines.append(f'{PAGE_ROLES[key]}: {where}')
-    for what, words, _threshold in WHERE:
-        if what in places:
-            place = places[what]
-            said = (
-                PLACE_SAID[place]
-                if isinstance(place, str)
-                else 'on ' + drive_table.brief(place) + ', a drive of their own'
-            )
-            if place == 'media' and what in backed_up_beside(config):
-                said += '. ' + SAME_DRIVE_AS_BACKUP
-            lines.append(f'{words[0].upper()}{words[1:]}: {said}')
+    lines += [place_line(config, what, words, places[what]) for what, words, _ in WHERE if what in places]
     for what, row in (installs or {}).items():
         lines.append(f'{INSTALLED_NAMES[what]}: installed on {drive_table.brief(row)}, a drive of its own')
-    photos = config.get('photos', {})
-    if photos.get('external_backup_uuid'):
-        lines.append('Offline backup: ' + named(photos['external_backup_uuid']))
-    elif photos.get(OFFLINE_WANTED) is False:
-        lines.append('Offline backup: none for now')
-    import existing_media
-    import existing_page
-
-    for entry in existing_media.extras(config):
-        new = ', and new ones are saved there' if entry['new_files'] else ''
-        if entry['use'] == existing_media.NEW:
-            lines.append(f"New {existing_media.WHAT[entry['holds']]} are saved in {entry['path']}")
-        else:
-            lines.append(f"Your {existing_media.WHAT[entry['holds']]} in {entry['path']}: used where they are{new}")
-    for wanted in config.get(existing_page.COPIES) or []:
-        lines.append(
-            f"Your {existing_media.WHAT[wanted['holds']]} in {wanted['path']}: copied into the NekoServer library; "
-            'your folder is kept as it is'
-        )
-    return lines
+    return lines + offline_line(config, named) + own_folder_lines(config)
 
 
 def checked_before_mount(config, specs):

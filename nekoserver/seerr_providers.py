@@ -99,90 +99,88 @@ def connection_matches(value, connection):
 PROVIDER = 'seerr:provider:'
 
 
-def provider(seerr, manager, root, app, apply, prompt, verify_only=False, folder=None):
-    port, library = SPECS[app]
-    endpoint = settings_of(app)
-    initial = records(seerr.call(endpoint))
-    standard = current_standard(initial)
-    directory = wanted_folder(app, folder, standard, verify_only)
-    if verify_only and not standard:
-        raise SetupRequired('No standard request provider is configured; rerun --request-providers')
-    key = app_key(root, app)
-    manager.headers['X-Api-Key'] = key
+def manager_release(manager):
+    """(the major release, the base URL) of Sonarr or Radarr, as it reports them. Any
+    release from 3 on (Sonarr 5 too): only Sonarr 3 has the separate language profiles;
+    later releases keep the same provider settings."""
     status = manager.call('/system/status')
     if not isinstance(status, dict) or not isinstance(status.get('version'), str):
         raise RuntimeError('Media manager version missing')
     major = status['version'].split('.')[0]
-    # Any release from 3 on (Sonarr 5 too): only Sonarr 3 has the separate language
-    # profiles handled below; later releases keep the same provider settings.
     if not major.isdecimal() or int(major) < 3:
         raise SetupRequired('Unsupported media manager version; configure its provider manually')
     base = status.get('urlBase', '')
-    if not isinstance(base, str) or (
-        base
-        and (
-            not base.startswith('/')
-            or base.startswith('//')
-            or any(c in base for c in ('?', '#', ':', '\\'))
-            or '..' in base.split('/')
+    plain = isinstance(base, str) and (
+        not base
+        or (
+            base.startswith('/')
+            and not base.startswith('//')
+            and not any(c in base for c in ('?', '#', ':', '\\'))
+            and '..' not in base.split('/')
         )
-    ):
+    )
+    if not plain:
         raise SetupRequired('Unsupported media manager base URL; custom configuration preserved')
-    connection = {'hostname': app, 'port': port, 'apiKey': key, 'useSsl': False, 'baseUrl': base}
-    if standard and (
-        len(standard) != 1
-        or standard[0].get('isDefault') is not True
-        or not connection_matches(standard[0], connection)
-    ):
-        raise SetupRequired('Existing standard providers/default routing differ; review them in Seerr')
-    roots = records(manager.call('/rootfolder'))
-    expected = [x for x in roots if str(x.get('path', '')).rstrip('/') == directory]
-    if len(expected) != 1 or expected[0].get('accessible') is not True:
-        raise SetupRequired('Expected Arr root folder is missing or inaccessible; run --configure first')
-    local_profiles = profiles(manager.call('/qualityprofile'))
-    # This POST tests from Seerr's container; it does not save a provider or request content.
+    return int(major), base
+
+
+def same_folder(found, directory):
+    return str(found).rstrip('/') == directory
+
+
+def tested_through_seerr(seerr, app, standard, connection, verify_only):
+    """What Seerr's own container sees of the app: its profiles and root folders. A check
+    reads the saved provider through Seerr; setup tests the connection, which saves no
+    provider and requests no content."""
     if verify_only:
         if type(standard[0].get('id')) is not int or standard[0]['id'] < 0:
             raise RuntimeError('Provider ID missing')
         tested = seerr.call('/service/' + app + '/' + str(standard[0]['id']))
     else:
-        tested = seerr.call(endpoint + '/test', 'POST', connection)
+        tested = seerr.call(settings_of(app) + '/test', 'POST', connection)
     if not isinstance(tested, dict):
         raise RuntimeError('Unsupported connection test response')
+    return tested
+
+
+def agreed_profiles(local_profiles, tested, base, directory):
+    """The quality profiles the app and Seerr both report, once Seerr sees the app's
+    folder for requests and its base URL."""
     remote_profiles = profiles(tested.get('profiles'))
     remote_roots = records(tested.get('rootFolders'))
-    if tested.get('urlBase', base) != base or not any(
-        str(x.get('path', '')).rstrip('/') == directory for x in remote_roots
-    ):
+    if tested.get('urlBase', base) != base or not any(same_folder(x.get('path', ''), directory) for x in remote_roots):
         raise SetupRequired('Seerr cannot see the expected Arr root folder/base URL')
     available = [
         x for x in local_profiles if any(p['id'] == x['id'] and p['name'] == x['name'] for p in remote_profiles)
     ]
     if len(available) != len(local_profiles) or len(remote_profiles) != len(local_profiles):
         raise SetupRequired('Seerr and the local manager report different profiles')
-    languages = None
-    if app == 'sonarr' and int(major) == 3:
-        languages = profiles(tested.get('languageProfiles'))
-    if standard:
-        existing = standard[0]
-        if str(existing.get('activeDirectory', '')).rstrip('/') == library != directory:
-            # Chosen after the provider was made: its folder is the person's to change.
-            raise SetupRequired(
-                f'Requests are still saved in {library}. To save them in your own folder, open Seerr, Settings, '
-                f'Services, {app.capitalize()}, and choose the root folder {directory}'
-            )
-        if str(existing.get('activeDirectory', '')).rstrip('/') != directory or not any(
-            p['id'] == existing.get('activeProfileId') for p in available
-        ):
-            raise SetupRequired('Existing provider root/quality profile is not valid; settings preserved')
-        if languages and not any(p['id'] == existing.get('activeLanguageProfileId') for p in languages):
-            raise SetupRequired('Existing Sonarr language profile is invalid; settings preserved')
-        if existing.get('preventSearch') is not False:
-            raise SetupRequired(
-                'Existing provider prevents searches or has an unknown search policy; review it in Seerr'
-            )
-        return row(PROVIDER + app, 'pass', 'Existing default provider verified through Seerr; settings preserved')
-    selected = choose(available, app.capitalize() + ' request quality profile', prompt)
+    return available
+
+
+def existing_verified(app, existing, folders, available, languages):
+    """The provider that is there already, checked and kept as it is. `folders`: (the
+    library's own folder, the folder requests are to be saved in)."""
+    library, directory = folders
+    if same_folder(existing.get('activeDirectory', ''), library) and library != directory:
+        # Chosen after the provider was made: its folder is the person's to change.
+        raise SetupRequired(
+            f'Requests are still saved in {library}. To save them in your own folder, open Seerr, Settings, '
+            f'Services, {app.capitalize()}, and choose the root folder {directory}'
+        )
+    if not same_folder(existing.get('activeDirectory', ''), directory) or not any(
+        p['id'] == existing.get('activeProfileId') for p in available
+    ):
+        raise SetupRequired('Existing provider root/quality profile is not valid; settings preserved')
+    if languages and not any(p['id'] == existing.get('activeLanguageProfileId') for p in languages):
+        raise SetupRequired('Existing Sonarr language profile is invalid; settings preserved')
+    if existing.get('preventSearch') is not False:
+        raise SetupRequired('Existing provider prevents searches or has an unknown search policy; review it in Seerr')
+    return row(PROVIDER + app, 'pass', 'Existing default provider verified through Seerr; settings preserved')
+
+
+def new_provider(app, connection, selected, directory, languages, prompt):
+    """The provider setup makes for the app, as Seerr's settings take it."""
     payload = dict(
         connection,
         name='NekoServer ' + app.capitalize(),
@@ -194,29 +192,71 @@ def provider(seerr, manager, root, app, apply, prompt, verify_only=False, folder
         syncEnabled=False,
         preventSearch=False,
     )
-    if app == 'sonarr':
-        payload['enableSeasonFolders'] = True
-        if languages:
-            payload['activeLanguageProfileId'] = choose(languages, 'Sonarr request language profile', prompt)['id']
-    else:
+    if app != 'sonarr':
         payload['minimumAvailability'] = 'released'
-    if not apply:
-        return row(PROVIDER + app, 'needs_setup', 'Preview: connection tested; default provider would be created')
+        return payload
+    payload['enableSeasonFolders'] = True
+    if languages:
+        payload['activeLanguageProfileId'] = choose(languages, 'Sonarr request language profile', prompt)['id']
+    return payload
+
+
+def saved_provider(seerr, app, initial, payload, connection):
+    """The provider saved, read back, and tested once more through Seerr with the
+    connection it kept (Docker's names and the API reached from Seerr's container)."""
+    endpoint = settings_of(app)
     if records(seerr.call(endpoint)) != initial:
         raise SetupRequired('Provider settings changed during setup; rerun before saving')
     seerr.call(endpoint, 'POST', payload)
     saved = current_standard(seerr.call(endpoint))
     if len(saved) != 1 or any(saved[0].get(k) != v for k, v in payload.items()):
         raise RuntimeError('Provider settings were not retained as expected')
-    # Recheck Docker DNS/API access using the actual retained connection.
     retained = seerr.call(endpoint + '/test', 'POST', {k: saved[0][k] for k in connection})
     if (
         not isinstance(retained, dict)
-        or not any(p.get('id') == selected['id'] for p in records(retained.get('profiles')))
-        or not any(str(p.get('path', '')).rstrip('/') == directory for p in records(retained.get('rootFolders')))
+        or not any(p.get('id') == payload['activeProfileId'] for p in records(retained.get('profiles')))
+        or not any(
+            same_folder(p.get('path', ''), payload['activeDirectory']) for p in records(retained.get('rootFolders'))
+        )
     ):
         raise RuntimeError('Retained provider connection could not be verified')
     return row(PROVIDER + app, 'pass', 'Default provider created, read back and tested through Seerr')
+
+
+def provider(seerr, manager, root, app, apply, prompt, verify_only=False, folder=None):
+    """Seerr's request provider for Sonarr or Radarr: the one that is there, verified
+    and kept, or a new one made, saved and read back. `folder`: where requests are
+    saved (request_folders); the library's own folder without it."""
+    port, library = SPECS[app]
+    initial = records(seerr.call(settings_of(app)))
+    standard = current_standard(initial)
+    directory = wanted_folder(app, folder, standard, verify_only)
+    if verify_only and not standard:
+        raise SetupRequired('No standard request provider is configured; rerun --request-providers')
+    key = app_key(root, app)
+    manager.headers['X-Api-Key'] = key
+    major, base = manager_release(manager)
+    connection = {'hostname': app, 'port': port, 'apiKey': key, 'useSsl': False, 'baseUrl': base}
+    if standard and (
+        len(standard) != 1
+        or standard[0].get('isDefault') is not True
+        or not connection_matches(standard[0], connection)
+    ):
+        raise SetupRequired('Existing standard providers/default routing differ; review them in Seerr')
+    expected = [x for x in records(manager.call('/rootfolder')) if same_folder(x.get('path', ''), directory)]
+    if len(expected) != 1 or expected[0].get('accessible') is not True:
+        raise SetupRequired('Expected Arr root folder is missing or inaccessible; run --configure first')
+    local_profiles = profiles(manager.call('/qualityprofile'))
+    tested = tested_through_seerr(seerr, app, standard, connection, verify_only)
+    available = agreed_profiles(local_profiles, tested, base, directory)
+    languages = profiles(tested.get('languageProfiles')) if app == 'sonarr' and major == 3 else None
+    if standard:
+        return existing_verified(app, standard[0], (library, directory), available, languages)
+    selected = choose(available, app.capitalize() + ' request quality profile', prompt)
+    payload = new_provider(app, connection, selected, directory, languages, prompt)
+    if not apply:
+        return row(PROVIDER + app, 'needs_setup', 'Preview: connection tested; default provider would be created')
+    return saved_provider(seerr, app, initial, payload, connection)
 
 
 def configure(
