@@ -153,9 +153,9 @@ class RetentionTests(unittest.TestCase):
             for name, tree in spec_sources.python_files().items()
             if any(isinstance(node, ast.Constant) and node.value == 'keep_snapshots' for node in ast.walk(tree))
         )
-        self.assertEqual(
-            named, ['installer.py', 'modules/app_backup.py', 'modules/host_backup.py', 'modules/maintenance.py']
-        )
+        # (installer.py named it for the 14-to-7 review until the backup counts moved to
+        # backup_plan, which reads it through app_backup.KEEP.)
+        self.assertEqual(named, ['modules/app_backup.py', 'modules/host_backup.py', 'modules/maintenance.py'])
         # And in every set of unit files setup writes (the golden files), no job but those
         # is started with a count.
         checked = 0
