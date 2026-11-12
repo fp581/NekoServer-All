@@ -2558,6 +2558,23 @@ class NextcloudFirstInstallTests(unittest.TestCase):
             nextcloud.finish_install(self.BASE, lambda m: None, run=run, sleep=lambda s: None, now=lambda: next(clock))
         checked.assert_not_called()
 
+    def test_a_status_or_log_read_that_hangs_while_it_starts_is_waited_through(self):
+        import subprocess
+
+        from modules import nextcloud
+
+        answered = self.fake(True, '')[0]
+        hung = iter([True, True, False])  # the first status read, then its log read, hang
+
+        def run(argv, **kwargs):
+            if next(hung, False):
+                raise subprocess.TimeoutExpired(argv, kwargs.get('timeout'))
+            return answered(argv, **kwargs)
+
+        with mock.patch.object(nextcloud, 'checked_run') as checked:
+            self.assertFalse(nextcloud.finish_install(self.BASE, lambda m: None, run=run, sleep=lambda s: None))
+        checked.assert_not_called()
+
 
 class NextcloudReinstalledLinuxTests(unittest.TestCase):
     """Linux reinstalled and the SSD kept, the settings made anew: Nextcloud's administrator
