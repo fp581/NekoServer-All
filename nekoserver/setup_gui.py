@@ -278,7 +278,9 @@ class Window:
         for part in (cookie or '').split(';'):
             name, _, value = part.strip().partition('=')
             sent[name] = value
-        if secrets.compare_digest(sent.get(COOKIE, ''), self.session):
+        # Compared as bytes: compare_digest raises on text with non-ASCII characters (a
+        # cookie another page on 127.0.0.1 set, say), which would end every request.
+        if secrets.compare_digest(sent.get(COOKIE, '').encode(), self.session.encode()):
             return True, None, None
         if method != 'GET' or route not in ('', INDEX):
             return False, None, SPENT
