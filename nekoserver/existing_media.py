@@ -19,19 +19,32 @@ there now (the share may be away).
 """
 
 import copy
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import urllib.error
 import urllib.parse
+import urllib.request
 from pathlib import Path
 
+import account_store
 import media_libraries
 import nfs_exports
 import placement
 import source_import
-from neko_common import atomic_write, files_root, findmnt
+from neko_common import (
+    app_port,
+    atomic_json,
+    atomic_write,
+    files_root,
+    findmnt,
+    local_opener,
+    music_downloads,
+    verify_storage,
+)
 
 # category -> (its row of the placement table, the library's name, Jellyfin's kind).
 # "tv" is what the page calls shows (the name source_import and the library folder use).
@@ -41,6 +54,9 @@ CATEGORIES = {
     'music': ('music', 'Music (your folder)', None),
 }
 IN_PLACE = 'in_place'
+# A folder of the person's that only takes the new files (the one used in place is read-only).
+NEW = 'new_files'
+USES = (IN_PLACE, NEW)
 # Where a folder used in place is mounted: under the library of its group's drive ...
 EXISTING = 'existing'
 # ... which every app sees here.
@@ -293,8 +309,9 @@ def check(
 
     Returns {'path' (the real folder), 'mount', 'share', 'fstype', 'read_only',
     'persistent', 'add_to_fstab' (a line that makes an NFS share permanent, or None),
-    'hardlinks' (False: new files are downloaded on the library's drive and copied here),
-    'new_files': None when not asked, {'ok': True}, or {'ok': False, 'code', 'reason'}}.
+    'hardlinks' (always False, see COPIED_TWICE), 'new_files': None when not asked,
+    {'ok': True, 'note': what to say about room and time}, or {'ok': False, 'code',
+    'reason'}}.
     Raises Refused (code, words) when the folder itself cannot be used. Never changes
     the folder: the only thing written is the apps' own test file, removed at once."""
     category_of(category)
@@ -313,13 +330,16 @@ def check(
     if said:
         fix = (FIX_ON_NAS if found['fstype'] in NETWORK else FIX_LOCAL).format(uid=uid, gid=gid)
         raise Refused('unreadable', uid=uid, gid=gid, path=real, said=said.partition(' ')[2] or said, fix=fix)
+    answer = new_files_answer(real, found, category, uid, gid, as_user, statvfs) if new_files else None
+    if answer and answer['ok']:
+        answer['note'] = new_files_note(config, category, real)
     return {
         'path': real,
         **found,
         'read_only': read_only(real, statvfs),
         'add_to_fstab': add,
         'hardlinks': False,
-        'new_files': new_files_answer(real, found, category, uid, gid, as_user, statvfs) if new_files else None,
+        'new_files': answer,
     }
 
 
@@ -327,20 +347,28 @@ def check(
 # my-config.json, in the group's row of the placement table:
 #   "placement": {"movies": {..., "extra": [
 #       {"path": "/mnt/tank/films", "holds": "movies", "use": "in_place", "new_files": false,
-#        "mount": "/mnt/tank", "share": "nas:/tank", "fstype": "nfs4"}]}}
-# One folder for each of movies, tv and music. "mount", "share" and "fstype" are what the
-# folder was on when it was chosen: later checks want the same thing mounted there.
+#        "mount": "/mnt/tank", "share": "nas:/tank", "fstype": "nfs4"},
+#       {"path": "/mnt/big/new-films", "holds": "movies", "use": "new_files", "new_files": true, ...}]}}
+# For each of movies, tv and music: one folder used where it is ("in_place"), and at most
+# one place new files are saved: that folder itself ("new_files": true), or a folder of
+# its own for them ("use": "new_files", when the first is read-only), or neither (new
+# files go to NekoServer's own library). "mount", "share" and "fstype" are what the folder
+# was on when it was chosen: later checks want the same thing mounted there.
 
 
-def entry_for(category, found, new_files=False):
-    """The settings entry for a folder check() passed (`found`: what check() returned)."""
+def entry_for(category, found, new_files=False, use=IN_PLACE):
+    """The settings entry for a folder check() passed (`found`: what check() returned).
+    `use`: IN_PLACE, or NEW for a folder of its own that only takes the new files."""
+    if use not in USES:
+        raise RuntimeError(f'Not a way to use a folder: {use!r}')
+    new_files = bool(new_files) or use == NEW
     if new_files and not (found.get('new_files') or {}).get('ok'):
         raise RuntimeError('New files cannot be saved in this folder; choose another place for them')
     return {
         'path': found['path'],
         'holds': category,
-        'use': IN_PLACE,
-        'new_files': bool(new_files),
+        'use': use,
+        'new_files': new_files,
         'mount': found['mount'],
         'share': found['share'],
         'fstype': found['fstype'],
@@ -348,35 +376,48 @@ def entry_for(category, found, new_files=False):
 
 
 def with_choice(config, entry):
-    """A copy of the settings with this folder as its category's existing folder (it
-    takes the place of an earlier one for that category)."""
+    """A copy of the settings with this folder for its category and use (it takes the
+    place of an earlier one). There is one place for new files: a folder that takes them
+    ends an earlier choice for them (the other folder stays used, read-only)."""
     row = category_of(entry['holds'])[0]
     changed = copy.deepcopy(config)
     table = copy.deepcopy(placement.table(config))
-    kept = [e for e in table[row].get('extra') or [] if not (isinstance(e, dict) and e.get('holds') == entry['holds'])]
+    kept = []
+    for other in table[row].get('extra') or []:
+        if not isinstance(other, dict) or other.get('holds') != entry['holds']:
+            kept.append(other)
+        elif other.get('use') == entry['use'] or (entry['new_files'] and other.get('use') == NEW):
+            continue  # replaced, or a folder that was only for the new files
+        elif entry['new_files']:
+            kept.append({**other, 'new_files': False})
+        else:
+            kept.append(other)
     table[row]['extra'] = [*kept, dict(entry)]
     changed['placement'] = table
     extras(changed)  # refused here rather than at the next start
     return changed
 
 
-def without_choice(config, category):
-    """A copy of the settings without an existing folder for `category`."""
+def without_choice(config, category, use=None):
+    """A copy of the settings without the folders for `category` (only the one used as
+    `use`, when given)."""
     row = category_of(category)[0]
     changed = copy.deepcopy(config)
     if isinstance(changed.get('placement'), dict) and isinstance(changed['placement'].get(row), dict):
-        kept = [e for e in changed['placement'][row].get('extra') or [] if e.get('holds') != category]
-        changed['placement'][row]['extra'] = kept
+        listed = changed['placement'][row].get('extra') or []
+        changed['placement'][row]['extra'] = [
+            e for e in listed if e.get('holds') != category or (use is not None and e.get('use') != use)
+        ]
     return changed
 
 
 def extras(config):
-    """The folders used in place, from the settings, each checked as far as a settings
-    file can be trusted: [{'path', 'holds', 'use', 'new_files', 'mount', 'share', 'fstype'}]."""
+    """The person's folders, from the settings, each checked as far as a settings file can
+    be trusted: [{'path', 'holds', 'use', 'new_files', 'mount', 'share', 'fstype'}]."""
     saved = config.get('placement')
     if not isinstance(saved, dict):
         return []
-    found, seen = [], set()
+    found, seen, writable = [], set(), set()
     for row in ('movies', 'music'):
         listed = (saved.get(row) or {}).get('extra') if isinstance(saved.get(row), dict) else None
         if listed is None:
@@ -384,13 +425,16 @@ def extras(config):
         if not isinstance(listed, list):
             raise RuntimeError(f'"extra" of "{row}" under "placement" in my-config.json must be a list')
         for entry in listed:
-            if not isinstance(entry, dict) or entry.get('use') != IN_PLACE:
-                raise RuntimeError(f'An "extra" folder of "{row}" in my-config.json is not {{"use": "in_place", ...}}')
-            holds, path = entry.get('holds'), entry.get('path')
-            if holds not in CATEGORIES or CATEGORIES[holds][0] != row or holds in seen:
+            if not isinstance(entry, dict) or entry.get('use') not in USES:
+                raise RuntimeError(f'An "extra" folder of "{row}" in my-config.json has no "use" NekoServer knows')
+            holds, path, use = entry.get('holds'), entry.get('path'), entry['use']
+            if holds not in CATEGORIES or CATEGORIES[holds][0] != row or (holds, use) in seen:
                 raise RuntimeError(f'"holds" of an "extra" folder of "{row}" in my-config.json is wrong or given twice')
-            if not isinstance(path, str) or type(entry.get('new_files', False)) is not bool:
+            new_files = entry.get('new_files', use == NEW)
+            if not isinstance(path, str) or type(new_files) is not bool or (use == NEW and not new_files):
                 raise RuntimeError(f'The "extra" folder for {holds} in my-config.json needs "path" and "new_files"')
+            if new_files and holds in writable:
+                raise RuntimeError(f'my-config.json names two places for new {holds}; there is one')
             for key in ('mount', 'share', 'fstype'):
                 if not isinstance(entry.get(key), str):
                     raise RuntimeError(f'The "extra" folder for {holds} in my-config.json needs "{key}"')
@@ -400,60 +444,113 @@ def extras(config):
             unsafe = real != path or not path.startswith('/') or any(ord(c) < 32 or c == '\\' for c in path)
             if unsafe or real == '/' or any(within(real, top) for top in (*SYSTEM, *own_folders(config))):
                 raise RuntimeError(f'The "extra" folder for {holds} in my-config.json is not a folder that may be used')
-            seen.add(holds)
-            found.append({**entry, 'new_files': entry.get('new_files', False)})
+            seen.add((holds, use))
+            if new_files:
+                writable.add(holds)
+            found.append({**entry, 'new_files': new_files})
     return found
 
 
-def mount_point(config, category):
-    """Where the folder for `category` is mounted on this PC: library/existing/<category>
+def slot(category, use=IN_PLACE):
+    """The folder's name under library/existing and /data/existing: the kind, or
+    "<kind>-new" for a folder that only takes the new files."""
+    category_of(category)
+    if use not in USES:
+        raise RuntimeError(f'Not a way to use a folder: {use!r}')
+    return category if use == IN_PLACE else category + '-new'
+
+
+def mount_point(config, category, use=IN_PLACE):
+    """Where the folder for `category` is mounted on this PC: library/existing/<slot>
     on its group's drive."""
     root = os.path.realpath(files_root(config, category_of(category)[0]))
-    point = os.path.realpath(os.path.join(root, 'library', EXISTING, category))
+    point = os.path.realpath(os.path.join(root, 'library', EXISTING, slot(category, use)))
     # Under the group's own drive, whatever the settings say.
     if not point.startswith(root + os.sep):
         raise RuntimeError(f'The folder for existing {category} would be outside {root}')
     return Path(point)
 
 
-def container_path(category):
+def container_path(category, use=IN_PLACE):
     """Where every app sees the folder for `category`."""
+    return f'{CONTAINER}/{slot(category, use)}'
+
+
+def new_files_entry(config, category):
+    """The person's folder new films, shows or music are saved in, or None when they go
+    to NekoServer's own library."""
     category_of(category)
-    return f'{CONTAINER}/{category}'
+    return next((e for e in extras(config) if e['holds'] == category and e['new_files']), None)
 
 
 def new_files_folder(config, category):
     """The ONE folder new films, shows or music are saved in, as the apps see it: the
-    existing folder when "save new ones here too" was chosen, else the library's own
-    (/data/movies, /data/tv, /data/music). Sonarr's, Radarr's and Lidarr's root folder."""
-    for entry in extras(config):
-        if entry['holds'] == category and entry['new_files']:
-            return container_path(category)
-    category_of(category)
-    return f'/data/{category}'
+    person's folder when one was chosen for them (/data/existing/movies, or
+    /data/existing/movies-new), else the library's own (/data/movies, /data/tv,
+    /data/music). Sonarr's, Radarr's and Lidarr's root folder, and Seerr's."""
+    entry = new_files_entry(config, category)
+    return container_path(category, entry['use']) if entry else f'/data/{category}'
 
 
 def not_backed_up(config):
-    """[(category, folder, why)]: folders used in place are never in a NekoServer backup
-    (they are the person's own, often larger than the backup drive). For the list of what
-    no job copies (placement.downloadable) and the dashboard."""
+    """[(category, folder, why)]: the person's own folders are never in a NekoServer backup
+    (often larger than the backup drive). For the list of what no job copies
+    (placement.downloadable) and the dashboard."""
     return [
         (e['holds'], e['path'], 'your own folder, used where it is: NekoServer does not copy it; keep your own copy')
         for e in extras(config)
     ]
 
 
+# ---- new files in the person's folder ------------------------------------------------------
+# A download is saved in the library's own downloads folder (/data/downloads), then the
+# importer (Radarr, Sonarr, Lidarr) puts it into the folder for new files. The person's
+# folder is a mount of its own inside /data, and Linux makes no hard link from one mount
+# to another, even on one drive: the importer copies the file and removes the download.
+# So a hard link is never promised here; the room is needed twice until the copy is done.
+
+COPIED_TWICE = (
+    'New {what} are downloaded to {downloads} first and then copied into {path}; the download is removed after '
+    'the copy. Each one needs room in both places for that moment, and the copy takes as long as the file is big.'
+)
+
+
+def downloads_folder(config, category):
+    """Where downloads of this kind are saved on this PC before they are imported."""
+    if category_of(category)[0] == 'music':
+        return music_downloads(config)
+    return files_root(config, 'movies') / 'library' / 'downloads'
+
+
+def new_files_note(config, category, path):
+    """What to say when new files are to be saved in a folder of the person's."""
+    return COPIED_TWICE.format(what=WHAT[category], downloads=downloads_folder(config, category), path=path)
+
+
+def new_files_ready(config, category, **how):
+    """Before an app is told to save new files in the person's folder: the folder as the
+    apps see it. Away when it is not there now (nothing is then written in its place).
+    None when new files go to NekoServer's library."""
+    entry = new_files_entry(config, category)
+    if entry is None:
+        return None
+    row = next(r for r in available(config, **how) if (r['holds'], r['use']) == (category, entry['use']))
+    if not row['ready']:
+        raise Away(row['reason'])
+    return row['container']
+
+
 # ---- mounting it ---------------------------------------------------------------------------
 
 
 def fstab_lines(config):
-    """The /etc/fstab lines that bind each folder used in place onto its mount point:
+    """The /etc/fstab lines that bind each of the person's folders onto its mount point:
     read-only unless new files go there; `nofail`, and only once the folder's own drive
     or share is mounted (x-systemd.requires-mounts-for), so a share that is away leaves
     the mount point as it is (root's, closed to the apps) instead of an empty folder."""
     lines = []
     for entry in extras(config):
-        point = mount_point(config, entry['holds'])
+        point = mount_point(config, entry['holds'], entry['use'])
         mode = 'rw' if entry['new_files'] else 'ro'
         source, root = escaped(entry['path']), escaped(point.parents[2])
         needs = f'x-systemd.requires-mounts-for={source},x-systemd.requires-mounts-for={root}'
@@ -501,13 +598,14 @@ def use_in_place(
     mounted=source_import.mount_id,
     log=print,
 ):
-    """Mount every folder used in place, now and at every start, from the settings.
+    """Mount every one of the person's folders, now and at every start, from the settings.
 
     Writes NekoServer's block in /etc/fstab (and `permanent`: the 'add_to_fstab' lines
     check() gave), makes each mount point (root's, closed to the apps, so nothing can be
     written into it while the folder is away) and mounts it. A folder that is away now is
-    left for the next start and reported. Returns [{'holds', 'path', 'mounted', 'reason'}].
-    Run again after the settings change; with no folders left it removes its block."""
+    left for the next start and reported. Returns [{'holds', 'use', 'path', 'mounted',
+    'reason'}]. Run again after the settings change; with no folders left it removes its
+    block."""
     run = run or must_run
     wanted = extras(config)
     lines = fstab_lines(config)
@@ -518,11 +616,11 @@ def use_in_place(
         run(['systemctl', 'daemon-reload'], 60)
     rows = []
     for entry in wanted:
-        point = mount_point(config, entry['holds'])
+        point = mount_point(config, entry['holds'], entry['use'])
         if not point.is_dir():
             point.mkdir(parents=True, mode=0o555)
             os.chmod(point, 0o555)  # root's and closed: the apps cannot write into the bare folder
-        row = {'holds': entry['holds'], 'path': entry['path'], 'mounted': False, 'reason': None}
+        row = {'holds': entry['holds'], 'use': entry['use'], 'path': entry['path'], 'mounted': False, 'reason': None}
         if not still_there(entry, find, kind):
             row['reason'] = away_words(entry)
             log(row['reason'])
@@ -555,14 +653,14 @@ def must_run(argv, timeout):
 
 
 def available(config, find=findmnt, kind=source_import.share_type, mounted=source_import.mount_id):
-    """Each folder used in place, and whether it is there now: [{'holds', 'path',
+    """Each of the person's folders, and whether it is there now: [{'holds', 'use', 'path',
     'container', 'new_files', 'ready', 'reason'}]. Ready: the folder is on the drive or
     share it was chosen on, and it is mounted in the library. For the checkup, the
     dashboard and anything about to write."""
     rows = []
     for entry in extras(config):
         there = still_there(entry, find, kind)
-        bound = mounted(mount_point(config, entry['holds'])) is not None
+        bound = mounted(mount_point(config, entry['holds'], entry['use'])) is not None
         reason = None
         if not there:
             reason = away_words(entry)
@@ -571,8 +669,9 @@ def available(config, find=findmnt, kind=source_import.share_type, mounted=sourc
         rows.append(
             {
                 'holds': entry['holds'],
+                'use': entry['use'],
                 'path': entry['path'],
-                'container': container_path(entry['holds']),
+                'container': container_path(entry['holds'], entry['use']),
                 'new_files': entry['new_files'],
                 'ready': there and bound,
                 'reason': reason,
@@ -582,8 +681,8 @@ def available(config, find=findmnt, kind=source_import.share_type, mounted=sourc
 
 
 def guard(config, category, **how):
-    """Before anything is written to (or a library made for) the existing folder of
-    `category`: Away when it is not there now."""
+    """Before anything is written to (or a library made for) the person's folders of
+    `category`: Away when one is not there now."""
     for row in available(config, **how):
         if row['holds'] == category and not row['ready']:
             raise Away(row['reason'])
@@ -593,7 +692,7 @@ def guard(config, category, **how):
 
 
 NAME_TAKEN = (
-    'Jellyfin already has a library called "{name}" for another folder; rename it in Jellyfin, then run setup again'
+    '{app} already has a library called "{name}" for another folder; rename it in {app}, then run setup again'
 )
 API_FAILED = 'Library API/path check failed; existing settings preserved'
 TOO_OLD = (
@@ -602,27 +701,39 @@ TOO_OLD = (
 )
 
 
+def library_name(entry):
+    """What the library for one of the person's folders is called in the app."""
+    name = category_of(entry['holds'])[1]
+    return name if entry['use'] == IN_PLACE else name.replace('(your folder)', '(new, your folder)')
+
+
+def ready_row(config, entry, how):
+    """Away unless this one folder is there now."""
+    for row in available(config, **how):
+        if (row['holds'], row['use']) == (entry['holds'], entry['use']) and not row['ready']:
+            raise Away(row['reason'])
+
+
 def jellyfin_libraries(client, config, apply=False, **how):
-    """A Jellyfin library for each existing folder of films and shows, pointing at where
-    Jellyfin sees it (/data/existing/movies). `client`: a media_libraries.Client signed
-    in as administrator. Nothing is made while the folder is away. Rows as
+    """A Jellyfin library for each of the person's folders of films and shows, pointing at
+    where Jellyfin sees it (/data/existing/movies). `client`: a media_libraries.Client
+    signed in as administrator. Nothing is made while the folder is away. Rows as
     media_libraries.row gives them."""
     rows = []
     for entry in extras(config):
-        holds = entry['holds']
-        _, name, kind = category_of(holds)
+        kind = category_of(entry['holds'])[2]
         if kind is None:
             continue
-        check_name = f'jellyfin:existing:{holds}'
+        name, check_name = library_name(entry), f"jellyfin:existing:{slot(entry['holds'], entry['use'])}"
         try:
-            guard(config, holds, **how)
-            path = container_path(holds)
+            ready_row(config, entry, how)
+            path = container_path(entry['holds'], entry['use'])
             values = media_libraries.folders(client)
             if any(path in [str(p).rstrip('/') for p in x['Locations']] for x in values):
                 rows.append(media_libraries.row(check_name, 'pass'))
                 continue
             if any(str(x.get('Name', '')).casefold() == name.casefold() for x in values):
-                raise media_libraries.SetupRequired(NAME_TAKEN.format(name=name))
+                raise media_libraries.SetupRequired(NAME_TAKEN.format(app='Jellyfin', name=name))
             if not apply:
                 rows.append(media_libraries.row(check_name, 'needs_setup', 'Preview: library would be created'))
                 continue
@@ -640,33 +751,100 @@ def jellyfin_libraries(client, config, apply=False, **how):
 
 
 def navidrome_library(call, config, apply=False, **how):
-    """A Navidrome library for the existing music folder (/data/existing/music).
+    """A Navidrome library for each of the person's music folders (/data/existing/music).
     `call(method, endpoint, payload)`: Navidrome's own API as its administrator, returning
-    the decoded answer (GET /api/library lists, POST /api/library adds). Navidrome
-    releases without several libraries answer 404: said as a step left, never an error."""
+    the decoded answer (GET /api/library lists, POST /api/library adds); navidrome_api()
+    makes one. A Navidrome without several libraries answers 404 (LookupError): said as a
+    step left, never an error."""
+    rows = []
+    for entry in extras(config):
+        if entry['holds'] != 'music':
+            continue
+        name, path = library_name(entry), container_path('music', entry['use'])
+        check_name = f"navidrome:existing:{slot('music', entry['use'])}"
+        try:
+            ready_row(config, entry, how)
+            listed = call('GET', '/api/library', None)
+            if not isinstance(listed, list) or any(not isinstance(x, dict) for x in listed):
+                raise RuntimeError('Unsupported Navidrome library response')
+            if any(str(x.get('path', '')).rstrip('/') == path for x in listed):
+                rows.append(media_libraries.row(check_name, 'pass'))
+                continue
+            if any(str(x.get('name', '')).casefold() == name.casefold() for x in listed):
+                raise media_libraries.SetupRequired(NAME_TAKEN.format(app='Navidrome', name=name))
+            if not apply:
+                rows.append(media_libraries.row(check_name, 'needs_setup', 'Preview: library would be created'))
+                continue
+            call('POST', '/api/library', {'name': name, 'path': path})
+            again = call('GET', '/api/library', None)
+            if not isinstance(again, list) or not any(isinstance(x, dict) and x.get('path') == path for x in again):
+                raise RuntimeError('Library creation was not retained')
+            rows.append(media_libraries.row(check_name, 'pass'))
+        except (Away, media_libraries.SetupRequired) as exc:
+            rows.append(media_libraries.row(check_name, 'needs_setup', str(exc)))
+        except LookupError:
+            rows.append(media_libraries.row(check_name, 'needs_setup', TOO_OLD))
+        except (RuntimeError, ValueError, TypeError, KeyError):
+            rows.append(media_libraries.row(check_name, 'fail', API_FAILED))
+    return rows
+
+
+NAVIDROME = f"http://127.0.0.1:{app_port('navidrome')}"
+
+
+def navidrome_api(username, password, base=NAVIDROME, opener=None):
+    """Navidrome's own API as its administrator: call(method, endpoint, payload) for
+    navidrome_library. Signs in once (POST /auth/login) and sends the token it is given
+    with every request; the password is not kept. Local only, no redirects or proxies.
+    SetupRequired when the login is refused or is not an administrator's."""
+    opener = opener or local_opener()
+
+    def send(method, endpoint, payload, headers):
+        body = json.dumps(payload).encode() if payload is not None else None
+        asked = urllib.request.Request(
+            base + endpoint, data=body, method=method, headers={'Content-Type': 'application/json', **headers}
+        )
+        try:
+            with opener.open(asked, timeout=12) as answer:
+                data = answer.read(3_000_001)
+        except urllib.error.HTTPError as exc:
+            code = exc.code
+            exc.close()
+            if code == 404:
+                raise LookupError('navidrome: HTTP 404') from None
+            raise RuntimeError(f'navidrome: HTTP {code}') from None
+        except OSError:
+            raise RuntimeError('navidrome: unavailable') from None
+        if len(data) > 3_000_000:
+            raise RuntimeError('API response too large')
+        return json.loads(data) if data.strip() else {}
+
+    try:
+        signed = send('POST', '/auth/login', {'username': username, 'password': password}, {})
+    except (RuntimeError, LookupError):
+        raise media_libraries.SetupRequired(
+            'Navidrome did not accept its administrator login; run setup again once the saved login works'
+        ) from None
+    if not isinstance(signed, dict) or not signed.get('token') or signed.get('isAdmin') is not True:
+        raise media_libraries.SetupRequired('Navidrome\'s saved login is not an administrator\'s; a library needs one')
+    token = {'X-ND-Authorization': 'Bearer ' + str(signed['token'])}
+    return lambda method, endpoint, payload=None: send(method, endpoint, payload, token)
+
+
+def music_libraries(config, apply=False, api=navidrome_api, **how):
+    """Navidrome's libraries for the person's music folders, with the administrator login
+    setup saved (account_store). [] with no such folder; a step left when there is no
+    verified login yet."""
     if not any(e['holds'] == 'music' for e in extras(config)):
         return []
-    check_name, path = 'navidrome:existing:music', container_path('music')
+    saved = account_store.get(config, 'navidrome', verified=True)
     try:
-        guard(config, 'music', **how)
-        listed = call('GET', '/api/library', None)
-        if not isinstance(listed, list):
-            raise RuntimeError('Unsupported Navidrome library response')
-        if any(isinstance(x, dict) and str(x.get('path', '')).rstrip('/') == path for x in listed):
-            return [media_libraries.row(check_name, 'pass')]
-        if not apply:
-            return [media_libraries.row(check_name, 'needs_setup', 'Preview: library would be created')]
-        call('POST', '/api/library', {'name': CATEGORIES['music'][1], 'path': path})
-        again = call('GET', '/api/library', None)
-        if not isinstance(again, list) or not any(isinstance(x, dict) and x.get('path') == path for x in again):
-            raise RuntimeError('Library creation was not retained')
-        return [media_libraries.row(check_name, 'pass')]
-    except Away as exc:
-        return [media_libraries.row(check_name, 'needs_setup', str(exc))]
-    except LookupError:
-        return [media_libraries.row(check_name, 'needs_setup', TOO_OLD)]
-    except (RuntimeError, ValueError, TypeError, KeyError):
-        return [media_libraries.row(check_name, 'fail', API_FAILED)]
+        if not saved:
+            raise media_libraries.SetupRequired('Navidrome\'s administrator login is not set up yet')
+        call = api(saved['username'], saved['password'])
+    except media_libraries.SetupRequired as exc:
+        return [media_libraries.row('navidrome:existing:music', 'needs_setup', str(exc))]
+    return navidrome_library(call, config, apply, **how)
 
 
 # ---- copying instead -----------------------------------------------------------------------
@@ -676,13 +854,13 @@ def copy_preview(config, category, folder, *, find=findmnt, kind=None, fstab=FST
     """What copying the folder into the NekoServer library would do, before anything is
     copied: {'source', 'destination', 'files', 'bytes', 'free', 'fits', 'conflicts' (files
     the library already has differently: kept, the source's left out), 'source_kept':
-    True, 'entry' (what to add to media-sources.json so source_import copies it)}.
+    True, 'entry' (the source-list entry copy_now and source_import use)}.
     Raises Refused as check() does; source_import.IncompleteSource when part of the
     folder cannot be read (nothing would be copied)."""
     row = category_of(category)[0]
     real = checked_folder(config, folder)
     text = fstab.read_text(encoding='utf-8', errors='replace') if fstab.is_file() else ''
-    found = where(real, find, kind or source_import.share_type, text)
+    found = where(real, find, kind or source_import.share_type, text, WHAT[category])
     root = files_root(config, row)
     target = source_import.import_target(Path(real), root, category)
     conflicts = []
@@ -703,3 +881,76 @@ def copy_preview(config, category, folder, *, find=findmnt, kind=None, fstab=FST
         'source_kept': True,
         'entry': entry,
     }
+
+
+NO_ROOM = (
+    'Copying {source} needs {need} and {destination} has {free} free, so nothing was copied. Free some room, '
+    'choose fewer folders, or use the files where they are.'
+)
+
+
+NO_REPORT = 'The copy left no report; look at the library and run setup again'
+
+
+def size_words(count):
+    """A number of bytes as people say it: "1.5 GB"."""
+    for unit, size in (('TB', 1000**4), ('GB', 1000**3), ('MB', 1000**2), ('kB', 1000)):
+        if count >= size:
+            return f'{count / size:.1f} {unit}'
+    return f'{count} bytes'
+
+
+def sources_file(config):
+    """The list of sources the import reads (<app SSD>/config/media-sources.json)."""
+    root = os.path.realpath(config['data_mount'])
+    path = os.path.realpath(os.path.join(root, 'config', 'media-sources.json'))
+    if not path.startswith(root + os.sep):
+        raise RuntimeError('The source list would be outside the app SSD')
+    return Path(path)
+
+
+def listed_source(config, entry):
+    """The entry put into the source list (once), so a later run of the import knows the
+    folder and that it was copied. Returns the list as saved."""
+    path = sources_file(config)
+    try:
+        saved = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        saved = {}
+    sources = saved.get('sources') if isinstance(saved, dict) and isinstance(saved.get('sources'), list) else []
+    if not any(isinstance(s, dict) and source_import.source_key(s) == source_import.source_key(entry) for s in sources):
+        sources = [*sources, dict(entry)]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_json(path, {'schema_version': 1, 'sources': sources})
+    return sources
+
+
+def copy_now(config, category, folder, *, run=source_import.run, verify=verify_storage, again=False, **how):
+    """Copy the folder into the NekoServer library, the source kept as it is (after the
+    person saw copy_preview and said yes). The copy is source_import's: add-only, a file
+    the library already has differently is kept and the source's left out, a drive that
+    goes away stops it. Refused (as copy_preview) when the folder is away; RuntimeError
+    with the sizes when it does not fit, before anything is copied.
+
+    Returns the import's row for this folder ({'status': 'copied', 'copied', 'bytes',
+    'destination', 'reason' ...}) with 'source' and 'source_kept': True. Needs root and
+    the drives mounted, as source_import.run does."""
+    shown = copy_preview(config, category, folder, **how)
+    if not shown['fits']:
+        raise RuntimeError(
+            NO_ROOM.format(
+                source=shown['source'],
+                need=size_words(shown['bytes']),
+                destination=shown['destination'],
+                free=size_words(shown['free']),
+            )
+        )
+    listed_source(config, shown['entry'])
+    run(config, [shown['entry']], True, lambda: verify(config), again)
+    report = os.path.join(os.path.realpath(config['data_mount']), 'reports', 'source-import.json')
+    try:
+        rows = json.loads(Path(report).read_text(encoding='utf-8')).get('sources') or []
+    except (OSError, ValueError, AttributeError):
+        rows = []
+    row = rows[0] if rows and isinstance(rows[0], dict) else {'status': 'needs_setup', 'reason': NO_REPORT}
+    return {**row, 'source': shown['source'], 'source_kept': True}
