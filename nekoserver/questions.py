@@ -326,6 +326,16 @@ Q = {
         'how': 'Type 1 or 2, then press Enter. Enter alone takes the first.',
         'example': {'what': 'films'},
     },
+    'existing_backup': {
+        'screen': 'Media you already have',
+        'title': 'Back this up too?',
+        'hint': 'Your {what} on the network share can be copied each night with the music backup, onto the '
+        "backups' drive. That needs as much room there as the folder takes. Nothing in your folder is changed.",
+        'kind': 'choice',
+        'choices': [('1', 'Yes, back it up (recommended)'), ('2', 'No, I keep my own copy')],
+        'how': 'Type 1 or 2, then press Enter. Enter alone takes the first.',
+        'example': {'what': 'music'},
+    },
     'existing_new_files': {
         'screen': 'Media you already have',
         'title': 'Save new {what} here too?',

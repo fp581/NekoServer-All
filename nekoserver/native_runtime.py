@@ -329,6 +329,12 @@ def storage_config(config):
         # The backup drive is a folder the NAS shares: the weekly copy mounts it by this
         # address (backup.rs UsbRun).
         found['backup_drive'] = {'export': backup.get('export')}
+    import existing_media
+
+    extra = existing_media.backed_up(config)
+    if extra:
+        # The person's music folders the music backup copies too (G7; music_backup.rs).
+        found['music_extra'] = extra
     nas = config.get('network_storage') or {}
     if nas.get('wanted') is True:
         # The NAS check logs in again once the NAS answers (runtime nas_watch.rs).

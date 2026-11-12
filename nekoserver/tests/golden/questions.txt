@@ -25,9 +25,9 @@ guided_setup.py
     ask_again
     install_group
     How many {field['what']} should be kept? ({least} to {most}, Enter for {offered} | leaves them as they are):
-    When should the daily backups run? (HH:MM, Enter for {now['app']}):
     On which day should the weekly USB copy run? ({days}; Enter for {now['usb_day']}):
     At what time on that day? (HH:MM, Enter for {now['usb']}):
+    When should the daily backups run? (HH:MM, Enter for {now['app']}):
     At what time should the monthly check start? (HH:MM before {night_end}:00, Enter for {offered}{why}):
 installer.py
     {said} Keep the newest {backup_plan.DEFAULT} {what} from now on?
@@ -59,7 +59,6 @@ music-setup.py
     Listener username:
     Listener password (never saved as plaintext):
 recovery_wizard.py
-    Choose a number:
     Type the full name of a NEW folder, for example /home/you/restored-photos (Enter alone goes back, with nothing restored):
     repair_drive
 source-wizard.py

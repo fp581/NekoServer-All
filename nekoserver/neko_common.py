@@ -872,6 +872,11 @@ def music_backed_up(config):
         return False
     if config.get('music', {}).get('backup_enabled', True) is not False:
         return True
+    # A music folder of the person's own that they asked to back up (G7).
+    table = config.get('placement') if isinstance(config.get('placement'), dict) else {}
+    own = (table.get('music') or {}).get('extra') if isinstance(table.get('music'), dict) else None
+    if isinstance(own, list) and any(isinstance(e, dict) and e.get('backup') is True for e in own):
+        return True
     try:
         return location(config, 'music') not in DRIVE_KEYS
     except RuntimeError:

@@ -140,6 +140,13 @@ def one_kind(config, kind, words, asking):
     entries = [existing_media.entry_for(kind, found)]
     if downloads(config, kind) and questions.yes_no('existing_new_files', prompt, output, what=words):
         entries = with_new_files(config, kind, words, found, asking)
+    if kind == 'music' and found.get('share'):
+        # On a network share (G7, the user's decision): asked once whether the music
+        # backup copies it too; yes unless "No". Films and shows have no NekoServer backup
+        # job, so they are not asked about and stay listed as not backed up.
+        backed_up = typed('existing_backup', prompt, what=words) != '2'
+        entries = [{**entry, 'backup': backed_up} for entry in entries]
+        output(f'Your {words}: ' + ('copied each night with the music backup.' if backed_up else 'not backed up by NekoServer.'))
     for entry in entries:
         config['placement'] = existing_media.with_choice(config, entry)['placement']
 

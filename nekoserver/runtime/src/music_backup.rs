@@ -5,7 +5,11 @@ use crate::{
     Args,
 };
 use serde_json::json;
-use std::{fs, os::unix::fs::MetadataExt, path::Path};
+use std::{
+    fs,
+    os::unix::fs::MetadataExt,
+    path::{Path, PathBuf},
+};
 /// A file changed in the last 10 minutes may still be being written (a download or an
 /// import): it waits for the next run, and the rest of the library is backed up now.
 const SETTLE: f64 = 600.0;
@@ -46,12 +50,67 @@ fn inventory(
 /// The library listed again after copying, for comparison with the first listing. A
 /// file that waited then (and may have settled since) is left out of both; a file
 /// changed during the run waits now, so it shows as changed.
-fn listed_again(source: &Path, waited: &[String]) -> Result<Vec<serde_json::Value>> {
-    let (mut after, mut waiting) = (vec![], vec![]);
-    inventory(source, source, &mut after, &mut waiting)?;
+fn listed_again(
+    sources: &[(String, PathBuf)],
+    waited: &[String],
+) -> Result<Vec<serde_json::Value>> {
+    let (mut after, _waiting) = listing(sources)?;
     after.retain(|r| !waited.iter().any(|w| r["path"] == w.as_str()));
-    after.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
     Ok(after)
+}
+/// Where the person's own music folders are listed in a snapshot (G7, 0.50.0): under
+/// this folder and the folder's name, apart from the library's own files.
+const OWN: &str = "your-own";
+/// What is copied: the library (no prefix), then each of the person's own music folders
+/// on a network share that they asked to back up ("music_extra" in the jobs' settings:
+/// [{"slot": "music", "path": <where setup mounts it>}]), each under OWN/<slot>.
+fn sources(cfg: &serde_json::Value, library: PathBuf) -> Result<Vec<(String, PathBuf)>> {
+    let mut found = vec![(String::new(), library)];
+    for extra in cfg["music_extra"].as_array().into_iter().flatten() {
+        let slot = extra["slot"].as_str().unwrap_or("");
+        let path = common::safe(Path::new(extra["path"].as_str().unwrap_or("")))?;
+        // Only a folder setup mounts under library/existing (existing_media.mount_point).
+        let under_existing = path
+            .parent()
+            .is_some_and(|p| p.ends_with("library/existing"))
+            && path.file_name().and_then(|n| n.to_str()) == Some(slot);
+        if !(slot == "music" || slot == "music-new") || !under_existing {
+            return Err(Error::new("Invalid music folder to back up"));
+        }
+        found.push((format!("{OWN}/{slot}/"), path));
+    }
+    Ok(found)
+}
+/// Every source listed: (rows sorted by path, files still being added).
+fn listing(sources: &[(String, PathBuf)]) -> Result<(Vec<serde_json::Value>, Vec<String>)> {
+    let (mut rows, mut waiting) = (vec![], vec![]);
+    for (prefix, root) in sources {
+        let (mut found, mut later) = (vec![], vec![]);
+        inventory(root, root, &mut found, &mut later)?;
+        for mut row in found {
+            let name = row["path"].as_str().unwrap_or("").to_string();
+            if prefix.is_empty() && name.starts_with(&format!("{OWN}/")) {
+                return Err(Error::new(
+                    "A music folder named your-own is in the library",
+                ));
+            }
+            row["path"] = json!(format!("{prefix}{name}"));
+            rows.push(row);
+        }
+        waiting.extend(later.into_iter().map(|name| format!("{prefix}{name}")));
+    }
+    rows.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+    Ok((rows, waiting))
+}
+/// The file a row names, in the source it was listed from.
+fn file_of(sources: &[(String, PathBuf)], path: &str) -> Result<PathBuf> {
+    let (prefix, root) = sources
+        .iter()
+        .rev()
+        .find(|(prefix, _)| !prefix.is_empty() && path.starts_with(prefix.as_str()))
+        .or_else(|| sources.first())
+        .ok_or_else(|| Error::new("Music source missing"))?;
+    Ok(root.join(&path[prefix.len()..]))
 }
 pub fn run(a: &Args) -> Result<()> {
     let backup::Job {
@@ -66,11 +125,11 @@ pub fn run(a: &Args) -> Result<()> {
         // A HDD that drops out mid-run stops it (see common::expect_drive).
         let _hdd = common::expect_drive(&media)?;
         // Where setup put the music (the SSD or the media drive, "locations").
-        let source = common::safe(&common::music_library(&common::json(&config, 64000))?)?;
+        let cfg = common::json(&config, 64000);
+        let source = common::safe(&common::music_library(&cfg)?)?;
+        let from = sources(&cfg, source)?;
         let root = common::safe(&media.join("backups/music"))?;
-        let (mut rows, mut waiting) = (vec![], vec![]);
-        inventory(&source, &source, &mut rows, &mut waiting)?;
-        rows.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+        let (rows, waiting) = listing(&from)?;
         common::directory(&root, 0o700)?;
         for row in &rows {
             backup::guard(&config, &data, &media)?;
@@ -81,7 +140,7 @@ pub fn run(a: &Args) -> Result<()> {
                 .as_str()
                 .ok_or_else(|| Error::new("Path missing"))?;
             let target = common::safe(&root.join("objects").join(&hash[..2]).join(hash))?;
-            backup::verified_copy(&source.join(path), &target, true, 0o600)?;
+            backup::verified_copy(&file_of(&from, path)?, &target, true, 0o600)?;
             if common::digest(&target)? != hash
                 || Some(fs::metadata(&target)?.len()) != row["size"].as_u64()
             {
@@ -89,7 +148,7 @@ pub fn run(a: &Args) -> Result<()> {
             }
         }
         // Refuse a partial catalogue if a download/import changed the source during copying.
-        if listed_again(&source, &waiting)? != rows {
+        if listed_again(&from, &waiting)? != rows {
             return Err(Error::new("Music library changed during backup"));
         }
         backup::guard(&config, &data, &media)?;
@@ -121,6 +180,47 @@ pub fn run(a: &Args) -> Result<()> {
 mod tests {
     use super::*;
     #[test]
+    fn the_persons_own_music_folder_is_listed_apart_and_copied_from_where_it_is() {
+        let top = std::env::temp_dir().join(format!("neko-music-own-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&top);
+        let library = top.join("library/music");
+        let own = top.join("library/existing/music");
+        fs::create_dir_all(library.join("Album")).unwrap();
+        fs::create_dir_all(own.join("Mine")).unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(86400);
+        for path in [library.join("Album/a.flac"), own.join("Mine/b.flac")] {
+            fs::write(&path, b"x").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
+        let cfg = json!({"music_extra": [{"slot": "music", "path": own}]});
+        let from = sources(&cfg, library.clone()).unwrap();
+        let (rows, waiting) = listing(&from).unwrap();
+        let names: Vec<_> = rows
+            .iter()
+            .map(|r| r["path"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, ["Album/a.flac", "your-own/music/Mine/b.flac"]);
+        assert!(waiting.is_empty());
+        assert_eq!(
+            file_of(&from, "your-own/music/Mine/b.flac").unwrap(),
+            own.join("Mine/b.flac")
+        );
+        assert_eq!(
+            file_of(&from, "Album/a.flac").unwrap(),
+            library.join("Album/a.flac")
+        );
+        // Only a folder under library/existing, named as its slot.
+        let elsewhere =
+            json!({"music_extra": [{"slot": "music", "path": top.join("library/music")}]});
+        assert!(sources(&elsewhere, library.clone()).is_err());
+        let _ = fs::remove_dir_all(&top);
+    }
+    #[test]
     fn a_file_still_being_added_waits_instead_of_failing_the_backup() {
         let root = std::env::temp_dir().join(format!("neko-music-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -150,10 +250,16 @@ mod tests {
         rows.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
         // It settles during the run: not counted as a change.
         set("Album/new.flac", now - day);
-        assert_eq!(listed_again(&root, &waiting).unwrap(), rows);
+        assert_eq!(
+            listed_again(&[(String::new(), root.clone())], &waiting).unwrap(),
+            rows
+        );
         // A file that was backed up and then changes during the run is a change.
         set("Album/old.flac", now);
-        assert_ne!(listed_again(&root, &waiting).unwrap(), rows);
+        assert_ne!(
+            listed_again(&[(String::new(), root.clone())], &waiting).unwrap(),
+            rows
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }

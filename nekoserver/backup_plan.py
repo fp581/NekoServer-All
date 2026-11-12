@@ -273,6 +273,19 @@ def table(config, held=None):
         ('as far back as the first copy', None) if offline and takes else ('nothing', None),
         note=None if offline or not takes else OFFLINE_MISSING + (CLOUD_UNPROTECTED if cloud else ''),
     )
+    if music_backed_up(config):
+        import existing_media
+
+        own = ' and your own music folder on the network share' if existing_media.backed_up(config) else ''
+        row(
+            'music',
+            'Your music (the library' + own + ')',
+            (drive, 'backups/music'),
+            f"every night at {times['music']}",
+            NEVER_REMOVED,
+            ('as far back as the first backup', None),
+            same=same_drive(config, 'music', placement.DATA, drive),
+        )
     for key, what, why in not_copied(config):
         # The page then shows only "never" and why.
         row(key, what, (None, None), 'never', None, (None, None), note=why)
@@ -302,7 +315,7 @@ def not_copied(config):
     if media_group(config, 'music') and not music_backed_up(config):
         found.append(('not_copied_music', 'Your music (the library)', MUSIC_NOT_COPIED))
     for category, folder, why in existing_media.not_backed_up(config):
-        found.append((f'not_copied_{category}', f'Your own folder of {category}: {folder}', 'Not backed up: ' + why))
+        found.append((f'not_copied_own_{category}', f'Your own folder of {category}: {folder}', 'Not backed up: ' + why))
     return found
 
 

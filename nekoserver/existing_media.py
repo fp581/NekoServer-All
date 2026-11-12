@@ -516,6 +516,17 @@ def not_backed_up(config):
     return [
         (e['holds'], e['path'], 'your own folder, used where it is: NekoServer does not copy it; keep your own copy')
         for e in extras(config)
+        if e.get('backup') is not True
+    ]
+
+
+def backed_up(config):
+    """The person's music folders the music backup copies too (G7): [{'slot', 'path'}],
+    'path' where setup mounts it (mount_point), as the runtime's music copy reads them."""
+    return [
+        {'slot': slot(e['holds'], e['use']), 'path': str(mount_point(config, e['holds'], e['use']))}
+        for e in extras(config)
+        if e['holds'] == 'music' and e.get('backup') is True
     ]
 
 
