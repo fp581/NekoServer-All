@@ -7624,7 +7624,7 @@ mod tests {
         assert_eq!(common::complete_snapshots(&root).unwrap().len(), 3);
         // The run that succeeds: only now the older ones go, and the new one is the one kept.
         publish_snapshot(&root, &stage, &[], || Ok(()), &json!({}), 1, None).unwrap();
-        assert_eq!(names(&root), [stage.name.clone()]);
+        assert_eq!(names(&root), std::slice::from_ref(&stage.name));
         // With one backup left and a run that fails, that one stays: the count never
         // takes the last usable backup.
         let next = stage_snapshot(&root).unwrap();

@@ -7712,7 +7712,7 @@ mod tests {
                 ("qbittorrent", d3.join("library/music")),
                 ("navidrome", data.join("library/music")),
             ] {
-                let said = check(name, &[source.clone()]).unwrap_err().to_string();
+                let said = check(name, std::slice::from_ref(&source)).unwrap_err().to_string();
                 assert_eq!(
                     said,
                     "Uncovered container bind mount",
