@@ -48,13 +48,12 @@ def not_here(config, total, checks):
     return ''
 
 
-def fits_memory(need, room, apps_started):
+def fits_memory(need, total, room, apps_started):
     """('yes' | 'no' | 'unknown', why not or why it cannot be promised) for one model's memory."""
     if need > room:
         return 'no', (
-            f'It needs about {_gb(need)} of free memory. This PC has {max(room, 0):.1f} GB free for it'
-            + (' with your apps running' if apps_started else '')
-            + ' and room kept for them to grow.'
+            f'It needs about {_gb(need)} of free memory. This PC has '
+            f'{assistant.room_said(total, room, apps_started)}.'
         )
     if apps_started:
         return 'yes', ''
@@ -64,10 +63,11 @@ def fits_memory(need, room, apps_started):
     )
 
 
-def model_choice(config, name, spec, room, apps_started, usage):
+def model_choice(config, name, spec, memory, apps_started, usage):
     """One model as a person can judge it: its row of assistant_choices' "choices"."""
     model, download, need, answers_like = spec
-    fits, why_not = fits_memory(need, room, apps_started)
+    total, room = memory
+    fits, why_not = fits_memory(need, total, room, apps_started)
     one = {
         'id': model,
         'name': name,
@@ -124,7 +124,7 @@ def assistant_choices(config, memory=None, own_use=None, apps_started=True, usag
     room = assistant.memory_for_model(total, available, own)
     reason = not_here(config, total, checks)
     choices = [
-        model_choice(config, name, spec, room, apps_started, usage) for name, spec in zip(PLAIN_NAMES, assistant.MODELS)
+        model_choice(config, name, spec, (total, room), apps_started, usage) for name, spec in zip(PLAIN_NAMES, assistant.MODELS)
     ]
     usable = [one for one in choices if one['fits'] != 'no' and one['room_on_drive']] if not reason else []
     if not reason and not usable:
