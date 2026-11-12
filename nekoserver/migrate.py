@@ -163,7 +163,7 @@ def disk_of(rows, uuid):
 
 
 def on_nas(rows, disks):
-    """True when one of `disks` is a disk on a network storage box (iSCSI)."""
+    """True when one of `disks` is a disk on a NAS (iSCSI)."""
     return any(r.get('tran') == 'iscsi' for r in rows if r.get('name') in disks)
 
 
@@ -221,7 +221,7 @@ def kept_for(drive, rows, disks, backup_disks):
     if disks & backup_disks:
         return 'the USB backup drive (a backup must stay on a drive of its own)'
     if drive == 'data_ssd' and on_nas(rows, disks):
-        return 'a disk on the network storage box; the SSD for the apps must be connected to this PC (it holds the databases)'
+        return 'a disk on the NAS; the SSD for the apps must be connected to this PC (it holds the databases)'
     return None
 
 

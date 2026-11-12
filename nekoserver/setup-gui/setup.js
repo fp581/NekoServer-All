@@ -36,6 +36,7 @@
   let pageInputs = {}; // the fields of the page shown, by key
   let pickInputs = []; // the tick boxes of a list to pick from (the "pick" page)
   let finishedShown = false; // the finishing screen is up: it stays, also once setup has closed
+  let finishBuilt = false; // the finishing page's cards are made (once: a login shown stays shown)
 
   function el(tag, attrs, ...children) {
     const node = document.createElement(tag);
@@ -687,6 +688,26 @@
   /* One card for each step of a part: its title, what to do, and its switch. The caption
      beside the switch has a fixed box (setup.css), so sliding it moves nothing. */
   let partSwitches = [];
+  /* What a step of a part has besides its lines: an address to open on the phone, with
+     its QR code, and "Show login" for the login it is signed in with. */
+  function stepExtras(step) {
+    const parts = [];
+    if (step.address) {
+      const address = el('div', { class: 'step-address' }, el('code', { text: step.address }));
+      if (step.qr) {
+        const code = el('img', { class: 'login-qr', alt: 'The address as a QR code', width: '120', height: '120' });
+        code.src = step.qr;
+        address.append(code);
+      }
+      parts.push(address);
+    }
+    if (step.login) {
+      const { shown, button, note } = loginParts(step.login);
+      parts.push(el('div', { class: 'row-inputs' }, button, note), shown);
+    }
+    return parts;
+  }
+
   function buildPart(page) {
     pageInputs = {};
     pickInputs = [];
@@ -713,6 +734,7 @@
         { class: 'retry part-step' },
         el('div', { class: 'row-title', text: index + 1 + '. ' + step.title + (step.done ? ' (done last time)' : '') }),
         step.done ? null : el('ul', {}, ...step.lines.map(line => el('li', { text: line }))),
+        ...(step.done ? [] : stepExtras(step)),
         el('div', { class: 'choice' }, caption, el('label', { class: 'switch' }, input, el('span')))
       );
     });
@@ -908,7 +930,7 @@
     }
     for (const place of page.places) {
       const options = place.options.map(([value, text]) => ({ value, text }));
-      const select = chooser(place.key, place.title, options, page.fields[place.key]);
+      const select = chooser(place.key, place.title, options, page.fields[place.key] || place.recommended || '');
       // Files kept on the backups' drive: what that means for their backup, said while it is chosen.
       const beside = el('small', { class: 'drive-facts', id: 'ask-page-' + place.key + '-facts' });
       const say = () => {
@@ -993,37 +1015,44 @@
     $('ask-page').replaceChildren(...cards);
   }
 
+  /* "Show login" for one saved login: the button, where the login appears until Hide,
+     and a line for when it cannot be fetched. */
+  function loginParts(id) {
+    const shown = el('div', { class: 'login-shown' });
+    shown.hidden = true;
+    const button = el('button', { type: 'button', class: 'secondary', text: 'Show login' });
+    const note = el('small', { class: 'muted' });
+    const hide = () => {
+      shown.replaceChildren();
+      shown.hidden = true;
+      button.textContent = 'Show login';
+    };
+    button.addEventListener('click', async () => {
+      if (!shown.hidden) return hide();
+      note.textContent = '';
+      let login = null;
+      try {
+        login = await post('api/login', { app: id });
+      } catch {
+        /* said below */
+      }
+      if (!login?.ok) {
+        note.textContent = login?.reason || 'Could not fetch the login; the terminal can show it too.';
+        return;
+      }
+      showLogin(shown, login);
+      button.textContent = 'Hide';
+    });
+    return { shown, button, note };
+  }
+
   /* One card for each saved login: its name and username, and "Show login", which asks
      setup's own server for the password (and a QR code of it) and shows it until Hide. */
   function buildLogins(page) {
     pageInputs = {};
     pickInputs = [];
     const cards = page.apps.map(app => {
-      const shown = el('div', { class: 'login-shown' });
-      shown.hidden = true;
-      const button = el('button', { type: 'button', class: 'secondary', text: 'Show login' });
-      const note = el('small', { class: 'muted' });
-      const hide = () => {
-        shown.replaceChildren();
-        shown.hidden = true;
-        button.textContent = 'Show login';
-      };
-      button.addEventListener('click', async () => {
-        if (!shown.hidden) return hide();
-        note.textContent = '';
-        let login = null;
-        try {
-          login = await post('api/login', { app: app.id });
-        } catch {
-          /* said below */
-        }
-        if (!login?.ok) {
-          note.textContent = login?.reason || 'Could not fetch the login; the terminal can show it too.';
-          return;
-        }
-        showLogin(shown, login);
-        button.textContent = 'Hide';
-      });
+      const { shown, button, note } = loginParts(app.id);
       return el(
         'div',
         { class: 'retry login' },
@@ -1302,7 +1331,8 @@
     badge(waiting ? 'Waiting for you' : 'Working…', waiting ? 'waiting' : '');
     // A menu of its own (the recovery menu, the uninstaller) has a name, no steps.
     const current = state.session ? { title: state.session.title } : state.steps.find(s => s.id === state.current);
-    showQuestion(state.question, current);
+    // Asked before anything is installed (the storage page): the page's own title is its heading.
+    showQuestion(state.question, state.stage === 'storage' ? null : current);
     $('now').hidden = !!state.question;
     $('now-text').className = state.session ? 'said' : '';
     if (state.session) showSession(state.session);
@@ -1311,6 +1341,114 @@
     $('running').className = state.session ? 'running alone' : 'running';
     $('steps').hidden = !!state.session;
     stepList($('steps'), state.steps, state.current);
+  }
+
+  /* How one thing stands: its label, a mark for its state, and the words for it. */
+  function stateChip(found) {
+    const marks = { done: '✓', failed: '✕', waiting: '…', not_tested: '?' };
+    return el(
+      'span',
+      { class: 'finish-state ' + (marks[found.state] ? found.state : 'not_tested') },
+      el('b', { text: (marks[found.state] || '?') + ' ' + found.label }),
+      ': ' + found.words
+    );
+  }
+
+  /* A test a person can try, with its three answers; "Test later" keeps nothing waiting. */
+  function testRow(test) {
+    const said = el('small', { class: 'muted', text: test.words });
+    const answers = [
+      ['seen', 'It worked'],
+      ['not_working', 'It did not work'],
+      ['later', 'Test later']
+    ].map(([word, label]) => {
+      const button = el('button', { type: 'button', class: 'secondary', text: label });
+      button.addEventListener('click', async () => {
+        let answer = null;
+        try {
+          answer = await post('api/test', { test: test.id, word });
+        } catch {
+          /* said below */
+        }
+        said.textContent = answer?.ok
+          ? { seen: 'You said it worked.', not_working: 'You said it did not work.', later: 'Left for later.' }[word]
+          : answer?.reason || 'That did not reach setup; the dashboard has the same tests.';
+      });
+      return button;
+    });
+    return el(
+      'div',
+      { class: 'finish-test' },
+      el('span', { text: 'Try it: ' + test.title }),
+      el('div', { class: 'row-inputs' }, ...answers),
+      said
+    );
+  }
+
+  /* The finishing page: a card for each app, the backups, what still waits, the dashboard. */
+  function buildFinish(page) {
+    const cards = page.apps.map(app => {
+      const parts = [
+        el('div', { class: 'row-title', text: app.name }),
+        el('div', { class: 'finish-states' }, ...app.states.map(stateChip))
+      ];
+      const buttons = [];
+      if (app.url) {
+        parts.push(el('code', { text: app.url }));
+        buttons.push(
+          el('a', { class: 'secondary button', href: app.url, target: '_blank', rel: 'noopener', text: 'Open' })
+        );
+      }
+      let shown = null;
+      if (app.login) {
+        const login = loginParts(app.login);
+        buttons.push(login.button, login.note);
+        shown = login.shown;
+      }
+      if (buttons.length) parts.push(el('div', { class: 'row-inputs' }, ...buttons));
+      if (shown) parts.push(shown);
+      if (app.test) parts.push(testRow(app.test));
+      return el('div', { class: 'retry finish-app' }, ...parts);
+    });
+    const list = (title, lines) =>
+      lines.length
+        ? el(
+            'div',
+            { class: 'retry' },
+            el('div', { class: 'row-title', text: title }),
+            el('ul', {}, ...lines.map(line => el('li', { text: line })))
+          )
+        : null;
+    const more = [
+      list('Needs fixing', page.attention),
+      list('Still waiting for you', page.waiting),
+      el(
+        'div',
+        { class: 'retry' },
+        el('div', { class: 'row-title', text: 'Backups' }),
+        el('div', { class: 'finish-states' }, ...page.backups.map(stateChip))
+      ),
+      page.tests.length
+        ? el(
+            'div',
+            { class: 'retry' },
+            el('div', { class: 'row-title', text: 'More to try' }),
+            ...page.tests.map(testRow)
+          )
+        : null
+    ];
+    if (page.dashboard) {
+      more.push(
+        el(
+          'div',
+          { class: 'retry' },
+          el('div', { class: 'row-title', text: 'The dashboard' }),
+          el('a', { href: page.dashboard.url, target: '_blank', rel: 'noopener', text: page.dashboard.url }),
+          el('small', { text: 'It opens on this PC. ' + page.dashboard.pin })
+        )
+      );
+    }
+    $('finish-page').replaceChildren(...cards, ...more.filter(Boolean));
   }
 
   function renderFinished(state) {
@@ -1328,6 +1466,15 @@
       word = 'Stopped';
     }
     badge(word, ready ? 'done' : 'waiting');
+    // The finishing page, when setup made one: cards and buttons, no command lines.
+    const page = state.finish_page;
+    $('finish-page').hidden = !page;
+    $('finish-lines').hidden = !!page;
+    if (page && !finishBuilt) {
+      $('finish-title').textContent = page.heading;
+      buildFinish(page);
+      finishBuilt = true;
+    }
     // The terminal's ruled lines and its own title are the card's title here.
     $('finish-lines').textContent = state.finish
       .filter(l => !/^=+$/.test(l.trim()) && l.trim().replace(/!$/, '') !== title.replace(/!$/, ''))

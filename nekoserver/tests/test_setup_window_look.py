@@ -54,7 +54,7 @@ CHOOSE = {
         extra('notifications', 'Send alerts to my phone', part='Optional extras'),
         extra(
             'network_storage',
-            'My media and backup drives are in a network storage box (NAS)',
+            'My media and backup drives are in a NAS',
             on=False,
             part='Storage',
             installs=2,

@@ -451,10 +451,7 @@ def part(ctx, title, steps, question, done=(), intro=(), targets=(), prompt=None
     part_said(title, intro, steps, confirmed, output)
     open_targets(ctx, list(targets), output)
     show_logins(ctx.config, [login for step in todo for login in step.get('logins', ())], prompt, output)
-    shown = [
-        {'id': step['id'], 'title': step['title'], 'lines': list(step['lines']), 'done': step['id'] in confirmed}
-        for step in steps
-    ]
+    shown = [window_step(step, step['id'] in confirmed) for step in steps]
     import questions
 
     asked = questions.words(question)  # the part's one question, by its key in questions.py
@@ -475,6 +472,20 @@ def part(ctx, title, steps, question, done=(), intro=(), targets=(), prompt=None
     if left:
         output('Kept for the next run of setup. Still to do: ' + '; '.join(left) + '.')
     return confirmed
+
+
+def window_step(step, done):
+    """A step of a part as the setup window shows it. `step['window']` (optional): its
+    own short lines there, an address shown with its QR code, and the saved login a
+    "Show login" button fetches; without it the window lists the terminal's lines."""
+    own = step.get('window') or {}
+    shown = {'id': step['id'], 'title': step['title'], 'lines': list(own.get('lines', step['lines'])), 'done': done}
+    if own.get('address'):
+        shown['address'] = own['address']
+        shown['qr'] = qr_image(own['address'])
+    if own.get('login'):
+        shown['login'] = own['login']
+    return shown
 
 
 def part_said(title, intro, steps, confirmed, output):

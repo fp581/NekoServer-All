@@ -34,7 +34,7 @@ Now choose the drive for your apps, photos and music (the app SSD). It needs at 
   4) sdc1: 29 GB USB drive, SanDisk Ultra, named "BACKUP", exfat  - not this one: it is formatted exFAT, which Linux apps can't keep their files on
   5) sdd1: 15 GB USB drive, Cruzer Blade, named "stick", ext4, about 3 % full  - not this one: it is too small: the app SSD needs a drive of at least 22 GB (20 GB free once formatted)
   6) sde: 932 GB HDD, ST1000DM010  - not this one: it has no filesystem yet
-  7) sdf: 3.6 TB network disk (iSCSI), Synology LUN, named "nas-media", ext4  - not this one: it is on the network storage box, and the app SSD must be connected to this PC (by USB 3, or inside it): it holds the databases and is what makes the apps fast
+  7) sdf: 3.6 TB network disk (iSCSI), Synology LUN, named "nas-media", ext4  - not this one: it is on the NAS, and the app SSD must be connected to this PC (by USB 3, or inside it): it holds the databases and is what makes the apps fast
   8) nvme1n1p1: 233 GB NVMe SSD, KINGSTON SNV2S250G, xfs
   9) sdg1: 238 GB SSD, Crucial MX500, named "Windows", ntfs  - not this one: it is formatted NTFS (Windows), which Linux apps can't keep their files on
 Number of the drive for your apps, photos and music (the app SSD) (Enter for 2, the recommended one): [5]

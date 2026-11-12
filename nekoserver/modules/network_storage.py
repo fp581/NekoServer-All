@@ -1,4 +1,4 @@
-"""Drives on a network storage box (a NAS), for the media HDD and the backup drive: over
+"""Drives on a NAS, for the media HDD and the backup drive: over
 iSCSI (a disk of its own) or, since 0.50.0, NFS (a folder the NAS shares). Off unless
 switched on ("network_storage": {"wanted": true}). Setup looks at what the NAS offers at
 its address and asks when it offers both (chosen_kind); the NFS part is at the end of
@@ -32,7 +32,7 @@ from pathlib import Path
 from neko_common import atomic_write
 
 DEPENDENCIES = ['system']
-DESCRIPTION = 'Connect the drives on a network storage box (NAS) over iSCSI, when switched on'
+DESCRIPTION = 'Connect the drives on a NAS over iSCSI, when switched on'
 
 SECTION = 'network_storage'
 PORT = 3260  # iSCSI's port
@@ -71,7 +71,7 @@ SESSIONS = Path('/sys/class/iscsi_session')
 COMMAND_TIMEOUT = 120
 UDEV_RULE = Path('/etc/udev/rules.d/90-nekoserver-nas-disks.rules')
 RULE = (
-    '# NekoServer: disks on a network storage box (iSCSI) wait for it to come back instead\n'
+    '# NekoServer: disks on a NAS (iSCSI) wait for it to come back instead\n'
     '# of failing writes after 3 minutes (network_storage.py).\n'
     'ACTION=="add|change", SUBSYSTEM=="scsi", KERNELS=="session[0-9]*", ATTR{type}=="0", '
     f'ATTR{{timeout}}="{COMMAND_TIMEOUT}"\n'
@@ -569,7 +569,7 @@ EXPERIMENTAL = (
 def run(context):
     config = context.config
     if not wanted(config):
-        context.log('Drives on a network storage box: not used (all drives are connected to this PC)')
+        context.log('Drives on a NAS: not used (all drives are connected to this PC)')
         return None
     if not context.apply:
         context.log('Drives on a NAS over iSCSI: connected with --apply')

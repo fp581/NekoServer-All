@@ -420,6 +420,8 @@ class Window:
             # A menu of its own: its name and the terminal's last lines.
             'session': {'title': session, 'lines': setup_progress.recent_lines(30)} if session else None,
             'finish': finished['lines'] if finished else [],
+            # The finishing page (finish_page.py); without one the window shows the lines.
+            'finish_page': finished.get('page') if finished else None,
             'title': (finished.get('title') or '') if finished else '',
             'stopped': bool(finished and finished.get('stopped') is True),
             'complete': bool(finished and finished.get('complete') is True),
@@ -515,6 +517,8 @@ class Window:
             return self._fixed_or_ok(self.choose(choices if isinstance(choices, dict) else {}, start=True))
         if route == 'api/login' and isinstance(body, dict):
             return self.login(body.get('app'))
+        if route == 'api/test' and isinstance(body, dict):
+            return self.tried(body.get('test'), body.get('word'))
         if route == 'api/answer' and isinstance(body, dict):
             # The window's answer to the question setup is waiting on; the terminal may
             # have answered first, in which case this says so.
@@ -534,13 +538,17 @@ class Window:
 
     def login(self, app):
         """A saved login for the window's "Show login" button. Only for an app the question
-        waiting offers (its "logins" page, guided_setup.show_logins), read from the private
+        waiting offers (its "logins" page, guided_setup.show_logins, or a step of a part), read from the private
         store when asked for and sent to the window's own page alone: the request needs
         this window's cookie, on this PC's loopback. It is never recorded: no event, no
         log, no report."""
         asked = setup_progress.pending_question() or {}
         page = asked.get('page') or {}
         offered = [row.get('id') for row in page.get('apps', [])] if page.get('form') == 'logins' else []
+        if page.get('form') == 'part':
+            # A step of a part (the phone's): the login its own Show login button names.
+            offered = [step.get('login') for step in page.get('steps', []) if step.get('login')]
+        offered = [*offered, *self._finish_offers()[0]]  # the finishing page's cards
         if not isinstance(app, str) or app not in offered:
             return 403, b'{"ok": false, "reason": "No sign-in step is asking for that login now."}', JSON
         try:
@@ -558,6 +566,27 @@ class Window:
             'qr': guided_setup.qr_image(entry['password']),
         }
         return 200, json.dumps(shown).encode(), JSON
+
+    def _finish_offers(self):
+        """(the logins, the tests) the finishing page has a button for, once it is shown."""
+        import finish_page
+
+        finished = setup_progress.last('finished')
+        return finish_page.offered(finished.get('page') if finished else None)
+
+    def tried(self, test, word):
+        """What the person said about a test on the finishing page (it worked, it did not,
+        later), kept where the dashboard and the next run read it (finish_states). Only a
+        test that page shows, and only one of its three answers."""
+        import finish_states
+
+        if not isinstance(test, str) or test not in self._finish_offers()[1]:
+            return 403, b'{"ok": false, "reason": "That test is not on this page."}', JSON
+        try:
+            finish_states.record_test(self._saved() or self.config, test, word)
+        except (ValueError, RuntimeError, OSError) as problem:
+            return 409, json.dumps({'ok': False, 'reason': str(problem)}).encode(), JSON
+        return 200, b'{"ok": true}', JSON
 
     @staticmethod
     def _fixed_or_ok(taken):

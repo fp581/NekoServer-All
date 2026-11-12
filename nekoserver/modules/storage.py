@@ -453,7 +453,7 @@ def local_ssd(key, device):
         import drive_table
 
         raise RuntimeError(
-            f"{drive_table.said(device, first=True)} is a disk on the network storage box. The SSD for the apps must be connected to "
+            f"{drive_table.said(device, first=True)} is a disk on the NAS. The SSD for the apps must be connected to "
             'this PC (by USB 3, or inside it): it holds the databases and setup\'s own records, and is what makes '
             'the apps fast. Choose the NAS disk for the media HDD, then run setup again. Nothing was changed.'
         )
@@ -952,7 +952,7 @@ def validate_device(uuid, fstype):
     return str(source)
 
 
-# A drive on a network storage box (iSCSI, network_storage.py) is mounted once the network
+# A drive on a NAS (iSCSI, network_storage.py) is mounted once the network
 # is up and this PC has logged in to the NAS (_netdev, and the login service required);
 # an ext4 one that loses the NAS long enough to fail writes turns read-only rather than
 # carry on half-written (errors=remount-ro), so nothing writes past a fault unseen.
@@ -1600,12 +1600,12 @@ INSTALLED_NAMES = {
     'music': 'Navidrome',
     'cloud': 'Nextcloud',
 }
-INSTALL_HERE = 'Same drive as NekoServer and your apps (recommended)'
+INSTALL_HERE = 'Recommended: same drive as NekoServer and your apps'
 
 
 def install_drives(config, inventory):
     """The drives a group's apps may be installed on besides the apps' own: connected to
-    this PC itself (never a storage box), with a filesystem Linux apps can use, and with
+    this PC itself (never a NAS), with a filesystem Linux apps can use, and with
     no role of their own."""
     import drive_table
 
@@ -1810,7 +1810,6 @@ PAGE_ROLES = {
     'usb': 'Offline backup on a removable drive (optional)',
 }
 PAGE_PLACES = {
-    '': 'Let setup choose (recommended)',
     'ssd': 'Same drive as NekoServer and your apps',
     'media': 'Same drive as the backups',
 }
@@ -1822,9 +1821,25 @@ SAME_DRIVE_AS_BACKUP = (
     'Only the offline backup is a copy on another drive'
 )
 SMB_SAID = (
-    'A drive on a network storage box is connected first (the switch on setup\'s first page): as a disk of its '
+    'A drive on a NAS (a storage device on your home network) is connected first (the switch on setup\'s first page): as a disk of its '
     'own (iSCSI) or a shared folder (NFS). Folders shared the Windows way (SMB) are not supported yet.'
 )
+
+
+def page_ssd_room(config, row):
+    """The room, in GB, on the drive of NekoServer and your apps as the page opens: the
+    drive that has the role, or the one recommended for it (`row`); 0 when there is none."""
+    if findmnt('SOURCE', str(mount_path(config['data_mount']))) is not None:
+        return free_gb(config['data_mount'])
+    return free_on(row)
+
+
+def place_options(best, others):
+    """The places a kind of files may be kept, as the page lists them: the recommended
+    one first and said so, then the other of the two, then the drives of their own."""
+    other = 'ssd' if best == 'media' else 'media'
+    words = PAGE_PLACES[best]
+    return [[best, 'Recommended: ' + words[0].lower() + words[1:]], [other, PAGE_PLACES[other]], *others]
 
 
 @contextlib.contextmanager
@@ -1869,11 +1884,14 @@ def storage_page(context, inventory):
         for row in install_drives(config, inventory)
     ]
     installs = installs_asked(config) if len(install_on) > 1 else []
+    ssd_room = page_ssd_room(config, best.get('data_ssd'))
     places = [
         {
             'key': what,
             'title': words[0].upper() + words[1:],
-            'options': [list(option) for option in PAGE_PLACES.items()] + others,
+            'options': place_options(recommended(ssd_room, threshold), others),
+            # Chosen already when the page opens, and named: nothing is left for setup to decide unseen.
+            'recommended': recommended(ssd_room, threshold),
             # Said under the line while the backups' drive is chosen for it.
             'beside_backup': SAME_DRIVE_AS_BACKUP + '.' if what in backed_up_beside(config) else '',
             **(
@@ -1882,7 +1900,7 @@ def storage_page(context, inventory):
                 else {}
             ),
         }
-        for what, words, _threshold in WHERE
+        for what, words, threshold in WHERE
         if what in asked
     ]
     asked = {**asked, **{'install_' + what: '' for what in installs}}
@@ -2331,7 +2349,7 @@ def asked_location(context, words, best, room, on_nas, input_fn=None, key=None, 
     # 24 GB free beside an SSD with 26).
     most = ', the most room' if room['media'] > room['ssd'] else ''
     said = {
-        'media': f'the media drive{" (on the network storage box)" if on_nas else ""}: {room["media"]} GB free{most}',
+        'media': f'the media drive{" (on the NAS)" if on_nas else ""}: {room["media"]} GB free{most}',
         'ssd': f'the SSD: {room["ssd"]} GB free, faster',
     }
     options = [best, 'ssd' if best == 'media' else 'media']

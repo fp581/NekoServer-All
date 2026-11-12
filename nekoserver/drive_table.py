@@ -443,7 +443,7 @@ def drive_verdict(row, key, config):
         return busy
     if key == 'data_ssd' and device.get('network'):
         return (
-            'it is on the network storage box, and the app SSD must be connected to this PC (by USB 3, or '
+            'it is on the NAS, and the app SSD must be connected to this PC (by USB 3, or '
             'inside it): it holds the databases and is what makes the apps fast'
         )
     other = (config.get('storage', {}).get('media_hdd' if key == 'data_ssd' else 'data_ssd') or {}).get('uuid')
@@ -649,7 +649,7 @@ def recommended(table, config):
     gets a sensible layout: {'data_ssd': row or None, 'media_hdd': ..., 'usb': ...}.
 
     The media and backups get the biggest drive of their own that can hold them (one in
-    this PC before one on a storage box); the apps get an SSD among the others, the
+    this PC before one on a NAS); the apps get an SSD among the others, the
     biggest, else any other drive; the offline backup gets a USB drive that is neither.
     With three drives that is the layout every server before 0.50.0 has. The disk Linux
     runs from is recommended only where no drive of its own can have the role. A role

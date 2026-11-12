@@ -38,7 +38,7 @@ RELEASE = re.compile(r'v(\d{1,9})\.(\d{1,9})\.(\d{1,9})')
 
 STEPS = {
     'system': 'System check',
-    'network_storage': 'Drives on the network storage box',
+    'network_storage': 'Drives on the NAS',
     'storage': 'Drives',
     'capacity': 'Drive space',
     'recovery': 'Recovery copy of NekoServer',
@@ -1082,9 +1082,38 @@ def after_setup(code, path, default_state, output, window):
     if window is not None:
         # The window shows the same summary; give it a moment to fetch it.
         heading = next((text.strip() for text in lines[1:2]), '')  # under the first ruled line
-        setup_progress.event('finished', lines=lines, complete=complete, title=heading)
+        setup_progress.event(
+            'finished', lines=lines, complete=complete, title=heading, page=window_finish_page(config, summary)
+        )
         window.delivered.wait(3)
+        keep_window_open(output)
     return 0 if complete and finished_all else 1
+
+
+def window_finish_page(config, summary):
+    """The finishing page for the setup window (finish_page.py); None when it cannot be
+    made, and the window shows the terminal's summary instead."""
+    try:
+        import finish_page
+
+        return finish_page.page(config, summary, PIN_FILE.exists())
+    except (ImportError, OSError, RuntimeError, KeyError, TypeError, ValueError):
+        return None
+
+
+def keep_window_open(output, stdin=None):
+    """The setup window's buttons (Show login, the answers to a test) are answered by
+    setup itself, so setup stays until the person is done with the page: Enter in the
+    terminal ends it. With nobody at the terminal it ends at once, as before."""
+    stdin = sys.stdin if stdin is None else stdin
+    try:
+        if not stdin.isatty():
+            return
+        output('')
+        output('The setup window stays open for its buttons. Press Enter here when you are done with it.')
+        stdin.readline()
+    except (OSError, ValueError, KeyboardInterrupt):
+        return
 
 
 def run(execute, default_state, prompt=input, output=print, root=ROOT, config=None):

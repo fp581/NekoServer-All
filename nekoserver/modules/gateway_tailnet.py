@@ -69,6 +69,8 @@ def phone_steps(ctx, result, done=()):
                     'title': phone_guide.APPS[app]['title'],
                     'lines': phone_guide.instructions(ctx.config, app, links[app], asks=False),
                     'logins': [phone_guide.login_of(ctx.config, app)] if app in phone_guide.LOGIN else [],
+                    # The same step in the setup window: short, with buttons instead of commands.
+                    'window': phone_guide.window_step(ctx.config, app, links[app]),
                 }
             )
     steps.append(

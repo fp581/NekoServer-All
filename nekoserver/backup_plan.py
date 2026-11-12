@@ -274,7 +274,7 @@ def table(config, held=None):
 
 
 OFFLINE_MISSING = (
-    'Not set up. Every backup is then inside this PC (or on its storage box): a fire, a theft or a power surge '
+    'Not set up. Every backup is then inside this PC (or on its NAS): a fire, a theft or a power surge '
     'can take the backups with it.'
 )
 CLOUD_UNPROTECTED = ' Nextcloud files are backed up only to this drive, so without it they have no backup at all.'

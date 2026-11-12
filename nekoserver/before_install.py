@@ -83,7 +83,7 @@ class Look:
         return found
 
     def folder_free(self, folder):
-        """Free bytes where a folder is (a shared folder of a storage box), or None."""
+        """Free bytes where a folder is (a shared folder of a NAS), or None."""
         try:
             return shutil.disk_usage(folder).free
         except OSError:

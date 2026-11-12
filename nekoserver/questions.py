@@ -86,38 +86,38 @@ Q = {
         'yes': 'Go on',
         'no': 'Stop, I will change the drive',
     },
-    # ---- a network storage box
+    # ---- a NAS
     'nas_address': {
-        'screen': 'A network storage box (NAS)',
-        'title': 'What is the address of your storage box?',
+        'screen': 'A NAS (a storage device on your home network)',
+        'title': 'What is the address of your NAS?',
         'hint': 'It is what you open in a browser to reach it, such as 192.168.1.20.',
         'kind': 'text',
         'send': 'Look there',
     },
     'nas_kind': {
-        'screen': 'A network storage box (NAS)',
-        'title': 'How should NekoServer use your storage box?',
+        'screen': 'A NAS (a storage device on your home network)',
+        'title': 'How should NekoServer use your NAS?',
         'hint': 'It offers both ways. If you are not sure, take the first.',
         'kind': 'choice',
         'choices': [
             ('1', 'As a disk of its own (only this PC can use it)'),
-            ('2', 'As a shared folder (the files stay visible on the storage box)'),
+            ('2', 'As a shared folder (the files stay visible on the NAS)'),
         ],
         'how': 'Type 1 or 2, then press Enter. Enter alone takes the first.',
     },
     'nas_disks': {
-        'screen': 'A network storage box (NAS)',
+        'screen': 'A NAS (a storage device on your home network)',
         'title': 'Which of these disks are for NekoServer?',
-        'hint': 'The storage box offers the disks listed above. Choose only the ones you made for this server.',
+        'hint': 'The NAS offers the disks listed above. Choose only the ones you made for this server.',
         'kind': 'text',
         'above': True,
         'send': 'Use these',
         'how': 'Type their numbers with commas between them (such as 1,2), then press Enter. Enter alone stops setup here.',
     },
     'nas_login_needed': {
-        'screen': 'A network storage box (NAS)',
-        'title': 'Does your storage box ask for a user name and password for this disk?',
-        'hint': 'Most do not. If you set one up on the storage box (it calls it CHAP), choose yes. The disk is {iqn}.',
+        'screen': 'A NAS (a storage device on your home network)',
+        'title': 'Does your NAS ask for a user name and password for this disk?',
+        'hint': 'Most do not. If you set one up on the NAS (it calls it CHAP), choose yes. The disk is {iqn}.',
         'kind': 'yesno',
         'yes': 'Yes, it has a password',
         'no': 'No password',
@@ -125,15 +125,15 @@ Q = {
         'example': {'iqn': 'iqn.2000-01.com.synology:nas.Target-1'},
     },
     'nas_login_user': {
-        'screen': 'A network storage box (NAS)',
+        'screen': 'A NAS (a storage device on your home network)',
         'title': 'What is the user name for that disk?',
         'kind': 'text',
         'send': 'Next',
     },
     'nas_folder': {
-        'screen': 'A network storage box (NAS)',
+        'screen': 'A NAS (a storage device on your home network)',
         'title': 'Which shared folder is for {words}?',
-        'hint': 'The folders the storage box shares are listed above.',
+        'hint': 'The folders the NAS shares are listed above.',
         'kind': 'text',
         'above': True,
         'send': 'Use this folder',
@@ -305,7 +305,7 @@ Q = {
     'existing_media': {
         'screen': 'Media you already have',
         'title': 'Do you already have films, shows or music that this server should use?',
-        'hint': 'On this PC, on another drive, or on a storage box whose folder is connected to this PC. '
+        'hint': 'On this PC, on another drive, or on a NAS (a storage device on your home network) whose folder is connected to this PC. '
         'Nothing in your folder is changed.',
         'kind': 'yesno',
         'yes': 'Yes, I have some',
@@ -314,7 +314,7 @@ Q = {
     'existing_folder': {
         'screen': 'Media you already have',
         'title': 'Which folder holds your {what}?',
-        'hint': 'The folder as this PC sees it, such as /mnt/tank/{what}. For a storage box that is where its '
+        'hint': 'The folder as this PC sees it, such as /mnt/tank/{what}. For a NAS that is where its '
         'shared folder is connected here, not its network address.',
         'kind': 'text',
         'send': 'Use this folder',

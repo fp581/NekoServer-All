@@ -814,6 +814,48 @@ main > section {
 .part-step .choice {
   justify-self: end;
 }
+/* the finishing page: a card for each app, with how it stands and its buttons */
+.finish-page {
+  display: grid;
+  gap: 10px;
+}
+.finish-page[hidden] {
+  display: none;
+}
+.finish-states {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 13.5px;
+}
+.finish-state.done b {
+  color: var(--mint);
+}
+.finish-state.failed b {
+  color: var(--red);
+}
+.finish-state.waiting b,
+.finish-state.not_tested b {
+  color: var(--amber);
+}
+.finish-test {
+  display: grid;
+  gap: 4px;
+  font-size: 13.5px;
+}
+a.button {
+  display: inline-block;
+  text-decoration: none;
+}
+/* a step's address on the phone: the address itself, and its QR code beside it */
+.step-address {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  font-size: 13.5px;
+  overflow-wrap: anywhere;
+}
 /* the drives connected to this PC: a card each; one that cannot be chosen is quieter */
 .pick.drives {
   max-height: 46vh;

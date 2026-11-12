@@ -189,6 +189,21 @@ def instructions(config, app, url, asks=True):
     return lines + (['Return here and answer yes once it works on the phone.'] if asks else [])
 
 
+def window_step(config, app, url):
+    """An app's phone step as the setup window shows it: which app to install on the
+    phone, then its address (with a QR code) and a Show login button, which the window
+    adds itself. No command: the window has a button for what the terminal types."""
+    info = APPS[app]
+    return {
+        'lines': [
+            'Install on the phone: ' + info['iphone'] + ' (iPhone), ' + info['android'] + ' (Android).',
+            'Open it, enter the address below (or scan its code), and sign in.',
+        ],
+        'address': url,
+        'login': login_of(config, app) if app in LOGIN else '',
+    }
+
+
 def qr_svg(text):
     """An inline SVG QR code, or '' if qrencode is unavailable."""
     if not shutil.which('qrencode'):

@@ -1,4 +1,4 @@
-"""Drives on a network storage box (a NAS) over iSCSI: the connection step
+"""Drives on a NAS over iSCSI: the connection step
 (modules/network_storage.py) and what the drive step does with such a disk."""
 
 import contextlib
@@ -609,7 +609,7 @@ class DriveStepTests(unittest.TestCase):
         self.assertIn('the app SSD must be connected to this PC', drive_table.verdict(nas, 'data_ssd', config))
         # With the only local drive taken, nothing is left for the SSD: said, not asked.
         taken = {**config, 'storage': {'media_hdd': {'uuid': 'ssd-1'}}}
-        with self.assertRaisesRegex(RuntimeError, 'it is on the network storage box, and the app SSD must be'):
+        with self.assertRaisesRegex(RuntimeError, 'it is on the NAS, and the app SSD must be'):
             storage.choose_new(taken, table, 'data_ssd', None, None)
 
     def test_a_saved_nas_disk_must_be_the_same_one(self):

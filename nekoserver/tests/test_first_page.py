@@ -53,7 +53,7 @@ class PageTests(Base):
                 ('extras', 'Send alerts to my phone'),
                 ('extras', 'Warn me if the server stops checking in'),
                 ('extras', 'Add a local AI assistant'),
-                ('storage', 'My media and backup drives are in a network storage box (NAS)'),
+                ('storage', 'My media and backup drives are in a NAS (a storage device on my home network)'),
             ],
         )
         self.assertEqual(explanations.PAGE_TITLE, 'What would you like this server to do?')

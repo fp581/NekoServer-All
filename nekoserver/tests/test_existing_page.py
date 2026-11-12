@@ -1,5 +1,5 @@
 """0.50.0, the wizard (P03): media you already have. The user's own case: a folder of films
-on a storage box was given to setup, and Jellyfin could not see it once it ran. Now the
+on a NAS was given to setup, and Jellyfin could not see it once it ran. Now the
 folder is asked for once, checked as the apps' account, mounted into the apps before they
 start, and given a library of its own in Jellyfin (music: in Navidrome). The person may
 also have new ones saved there, or have the folder copied into the library instead.

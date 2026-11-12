@@ -151,7 +151,7 @@ class TableTests(DriveListCase):
         )
         self.assertTrue(why[6].startswith('it has no filesystem yet. To use it, format it as ext4 yourself'), why[6])
         self.assertIn('sudo mkfs.ext4 /dev/sde  (this erases what is on it; setup never formats a drive)', why[6])
-        self.assertTrue(why[7].startswith('it is on the network storage box, and the app SSD must be connected'))
+        self.assertTrue(why[7].startswith('it is on the NAS, and the app SSD must be connected'))
         self.assertIn('copy its files elsewhere first', why[9])
         # A drive is never two things: the role it has is why it cannot have another.
         config['storage'] = {'data_ssd': {'uuid': 'ssd-0001'}}
@@ -343,7 +343,7 @@ class QuestionTests(DriveListCase):
         talk = Conversation(['', ''])
         config = self.first_run(talk)
         # The media and backups: the biggest drive in this PC (the HDD, before the bigger
-        # disk on the storage box); the apps: the bigger SSD of the others.
+        # disk on the NAS); the apps: the bigger SSD of the others.
         self.assertEqual(config['storage']['media_hdd']['uuid'], 'hdd-0001')
         self.assertEqual(config['storage']['data_ssd']['uuid'], 'ssd-0001')
         said = '\n'.join(talk.lines)
@@ -466,7 +466,19 @@ class StoragePageTests(DriveListCase):
             self.assertEqual([place['key'] for place in page['places']], ['photos', 'movies', 'music', 'cloud'])
             # Backups are a line of their own; files kept beside their backup are told so.
             self.assertEqual(page['roles'][1]['holds'], storage.BACKUPS_HOLD)
-            self.assertEqual(page['places'][0]['options'][2], ['media', 'Same drive as the backups'])
+            # Each line names the recommended place first, chosen when the page opens: nothing
+            # is left for setup to decide unseen. No drive is the apps' yet, so that is the backups'.
+            self.assertEqual(
+                page['places'][0]['options'][:2],
+                [
+                    ['media', 'Recommended: same drive as the backups'],
+                    ['ssd', 'Same drive as NekoServer and your apps'],
+                ],
+            )
+            self.assertEqual(page['places'][0]['recommended'], 'media')
+            self.assertEqual(
+                storage.place_options('ssd', [])[0], ['ssd', 'Recommended: same drive as NekoServer and your apps']
+            )
             # The photos always have a copy there; the music only where its backup is switched on.
             music_backup = ctx.config.get('music', {}).get('backup_enabled') is True
             self.assertEqual(
@@ -477,10 +489,10 @@ class StoragePageTests(DriveListCase):
             # The two roles' drives, or a drive of their own: any other drive that could hold them.
             self.assertEqual(
                 [option[0] for option in page['places'][0]['options']],
-                ['', 'ssd', 'media', 'drive:2', 'drive:3', 'drive:7', 'drive:8'],
+                ['media', 'ssd', 'drive:2', 'drive:3', 'drive:7', 'drive:8'],
             )
             self.assertEqual(
-                page['places'][0]['options'][3][1],
+                page['places'][0]['options'][2][1],
                 'On a drive of their own: 2 · 466 GB SSD, Samsung SSD 870, named "apps"',
             )
             self.assertIn('SMB) are not supported yet', page['network'])

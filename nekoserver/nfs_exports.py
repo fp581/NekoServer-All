@@ -1,4 +1,4 @@
-"""A folder a network storage box (a NAS) shares over NFS, used as NekoServer's media
+"""A folder a NAS shares over NFS, used as NekoServer's media
 drive or its backup drive. network_storage.py finds the shared folders and asks which
 one is which; this file holds what an NFS folder is to NekoServer.
 

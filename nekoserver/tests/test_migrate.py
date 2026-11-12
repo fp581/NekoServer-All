@@ -75,7 +75,7 @@ class TargetTests(unittest.TestCase):
         self.assertNotIn('lun-0001', [t[0] for t in found])
         said = ' '.join(left_out)
         self.assertIn('/dev/sdc1: the USB backup drive', said)
-        self.assertIn('/dev/sdg1: a disk on the network storage box', said)
+        self.assertIn('/dev/sdg1: a disk on the NAS', said)
         # The media drive may move to the NAS.
         found, _ = migrate.targets(config, 'media_hdd', rows, used=500 * GB)
         self.assertIn('lun-0001', [t[0] for t in found])
