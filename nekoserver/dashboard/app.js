@@ -1805,8 +1805,8 @@ function bugReport(entry) {
   }
   return [
     'NekoServer ' + text(state.status?.version, '?'),
-    'Question (passwords and keys removed): ' + entry.question,
-    entry.excerpt ? 'What the server showed (passwords and keys removed):\n' + entry.excerpt : '',
+    'Question (known passwords and keys removed): ' + entry.question,
+    entry.excerpt ? 'What the server showed (known passwords and keys removed):\n' + entry.excerpt : '',
     'Neko’s report:\n' + plainWords(entry.answer.slice(at + 'BUG REPORT:'.length).replace(/^[\s*_:]+/, ''))
   ]
     .filter(Boolean)
@@ -1862,6 +1862,10 @@ function repairCard(entry) {
   }
   return card;
 }
+/* What the server takes out of a report is what it knows to be a secret (the saved
+ * logins, anything shaped like a key, a password named as one): it cannot know every
+ * word a person typed, so the person is asked to read the report first. */
+const REPORT_CARE = 'Known passwords and keys are removed. Read it before you share it.';
 function bugBox(report) {
   const box = el('div', 'ask-bug'),
     area = el('textarea');
@@ -1875,6 +1879,7 @@ function bugBox(report) {
       'hint',
       'This looks like a problem in NekoServer itself. Nothing is sent anywhere: read it, then copy it to report the problem.'
     ),
+    el('p', 'hint', REPORT_CARE),
     area,
     button('Copy', async () => {
       if (await copied(report)) {
