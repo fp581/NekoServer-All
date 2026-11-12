@@ -103,7 +103,10 @@ fn in_a_library(cfg: &Value, point: &Path) -> bool {
             .iter()
             .filter_map(|d| common::drive_folder(cfg, d)),
     );
-    let kind = point.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let kind = point
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("");
     let plain = !kind.is_empty() && kind.bytes().all(|b| b.is_ascii_lowercase() || b == b'-');
     plain
         && drives

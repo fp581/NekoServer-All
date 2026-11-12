@@ -451,7 +451,7 @@ pub fn saved_path(cfg: &serde_json::Value, what: &str) -> Result<PathBuf> {
         // On the SSD, the media drive, or another drive something is placed on.
         let drives = ["ssd", "media"]
             .iter()
-            .map(|d| d.to_string())
+            .map(ToString::to_string)
             .chain(drives_in_use(cfg))
             .filter_map(|d| drive_folder(cfg, &d))
             .collect::<Vec<_>>();

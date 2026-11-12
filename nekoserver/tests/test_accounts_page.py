@@ -175,7 +175,7 @@ class AccountsPageTests(unittest.TestCase):
         source = (ROOT / 'account_store.py').read_text()
         self.assertIn("not in ('generate', 'custom', 'per-app')", source)
         store = {'format': 1, 'mode': 'generate', 'apps': {'jellyfin': {'username': 'a', 'password': TYPED, 'state': 'verified', 'allow_create': True, 'source': 'generate'}}}  # fmt: skip
-        with mock.patch.object(account_store, 'load', lambda config: store):
+        with mock.patch.object(account_store, 'load', return_value=store):
             person = Person()
             saved = self.collect(['jellyfin', 'navidrome'], person)
         self.assertEqual(person.asked, [])  # the choice was made the first time

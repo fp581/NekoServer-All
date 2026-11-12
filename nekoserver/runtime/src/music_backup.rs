@@ -83,7 +83,7 @@ fn sources(cfg: &serde_json::Value, library: PathBuf) -> Result<Vec<(String, Pat
         let under_existing = path
             .parent()
             .is_some_and(|p| p.ends_with("library/existing"))
-            && path.file_name().and_then(|n| n.to_str()) == Some(slot);
+            && path.file_name().and_then(std::ffi::OsStr::to_str) == Some(slot);
         if !(slot == "music" || slot == "music-new") || !under_existing {
             return Err(Error::new("Invalid music folder to back up"));
         }

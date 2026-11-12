@@ -1594,34 +1594,7 @@ fn restored_model(original: &Value, stage: &Path, data: &Path, media: &Path) -> 
             .flatten();
         for volume in listed {
             if volume["type"] == "bind" {
-                let source = Path::new(string(volume, "source")?);
-                let target = if let Ok(relative) = source.strip_prefix(data) {
-                    stage.join("data").join(relative)
-                } else if let Ok(relative) = source.strip_prefix(media) {
-                    stage.join("media").join(relative)
-                } else if let Ok(relative) = source.strip_prefix(common::EXTRA_MOUNTS) {
-                    // A drive beyond the two (an app's files on a drive of their own, gate
-                    // run C14): its files are not in the snapshot, so the rehearsal gets an
-                    // empty folder of its own, read-only; the drive itself is never seen.
-                    stage.join("drives").join(relative)
-                } else if source == Path::new("/etc/localtime") {
-                    continue;
-                } else {
-                    return Err(Error::new("Unsafe restored bind mount"));
-                };
-                // Under the rehearsal's own folder, always: a source with ".." in it (from
-                // a snapshot's settings) would lead out of it, onto this PC's own files.
-                let inside = source
-                    .components()
-                    .all(|c| matches!(c, Component::RootDir | Component::Normal(_)));
-                if !inside {
-                    return Err(Error::new("Unsafe restored bind mount"));
-                }
-                if !target.exists() {
-                    common::directory(&target, 0o755)?;
-                    volume["read_only"] = json!(true);
-                }
-                volume["source"] = json!(target);
+                restored_bind(volume, stage, data, media)?;
             } else {
                 // Cache volumes are intentionally recreated in the rehearsal's private namespace.
                 let name = format!("cache-{service}");
@@ -1641,6 +1614,39 @@ fn restored_model(original: &Value, stage: &Path, data: &Path, media: &Path) -> 
         model["volumes"] = Value::Object(volumes);
     }
     Ok(model)
+}
+/// A bind mount of the restored model led into the rehearsal's own folder (`stage`), or
+/// left as it is for this PC's clock (/etc/localtime).
+fn restored_bind(volume: &mut Value, stage: &Path, data: &Path, media: &Path) -> Result<()> {
+    let source = Path::new(string(volume, "source")?);
+    let target = if let Ok(relative) = source.strip_prefix(data) {
+        stage.join("data").join(relative)
+    } else if let Ok(relative) = source.strip_prefix(media) {
+        stage.join("media").join(relative)
+    } else if let Ok(relative) = source.strip_prefix(common::EXTRA_MOUNTS) {
+        // A drive beyond the two (an app's files on a drive of their own, gate
+        // run C14): its files are not in the snapshot, so the rehearsal gets an
+        // empty folder of its own, read-only; the drive itself is never seen.
+        stage.join("drives").join(relative)
+    } else if source == Path::new("/etc/localtime") {
+        return Ok(());
+    } else {
+        return Err(Error::new("Unsafe restored bind mount"));
+    };
+    // Under the rehearsal's own folder, always: a source with ".." in it (from
+    // a snapshot's settings) would lead out of it, onto this PC's own files.
+    let inside = source
+        .components()
+        .all(|c| matches!(c, Component::RootDir | Component::Normal(_)));
+    if !inside {
+        return Err(Error::new("Unsafe restored bind mount"));
+    }
+    if !target.exists() {
+        common::directory(&target, 0o755)?;
+        volume["read_only"] = json!(true);
+    }
+    volume["source"] = json!(target);
+    Ok(())
 }
 /// Apps whose user data (photos, Nextcloud files) is kept out of the monthly
 /// snapshot, and a table that proves their restored database is the real one.

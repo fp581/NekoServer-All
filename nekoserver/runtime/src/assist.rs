@@ -103,7 +103,7 @@ static SECRET_WORD: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new
 static WORDS: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"\S+").unwrap());
 /// Words that follow "the password is" (or "to") in ordinary sentences and log lines,
-/// and so are not the password: "is wrong", "is required", "to Jellyfin", "to log in".
+/// and so are not the secret itself, as in "is wrong", "is required", "to Jellyfin", "to log in".
 /// Anything else there is taken out: a word too many removed costs little, a password
 /// left in a report that is shared costs much.
 #[rustfmt::skip]
