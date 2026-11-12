@@ -213,7 +213,8 @@ class SetupQuestionTests(unittest.TestCase):
         self.addCleanup(self.interactive.stop)
 
     def config(self, **extra):
-        return {'data_mount': self.dir.name, 'timezone': 'UTC', **extra}
+        # With Immich, so the weekly USB copy is on this server and its day and time are asked.
+        return {'data_mount': self.dir.name, 'timezone': 'UTC', 'photos': {'deploy_immich': True}, **extra}
 
     def ask(self, ctx, *typed):
         printed = []
@@ -392,7 +393,7 @@ class SetupQuestionTests(unittest.TestCase):
         ctx = Ctx(
             self.config(
                 app_backup={'time': '23:00'},
-                photos={'backup_weekday': 'Fri', 'backup_time': '22:00'},
+                photos={'deploy_immich': True, 'backup_weekday': 'Fri', 'backup_time': '22:00'},
                 maintenance={'time': '01:30'},
             )
         )
@@ -458,6 +459,7 @@ class SetupQuestionTests(unittest.TestCase):
             host_backup={'time': '02:00'},
             music={'backup_time': '03:45'},
             photos={
+                'deploy_immich': True,
                 'backup_weekday': 'Fri',
                 'backup_time': '22:00',
                 'database_backup_time': '21:00',
@@ -685,3 +687,56 @@ class SetupQuestionTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class OnlyWhatTheServerHasTests(unittest.TestCase):
+    """Gate runs B2 and B4: the page named the music copy with Music off, and asked the
+    weekly USB copy's day and time on a server with no USB drive, no Immich and no
+    Nextcloud."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        patch = mock.patch.object(guided_setup, 'interactive', return_value=True)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_the_daily_words_name_only_the_jobs_there_are(self):
+        films_only = {'media_apps': {'movies': True, 'music': False}}
+        self.assertNotIn('music', guided_setup.daily_words(films_only))
+        self.assertIn("the media apps' snapshot", guided_setup.daily_words(films_only))
+        both = {'media_apps': {'movies': True, 'music': True}}
+        self.assertIn('the music copy 30 minutes before it', guided_setup.daily_words(both))
+        neither = {'media_apps': {'movies': False, 'music': False}}
+        self.assertEqual(guided_setup.daily_words(neither), "the copy of this PC's own settings at the time you choose")
+
+    def test_no_weekly_question_without_a_weekly_copy(self):
+        config = {
+            'data_mount': self.dir.name,
+            'timezone': 'UTC',
+            'media_apps': {'movies': True, 'music': False},
+            'photos': {'deploy_immich': False},
+            'nextcloud': {'enabled': False},
+        }
+        ctx = Ctx(config)
+        asked, printed = [], []
+
+        def prompt(question=''):
+            asked.append(question)
+            return ''
+
+        guided_setup.choose_backup_times(ctx, prompt=prompt, output=printed.append)
+        self.assertFalse([q for q in asked if 'weekly USB copy' in q or 'on that day' in q], asked)
+        self.assertFalse([line for line in printed if 'USB copy' in line or 'music copy' in line], printed)
+        # The weekly times stay what they were.
+        self.assertEqual((ctx.config['backup_times']['weekly_day'], ctx.config['backup_times']['weekly']), ('Sun', '03:00'))
+
+    def test_the_offline_drive_left_out_asks_no_weekly_time(self):
+        config = {'photos': {'deploy_immich': True, 'external_backup_wanted': False}}
+        self.assertFalse(guided_setup.weekly_copy(config))
+        config['photos']['external_backup_wanted'] = True
+        self.assertTrue(guided_setup.weekly_copy(config))
+        self.assertEqual(
+            guided_setup.weekly_words({'photos': {'deploy_immich': False}, 'nextcloud': {'enabled': True}}),
+            'your Nextcloud files',
+        )

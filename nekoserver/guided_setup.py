@@ -924,6 +924,9 @@ def choose_backup_times(ctx, prompt=None, output=None):
         night_end=night_end,
         counts=counts,
         table=backup_rows(ctx.config),
+        daily_words=daily_words(ctx.config),
+        weekly_copy=weekly_copy(ctx.config),
+        weekly_words=weekly_words(ctx.config),
     )
     with page:
         chosen = ask_backup_times(ctx, now, night_end, prompt, output)
@@ -1078,34 +1081,45 @@ def monthly_offered(current, night_end):
     return f'{max(night_end - 1, 0):02d}:{current[3:]}'
 
 
-def ask_backup_times(ctx, now, night_end, prompt, output):
-    """The three questions in the terminal (the window answers through ask_on_page);
-    the chosen "backup_times" settings."""
-    from neko_common import WEEKDAYS, host_timezone, valid_time
+def daily_words(config):
+    """What runs at the daily time, for this server only (gate run B2: the music copy was
+    named with Music off)."""
+    from neko_common import media_group
+
+    parts = []
+    if any(media_group(config, group) for group in ('movies', 'music')):
+        parts.append("the media apps' snapshot at the time you choose")
+    if media_group(config, 'music') and config.get('music', {}).get('backup_enabled', True) is not False:
+        parts.append('the music copy 30 minutes before it')
+    parts.append("the copy of this PC's own settings " + ('an hour after it' if parts else 'at the time you choose'))
+    if len(parts) == 1:
+        return parts[0]
+    return ', '.join(parts[:-1]) + ' and ' + parts[-1]
+
+
+def weekly_copy(config):
+    """The weekly USB copy runs on this server: there are photos or Nextcloud files to
+    copy, and the offline drive was not left out (gate run B4: its day and time were asked
+    with neither)."""
+    from modules import photo_backup
+
+    return any(photo_backup.copies(config)) and config.get('photos', {}).get('external_backup_wanted') is not False
+
+
+def weekly_words(config):
+    """What the weekly USB copy takes, for this server only."""
+    from modules import photo_backup
+
+    photos, cloud = photo_backup.copies(config)
+    what = ' and '.join(name for name, on in (('your photos', photos), ('your Nextcloud files', cloud)) if on)
+    return what + (", with Immich's database copy 45 minutes before it" if photos else '')
+
+
+def ask_weekly(now, prompt, output):
+    """The weekly USB copy's day and time."""
+    from neko_common import WEEKDAYS, valid_time
 
     days = ', '.join(WEEKDAYS)
-    output('\n=== When the backups run ===')
-    output(
-        f'Times are on this PC\'s clock ({host_timezone(ctx.config)}). Press Enter to keep the time shown. '
-        'Choose hours when nobody uses the server: the apps pause for a moment while they are copied.'
-    )
-    output(
-        'Every night: the media apps\' snapshot at the time you choose, the music copy 30 minutes '
-        'before it and the copy of this PC\'s own settings an hour after it.'
-    )
-    daily = ask_on_page(
-        'daily',
-        f'When should the daily backups run? (HH:MM, Enter for {now["app"]}): ',
-        now['app'],
-        valid_time,
-        'Type a time of day as HH:MM, for example 04:15.',
-        prompt,
-        output,
-    )
-    output(
-        'Every week: the USB copy of your photos and Nextcloud files, with Immich\'s database copy '
-        '45 minutes before it.'
-    )
     weekday = ask_on_page(
         'weekly_day',
         f'On which day should the weekly USB copy run? ({days}; Enter for {now["usb_day"]}): ',
@@ -1125,6 +1139,35 @@ def ask_backup_times(ctx, now, night_end, prompt, output):
         prompt,
         output,
     )
+    return weekday, weekly
+
+
+def ask_backup_times(ctx, now, night_end, prompt, output):
+    """The questions in the terminal (the window answers through ask_on_page); the chosen
+    "backup_times" settings. The weekly copy's are asked only on a server that has it."""
+    from neko_common import host_timezone, valid_time
+
+    output('\n=== When the backups run ===')
+    output(
+        f'Times are on this PC\'s clock ({host_timezone(ctx.config)}). Press Enter to keep the time shown. '
+        'Choose hours when nobody uses the server: the apps pause for a moment while they are copied.'
+    )
+    output('Every night: ' + daily_words(ctx.config) + '.')
+    daily = ask_on_page(
+        'daily',
+        f'When should the daily backups run? (HH:MM, Enter for {now["app"]}): ',
+        now['app'],
+        valid_time,
+        'Type a time of day as HH:MM, for example 04:15.',
+        prompt,
+        output,
+    )
+    if weekly_copy(ctx.config):
+        output('Every week: the USB copy of ' + weekly_words(ctx.config) + '.')
+        weekday, weekly = ask_weekly(now, prompt, output)
+    else:
+        # No weekly copy on this server: its day and time stay as they are, unasked.
+        weekday, weekly = now['usb_day'], now['usb']
     output(
         'Every month, on the 1st: the check of every backup copy, a snapshot of every app and a restore '
         f'test; the weekly app updates start at this time too. It must start at night, before {night_end:02d}:00.'

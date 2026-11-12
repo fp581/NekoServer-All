@@ -452,6 +452,10 @@
     );
   }
 
+  function capital(text) {
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
   /* Each row says what runs at its time (the same words setup says in the terminal). */
   function buildBackupTimes(page) {
     const f = page.fields;
@@ -509,13 +513,20 @@
       row(
         'Daily backups',
         [pageInputs.daily],
-        "The media apps' snapshot at this time, the music copy 30 minutes before it and the copy of this PC's own settings an hour after it."
+        page.daily_words
+          ? capital(page.daily_words) + '.'
+          : "The media apps' snapshot at this time, the music copy 30 minutes before it and the copy of this PC's own settings an hour after it."
       ),
-      row(
-        'Weekly USB copy',
-        [day, pageInputs.weekly],
-        "Your photos and Nextcloud files onto the USB drive, with Immich's database copy 45 minutes before it."
-      ),
+      // Only on a server that has the weekly copy (gate run B4); its inputs keep their times.
+      page.weekly_copy === false
+        ? null
+        : row(
+            'Weekly USB copy',
+            [day, pageInputs.weekly],
+            page.weekly_words
+              ? capital(page.weekly_words) + ', onto the USB drive.'
+              : "Your photos and Nextcloud files onto the USB drive, with Immich's database copy 45 minutes before it."
+          ),
       row(
         'Monthly check and updates',
         [pageInputs.monthly],
