@@ -205,6 +205,46 @@ def shared_rows(config):
     ]
 
 
+# A network share mounted on this PC by hand or by the desktop (gate run C1: the page did
+# not list it at all): listed, with why it is no drive for NekoServer's roles.
+NETWORK_FILESYSTEMS = ('nfs', 'nfs4', 'cifs', 'smb3')
+SHARE_NOT_A_DRIVE = (
+    'a network share can hold data, not the apps. To use its films, shows or music, give its folder on the '
+    '"Media you already have" page'
+)
+
+
+def mounted_shares(listed, run=None):
+    """Rows for the network shares mounted here that the list has not got already
+    (`listed`: the NAS folders the network storage step chose)."""
+    import json
+    import subprocess
+
+    run = run or subprocess.run
+    try:
+        shown = run(
+            ['findmnt', '-J', '-t', ','.join(NETWORK_FILESYSTEMS), '-o', 'TARGET,SOURCE,FSTYPE'],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        mounts = json.loads(shown.stdout or '{}').get('filesystems') or []
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    known = {row['export'] for row in listed}
+    return [
+        entry(
+            {'name': m.get('source', ''), 'fstype': m.get('fstype', ''), 'mountpoint': m.get('target')},
+            {},
+            type=f"network share ({str(m.get('fstype', '')).upper()})",
+            problem=SHARE_NOT_A_DRIVE,
+        )
+        for m in mounts
+        if isinstance(m, dict) and m.get('source') and m.get('source') not in known
+    ]
+
+
 def with_children(dev, disk):
     """A device and everything under it, each with the disk it is on."""
     yield dev, disk
@@ -263,7 +303,8 @@ def rows(inventory, config, items=None, look=None):
             found.append(entry(top, top, system=True, fstype='', uuid='', label='', mountpoint=None))
         else:
             found += rows_of(top, seen, usable, backups, look)
-    return numbered_rows(found + shared_rows(config))
+    shared = shared_rows(config)
+    return numbered_rows(found + shared + mounted_shares(shared))
 
 
 def numbered_rows(found):

@@ -137,3 +137,23 @@ class DriveWordsTests(unittest.TestCase):
         none = {'media_apps': {'photos': False, 'movies': False, 'music': False}}
         self.assertEqual(drive_holds(none, 'media_hdd'), 'the backups')
         self.assertEqual(drive_holds(none, 'usb'), 'the weekly copy of your files')
+
+
+class MountedShareTests(unittest.TestCase):
+    """Gate run C1: a network share mounted on this PC was not in the storage page's list."""
+
+    def test_a_mounted_share_is_listed_with_why_it_holds_no_apps(self):
+        import json as json_
+
+        shown = {'filesystems': [{'target': '/mnt/tank/films', 'source': 'nas:/films', 'fstype': 'nfs4'}]}
+        run = mock.Mock(return_value=mock.Mock(stdout=json_.dumps(shown)))
+        found = drive_table.mounted_shares([], run)
+        self.assertEqual(len(found), 1)
+        row = found[0]
+        self.assertEqual((row['name'], row['mountpoint']), ('nas:/films', '/mnt/tank/films'))
+        self.assertIn('a network share can hold data, not the apps', drive_table.verdict(row, 'data_ssd', {}))
+        self.assertIn('network share (NFS4)', drive_table.words(row))
+        # One the network storage step chose is listed by it already.
+        self.assertEqual(drive_table.mounted_shares([{'export': 'nas:/films'}], run), [])
+        # findmnt missing: nothing more listed.
+        self.assertEqual(drive_table.mounted_shares([], mock.Mock(side_effect=OSError)), [])
