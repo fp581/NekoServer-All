@@ -162,7 +162,9 @@ class OneDriveWordsTests(unittest.TestCase):
         said = []
         ctx = SimpleNamespace(config=self.one(), log=said.append)
         room = {'ssd': 105, 'media': 105}
-        place = storage.asked_location(ctx, "Immich's photos", 'media', room, False, mock.Mock(side_effect=AssertionError))
+        place = storage.asked_location(
+            ctx, "Immich's photos", 'media', room, False, mock.Mock(side_effect=AssertionError)
+        )
         self.assertEqual(place, 'media')
         self.assertEqual(said, ["Immich's photos: kept on the one drive of this server."])
 

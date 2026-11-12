@@ -52,8 +52,7 @@ def fits_memory(need, total, room, apps_started):
     """('yes' | 'no' | 'unknown', why not or why it cannot be promised) for one model's memory."""
     if need > room:
         return 'no', (
-            f'It needs about {_gb(need)} of free memory. This PC has '
-            f'{assistant.room_said(total, room, apps_started)}.'
+            f'It needs about {_gb(need)} of free memory. This PC has {assistant.room_said(total, room, apps_started)}.'
         )
     if apps_started:
         return 'yes', ''

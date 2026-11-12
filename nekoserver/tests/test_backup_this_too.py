@@ -25,7 +25,9 @@ def asked(kind, found, typed_answers):
     kept, said = [], []
     with (
         mock.patch.object(existing_page, 'folder_found', return_value=found),
-        mock.patch.object(existing_page, 'typed', side_effect=lambda key, prompt, **v: kept.append(key) or next(answers)),
+        mock.patch.object(
+            existing_page, 'typed', side_effect=lambda key, prompt, **v: kept.append(key) or next(answers)
+        ),
         mock.patch.object(existing_page, 'downloads', return_value=False),
         mock.patch.object(existing_media, 'with_choice', side_effect=lambda c, e: {'placement': {'entry': e}}),
     ):
@@ -64,7 +66,10 @@ class FollowedTests(unittest.TestCase):
             'media_mount': '/mnt/nekoserver-media',
             'media_apps': {'movies': False, 'music': True, 'photos': False},
             'music': {'backup_enabled': False},
-            'storage': {'data_ssd': {'uuid': 'ssd-1', 'fstype': 'ext4'}, 'media_hdd': {'uuid': 'hdd-1', 'fstype': 'ext4'}},
+            'storage': {
+                'data_ssd': {'uuid': 'ssd-1', 'fstype': 'ext4'},
+                'media_hdd': {'uuid': 'hdd-1', 'fstype': 'ext4'},
+            },
         }
         table = copy.deepcopy(placement.table(config))
         table['music']['extra'] = [{**entry, 'new_files': False}]

@@ -617,8 +617,11 @@ def fstab_with(text, lines, extra=()):
 
 
 FSTAB_UNENDED = (
-    "/etc/fstab has NekoServer's line for your own folders (" + BEGIN + ') but not the line that ends that part ('
-    + END + '), so setup cannot tell which lines below it are its own. Nothing was changed. Put the end line back '
+    "/etc/fstab has NekoServer's line for your own folders ("
+    + BEGIN
+    + ') but not the line that ends that part ('
+    + END
+    + '), so setup cannot tell which lines below it are its own. Nothing was changed. Put the end line back '
     "after NekoServer's lines (or delete NekoServer's lines), then run setup again."
 )
 

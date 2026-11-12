@@ -1560,9 +1560,7 @@ def drive_holds(config, key):
     cloud = bool(config.get('nextcloud', {}).get('enabled', False))
     if key == 'data_ssd':
         return listed(
-            ['your apps']
-            + ['photos'] * media_group(config, 'photos')
-            + ['music'] * media_group(config, 'music')
+            ['your apps'] + ['photos'] * media_group(config, 'photos') + ['music'] * media_group(config, 'music')
         )
     if key == 'media_hdd':
         kept = ['movies', 'shows'] * media_group(config, 'movies') + ['Nextcloud files'] * cloud

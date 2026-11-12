@@ -254,8 +254,11 @@ class ChoiceTests(unittest.TestCase):
         self.assertEqual(answers, {'0': 'none', '': 'none', '1': 'qwen3.5:2b-q4_K_M', '2': 'qwen3.5:4b'})
         self.assertIn('2) qwen3.5:4b (recommended)', text)
         self.assertNotIn('1) qwen3.5:2b-q4_K_M (recommended)', text)
-        self.assertIn('Not possible here: qwen3.5:9b needs about 9 GB; this PC has 9.5 GB free with your apps running, '
-                      'and keeps 3.2 GB for the apps to grow into, which leaves 6.3 GB for the assistant.', text)
+        self.assertIn(
+            'Not possible here: qwen3.5:9b needs about 9 GB; this PC has 9.5 GB free with your apps running, '
+            'and keeps 3.2 GB for the apps to grow into, which leaves 6.3 GB for the assistant.',
+            text,
+        )
 
     def test_each_choice_says_what_it_costs_this_pc(self):
         text = '\n'.join(assistant.choices(16, 6.3, 8)[0])

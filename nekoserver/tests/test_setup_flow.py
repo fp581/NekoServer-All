@@ -357,9 +357,7 @@ class SetupWindowTests(unittest.TestCase):
         )
         # A number outside the limits is said, not sent; within them it goes with the page.
         seen = self.page([{**state, 'fill': {'ask-page-keep_app_backup': '14'}}])
-        self.assertEqual(
-            (seen['posts'], seen['note']), ([], 'Keep the latest nightly app backups: from 1 to 7.')
-        )
+        self.assertEqual((seen['posts'], seen['note']), ([], 'Keep the latest nightly app backups: from 1 to 7.'))
         seen = self.page([{**state, 'fill': {'ask-page-keep_app_backup': '5'}}])
         self.assertEqual(
             (seen['posts'][0][1]['fields']['keep_app_backup'], seen['posts'][0][1]['fields']['keep_host_backup']),

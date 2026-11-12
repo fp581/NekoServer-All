@@ -236,7 +236,9 @@ def chosen_indexers(schemas, names, ask=None, attempts=3, existing=()):
         setup_progress.page_asks('choice')
         for _ in range(attempts):
             try:
-                answer = ask(question + (' (Enter alone takes the ticked ones): ' if ticked else ' (Enter alone skips): ')).strip()
+                answer = ask(
+                    question + (' (Enter alone takes the ticked ones): ' if ticked else ' (Enter alone skips): ')
+                ).strip()
             except EOFError:
                 print()
                 return []

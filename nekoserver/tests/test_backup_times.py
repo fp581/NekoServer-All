@@ -733,7 +733,9 @@ class OnlyWhatTheServerHasTests(unittest.TestCase):
         self.assertFalse([q for q in asked if 'weekly USB copy' in q or 'on that day' in q], asked)
         self.assertFalse([line for line in printed if 'USB copy' in line or 'music copy' in line], printed)
         # The weekly times stay what they were.
-        self.assertEqual((ctx.config['backup_times']['weekly_day'], ctx.config['backup_times']['weekly']), ('Sun', '03:00'))
+        self.assertEqual(
+            (ctx.config['backup_times']['weekly_day'], ctx.config['backup_times']['weekly']), ('Sun', '03:00')
+        )
 
     def test_the_offline_drive_left_out_asks_no_weekly_time(self):
         config = {'photos': {'deploy_immich': True, 'external_backup_wanted': False}}

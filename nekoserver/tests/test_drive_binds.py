@@ -122,7 +122,6 @@ class DriveReturnUnitTests(unittest.TestCase):
         self.assertEqual(devices, ['device-aaaa-1111', 'device-bbbb-2222'])
 
 
-
 class SharedFolderTests(unittest.TestCase):
     """Gate run C8: a folder of yours on a NAS, used where it is. The runtime is told which
     one, where it is mounted into the library and which apps see it, so those stay stopped

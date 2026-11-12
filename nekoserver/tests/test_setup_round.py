@@ -784,7 +784,9 @@ class DriveSizeTests(unittest.TestCase):
             any(line.startswith('Now choose the drive for your movies') and '50 GB' in line for line in out)
         )
         # The drive just chosen keeps its number, and may hold the media and backups too (0.50.0).
-        row = next(line for line in out if line.startswith('  4) Samsung SSD 870') and 'media' not in line.split('(')[0])
+        row = next(
+            line for line in out if line.startswith('  4) Samsung SSD 870') and 'media' not in line.split('(')[0]
+        )
         self.assertNotIn('it is already the app SSD', row)
         # The UUID is shown in the drive's details and never has to be typed.
         self.assertIn('       Details: sdc1 on sdc; ext4, UUID ssd-0001; not open', out)

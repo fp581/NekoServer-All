@@ -146,7 +146,10 @@ def one_kind(config, kind, words, asking):
         # job, so they are not asked about and stay listed as not backed up.
         backed_up = typed('existing_backup', prompt, what=words) != '2'
         entries = [{**entry, 'backup': backed_up} for entry in entries]
-        output(f'Your {words}: ' + ('copied each night with the music backup.' if backed_up else 'not backed up by NekoServer.'))
+        output(
+            f'Your {words}: '
+            + ('copied each night with the music backup.' if backed_up else 'not backed up by NekoServer.')
+        )
     for entry in entries:
         config['placement'] = existing_media.with_choice(config, entry)['placement']
 

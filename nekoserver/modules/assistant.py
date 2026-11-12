@@ -380,9 +380,7 @@ def choices(total, room, cores):
         ]
         answers[str(number)] = model
     for model, _, need, _ in MODELS[len(usable) :]:
-        lines.append(
-            f'  Not possible here: {model} needs about {need} GB; this PC has {room_said(total, room)}.'
-        )
+        lines.append(f'  Not possible here: {model} needs about {need} GB; this PC has {room_said(total, room)}.')
     return lines, answers
 
 

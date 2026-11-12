@@ -1584,14 +1584,15 @@ class UsbPickerTests(unittest.TestCase):
         offered = '\n'.join(shown)
         # In the list with why not (0.50.0: everything connected is shown), and refused when chosen.
         self.assertIn('  3) drive, ID ending second-0001  - not this one: it must be a drive of its own', offered)
-        self.assertIn('Drive 3 (drive, ID ending second-0001) cannot be the USB backup drive: it must be a drive of its own', offered)
+        self.assertIn(
+            'Drive 3 (drive, ID ending second-0001) cannot be the USB backup drive: it must be a drive of its own',
+            offered,
+        )
         self.assertIn('  2) drive, ID ending uuid-0001  - not this one: it is already the media HDD', offered)
         self.assertNotIn('nvme0n1p3', offered)  # spare partition of the system disk: the disk is one row
         # Worded as the SSD and HDD lists are, not as UUIDs and mount points (seen on a Debian VM).
         self.assertIn('  4) 1.0 TB drive', shown)
-        self.assertIn(
-            'Now choose the drive for the weekly copy of your files (the USB backup drive).', shown
-        )
+        self.assertIn('Now choose the drive for the weekly copy of your files (the USB backup drive).', shown)
         self.assertNotIn('UUID=', offered)
 
     def test_a_typo_in_the_usb_picker_is_asked_again(self):
