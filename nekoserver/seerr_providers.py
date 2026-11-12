@@ -221,7 +221,7 @@ def saved_provider(seerr, app, initial, payload, connection):
     return row(PROVIDER + app, 'pass', 'Default provider created, read back and tested through Seerr')
 
 
-def provider(seerr, manager, root, app, apply, prompt, verify_only=False, folder=None):
+def provider(seerr, manager, root, app, apply, verify_only=False, folder=None):
     """Seerr's request provider for Sonarr or Radarr: the one that is there, verified
     and kept, or a new one made, saved and read back. `folder`: where requests are
     saved (request_folders); the library's own folder without it."""
@@ -257,9 +257,7 @@ def provider(seerr, manager, root, app, apply, prompt, verify_only=False, folder
     return saved_provider(seerr, app, initial, payload, connection)
 
 
-def configure(
-    root, apply=False, apps=('seerr', 'sonarr', 'radarr'), factory=Client, prompt=input, verify_only=False, folders=None
-):
+def configure(root, apply=False, apps=('seerr', 'sonarr', 'radarr'), factory=Client, verify_only=False, folders=None):
     """`folders`: where each app's requests are saved (request_folders); the library's own without it."""
     if verify_only and apply:
         raise ValueError('Read-only verification cannot apply changes')
@@ -283,7 +281,7 @@ def configure(
             try:
                 try:
                     folder = (folders or {}).get(app)
-                    results.append(provider(client, manager, root, app, apply, prompt, verify_only, folder))
+                    results.append(provider(client, manager, root, app, apply, verify_only, folder))
                 except SetupRequired as exc:
                     results.append(row(PROVIDER + app, 'needs_setup', str(exc)))
                 except (RuntimeError, ValueError, TypeError, KeyError, EOFError):

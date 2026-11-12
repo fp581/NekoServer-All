@@ -48,7 +48,7 @@ def radarr(roots=(OWN, '/data/movies')):
 
 def provider(seerr, folder=None, apply=True, verify_only=False):
     with mock.patch.object(sp, 'app_key', return_value='key'):
-        return sp.provider(seerr, radarr(), '/srv', 'radarr', apply, input, verify_only, folder)
+        return sp.provider(seerr, radarr(), '/srv', 'radarr', apply, verify_only, folder)
 
 
 def made(folder):
@@ -87,7 +87,7 @@ class FolderTests(unittest.TestCase):
         seerr = Seerr(roots=('/data/movies',))
         app = radarr(('/data/movies',))
         with mock.patch.object(sp, 'app_key', return_value='key'), self.assertRaisesRegex(sp.SetupRequired, 'root'):
-            sp.provider(seerr, app, '/srv', 'radarr', True, input, False, OWN)
+            sp.provider(seerr, app, '/srv', 'radarr', True, False, OWN)
         self.assertEqual(seerr.posted, [])
 
     def test_a_provider_made_before_the_choice_is_said_and_left_alone(self):
@@ -107,7 +107,7 @@ class FolderTests(unittest.TestCase):
         for folder in ('/data/movies', OWN, '/data/existing/movies-new'):
             seerr = Seerr([made(folder)], roots=(folder,))
             with mock.patch.object(sp, 'app_key', return_value='key'):
-                found = sp.provider(seerr, radarr((folder,)), '/srv', 'radarr', False, input, True)
+                found = sp.provider(seerr, radarr((folder,)), '/srv', 'radarr', False, True)
             self.assertEqual(found['status'], 'pass', folder)
         seerr = Seerr([made('/mnt/elsewhere')], roots=('/mnt/elsewhere', '/data/movies'))
         with self.assertRaises(sp.SetupRequired):

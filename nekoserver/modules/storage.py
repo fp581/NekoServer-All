@@ -2557,16 +2557,16 @@ def choose_locations(context, input_fn=None, interactive=None, inventory=None):
     others = data_drives(config, inventory) if interactive and inventory else []
     asking = (interactive and (input_fn or input), (room, on_nas), others)
     # A kind whose app is not part of this server is asked about if it is added later.
-    changes = [
-        place_of(context, (what, words, threshold), asking)
-        for what, words, threshold in WHERE
-        if asked_where(config, what)
-    ]
+    changed = False
+    for what, words, threshold in WHERE:
+        if asked_where(config, what):
+            # Every kind is settled, whatever an earlier one did: place_of before the "or".
+            changed = place_of(context, (what, words, threshold), asking) or changed
     if chosen.get('photos') == 'media' and asked_where(config, 'photos'):
         context.log(photos_on_media(config))
     if chosen.get('music') == 'media' and 'music' in backed_up_beside(config) and asked_where(config, 'music'):
         context.log(MUSIC_ON_MEDIA)
-    if any(changes) and hasattr(context, 'persist_config'):
+    if changed and hasattr(context, 'persist_config'):
         context.persist_config()
 
 

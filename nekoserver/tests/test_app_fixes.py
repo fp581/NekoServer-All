@@ -295,7 +295,7 @@ class SeerrSonarrVersionTests(unittest.TestCase):
             mock.patch.object(sp, 'app_key', return_value='key'),
             self.assertRaisesRegex(sp.SetupRequired, 'root folder'),
         ):
-            sp.provider(seerr, manager, '/srv', 'sonarr', False, input)
+            sp.provider(seerr, manager, '/srv', 'sonarr', False)
 
 
 class QbitAutomaticModeTests(unittest.TestCase):

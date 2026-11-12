@@ -360,7 +360,8 @@ def run_program(script, args=()):
     try:
         runpy.run_path(str(script), run_name='__main__')
         return 0
-    except SystemExit as stop:  # NOSONAR: the program's own end, run inside setup: setup goes on
+    # The program's own end (sys.exit), run inside setup: that program ends, setup goes on.
+    except SystemExit as stop:  # NOSONAR
         if stop.code is None or isinstance(stop.code, int):
             return stop.code or 0
         print(stop.code, file=sys.stderr)  # sys.exit('a message'), as Python ends it
