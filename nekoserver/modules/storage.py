@@ -1583,6 +1583,12 @@ def existing_ahead(draft, log):
 
     context = types.SimpleNamespace(config=draft, log=log, apply=True, config_path=None)
     existing_page.ask(context, output=log)
+    # The offline drive left out at an earlier run is offered again: "run setup again" is
+    # the way to add one later (gate run B4); "none for now" again keeps it out.
+    photos = draft.get('photos') if isinstance(draft.get('photos'), dict) else {}
+    if photos.get(OFFLINE_WANTED) is False and not photos.get('external_backup_uuid'):
+        photos.pop(OFFLINE_WANTED)
+        choose_usb(context)
 
 
 def others_ahead(draft, log):
@@ -2552,7 +2558,7 @@ def choose_usb(context):
         photos[OFFLINE_WANTED] = False
         context.log(
             'Offline backup: none, as you chose. The weekly copy to a removable drive is left out. To add one '
-            'later, connect it and run  sudo bash install.sh --module photo_backup'
+            'later, connect it and run  sudo bash install.sh  again: setup offers it before anything changes.'
         )
     if hasattr(context, 'persist_config'):
         context.persist_config()

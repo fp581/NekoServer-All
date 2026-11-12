@@ -60,8 +60,25 @@ class OfflineDriveTests(unittest.TestCase):
         ):
             storage.choose_usb(context)
         self.assertIs(context.config['photos'][storage.OFFLINE_WANTED], False)
-        self.assertTrue(any('install.sh --module photo_backup' in line for line in said), said)
+        self.assertTrue(any('run  sudo bash install.sh  again' in line for line in said), said)
         self.assertFalse(any('my-config.json' in line for line in said), said)
+
+
+class OfferedAgainTests(unittest.TestCase):
+    def test_a_later_setup_run_offers_the_left_out_drive_before_the_approval(self):
+        draft = {'photos': {'deploy_immich': True, storage.OFFLINE_WANTED: False}}
+        with (
+            mock.patch('existing_page.ask', return_value=False),
+            mock.patch.object(storage, 'choose_usb') as offered,
+        ):
+            storage.existing_ahead(draft, lambda _: None)
+        offered.assert_called_once()
+        self.assertNotIn(storage.OFFLINE_WANTED, draft['photos'])
+        # One chosen already is not asked about.
+        draft = {'photos': {'deploy_immich': True, 'external_backup_uuid': 'usb-1'}}
+        with mock.patch('existing_page.ask', return_value=False), mock.patch.object(storage, 'choose_usb') as offered:
+            storage.existing_ahead(draft, lambda _: None)
+        offered.assert_not_called()
 
 
 class AskedAgainTests(unittest.TestCase):
