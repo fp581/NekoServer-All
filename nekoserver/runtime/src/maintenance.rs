@@ -6245,6 +6245,22 @@ mod tests {
         ] {
             assert_eq!(placed_base(&cfg, elsewhere).unwrap(), None, "{elsewhere}");
         }
+        // A server with everything on the app drive (no "installed" in its settings, as
+        // every server before 0.50.0): no path is ever taken to another drive, so the
+        // rollback is the two renames on the app drive it always was.
+        for settings in [
+            json!({}),
+            json!({"storage": {"d3": {"uuid": "u"}}, "locations": {"photos": "d3"}}),
+        ] {
+            for path in [
+                "appdata/jellyfin",
+                "appdata/immich",
+                "compose/jellyfin",
+                "secrets/accounts",
+            ] {
+                assert_eq!(placed_base(&settings, path).unwrap(), None, "{path}");
+            }
+        }
         let _ = fs::remove_dir_all(root);
     }
     #[test]
