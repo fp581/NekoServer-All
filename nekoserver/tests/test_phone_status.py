@@ -76,23 +76,24 @@ def status_of(text_or_dict):
     return phone_status.read_status(FakeTailscale(text_or_dict))
 
 
+def addresses():
+    """Every app's private HTTPS address on the test server."""
+    return {app: f'https://{NAME}:{PORT[app]}/' for app in APPS}
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.config = {'data_mount': folder.name}
         self.logins = {app: {'state': 'verified'} for app in APPS}
-        self.accounts_on = True
         for patch in (
-            mock.patch.object(gateway_tools, 'selected', lambda config: list(APPS)),
-            mock.patch.object(account_store, 'enabled', lambda config: self.accounts_on),
+            mock.patch.object(gateway_tools, 'selected', return_value=list(APPS)),
+            mock.patch.object(account_store, 'enabled', return_value=True),
             mock.patch.object(account_store, 'get', lambda config, app, verified=False: self.logins.get(app)),
         ):
             patch.start()
             self.addCleanup(patch.stop)
-
-    def addresses(self):
-        return {app: f'https://{NAME}:{PORT[app]}/' for app in APPS}
 
 
 class ReadingTailscaleTests(Base):
@@ -150,7 +151,7 @@ class HttpsRowTests(Base):
             self.probed.append((name, port, address))
             return answers if isinstance(answers, bool) else answers[str(port)]
 
-        return phone_status.private_https(status_of(status), self.addresses(), routes, probe, why)
+        return phone_status.private_https(status_of(status), addresses(), routes, probe, why)
 
     def test_everything_in_place_and_answering_is_pass(self):
         found = self.check(tailscale())
@@ -205,7 +206,7 @@ class HttpsRowTests(Base):
 
     def test_the_addresses_are_the_ones_the_routes_step_writes(self):
         found = phone_status.app_addresses(self.config, status_of(tailscale()))
-        self.assertEqual(found, self.addresses())
+        self.assertEqual(found, addresses())
         routes = gateway_tools.desired(NAME, APPS)
         self.assertEqual(sorted(found.values()), sorted(gateway_tools.tailnet_links(NAME, routes).values()))
         self.assertEqual(phone_status.app_addresses(self.config, status_of(tailscale(DNSName='x'))), {})
@@ -259,7 +260,7 @@ class AppRowTests(Base):
             self.assertEqual(
                 (one['id'], one['status'], one['login'], one['route']), ('app:' + app, 'pass', 'pass', 'on')
             )
-            self.assertEqual((one['address'], one['route_reason']), (self.addresses()[app], ''))
+            self.assertEqual((one['address'], one['route_reason']), (addresses()[app], ''))
             self.assertEqual(one['title'], gateway_tools.APPS[app][0])
             self.assertTrue(phone_status.route_may_open(one))
 
@@ -275,7 +276,7 @@ class AppRowTests(Base):
         missing = self.rows(routes={PORT['jellyfin']})['immich']
         self.assertEqual((missing['status'], missing['login']), ('unknown', 'unknown'))
         self.assertFalse(phone_status.route_may_open(missing))
-        self.accounts_on = False
+        account_store.enabled.return_value = False  # (patched in setUp)
         for one in self.rows(routes=set()).values():
             self.assertEqual((one['status'], one['login'], one['route']), ('unknown', 'unknown', 'off'))
             self.assertIn('does not keep the logins', one['route_reason'])
@@ -336,7 +337,7 @@ class KeptRowsTests(Base):
         """T23: the page opened again after a skip or a restart."""
         self.run_check(now=1000.0)
         self.assertEqual(len(self.probed), 2)
-        kept = phone_status.remembered(self.config, self.addresses())
+        kept = phone_status.remembered(self.config, addresses())
         self.assertEqual(sorted(kept), ['app:immich', 'app:jellyfin', 'https', 'phone', 'server'])
         self.assertEqual({one['checked_at'] for one in kept.values()}, {1000.0})
         again = self.run_check(again=False, now=2000.0)
@@ -367,9 +368,9 @@ class KeptRowsTests(Base):
 
     def test_new_addresses_drop_the_rows_that_stood_on_the_old_ones(self):
         self.run_check(now=1000.0)
-        renamed = {app: address.replace('nekotest', 'renamed') for app, address in self.addresses().items()}
+        renamed = {app: address.replace('nekotest', 'renamed') for app, address in addresses().items()}
         self.assertEqual(sorted(phone_status.remembered(self.config, renamed)), ['phone', 'server'])
-        one_changed = dict(self.addresses(), immich=renamed['immich'])
+        one_changed = dict(addresses(), immich=renamed['immich'])
         self.assertEqual(sorted(phone_status.remembered(self.config, one_changed)), ['app:jellyfin', 'phone', 'server'])
 
     def test_a_damaged_or_foreign_file_is_no_kept_row(self):
@@ -377,25 +378,23 @@ class KeptRowsTests(Base):
         path.parent.mkdir(parents=True)
         for content in ('not json', '[]', '{"format": "something-else", "rows": {"server": {}}}', '{"rows": 5}'):
             path.write_text(content)
-            self.assertEqual(phone_status.remembered(self.config, self.addresses()), {})
-            self.assertEqual(phone_status.observation(self.config, self.addresses())['status'], 'not_tested')
+            self.assertEqual(phone_status.remembered(self.config, addresses()), {})
+            self.assertEqual(phone_status.observation(self.config, addresses())['status'], 'not_tested')
 
 
 class ObservationTests(Base):
     def test_only_a_persons_yes_is_recorded_and_it_is_no_machine_check(self):
-        found = phone_status.observation(self.config, self.addresses())
+        found = phone_status.observation(self.config, addresses())
         self.assertEqual((found['id'], found['status'], found['by']), ('observation', 'not_tested', 'person'))
         self.assertIn('Setup cannot check this for you', found['reason'])
         for answer in (False, None, 'yes', 1):
-            self.assertEqual(
-                phone_status.record_observation(self.config, answer, self.addresses())['status'], 'not_tested'
-            )
-        said = phone_status.record_observation(self.config, True, self.addresses(), now=50.0)
+            self.assertEqual(phone_status.record_observation(self.config, answer, addresses())['status'], 'not_tested')
+        said = phone_status.record_observation(self.config, True, addresses(), now=50.0)
         self.assertEqual((said['status'], said['by']), ('observed', 'person'))
         self.assertIn('You said', said['reason'])
 
     def test_it_is_kept_apart_from_the_machine_rows_and_survives_them(self):
-        phone_status.record_observation(self.config, True, self.addresses())
+        phone_status.record_observation(self.config, True, addresses())
         check = lambda status: phone_status.check(  # noqa: E731
             self.config, FakeTailscale(status, serve(sorted(PORT.values()))), lambda *a: True, lambda: ''
         )
@@ -411,26 +410,26 @@ class ObservationTests(Base):
         self.assertIn('phone', check(tailscale(peers={}))['unresolved'])
 
     def test_other_addresses_need_a_new_look(self):
-        phone_status.record_observation(self.config, True, self.addresses())
-        moved = dict(self.addresses(), immich=f'https://{NAME}:9999/')
+        phone_status.record_observation(self.config, True, addresses())
+        moved = dict(addresses(), immich=f'https://{NAME}:9999/')
         self.assertEqual(phone_status.observation(self.config, moved)['status'], 'not_tested')
 
     def test_what_the_phone_step_was_told_in_an_earlier_run_counts(self):
         report = gateway_tailnet.report_path(self.config)
         report.parent.mkdir(parents=True)
-        links = {**self.addresses(), 'dashboard': f'https://{NAME}:8448/'}
+        links = {**addresses(), 'dashboard': f'https://{NAME}:8448/'}
         report.write_text(
             json.dumps({'links': links, 'client_acceptance': 'needs_setup', 'phone_steps_done': ['tailscale']})
         )
-        self.assertEqual(phone_status.observation(self.config, self.addresses())['status'], 'not_tested')
+        self.assertEqual(phone_status.observation(self.config, addresses())['status'], 'not_tested')
         report.write_text(
             json.dumps({'links': links, 'client_acceptance': 'needs_setup', 'phone_steps_done': [gateway_tailnet.AWAY]})
         )
-        self.assertEqual(phone_status.observation(self.config, self.addresses())['status'], 'observed')
+        self.assertEqual(phone_status.observation(self.config, addresses())['status'], 'observed')
         report.write_text(json.dumps({'links': links, 'client_acceptance': 'user_confirmed'}))
-        self.assertEqual(phone_status.observation(self.config, self.addresses())['status'], 'observed')
+        self.assertEqual(phone_status.observation(self.config, addresses())['status'], 'observed')
         report.write_text(json.dumps({'links': {'jellyfin': 'https://other/'}, 'client_acceptance': 'user_confirmed'}))
-        self.assertEqual(phone_status.observation(self.config, self.addresses())['status'], 'not_tested')
+        self.assertEqual(phone_status.observation(self.config, addresses())['status'], 'not_tested')
 
 
 class PrivateNamesTests(Base):
@@ -461,7 +460,7 @@ class PrivateNamesTests(Base):
                         NAME, {'Health': [f'TLS certificate for {NAME} failed']}, '', None
                     ).replace(NAME, 'this server')
                     results.append(phone_status.check(self.config, fake, lambda *a, answers=answers: answers, why))
-            results.append(phone_status.record_observation(self.config, True, self.addresses()))
+            results.append(phone_status.record_observation(self.config, True, addresses()))
         secrets = (NAME, 'nekotest', OWN_ADDRESS, 'private-phone-name', 'someone@example.org')
         for secret in secrets:
             self.assertNotIn(secret, logged.getvalue() + printed.getvalue())
