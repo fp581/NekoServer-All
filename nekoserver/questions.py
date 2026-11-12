@@ -211,15 +211,6 @@ Q = {
         'no': 'Not yet',
     },
     # ---- connecting the media apps
-    'apps_finished': {
-        'screen': 'Connecting your apps',
-        'title': 'Did you finish what was left in the apps?',
-        'hint': 'The list above says what each app still needs.',
-        'kind': 'yesno',
-        'above': True,
-        'yes': 'Yes, done',
-        'no': 'Not yet',
-    },
     'played': {
         'screen': 'Connecting your apps',
         'title': 'Did a film or show play in Jellyfin?',

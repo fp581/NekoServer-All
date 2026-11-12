@@ -371,8 +371,8 @@ class OnboardingReasonTests(unittest.TestCase):
                 ],
             )
         self.assertEqual(result['status'], 'needs_setup')
-        self.assertIn('a quality profile that Enter skipped', result['reason'])
-        self.assertIn('sudo bash install.sh', result['reason'])
+        self.assertIn('the download sources it was given', result['reason'])
+        self.assertIn('retry this step', result['reason'])
 
     def test_without_a_terminal_an_unfinished_step_is_not_passed(self):
         """Seen on a VM upgraded from 0.47.6 (an upgrade runs setup without a terminal): the

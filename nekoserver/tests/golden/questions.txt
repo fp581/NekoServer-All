@@ -30,7 +30,6 @@ guided_setup.py
 installer.py
     {said} Keep the newest {backup_plan.DEFAULT} {what} from now on?
 media-connect.py
-    {prompt} (its number; Enter alone skips):
     source_filter
     {question} (Enter alone skips):
     {row['label']} (Enter alone keeps its default):
@@ -61,8 +60,6 @@ recovery_wizard.py
     Choose a number:
     Type the full name of a NEW folder, for example /home/you/restored-photos (Enter alone goes back, with nothing restored):
     repair_drive
-seerr_providers.py
-    Choose a number (Enter alone skips):
 source-wizard.py
     Category (movies/tv/music)
     Type (local/remote/indexer)

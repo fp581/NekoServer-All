@@ -105,30 +105,6 @@ def field_set(fields, name, value):
     return False
 
 
-def choose(items, prompt, ask=input, attempts=3):
-    """The item picked by its number; None when skipped (blank or Ctrl+D). A number not
-    in the list is asked again rather than failing the step."""
-    names = [str(item.get('name') or item.get('implementationName') or item.get('implementation')) for item in items]
-    for i, name in enumerate(names, 1):
-        print(f' {i:3d}. {name}')
-    # In the setup window: the whole list with a search box, however long it is (the
-    # terminal's last lines alone would show only its end).
-    with setup_progress.page('pick', {'choice': ''}, what=prompt, items=[{'label': name} for name in names]):
-        setup_progress.page_asks('choice')
-        for _ in range(attempts):
-            try:
-                answer = ask(f'{prompt} (its number; Enter alone skips): ').strip()
-            except EOFError:
-                print()
-                return None
-            if not answer:
-                return None
-            if answer.isdecimal() and 1 <= int(answer) <= len(items):
-                return items[int(answer) - 1]
-            print(f'Type a number from 1 to {len(items)}, or press Enter to skip.')
-    return None
-
-
 def prepared(selected, profiles):
     """A new indexer from Prowlarr's catalogue entry, ready to save: switched on, and in
     an app profile (the catalogue leaves the profile at 0, which Prowlarr refuses). The
@@ -753,9 +729,20 @@ def library_host(category, root, media, music=None):
     return safe_path(Path(media) / 'library' / category)
 
 
+# The profile setup picks for Lidarr's music folder, without asking (the user: nothing is
+# asked after the one approval that does not need the running server). Its name in
+# Lidarr; the first one when Lidarr has none of that name. It can be changed in Lidarr.
+STANDARD_PROFILE = 'Standard'
+
+
+def standard_profile(options):
+    """The profile named Standard, else the first one Lidarr lists."""
+    return next((o for o in options if str(o.get('name', '')).casefold() == STANDARD_PROFILE.casefold()), options[0])
+
+
 def lidarr_profiles(app, key):
-    """The quality and metadata profiles Lidarr's root folder needs: the only one, or the
-    one chosen."""
+    """The quality and metadata profiles Lidarr's root folder needs: Standard (or the
+    first one), picked without asking and said."""
     chosen = {}
     for endpoint, field in [
         ('/qualityprofile', 'defaultQualityProfileId'),
@@ -764,12 +751,8 @@ def lidarr_profiles(app, key):
         options = request(app, key, endpoint)
         if not options:
             raise RuntimeError('Lidarr has no configured profiles')
-        profile = options[0] if len(options) == 1 else choose(options, 'Choose Lidarr ' + endpoint[1:])
-        if profile is None:
-            raise RuntimeError(
-                "Lidarr's quality and metadata profiles were not chosen (Enter skips them). Run  sudo bash "
-                'install.sh  again and choose one of each'
-            )
+        profile = standard_profile(options)
+        print(f"lidarr: {endpoint[1:]} {profile.get('name')} (change it in Lidarr when you want another)")
         chosen[field] = profile['id']
     return chosen
 

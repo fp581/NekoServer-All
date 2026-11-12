@@ -9,10 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 from neko_common import (
-    MEDIA_APPS,
     VERSION,
     app_port,
-    app_ports,
     atomic_json,
     apps_to_connect,
     media_services,
@@ -121,34 +119,17 @@ def run(ctx):
             }
     remove_stale(ctx, release, config)
     if result:
-        # Something to fix, said with its reason (on the finishing screen too), not a
-        # failed step: what is left is finished in the apps, then setup runs again.
+        # Something to fix, said with its reason: a row of the finishing page, never a
+        # question here (the user: nothing is asked after the one approval that does not
+        # need the running server). What is left is finished in the apps; the step's
+        # Retry, or setup run again, checks it.
         why = first_problem(ctx.config)
-        ports = app_ports(MEDIA_APPS)
-        guided_setup.checkpoint(
-            ctx,
-            'Finish media provider setup',
-            [
-                'Read the onboarding results above to identify the remaining configuration.',
-                'Sign into the relevant opened applications using their saved logins ("Show login" in the setup '
-                'window, or the question below this list in the terminal, shows them). '
-                'Finish selected provider/indexer credentials or any provider verification in its own page.',
-                'Run  sudo bash install.sh  again afterwards: it checks the configuration again.',
-            ],
-            [
-                ('url', 'http://127.0.0.1:' + str(ports[a]) + '/')
-                for a in ctx.config.get('media', {}).get('services', [])
-                if a in ports
-            ],
-            logins=[a for a in media_services(ctx.config) if a in ports],
-            ask='apps_finished',
-        )
         ctx.log('Media deployed; connecting the apps is not finished: ' + why)
         return {
             'status': 'needs_setup',
             'reason': 'Connecting the media apps is not finished: '
             + why
-            + '. Fix that, then run  sudo bash install.sh  again',
+            + '. Finish it in the app, then retry this step',
         }
     ctx.log('Onboarding configuration checks complete')
     witness_playback(ctx)
@@ -211,8 +192,8 @@ def remove_stale(ctx, release, config):
 
 # Said for the connector's row, which has no reason of its own: its messages are above.
 CONNECTOR = (
-    'the app connections (Prowlarr, the download client, the library folders, or a quality profile '
-    'that Enter skipped; the messages above say which)'
+    'the app connections (Prowlarr and the download sources it was given, the download client, or the '
+    "library folders; setup's log says which)"
 )
 
 

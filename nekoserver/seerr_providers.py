@@ -63,26 +63,18 @@ def profiles(value):
     return values
 
 
-def choose(values, label, prompt):
-    """The profile picked by its number. In the setup window the list is a page to pick
-    from (as Lidarr's profiles are), never a number typed in a box."""
-    import setup_progress
+# The request profiles setup picks for Seerr without asking, in this order (the user:
+# nothing is asked after the one approval that does not need the running server); the
+# first profile the app lists when it has none of them. They can be changed in Seerr.
+STANDARD_PROFILES = ('HD-1080p', 'HD - 720p/1080p', 'Any', 'English')
 
-    if len(values) == 1:
-        return values[0]
-    print(label + ':')
-    for index, item in enumerate(values, 1):
-        print(f"  {index}. {item['name']}")
-    with setup_progress.page('pick', {'choice': ''}, what=label, items=[{'label': item['name']} for item in values]):
-        setup_progress.page_asks('choice')
-        answer = prompt('Choose a number (Enter alone skips): ').strip()
-    if not answer:
-        raise SetupRequired(
-            'No quality profile was chosen for requests (Enter skips it). Run  sudo bash install.sh  again and choose one'
-        )
-    if not answer.isdecimal() or not 1 <= int(answer) <= len(values):
-        raise SetupRequired('Invalid profile selection; provider unchanged')
-    return values[int(answer) - 1]
+
+def standard_profile(values, label):
+    """The profile setup picks for Seerr's requests, said in the log."""
+    names = {str(item['name']).casefold(): item for item in values}
+    picked = next((names[n.casefold()] for n in STANDARD_PROFILES if n.casefold() in names), values[0])
+    print(f"{label}: {picked['name']} (change it in Seerr when you want another)")
+    return picked
 
 
 def current_standard(values):
@@ -203,7 +195,7 @@ def new_provider(app, connection, selected, directory, languages, prompt):
         return payload
     payload['enableSeasonFolders'] = True
     if languages:
-        payload['activeLanguageProfileId'] = choose(languages, 'Sonarr request language profile', prompt)['id']
+        payload['activeLanguageProfileId'] = standard_profile(languages, 'Sonarr request language profile')['id']
     return payload
 
 
@@ -258,7 +250,7 @@ def provider(seerr, manager, root, app, apply, prompt, verify_only=False, folder
     languages = profiles(tested.get('languageProfiles')) if app == 'sonarr' and major == 3 else None
     if standard:
         return existing_verified(app, standard[0], (library, directory), available, languages)
-    selected = choose(available, app.capitalize() + ' request quality profile', prompt)
+    selected = standard_profile(available, app.capitalize() + ' request quality profile')
     payload = new_provider(app, connection, selected, directory, languages, prompt)
     if not apply:
         return row(PROVIDER + app, 'needs_setup', 'Preview: connection tested; default provider would be created')

@@ -114,24 +114,30 @@ class FolderTests(unittest.TestCase):
 
 
 class ProfileChoiceTests(unittest.TestCase):
-    def test_the_request_profile_is_a_page_to_pick_from_in_the_window(self):
-        """Seen on the 0.50.0 gate: Seerr's request profile was a number typed in a box."""
-        import setup_progress
+    """The user (after gate run A): nothing is asked after the one approval that does not
+    need the running server. Seerr's request profiles and Lidarr's are picked, not asked."""
 
-        values = [{'id': 1, 'name': 'Any'}, {'id': 4, 'name': 'HD-1080p'}]
-        shown = []
-
-        def prompt(question):
-            shown.append(setup_progress.page_shown())
-            return '2'
-
+    def test_seerr_takes_the_standard_profile_and_says_which(self):
+        values = [{'id': 1, 'name': 'Any'}, {'id': 4, 'name': 'HD-1080p'}, {'id': 6, 'name': 'HD - 720p/1080p'}]
+        with mock.patch('builtins.print') as said:
+            self.assertEqual(sp.standard_profile(values, 'Sonarr request quality profile')['id'], 4)
+        self.assertIn('HD-1080p (change it in Seerr', said.call_args[0][0])
         with mock.patch('builtins.print'):
-            self.assertEqual(sp.choose(values, 'Sonarr request quality profile', prompt)['name'], 'HD-1080p')
-        self.assertEqual(shown[0]['form'], 'pick')
-        self.assertEqual(shown[0]['what'], 'Sonarr request quality profile')
-        self.assertEqual([item['label'] for item in shown[0]['items']], ['Any', 'HD-1080p'])
-        # One profile only: nothing is asked.
-        self.assertEqual(sp.choose(values[:1], 'x', mock.Mock(side_effect=AssertionError))['id'], 1)
+            self.assertEqual(sp.standard_profile([{'id': 9, 'name': 'Mine'}], 'x')['id'], 9)  # none known: the first
+        self.assertFalse(hasattr(sp, 'choose'))
+
+    def test_lidarr_takes_standard_or_the_first(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location('media_connect', ROOT / 'media-connect.py')
+        mc = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mc)
+        self.assertEqual(mc.standard_profile([{'id': 1, 'name': 'Any'}, {'id': 3, 'name': 'Standard'}])['id'], 3)
+        self.assertEqual(mc.standard_profile([{'id': 2, 'name': 'Lossless'}])['id'], 2)
+        self.assertFalse(hasattr(mc, 'choose'))
+        self.assertEqual(mc.recommended_names(), ['the pirate bay', 'yts', 'eztv'])
+        schemas = [{'name': 'The Pirate Bay'}, {'name': '1337x'}, {'name': 'YTS'}]
+        self.assertEqual(mc.recommended_among(schemas, mc.recommended_names()), [1, 3])  # EZTV missing: left out
 
 
 if __name__ == '__main__':
