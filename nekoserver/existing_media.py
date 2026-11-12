@@ -41,6 +41,7 @@ from neko_common import (
     atomic_write,
     files_root,
     findmnt,
+    folder_answers,
     local_opener,
     music_downloads,
     verify_storage,
@@ -618,8 +619,10 @@ FSTAB_UNENDED = (
 
 def still_there(entry, find=findmnt, kind=source_import.share_type):
     """The folder is on what it was on when it was chosen: the same drive or share,
-    mounted at the same place (not the empty folder left when a share is away)."""
-    if kind(entry['path']) == 'autofs' or not os.path.isdir(entry['path']):
+    mounted at the same place (not the empty folder left when a share is away). Looked
+    at with a time limit first: a share mounted hard that is away holds any look in this
+    process for ever (setup, the checkup and every write ask this)."""
+    if not folder_answers(entry['path']) or kind(entry['path']) == 'autofs':
         return False
     return find('TARGET', entry['path'], '--target') == entry['mount'] and (
         not entry['share'] or find('SOURCE', entry['path'], '--target') == entry['share']
@@ -661,7 +664,8 @@ def mounted_row(config, entry, tools, log):
     takes the new files), or left for the next start when it is away: its row."""
     run, find, kind, mounted = tools
     point = mount_point(config, entry['holds'], entry['use'])
-    if not point.is_dir():
+    # Mounted already (the kernel's table says so): never looked at, it may be the share itself.
+    if mounted(point) is None and not point.is_dir():
         point.mkdir(parents=True, mode=0o555)
         os.chmod(point, 0o555)  # root's and closed: the apps cannot write into the bare folder
     row = {'holds': entry['holds'], 'use': entry['use'], 'path': entry['path'], 'mounted': False, 'reason': None}

@@ -442,6 +442,41 @@ class MountTests(unittest.TestCase):
             existing_media.guard(config, 'movies', **self.pc.how())
         existing_media.guard(config, 'tv', **self.pc.how())  # no existing folder for shows
 
+    def test_a_share_that_does_not_answer_is_away_and_never_looked_at_here(self):
+        config = self.pc.chosen()
+        self.use(config)
+        looked = []
+        with (
+            mock.patch.object(existing_media, 'folder_answers', return_value=False),
+            mock.patch.object(existing_media.os.path, 'isdir', side_effect=looked.append),
+            mock.patch.object(existing_media.Path, 'is_dir', side_effect=lambda *a: looked.append(a)),
+        ):
+            (state,) = existing_media.available(config, **self.pc.how())
+            rows = self.use(config)
+        self.assertFalse(state['ready'])
+        self.assertIn('are not there now (nas:/tank is not connected)', state['reason'])
+        self.assertFalse(rows[0]['mounted'])
+        self.assertEqual(looked, [], 'nothing of the share, or of the folder it is bound to, is looked at')
+
+    def test_a_look_that_does_not_end_is_given_up_and_its_child_is_not_waited_for(self):
+        import neko_common
+
+        class Stuck:
+            killed = False
+
+            def poll(self):
+                return None
+
+            def kill(self):
+                Stuck.killed = True
+
+        clock = iter(range(100))
+        got = neko_common.answered_within(['x'], 15, start=lambda *a, **k: Stuck(), now=lambda: next(clock), sleep=id)
+        self.assertIsNone(got)
+        self.assertTrue(Stuck.killed)
+        self.assertTrue(neko_common.folder_answers(self.pc.films))
+        self.assertFalse(neko_common.folder_answers(self.pc.films / 'not-there'))
+
     def test_ready_only_when_the_share_is_there_and_bound_into_the_library(self):
         config = self.pc.chosen()
         (state,) = existing_media.available(config, **self.pc.how())
