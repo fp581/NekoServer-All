@@ -105,6 +105,21 @@ class DriveListCase(unittest.TestCase):
 
 
 class TableTests(DriveListCase):
+    def test_the_retry_page_looks_for_a_missing_drive_the_way_the_list_shows_it(self):
+        import known_fixes
+
+        fix = known_fixes.fix_for('Drive UUID ssd-0001 not found')
+        self.assertIn(known_fixes.DRIVE_LIST_LOOK, fix['steps'])
+        # The words the Retry page sends the person to are the list's own: the name and size
+        # on the row, the UUID behind its Details.
+        row = self.table()[1]
+        self.assertIn('Details', known_fixes.DRIVE_LIST_LOOK)
+        self.assertTrue(drive_table.details(row).startswith('Details: '))
+        self.assertIn('UUID ssd-0001', drive_table.details(row))
+        self.assertIn('GB', drive_table.words(row))
+        self.assertNotIn('UUID', drive_table.words(row))
+        self.assertNotIn('column', ' '.join(fix['steps']))
+
     def test_every_drive_is_a_row_with_its_number_and_what_it_is(self):
         table = self.table()
         self.assertEqual(
