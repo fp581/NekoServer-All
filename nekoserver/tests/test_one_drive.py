@@ -142,3 +142,35 @@ class MountTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class OneDriveWordsTests(unittest.TestCase):
+    """Gate run B3: on one drive the photos question offered "the media drive: 105 GB free"
+    and "the SSD: 105 GB free", the same drive twice, and the log said "your only copy on
+    another drive is the weekly USB backup" with no offline drive."""
+
+    def one(self, **photos):
+        folders = storage.SHARED_FOLDERS
+        return {
+            'storage': {key: {'uuid': 'one-1', 'fstype': 'ext4', 'folder': folders[key]} for key in folders},
+            'photos': photos,
+        }
+
+    def test_the_one_drive_is_not_offered_twice(self):
+        from types import SimpleNamespace
+
+        said = []
+        ctx = SimpleNamespace(config=self.one(), log=said.append)
+        room = {'ssd': 105, 'media': 105}
+        place = storage.asked_location(ctx, "Immich's photos", 'media', room, False, mock.Mock(side_effect=AssertionError))
+        self.assertEqual(place, 'media')
+        self.assertEqual(said, ["Immich's photos: kept on the one drive of this server."])
+
+    def test_the_photos_line_says_what_copies_there_are(self):
+        none = storage.photos_on_media(self.one(**{storage.OFFLINE_WANTED: False}))
+        self.assertIn('the one drive of this server', none)
+        self.assertNotIn('only copy on another drive', none)
+        self.assertIn('run  sudo bash install.sh  again', none)
+        usb = storage.photos_on_media(self.one(external_backup_uuid='usb-1'))
+        self.assertIn('Your only copy on another drive is the weekly USB backup.', usb)
+        self.assertEqual(storage.photos_on_media({'photos': {}}), storage.PHOTOS_ON_MEDIA)

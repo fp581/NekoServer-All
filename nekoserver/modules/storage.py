@@ -2362,7 +2362,7 @@ def choose_locations(context, input_fn=None, interactive=None, inventory=None):
     # A kind whose app is not part of this server is asked about if it is added later.
     changes = [place_of(context, kind, asking) for kind in WHERE if asked_where(config, kind[0])]
     if chosen.get('photos') == 'media' and asked_where(config, 'photos'):
-        context.log(PHOTOS_ON_MEDIA)
+        context.log(photos_on_media(config))
     if chosen.get('music') == 'media' and 'music' in backed_up_beside(config) and asked_where(config, 'music'):
         context.log(MUSIC_ON_MEDIA)
     if any(changes) and hasattr(context, 'persist_config'):
@@ -2376,6 +2376,34 @@ PHOTOS_ON_MEDIA = (
     'but does not survive losing that drive. Your only copy on another drive is the weekly USB backup, so '
     'set it up (setup asks for the USB drive next).'
 )
+
+
+def photos_on_media(config):
+    """What the photos' place means for their copies, as it is on this server (gate run
+    B3: "your only copy on another drive is the weekly USB backup" with none chosen, on a
+    server with one drive)."""
+    photos = config.get('photos', {})
+    where = 'the one drive of this server' if one_place(config) else 'the media drive'
+    said = (
+        f"Immich's photos are on {where}, and so is their weekly archive copy: it keeps older versions, "
+        'but does not survive losing that drive.'
+    )
+    if photos.get('external_backup_uuid'):
+        return said + ' Your only copy on another drive is the weekly USB backup.'
+    if photos.get(OFFLINE_WANTED) is False:
+        return said + (
+            ' No copy is on another drive: to add one, connect a drive you can unplug and run  '
+            'sudo bash install.sh  again.'
+        )
+    return PHOTOS_ON_MEDIA if where == 'the media drive' else said + ' Set up the offline backup (asked next).'
+
+
+def one_place(config):
+    """The apps and the media are on one drive (a drive of its own holding both, or the
+    disk Linux runs from): "the SSD" and "the media drive" are the same drive there."""
+    import drive_table
+
+    return shared_with(config) is not None or len(drive_table.system_roles(config)) == 2
 
 
 def backed_up_beside(config):
@@ -2506,17 +2534,29 @@ def asked_location(context, words, best, room, on_nas, input_fn=None, key=None, 
         'ssd': f'the SSD: {room["ssd"]} GB free, faster',
     }
     options = [best, 'ssd' if best == 'media' else 'media']
+    if one_place(context.config):
+        # One drive holds both (gate run B3 offered it twice, as "the media drive" and
+        # "the SSD"): it is offered once, and not asked about with no other drive.
+        if not others:
+            context.log(f'{words[0].upper() + words[1:]}: kept on the one drive of this server.')
+            return best
+        options = [best]
+        said[best] = f'the drive of this server, with the apps: {room[best]} GB free'
     context.log(f'Where should {words} be kept? (The backups follow wherever you choose.)')
     for n, drive in enumerate(options, 1):
         context.log(f'  {n}) {said[drive]}' + ('  (recommended)' if drive == best else ''))
-    for n, row in enumerate(others, 3):
+    first = len(options) + 1
+    for n, row in enumerate(others, first):
         context.log(f'  {n}) a drive of their own: {drive_table.brief(row)}')
     for _ in range(3):
         answer = drive_table.field(key or 'place', input_fn or input, 'Number (Enter for the recommended one): ')
+        if len(options) == 1 and answer.isdigit() and int(answer) >= 2:
+            # Numbered from 2 here: the place_answered numbers count two drives first.
+            answer = str(int(answer) + 1)
         place = place_answered(answer, options, others)
         if place is not None:
             return place
-        context.log(f'Type a number from 1 to {2 + len(others)}, or press Enter.')
+        context.log(f'Type a number from 1 to {len(options) + len(others)}, or press Enter.')
     return best
 
 
