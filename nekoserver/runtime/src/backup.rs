@@ -3308,6 +3308,24 @@ pub fn guard(cfgpath: &Path, data: &Path, media: &Path) -> Result<()> {
         }
         ids.push(id);
     }
+    installed_in_place(&c, data)
+}
+/// Every app installed on another drive (0.50.0) has its settings folder there mounted
+/// at its usual place. With the mount missing, that place is the empty, closed folder of
+/// the app drive: no job may read it as the app's settings, or write into it.
+fn installed_in_place(c: &Value, data: &Path) -> Result<()> {
+    for (app, _) in c["installed"].as_object().into_iter().flatten() {
+        let base = common::installed_base(c, app)?
+            .ok_or_else(|| Error::new("Unknown drive in the settings"))?;
+        let place = data.join("appdata").join(app);
+        if !common::same_folder(&place, &base.join("appdata").join(app)) {
+            return Err(Error::new(&format!(
+                "{app} is installed on another drive, and its settings folder ({}) is not mounted from that drive. Run  sudo mount {}  (or restart the PC) and try again; nothing was changed",
+                place.display(),
+                place.display()
+            )));
+        }
+    }
     Ok(())
 }
 /// Run inside the database container. Stopping `docker compose exec` when the dump

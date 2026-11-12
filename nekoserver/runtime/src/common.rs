@@ -350,6 +350,36 @@ pub fn drive_folder(cfg: &serde_json::Value, drive: &str) -> Option<PathBuf> {
         _ => None,
     }
 }
+/// Where an app installed on another drive (0.50.0, "installed": {app: drive} in the
+/// settings setup writes for the jobs) keeps its settings on that drive: the folder
+/// <where the drive is mounted>/nekoserver, which holds appdata/<app>. That folder is
+/// mounted at the app's usual place (<app drive>/appdata/<app>). None for an app on the
+/// app drive; an error when the settings name something that is no drive.
+pub fn installed_base(cfg: &serde_json::Value, app: &str) -> Result<Option<PathBuf>> {
+    let named = &cfg["installed"][app];
+    if named.is_null() {
+        return Ok(None);
+    }
+    named
+        .as_str()
+        .filter(|drive| extra_drive(cfg, drive))
+        .and_then(|drive| drive_folder(cfg, drive))
+        .map(|folder| Some(folder.join("nekoserver")))
+        .ok_or_else(|| {
+            Error::new(&format!(
+                "installed.{app} must name a drive under \"storage\""
+            ))
+        })
+}
+/// Two paths are one folder (the same device and inode): a folder and the place it is
+/// mounted at, say.
+pub fn same_folder(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (fs::metadata(a), fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
 /// The extra drives something is placed on: an app's files ("locations"), or its
 /// settings and database ("installed", 0.50.0). The ones every job checks.
 pub fn drives_in_use(cfg: &serde_json::Value) -> Vec<String> {
@@ -1451,6 +1481,26 @@ mod media_answer_tests {
             Path::new("/mnt/nekoserver-media/library")
         );
         assert!(drives_in_use(&plain).is_empty());
+        // Where such an app keeps its settings on its drive; nothing for an app on the app drive.
+        let placed_cfg = json!({"storage": {"d4": {"uuid": "u4"}}, "installed": {"immich": "d4", "seerr": "media"}});
+        assert_eq!(
+            super::installed_base(&placed_cfg, "immich").unwrap(),
+            Some(std::path::PathBuf::from(
+                "/mnt/nekoserver-drives/d4/nekoserver"
+            ))
+        );
+        assert_eq!(
+            super::installed_base(&placed_cfg, "jellyfin").unwrap(),
+            None
+        );
+        assert!(super::installed_base(&placed_cfg, "seerr").is_err());
+        let here = std::env::temp_dir();
+        assert!(super::same_folder(&here, &here.join(".")));
+        assert!(!super::same_folder(&here, std::path::Path::new("/proc")));
+        assert!(!super::same_folder(
+            &here,
+            &here.join("no-such-folder-here")
+        ));
         // An app installed on another drive (0.50.0): that drive is checked by every job too.
         let placed = json!({"storage": {"d4": {"uuid": "u4"}, "d3": {"uuid": "u3"}},
             "locations": {"photos": "d3"}, "installed": {"immich": "d4", "jellyfin": "d4", "x": "nowhere"}});

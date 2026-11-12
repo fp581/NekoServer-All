@@ -1991,32 +1991,18 @@ fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
                 {
                     continue;
                 }
-                let live = common::safe(&root.join(&relative))?;
+                let run = string(&journal, "run")?.to_string();
                 let stage = if kind == "data" {
-                    root.join("backups")
-                        .join(format!("rollback-{}", string(&journal, "run")?))
+                    root.join("backups").join(format!("rollback-{run}"))
                 } else {
                     snapshot.join("rollback-stage/media")
                 };
-                let source = common::safe(&stage.join(&relative))?;
-                let quarantine = live.with_file_name(format!(
-                    "{}.neko-failed-{}",
-                    live.file_name().unwrap().to_string_lossy(),
-                    string(&journal, "run")?
-                ));
-                if source.exists() {
-                    if live.exists() && !quarantine.exists() {
-                        fs::rename(&live, &quarantine)?;
-                        fs::File::open(live.parent().unwrap())?.sync_all()?;
-                    }
-                    if live.exists() {
-                        return Err(Error::new("Rollback destination collision"));
-                    }
-                    fs::rename(&source, &live)?;
-                    fs::File::open(live.parent().unwrap())?.sync_all()?;
-                } else if !live.exists() || !quarantine.exists() {
-                    return Err(Error::new("Rollback state incomplete"));
-                }
+                let base = if kind == "data" {
+                    placed_base(cfg, &relative)?
+                } else {
+                    None
+                };
+                put_back(root, &stage, &relative, &run, base.as_deref(), &remount)?;
                 journal["restored"].as_array_mut().unwrap().push(json!(key));
                 save_journal(&journal)?;
             }
@@ -2065,10 +2051,18 @@ fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
     }
     if phase != "snapshot" && phase != "backed_up" {
         // Rolled back and healthy: the stages the old data came from are spent.
+        let rollback = format!("rollback-{}", string(&journal, "run")?);
         let stage = Path::new(string(cfg, "data_mount")?)
             .join("backups")
-            .join(format!("rollback-{}", string(&journal, "run")?));
-        for spent in [snapshot.join("rollback-stage"), stage] {
+            .join(&rollback);
+        let mut spent = vec![snapshot.join("rollback-stage"), stage];
+        // ... and the stage of an app installed on another drive, on that drive.
+        for (name, _) in journal["models"].as_object().unwrap() {
+            if let Some(base) = common::installed_base(cfg, name)? {
+                spent.push(base.join(&rollback));
+            }
+        }
+        for spent in spent {
             if spent.exists() {
                 fs::remove_dir_all(common::safe(&spent)?)?;
             }
@@ -2078,6 +2072,115 @@ fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
     fs::File::open(Path::new(*JOURNAL).parent().unwrap())?.sync_all()?;
     scrub_all(Path::new(string(cfg, "media_mount")?));
     clear_work(Path::new(string(cfg, "data_mount")?));
+    Ok(())
+}
+/// For the settings folder of an app installed on another drive (0.50.0): the folder
+/// on that drive that holds it (<drive>/nekoserver). Its usual place is a mount of
+/// <drive>/nekoserver/appdata/<app> and cannot be renamed; on the drive itself it can.
+/// None for every other path: those are put back on the app drive as always.
+fn placed_base(cfg: &Value, relative: &str) -> Result<Option<PathBuf>> {
+    match relative.strip_prefix("appdata/") {
+        Some(app) if !app.contains('/') => common::installed_base(cfg, app),
+        _ => Ok(None),
+    }
+}
+/// The snapshot's copy of such an app's settings is unpacked on the app drive with the
+/// rest; a rename cannot cross drives, so it is copied to the app's own drive first
+/// (`on_drive`), whole or not at all: under another name until the copy is complete.
+fn stage_on_drive(unpacked: &Path, on_drive: &Path) -> Result<()> {
+    if on_drive.exists() || !unpacked.exists() {
+        return Ok(()); // copied already (a rollback cut off and run again), or put back
+    }
+    let parent = on_drive
+        .parent()
+        .ok_or_else(|| Error::new("Invalid path"))?;
+    common::directory(parent, 0o700)?;
+    let partial = on_drive.with_file_name(format!(
+        "{}.partial",
+        on_drive.file_name().unwrap().to_string_lossy()
+    ));
+    if partial.exists() {
+        fs::remove_dir_all(common::safe(&partial)?)?;
+    }
+    checked(
+        &[
+            "cp",
+            "--archive",
+            "--",
+            &unpacked.to_string_lossy(),
+            &partial.to_string_lossy(),
+        ],
+        21600,
+    )?;
+    fs::rename(&partial, on_drive)?;
+    fs::File::open(parent)?.sync_all()?;
+    fs::remove_dir_all(common::safe(unpacked)?)?;
+    Ok(())
+}
+/// The app's usual place shows the folder now at `home` on its drive: after a rollback
+/// swapped that folder, the mount still shows the one set aside until it is made again.
+fn remount(place: &Path, home: &Path) -> Result<()> {
+    if common::same_folder(place, home) {
+        return Ok(());
+    }
+    let at = place.to_string_lossy();
+    if common::command(&["mountpoint", "-q", &at], 30)?.0 == 0 {
+        checked(&["umount", &at], 300)?;
+    }
+    checked(&["mount", &at], 300)?;
+    if !common::same_folder(place, home) {
+        return Err(Error::new(
+            "The app's settings folder is not the one on its drive after the rollback",
+        ));
+    }
+    Ok(())
+}
+/// One path of a rollback put back: the failed update's copy is set aside beside it
+/// (`<name>.neko-failed-<run>`) and the snapshot's copy takes its place, each by a
+/// rename, so a rollback cut off half-way finds one or the other and goes on.
+/// `base`: for an app installed on another drive, the folder there that holds its
+/// settings (placed_base); the two renames are then made on that drive, and `remount`
+/// shows the folder put back at the app's usual place.
+fn put_back(
+    root: &Path,
+    stage: &Path,
+    relative: &str,
+    run: &str,
+    base: Option<&Path>,
+    remount: &dyn Fn(&Path, &Path) -> Result<()>,
+) -> Result<()> {
+    let unpacked = common::safe(&stage.join(relative))?;
+    let (live, source) = match base {
+        Some(base) => {
+            let on_drive = base.join(format!("rollback-{run}")).join(relative);
+            stage_on_drive(&unpacked, &on_drive)?;
+            (
+                common::safe(&base.join(relative))?,
+                common::safe(&on_drive)?,
+            )
+        }
+        None => (common::safe(&root.join(relative))?, unpacked),
+    };
+    let quarantine = live.with_file_name(format!(
+        "{}.neko-failed-{run}",
+        live.file_name().unwrap().to_string_lossy()
+    ));
+    if source.exists() {
+        if live.exists() && !quarantine.exists() {
+            fs::rename(&live, &quarantine)?;
+            fs::File::open(live.parent().unwrap())?.sync_all()?;
+        }
+        if live.exists() {
+            return Err(Error::new("Rollback destination collision"));
+        }
+        fs::rename(&source, &live)?;
+        fs::File::open(live.parent().unwrap())?.sync_all()?;
+    } else if !live.exists() || !quarantine.exists() {
+        return Err(Error::new("Rollback state incomplete"));
+    }
+    if base.is_some() {
+        remount(&root.join(relative), &live)?;
+    }
     Ok(())
 }
 /// Environment names that carry a password or secret.
@@ -2744,12 +2847,21 @@ fn same_manifest(a: &Path, b: &Path) -> bool {
 fn failed_copies(data: &Path, run: &str) -> Result<Vec<PathBuf>> {
     let suffix = format!(".neko-failed-{run}");
     let mut found = vec![];
-    for folder in [
+    let mut folders = vec![
         data.to_path_buf(),
         data.join("appdata"),
         data.join("compose"),
         data.join("secrets"),
-    ] {
+    ];
+    // An app installed on another drive is set aside there, beside its folder.
+    for drive in fs::read_dir(common::EXTRA_MOUNTS)
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        folders.push(drive.path().join("nekoserver/appdata"));
+    }
+    for folder in folders {
         let Ok(entries) = fs::read_dir(&folder) else {
             continue;
         };
@@ -6038,6 +6150,102 @@ mod tests {
         let out = child.wait_with_output().unwrap();
         assert!(out.status.success(), "{args:?}");
         out.stdout
+    }
+    /// The rollback of an app whose settings are on another drive (0.50.0): its usual
+    /// place is a mount and cannot be renamed, and the snapshot's copy is unpacked on the
+    /// app drive, which a rename cannot leave. The copy is taken to the app's drive first
+    /// and the swap is made there; then the mount is made again. Cut off anywhere, the
+    /// same call goes on from where it stopped.
+    #[test]
+    fn a_rollback_puts_an_app_on_another_drive_back_on_that_drive() {
+        let root = scratch("placed-rollback");
+        let (data, base) = (root.join("ssd"), root.join("d3/nekoserver"));
+        let stage = data.join("backups/rollback-200-1");
+        let home = base.join("appdata/jellyfin");
+        for (folder, name, body) in [
+            (&home, "library.db", "after the failed update"),
+            (
+                &stage.join("appdata/jellyfin"),
+                "library.db",
+                "as the snapshot has it",
+            ),
+            (&data.join("compose/jellyfin"), "compose.yaml", "new"),
+            (&stage.join("compose/jellyfin"), "compose.yaml", "old"),
+        ] {
+            fs::create_dir_all(folder).unwrap();
+            fs::write(folder.join(name), body).unwrap();
+        }
+        let remounted = std::cell::RefCell::new(vec![]);
+        let shown = |place: &Path, home: &Path| {
+            remounted
+                .borrow_mut()
+                .push((place.to_path_buf(), home.to_path_buf()));
+            Ok(())
+        };
+        let read = |path: PathBuf| fs::read_to_string(path).unwrap();
+        // Cut off once the copy is on the app's drive: nothing is swapped yet.
+        stage_on_drive(
+            &stage.join("appdata/jellyfin"),
+            &base.join("rollback-200-1/appdata/jellyfin"),
+        )
+        .unwrap();
+        assert!(!stage.join("appdata/jellyfin").exists());
+        assert_eq!(read(home.join("library.db")), "after the failed update");
+        for _ in 0..2 {
+            // ... and run again, twice: the second time finds it done and changes nothing.
+            put_back(
+                &data,
+                &stage,
+                "appdata/jellyfin",
+                "200-1",
+                Some(&base),
+                &shown,
+            )
+            .unwrap();
+            assert_eq!(read(home.join("library.db")), "as the snapshot has it");
+            assert_eq!(
+                read(base.join("appdata/jellyfin.neko-failed-200-1/library.db")),
+                "after the failed update"
+            );
+        }
+        // The app's usual place is shown the folder put back, both times.
+        assert_eq!(
+            *remounted.borrow(),
+            vec![(data.join("appdata/jellyfin"), home.clone()); 2]
+        );
+        // Nothing of it was put on the app drive, where the closed folder under the mount is.
+        assert!(!data.join("appdata/jellyfin.neko-failed-200-1").exists());
+        // Its Compose file stays on the app drive and is put back there as always.
+        put_back(&data, &stage, "compose/jellyfin", "200-1", None, &shown).unwrap();
+        assert_eq!(read(data.join("compose/jellyfin/compose.yaml")), "old");
+        assert_eq!(remounted.borrow().len(), 2);
+        // A copy cut off half-way is made again from the start, never used as it is.
+        let again = stage.join("appdata/seerr");
+        fs::create_dir_all(&again).unwrap();
+        fs::write(again.join("settings.json"), "whole").unwrap();
+        let on_drive = base.join("rollback-200-1/appdata/seerr");
+        fs::create_dir_all(on_drive.with_file_name("seerr.partial")).unwrap();
+        fs::write(on_drive.with_file_name("seerr.partial").join("half"), "x").unwrap();
+        stage_on_drive(&again, &on_drive).unwrap();
+        assert_eq!(read(on_drive.join("settings.json")), "whole");
+        assert!(
+            !on_drive.join("half").exists() && !on_drive.with_file_name("seerr.partial").exists()
+        );
+        // Which paths: an app's settings folder only, for an app the settings place elsewhere.
+        let cfg = json!({"storage": {"d3": {"uuid": "u"}}, "installed": {"jellyfin": "d3"}});
+        assert_eq!(
+            placed_base(&cfg, "appdata/jellyfin").unwrap(),
+            Some(PathBuf::from("/mnt/nekoserver-drives/d3/nekoserver"))
+        );
+        for elsewhere in [
+            "compose/jellyfin",
+            "appdata/seerr",
+            "appdata/jellyfin/config",
+            "secrets/accounts",
+        ] {
+            assert_eq!(placed_base(&cfg, elsewhere).unwrap(), None, "{elsewhere}");
+        }
+        let _ = fs::remove_dir_all(root);
     }
     #[test]
     fn rollback_with_encryption_restores_the_left_out_config_files() {
