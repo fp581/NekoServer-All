@@ -1269,7 +1269,11 @@ def _destroy(plan, chosen, out, tools, accounts, drives, jobs):
         _tried(call, out, ['systemctl', 'unmask', *plan.unmask], left, 'the masks on ' + ', '.join(plan.unmask))
     _finish_packages(plan, call, out, reconcile)
     journal_limits = any('journald' in str(p) for p in plan.os_dropins())
-    left += _remove_files(plan, chosen, out, rmtree, drives, jobs.kept() | kept_folders(plan))
+    # The person's own folders bound into a library: unmounted before anything around them
+    # is deleted (a bind from the same drive looks like a plain folder). A path that still
+    # holds one, or that may hold one that could not be checked, is kept.
+    held = _unbind_own_folders(plan, chosen, call, out, left) + unchecked_folders(plan, out)
+    left += _remove_files(plan, chosen, out, rmtree, drives, jobs.kept() | kept_folders(plan), held)
     # The lock last: released first, then its file (with the folder, when the SSD data goes).
     jobs.release()
     jobs.tidy('data' in chosen and plan.folder_of('data') / 'installer' in plan.groups['data']['paths'])
@@ -1297,6 +1301,67 @@ def kept_folders(plan):
             continue
         kept.add((found.st_dev, found.st_ino))
     return kept
+
+
+def unchecked_folders(plan, out):
+    """The person's own folders that could not be checked (looked at) now, with the folders
+    setup mounts them at: nothing around any of them is removed, since what is theirs could
+    not be told from what is NekoServer's. Said, so the person knows why something stayed."""
+    held = []
+    for folder in getattr(plan, 'own_folders', ()):
+        try:
+            os.stat(plan.at(folder['path']))
+        except (OSError, RuntimeError):
+            out(
+                '  your own folder ' + folder['path'] + ' could not be checked, so nothing around it (or around '
+                'the folders it is shown in) is removed'
+            )
+            held.append(folder['path'])
+    return held + own_bind_targets(plan) if held else []
+
+
+def own_bind_targets(plan):
+    """The folders setup's /etc/fstab block mounts the person's own folders at (inside the
+    libraries of its drives)."""
+    try:
+        text = plan.at(FSTAB).read_text(errors='replace')
+    except (OSError, RuntimeError):
+        return []
+    begin, end = FSTAB_BLOCKS[0]
+    lines = [line.strip() for line in text.splitlines()]
+    if begin not in lines or end not in lines[lines.index(begin) :]:
+        return []
+    first = lines.index(begin)
+    inside = lines[first + 1 : lines.index(end, first)]
+    return [line.split()[1] for line in inside if len(line.split()) >= 2 and not line.startswith('#')]
+
+
+def holds(path, folder, plan):
+    """`path` (a path the plan found) is `folder` (an absolute path) or a folder around it."""
+    try:
+        inner = Path(plan.at(folder))
+    except RuntimeError:
+        return False
+    return inner == Path(path) or Path(path) in inner.parents
+
+
+def _unbind_own_folders(plan, chosen, call, out, left):
+    """Each bind of the person's own folders inside a path that is about to be removed,
+    unmounted first, the deepest first. Returns those that would not unmount (still in
+    place: the paths around them are kept)."""
+    paths = _chosen_paths(plan, chosen)
+    stuck = []
+    for target in sorted(set(own_bind_targets(plan)), key=len, reverse=True):
+        place = plan.at(target)
+        if not any(holds(path, target, plan) for path in paths) or not os.path.ismount(str(place)):
+            continue
+        out('Unmounting ' + target + ' (your own folder, shown there: it stays where it is)')
+        code, said = call(['umount', target], 120)
+        if code != 0:
+            out('  could not unmount (busy' + (': ' + said if said else '') + '): sudo umount ' + target)
+            left.append(target + ' (still mounted)')
+            stuck.append(target)
+    return stuck
 
 
 def _our_policy(policy):
@@ -1625,15 +1690,21 @@ def _chosen_paths(plan, chosen):
     return [p for key, *_ in CHOICES if key in chosen for p in plan.groups[key]['paths'] if p not in keep]
 
 
-def _remove_files(plan, chosen, out, rmtree, drives=None, keep_inodes=()):
+def _remove_files(plan, chosen, out, rmtree, drives=None, keep_inodes=(), held=()):
     """The paths of every chosen group: each one the plan itself found, under NekoServer's
     own places or its drives (mount_folder), never anywhere the settings alone point.
     What is on a drive is deleted only through that drive's folder as opened and checked
     right before (open_drives); a drive that is not the one the settings name any more
-    loses nothing. Returns what could not be removed (said at the end)."""
+    loses nothing. A path around one of `held` (the person's folders that could not be
+    checked or unmounted) is kept. Returns what could not be removed (said at the end)."""
     drives = drives or {}
     left = []
     for path in _chosen_paths(plan, chosen):
+        inside = [folder for folder in held if holds(path, folder, plan)]
+        if inside:
+            out('  kept ' + str(path) + ': your own folder ' + inside[0] + ' is in it, so it was not removed')
+            left.append(str(path))
+            continue
         drive = _drive_of(plan, path)
         if drive is not None and drive not in drives:
             left.append(Skipped(path))  # open_drives said why, once for the drive

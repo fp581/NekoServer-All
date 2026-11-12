@@ -102,6 +102,63 @@ class GroupDriveTests(unittest.TestCase):
         self.assertTrue(self.there(D3 + '/my-own-notes.txt'))
         self.assertTrue(self.there(SHARED_FILMS + '/film.mkv'))
 
+    def remove_all(self):
+        with mock.patch.object(uninstaller.shutil, 'which', return_value='/usr/bin/x'):
+            uninstaller.remove(
+                self.plan,
+                ALL - {'mounts'},
+                run=self.system.run,
+                out=self.shown.append,
+                root=self.system.root,
+                call=self.system.call,
+                sleep=lambda seconds: None,
+            )
+
+    def bound(self):
+        """Setup's block in /etc/fstab, binding the person's folder into the library."""
+        fstab = self.system.root / 'etc/fstab'
+        begin, end = uninstaller.FSTAB_BLOCKS[0]
+        block = [begin, f'/srv/own/music {OWN_ON_D3} none bind,ro,nofail 0 0', end]
+        fstab.write_text(fstab.read_text() + ''.join(line + '\n' for line in block))
+        self.plan = self.system.plan(settings=GROUPS)
+        where = str(self.system.root) + OWN_ON_D3
+        real = uninstaller.os.path.ismount
+        return mock.patch.object(uninstaller.os.path, 'ismount', side_effect=lambda p: str(p) == where or real(p))
+
+    def test_an_own_folder_that_cannot_be_checked_keeps_the_library_around_it(self):
+        where = str(self.system.root) + OWN_ON_D3
+        real = uninstaller.os.stat
+
+        def stat(path, *args, **kwargs):
+            if str(path) == where:
+                raise PermissionError(13, 'Permission denied')
+            return real(path, *args, **kwargs)
+
+        with mock.patch.object(uninstaller.os, 'stat', side_effect=stat):
+            self.remove_all()
+        self.assertTrue(self.there(OWN_ON_D3 + '/mine/old-song.flac'))
+        self.assertTrue(self.there(D3 + '/library/music/album/song.flac'), 'kept with the folder it holds')
+        self.assertFalse(self.there(D3 + '/nekoserver'), 'what holds none of them still goes')
+        said = '\n'.join(self.shown)
+        self.assertIn('your own folder ' + OWN_ON_D3 + ' could not be checked', said)
+        self.assertIn(': your own folder ' + OWN_ON_D3 + ' is in it, so it was not removed', said)
+
+    def test_an_own_folder_bound_into_the_library_is_unmounted_before_the_library_goes(self):
+        with self.bound():
+            self.remove_all()
+        unmounted = self.system.calls.index(['umount', OWN_ON_D3])
+        self.assertLess(unmounted, len(self.system.calls))
+        self.assertTrue(self.there(OWN_ON_D3 + '/mine/old-song.flac'))
+        self.assertFalse(self.there(D3 + '/library/music'))
+
+    def test_a_bind_that_will_not_unmount_keeps_the_library_around_it(self):
+        self.system.failing[('umount', OWN_ON_D3)] = (32, 'target is busy')
+        with self.bound():
+            self.remove_all()
+        self.assertTrue(self.there(D3 + '/library/music/album/song.flac'))
+        self.assertTrue(self.there(OWN_ON_D3 + '/mine/old-song.flac'))
+        self.assertIn('  could not unmount (busy: target is busy): sudo umount ' + OWN_ON_D3, self.shown)
+
     def test_the_mounts_go_but_the_share_and_its_line_stay(self):
         with mock.patch.object(uninstaller.shutil, 'which', return_value='/usr/bin/x'):
             uninstaller.remove(
