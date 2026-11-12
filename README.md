@@ -60,7 +60,7 @@ On a PC with a desktop a **setup window** opens in your browser beside the termi
 5. **Your backups**: when they run and how many are kept.
 6. **Review and install**: one page lists everything that will happen, and one button starts it.
 
-Then setup works on its own. After the approval only three things stop it: signing in to Tailscale, a drive that is short of room, and the phone page. The alerts and outage addresses, if you switched those on, are asked when setup reaches them. If a step does not finish it says why, what usually fixes it, and offers **Retry this step**.
+Then setup works on its own. After the approval only four things stop it: signing in to Tailscale, a drive that is short of room, choosing the download sources once Prowlarr runs (the recommended ones are ticked, so Continue alone takes them), and the phone page. The alerts and outage addresses, if you switched those on, are asked when setup reaches them. If a step does not finish it says why, what usually fixes it, and offers **Retry this step**.
 
 Afterwards one page helps you **connect your phone**, and the last page says what is ready, what a program checked, what you tried yourself and what is still waiting for you.
 

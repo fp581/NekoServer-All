@@ -314,6 +314,9 @@ ASKED_DURING = {
 }
 
 
+SOURCES_ASKED = 'which download sources to add (the recommended ones are ticked), once Prowlarr runs'
+
+
 def apps_to_install(config, now):
     """The apps the switches as they stand (`now`) install, each with what it is for."""
     import neko_common
@@ -345,6 +348,9 @@ def review(config):
     extras = [extra['title'] for extra in EXTRAS if extra['part'] in ('extras', 'storage') and now[extra['id']]]
     left_out = left_out_titles(now)
     asked = [words for key, words in ASKED_DURING.items() if key not in now or now[key]]
+    if neko_common.media_group(config, 'downloads'):
+        # Once Prowlarr runs (the user's decision after the gate: it needs Prowlarr).
+        asked.append(SOURCES_ASKED)
     sections = [('Apps on this server' if again else 'Apps to install', apps or ['None: only what is always set up'])]
     if extras:
         sections.append(('Extras', extras))

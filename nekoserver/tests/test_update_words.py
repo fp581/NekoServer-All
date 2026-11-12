@@ -53,5 +53,15 @@ class UpdateWordsTests(unittest.TestCase):
             self.assertIs(wizard.welcome({'data_mount': '/srv/nekoserver'}), wizard.UPDATE_WELCOME)
 
 
+class SourcesSaidTests(unittest.TestCase):
+    def test_the_review_says_the_sources_are_asked_once_prowlarr_runs(self):
+        asked = sections(False)['Setup stops to ask you']
+        self.assertIn('Which download sources to add (the recommended ones are ticked), once Prowlarr runs', asked)
+        none = {**SETTINGS, 'media_apps': {'photos': True, 'movies': False, 'music': False}}
+        with mock.patch.object(neko_common, 'server_exists', return_value=False):
+            asked = dict(explanations.review(none))['Setup stops to ask you']
+        self.assertFalse([line for line in asked if 'download sources' in line])
+
+
 if __name__ == '__main__':
     unittest.main()

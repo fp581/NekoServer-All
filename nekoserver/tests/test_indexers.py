@@ -75,7 +75,7 @@ class ChoosingTests(unittest.TestCase):
         for wrong in ('0', '10', '5-3', 'two', '1-', '-3', '1-x', 'r'):
             self.assertIsNone(connect.chosen_numbers(wrong, 9), wrong)
 
-    def chosen(self, typed, names=()):
+    def chosen(self, typed, names=(), existing=()):
         setup_progress.enable()
         self.addCleanup(setup_progress.disable)
         answers, pages, said = iter(typed), [], []
@@ -86,7 +86,7 @@ class ChoosingTests(unittest.TestCase):
             return next(answers)
 
         with mock.patch('builtins.print', side_effect=lambda *words: said.append(' '.join(map(str, words)))):
-            found = connect.chosen_indexers(CATALOGUE, list(names), ask)
+            found = connect.chosen_indexers(CATALOGUE, list(names), ask, existing=existing)
         return [row['name'] for row in found], pages, said
 
     def test_several_are_chosen_at_once_in_the_terminal(self):
@@ -125,7 +125,10 @@ class ChoosingTests(unittest.TestCase):
         self.assertEqual(names, ['Alpha', 'Gamma'])  # the one Prowlarr no longer has is left out
         self.assertEqual(pages[1]['recommended'], [1, 3])
         self.assertIn('Recommended (r): Alpha, Gamma', said)
-        self.assertIn('Numbers to add, such as 1 4 7 or 1-5, or r for the recommended ones (Enter alone skips): ', said)
+        self.assertIn(
+            'Numbers to add, such as 1 4 7 or 1-5, or r for the recommended ones (Enter alone takes the ticked ones): ',
+            said,
+        )
         # Without a list there is no such choice.
         names, _, said = self.chosen(['', 'r', ''])
         self.assertEqual(names, [])
@@ -184,7 +187,7 @@ class AddingTests(unittest.TestCase):
         with (
             mock.patch.object(connect, 'app_key', return_value='k'),
             mock.patch.object(connect, 'request', prowlarr),
-            mock.patch.object(connect, 'standard_indexers', return_value=chosen),
+            mock.patch.object(connect, 'chosen_indexers', return_value=chosen),
             mock.patch.object(connect, 'provider_account_ready', return_value=True),
             mock.patch.object(connect, 'finished_in_prowlarr', return_value=finished) as by_hand,
             mock.patch.object(
@@ -294,7 +297,7 @@ class AddingTests(unittest.TestCase):
 
     def test_a_provider_account_not_ready_skips_only_that_one(self):
         prowlarr = Prowlarr()
-        with mock.patch.object(connect, 'standard_indexers', return_value=[CATALOGUE[1], CATALOGUE[0]]):
+        with mock.patch.object(connect, 'chosen_indexers', return_value=[CATALOGUE[1], CATALOGUE[0]]):
             with (
                 mock.patch.object(connect, 'app_key', return_value='k'),
                 mock.patch.object(connect, 'request', prowlarr),
@@ -332,16 +335,30 @@ if __name__ == '__main__':
     unittest.main()
 
 
-class NothingAskedAfterTheApprovalTests(unittest.TestCase):
-    """The gate's J01 run stopped after "Install selected apps" at "Looking for a download
-    source by name?": the recommended sources are added without asking instead."""
+class AfterTheInstallTests(unittest.TestCase):
+    """The user's decision after the gate: the picker comes after the install, once
+    Prowlarr runs (like the Tailscale sign-in); the recommended ones the live catalogue
+    has are ticked, and so are the sources Prowlarr has, so Continue or Enter alone
+    accepts them."""
 
-    def test_the_recommended_ones_while_prowlarr_has_none(self):
-        schemas = [{'name': 'The Pirate Bay'}, {'name': 'Other'}, {'name': 'YTS'}]
-        with mock.patch('builtins.input', side_effect=AssertionError('asked')), mock.patch('builtins.print'):
-            picked = connect.standard_indexers(schemas, [], ['the pirate bay', 'yts', 'eztv'])
-        self.assertEqual([s['name'] for s in picked], ['The Pirate Bay', 'YTS'])
+    chosen = ChoosingTests.chosen
 
-    def test_sources_of_its_own_are_kept_as_they_are(self):
-        with mock.patch('builtins.print'):
-            self.assertEqual(connect.standard_indexers([{'name': 'YTS'}], [{'name': 'Mine'}], ['yts']), [])
+    def test_enter_alone_takes_the_recommended_ones(self):
+        names, pages, said = self.chosen(['', ''], names=['alpha', 'gamma', 'not in the catalogue'])
+        self.assertEqual(names, ['Alpha', 'Gamma'])
+        self.assertEqual(pages[1]['ticked'], [1, 3])
+        self.assertIn('Ticked already (Enter alone takes them): Alpha, Gamma', said)
+
+    def test_sources_prowlarr_has_are_shown_ticked(self):
+        existing = [{'name': CATALOGUE[1]['name'], 'implementation': CATALOGUE[1].get('implementation')}]
+        names, pages, _ = self.chosen(['', ''], names=['alpha'], existing=existing)
+        self.assertEqual(pages[1]['ticked'], [1, 2])
+        self.assertEqual(names, ['Alpha', 'Beta'])  # Beta is then skipped as already there
+
+    def test_with_nothing_ticked_enter_alone_still_adds_none(self):
+        names, pages, _ = self.chosen(['', ''])
+        self.assertEqual((names, pages[1]['ticked']), ([], []))
+
+    def test_the_window_ticks_them_when_the_list_opens(self):
+        script = (ROOT / 'setup-gui' / 'setup.js').read_text()
+        self.assertIn('for (const n of page.ticked || [])', script)

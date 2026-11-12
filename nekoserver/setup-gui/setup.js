@@ -628,6 +628,9 @@
       const wanted = search.value.trim().toLowerCase();
       for (const label of list.children) label.hidden = !label.textContent.toLowerCase().includes(wanted);
     });
+    // Ticked when the list opens: the recommended ones and those already set up, so
+    // pressing the button alone accepts them.
+    for (const n of page.ticked || []) if (n >= 1 && n <= pickInputs.length) pickInputs[n - 1].checked = true;
     list.addEventListener('change', counted);
     counted();
     pageInputs = { search };

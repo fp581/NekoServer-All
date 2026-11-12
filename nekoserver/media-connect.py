@@ -187,12 +187,24 @@ def chosen_numbers(text, count, recommended=()):
     return list(dict.fromkeys(found))
 
 
-def chosen_indexers(schemas, names, ask=None, attempts=3):
-    """The catalogue entries to add: several at once. In the terminal, a filter by name,
-    then the numbered list and numbers typed together ("1 4 7", "1-5", "r"). In the setup
-    window the same list is one page with a search box and a tick box on every row, a
-    count of the ticked ones, and one button for the recommended ones. Empty when none
-    is chosen (Enter alone, Skip for now, Ctrl+D)."""
+def ticked_ones(matches, recommended, existing):
+    """The rows ticked when the list opens (the user's decision after the gate): the
+    recommended ones the live catalogue has, and the sources Prowlarr has already, so
+    Continue (or Enter alone) accepts them."""
+    have = {(row.get('implementation'), row.get('name')) for row in existing or []}
+    there = [n for n, schema in enumerate(matches, 1) if (schema.get('implementation'), schema.get('name')) in have]
+    return list(dict.fromkeys([*recommended, *there]))
+
+
+def chosen_indexers(schemas, names, ask=None, attempts=3, existing=()):
+    """The catalogue entries to add: several at once, once Prowlarr is running (after the
+    install: like the Tailscale sign-in, the one question allowed then, as it needs
+    Prowlarr). In the terminal, a filter by name, then the numbered list and numbers typed
+    together ("1 4 7", "1-5", "r"); Enter alone takes the ones ticked: the recommended and
+    the ones Prowlarr has (`existing`). In the setup window the same list is one page with
+    a search box, a tick box on every row with those ticked, a count of the ticked ones,
+    and one button for the recommended ones. Empty when none is chosen (Skip for now,
+    Ctrl+D)."""
     ask = ask or input
     query = questions.ask('source_filter', ask).strip().casefold()
     matches = [schema for schema in schemas if query in indexer_name(schema).casefold()]
@@ -200,6 +212,7 @@ def chosen_indexers(schemas, names, ask=None, attempts=3):
         print('No matching definitions')
         return []
     recommended = recommended_among(matches, names)
+    ticked = ticked_ones(matches, recommended, existing)
     items = [{'label': indexer_name(schema), 'note': indexer_note(schema)} for schema in matches]
     for number, item in enumerate(items, 1):
         print(f" {number:3d}. {item['label']}" + (f"  ({item['note']})" if item['note'] else ''))
@@ -207,6 +220,8 @@ def chosen_indexers(schemas, names, ask=None, attempts=3):
         print('Recommended (r): ' + ', '.join(items[number - 1]['label'] for number in recommended))
     print(INDEXER_ADVICE)
     question = 'Numbers to add, such as 1 4 7 or 1-5' + (', or r for the recommended ones' if recommended else '')
+    if ticked:
+        print('Ticked already (Enter alone takes them): ' + ', '.join(items[n - 1]['label'] for n in ticked))
     page = setup_progress.page(
         'pick',
         {'choice': ''},
@@ -214,17 +229,18 @@ def chosen_indexers(schemas, names, ask=None, attempts=3):
         items=items,
         multiple=True,
         recommended=recommended,
+        ticked=ticked,
         advice=INDEXER_ADVICE,
     )
     with page:
         setup_progress.page_asks('choice')
         for _ in range(attempts):
             try:
-                answer = ask(question + ' (Enter alone skips): ').strip()
+                answer = ask(question + (' (Enter alone takes the ticked ones): ' if ticked else ' (Enter alone skips): ')).strip()
             except EOFError:
                 print()
                 return []
-            numbers = chosen_numbers(answer, len(matches), recommended)
+            numbers = ticked if not answer else chosen_numbers(answer, len(matches), recommended)
             if numbers is not None:
                 return [matches[number - 1] for number in numbers]
             print(f'Type numbers from 1 to {len(matches)}, such as 1 4 7 or 1-5, or press Enter to skip.')
@@ -374,27 +390,6 @@ def already_there(existing, selected):
     )
 
 
-ELSEWHERE = (
-    'To add other download sources, open Prowlarr (on the dashboard) and choose Indexers, then Add Indexer.'
-)
-
-
-def standard_indexers(schemas, existing, names=None):
-    """The download sources added without asking (the user: after "Install selected apps"
-    only the Tailscale sign-in, the drive-space warning and the phone page ask; the
-    fresh install of the gate's J01 run stopped at the picker): the recommended ones,
-    only while Prowlarr has none. A server with sources of its own keeps them as they are."""
-    if existing:
-        print('Download sources: the ones Prowlarr has are kept. ' + ELSEWHERE)
-        return []
-    found = recommended_among(schemas, recommended_names() if names is None else names)
-    picked = [schemas[number - 1] for number in found]
-    if picked:
-        print('Download sources: the recommended ones are added: ' + ', '.join(indexer_name(s) for s in picked) + '.')
-    print(ELSEWHERE)
-    return picked
-
-
 def configure_indexers(root, apply, config=None):
     """Prowlarr's download sources: chosen several at once from its own catalogue (no list
     of NekoServer's own, apart from the names marked recommended), then added one by one.
@@ -407,7 +402,7 @@ def configure_indexers(root, apply, config=None):
     profiles = request('prowlarr', key, '/appprofile')
     print(f'Prowlarr catalog: {len(schemas)} definitions; {len(existing)} configured indexers')
     added, rejected = [], []
-    for selected in standard_indexers(schemas, existing):
+    for selected in chosen_indexers(schemas, recommended_names(), existing=existing):
         if already_there(existing, selected):
             print(indexer_name(selected) + ': already configured; skipping duplicate')
             continue

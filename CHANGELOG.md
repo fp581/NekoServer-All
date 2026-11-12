@@ -14,7 +14,8 @@ Setup was rebuilt around one idea: you choose once, approve once, and setup does
 - **The accounts page**: strong passwords made for you (Enter takes this), or your own logins, one row per app, with the dashboard PIN and the shared folders' password made for you or typed. **Show login** shows any of them.
 - **The backups page**: when the backups run and how many nightly backups are kept, and a table of what is backed up, where, when and how far back, which also lists what is not backed up (films and shows, music while its copy is off, your own folders).
 - **One approval.** "Ready to install NekoServer" lists what will be installed, what is left out, what is always set up and what setup will still stop to ask. One button, **Install selected apps**, starts it; in the terminal `yes`. On a server that exists the page is "Review your changes", the welcome says nothing changes until you approve, and the review says what is kept.
-- **After the approval** only the Tailscale sign-in, a drive short of room and the phone page stop setup. Lidarr's and Seerr's profiles are picked without asking, and the recommended download sources (The Pirate Bay, YTS, EZTV) are added while Prowlarr has none.
+- **After the approval** only the Tailscale sign-in, a drive short of room, the download sources and the phone page stop setup. Lidarr's and Seerr's profiles are picked without asking.
+- **Download sources from a list you can search**, once Prowlarr runs: Prowlarr's whole catalogue with a search box and tick boxes, the recommended ones (The Pirate Bay, YTS, EZTV, those the catalogue has) and the ones Prowlarr has already ticked, so Continue (or Enter alone) takes them. One Prowlarr refuses gets a Retry page; the rest still go in.
 - **The phone page, "Use your apps away from home"**: status rows for what setup checked itself, each passed, not yet or not known, with the reason and the next step.
 - **The finishing page**: what is ready, what a program checked, what you tried yourself and what is still waiting, each with its own Retry, and the dashboard's address and PIN in words.
 
@@ -54,7 +55,7 @@ Setup was rebuilt around one idea: you choose once, approve once, and setup does
 From the 0.50.0 gate on virtual machines (a fresh install in the window, one drive in the terminal, two drives with a network share and films already there, an update of a 0.48.2 server):
 - The one-drive layout could not be chosen, and the runtime refused two roles on one drive.
 - One drive was offered twice in the photos question ("the media drive" and "the SSD"), and the photos line spoke of a USB copy that was not chosen.
-- Questions were asked after the approval: the accounts page, the backup times, the PIN, the shared folders' password, "Add a media source?", Lidarr's and Seerr's profiles, "Did you finish what was left in the apps?", the download-source picker; on an update, the films question and "Change any of these answers?" a second time.
+- Questions were asked after the approval: the accounts page, the backup times, the PIN, the shared folders' password, "Add a media source?", Lidarr's and Seerr's profiles, "Did you finish what was left in the apps?"; on an update, the films question and "Change any of these answers?" a second time.
 - An update was told as a first install ("Nothing is installed yet", "Apps to install", "about an hour").
 - The logins question refused Enter alone, though its first answer is the recommended one; so did the recovery menu's.
 - The welcome asked for three data drives.
