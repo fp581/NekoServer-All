@@ -1022,6 +1022,9 @@ def newest_with_files(listed):
 
 
 COPYING = 'Copying... this can take a while for a big backup.'
+# Where a restored password list goes unless another folder is named: root's own home,
+# which only root can open (the restore runs as root).
+PASSWORDS_HOME = Path('/root')
 # What the recovery menu calls the repair of backup copies (DRIVE_MENU), where a message names it.
 FIX_COPIES = '"Fix damaged backup copies" (in the recovery menu, under "Check or repair a drive")'
 
@@ -1809,7 +1812,9 @@ def restore_password_list(config, runs, prompt, output):
     run = choose('Which password list? The newest is first.', [(p, d) for p, d in runs], prompt, output)
     if run is None:
         return
-    target = new_folder(unused(Path('/root') / f'nekoserver-passwords-{stamp()}'), prompt, output, backup_trees(config))
+    target = new_folder(
+        unused(PASSWORDS_HOME / f'nekoserver-passwords-{stamp()}'), prompt, output, backup_trees(config)
+    )
     if target is None:
         output(NOTHING_CHANGED)
         return

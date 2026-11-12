@@ -1050,6 +1050,7 @@ class ReviewFixTests(unittest.TestCase):
         self.assertIn('running right now', blocked)
         lock = Path(self.tmp.name) / 'setup.lock'
         lock.write_text('')
+        lock.chmod(0o644)  # as install.sh's lock is, whatever the test user's umask
         import fcntl
 
         with lock.open() as setup:
@@ -1694,6 +1695,8 @@ class ExclusionTests(unittest.TestCase):
         ):
             self.system.write(path, '')
         setup = self.at('/run/nekoserver-setup.lock')
+        # As install.sh's lock is (bash makes it 0644): not what the test user's umask makes.
+        setup.chmod(0o644)
         held = uninstaller.hold_setup_locks((str(setup),))
         self.addCleanup(lambda: [os.close(fd) for fd in held])
         self.plan = self.system.plan()

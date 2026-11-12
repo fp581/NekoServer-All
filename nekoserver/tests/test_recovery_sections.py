@@ -59,6 +59,12 @@ class Server:
             'data_mount': str(self.root / 'ssd'),
             'photos': {'archive_dir': 'photos/archive'},
         }
+        # The password list's own folder, /root on a server, here a folder of the test's: the
+        # tests run as a normal user too, as CI does, who cannot look into /root.
+        (self.root / 'home').mkdir()
+        home = mock.patch.object(recovery_wizard, 'PASSWORDS_HOME', self.root / 'home')
+        home.start()
+        self.addCleanup(home.stop)
         for name in ('hdd_ready', 'ssd_ready', 'usb_ready'):
             ready = mock.patch.object(recovery_wizard, name, return_value=True)
             ready.start()
