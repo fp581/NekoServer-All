@@ -114,7 +114,7 @@ From the 0.50.0 gate on virtual machines (a fresh install in the window, one dri
 
 ### How it was tested
 
-On the release commit: 2384 Python tests (19 skipped) and 554 Rust tests pass, `cargo clippy --all-targets -D warnings` is clean, and no function this release made longer is over a cognitive complexity of 15. The gate ran on three virtual machines on 2026-11-12: a fresh install in the setup window, one drive in the terminal, two drives with a network share and films already there, and an update of an installed 0.48.2 server (with an update cut off midway and put right at the next start). Its failures are fixed above; the rows and what they looked at are in the gate results. Not tested on the gate: the assistant's model on the small VMs, the phone on mobile data, a real NAS or ZFS box, and real hardware (a TV, a controller, removable media).
+On the release commit: 2385 Python tests (19 skipped) and 555 Rust tests pass, `cargo clippy --all-targets -D warnings` is clean, and no function this release made longer is over a cognitive complexity of 15. The gate ran on three virtual machines on 2026-11-12: a fresh install in the setup window, one drive in the terminal, two drives with a network share and films already there, and an update of an installed 0.48.2 server (with an update cut off midway and put right at the next start). Its failures are fixed above; the rows and what they looked at are in the gate results. Not tested on the gate: the assistant's model on the small VMs, the phone on mobile data, a real NAS or ZFS box, and real hardware (a TV, a controller, removable media).
 
 ### Known limits
 
