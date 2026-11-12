@@ -214,14 +214,7 @@ def chosen_indexers(schemas, names, ask=None, attempts=3, existing=()):
     recommended = recommended_among(matches, names)
     ticked = ticked_ones(matches, recommended, existing)
     items = [{'label': indexer_name(schema), 'note': indexer_note(schema)} for schema in matches]
-    for number, item in enumerate(items, 1):
-        print(f" {number:3d}. {item['label']}" + (f"  ({item['note']})" if item['note'] else ''))
-    if recommended:
-        print('Recommended (r): ' + ', '.join(items[number - 1]['label'] for number in recommended))
-    print(INDEXER_ADVICE)
-    question = 'Numbers to add, such as 1 4 7 or 1-5' + (', or r for the recommended ones' if recommended else '')
-    if ticked:
-        print('Ticked already (Enter alone takes them): ' + ', '.join(items[n - 1]['label'] for n in ticked))
+    show_indexers(items, recommended, ticked)
     page = setup_progress.page(
         'pick',
         {'choice': ''},
@@ -234,18 +227,35 @@ def chosen_indexers(schemas, names, ask=None, attempts=3, existing=()):
     )
     with page:
         setup_progress.page_asks('choice')
-        for _ in range(attempts):
-            try:
-                answer = ask(
-                    question + (' (Enter alone takes the ticked ones): ' if ticked else ' (Enter alone skips): ')
-                ).strip()
-            except EOFError:
-                print()
-                return []
-            numbers = ticked if not answer else chosen_numbers(answer, len(matches), recommended)
-            if numbers is not None:
-                return [matches[number - 1] for number in numbers]
-            print(f'Type numbers from 1 to {len(matches)}, such as 1 4 7 or 1-5, or press Enter to skip.')
+        return picked_indexers(matches, recommended, ticked, ask, attempts)
+
+
+def show_indexers(items, recommended, ticked):
+    """The numbered list of indexers, with the recommended and the ticked ones named."""
+    for number, item in enumerate(items, 1):
+        print(f" {number:3d}. {item['label']}" + (f"  ({item['note']})" if item['note'] else ''))
+    if recommended:
+        print('Recommended (r): ' + ', '.join(items[number - 1]['label'] for number in recommended))
+    print(INDEXER_ADVICE)
+    if ticked:
+        print('Ticked already (Enter alone takes them): ' + ', '.join(items[n - 1]['label'] for n in ticked))
+
+
+def picked_indexers(matches, recommended, ticked, ask, attempts):
+    """The numbers typed for chosen_indexers, as catalogue entries; empty on Ctrl+D."""
+    question = 'Numbers to add, such as 1 4 7 or 1-5' + (', or r for the recommended ones' if recommended else '')
+    for _ in range(attempts):
+        try:
+            answer = ask(
+                question + (' (Enter alone takes the ticked ones): ' if ticked else ' (Enter alone skips): ')
+            ).strip()
+        except EOFError:
+            print()
+            return []
+        numbers = ticked if not answer else chosen_numbers(answer, len(matches), recommended)
+        if numbers is not None:
+            return [matches[number - 1] for number in numbers]
+        print(f'Type numbers from 1 to {len(matches)}, such as 1 4 7 or 1-5, or press Enter to skip.')
     return []
 
 
@@ -324,7 +334,7 @@ def finished_in_prowlarr(entry, key, config):
     def present():
         return any(
             row.get('name') == entry.get('name') and row.get('implementation') == entry.get('implementation')
-            for row in request('prowlarr', key, '/indexer')
+            for row in request('prowlarr', key, INDEXERS)
         )
 
     return guided_setup.checkpoint(
@@ -344,6 +354,8 @@ def finished_in_prowlarr(entry, key, config):
     )
 
 
+# Prowlarr's list of indexers, in its API.
+INDEXERS = '/indexer'
 # How often one rejected indexer is tried again before it is left for Prowlarr's own page.
 INDEXER_RETRIES = 3
 
@@ -360,21 +372,9 @@ def add_indexer(selected, key, profiles, apply, config):
     if apply and not provider_account_ready(entry, config):
         return 'skipped', 'its provider account is not ready yet'
     for tried in range(INDEXER_RETRIES + 1):
-        try:
-            fill_fields(entry)
-        except EOFError:
-            print()
-            return 'skipped', 'left for later'
-        print('Selected:', name, '| action:', 'create' if apply else 'PREVIEW ONLY')
-        if not apply:
-            return 'skipped', 'preview only'
-        try:
-            result = request('prowlarr', key, '/indexer', 'POST', entry)
-            print('Created indexer:', result.get('name', '(unnamed)'))
-            return 'added', str(result.get('name') or name)
-        except RuntimeError as exc:
-            reason = str(exc)
-            print('Rejected by Prowlarr:', reason)
+        outcome, reason = indexer_tried(entry, name, key, apply)
+        if outcome:
+            return outcome, reason
         row = {'answer': 'yes', 'title': name, 'reason': 'Prowlarr refused it: ' + reason, 'fix': None}
         if tried >= INDEXER_RETRIES or guided_setup.retry_question([row], leave='no') != 'yes':
             break
@@ -383,6 +383,26 @@ def add_indexer(selected, key, profiles, apply, config):
     if config is not None and finished_in_prowlarr(entry, key, config):
         return 'added', name
     return 'rejected', reason
+
+
+def indexer_tried(entry, name, key, apply):
+    """One try of add_indexer: its values asked for, then the indexer created. Returns
+    (outcome, said) when that ends it, or (None, Prowlarr's reason) when Prowlarr refused it."""
+    try:
+        fill_fields(entry)
+    except EOFError:
+        print()
+        return 'skipped', 'left for later'
+    print('Selected:', name, '| action:', 'create' if apply else 'PREVIEW ONLY')
+    if not apply:
+        return 'skipped', 'preview only'
+    try:
+        result = request('prowlarr', key, INDEXERS, 'POST', entry)
+    except RuntimeError as exc:
+        print('Rejected by Prowlarr:', str(exc))
+        return None, str(exc)
+    print('Created indexer:', result.get('name', '(unnamed)'))
+    return 'added', str(result.get('name') or name)
 
 
 def already_there(existing, selected):
@@ -409,7 +429,7 @@ def configure_indexers(root, apply, config=None):
     tried again, and the rest still go in."""
     key = app_key('prowlarr', root)
     schemas = request('prowlarr', key, '/indexer/schema')
-    existing = request('prowlarr', key, '/indexer')
+    existing = request('prowlarr', key, INDEXERS)
     profiles = request('prowlarr', key, '/appprofile')
     print(f'Prowlarr catalog: {len(schemas)} definitions; {len(existing)} configured indexers')
     added, rejected = [], []

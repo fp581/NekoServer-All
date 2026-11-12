@@ -85,8 +85,9 @@ class FolderTests(unittest.TestCase):
 
     def test_the_apps_must_have_that_folder(self):
         seerr = Seerr(roots=('/data/movies',))
+        app = radarr(('/data/movies',))
         with mock.patch.object(sp, 'app_key', return_value='key'), self.assertRaisesRegex(sp.SetupRequired, 'root'):
-            sp.provider(seerr, radarr(('/data/movies',)), '/srv', 'radarr', True, input, False, OWN)
+            sp.provider(seerr, app, '/srv', 'radarr', True, input, False, OWN)
         self.assertEqual(seerr.posted, [])
 
     def test_a_provider_made_before_the_choice_is_said_and_left_alone(self):

@@ -48,7 +48,9 @@ DAEMON_JSON = '/etc/docker/daemon.json'
 DOCKER_GUARD = '/etc/systemd/system/docker.service.d/10-nekoserver-storage.conf'  # modules/docker.py
 FSTAB = '/etc/fstab'
 # Where Linux itself is mounted: a line for one of these is never taken out of /etc/fstab.
-SYSTEM_PLACES = frozenset(('/', '/boot', '/boot/efi', '/efi', '/home', '/usr', '/var', '/tmp', 'none', 'swap'))
+# They are only compared with the mount folders of /etc/fstab's lines, never written to.
+SYSTEM_FOLDERS = ('boot', 'boot/efi', 'efi', 'home', 'usr', 'var', 'tmp')
+SYSTEM_PLACES = frozenset(('/', 'none', 'swap', *('/' + folder for folder in SYSTEM_FOLDERS)))
 GATEWAY_SETTINGS = '/etc/nekoserver-gateway'
 TAILNET_LEDGER = 'gateway/tailnet-owned.json'  # on the SSD: the Tailscale routes setup made (gateway_tools.py)
 # The server-OS step (modules/server_os.py): no sleep, log limits, and the sleep targets masked.
@@ -1391,11 +1393,7 @@ def _unbind_own_folders(plan, chosen, call, out, left):
             continue
         if not os.path.ismount(str(place)):
             continue
-        out('Unmounting ' + target + ' (your own folder, shown there: it stays where it is)')
-        code, said = call(['umount', target], 120)
-        if code != 0:
-            out('  could not unmount (busy' + (': ' + said if said else '') + '): sudo umount ' + target)
-            left.append(target + ' (still mounted)')
+        if not unmounted(target, call, out, left, ' (your own folder, shown there: it stays where it is)'):
             stuck.append(target)
     return stuck
 
@@ -2104,19 +2102,30 @@ def _unmount_inside(plan, folders, call, out, left):
         if not any(folder.startswith(drive.rstrip('/') + '/') for drive in drives):
             continue  # not a folder of NekoServer's drives: left alone
         place = plan.at(folder)
-        if os.path.ismount(str(place)):
-            out('Unmounting ' + folder)
-            code, said = call(['umount', folder], 120)
-            if code != 0:
-                out('  could not unmount (busy' + (': ' + said if said else '') + '): sudo umount ' + folder)
-                left.append(folder + ' (still mounted)')
-                continue
-        if place.is_dir() and not os.path.ismount(str(place)):
-            call(['chattr', '-i', str(place)], 30)  # closed by setup while its drive was away
-            try:
-                place.rmdir()
-            except OSError:
-                pass  # it holds files, or it goes with the drive's own folder: both are said there
+        if os.path.ismount(str(place)) and not unmounted(folder, call, out, left):
+            continue
+        _remove_closed_folder(place, call)
+
+
+def _remove_closed_folder(place, call):
+    """The folder that was underneath an app's mount, opened again and removed when empty."""
+    if place.is_dir() and not os.path.ismount(str(place)):
+        call(['chattr', '-i', str(place)], 30)  # closed by setup while its drive was away
+        try:
+            place.rmdir()
+        except OSError:
+            pass  # it holds files, or it goes with the drive's own folder: both are said there
+
+
+def unmounted(folder, call, out, left, why=''):
+    """Unmount one folder, said as it is done. False, with what to type, when it is busy."""
+    out('Unmounting ' + folder + why)
+    code, said = call(['umount', folder], 120)
+    if code == 0:
+        return True
+    out('  could not unmount (busy' + (': ' + said if said else '') + '): sudo umount ' + folder)
+    left.append(folder + ' (still mounted)')
+    return False
 
 
 def _unmount_extra(plan, call, out, left):
@@ -2127,13 +2136,8 @@ def _unmount_extra(plan, call, out, left):
         return
     for place in sorted(top.iterdir()):
         folder = EXTRA_MOUNTS + '/' + place.name
-        if os.path.ismount(str(place)):
-            out('Unmounting ' + folder)
-            code, said = call(['umount', folder], 120)
-            if code != 0:
-                out('  could not unmount (busy' + (': ' + said if said else '') + '): sudo umount ' + folder)
-                left.append(folder + ' (still mounted)')
-                continue
+        if os.path.ismount(str(place)) and not unmounted(folder, call, out, left):
+            continue
         call(['chattr', '-i', str(plan.at(folder))], 30)  # closed by setup before the drive was mounted
         _remove_mount_folder(plan, folder, out, left)
     try:
@@ -2162,15 +2166,8 @@ def _remove_mounts(plan, path, call, out):
         )
     _unmount_inside(plan, inside, call, out, left)
     for folder in (plan.external, plan.media, plan.data):
-        if not plan.mounted(folder):
-            continue
-        out('Unmounting ' + folder)
-        code, said = call(['umount', folder], 120)
-        if code != 0:
-            out('  could not unmount (busy' + (': ' + said if said else '') + '): sudo umount ' + folder)
-            left.append(folder + ' (still mounted)')
-            continue
-        _remove_mount_folder(plan, folder, out, left)
+        if plan.mounted(folder) and unmounted(folder, call, out, left):
+            _remove_mount_folder(plan, folder, out, left)
     # Last: the drives under EXTRA_MOUNTS, one of which may hold the two roles as folders.
     _unmount_extra(plan, call, out, left)
     return left

@@ -31,9 +31,13 @@ def bundle_files(project):
         ]
     )
     files.extend((project / 'runtime/src').glob('*.rs'))
-    files.append(project / 'runtime/src/shared.json')  # the facts setup and the runtime share
-    files.append(project / 'recommended-indexers.json')  # the download sources setup may recommend
-    files.append(project / 'runtime/THIRD-PARTY-NOTICES.md')
+    files.extend(
+        (
+            project / 'runtime/src/shared.json',  # the facts setup and the runtime share
+            project / 'recommended-indexers.json',  # the download sources setup may recommend
+            project / 'runtime/THIRD-PARTY-NOTICES.md',
+        )
+    )
     files.extend(p for p in (project / 'runtime/licenses').rglob('*') if p.is_file())
     return files
 

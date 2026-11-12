@@ -628,30 +628,39 @@ def move_held(settings, drive, new_uuid, out, journal, staging, fstab):
     )
     new = {'uuid': new_uuid, 'fstype': fstype}
     try:
-        mount_staging(new_uuid, fstype, staging)
-        if not empty(staging) and not our_copy(journal, drive, old.get('uuid'), new_uuid):
-            raise RuntimeError(f'{name} is not empty; NekoServer only moves to an empty filesystem')
-        # A move started again goes on with the copy this one makes (its last pass removes
-        # what is no longer on the old drive, and every file is compared after it).
-        ensure_directory(Path(journal).parent, 0o700)
-        atomic_json(copy_note(journal), {'drive': drive, 'old': old.get('uuid'), 'new': new_uuid})
-        record(journal, phase='copying')
-        same_drives(mountpoint, old, staging, new)
-        copy(mountpoint, staging, out=out)
-        stop_writers(journal)
-        same_drives(mountpoint, old, staging, new)
-        copy(mountpoint, staging, final=True, out=out)
-        record(journal, phase='verifying')
-        out('Comparing every file on both drives by checksum (this reads both drives once more)...')
-        same_drives(mountpoint, old, staging, new)
-        differ = differences(mountpoint, staging)
-        if differ:
-            raise RuntimeError(f'{len(differ)} files differ after the copy (the first: {differ[0]})')
-        same_drives(mountpoint, old, staging, new)
+        copy_to_new(journal, drive, old, new, (mountpoint, staging, name), out)
     except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
         return stopped_safely(exc, label, journal, staging, out)
     switching(journal)
     return switch(path, config, drive, journal, staging, fstab, out)
+
+
+def copy_to_new(journal, drive, old, new, places, out):
+    """The copy of move_held, before its switch: the new drive mounted at the staging
+    folder, everything copied twice (the second time with the writers stopped), then every
+    file compared. `places`: (the drive's mount folder, the staging folder, the new drive's
+    name). Raises when the move must stop."""
+    mountpoint, staging, name = places
+    mount_staging(new['uuid'], new['fstype'], staging)
+    if not empty(staging) and not our_copy(journal, drive, old.get('uuid'), new['uuid']):
+        raise RuntimeError(f'{name} is not empty; NekoServer only moves to an empty filesystem')
+    # A move started again goes on with the copy this one makes (its last pass removes
+    # what is no longer on the old drive, and every file is compared after it).
+    ensure_directory(Path(journal).parent, 0o700)
+    atomic_json(copy_note(journal), {'drive': drive, 'old': old.get('uuid'), 'new': new['uuid']})
+    record(journal, phase='copying')
+    same_drives(mountpoint, old, staging, new)
+    copy(mountpoint, staging, out=out)
+    stop_writers(journal)
+    same_drives(mountpoint, old, staging, new)
+    copy(mountpoint, staging, final=True, out=out)
+    record(journal, phase='verifying')
+    out('Comparing every file on both drives by checksum (this reads both drives once more)...')
+    same_drives(mountpoint, old, staging, new)
+    differ = differences(mountpoint, staging)
+    if differ:
+        raise RuntimeError(f'{len(differ)} files differ after the copy (the first: {differ[0]})')
+    same_drives(mountpoint, old, staging, new)
 
 
 UUID = re.compile(r'[A-Za-z0-9-]{8,80}')

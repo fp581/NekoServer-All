@@ -43,8 +43,9 @@ def tree(root):
     return sorted((str(p.relative_to(root)), p.stat().st_size if p.is_file() else -1) for p in Path(root).rglob('*'))
 
 
-class Server(unittest.TestCase):
-    """A server in a temporary folder: an SSD, an HDD with a photo archive, a USB drive."""
+class Server:
+    """A server in a temporary folder: an SSD, an HDD with a photo archive, a USB drive (a
+    mixin of the test classes below, with the helpers they share)."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -101,7 +102,7 @@ class Server(unittest.TestCase):
         return prompt
 
 
-class MenuTests(Server):
+class MenuTests(Server, unittest.TestCase):
     def menu(self, *typed):
         return recovery_wizard.menu_loop(self.config, answers(*typed), self.out.append)
 
@@ -165,7 +166,7 @@ class MenuTests(Server):
         self.assertEqual(self.out[-1], '\nStopped. Nothing was changed.')
 
 
-class RestoreChoiceTests(Server):
+class RestoreChoiceTests(Server, unittest.TestCase):
     """R01: everything is chosen before anything is written, with the careful choice first."""
 
     def setUp(self):
@@ -223,7 +224,7 @@ class RestoreChoiceTests(Server):
                 self.assertFalse(any(self.changed_at))
 
 
-class ReviewTests(Server):
+class ReviewTests(Server, unittest.TestCase):
     """R02: one review of everything, one approval, and nothing written before it."""
 
     def setUp(self):
@@ -283,8 +284,9 @@ class ReviewTests(Server):
 
     def test_a_restore_with_no_room_stops_at_the_review_before_the_question(self):
         full = RuntimeError('The restore needs 9 GB; only 1 GB is free')
+        prompt = self.watching('1', '1', '1')
         with mock.patch.object(recovery_wizard, 'ensure_room', side_effect=full), self.assertRaises(RuntimeError):
-            recovery_wizard.restore_photos(self.config, self.watching('1', '1', '1'), self.out.append)
+            recovery_wizard.restore_photos(self.config, prompt, self.out.append)
         self.assertNotIn('Restore these items now?', self.said())
         self.assertFalse(any(self.changed_at))
 
@@ -337,7 +339,7 @@ class ReviewTests(Server):
         self.assertIn('  Not in it:    Linux itself, your photos, your Nextcloud files, movies, shows and music.', said)
 
 
-class AppVersionTests(Server):
+class AppVersionTests(Server, unittest.TestCase):
     """R02: "Is this a new server?" is not asked. What the snapshot saved and what Docker
     on this PC has are looked at; a question comes only when there is a real choice."""
 

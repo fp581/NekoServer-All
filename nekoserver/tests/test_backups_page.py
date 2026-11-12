@@ -48,14 +48,14 @@ class BackupsPageTests(unittest.TestCase):
         counts = guided_setup.backup_counts(ctx.config)
         said = []
         with setup_progress.page('backup_times', {}):
-            chosen = guided_setup.ask_backup_counts(ctx, counts, lambda question='': '', said.append)
+            chosen = guided_setup.ask_backup_counts(counts, lambda question='': '', said.append)
         self.assertEqual(chosen, {'app_backup': '3', 'host_backup': '3'})
         guided_setup.keep_counts(ctx, chosen, said.append)
         self.assertEqual(ctx.saved, [])
         # 0 and 8 are refused in words; 5 is taken for the app backups alone.
         typed = iter(['0', '5', ''])
         with setup_progress.page('backup_times', {}):
-            chosen = guided_setup.ask_backup_counts(ctx, counts, lambda question='': next(typed), said.append)
+            chosen = guided_setup.ask_backup_counts(counts, lambda question='': next(typed), said.append)
         self.assertIn('Type a whole number from 1 to 7.', said)
         guided_setup.keep_counts(ctx, chosen, said.append)
         self.assertEqual(
@@ -74,7 +74,7 @@ class BackupsPageTests(unittest.TestCase):
         self.assertEqual(guided_setup.count_offered(field), '')  # Enter leaves it as it is
         said = []
         with setup_progress.page('backup_times', {}):
-            chosen = guided_setup.ask_backup_counts(ctx, [field], lambda question='': '', said.append)
+            chosen = guided_setup.ask_backup_counts([field], lambda question='': '', said.append)
         self.assertIn(field['review'], said)
         guided_setup.keep_counts(ctx, chosen, said.append)
         self.assertEqual((backup_plan.count(config, 'app_backup'), ctx.saved), ((14, True), []))
