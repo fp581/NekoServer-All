@@ -1330,19 +1330,80 @@ def answered_within(argv, seconds, start=subprocess.Popen, now=time.monotonic, s
     return None if found is None else found[0]
 
 
-def real_path(path, seconds=15):
-    """os.path.realpath(path), asked with a time limit (a share that is away holds every
-    look at its folders, the share's own folder too): None when no answer came."""
-    found = output_within(['realpath', '-m', '--', str(path)], seconds)
-    if found is None or found[0] != 0:
+# The filesystems whose folders can stop answering (a NAS that is away), and the
+# automounts that become one when first used.
+NETWORK_FILESYSTEMS = ('nfs', 'nfs4', 'cifs', 'smb3', 'smbfs', 'fuse.sshfs', 'autofs')
+MOUNTINFO = Path('/proc/self/mountinfo')
+# How long a share that did not answer counts as away without being asked again: one
+# setup run asks about the same folder many times, and each try waits its full limit.
+AWAY_FOR = 60
+_ASKED = {}  # (what, path) -> (answer, when): real paths for the run, "no answer" for AWAY_FOR
+
+
+def network_mounts(table=None):
+    """The mount points of network filesystems (and automounts) on this PC, from the
+    kernel's mount table (a file in /proc, never a look at a share). None when it can't
+    be read."""
+    try:
+        text = (table or MOUNTINFO).read_text(encoding='utf-8', errors='replace')
+    except OSError:
         return None
-    return found[1].rstrip('\n') or None
+    found = []
+    for line in text.splitlines():
+        mine, _, theirs = line.partition(' - ')
+        fields, kind = mine.split(), theirs.split()[:1]
+        if len(fields) > 4 and kind and kind[0] in NETWORK_FILESYSTEMS:
+            found.append(re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), fields[4]))
+    return found
 
 
-def folder_answers(path, seconds=15):
-    """`path` is a folder, and answers within `seconds`. Looked into (`path/.`), so a
-    share mounted when first used (an automount) is mounted by the look."""
-    return answered_within(['test', '-d', str(path) + '/.'], seconds) == 0
+def on_a_share(path, table=None):
+    """`path` is at or under a network mount (or that can't be told): a look at it may wait."""
+    mounts = network_mounts(table)
+    shown = str(path)
+    return mounts is None or any(shown == m or shown.startswith(m.rstrip('/') + '/') for m in mounts)
+
+
+def recently_away(path, now=time.monotonic):
+    """A look at `path` got no answer less than AWAY_FOR seconds ago."""
+    kept = _ASKED.get(('away', str(path)))
+    return bool(kept) and now() - kept[1] < AWAY_FOR
+
+
+def real_path(path, seconds=15, table=None, ask=None):
+    """os.path.realpath(path). On a share, asked by a child with a time limit (a share
+    that is away holds every look at its folders, the share's own folder too) and kept
+    for the run: None when no answer came (then not asked again for AWAY_FOR seconds).
+    A path on this PC's own drives is resolved directly."""
+    if not on_a_share(path, table):
+        return os.path.realpath(path)
+    kept = _ASKED.get(('real', str(path)))
+    if kept:
+        return kept[0]
+    if recently_away(path):
+        return None
+    found = (ask or output_within)(['realpath', '-m', '--', str(path)], seconds)
+    if found is None or found[0] != 0:
+        _ASKED[('away', str(path))] = (None, time.monotonic())
+        return None
+    answer = found[1].rstrip('\n') or None
+    _ASKED[('real', str(path))] = (answer, time.monotonic())
+    return answer
+
+
+def folder_answers(path, seconds=15, table=None):
+    """`path` is a folder, and answers within `seconds`. On a share, asked by a child
+    looking into it (`path/.`, so an automount is mounted by the look); one that did not
+    answer is not asked again for AWAY_FOR seconds. A folder on this PC's own drives is
+    looked at directly."""
+    if not on_a_share(path, table):
+        return os.path.isdir(path)
+    if recently_away(path):
+        return False
+    answered = answered_within(['test', '-d', str(path) + '/.'], seconds)
+    if answered is None:
+        _ASKED[('away', str(path))] = (None, time.monotonic())
+    return answered == 0
 
 
 def findmnt(columns, target, by='--mountpoint', run=None, timeout=10):
