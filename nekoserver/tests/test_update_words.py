@@ -25,7 +25,9 @@ class UpdateWordsTests(unittest.TestCase):
     def test_a_first_install_keeps_its_words(self):
         first = sections(False)
         self.assertIn('Apps to install', first)
-        self.assertIn('The dashboard, with a PIN you choose', first['Always set up'])
+        # The PIN is chosen (or made) on the accounts page, which comes before the review.
+        self.assertIn('The dashboard, with the PIN from the accounts page', first['Always set up'])
+        self.assertNotIn('PIN you choose', ' '.join(first['Always set up']))
         self.assertTrue(first['What happens next'][0].startswith('Setup takes about an hour'))
 
     def test_an_update_says_what_is_there_and_kept(self):
