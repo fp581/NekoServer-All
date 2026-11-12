@@ -74,6 +74,11 @@ From the 0.50.0 gate on virtual machines (a fresh install in the window, one dri
 - The uninstaller did not list a group's own drive or the person's folders and shares.
 - A network share mounted on the PC was not in the drive list.
 - The fresh install stopped at the welcome on a PC with no settings yet (a change made during the gate).
+- With every app off, the home-addresses step failed and setup ended "almost ready".
+- "Continue unfinished setup" showed the first page, the offline drive question and "Change any of these answers?" again before going on.
+- The finishing page offered tries for apps this server does not have.
+- `sudo bash uninstall.sh --dry-run` crashed without root.
+- Ask Neko's memory said "0.0 GB free" where it meant free memory less the 2 GB kept for the apps; each number is said now.
 
 **The setup window**
 - Choosing something no longer moves the page.
@@ -109,7 +114,7 @@ From the 0.50.0 gate on virtual machines (a fresh install in the window, one dri
 
 ### How it was tested
 
-On the release commit: 2374 Python tests (19 skipped) and 554 Rust tests pass, `cargo clippy --all-targets -D warnings` is clean, and no function this release made longer is over a cognitive complexity of 15. The gate ran on three virtual machines on 2026-11-12: a fresh install in the setup window, one drive in the terminal, two drives with a network share and films already there, and an update of an installed 0.48.2 server (with an update cut off midway and put right at the next start). Its failures are fixed above; the rows and what they looked at are in the gate results. Not tested on the gate: the assistant's model on the small VMs, the phone on mobile data, a real NAS or ZFS box, and real hardware (a TV, a controller, removable media).
+On the release commit: 2384 Python tests (19 skipped) and 554 Rust tests pass, `cargo clippy --all-targets -D warnings` is clean, and no function this release made longer is over a cognitive complexity of 15. The gate ran on three virtual machines on 2026-11-12: a fresh install in the setup window, one drive in the terminal, two drives with a network share and films already there, and an update of an installed 0.48.2 server (with an update cut off midway and put right at the next start). Its failures are fixed above; the rows and what they looked at are in the gate results. Not tested on the gate: the assistant's model on the small VMs, the phone on mobile data, a real NAS or ZFS box, and real hardware (a TV, a controller, removable media).
 
 ### Known limits
 
