@@ -13,6 +13,16 @@ services:
     volumes:
       - "${NEKO_DATA}/appdata/navidrome:/data"
       - "${NEKO_MUSIC}/library/music:/music:ro"
+      # Media you already have, used where it is (existing_media.py): each folder is
+      # mounted under library/existing by setup, and seen here as /data/existing/<kind>.
+      # rslave: a share that comes back after this app started is seen without a restart.
+      - type: bind
+        source: "${NEKO_MUSIC}/library/existing"
+        target: /data/existing
+        read_only: true
+        bind:
+          propagation: rslave
+          create_host_path: true
     user: "${NEKO_UID}:${NEKO_GID}"
     restart: unless-stopped
     security_opt:
