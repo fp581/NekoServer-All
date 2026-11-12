@@ -490,6 +490,39 @@ class MountTests(unittest.TestCase):
 
         self.assertEqual(neko_common.real_path(self.pc.films), os.path.realpath(self.pc.films))
 
+    def test_only_a_path_on_a_share_is_asked_aside_and_its_answer_is_kept(self):
+        import neko_common
+
+        table = self.pc.top / 'mountinfo'
+        table.write_text(
+            '22 1 8:1 / / rw - ext4 /dev/sda1 rw\n'
+            '40 22 0:50 / /mnt/my\\040tank rw - nfs4 nas:/tank rw\n'
+            '41 22 0:51 / /mnt/auto rw - autofs systemd-1 rw\n'
+        )
+        self.assertEqual(neko_common.network_mounts(table), ['/mnt/my tank', '/mnt/auto'])
+        self.assertTrue(neko_common.on_a_share('/mnt/my tank/films', table))
+        self.assertTrue(neko_common.on_a_share('/mnt/auto', table))
+        self.assertFalse(neko_common.on_a_share('/mnt/my tanker', table))
+        self.assertTrue(neko_common.on_a_share('/x', self.pc.top / 'no-such-table'))  # can't be told: aside
+        asked = []
+
+        def ask(argv, seconds):
+            asked.append(argv)
+            return None  # the share does not answer
+
+        self.addCleanup(neko_common._ASKED.clear)
+        neko_common._ASKED.clear()
+        local = neko_common.real_path(self.pc.films, table=table, ask=ask)
+        self.assertEqual((local, asked), (os.path.realpath(self.pc.films), []), 'a folder of this PC: no child')
+        self.assertIsNone(neko_common.real_path('/mnt/my tank/films', table=table, ask=ask))
+        self.assertIsNone(neko_common.real_path('/mnt/my tank/films', table=table, ask=ask))
+        self.assertEqual(len(asked), 1, 'away: not asked again at once')
+        got = neko_common.real_path('/mnt/my tank/music', table=table, ask=lambda argv, s: (0, '/mnt/tank2\n'))
+        self.assertEqual(got, '/mnt/tank2')
+        self.assertEqual(neko_common.real_path('/mnt/my tank/music', table=table, ask=ask), got, 'kept for the run')
+        self.assertEqual(len(asked), 1)
+        self.assertFalse(neko_common.folder_answers('/mnt/my tank/films', table=table), 'still away')
+
     def test_ready_only_when_the_share_is_there_and_bound_into_the_library(self):
         config = self.pc.chosen()
         (state,) = existing_media.available(config, **self.pc.how())
