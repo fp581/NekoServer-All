@@ -180,6 +180,19 @@ def installed(config, app):
     return app in media_services(config)
 
 
+NO_APP_SAID = (
+    'no app is set up on this server, so there are no app addresses to make; the dashboard opens on this PC '
+    '(its shortcut on the desktop). Switch an app on and run setup again to get the addresses.'
+)
+
+
+def no_apps(config):
+    """The gateway list is the default one and none of its apps is set up (every group
+    off, gate runs B7 and J10): the address steps have nothing to do, and are done."""
+    apps = config.get('gateway', {}).get('services', list(APPS))
+    return list(apps) == list(DEFAULT_SERVICES) and not any(installed(config, a) for a in apps)
+
+
 def selected(config):
     apps = config.get('gateway', {}).get('services', list(APPS))
     if not isinstance(apps, list) or not apps or len(apps) != len(set(apps)) or not set(apps) <= set(APPS):

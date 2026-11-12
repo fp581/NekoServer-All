@@ -7,6 +7,9 @@ DESCRIPTION = 'Install LAN HTTPS gateway for selected apps; no Tailscale needed'
 
 
 def run(ctx):
+    if gateway_tools.no_apps(ctx.config):
+        ctx.log('Home addresses: ' + gateway_tools.NO_APP_SAID)
+        return None
     gateway_tools.selected(ctx.config)
     if not ctx.apply:
         ctx.log('LAN gateway: private HTTPS after LAN selection and secured app-account confirmation')

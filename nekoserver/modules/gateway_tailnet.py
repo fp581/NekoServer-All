@@ -305,6 +305,9 @@ def phone_confirmed(ctx, earlier, result):
 
 
 def run(ctx):
+    if gateway_tools.no_apps(ctx.config):
+        ctx.log('Private addresses: ' + gateway_tools.NO_APP_SAID)
+        return None
     gateway_tools.selected(ctx.config)
     if not ctx.apply:
         ctx.log('Private gateway preview: browser/phone instructions and prompts run only during interactive apply')
