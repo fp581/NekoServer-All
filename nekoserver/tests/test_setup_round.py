@@ -268,6 +268,9 @@ class WindowAgainTests(unittest.TestCase):
             self.assertFalse(window.admit('api/state', setup_gui.COOKIE + '=' + first, 'GET', lambda: 1000)[0])
             self.assertTrue(window.admit('api/state', setup_gui.COOKIE + '=' + again, 'GET', lambda: 1000)[0])
             self.assertTrue(window.admit('', None, 'GET', lambda: 0)[0])
+            # A cookie of other characters is simply not this window's.
+            odd = window.admit('api/state', setup_gui.COOKIE + '=caf\u00e9', 'GET', lambda: 1000)
+            self.assertEqual(odd, (False, None, setup_gui.SPENT))
 
     def test_the_refusal_is_a_page_that_wraps(self):
         for code, body, kind in (setup_gui.SPENT, setup_gui.OTHER_ACCOUNT):
