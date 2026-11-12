@@ -273,6 +273,73 @@ class PageTests(unittest.TestCase):
         self.assertIn('Immich: installed on drive 4 (sdd1: 238 GB SSD, Fast), a drive of its own', lines)
 
 
+class GivenUpTests(unittest.TestCase):
+    """A group taken out of "install", and a drive that is lost."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(os.path.realpath(folder.name))
+        self.target = self.root / 'apps/appdata/immich'
+        self.target.mkdir(parents=True)
+        self.text = '\n'.join(
+            [storage.INSTALL_BEGIN, f'/mnt/nekoserver-drives/d3/nekoserver/appdata/immich {self.target} none bind 0 0']
+            + [storage.INSTALL_END]
+        )
+        self.said = []
+
+    def test_an_app_still_on_its_drive_is_not_moved_back_and_setup_says_why(self):
+        with (
+            mock.patch.object(storage.os.path, 'ismount', return_value=True),
+            self.assertRaisesRegex(RuntimeError, 'does not move an app that is set up back'),
+        ):
+            storage.given_up(self.text, [], self.said.append)
+
+    def test_with_the_drive_gone_the_closed_folder_is_opened_for_the_app_to_start_anew(self):
+        os.chmod(self.target, 0o000)
+        ran = mock.Mock()
+        storage.given_up(self.text, [], self.said.append, ran)
+        self.assertEqual(ran.call_args[0][0], ['chattr', '-i', str(self.target)])
+        self.assertEqual(self.target.stat().st_mode & 0o777, 0o755)
+        self.assertIn('sudo bash install.sh --recover', self.said[0])
+        # A group that is still placed is left as it is.
+        os.chmod(self.target, 0o000)
+        still = [('immich', Path('/x'), self.target, Path('/mnt/nekoserver-drives/d3'))]
+        storage.given_up(self.text, still, self.said.append, mock.Mock(side_effect=AssertionError('opened')))
+        self.assertEqual(self.target.stat().st_mode & 0o777, 0o000)
+        os.chmod(self.target, 0o755)
+
+    def test_a_lost_drive_stops_setup_with_what_to_do(self):
+        config = settings(install={'photos': 'd3'})
+        with self.assertRaises(RuntimeError) as stopped:
+            storage.installation_drives_connected(config, str(self.root) + '/no-such-')
+        said = str(stopped.exception)
+        self.assertIn('The drive that Immich are installed on is not connected (UUID fast-0003).', said)
+        self.assertIn('take "photos" out of "install" and "d3" out of "storage"', said)
+        self.assertIn('it restores into a new folder, never over an app', said)
+        # Connected, or nothing placed: setup goes on.
+        (self.root / 'by-fast-0003').write_text('')
+        storage.installation_drives_connected(config, str(self.root) + '/by-')
+        storage.installation_drives_connected(settings(), str(self.root) + '/no-such-')
+
+
+class SpaceTests(unittest.TestCase):
+    def test_the_space_check_counts_the_drive_the_apps_are_installed_on(self):
+        from modules import capacity
+
+        config = settings(install={'movies': 'd3'})
+        room = {'/mnt/nekoserver-drives/d3': 4 * capacity.GIB}
+        problems = capacity.installed_elsewhere(config, lambda path: room[str(path)])
+        self.assertEqual(len(problems), 1)
+        self.assertIn('Jellyfin', problems[0])
+        self.assertIn('has only 4 GB free. Their settings and databases need at least 10 GB there.', problems[0])
+        room['/mnt/nekoserver-drives/d3'] = 40 * capacity.GIB
+        self.assertEqual(capacity.installed_elsewhere(config, lambda path: room[str(path)]), [])
+        # Nothing placed: no drive is looked at.
+        never = mock.Mock(side_effect=AssertionError('measured'))
+        self.assertEqual(capacity.installed_elsewhere(settings(), never), [])
+
+
 class UninstallTests(unittest.TestCase):
     """The uninstaller takes setup's own blocks out of /etc/fstab, unmounts what is mounted
     inside the drives before the drives, and opens the folders setup closed."""

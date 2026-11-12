@@ -519,6 +519,15 @@ def collector_settings(cfg, smart, interval=60):
     """What the dashboard collector reads, including the fingerprint of the settings an
     acceptance report must match."""
     clean = {k: cfg[k] for k in ('data_mount', 'media_mount', 'external_backup_mount', 'storage')}
+    # A drive beyond the two that something is placed on (0.50.0) has a card of its own:
+    # the collector is told which, and what is on it. Said only then.
+    from neko_common import drives_in_use
+
+    if drives_in_use(cfg):
+        import placement
+
+        clean['locations'] = {k: v for k, v in (cfg.get('locations') or {}).items() if isinstance(v, str)}
+        clean['installed'] = placement.apps_elsewhere(cfg)
     clean['media'] = {'services': media_services(cfg)}
     # Whether any media group is on, and each group once one has an answer of its own (a
     # server with none keeps the file it had: "wanted" alone says it all).

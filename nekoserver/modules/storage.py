@@ -1254,6 +1254,7 @@ def place_drives(context, inventory):
     the drive of the weekly offline copy."""
     resolve_storage_identity(context.config, inventory, apply=True, interactive=sys.stdin.isatty(), out_fn=context.log)
     remember_subvolumes(context.config)
+    installation_drives_connected(context.config)
     specs = mount_specs(context.config)
     checked_before_mount(context.config, specs)
     # Saved for unattended reruns only once the choice passed these checks: a wrong pick
@@ -1345,6 +1346,73 @@ def on_its_drive(target, drive):
         return False
 
 
+def block_targets(text, begin, end):
+    """The folders the lines of setup's block in /etc/fstab mount."""
+    found, inside = [], False
+    for line in text.splitlines():
+        if line.strip() == begin:
+            inside = True
+        elif line.strip() == end:
+            inside = False
+        elif inside and len(line.split()) >= 2:
+            found.append(line.split()[1])
+    return found
+
+
+GIVEN_UP_MOUNTED = (
+    '{target} holds the settings of an app that is installed on another drive, and the settings no longer '
+    'place it there. Setup does not move an app that is set up back to the drive of NekoServer: its settings and '
+    'database would have to be copied with the app stopped. Put its group back under "install" in my-config.json '
+    'and run setup again. Nothing was changed.'
+)
+
+
+def given_up(text, binds, log, run=subprocess.run):
+    """The apps the settings placed on another drive at an earlier run and no longer do.
+    With the folder still mounted from that drive the app is set up there: setup stops
+    and says why. With the drive gone the closed folder underneath is opened again, so
+    the app can be set up on the apps' drive; its settings come back from a backup."""
+    wanted = {str(target) for _, _source, target, _drive in binds}
+    for target in block_targets(text, INSTALL_BEGIN, INSTALL_END):
+        if target in wanted:
+            continue
+        if os.path.ismount(target):
+            raise RuntimeError(GIVEN_UP_MOUNTED.format(target=target))
+        folder = safe_path(Path(target))
+        if folder.is_dir():
+            run(['chattr', '-i', str(folder)], capture_output=True, text=True, timeout=30, check=False)
+            os.chmod(folder, 0o755)
+            log(
+                f'{target}: the drive this app was installed on is no longer in the settings, so the app is set up '
+                'on the drive of NekoServer with empty settings. To bring its settings back from a backup, run  '
+                'sudo bash install.sh --recover  (RECOVERY.md says how).'
+            )
+
+
+LOST_DRIVE = (
+    'The drive that {apps} are installed on is not connected (UUID {uuid}). If it is only unplugged, connect it and '
+    'run setup again. If it is lost: take "{rows}" out of "install" and "{drive}" out of "storage" in my-config.json '
+    '(next to the installer) and run setup again. The apps are then set up on the drive of NekoServer with empty '
+    'settings; bring their settings back from a backup with  sudo bash install.sh --recover  (it restores into a new '
+    'folder, never over an app; RECOVERY.md says how to put them in place). Nothing was changed.'
+)
+
+
+def installation_drives_connected(config, by_uuid=None):
+    """Every drive a group's apps are installed on is connected, or setup stops with what
+    to do: wait for the drive, or give it up and restore the apps' settings from a backup."""
+    import placement
+    from neko_common import APPS
+
+    for drive in sorted(set(placement.apps_elsewhere(config).values())):
+        uuid = str(extra_drives(config)[drive].get('uuid', ''))
+        if Path((by_uuid or BY_UUID) + uuid).exists():
+            continue
+        apps = [APPS[app][0] for app, on in sorted(placement.apps_elsewhere(config).items()) if on == drive]
+        rows = [row for row, on in sorted((config.get('install') or {}).items()) if on == drive]
+        raise RuntimeError(LOST_DRIVE.format(apps=', '.join(apps), uuid=uuid, rows='", "'.join(rows), drive=drive))
+
+
 def mount_installed(context, fstab=FSTAB):
     """Every app installed on another drive has its folder there mounted at its usual
     place, now and at every start. An app whose settings are on the apps' drive already
@@ -1362,6 +1430,7 @@ def mount_installed(context, fstab=FSTAB):
     lines = [installed_line(source, target, drive, data) for _, source, target, drive in binds]
     fstab = safe_path(fstab)
     text = fstab.read_text() if fstab.exists() else ''
+    given_up(text, binds, context.log)
     wanted = with_block(text, INSTALL_BEGIN, INSTALL_END, lines)
     if wanted != text and (lines or INSTALL_BEGIN in text):
         atomic_write(fstab, wanted, 0o644)

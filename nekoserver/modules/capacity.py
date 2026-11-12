@@ -23,6 +23,7 @@ GIB = 1024**3
 SSD = (20, 100)  # Docker images (~20 GB), app data, photos and music live here.
 HDD = (50, 500)  # Movies, shows, Nextcloud files and every HDD backup.
 USB_MIN = 16  # The USB copy must at least fit photos + Nextcloud files.
+INSTALLED_MIN = 10  # A group's apps on a drive of their own: their settings and databases.
 # What an empty drive sold as 1 GB has free once formatted, at the least: 10^9 bytes,
 # less what ext4 keeps for itself (about 5 %) and a little more for its tables.
 SOLD_AS_FREE = 0.9 * 10**9
@@ -330,6 +331,7 @@ def assess(
                 f'The {name} has {gib(space)} free. A drive of {recommended} GB or more is recommended '
                 f'for {purpose}; it will fill up sooner.'
             )
+    stop += installed_elsewhere(config, free)
     # The archive also keeps photos deleted from Immich and earlier versions.
     photos = max(used(photo_library(config)), used(archive_folder(config)))
     cloud = used(cloud_files(config))
@@ -352,6 +354,27 @@ def assess(
                 'Free up space on it or use a bigger one.'
             )
     return stop, warn
+
+
+def installed_elsewhere(config, free=free_bytes):
+    """The problems of the drives a group's apps are installed on (0.50.0, "install" in the
+    settings): each needs room for those apps' settings and databases."""
+    import placement
+    from neko_common import APPS, drive_folder
+
+    by_drive = {}
+    for app, drive in sorted(placement.apps_elsewhere(config).items()):
+        by_drive.setdefault(drive, []).append(APPS[app][0])
+    problems = []
+    for drive, names in by_drive.items():
+        space = free(drive_folder(config, drive))
+        if space < INSTALLED_MIN * GIB:
+            problems.append(
+                f'The drive {", ".join(names)} would be installed on has only {gib(space)} free. Their settings and '
+                f'databases need at least {INSTALLED_MIN} GB there. Free up space on it, or choose another drive '
+                'for them on the storage page.'
+            )
+    return problems
 
 
 def same_filesystem(first, second):

@@ -630,29 +630,77 @@ fn mounted_details(
         )
     };
 }
-fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, Vec<Value>, bool, bool)> {
-    let rows = [
-        ("os", "OS SSD", PathBuf::from("/"), None, ""),
+/// What a drive beyond the two holds, for its card's name: the kinds of files placed
+/// on it ("locations") and the apps installed on it ("installed"), as the settings say.
+fn extra_drive_name(cfg: &Value, drive: &str) -> String {
+    let on_it = |section: &str| -> Vec<String> {
+        cfg[section]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(_, placed)| placed.as_str() == Some(drive))
+            .map(|(what, _)| chars(what, 20))
+            .collect()
+    };
+    let (files, apps) = (on_it("locations"), on_it("installed"));
+    let mut holds = vec![];
+    if !files.is_empty() {
+        holds.push(format!("files: {}", files.join(", ")));
+    }
+    if !apps.is_empty() {
+        holds.push(format!("apps: {}", apps.join(", ")));
+    }
+    format!("Drive {drive} ({})", holds.join("; "))
+}
+/// The drives the cards show: the disk Linux runs from, the two every server has, and
+/// every other drive something is placed on (0.50.0), each as (id, name, where it is
+/// mounted, the UUID it must have, its filesystem).
+fn storage_rows(cfg: &Value) -> Result<Vec<(String, String, PathBuf, Option<String>, String)>> {
+    let saved = |key: &str, field: &str| text(&cfg["storage"][key][field]).to_string();
+    let mut rows = vec![
         (
-            "data_ssd",
-            "Application SSD",
-            common::mount_path(text(&cfg["data_mount"]))?,
-            Some(text(&cfg["storage"]["data_ssd"]["uuid"])),
-            text(&cfg["storage"]["data_ssd"]["fstype"]),
+            "os".to_string(),
+            "OS SSD".to_string(),
+            PathBuf::from("/"),
+            None,
+            String::new(),
         ),
         (
-            "media_hdd",
-            "Media HDD",
+            "data_ssd".to_string(),
+            "Application SSD".to_string(),
+            common::mount_path(text(&cfg["data_mount"]))?,
+            Some(saved("data_ssd", "uuid")),
+            saved("data_ssd", "fstype"),
+        ),
+        (
+            "media_hdd".to_string(),
+            "Media HDD".to_string(),
             common::mount_path(text(&cfg["media_mount"]))?,
-            Some(text(&cfg["storage"]["media_hdd"]["uuid"])),
-            text(&cfg["storage"]["media_hdd"]["fstype"]),
+            Some(saved("media_hdd", "uuid")),
+            saved("media_hdd", "fstype"),
         ),
     ];
+    for drive in common::drives_in_use(cfg) {
+        if let Some(folder) = common::drive_folder(cfg, &drive) {
+            let name = extra_drive_name(cfg, &drive);
+            let (uuid, fs) = (saved(&drive, "uuid"), saved(&drive, "fstype"));
+            rows.push((drive, name, folder, Some(uuid), fs));
+        }
+    }
+    Ok(rows)
+}
+fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, Vec<Value>, bool, bool)> {
     let mut disks = vec![];
     let mut mounted = vec![];
     let mut data_ok = false;
     let mut media_ok = false;
-    for (key, name, path, expected, fs) in rows {
+    for (key, name, path, expected, fs) in storage_rows(cfg)? {
+        let (key, name, expected, fs) = (
+            key.as_str(),
+            name.as_str(),
+            expected.as_deref(),
+            fs.as_str(),
+        );
         let info = app_drive(cfg, key, &path, expected, fs);
         let mut r = drive_row(key, name, &path, &info["status"]);
         if info["status"] == "mounted" {
@@ -3940,6 +3988,36 @@ mod user_panel_tests {
             app_drive(&json!({}), "os", Path::new("/nonexistent-neko"), None, "")["status"],
             "missing"
         );
+    }
+    /// A drive beyond the two (0.50.0: a group's files, or its apps, on a drive of
+    /// their own) has a card like the two, named by what it holds; a server with
+    /// nothing placed there has the three cards it always had.
+    #[test]
+    fn a_drive_something_is_placed_on_has_its_own_card() {
+        let plain = json!({"data_mount": "/srv/nekoserver", "media_mount": "/mnt/nekoserver-media",
+            "storage": {"data_ssd": {"uuid": "u1", "fstype": "ext4"}, "media_hdd": {"uuid": "u2", "fstype": "xfs"}}});
+        let ids = |cfg: &Value| -> Vec<String> {
+            storage_rows(cfg)
+                .unwrap()
+                .into_iter()
+                .map(|row| row.0)
+                .collect()
+        };
+        assert_eq!(ids(&plain), ["os", "data_ssd", "media_hdd"]);
+        let mut placed = plain.clone();
+        placed["storage"]["d3"] = json!({"uuid": "u3", "fstype": "ext4"});
+        placed["storage"]["d4"] = json!({"uuid": "u4", "fstype": "ext4"});
+        placed["locations"] = json!({"photos": "d3", "music": "ssd"});
+        placed["installed"] = json!({"immich": "d3"});
+        let rows = storage_rows(&placed).unwrap();
+        assert_eq!(rows.len(), 4, "a drive nothing is placed on has no card");
+        let (id, name, folder, uuid, fs) = rows[3].clone();
+        assert_eq!(
+            (id.as_str(), name.as_str()),
+            ("d3", "Drive d3 (files: photos; apps: immich)")
+        );
+        assert_eq!(folder, Path::new("/mnt/nekoserver-drives/d3"));
+        assert_eq!((uuid.as_deref(), fs.as_str()), (Some("u3"), "ext4"));
     }
     #[test]
     fn a_failing_job_stays_a_failure_and_a_switched_off_timer_is_never_late() {
