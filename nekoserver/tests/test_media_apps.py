@@ -190,7 +190,7 @@ class QuestionTests(unittest.TestCase):
     def test_the_drives_are_described_by_what_goes_on_them(self):
         self.assertIn('movies', storage.drive_label(settings(), 'media_hdd', storage.DRIVES[1][1]))
         hdd = storage.drive_label(settings(False), 'media_hdd', storage.DRIVES[1][1])
-        self.assertEqual(hdd, 'the HDD (Nextcloud files and the backups)')
+        self.assertEqual(hdd, 'the HDD (your Nextcloud files and the backups)')
         self.assertNotIn('photos', storage.drive_label(settings(False), 'data_ssd', storage.DRIVES[0][1]))
 
     def test_only_nextclouds_place_is_asked_without_the_media_apps(self):
