@@ -38,6 +38,7 @@ def bundle_files(project):
             project / 'runtime/THIRD-PARTY-NOTICES.md',
         )
     )
+    files.extend((project / 'prowlarr-definitions').glob('*.yml'))  # what setup adds to Prowlarr's catalogue
     files.extend(p for p in (project / 'runtime/licenses').rglob('*') if p.is_file())
     return files
 

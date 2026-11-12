@@ -25,6 +25,7 @@ from neko_common import (
     music_library,
     remember_answer,
 )
+import custom_indexers
 import existing_media
 import qbit_setup
 import questions
@@ -139,8 +140,12 @@ def indexer_name(schema):
 
 def indexer_note(schema):
     """What Prowlarr says about a catalogue entry, in a few words: public or private
-    (needs an account), its language, torrents or Usenet."""
-    privacy = {'public': 'public', 'semiPrivate': 'needs a free account', 'private': 'private: needs an account'}
+    (needs an account), its language, torrents or Usenet. A definition NekoServer ships
+    (custom_indexers.py) has its own one line."""
+    own = custom_indexers.note(schema)
+    if own:
+        return own
+    privacy ={'public': 'public', 'semiPrivate': 'needs a free account', 'private': 'private: needs an account'}
     words = [privacy.get(schema.get('privacy')), schema.get('language'), schema.get('protocol')]
     said = ', '.join(str(word) for word in words if word)
     described = str(schema.get('description') or '').strip()

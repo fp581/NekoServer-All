@@ -1,0 +1,94 @@
+---
+# Torrentio for Prowlarr: a custom definition NekoServer installs into Prowlarr's
+# Definitions/Custom folder (custom_indexers.py). Torrentio is a Stremio add-on, not a
+# torrent site: it answers JSON for one IMDb number at a time
+#   /stream/movie/<imdb id>.json   /stream/series/<imdb id>:<season>:<episode>.json
+# and each stream carries the torrent's info hash; Prowlarr makes the magnet link from it
+# (it does so for every public definition that gives an info hash and no link).
+#
+# Prowlarr's templates have only flat "if ... else ... end" (no nesting), so each piece
+# of a path is decided on its own. Torrentio answers {"streams": []} for an id it does
+# not know, but a movie path with no id at all is a 404, which Prowlarr counts as the
+# indexer failing: so a request that does not apply asks for the id "none" instead.
+id: torrentio
+name: Torrentio
+description: "Finds only the films and shows Sonarr and Radarr search for (by IMDb number); it never offers new releases on its own"
+language: en-US
+type: public
+encoding: UTF-8
+# Be polite to a free service: one request every two seconds at most.
+requestDelay: 2
+links:
+  - https://torrentio.strem.fun/
+
+caps:
+  categorymappings:
+    - {id: movie, cat: Movies, desc: "Movies"}
+    - {id: series, cat: TV, desc: "TV"}
+  modes:
+    search: [q]
+    # IMDb numbers only: Sonarr then asks with imdbid, season and ep. A series without
+    # an IMDb number in Sonarr cannot be found here.
+    tv-search: [q, season, ep, imdbid]
+    movie-search: [q, imdbid]
+
+settings: []
+
+search:
+  paths:
+    # A film: its IMDb number. On a TV search the id gets "-none", which Torrentio
+    # answers with no streams.
+    - path: "stream/movie/{{ if .Query.IMDBID }}{{ .Query.IMDBID }}{{ else }}none{{ end }}{{ if .Query.Season }}-none{{ else }}{{ end }}.json"
+      categories: [movie]
+      response:
+        type: json
+    # An episode: <imdb>:<season>:<episode>. A season search (no episode) asks for
+    # episode 1, whose answer also lists the season's complete packs. Without a season
+    # (a film) the path is "::1", which Torrentio answers with no streams.
+    - path: "stream/series/{{ if .Query.Season }}{{ .Query.IMDBID }}{{ else }}{{ end }}:{{ .Query.Season }}:{{ if .Query.Ep }}{{ .Query.Ep }}{{ else }}1{{ end }}.json"
+      categories: [series]
+      response:
+        type: json
+    # Prowlarr's test when the indexer is added is a search with nothing in it, and it
+    # refuses an indexer that answers it with no results. Torrentio has no list of new
+    # releases, so that search (and only that one) asks for one known episode.
+    - path: "stream/series/{{ if or .Query.IMDBID .Query.Keywords }}none{{ else }}tt0903747:1:1{{ end }}.json"
+      response:
+        type: json
+
+  rows:
+    selector: streams
+
+  fields:
+    category:
+      text: "{{ if .Query.Season }}series{{ else }}movie{{ end }}"
+    # The stream's title is the release's name on its first line, then a line such as
+    # "👤 352 💾 18.45 GB ⚙️ Rutracker" (seeders, size, where Torrentio found it).
+    title:
+      selector: title
+      filters:
+        - name: split
+          args: ["\n", 0]
+    infohash:
+      selector: infoHash
+    details:
+      text: "{{ .Config.sitelink }}?btih={{ .Result.infohash }}"
+    size:
+      selector: title
+      filters:
+        - name: regexp
+          args: "\U0001F4BE ([0-9.,]+ [KMGT]?B)"
+    seeders:
+      selector: title
+      filters:
+        - name: regexp
+          args: "\U0001F464 ([0-9]+)"
+    imdbid:
+      text: "{{ .Query.IMDBID }}"
+    # Torrentio gives no date; "now" keeps the release from looking years old.
+    date:
+      text: now
+    downloadvolumefactor:
+      text: 0
+    uploadvolumefactor:
+      text: 1
