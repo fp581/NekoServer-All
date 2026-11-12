@@ -462,6 +462,12 @@ fn valid_model(model: &Value, name: &str, data: &Path, media: &Path, cfg: &Value
         music: common::saved_path(&view, "music")?,
         downloads: common::saved_path(&view, "downloads")?,
         library: common::movies_library(&view)?,
+        existing_media: common::files_root(&view, "movies")?
+            .join("library")
+            .join("existing"),
+        existing_music: common::files_root(&view, "music")?
+            .join("library")
+            .join("existing"),
     };
     let services = model["services"]
         .as_object()
@@ -726,14 +732,21 @@ struct Places<'a> {
     downloads: PathBuf,
     /// The films, the shows and their downloads (common::movies_library).
     library: PathBuf,
+    /// Where setup mounts the person's own folders (existing_media.py, 0.50.0): library/
+    /// existing on the films' drive and on the music's drive.
+    existing_media: PathBuf,
+    existing_music: PathBuf,
 }
 impl Places<'_> {
     fn volume_ok(&self, service: &str, volume: &Value) -> Result<()> {
         if volume["type"] == "bind" {
-            // A bind's own options: only these two (propagation could carry mounts out).
+            // A bind's own options: only these, and propagation only inwards (rslave or
+            // slave: a share mounted later is seen; shared could carry mounts out).
             let options_ok = volume["bind"].as_object().is_none_or(|o| {
-                o.keys()
-                    .all(|k| ["create_host_path", "selinux"].contains(&k.as_str()))
+                o.iter().all(|(k, v)| {
+                    ["create_host_path", "selinux"].contains(&k.as_str())
+                        || (k == "propagation" && (v == "rslave" || v == "slave"))
+                })
             });
             if !options_ok {
                 return Err(Error::new("Uncovered container bind mount"));
@@ -768,6 +781,10 @@ impl Places<'_> {
             // Lidarr sees the folder both music folders are in (it moves downloads in).
             || (name == "lidarr" && self.music.parent().is_some_and(|top| p == top))
             || (name == "qbittorrent" && p == self.downloads)
+            // The person's own folders, seen at /data/existing (existing_media.py).
+            || (["jellyfin", "radarr", "sonarr", "qbittorrent"].contains(&name)
+                && p == self.existing_media)
+            || (["navidrome", "lidarr"].contains(&name) && p == self.existing_music)
     }
 }
 /// The app's own port on this PC only (qBittorrent's peer port excepted); its helpers
@@ -7619,6 +7636,46 @@ mod tests {
         ] {
             assert_eq!(
                 refused(&one(name, &folder), name),
+                "Uncovered container bind mount",
+                "{name}"
+            );
+        }
+        // Gate run C14: the person's own folders (library/existing, 0.50.0) as the Compose
+        // files bind them, inwards propagation included; nobody else's and never outwards.
+        fs::create_dir_all(media.join("library/existing")).unwrap();
+        fs::create_dir_all(data.join("library/existing")).unwrap();
+        let theirs = |name: &str, source: &Path, propagation: &str| {
+            json!({"services": {name: {"image": "sha256:1", "ports": port, "volumes": [{
+                "type": "bind", "source": source, "target": "/data/existing",
+                "bind": {"propagation": propagation, "create_host_path": true}}]}}})
+        };
+        for (name, folder) in [
+            ("jellyfin", media.join("library/existing")),
+            ("radarr", media.join("library/existing")),
+            ("sonarr", media.join("library/existing")),
+            ("qbittorrent", media.join("library/existing")),
+            ("navidrome", data.join("library/existing")),
+            ("lidarr", data.join("library/existing")),
+        ] {
+            fs::create_dir_all(data.join("appdata").join(name)).unwrap();
+            let model = theirs(name, &folder, "rslave");
+            assert!(
+                valid_model(&model, name, &data, &media, &Value::Null).is_ok(),
+                "{name}"
+            );
+            assert_eq!(
+                refused(&theirs(name, &folder, "rshared"), name),
+                "Uncovered container bind mount",
+                "{name}"
+            );
+        }
+        for (name, folder) in [
+            ("navidrome", media.join("library/existing")),
+            ("jellyfin", data.join("library/existing")),
+            ("seerr", media.join("library/existing")),
+        ] {
+            assert_eq!(
+                refused(&theirs(name, &folder, "rslave"), name),
                 "Uncovered container bind mount",
                 "{name}"
             );
