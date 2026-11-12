@@ -247,11 +247,12 @@ pub fn media_services(cfg: &Value) -> Vec<&str> {
         .collect()
 }
 /// The app drive and the media drive are one filesystem by choice (setup's storage page,
-/// 0.50.0: both kept on the disk Linux runs from). Each is then a folder of it ("folder"
-/// in its record), mounted at the role's place and told apart by the folder findmnt
-/// shows there ("subvolume"), which every drive check compares. Only then may the two
-/// carry one UUID.
-pub fn share_system_disk(cfg: &Value) -> bool {
+/// 0.50.0: both kept on the disk Linux runs from, or both on one drive of their own,
+/// mounted at ONE_DRIVE). Each is then a folder of it ("folder" in its record), mounted
+/// at the role's place and told apart by the folder findmnt shows there ("subvolume"),
+/// which every drive check compares. Only then may the two carry one UUID: two drives
+/// with one UUID (a copy), or a drive mounted at the wrong place, are still refused.
+pub fn roles_share_one_filesystem(cfg: &Value) -> bool {
     let storage = &cfg["storage"];
     let folder = |key: &str| {
         storage[key]["folder"]
@@ -264,6 +265,28 @@ pub fn share_system_disk(cfg: &Value) -> bool {
         && !kept("data_ssd").is_empty()
         && !kept("media_hdd").is_empty()
         && kept("data_ssd") != kept("media_hdd")
+}
+/// Where one drive that holds both the apps and the media is mounted (modules/storage.py
+/// ONE_DRIVE); each role is a folder of it, bind-mounted at the role's own place.
+pub const ONE_DRIVE: &str = "/mnt/nekoserver-drives/one";
+/// Both roles are folders of the one drive mounted at ONE_DRIVE (not the disk Linux runs
+/// from): that drive's own mount is then the one to bring back first.
+pub fn one_drive(cfg: &Value) -> bool {
+    let inside = |key: &str| {
+        cfg["storage"][key]["folder"]
+            .as_str()
+            .is_some_and(|f| Path::new(f).starts_with(ONE_DRIVE) && f != ONE_DRIVE)
+    };
+    roles_share_one_filesystem(cfg) && inside("data_ssd") && inside("media_hdd")
+}
+/// Two folders are on one filesystem (the same device): one drive's free space counts
+/// once for both.
+pub fn same_filesystem(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (fs::metadata(a), fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev(),
+        _ => false,
+    }
 }
 /// Immich is set up: photos.deploy_immich, and the Photos group not left out.
 pub fn immich_wanted(cfg: &Value) -> bool {
@@ -1518,26 +1541,64 @@ mod media_answer_tests {
     /// disk by choice, each known by its own folder (modules/storage.py SYSTEM_FOLDERS).
     #[test]
     fn two_roles_share_a_filesystem_only_as_folders_of_the_system_disk() {
-        use super::share_system_disk;
+        use super::roles_share_one_filesystem;
         let role = |folder: &str, kept: &str| json!({"uuid": "root-1", "fstype": "ext4", "folder": folder, "subvolume": kept});
         let apps = role("/var/lib/nekoserver/apps", "/var/lib/nekoserver/apps");
         let media = role("/var/lib/nekoserver/media", "/var/lib/nekoserver/media");
-        assert!(share_system_disk(
+        assert!(roles_share_one_filesystem(
             &json!({"storage": {"data_ssd": apps, "media_hdd": media}})
         ));
         // One of them a drive of its own, the folder not learned yet, or both the same folder: no.
         let drive = json!({"uuid": "root-1", "fstype": "ext4"});
-        assert!(!share_system_disk(
+        assert!(!roles_share_one_filesystem(
             &json!({"storage": {"data_ssd": apps, "media_hdd": drive}})
         ));
         let unknown = role("/var/lib/nekoserver/media", "");
-        assert!(!share_system_disk(
+        assert!(!roles_share_one_filesystem(
             &json!({"storage": {"data_ssd": apps, "media_hdd": unknown}})
         ));
-        assert!(!share_system_disk(
+        assert!(!roles_share_one_filesystem(
             &json!({"storage": {"data_ssd": apps, "media_hdd": apps}})
         ));
-        assert!(!share_system_disk(&json!({})));
+        assert!(!roles_share_one_filesystem(&json!({})));
+        // One drive of their own (gate run B0d): the same rule, and its mount is known.
+        let apps = role(
+            "/mnt/nekoserver-drives/one/nekoserver/apps",
+            "/nekoserver/apps",
+        );
+        let media = role(
+            "/mnt/nekoserver-drives/one/nekoserver/media",
+            "/nekoserver/media",
+        );
+        let one = json!({"storage": {"data_ssd": apps, "media_hdd": media}});
+        assert!(roles_share_one_filesystem(&one));
+        assert!(super::one_drive(&one));
+        let system = json!({"storage": {"data_ssd": role("/var/lib/nekoserver/apps", "/var/lib/nekoserver/apps"),
+            "media_hdd": role("/var/lib/nekoserver/media", "/var/lib/nekoserver/media")}});
+        assert!(
+            !super::one_drive(&system),
+            "the disk Linux runs from is never remounted"
+        );
+    }
+    #[test]
+    fn one_filesystem_is_told_by_its_device() {
+        use std::{fs, path::Path};
+        let root = std::env::temp_dir().join(format!("neko-same-fs-{}", std::process::id()));
+        fs::create_dir_all(root.join("apps")).unwrap();
+        fs::create_dir_all(root.join("media")).unwrap();
+        assert!(super::same_filesystem(
+            &root.join("apps"),
+            &root.join("media")
+        ));
+        assert!(!super::same_filesystem(
+            &root.join("apps"),
+            Path::new("/proc")
+        ));
+        assert!(!super::same_filesystem(
+            &root.join("gone"),
+            &root.join("media")
+        ));
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// The three groups (neko_common.media_group and tests/test_media_groups.py): each

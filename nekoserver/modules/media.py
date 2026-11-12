@@ -293,6 +293,10 @@ def _run(context):
     context.log('Prepared all media Compose manifests without touching existing projects')
     ensure_directory(films / 'library', 0o755)
     ensure_directory(music / 'library', 0o755)
+    # Where the person's own folders are mounted (existing_media.py): there before the apps
+    # start, since their Compose files never let Docker make a missing folder.
+    for drive in dict.fromkeys((films, music)):
+        ensure_directory(drive / 'library' / 'existing', 0o755)
     # The music folders setup decided (neko_common, from shared.json's locations).
     for target in (music_library(context.config), music_downloads(context.config)):
         library_folder(safe_path(target), uid, gid, context.log)

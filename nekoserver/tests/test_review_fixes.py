@@ -95,18 +95,31 @@ class ComposeTests(unittest.TestCase):
             with self.subTest(path=path.name):
                 self.assertNotIn('1000:1000', path.read_text())
 
+    @staticmethod
+    def drive_binds(name):
+        """(source, target) of each bind of the app's files: never one Docker would make."""
+        text = render(name)
+        found = []
+        for volume in yaml.safe_load(text)['services'][name.split('.')[0]]['volumes']:
+            if isinstance(volume, dict) and volume['source'] != '/srv/nekoserver/appdata/' + name.split('.')[0]:
+                assert volume['bind']['create_host_path'] is False, volume
+                found.append((volume['source'], volume['target']))
+        return text, found
+
+    @unittest.skipUnless(yaml, 'PyYAML is not installed')
     def test_lidarr_has_single_ssd_mount_for_downloads_and_library(self):
-        text = render('lidarr.yaml')
-        self.assertIn('"/srv/nekoserver/library:/data"', text)
+        text, binds = self.drive_binds('lidarr.yaml')
+        self.assertIn(('/srv/nekoserver/library', '/data'), binds)
         # No nested bind mounts: they split downloads and library across mount points (EXDEV on import).
-        self.assertNotIn(':/data/downloads/music', text)
-        self.assertNotIn(':/data/music', text)
+        self.assertNotIn('/data/downloads/music', [target for _, target in binds])
+        self.assertNotIn('/data/music', [target for _, target in binds])
         self.assertNotIn('/mnt/nekoserver-media', text)
 
+    @unittest.skipUnless(yaml, 'PyYAML is not installed')
     def test_qbittorrent_still_sees_hdd_and_ssd_music_downloads(self):
-        text = render('qbittorrent.yaml')
-        self.assertIn('"/mnt/nekoserver-media/library:/data"', text)
-        self.assertIn('"/srv/nekoserver/library/downloads/music:/data/downloads/music"', text)
+        _, binds = self.drive_binds('qbittorrent.yaml')
+        self.assertIn(('/mnt/nekoserver-media/library', '/data'), binds)
+        self.assertIn(('/srv/nekoserver/library/downloads/music', '/data/downloads/music'), binds)
 
 
 class JellyfinGpuTests(unittest.TestCase):

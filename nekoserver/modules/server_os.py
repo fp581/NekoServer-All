@@ -287,11 +287,14 @@ def log_journal_limits(config, log, journald=JOURNALD):
 
 
 def drive_devices(config, run=subprocess.run):
-    """systemd's names for the SSD's and HDD's devices, by their IDs."""
+    """systemd's names for the devices of the SSD, the HDD and each other drive something
+    is placed on (0.50.0), by their IDs: drive-return runs when one of them appears, and
+    starts the apps Docker could not start while it was away (drive_return.rs)."""
     import nfs_exports
+    from neko_common import drives_in_use
 
     names = []
-    for key in ('data_ssd', 'media_hdd'):
+    for key in ('data_ssd', 'media_hdd', *drives_in_use(config)):
         if nfs_exports.export_of(config['storage'][key]):
             # A folder the NAS shares has no device systemd could see return: the NAS
             # check starts drive-return once the NAS answers again (nas_watch.rs).

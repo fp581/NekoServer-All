@@ -2318,11 +2318,31 @@ fn setup_step_detail(step: &Value) -> String {
     said.push_str(" Then, in a terminal on the server, run  sudo bash install.sh  : it carries on with this step and leaves what is done as it is. (Setup is never started from this page.)");
     said.trim().to_string()
 }
+/// Where the backups are kept, for the page: on the same filesystem as what they copy
+/// (one drive for the apps, the media and the backups, or the disk Linux runs from), and
+/// whether a weekly copy goes to a USB drive of its own.
+fn backup_place(cfg: &Value) -> Value {
+    json!({
+        "same_drive": common::roles_share_one_filesystem(cfg),
+        "offline": !text(&cfg["photos"]["external_backup_uuid"]).is_empty(),
+    })
+}
+/// Said for as long as the backups are on the drive they copy and no copy goes anywhere
+/// else (the placement design's standing item; setup said it once, before choosing it).
+const SAME_DRIVE: &str = "One drive holds the apps, your files and their backups. The backups protect you from a mistake (a file deleted or changed), not from losing that drive. Add a second drive for the backups, or a USB drive for the weekly copy, and run setup again.";
 pub(crate) fn alerts(s: &Value) -> Value {
     let mut out = vec![];
     let mut add = |id: String, level: &str, title: String, detail: &str| {
         out.push(json!({"id":id,"level":level,"title":title,"detail":detail}))
     };
+    if s["backup_place"]["same_drive"] == true && s["backup_place"]["offline"] != true {
+        add(
+            "backup:same-drive".into(),
+            "warning",
+            "Your backups are on the same drive as your files".into(),
+            SAME_DRIVE,
+        );
+    }
     // A step of setup that failed in its last run: said until a later run finishes it.
     for step in s["setup"]["unfinished"].as_array().into_iter().flatten() {
         add(
@@ -2792,8 +2812,8 @@ pub fn job_states(a: &Args) -> Result<()> {
         checked("data_ssd", "data_mount")?,
         checked("media_hdd", "media_mount")?,
     );
-    let apart =
-        common::share_system_disk(&cfg) || !matches!((&data, &media), (Some(a), Some(b)) if a == b);
+    let apart = common::roles_share_one_filesystem(&cfg)
+        || !matches!((&data, &media), (Some(a), Some(b)) if a == b);
     let ok = data.is_some() && apart;
     let media_ok = media.is_some() && apart;
     let states = json!({
@@ -2920,6 +2940,7 @@ pub fn run(a: &Args) -> Result<()> {
     };
     result["integrity"] = integrity(data, ok, away, text(&cfg["photos"]["external_backup_uuid"]));
     result["backup_key"] = json!(backup_key_ready());
+    result["backup_place"] = backup_place(&cfg);
     result["tailscale"] = tailscale_login(now);
     result["network_storage"] = network_storage(&cfg, Path::new("/sys/class/iscsi_session"));
     result["arrays"] = arrays;
@@ -2970,6 +2991,30 @@ fn unwritable(result: &mut Value, why: &str) {
 #[cfg(test)]
 mod os_tests {
     use super::*;
+    /// Gate run B3: with one drive for everything, the dashboard keeps saying that the
+    /// backups are on it, until a USB drive takes a weekly copy (or setup moves them).
+    #[test]
+    fn a_backup_on_the_drive_it_copies_is_a_standing_item() {
+        let role = |folder: &str, kept: &str| json!({"uuid": "one-1", "fstype": "ext4", "folder": folder, "subvolume": kept});
+        let one = json!({"storage": {
+            "data_ssd": role("/mnt/nekoserver-drives/one/nekoserver/apps", "/nekoserver/apps"),
+            "media_hdd": role("/mnt/nekoserver-drives/one/nekoserver/media", "/nekoserver/media")}});
+        let ids = |cfg: &Value| -> Vec<String> {
+            let shown = alerts(&json!({"backup_place": backup_place(cfg)}));
+            shown
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| text(&a["id"]).to_string())
+                .collect()
+        };
+        assert!(ids(&one).contains(&"backup:same-drive".to_string()));
+        let mut with_usb = one.clone();
+        with_usb["photos"] = json!({"external_backup_uuid": "usb-1"});
+        assert!(!ids(&with_usb).contains(&"backup:same-drive".to_string()));
+        let two = json!({"storage": {"data_ssd": {"uuid": "a"}, "media_hdd": {"uuid": "b"}}});
+        assert!(!ids(&two).contains(&"backup:same-drive".to_string()));
+    }
     #[test]
     fn readings_count_as_late_by_one_rule_written_into_them() {
         assert_eq!(late_after(60), 180);

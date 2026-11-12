@@ -12,7 +12,16 @@ services:
       TZ: "${NEKO_TZ}"
     volumes:
       - "${NEKO_DATA}/appdata/navidrome:/data"
-      - "${NEKO_MUSIC}/library/music:/music:ro"
+      # Your files on a drive (or a share) of their own are bound in the long form with
+      # create_host_path false: when the drive is away, Docker does not make the folder on
+      # the disk Linux runs from, and this app does not start (drive-return starts it
+      # once the drive is back).
+      - type: bind
+        source: "${NEKO_MUSIC}/library/music"
+        target: /music
+        read_only: true
+        bind:
+          create_host_path: false
       # Media you already have, used where it is (existing_media.py): each folder is
       # mounted under library/existing by setup, and seen here as /data/existing/<kind>.
       # rslave: a share that comes back after this app started is seen without a restart.
@@ -22,7 +31,7 @@ services:
         read_only: true
         bind:
           propagation: rslave
-          create_host_path: true
+          create_host_path: false
     user: "${NEKO_UID}:${NEKO_GID}"
     restart: unless-stopped
     security_opt:

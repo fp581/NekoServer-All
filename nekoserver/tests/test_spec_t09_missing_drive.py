@@ -35,6 +35,9 @@ import spec_sources  # noqa: E402
 
 GUARD = ('backup', 'guard')
 SSD_ONLY = ('backup', 'guard_data')
+# Bringing the apps back (gate run C9): the SSD and the HDD as GUARD checks them, and a
+# drive of a group's own either the one setup chose or away (its apps stay stopped).
+PRESENT = ('backup', 'guard_present')
 USB = ('backup', 'validate_external')
 COORDINATE = [('backup', 'coordinate'), GUARD]  # the shared lock of the backup jobs: checks, then locks
 
@@ -48,7 +51,7 @@ CHECKED = {
     'music-backup': [('music_backup', 'run'), *COORDINATE],
     'storage-guard': [('startup', 'run'), ('backup', 'open_job'), GUARD],
     'gateway-guard': [('startup', 'run'), ('backup', 'open_job'), GUARD],
-    'drive-return': [('drive_return', 'run'), ('drive_return', 'start_again'), GUARD],
+    'drive-return': [('drive_return', 'run'), ('drive_return', 'start_again'), PRESENT],
     'nas-watch': [('nas_watch', 'run'), GUARD],
     'host-snapshot': [('host_snapshot', 'run'), *COORDINATE],
     'host-resume': [('host_snapshot', 'resume_command'), *COORDINATE],
@@ -108,7 +111,7 @@ class MissingDriveTests(unittest.TestCase):
 
     def test_every_job_that_writes_to_a_drive_checks_the_drives_first(self):
         for command, chain in CHECKED.items():
-            self.assertIn(chain[-1], (GUARD, SSD_ONLY), command)
+            self.assertIn(chain[-1], (GUARD, SSD_ONLY, PRESENT), command)
             self.assert_chain(command, chain)
         self.assert_chain('the weekly copy to the USB drive', USB_CHAIN)
         # In the jobs that check at once, the check is their first step with the drives:
@@ -124,7 +127,7 @@ class MissingDriveTests(unittest.TestCase):
             (('os_policy', 'run'), 'backup::guard('),
             (('nas_watch', 'run'), 'backup::guard('),
             (('backup', 'seal_passwords'), 'guard('),
-            (('drive_return', 'start_again'), 'backup::guard('),
+            (('drive_return', 'start_again'), 'backup::guard_present('),
         ):
             body = self.functions[function]
             self.assertIn(check, body, function)
@@ -138,10 +141,16 @@ class MissingDriveTests(unittest.TestCase):
 
     def test_the_check_covers_both_drives_and_every_share_in_use(self):
         guard = self.functions[GUARD]
-        self.assertIn('[("data_ssd", data), ("media_hdd", media)]', guard)
-        self.assertIn('checked_drive(&c, key, path)?', guard)
-        self.assertIn('for name in common::drives_in_use(&c)', guard)  # other drives and NFS shares
-        self.assertIn('checked_drive(&c, &name, &folder)?', guard)
+        main = self.functions[('backup', 'main_drives')]
+        self.assertIn('[("data_ssd", data), ("media_hdd", media)]', main)
+        self.assertIn('checked_drive(c, key, path)?', main)
+        for body in (guard, self.functions[PRESENT]):
+            self.assertIn('main_drives(&c, data, media)?', body)
+            self.assertIn('for name in common::drives_in_use(&c)', body)  # other drives and NFS shares
+            self.assertIn('checked_drive(&c, &name, &folder)?', body)
+        # Only bringing the apps back lets a placed drive be away: nothing mounted there.
+        self.assertIn('Ok(None)', self.functions[PRESENT])
+        self.assertNotIn('Ok(None)', guard)
         self.assertIn('checked_drive(&c, "data_ssd", data)', self.functions[SSD_ONLY])
         # A folder the job holds (expect_drive) is looked at again before each write below it.
         self.assertIn('on_drive(path)?', self.functions[('common', 'directory')])

@@ -267,7 +267,7 @@ class DataOnAnyDriveTests(unittest.TestCase):
         config = self.placed(movies='d3')
         films = neko_common.files_root(config, 'movies')
         rendered = media.render(template, '/srv/nekoserver', films, 1000, 1000, 'UTC', '127.0.0.1')
-        self.assertIn('- "/mnt/nekoserver-drives/d3/library:/data"', rendered)
+        self.assertIn('source: "/mnt/nekoserver-drives/d3/library"\n        target: /data\n', rendered)
         self.assertIn('- "/srv/nekoserver/appdata/sonarr:/config"', rendered)
         source = (ROOT / 'modules/media.py').read_text()
         self.assertIn("films = files_root(context.config, 'movies')", source)
