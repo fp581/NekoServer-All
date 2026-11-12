@@ -12,8 +12,8 @@ A question is asked through `ask` (or `yes_no`, `confirm`): the code keeps readi
 answer as it always did ("yes", "2", an address), so nothing about what an answer does is
 decided here. Only the words are.
 
-The review page (plans/0.50.0-questions-review.html) and the golden file
-tests/golden/questions.txt are made from this table, so they cannot drift from it.
+The golden file tests/golden/questions.txt lists every question read from the source, so
+a change to one shows in review.
 """
 
 import contextlib
@@ -39,10 +39,9 @@ SKIP = 'Skip for now'
 #   send    what the button that sends a typed answer says (text, secret)
 #   skip    the answer "Skip for now" gives, when the question can wait ('' is Enter alone)
 #   how     the terminal's line on how to answer, when the usual one does not fit
-#   example values for the {names} in the words, for the review page
-#   old     the question as 0.49.0 asked it, where it existed (for the review page)
+#   example values for the {names} in the words, for tests that show the question
 #   above   the question is about what setup listed just before it: the window shows that list too
-#   screen  where in setup it comes (the review page's order)
+#   screen  where in setup it comes
 Q = {
     # ---- before setup starts
     'keep_fewer': {
@@ -53,8 +52,6 @@ Q = {
         'yes': 'Keep the newest {new}',
         'no': 'Keep {old} as now',
         'example': {'old': 30, 'new': 7, 'what': 'app backups'},
-        'old': 'Your settings keep the newest 30 app backups, the default before v0.30.0 (now 7). '
-        'Keep fewer from now on, the newest 7? [yes/no]:',
     },
     # ---- the optional questions of a rerun
     'ask_again': {
@@ -65,7 +62,6 @@ Q = {
         'above': True,
         'yes': 'Ask me again',
         'no': 'Keep them',
-        'old': 'Ask these questions again? [yes/no]:',
     },
     # ---- the media apps
     'install_group': {
@@ -79,7 +75,6 @@ Q = {
             'group': 'Photos (Immich)',
             'about': 'Immich is your own photo backup and gallery. You can add it later.',
         },
-        'old': 'Install the media apps too? [yes/no]:',
     },
     # ---- drives
     'drive_space': {
@@ -90,7 +85,6 @@ Q = {
         'above': True,
         'yes': 'Go on',
         'no': 'Stop, I will change the drive',
-        'old': 'Continue with these drives anyway? [yes/no]:',
     },
     # ---- a network storage box
     'nas_address': {
@@ -99,7 +93,6 @@ Q = {
         'hint': 'It is what you open in a browser to reach it, such as 192.168.1.20.',
         'kind': 'text',
         'send': 'Look there',
-        'old': "The NAS's address on your network (such as 192.168.1.20):",
     },
     'nas_kind': {
         'screen': 'A network storage box (NAS)',
@@ -111,7 +104,6 @@ Q = {
             ('2', 'As a shared folder (the files stay visible on the storage box)'),
         ],
         'how': 'Type 1 or 2, then press Enter. Enter alone takes the first.',
-        'old': 'Which one does NekoServer use? [1/2] (Enter alone: 1):',
     },
     'nas_disks': {
         'screen': 'A network storage box (NAS)',
@@ -121,7 +113,6 @@ Q = {
         'above': True,
         'send': 'Use these',
         'how': 'Type their numbers with commas between them (such as 1,2), then press Enter. Enter alone stops setup here.',
-        'old': 'Numbers of the ones NekoServer uses, separated by commas (Enter alone stops here):',
     },
     'nas_login_needed': {
         'screen': 'A network storage box (NAS)',
@@ -132,14 +123,12 @@ Q = {
         'no': 'No password',
         'how': 'Type yes or no, then press Enter. Enter alone means no.',
         'example': {'iqn': 'iqn.2000-01.com.synology:nas.Target-1'},
-        'old': 'Does the NAS ask for a CHAP user name and password for iqn.2000-01.com.synology:nas.Target-1? [y/N]:',
     },
     'nas_login_user': {
         'screen': 'A network storage box (NAS)',
         'title': 'What is the user name for that disk?',
         'kind': 'text',
         'send': 'Next',
-        'old': 'CHAP user name:',
     },
     'nas_folder': {
         'screen': 'A network storage box (NAS)',
@@ -152,8 +141,6 @@ Q = {
         'skip_label': 'Use a drive on this PC instead',
         'how': 'Type its number or its name, then press Enter. Enter alone uses a drive on this PC instead.',
         'example': {'words': 'your films, shows and backups'},
-        'old': 'The shared folder for the media drive: its number (1 to 3) or its name, or Enter alone for a '
-        'drive on this PC:',
     },
     # ---- logins for the apps
     'logins_who': {
@@ -164,7 +151,6 @@ Q = {
         'kind': 'choice',
         'choices': [('1', 'Create strong passwords for me (recommended)'), ('2', 'Choose my own logins')],
         'how': 'Type 1 or 2, then press Enter.',
-        'old': 'Choose 1 or 2:',
     },
     'login_name': {
         'screen': 'Logins for your apps',
@@ -172,7 +158,6 @@ Q = {
         'kind': 'text',
         'send': 'Next',
         'example': {'app': 'Jellyfin'},
-        'old': 'Username:',
     },
     'login_email': {
         'screen': 'Logins for your apps',
@@ -181,7 +166,6 @@ Q = {
         'kind': 'text',
         'send': 'Next',
         'example': {'app': 'Immich'},
-        'old': 'Email login:',
     },
     'login_retry': {
         'screen': 'Logins for your apps',
@@ -191,7 +175,6 @@ Q = {
         'choices': [('', 'Try the saved login again'), ('c', 'I changed it: here is the new one')],
         'how': 'Press Enter alone to try again, or type c and press Enter to enter the new login.',
         'example': {'app': 'Jellyfin'},
-        'old': 'ENTER to retry saved login, or c to enter the current login:',
     },
     'app_signed_in': {
         'screen': 'Logins for your apps',
@@ -201,7 +184,6 @@ Q = {
         'yes': 'Yes, I am in',
         'no': 'Not yet',
         'example': {'app': 'Jellyfin'},
-        'old': 'Have you completed this step successfully? [yes/no]:',
     },
     # ---- Tailscale
     'tailscale_connected': {
@@ -211,7 +193,6 @@ Q = {
         'kind': 'yesno',
         'yes': 'Yes, it is connected',
         'no': 'Not yet',
-        'old': 'Have you completed this step successfully? [yes/no]:',
     },
     'tailscale_https': {
         'screen': 'Reaching the server from your phone',
@@ -220,7 +201,6 @@ Q = {
         'kind': 'yesno',
         'yes': 'Yes, both are on',
         'no': 'Not yet',
-        'old': 'Have you completed this step successfully? [yes/no]:',
     },
     'phone_ready': {
         'screen': 'Reaching the server from your phone',
@@ -229,7 +209,6 @@ Q = {
         'kind': 'yesno',
         'yes': 'Yes, it works',
         'no': 'Not yet',
-        'old': 'Have you completed this step successfully? [yes/no]: (asked after each of up to eight steps)',
     },
     # ---- connecting the media apps
     'apps_finished': {
@@ -240,7 +219,6 @@ Q = {
         'above': True,
         'yes': 'Yes, done',
         'no': 'Not yet',
-        'old': 'Have you completed this step successfully? [yes/no]:',
     },
     'played': {
         'screen': 'Connecting your apps',
@@ -249,7 +227,6 @@ Q = {
         'kind': 'yesno',
         'yes': 'Yes, it played',
         'no': 'Not yet',
-        'old': 'Have you completed this step successfully? [yes/no]:',
     },
     'source_filter': {
         'screen': 'Connecting your apps',
@@ -260,7 +237,6 @@ Q = {
         'skip': '',
         'skip_label': 'Show them all',
         'how': 'Type part of a name and press Enter. Enter alone shows them all.',
-        'old': 'Filter catalog by name (blank for all):',
     },
     'source_account_ready': {
         'screen': 'Connecting your apps',
@@ -270,7 +246,6 @@ Q = {
         'yes': 'Yes, I have it',
         'no': 'Not yet',
         'example': {'source': 'ExampleTracker'},
-        'old': 'Have you completed this step successfully? [yes/no]:',
     },
     'source_saved': {
         'screen': 'Connecting your apps',
@@ -280,7 +255,6 @@ Q = {
         'yes': 'Yes, it is saved',
         'no': 'Not yet',
         'example': {'source': 'ExampleTracker'},
-        'old': 'Have you completed this step successfully? [yes/no]:',
     },
     'qbit_user': {
         'screen': 'Connecting your apps',
@@ -291,7 +265,6 @@ Q = {
         'skip': '',
         'skip_label': 'It is admin',
         'how': 'Type it and press Enter. Enter alone means admin.',
-        'old': 'qBittorrent username [admin]:',
     },
     'qbit_password': {
         'screen': 'Connecting your apps',
@@ -299,7 +272,6 @@ Q = {
         'hint': 'It is used once to connect the apps and is not kept.',
         'kind': 'secret',
         'send': 'Connect',
-        'old': 'qBittorrent WebUI password (not saved by this connector):',
     },
     # ---- alerts
     'alert_arrived': {
@@ -310,7 +282,6 @@ Q = {
         'yes': 'Yes, it arrived',
         'no': 'Not yet',
         'example': {'said': 'The alert server accepted the test message.'},
-        'old': 'Have you completed this step successfully? [yes/no]:',
     },
     'alerts_token': {
         'screen': 'Alerts on your phone',
@@ -320,7 +291,6 @@ Q = {
         'send': 'Save',
         'skip': '',
         'skip_label': 'It has none',
-        'old': 'ntfy access token (blank for no token):',
     },
     'alerts_switch': {
         'screen': 'Alerts on your phone',
@@ -329,8 +299,6 @@ Q = {
         'kind': 'yesno',
         'yes': 'Use the new one',
         'no': 'Keep the old one',
-        'old': 'Alerts go to another ntfy topic now. Send them to the topic in my-config.json '
-        '(notifications.endpoint) instead? [yes/no]:',
     },
     # ---- the outage monitor
     # ---- the assistant
@@ -342,7 +310,6 @@ Q = {
         'kind': 'yesno',
         'yes': 'Yes, I have some',
         'no': 'No, start empty',
-        'old': 'Add a media source now? [yes/no]:',
     },
     'existing_folder': {
         'screen': 'Media you already have',
@@ -355,7 +322,6 @@ Q = {
         'skip_label': 'I have none',
         'how': 'Type the folder, then press Enter. Enter alone when you have none.',
         'example': {'what': 'films'},
-        'old': 'Already mounted local folder (blank to defer)',
     },
     'assistant_model': {
         'screen': 'Ask Neko, the AI assistant',
@@ -364,7 +330,6 @@ Q = {
         'kind': 'choice',
         'how': 'Type its number, then press Enter. Enter alone keeps {default}.',
         'example': {'default': 'no assistant'},
-        'old': 'Which one? (0-2, Enter for no assistant):',
     },
     # ---- the TV
     'tv_worked': {
@@ -374,7 +339,6 @@ Q = {
         'kind': 'yesno',
         'yes': 'Yes, all of it',
         'no': 'Not yet',
-        'old': 'Have you completed this step successfully? [yes/no]: (asked after each of three steps)',
     },
     # ---- the first checkup's tests
     'test_passed': {
@@ -385,7 +349,6 @@ Q = {
         'yes': 'Yes, I saw it work',
         'no': 'Not yet',
         'example': {'name': 'A photo taken on the phone appears in Immich'},
-        'old': 'Have you completed this step successfully? [yes/no]:',
     },
     # ---- recovery
     # Section 2, "Review this restore": the one approval of a restore, asked under the
@@ -399,8 +362,6 @@ Q = {
         'no': 'Go back',
         'how': 'Type yes to restore, or no to go back, then press Enter. Enter alone does nothing.',
         'above': True,
-        'old': 'Use this folder? [yes/no]: and Restore everything else from this backup now? ("no" stops, with '
-        'nothing restored) [yes/no]:',
     },
     # Asked only when a monthly snapshot's app versions are not all on this PC (what the
     # snapshot holds and what Docker has was looked at; "Is this a new server?" is gone).
@@ -417,7 +378,6 @@ Q = {
             'found': '3 of the 9 app versions this snapshot was made with are not on this PC.',
             'size': '6.2 GB',
         },
-        'old': 'Also load the saved app versions into Docker (needed on a new server)? [yes/no]:',
     },
     # Section 3, "Check or repair a drive". The check and the repair are two actions.
     'check_drive': {
@@ -429,7 +389,6 @@ Q = {
         'no': 'Not now',
         'how': 'Type yes to check, or no to leave everything as it is, then press Enter. Enter alone does nothing.',
         'above': True,
-        'old': 'Stop the apps and check the drive now? [yes/no]:',
     },
     'repair_drive': {
         'screen': 'Recovery',
@@ -440,7 +399,6 @@ Q = {
         'how': 'Type {name} and press Enter to repair. Anything else, or Enter alone, leaves the drive as it is.',
         'above': True,
         'example': {'name': 'sdb1'},
-        'old': 'Check and repair its filesystem now (e2fsck: it changes only what is broken)? [yes/no]:',
     },
     'fix_copies': {
         'screen': 'Recovery',
@@ -528,11 +486,3 @@ def yes_no(key, prompt=None, output=None, leave=False, **values):
     text = '\n' + asked['title'] + ('\n' + asked['hint'] if asked['hint'] else '')
     with shown(key, leave=leave, **values):
         return guided_setup.yes_no(text, prompt, output, how='\n' + asked['how'] + ' ')
-
-
-def screens():
-    """The questions in the order setup shows them, by screen: [(screen, [key, ...])]."""
-    found = {}
-    for key, entry in Q.items():
-        found.setdefault(entry['screen'], []).append(key)
-    return list(found.items())
