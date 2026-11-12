@@ -175,14 +175,7 @@ def guard(config, previous=None):
     add(Path(config['data_mount']) / 'gateway')
     for path in system_paths():
         add(path)
-    user = None
-    if opts.get('steam', True) or opts.get('extra_paths'):
-        user = choose_user(config, opts, previous)
-        home = owned_home(user)
-        for path in steam_paths(home) if opts.get('steam', True) else []:
-            add(path, steam=True)
-        for value in opts.get('extra_paths', []):
-            add(extra_path(config, home, value), False)
+    user = user_paths(config, opts, previous, add)
     samba = opts.get('samba', True)
     if samba:
         add('/etc/samba')
@@ -199,6 +192,20 @@ def guard(config, previous=None):
         **({'earlier': True} if kept_count(config, 'host_backup', SETTINGS_BACKUPS)[1] else {}),
     }
     return value
+
+
+def user_paths(config, opts, previous, add):
+    """Steam's folders and the extra paths in the desktop account's home, handed to `add`.
+    Returns that account, or None when neither is backed up."""
+    if not (opts.get('steam', True) or opts.get('extra_paths')):
+        return None
+    user = choose_user(config, opts, previous)
+    home = owned_home(user)
+    for path in steam_paths(home) if opts.get('steam', True) else []:
+        add(path, steam=True)
+    for value in opts.get('extra_paths', []):
+        add(extra_path(config, home, value), False)
+    return user
 
 
 def expected(config, target=None):

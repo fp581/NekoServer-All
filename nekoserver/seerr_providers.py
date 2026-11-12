@@ -177,7 +177,7 @@ def existing_verified(app, existing, folders, available, languages):
     return row(PROVIDER + app, 'pass', 'Existing default provider verified through Seerr; settings preserved')
 
 
-def new_provider(app, connection, selected, directory, languages, prompt):
+def new_provider(app, connection, selected, directory, languages):
     """The provider setup makes for the app, as Seerr's settings take it."""
     payload = dict(
         connection,
@@ -251,7 +251,7 @@ def provider(seerr, manager, root, app, apply, prompt, verify_only=False, folder
     if standard:
         return existing_verified(app, standard[0], (library, directory), available, languages)
     selected = standard_profile(available, app.capitalize() + ' request quality profile')
-    payload = new_provider(app, connection, selected, directory, languages, prompt)
+    payload = new_provider(app, connection, selected, directory, languages)
     if not apply:
         return row(PROVIDER + app, 'needs_setup', 'Preview: connection tested; default provider would be created')
     return saved_provider(seerr, app, initial, payload, connection)

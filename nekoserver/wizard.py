@@ -1046,7 +1046,7 @@ def what_is_here(root, config, default_state):
         return None
 
 
-def settings_for_run(config, root, prompt, output):
+def settings_for_run(config, root, output):
     """(path, created) of the settings this run uses, or None when a file named with
     --config is missing."""
     if config:
@@ -1212,6 +1212,32 @@ def goes_straight_on(found, choice):
     return choice == 'continue' and bool(found.get('waiting')) and not found.get('job')
 
 
+def run_steps(execute, path, default_state, straight, asking):
+    """The setup run itself, once it is approved (run): the steps, the retries of the
+    ones that did not finish, then the finishing page. `straight`: only the steps left.
+    `asking`: (prompt, output, the setup window or None). Returns the exit code."""
+    prompt, output, window = asking
+    if window is not None:
+        window.freeze()
+    default_state = checked_path(default_state)
+    args = argparse.Namespace(
+        all=False,
+        profile='full',
+        module=None,
+        retry_failed=straight,
+        apply=True,
+        check=False,
+        dry_run=False,
+        config=str(path),
+        state_dir=str(default_state),
+    )
+    with setup_progress.watching_prompts():
+        code = execute(args)
+        if prompt is builtins.input:
+            code = retry_unfinished(execute, args, code, default_state, output=output)
+    return after_setup(code, path, default_state, output, window)
+
+
 def run(execute, default_state, prompt=input, output=print, root=ROOT, config=None):
     """`execute` is installer.execute; injected so this module stays testable.
     `config`: a settings file chosen with --config; otherwise my-config.json here."""
@@ -1223,7 +1249,7 @@ def run(execute, default_state, prompt=input, output=print, root=ROOT, config=No
     choice = chosen_here(found, prompt, output)
     if choice in (None, 'restore'):
         return 0
-    settings = settings_for_run(config, root, prompt, output)
+    settings = settings_for_run(config, root, output)
     if settings is None:
         return 2
     path, created = settings
@@ -1246,25 +1272,7 @@ def run(execute, default_state, prompt=input, output=print, root=ROOT, config=No
         if straight or wait_to_start(
             path, prompt, output, window, storage=choose_storage if prompt is builtins.input else None
         ):
-            if window is not None:
-                window.freeze()
-            default_state = checked_path(default_state)
-            args = argparse.Namespace(
-                all=False,
-                profile='full',
-                module=None,
-                retry_failed=straight,
-                apply=True,
-                check=False,
-                dry_run=False,
-                config=str(path),
-                state_dir=str(default_state),
-            )
-            with setup_progress.watching_prompts():
-                code = execute(args)
-                if prompt is builtins.input:
-                    code = retry_unfinished(execute, args, code, default_state, output=output)
-            exit_code = after_setup(code, path, default_state, output, window)
+            exit_code = run_steps(execute, path, default_state, straight, (prompt, output, window))
         else:
             output(
                 'No apps were set up. (The system update and the packages NekoServer needs are '

@@ -354,17 +354,22 @@ def new_folder(suggested, prompt=input, output=print, avoid=(), refuse=(), made_
             output(problem)
             path = None
             continue
-        room = free_space(path)
-        say(
-            output,
-            '\nWhere should the restored files go?',
-            'They go into a NEW folder, so nothing you have now is overwritten:',
-            f'  {path}' + (f'  (free space on that drive: {room})' if room else ''),
-        )
-        pick = choose('Restore into this folder?', FOLDER_CHOICES, prompt, output)
+        pick = folder_offered(path, prompt, output)
         if pick != 'other':
             return path if pick == 'use' else None
         path = None
+
+
+def folder_offered(path, prompt, output):
+    """The folder new_folder found, shown with the free space there: 'use', 'other' or None."""
+    room = free_space(path)
+    say(
+        output,
+        '\nWhere should the restored files go?',
+        'They go into a NEW folder, so nothing you have now is overwritten:',
+        f'  {path}' + (f'  (free space on that drive: {room})' if room else ''),
+    )
+    return choose('Restore into this folder?', FOLDER_CHOICES, prompt, output)
 
 
 # Inside a restore folder: the damaged copies a restore found, as they are on the backup
@@ -1140,14 +1145,12 @@ class Files:
         missing, other = self.checked.missing, self.checked.other
         if not missing:
             return None
+        also = ''
+        if other:
+            also = f' {other[0].upper() + other[1:]} may still have {"it" if len(missing) == 1 else "them"}.'
         return (
             f'{file_count(len(missing))} backed up and checked before {"is" if len(missing) == 1 else "are"} not on '
-            f'this backup any more (for example {", ".join(missing[:5])}), and cannot come back from it.'
-            + (
-                f' {other[0].upper() + other[1:]} may still have {"it" if len(missing) == 1 else "them"}.'
-                if other
-                else ''
-            )
+            f'this backup any more (for example {", ".join(missing[:5])}), and cannot come back from it.' + also
         )
 
     def not_restored(self):
@@ -2756,16 +2759,7 @@ def checked_drive(config, prompt, output, run, writes, errors, action=CHECK):
             'The apps start again by themselves once it takes new files. Nothing was changed.',
         )
         return
-    uuid, fstype = record.get('uuid', ''), record.get('fstype', '')
-    if not re.fullmatch(r'[A-Za-z0-9-]{8,80}', uuid or ''):
-        raise RuntimeError(f'{name} has no drive identity in the settings')
-    if found[2] != uuid:
-        # The review of 0.46.1: with another drive mounted there (or settings out of date),
-        # one filesystem was unmounted and another, the saved UUID's, checked.
-        raise RuntimeError(
-            f'{folder} holds another drive than the settings name (UUID {found[2] or "unknown"}, '
-            f'not {uuid}). Nothing was changed; run  sudo bash install.sh  so setup sees which drive it is.'
-        )
+    uuid, fstype = named_drive(name, folder, record, found)
     say(output, *drive_facts(name, folder, found, config, writes, errors))
     if not drive_approved(action, found[0], fstype, prompt, output):
         output('Nothing was changed: the apps keep running and the drive is as it was.')
@@ -2801,6 +2795,22 @@ def checked_drive(config, prompt, output, run, writes, errors, action=CHECK):
         else f'{folder} is repaired, connected again and takes new files.'
     )
     start_apps(run, output, config)
+
+
+def named_drive(name, folder, record, found):
+    """(UUID, filesystem) of the drive the settings name for `folder`, checked to be the
+    one mounted there (`found`: mounted_drive's answer). Raises when it is not."""
+    uuid, fstype = record.get('uuid', ''), record.get('fstype', '')
+    if not re.fullmatch(r'[A-Za-z0-9-]{8,80}', uuid or ''):
+        raise RuntimeError(f'{name} has no drive identity in the settings')
+    if found[2] != uuid:
+        # The review of 0.46.1: with another drive mounted there (or settings out of date),
+        # one filesystem was unmounted and another, the saved UUID's, checked.
+        raise RuntimeError(
+            f'{folder} holds another drive than the settings name (UUID {found[2] or "unknown"}, '
+            f'not {uuid}). Nothing was changed; run  sudo bash install.sh  so setup sees which drive it is.'
+        )
+    return uuid, fstype
 
 
 def own_tool(action, fstype, device):

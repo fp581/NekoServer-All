@@ -539,27 +539,38 @@ def retry_question(rows, leave='', ask=None, output=None):
     that just failed, its number in the list at the end of a run. Returns the answer
     chosen, or `leave` ("no", or '' for Enter alone) when none is; Ctrl+D leaves too.
     In the setup window this is one page: each step with a "Retry this step" button."""
-    import known_fixes
     import setup_progress
 
     ask, output = ask or input, output or print
     one = len(rows) == 1 and rows[0]['answer'] == 'yes'
+    say_unfinished(rows, one, output)
+    with setup_progress.page('retry', {'answer': ''}, steps=rows, leave=leave):
+        setup_progress.page_asks('answer')
+        return retry_chosen(rows, one, leave, ask, output)
+
+
+def say_unfinished(rows, one, output):
+    """Each step that did not finish, with its reason and the fix setup knows for it."""
+    import known_fixes
+
     for row in rows:
         output(('' if one else f"  {row['answer']}) ") + f"{row['title']} did not finish: {row['reason']}")
         for line in known_fixes.lines(row['fix']) if row.get('fix') else ():
             output(line)
+
+
+def retry_chosen(rows, one, leave, ask, output):
+    """The answer to retry_question, asked up to three times; `leave` when none is given."""
     question = 'Retry this step now? [yes/no]: ' if one else 'Retry one now? Type its number (Enter alone: finish): '
     answers = {row['answer'] for row in rows}
-    with setup_progress.page('retry', {'answer': ''}, steps=rows, leave=leave):
-        setup_progress.page_asks('answer')
-        for _ in range(3):
-            answer = typed_or_left(ask, question)
-            if answer is None:
-                return leave
-            chosen = retry_answer(answer, one, answers, leave)
-            if chosen is not None:
-                return chosen
-            output('Type yes or no.' if one else 'Type one of the numbers above, or press Enter alone to finish.')
+    for _ in range(3):
+        answer = typed_or_left(ask, question)
+        if answer is None:
+            return leave
+        chosen = retry_answer(answer, one, answers, leave)
+        if chosen is not None:
+            return chosen
+        output('Type yes or no.' if one else 'Type one of the numbers above, or press Enter alone to finish.')
     return leave
 
 
@@ -937,7 +948,7 @@ def choose_backup_times(ctx, prompt=None, output=None):
     )
     with page:
         chosen = ask_backup_times(ctx, now, night_end, prompt, output)
-        kept = ask_backup_counts(ctx, counts, prompt, output)
+        kept = ask_backup_counts(counts, prompt, output)
     keep_counts(ctx, kept, output)
     # Settings from before 0.48.0 (no "backup_times" yet) gave each job a time of its own.
     moved = jobs_moved(ctx.config, now, chosen) if backup_times(ctx.config) is None else []
@@ -987,7 +998,7 @@ def count_offered(field):
     return '' if field['earlier'] else str(field['value'])
 
 
-def ask_backup_counts(ctx, counts, prompt, output):
+def ask_backup_counts(counts, prompt, output):
     """One question for each count, on the backups page: {group: the number typed, '' for
     Enter on a count that stays as it is}."""
     chosen = {}

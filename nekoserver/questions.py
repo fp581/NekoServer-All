@@ -30,6 +30,17 @@ HOW = {
 OPTIONAL = ' Press Enter alone to skip this for now.'
 SKIP = 'Skip for now'
 
+# Words several questions share: the screens they come on and their answers.
+NAS = 'A NAS (a storage device on your home network)'
+FIRST_OF_TWO = 'Type 1 or 2, then press Enter. Enter alone takes the first.'
+USE_FOLDER = 'Use this folder'
+LOGINS = 'Logins for your apps'
+NOT_YET = 'Not yet'
+PHONE = 'Reaching the server from your phone'
+CONNECTING = 'Connecting your apps'
+ALERTS = 'Alerts on your phone'
+YOUR_MEDIA = 'Media you already have'
+
 # The questions. For each:
 #   title   the question itself
 #   hint    one plain line under it (optional)
@@ -101,14 +112,14 @@ Q = {
     },
     # ---- a NAS
     'nas_address': {
-        'screen': 'A NAS (a storage device on your home network)',
+        'screen': NAS,
         'title': 'What is the address of your NAS?',
         'hint': 'It is what you open in a browser to reach it, such as 192.168.1.20.',
         'kind': 'text',
         'send': 'Look there',
     },
     'nas_kind': {
-        'screen': 'A NAS (a storage device on your home network)',
+        'screen': NAS,
         'title': 'How should NekoServer use your NAS?',
         'hint': 'It offers both ways. If you are not sure, take the first.',
         'kind': 'choice',
@@ -116,10 +127,10 @@ Q = {
             ('1', 'As a disk of its own (only this PC can use it)'),
             ('2', 'As a shared folder (the files stay visible on the NAS)'),
         ],
-        'how': 'Type 1 or 2, then press Enter. Enter alone takes the first.',
+        'how': FIRST_OF_TWO,
     },
     'nas_disks': {
-        'screen': 'A NAS (a storage device on your home network)',
+        'screen': NAS,
         'title': 'Which of these disks are for NekoServer?',
         'hint': 'The NAS offers the disks listed above. Choose only the ones you made for this server.',
         'kind': 'text',
@@ -128,7 +139,7 @@ Q = {
         'how': 'Type their numbers with commas between them (such as 1,2), then press Enter. Enter alone stops setup here.',
     },
     'nas_login_needed': {
-        'screen': 'A NAS (a storage device on your home network)',
+        'screen': NAS,
         'title': 'Does your NAS ask for a user name and password for this disk?',
         'hint': 'Most do not: only if you gave this disk a password on the NAS (the NAS calls it CHAP). The disk is {iqn}.',
         'kind': 'yesno',
@@ -138,18 +149,18 @@ Q = {
         'example': {'iqn': 'iqn.2000-01.com.synology:nas.Target-1'},
     },
     'nas_login_user': {
-        'screen': 'A NAS (a storage device on your home network)',
+        'screen': NAS,
         'title': 'What is the user name for that disk?',
         'kind': 'text',
         'send': 'Next',
     },
     'nas_folder': {
-        'screen': 'A NAS (a storage device on your home network)',
+        'screen': NAS,
         'title': 'Which shared folder is for {words}?',
         'hint': 'The folders the NAS shares are listed above.',
         'kind': 'text',
         'above': True,
-        'send': 'Use this folder',
+        'send': USE_FOLDER,
         'skip': '',
         'skip_label': 'Use a drive on this PC instead',
         'how': 'Type its number or its name, then press Enter. Enter alone uses a drive on this PC instead.',
@@ -157,23 +168,23 @@ Q = {
     },
     # ---- logins for the apps
     'logins_who': {
-        'screen': 'Logins for your apps',
+        'screen': LOGINS,
         'title': 'How would you like to set up your app accounts?',
         'hint': 'Each selected app has a separate account. NekoServer stores its required credentials privately so '
         'it can connect and check the apps.',
         'kind': 'choice',
         'choices': [('1', 'Create strong passwords for me (recommended)'), ('2', 'Choose my own logins')],
-        'how': 'Type 1 or 2, then press Enter. Enter alone takes the first.',
+        'how': FIRST_OF_TWO,
     },
     'login_name': {
-        'screen': 'Logins for your apps',
+        'screen': LOGINS,
         'title': 'What user name do you want for {app}?',
         'kind': 'text',
         'send': 'Next',
         'example': {'app': 'Jellyfin'},
     },
     'login_email': {
-        'screen': 'Logins for your apps',
+        'screen': LOGINS,
         'title': 'What email address do you want to sign in to {app} with?',
         'hint': 'This identifies your account. Email delivery and password recovery depend on how {app} is configured.',
         'kind': 'text',
@@ -181,7 +192,7 @@ Q = {
         'example': {'app': 'Immich'},
     },
     'login_retry': {
-        'screen': 'Logins for your apps',
+        'screen': LOGINS,
         'title': '{app} did not take the saved login. What now?',
         'hint': 'If you changed the password in {app} yourself, tell NekoServer the new one.',
         'kind': 'choice',
@@ -190,50 +201,50 @@ Q = {
         'example': {'app': 'Jellyfin'},
     },
     'app_signed_in': {
-        'screen': 'Logins for your apps',
+        'screen': LOGINS,
         'title': 'Could you sign in to {app}?',
         'hint': '{app} opened in your browser. "Show login" gives you its user name and password.',
         'kind': 'yesno',
         'yes': 'Yes, I am in',
-        'no': 'Not yet',
+        'no': NOT_YET,
         'example': {'app': 'Jellyfin'},
     },
     # ---- Tailscale
     'tailscale_connected': {
-        'screen': 'Reaching the server from your phone',
+        'screen': PHONE,
         'title': 'Is this server connected to Tailscale?',
         'hint': 'The Tailscale page in your browser says so once you have signed in and pressed Connect.',
         'kind': 'yesno',
         'yes': 'Yes, it is connected',
-        'no': 'Not yet',
+        'no': NOT_YET,
     },
     'tailscale_https': {
-        'screen': 'Reaching the server from your phone',
+        'screen': PHONE,
         'title': 'Did you switch on both settings in Tailscale?',
         'hint': 'On the page that opened, "MagicDNS" and "HTTPS Certificates" must both be on. They give each app a safe address.',
         'kind': 'yesno',
         'yes': 'Yes, both are on',
-        'no': 'Not yet',
+        'no': NOT_YET,
     },
     'phone_ready': {
-        'screen': 'Reaching the server from your phone',
+        'screen': PHONE,
         'title': 'Is your phone set up?',
         'hint': 'Yes when the apps open on the phone, also with Wi-Fi off.',
         'kind': 'yesno',
         'yes': 'Yes, it works',
-        'no': 'Not yet',
+        'no': NOT_YET,
     },
     # ---- connecting the media apps
     'played': {
-        'screen': 'Connecting your apps',
+        'screen': CONNECTING,
         'title': 'Did a film or show play in Jellyfin?',
         'hint': 'Add something you are allowed to watch, wait for it to arrive, and press play. You can also do this later.',
         'kind': 'yesno',
         'yes': 'Yes, it played',
-        'no': 'Not yet',
+        'no': NOT_YET,
     },
     'source_filter': {
-        'screen': 'Connecting your apps',
+        'screen': CONNECTING,
         'title': 'Looking for a download source by name?',
         'hint': 'A few letters of its name shorten the list.',
         'kind': 'text',
@@ -243,25 +254,25 @@ Q = {
         'how': 'Type part of a name and press Enter. Enter alone shows them all.',
     },
     'source_account_ready': {
-        'screen': 'Connecting your apps',
+        'screen': CONNECTING,
         'title': 'Do you have your account at {source} ready?',
         'hint': '{source} needs an account of its own. Have its user name and password, or its key, at hand.',
         'kind': 'yesno',
         'yes': 'Yes, I have it',
-        'no': 'Not yet',
+        'no': NOT_YET,
         'example': {'source': 'ExampleTracker'},
     },
     'source_saved': {
-        'screen': 'Connecting your apps',
+        'screen': CONNECTING,
         'title': 'Is {source} saved in Prowlarr now?',
         'hint': 'Prowlarr opened in your browser. Fill in what it asks for {source}, press Test, then Save.',
         'kind': 'yesno',
         'yes': 'Yes, it is saved',
-        'no': 'Not yet',
+        'no': NOT_YET,
         'example': {'source': 'ExampleTracker'},
     },
     'qbit_user': {
-        'screen': 'Connecting your apps',
+        'screen': CONNECTING,
         'title': 'What is the user name of your download app (qBittorrent)?',
         'hint': 'It is "admin" unless you changed it.',
         'kind': 'text',
@@ -271,7 +282,7 @@ Q = {
         'how': 'Type it and press Enter. Enter alone means admin.',
     },
     'qbit_password': {
-        'screen': 'Connecting your apps',
+        'screen': CONNECTING,
         'title': 'What is the password of your download app (qBittorrent)?',
         'hint': 'It is used once to connect the apps and is not kept.',
         'kind': 'secret',
@@ -279,16 +290,16 @@ Q = {
     },
     # ---- alerts
     'alert_arrived': {
-        'screen': 'Alerts on your phone',
+        'screen': ALERTS,
         'title': 'Did the test message arrive on your phone?',
         'hint': '{said} Look at your phone now: a message called "NekoServer test" should be there.',
         'kind': 'yesno',
         'yes': 'Yes, it arrived',
-        'no': 'Not yet',
+        'no': NOT_YET,
         'example': {'said': 'The alert server accepted the test message.'},
     },
     'alerts_token': {
-        'screen': 'Alerts on your phone',
+        'screen': ALERTS,
         'title': 'Does your alerts topic have an access token? Paste it here',
         'hint': 'Only private topics have one. If yours has none, skip this.',
         'kind': 'secret',
@@ -297,7 +308,7 @@ Q = {
         'skip_label': 'It has none',
     },
     'alerts_switch': {
-        'screen': 'Alerts on your phone',
+        'screen': ALERTS,
         'title': 'Send alerts to the new topic?',
         'hint': 'Your settings name another alerts topic than the one alerts go to now.',
         'kind': 'yesno',
@@ -307,7 +318,7 @@ Q = {
     # ---- the outage monitor
     # ---- the assistant
     'existing_media': {
-        'screen': 'Media you already have',
+        'screen': YOUR_MEDIA,
         'title': 'Do you already have films, shows or music that this server should use?',
         'hint': 'On this PC, on another drive, or on a NAS (a storage device on your home network) whose folder is connected to this PC. '
         'Nothing in your folder is changed.',
@@ -316,19 +327,19 @@ Q = {
         'no': 'No, start empty',
     },
     'existing_folder': {
-        'screen': 'Media you already have',
+        'screen': YOUR_MEDIA,
         'title': 'Which folder holds your {what}?',
         'hint': 'The folder as this PC sees it, such as /mnt/tank/{what}. For a NAS that is where its '
         'shared folder is connected here, not its network address.',
         'kind': 'text',
-        'send': 'Use this folder',
+        'send': USE_FOLDER,
         'skip': '',
         'skip_label': 'I have none',
         'how': 'Type the folder, then press Enter. Enter alone when you have none.',
         'example': {'what': 'films'},
     },
     'existing_use': {
-        'screen': 'Media you already have',
+        'screen': YOUR_MEDIA,
         'title': 'How should this server use your {what}?',
         'hint': 'Your folder is kept as it is either way.',
         'kind': 'choice',
@@ -336,21 +347,21 @@ Q = {
             ('1', 'Use the files where they are (nothing is copied)'),
             ('2', 'Copy them into the NekoServer library'),
         ],
-        'how': 'Type 1 or 2, then press Enter. Enter alone takes the first.',
+        'how': FIRST_OF_TWO,
         'example': {'what': 'films'},
     },
     'existing_backup': {
-        'screen': 'Media you already have',
+        'screen': YOUR_MEDIA,
         'title': 'Back this up too?',
         'hint': 'Your {what} on the network share can be copied each night with the music backup, onto the '
         "backups' drive. That needs as much room there as the folder takes. Nothing in your folder is changed.",
         'kind': 'choice',
         'choices': [('1', 'Yes, back it up (recommended)'), ('2', 'No, I keep my own copy')],
-        'how': 'Type 1 or 2, then press Enter. Enter alone takes the first.',
+        'how': FIRST_OF_TWO,
         'example': {'what': 'music'},
     },
     'existing_new_files': {
-        'screen': 'Media you already have',
+        'screen': YOUR_MEDIA,
         'title': 'Save new {what} here too?',
         'hint': 'New downloads will be saved in this folder. Your existing files are not moved.',
         'kind': 'yesno',
@@ -359,19 +370,19 @@ Q = {
         'example': {'what': 'films'},
     },
     'existing_new_place': {
-        'screen': 'Media you already have',
+        'screen': YOUR_MEDIA,
         'title': 'Where should new {what} be saved?',
         'kind': 'choice',
         'choices': [('1', 'In the NekoServer library'), ('2', 'In another folder of mine')],
-        'how': 'Type 1 or 2, then press Enter. Enter alone takes the first.',
+        'how': FIRST_OF_TWO,
         'example': {'what': 'films'},
     },
     'existing_new_folder': {
-        'screen': 'Media you already have',
+        'screen': YOUR_MEDIA,
         'title': 'Which folder should new {what} be saved in?',
         'hint': 'The folder as this PC sees it. The apps must be able to write there.',
         'kind': 'text',
-        'send': 'Use this folder',
+        'send': USE_FOLDER,
         'skip': '',
         'skip_label': 'In the NekoServer library instead',
         'how': 'Type the folder, then press Enter. Enter alone saves them in the NekoServer library.',
@@ -392,7 +403,7 @@ Q = {
         'hint': 'Steam, the controller, and the picture and sound.',
         'kind': 'yesno',
         'yes': 'Yes, all of it',
-        'no': 'Not yet',
+        'no': NOT_YET,
     },
     # ---- the first checkup's tests
     'test_passed': {
@@ -401,7 +412,7 @@ Q = {
         'hint': 'Say yes only if you saw it work yourself.',
         'kind': 'yesno',
         'yes': 'Yes, I saw it work',
-        'no': 'Not yet',
+        'no': NOT_YET,
         'example': {'name': 'A photo taken on the phone appears in Immich'},
     },
     # ---- recovery
