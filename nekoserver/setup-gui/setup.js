@@ -792,16 +792,16 @@
       input.disabled = !!drive.why;
       // Only the ones that can be chosen are switched off and on again around an answer.
       if (!drive.why) pickInputs.push(input);
-      const facts = [drive.inside, drive.role, drive.why ? 'Not this one: ' + drive.why : '', drive.caution].filter(
-        Boolean
-      );
+      // In plain words: what it is and how it stands; its filesystem and ID are in its details.
+      const facts = [drive.why ? 'Not this one: ' + drive.why : drive.state, drive.caution].filter(Boolean);
       list.append(
         el(
           'label',
           { class: drive.why ? 'pick-row drive off' : 'pick-row drive' },
           input,
-          el('span', { class: 'pick-name', text: drive.number + ' · ' + drive.name + ' · ' + drive.what }),
-          ...facts.map(text => el('small', { text }))
+          el('span', { class: 'pick-name', text: drive.number + ' · ' + drive.what }),
+          ...facts.map(text => el('small', { text })),
+          driveDetails(drive)
         )
       );
     }
@@ -917,10 +917,21 @@
     return select;
   }
 
-  /* What the chosen drive holds now, under its line (it changes with the choice). */
+  /* A drive's details (Linux's name for it, its filesystem and ID), folded away under its line. */
+  function driveDetails(drive) {
+    return el(
+      'details',
+      { class: 'drive-details' },
+      el('summary', { text: 'Details' }),
+      el('small', { text: drive.details.replace(/^Details: /, '') })
+    );
+  }
+
+  /* How the chosen drive stands, under its line (it changes with the choice). */
   function driveFacts(role, select, facts) {
     const drive = role.rows.find(row => String(row.number) === select.value);
-    facts.textContent = drive ? [drive.name, drive.inside, drive.caution].filter(Boolean).join(' · ') : '';
+    facts.textContent = drive ? [drive.state, drive.caution].filter(Boolean).join(' · ') : '';
+    if (drive) facts.append(driveDetails(drive));
   }
 
   /* The storage page: every line is a list to choose from. A drive is named by what it

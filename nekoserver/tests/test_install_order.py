@@ -216,13 +216,13 @@ class DrivePickingTests(unittest.TestCase):
         message = str(caught.exception)
         self.assertIn('No drive here can be the media HDD', message)
         # Every drive by the number and words the list gave it (0.50.0), with its reason.
-        self.assertIn('drive 3 (sdc1: drive): it is formatted NTFS (Windows)', message)
-        self.assertIn('drive 4 (sdd1: drive): it is in use at /mnt/films', message)
+        self.assertIn('drive 3 (drive, ID ending win-0001): it is formatted NTFS (Windows)', message)
+        self.assertIn('drive 4 (drive, ID ending old-0001): it is in use at /mnt/films', message)
         self.assertIn('sudo umount /mnt/films', message)
         # The apps' drive could hold the backups too (0.50.0), but not at 40 GB.
         self.assertIn('it is too small for both', message)
         self.assertIn(
-            'drive 1 (nvme0n1: NVMe SSD): it has too little room: 0 GB free, and the media HDD needs at least 50 GB there',
+            'drive 1 (NVMe SSD): it has too little room: 0 GB free, and the media HDD needs at least 50 GB there',
             message,
         )
         self.assertNotIn('nvme0n1p1', message)  # the system disk's boot partition
@@ -267,7 +267,7 @@ class DrivePickingTests(unittest.TestCase):
             )
         message = str(caught.exception)
         self.assertIn(
-            'drive 2 (sdb: 2.0 TB drive, WDC WD20EZAZ): it has no filesystem yet. To use it, format it as ext4',
+            'drive 2 (WDC WD20EZAZ, 2.0 TB drive): it has no filesystem yet. To use it, format it as ext4',
             message,
         )
         # A server often has no desktop: the terminal's command is given too (seen on a Debian VM).
@@ -276,7 +276,7 @@ class DrivePickingTests(unittest.TestCase):
         for name in ('zram0', 'mmcblk0boot0', 'nbd0'):
             self.assertNotIn(name, message)
         # A disk with a partition that has no filesystem is listed, but never one to format.
-        self.assertIn('drive 3 (sdc: 1.0 TB drive): nothing on it is a filesystem', message)
+        self.assertIn('drive 3 (1.0 TB drive): nothing on it is a filesystem', message)
         self.assertNotIn('/dev/sdc', message)
 
 
@@ -1583,12 +1583,12 @@ class UsbPickerTests(unittest.TestCase):
         self.assertEqual(config['photos']['external_backup_uuid'], 'usb-uuid-0001')
         offered = '\n'.join(shown)
         # In the list with why not (0.50.0: everything connected is shown), and refused when chosen.
-        self.assertIn('  3) sdb2: drive, exfat  - not this one: it must be a drive of its own', offered)
-        self.assertIn('Drive 3 (sdb2: drive) cannot be the USB backup drive: it must be a drive of its own', offered)
-        self.assertIn('  2) sdb1: drive, ext4  - not this one: it is already the media HDD', offered)
+        self.assertIn('  3) drive, ID ending second-0001  - not this one: it must be a drive of its own', offered)
+        self.assertIn('Drive 3 (drive, ID ending second-0001) cannot be the USB backup drive: it must be a drive of its own', offered)
+        self.assertIn('  2) drive, ID ending uuid-0001  - not this one: it is already the media HDD', offered)
         self.assertNotIn('nvme0n1p3', offered)  # spare partition of the system disk: the disk is one row
         # Worded as the SSD and HDD lists are, not as UUIDs and mount points (seen on a Debian VM).
-        self.assertIn('  4) sdc1: 1.0 TB drive, exfat', shown)
+        self.assertIn('  4) 1.0 TB drive', shown)
         self.assertIn(
             'Now choose the drive for the weekly copy of your files (the USB backup drive).', shown
         )

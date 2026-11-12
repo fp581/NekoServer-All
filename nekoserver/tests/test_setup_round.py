@@ -745,14 +745,14 @@ class DriveSizeTests(unittest.TestCase):
             out,
         )
         too_small = 'it is too small: the app SSD needs a drive of at least 22 GB (20 GB free once formatted)'
-        self.assertIn(f'  3) sdb1: 16 GB drive, Cruzer, named "SSD", ext4  - not this one: {too_small}', out)
-        self.assertIn('  4) sdc1: 466 GB drive, Samsung SSD 870, named "Fast", ext4  (recommended)', out)
+        self.assertIn(f'  3) Cruzer, 16 GB drive, named "SSD"  - not this one: {too_small}', out)
+        self.assertIn('  4) Samsung SSD 870, 466 GB drive, named "Fast"  (recommended)', out)
         self.assertIn(
-            '  2) nvme0n1: 477 GB NVMe SSD, WD SN770  - not this one: it has too little room: 0 GB free, and the app SSD needs at least 20 GB there',
+            '  2) WD SN770, 477 GB NVMe SSD  - not this one: it has too little room: 0 GB free, and the app SSD needs at least 20 GB there',
             out,
         )
         self.assertIn(
-            f'Drive 3 (sdb1: 16 GB drive, Cruzer, named "SSD") cannot be the app SSD: {too_small}. '
+            f'Drive 3 (Cruzer, 16 GB drive, named "SSD") cannot be the app SSD: {too_small}. '
             'Choose another one from the list.',
             out,
         )
@@ -761,7 +761,7 @@ class DriveSizeTests(unittest.TestCase):
             out,
         )
         self.assertIn(
-            'Drive 4 (sdc1: 466 GB drive, Samsung SSD 870, named "Fast") is the app SSD. '
+            'Drive 4 (Samsung SSD 870, 466 GB drive, named "Fast") is the app SSD. '
             'Nothing on it is changed by choosing it.',
             out,
         )
@@ -769,10 +769,10 @@ class DriveSizeTests(unittest.TestCase):
             any(line.startswith('Now choose the drive for your movies') and '50 GB' in line for line in out)
         )
         # The drive just chosen keeps its number, and may hold the media and backups too (0.50.0).
-        row = next(line for line in out if line.startswith('  4) sdc1') and 'media' not in line.split('(')[0])
+        row = next(line for line in out if line.startswith('  4) Samsung SSD 870') and 'media' not in line.split('(')[0])
         self.assertNotIn('it is already the app SSD', row)
-        # The UUID is shown in the list and never has to be typed.
-        self.assertIn('       ext4, UUID ssd-0001; not open', out)
+        # The UUID is shown in the drive's details and never has to be typed.
+        self.assertIn('       Details: sdc1 on sdc; ext4, UUID ssd-0001; not open', out)
         self.assertFalse(any('UUID=' in line or 'mounted=' in line for line in out))
 
     def test_no_drive_big_enough_stops_before_anything_with_the_sizes(self):
@@ -781,7 +781,7 @@ class DriveSizeTests(unittest.TestCase):
             self.resolve([], inventory=inventory)
         self.assertIn('No drive here can be the app SSD (your apps, photos and music).', str(caught.exception))
         self.assertIn(
-            'drive 3 (sdb1: 16 GB drive, Cruzer, named "SSD"): it is too small: the app SSD needs a drive of at '
+            'drive 3 (Cruzer, 16 GB drive, named "SSD"): it is too small: the app SSD needs a drive of at '
             'least 22 GB (20 GB free once formatted)',
             str(caught.exception),
         )
@@ -836,7 +836,7 @@ class DriveSizeTests(unittest.TestCase):
         config, out = self.resolve(['4', 'sdc1', '5', 'sdd1'], config)
         self.assertEqual(config['storage']['data_ssd']['uuid'], 'ssd-0001')
         self.assertIn(
-            'Drive 3 (sdb1: 16 GB drive, Cruzer, named "SSD"), the drive saved as the app SSD, is too small: it '
+            'Drive 3 (Cruzer, 16 GB drive, named "SSD"), the drive saved as the app SSD, is too small: it '
             'needs a drive of at least 22 GB (20 GB free once formatted). Choose the SSD (your apps, photos and music) again:',
             out,
         )

@@ -110,17 +110,31 @@ class TableTests(DriveListCase):
         self.assertEqual(
             [(row['number'], row['name'], drive_table.words(row)) for row in table],
             [
-                (1, 'nvme0n1', '477 GB NVMe SSD, WD SN770'),
-                (2, 'sda1', '466 GB SSD, Samsung SSD 870, named "apps"'),
-                (3, 'sdb1', '1.8 TB HDD, WDC WD20EZRZ, named "media"'),
-                (4, 'sdc1', '29 GB USB drive, SanDisk Ultra, named "BACKUP"'),
-                (5, 'sdd1', '15 GB USB drive, Cruzer Blade, named "stick"'),
-                (6, 'sde', '932 GB HDD, ST1000DM010'),
-                (7, 'sdf', '3.6 TB network disk (iSCSI), Synology LUN, named "nas-media"'),
-                (8, 'nvme1n1p1', '233 GB NVMe SSD, KINGSTON SNV2S250G'),
-                (9, 'sdg1', '238 GB SSD, Crucial MX500, named "Windows"'),
+                (1, 'nvme0n1', 'WD SN770, 477 GB NVMe SSD'),
+                (2, 'sda1', 'Samsung SSD 870, 466 GB SSD, named "apps"'),
+                (3, 'sdb1', 'WDC WD20EZRZ, 1.8 TB HDD, named "media"'),
+                (4, 'sdc1', 'SanDisk Ultra, 29 GB USB drive, named "BACKUP"'),
+                (5, 'sdd1', 'Cruzer Blade, 15 GB USB drive, named "stick"'),
+                (6, 'sde', 'ST1000DM010, 932 GB HDD'),
+                (7, 'sdf', 'Synology LUN, 3.6 TB network disk (iSCSI), named "nas-media"'),
+                (8, 'nvme1n1p1', 'KINGSTON SNV2S250G, 233 GB NVMe SSD'),
+                (9, 'sdg1', 'Crucial MX500, 238 GB SSD, named "Windows"'),
             ],
         )
+        # The main line never says what a home user would not know: Linux's names, the
+        # filesystem, the ID. Those are in the details.
+        config = dict(FOLDERS)
+        for row in table:
+            main = f"{drive_table.words(row)} - {drive_table.state(row, config)}"
+            for word in ('ext4', 'xfs', 'UUID', row['name'] + ' ', row['name'] + ':'):
+                self.assertNotIn(word, main, main)
+        self.assertEqual(
+            drive_table.details(table[1]), 'Details: sda1 on sda; ext4, UUID ssd-0001; not open; about 1 % full'
+        )
+        states = [drive_table.state(row, config) for row in table]
+        self.assertEqual(states[1], 'ready to use')
+        self.assertEqual(states[2], 'has files: kept as they are')
+        self.assertEqual(states[5], "can't be used: it has no filesystem yet")
         # The filesystem, its UUID, where it is open and how full it is.
         inside = {row['name']: drive_table.inside(row) for row in table}
         self.assertEqual(inside['sda1'], 'ext4, UUID ssd-0001; not open; about 1 % full')
@@ -180,12 +194,32 @@ class TableTests(DriveListCase):
             drive_table.verdict(named['sda1'], 'data_ssd', config), 'it is on the same disk as the media HDD'
         )
 
+    def test_two_drives_of_one_model_and_size_are_told_apart(self):
+        rows = [
+            {'export': '', 'label': '', 'model': 'WD Red', 'type': 'HDD', 'size': '3.6T', 'disks': ['sdb'],
+             'uuid': '1111-aaaa', 'name': 'sdb1'},
+            {'export': '', 'label': '', 'model': 'WD Red', 'type': 'HDD', 'size': '3.6T', 'disks': ['sdc'],
+             'uuid': '2222-bbbb', 'name': 'sdc1'},
+            {'export': '', 'label': '', 'model': 'Samsung', 'type': 'SSD', 'size': '465.8G', 'disks': ['sda'],
+             'uuid': '3333-cccc', 'name': 'sda1'},
+        ]  # fmt: skip
+        drive_table.told_apart(rows)
+        self.assertEqual(
+            [drive_table.words(row) for row in rows],
+            ['WD Red, 3.6 TB HDD, ID ending aaaa', 'WD Red, 3.6 TB HDD, ID ending bbbb', 'Samsung, 466 GB SSD'],
+        )
+        # IDs that end alike: as much of the end as tells them apart.
+        twins = [dict(rows[0], uuid='hdd-uuid-0001'), dict(rows[1], uuid='hdd-second-0001')]
+        drive_table.told_apart(twins)
+        self.assertEqual([row['twin'] for row in twins], ['ID ending uuid-0001', 'ID ending second-0001'])
+
     def test_a_folder_the_nas_shares_is_a_row_with_its_role(self):
         export = 'nas.lan:/volume1/media'
         config = {**FOLDERS, 'storage': {'media_hdd': nfs_exports.record_for(export, 'nfs4')}}
         row = self.table(config)[-1]
         self.assertEqual((row['number'], row['name'], row['type']), (10, export, 'network folder (NFS)'))
-        self.assertEqual(drive_table.brief(row), 'drive 10 (nas.lan:/volume1/media: a folder the NAS shares (NFS))')
+        self.assertEqual(drive_table.brief(row), 'drive 10 (a folder the NAS shares (/volume1/media))')
+        self.assertEqual(drive_table.details(row), 'Details: the NAS shares it at nas.lan:/volume1/media')
         self.assertEqual(drive_table.can_be(row, config), 'Chosen as the media HDD.')
         self.assertEqual(drive_table.verdict(row, 'usb', config), 'it is already the media HDD')
 
@@ -293,13 +327,13 @@ class QuestionTests(DriveListCase):
         config = self.first_run(talk)
         said = [line for line in talk.lines if 'drive 2' in line.lower() or 'drive 5' in line.lower()]
         self.assertIn(
-            'Drive 5 (sdd1: 15 GB USB drive, Cruzer Blade, named "stick") cannot be the app SSD: it is too small: '
+            'Drive 5 (Cruzer Blade, 15 GB USB drive, named "stick") cannot be the app SSD: it is too small: '
             'the app SSD needs a drive of at least 22 GB (20 GB free once formatted). Choose another one from the list.',
             said,
         )
         # The choice is said back in words; no name is typed (choosing changes nothing on a drive).
         self.assertIn(
-            'Drive 2 (sda1: 466 GB SSD, Samsung SSD 870, named "apps") is the app SSD. '
+            'Drive 2 (Samsung SSD 870, 466 GB SSD, named "apps") is the app SSD. '
             'Nothing on it is changed by choosing it.',
             said,
         )
@@ -310,15 +344,15 @@ class QuestionTests(DriveListCase):
         self.assertEqual(
             rerun.lines,
             [
-                'Last time you chose drive 2 (sda1: 466 GB SSD, Samsung SSD 870, named "apps") as the app SSD '
-                '(UUID ssd-0001). It is used again.',
-                'Last time you chose drive 3 (sdb1: 1.8 TB HDD, WDC WD20EZRZ, named "media") as the media HDD '
-                '(UUID hdd-0001). It is used again.',
+                'Last time you chose drive 2 (Samsung SSD 870, 466 GB SSD, named "apps") as the app SSD. '
+                'It is used again.',
+                'Last time you chose drive 3 (WDC WD20EZRZ, 1.8 TB HDD, named "media") as the media HDD. '
+                'It is used again.',
             ],
         )
         # A later error names it the same way (a disk on the NAS saved as the app SSD).
         nas = {**FOLDERS, 'storage': {'data_ssd': {'uuid': 'nas-0001', 'fstype': 'ext4'}}}
-        with self.assertRaisesRegex(RuntimeError, r'^Drive 7 \(sdf: 3\.6 TB network disk \(iSCSI\), Synology LUN'):
+        with self.assertRaisesRegex(RuntimeError, r'^Drive 7 \(Synology LUN, 3\.6 TB network disk \(iSCSI\)'):
             storage.resolve_storage_identity(nas, INVENTORY, True, True, rerun.ask, rerun.out)
         # No message is a Linux name alone: none starts with one.
         self.assertFalse([line for line in talk.lines if line.startswith(('sd', 'nvme', '/dev/'))])
@@ -350,7 +384,7 @@ class QuestionTests(DriveListCase):
         self.assertEqual(config['storage']['media_hdd']['uuid'], 'hdd-0001')
         self.assertEqual(config['storage']['data_ssd']['uuid'], 'ssd-0001')
         said = '\n'.join(talk.lines)
-        self.assertIn('named "apps", ext4, about 1 % full  (recommended)', said)
+        self.assertIn('named "apps", about 1 % full  (recommended)', said)
         self.assertIn('(the app SSD) (Enter for 2, the recommended one): []', said)
         self.assertIn('(the media HDD) (Enter for 3, the recommended one): []', said)
         best = drive_table.recommended(self.table(), dict(FOLDERS))
@@ -387,8 +421,9 @@ class WindowFormTests(DriveListCase):
             {
                 'number': 2,
                 'name': 'sda1',
-                'what': '466 GB SSD, Samsung SSD 870, named "apps"',
-                'inside': 'ext4, UUID ssd-0001; not open; about 1 % full',
+                'what': 'Samsung SSD 870, 466 GB SSD, named "apps"',
+                'state': 'ready to use',
+                'details': 'Details: sda1 on sda; ext4, UUID ssd-0001; not open; about 1 % full',
                 'role': '',
                 'why': '',
                 'caution': '',
@@ -496,7 +531,7 @@ class StoragePageTests(DriveListCase):
             )
             self.assertEqual(
                 page['places'][0]['options'][2][1],
-                'On a drive of their own: 2 · 466 GB SSD, Samsung SSD 870, named "apps"',
+                'On a drive of their own: 2 · Samsung SSD 870, 466 GB SSD, named "apps"',
             )
             self.assertIn('SMB) are not supported yet', page['network'])
             # The window sends every line with the first question's answer.
@@ -513,7 +548,7 @@ class StoragePageTests(DriveListCase):
             self.assertEqual(ctx.config['photos']['external_backup_uuid'], 'USB0-0001')
         self.assertIsNone(setup_progress.page_shown())
         self.assertIn(
-            'Drive 2 (sda1: 466 GB SSD, Samsung SSD 870, named "apps") is the app SSD. '
+            'Drive 2 (Samsung SSD 870, 466 GB SSD, named "apps") is the app SSD. '
             'Nothing on it is changed by choosing it.',
             said,
         )
@@ -533,13 +568,13 @@ class StoragePageTests(DriveListCase):
             # The terminal: 1 and 2 are the two roles' drives, 3 onward the others (rows 7 and 8).
             storage.choose_locations(ctx, lambda prompt='': '4', True, inventory=INVENTORY)
         self.assertIn(
-            '  3) a drive of their own: drive 7 (sdf: 3.6 TB network disk (iSCSI), Synology LUN, named "nas-media")',
+            '  3) a drive of their own: drive 7 (Synology LUN, 3.6 TB network disk (iSCSI), named "nas-media")',
             said,
         )
         self.assertEqual(ctx.config['locations'], {'photos': 'd3'})
         self.assertEqual(ctx.config['storage']['d3'], {'uuid': 'nvme-0002', 'fstype': 'xfs'})
         self.assertIn(
-            "Immich's photos and videos: on drive 8 (nvme1n1p1: 233 GB NVMe SSD, KINGSTON SNV2S250G), a drive of their own",
+            "Immich's photos and videos: on drive 8 (KINGSTON SNV2S250G, 233 GB NVMe SSD), a drive of their own",
             said,
         )
         # It is mounted like the two (neko_common.drives_in_use), and is no longer free for another role.

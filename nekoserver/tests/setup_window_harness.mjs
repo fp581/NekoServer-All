@@ -175,6 +175,7 @@ const storage = (elements['ask-page']?.children?.[0]?.className === 'storage' ? 
     const select = lists[lists.length - 1];
     return { key: select.id.replace('ask-page-', ''), title: row.children[0].textContent, value: select.value,
       note: elements[select.id + '-facts']?.textContent ?? '',
+      details: (elements[select.id + '-facts']?.children ?? []).find((c) => c.id === 'details')?.children[1]?.textContent ?? '',
       install: lists.length > 1 ? { key: lists[0].id.replace('ask-page-', ''), value: lists[0].value,
         options: lists[0].children.map((option) => [option.value, option.textContent]) } : null,
       options: select.children.map((option) => [option.value, option.textContent, !!option.disabled]) }; });
@@ -197,7 +198,7 @@ console.log(JSON.stringify({ posts, parts, subs, review, storage, accounts, titl
   part: (elements['ask-page']?.children ?? []).filter((card) => (card.className ?? '').includes('part-step')).map((card) => { const choice = card.children[card.children.length - 1]; const input = choice.children[1].children[0]; return { title: card.children[0].textContent, lines: card.children.length === 3 ? card.children[1].children.map((line) => line.textContent) : [], caption: choice.children[0].textContent, on: input.checked, off: input.disabled, role: input.role, label: input['aria-label'] }; }),
   skipShown: elements['ask-skip'] ? !elements['ask-skip'].hidden : null,
   askOff: ['ask-send', 'ask-page-send', 'ask-page-skip', 'ask-yes', 'ask-no'].filter((id) => elements[id]?.disabled),
-  drives: (elements['ask-pick']?.children ?? []).filter((card) => (card.className ?? '').includes('drive')).map((card) => ({ name: card.children[1].textContent, facts: card.children.slice(2).map((fact) => fact.textContent), off: card.children[0].disabled, radioHidden: card.children[0].hidden })),
+  drives: (elements['ask-pick']?.children ?? []).filter((card) => (card.className ?? '').includes('drive')).map((card) => ({ name: card.children[1].textContent, facts: card.children.slice(2).filter((fact) => fact.id !== 'details').map((fact) => fact.textContent), details: card.children.find((c) => c.id === 'details')?.children[1]?.textContent ?? '', off: card.children[0].disabled, radioHidden: card.children[0].hidden })),
   pickNotes: (elements['ask-pick']?.children ?? []).map((label) => label.children[2]?.textContent ?? ''),
   recommended: [elements['ask-pick-recommended']?.textContent ?? '', elements['ask-pick-recommended']?.hidden ?? null],
   advice: elements['ask-pick-advice']?.textContent ?? '',
