@@ -576,6 +576,54 @@ def numbered(table, answer):
 STORAGE_PAGE = 'storage'  # the page every drive question of the drives step is on (modules/storage.py)
 
 
+def recommended(table, config):
+    """The drive setup would choose for each role, so that a person who changes nothing
+    gets a sensible layout: {'data_ssd': row or None, 'media_hdd': ..., 'usb': ...}.
+
+    The media and backups get the biggest drive of their own that can hold them (one in
+    this PC before one on a storage box); the apps get an SSD among the others, the
+    biggest, else any other drive; the offline backup gets a USB drive that is neither.
+    With three drives that is the layout every server before 0.50.0 has. The disk Linux
+    runs from is recommended only where no drive of its own can have the role. A role
+    that has its drive already keeps it, and that drive is offered for no other."""
+    from modules import storage
+
+    def size(row):
+        return storage.size_bytes(row.get('size')) or 0
+
+    saved = config.get('storage', {})
+    chosen = {}
+    for key in ('data_ssd', 'media_hdd'):
+        uuid = (saved.get(key) or {}).get('uuid') if isinstance(saved.get(key), dict) else None
+        chosen[key] = next((row for row in table if uuid and row['uuid'] == uuid), None)
+    usb_uuid = config.get('photos', {}).get('external_backup_uuid')
+    chosen['usb'] = next((row for row in table if usb_uuid and row['uuid'] == usb_uuid), None)
+
+    def free(row):
+        """Not chosen for another role, and on none of their disks."""
+        taken = [other for other in chosen.values() if other is not None]
+        return row not in taken and not any(set(row['disks']) & set(other['disks']) for other in taken)
+
+    def best(key, order):
+        own = [row for row in table if not row['system'] and free(row) and not verdict(row, key, config)]
+        if own:
+            return sorted(own, key=order)[0]
+        return next((row for row in table if row['system'] and not verdict(row, key, config)), None)
+
+    if chosen['media_hdd'] is None:
+        chosen['media_hdd'] = best('media_hdd', lambda row: (bool((row['device'] or {}).get('network')), -size(row)))
+    if chosen['data_ssd'] is None:
+        chosen['data_ssd'] = best('data_ssd', lambda row: ('SSD' not in row['type'], -size(row)))
+    if chosen['usb'] is None:
+        usb = [
+            row
+            for row in table
+            if row['type'] == 'USB drive' and not row['system'] and free(row) and not verdict(row, 'usb', config)
+        ]
+        chosen['usb'] = usb[0] if usb else None
+    return chosen
+
+
 def field(key, input_fn, prompt):
     """One answer of a page: what the setup window sent for it with an earlier question
     of the page, else the question itself, asked in the terminal and in the window.
@@ -601,9 +649,13 @@ def ask(table, key, config, input_fn=input, out_fn=print, attempts=3, skippable=
     sends them together; asked alone (the weekly backup step), the role is a page of
     its own."""
     what = asked_for(config, key)
+    best = recommended(table, config).get(key)
     for line in listed(table, key, config):
-        out_fn(line)
+        out_fn(line + ('  (recommended)' if best is not None and line.startswith(f"  {best['number']}) ") else ''))
     leave = 'Enter to skip for now' if skippable else 'Enter alone stops setup here'
+    if best is not None and not skippable:
+        # Enter takes the drive setup would choose; nothing is changed by choosing it.
+        leave = f"Enter for {best['number']}, the recommended one"
     stopped = (
         f'No drive was chosen for {role(key)}. Run  sudo bash install.sh  again to choose it; nothing was changed.'
     )
@@ -626,6 +678,8 @@ def ask(table, key, config, input_fn=input, out_fn=print, attempts=3, skippable=
     with page:
         for _ in range(attempts):
             answer = field(name, input_fn, f'Number of {what} ({leave}): ')
+            if not answer and best is not None and not skippable:
+                answer = str(best['number'])
             if not answer:
                 if skippable:
                     return None

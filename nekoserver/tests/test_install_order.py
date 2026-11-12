@@ -2150,8 +2150,9 @@ class StoppedStepMessageTests(unittest.TestCase):
 
         config = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media'}
         table = drive_table.rows(DrivePickingTests.INVENTORY, config)
+        # Three answers that are no drive of the list: nothing is chosen, and it says what to do.
         with self.assertRaisesRegex(RuntimeError, 'No drive was chosen for the app SSD. Run  sudo bash install.sh'):
-            drive_table.ask(table, 'data_ssd', config, lambda q='': '', lambda s: None)
+            drive_table.ask(table, 'data_ssd', config, lambda q='': '99', lambda s: None)
 
     def test_tailscale_waiting_says_how_to_sign_in(self):
         source = (Path(__file__).resolve().parents[1] / 'modules/tailscale.py').read_text()

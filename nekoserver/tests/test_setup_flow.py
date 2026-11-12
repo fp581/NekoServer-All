@@ -827,6 +827,13 @@ class SetupWindowTests(unittest.TestCase):
         )  # fmt: skip
         self.assertEqual(lists[2]['options'], [['', 'None for now', False]])  # the offline copy can wait
         self.assertEqual([option[0] for option in lists[3]['options']], ['', 'ssd', 'media'])
+        # The recommended drive is chosen already when the page opens, and says so.
+        ready = {**page, 'roles': [{**page['roles'][0], 'recommended': '2'}, *page['roles'][1:]]}
+        seen = self.page([self.asked(question, ready)])
+        self.assertEqual((seen['storage'][0]['value'], seen['storage'][1]['value']), ('2', ''))
+        self.assertEqual(
+            seen['storage'][0]['options'][2][1], '2 · 466 GB SSD, Samsung SSD 870, named "apps" (recommended)'
+        )
         # Nothing chosen for a line that needs a drive: said, not sent.
         seen = self.page([self.asked(question, page, leave=True)])
         self.assertEqual((seen['posts'], seen['note']), ([], 'Choose a drive for “NekoServer and your apps” first.'))

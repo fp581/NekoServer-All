@@ -29,7 +29,7 @@ The short names (sdb1, nvme0n1p2) are Linux's own and can change at the next sta
 Setup never formats a drive and changes nothing by showing this list.
 Now choose the drive for your apps, photos and music (the app SSD). It needs at least 20 GB free, so a drive of 22 GB or more (100 GB or more is recommended).
   1) nvme0n1: 477 GB NVMe SSD, WD SN770
-  2) sda1: 466 GB SSD, Samsung SSD 870, named "apps", ext4, about 1 % full
+  2) sda1: 466 GB SSD, Samsung SSD 870, named "apps", ext4, about 1 % full  (recommended)
   3) sdb1: 1.8 TB HDD, WDC WD20EZRZ, named "media", ext4, about 40 % full, holds files
   4) sdc1: 29 GB USB drive, SanDisk Ultra, named "BACKUP", exfat  - not this one: it is formatted exFAT, which Linux apps can't keep their files on
   5) sdd1: 15 GB USB drive, Cruzer Blade, named "stick", ext4, about 3 % full  - not this one: it is too small: the app SSD needs a drive of at least 22 GB (20 GB free once formatted)
@@ -37,29 +37,29 @@ Now choose the drive for your apps, photos and music (the app SSD). It needs at 
   7) sdf: 3.6 TB network disk (iSCSI), Synology LUN, named "nas-media", ext4  - not this one: it is on the network storage box, and the app SSD must be connected to this PC (by USB 3, or inside it): it holds the databases and is what makes the apps fast
   8) nvme1n1p1: 233 GB NVMe SSD, KINGSTON SNV2S250G, xfs
   9) sdg1: 238 GB SSD, Crucial MX500, named "Windows", ntfs  - not this one: it is formatted NTFS (Windows), which Linux apps can't keep their files on
-Number of the drive for your apps, photos and music (the app SSD) (Enter alone stops setup here): [5]
+Number of the drive for your apps, photos and music (the app SSD) (Enter for 2, the recommended one): [5]
 Drive 5 (sdd1: 15 GB USB drive, Cruzer Blade, named "stick") cannot be the app SSD: it is too small: the app SSD needs a drive of at least 22 GB (20 GB free once formatted). Choose another one from the list.
-Number of the drive for your apps, photos and music (the app SSD) (Enter alone stops setup here): [2]
+Number of the drive for your apps, photos and music (the app SSD) (Enter for 2, the recommended one): [2]
 Drive 2 (sda1: 466 GB SSD, Samsung SSD 870, named "apps") is the app SSD. Nothing on it is changed by choosing it.
 Now choose the drive for your movies, shows, Nextcloud files and the backups (the media HDD). It needs at least 50 GB free, so a drive of 54 GB or more (500 GB or more is recommended).
   1) nvme0n1: 477 GB NVMe SSD, WD SN770
   2) sda1: 466 GB SSD, Samsung SSD 870, named "apps", ext4, about 1 % full  - not this one: it is already the app SSD
-  3) sdb1: 1.8 TB HDD, WDC WD20EZRZ, named "media", ext4, about 40 % full, holds files
+  3) sdb1: 1.8 TB HDD, WDC WD20EZRZ, named "media", ext4, about 40 % full, holds files  (recommended)
   4) sdc1: 29 GB USB drive, SanDisk Ultra, named "BACKUP", exfat  - not this one: it is formatted exFAT, which Linux apps can't keep their files on
   5) sdd1: 15 GB USB drive, Cruzer Blade, named "stick", ext4, about 3 % full  - not this one: it is too small: the media HDD needs a drive of at least 54 GB (50 GB free once formatted)
   6) sde: 932 GB HDD, ST1000DM010  - not this one: it has no filesystem yet
   7) sdf: 3.6 TB network disk (iSCSI), Synology LUN, named "nas-media", ext4
   8) nvme1n1p1: 233 GB NVMe SSD, KINGSTON SNV2S250G, xfs
   9) sdg1: 238 GB SSD, Crucial MX500, named "Windows", ntfs  - not this one: it is formatted NTFS (Windows), which Linux apps can't keep their files on
-Number of the drive for your movies, shows, Nextcloud files and the backups (the media HDD) (Enter alone stops setup here): [2]
+Number of the drive for your movies, shows, Nextcloud files and the backups (the media HDD) (Enter for 3, the recommended one): [2]
 Drive 2 (sda1: 466 GB SSD, Samsung SSD 870, named "apps") cannot be the media HDD: it is already the app SSD. Choose another one from the list.
-Number of the drive for your movies, shows, Nextcloud files and the backups (the media HDD) (Enter alone stops setup here): [3]
+Number of the drive for your movies, shows, Nextcloud files and the backups (the media HDD) (Enter for 3, the recommended one): [3]
 Drive 3 (sdb1: 1.8 TB HDD, WDC WD20EZRZ, named "media") is the media HDD. Nothing on it is changed by choosing it.
 Now choose the drive for the weekly copy of your photos and files (the USB backup drive).
   1) nvme0n1: 477 GB NVMe SSD, WD SN770  - not this one: it is the disk Linux runs from; the offline backup must be a drive of its own that you can take away
   2) sda1: 466 GB SSD, Samsung SSD 870, named "apps", ext4, about 1 % full  - not this one: it is already the app SSD
   3) sdb1: 1.8 TB HDD, WDC WD20EZRZ, named "media", ext4, about 40 % full, holds files  - not this one: it is already the media HDD
-  4) sdc1: 29 GB USB drive, SanDisk Ultra, named "BACKUP", exfat
+  4) sdc1: 29 GB USB drive, SanDisk Ultra, named "BACKUP", exfat  (recommended)
   5) sdd1: 15 GB USB drive, Cruzer Blade, named "stick", ext4, about 3 % full
   6) sde: 932 GB HDD, ST1000DM010  - not this one: it has no filesystem yet
   7) sdf: 3.6 TB network disk (iSCSI), Synology LUN, named "nas-media", ext4
@@ -81,13 +81,13 @@ Everything connected to this PC:
 The short names (sdb1, nvme0n1p2) are Linux's own and can change at the next start. NekoServer remembers a drive by its UUID, which you never have to type.
 Setup never formats a drive and changes nothing by showing this list.
 Now choose the drive for your apps, photos and music (the app SSD). It needs at least 20 GB free, so a drive of 22 GB or more (100 GB or more is recommended).
-  1) nvme0n1: 477 GB NVMe SSD, WD SN770
-Number of the drive for your apps, photos and music (the app SSD) (Enter alone stops setup here): [1]
+  1) nvme0n1: 477 GB NVMe SSD, WD SN770  (recommended)
+Number of the drive for your apps, photos and music (the app SSD) (Enter for 1, the recommended one): [1]
 Drive 1 (nvme0n1: 477 GB NVMe SSD, WD SN770) is the app SSD. Nothing on it is changed by choosing it.
 It is the disk Linux runs from: NekoServer keeps this in a folder of it (/var/lib/nekoserver). If that disk fails, Linux and what is kept there are lost together, and a disk that fills up stops Linux too. A drive of its own is the safer choice.
 Now choose the drive for your movies, shows, Nextcloud files and the backups (the media HDD). It needs at least 50 GB free, so a drive of 54 GB or more (500 GB or more is recommended).
-  1) nvme0n1: 477 GB NVMe SSD, WD SN770
-Number of the drive for your movies, shows, Nextcloud files and the backups (the media HDD) (Enter alone stops setup here): [1]
+  1) nvme0n1: 477 GB NVMe SSD, WD SN770  (recommended)
+Number of the drive for your movies, shows, Nextcloud files and the backups (the media HDD) (Enter for 1, the recommended one): [1]
 Drive 1 (nvme0n1: 477 GB NVMe SSD, WD SN770) is the media HDD. Nothing on it is changed by choosing it.
 It is the disk Linux runs from: NekoServer keeps this in a folder of it (/var/lib/nekoserver). If that disk fails, Linux and what is kept there are lost together, and a disk that fills up stops Linux too. A drive of its own is the safer choice.
 The backups are then on the same disk as what they copy. They still help after a mistake or a broken app, but not when that disk fails: an offline backup on a removable drive is what covers that.

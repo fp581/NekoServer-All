@@ -336,11 +336,31 @@ class QuestionTests(DriveListCase):
         photo_backup.select_external(config, more, again.ask, again.out)
         self.assertEqual(again.lines[0], 'Everything connected to this PC:')
 
-    def test_enter_alone_stops_setup_or_skips_the_usb_drive(self):
+    def test_enter_alone_takes_the_recommended_drive_or_skips_the_usb_drive(self):
+        """0.50.0, the wizard (P02): every drive line comes with the recommended drive, so a
+        person who changes nothing gets a sensible layout (three drives: the one every
+        server before had)."""
         talk = Conversation(['', ''])
+        config = self.first_run(talk)
+        # The media and backups: the biggest drive in this PC (the HDD, before the bigger
+        # disk on the storage box); the apps: the bigger SSD of the others.
+        self.assertEqual(config['storage']['media_hdd']['uuid'], 'hdd-0001')
+        self.assertEqual(config['storage']['data_ssd']['uuid'], 'ssd-0001')
+        said = '\n'.join(talk.lines)
+        self.assertIn('named "apps", ext4, about 1 % full  (recommended)', said)
+        self.assertIn('(the app SSD) (Enter for 2, the recommended one): []', said)
+        self.assertIn('(the media HDD) (Enter for 3, the recommended one): []', said)
+        best = drive_table.recommended(self.table(), dict(FOLDERS))
+        self.assertEqual({key: row['number'] for key, row in best.items()}, {'data_ssd': 2, 'media_hdd': 3, 'usb': 4})
+        # Where no drive can have the role there is nothing to recommend, and Enter stops.
+        bare = {'blockdevices': [INVENTORY['blockdevices'][7]]}
+        table = self.table(inventory=bare)
+        self.assertIsNone(drive_table.recommended(table, dict(FOLDERS))['data_ssd'])
         with self.assertRaisesRegex(RuntimeError, 'No drive was chosen for the app SSD. Run  sudo bash install.sh'):
-            self.first_run(talk)
+            drive_table.ask(table, 'data_ssd', dict(FOLDERS), Conversation(['']).ask, lambda line: None)
         config = {**FOLDERS, 'storage': {'data_ssd': {'uuid': 'ssd-0001'}, 'media_hdd': {'uuid': 'hdd-0001'}}}
+        # The offline backup is optional: Enter skips it, whatever is recommended.
+        talk = Conversation([''])
         self.assertIsNone(photo_backup.select_external(config, INVENTORY, talk.ask, talk.out))
         self.assertTrue(talk.lines[-1].endswith('(the USB backup drive) (Enter to skip for now): []'), talk.lines[-1])
 

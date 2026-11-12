@@ -170,7 +170,7 @@ const review = { hidden: elements.review?.hidden ?? null, appsHidden: elements['
   sections: (elements['review-sections']?.children ?? []).map((part) => [part.children[0].textContent, part.children[1].children.map((li) => li.textContent)]) };
 const storage = (elements['ask-page']?.children?.[0]?.className === 'storage' ? elements['ask-page'].children[0].children : [])
   .filter((row) => row.className === 'row').map((row) => { const select = row.children[1].children[0];
-    return { key: select.id.replace('ask-page-', ''), title: row.children[0].textContent,
+    return { key: select.id.replace('ask-page-', ''), title: row.children[0].textContent, value: select.value,
       options: select.children.map((option) => [option.value, option.textContent, !!option.disabled]) }; });
 // The accounts page: [the app, whether its entries are shown, whether "made for you" is shown].
 const accounts = (elements['ask-page-accounts']?.children ?? []).map((row) => [row.children[0].textContent, !row.children[1].hidden, !row.children[2].hidden]);

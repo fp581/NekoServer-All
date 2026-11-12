@@ -890,11 +890,16 @@
       const options = role.rows.map(drive => ({
         value: String(drive.number),
         text:
-          drive.number + ' · ' + drive.what + (drive.why ? ' (not this one: ' + drive.why.split('. ')[0] + ')' : ''),
+          drive.number +
+          ' · ' +
+          drive.what +
+          (drive.why ? ' (not this one: ' + drive.why.split('. ')[0] + ')' : '') +
+          (String(drive.number) === role.recommended ? ' (recommended)' : ''),
         off: drive.why
       }));
       options.unshift({ value: '', text: role.optional ? 'None for now' : 'Choose a drive…' });
-      const select = chooser(role.key, role.title, options, page.fields[role.key]);
+      // The recommended drive is chosen already: a person who changes nothing gets a sensible layout.
+      const select = chooser(role.key, role.title, options, page.fields[role.key] || role.recommended || '');
       const facts = el('small', { class: 'drive-facts', id: 'ask-page-' + role.key + '-facts' });
       select.addEventListener('change', () => driveFacts(role, select, facts));
       driveFacts(role, select, facts);

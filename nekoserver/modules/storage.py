@@ -1323,9 +1323,9 @@ PAGE_ROLES = {
     'usb': 'Offline backup on a removable drive (optional)',
 }
 PAGE_PLACES = {
-    '': 'Let setup choose (the drive for your apps when it is big enough)',
-    'ssd': 'On the drive for your apps (faster)',
-    'media': 'On the drive for your media and the backups',
+    '': 'Let setup choose (recommended)',
+    'ssd': 'Same drive as NekoServer and your apps',
+    'media': 'Same drive as your media and the backups',
 }
 SMB_SAID = (
     'A drive on a network storage box is connected first (the switch on setup\'s first page): as a disk of its '
@@ -1349,6 +1349,7 @@ def storage_page(context, inventory):
 
     config = context.config
     table = drive_table.rows(inventory, config, discover_filesystems(inventory))
+    best = drive_table.recommended(table, config)
     roles = [
         {
             'key': key,
@@ -1357,6 +1358,8 @@ def storage_page(context, inventory):
             'needs': drive_table.needs(key),
             'optional': key == 'usb',
             'rows': drive_table.for_window(table, key, config),
+            # Chosen already when the page opens: change it only if you want another.
+            'recommended': str(best[key]['number']) if best.get(key) else '',
         }
         for key in ('data_ssd', 'media_hdd', 'usb')
         if key in asked

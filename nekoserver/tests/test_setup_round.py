@@ -746,7 +746,7 @@ class DriveSizeTests(unittest.TestCase):
         )
         too_small = 'it is too small: the app SSD needs a drive of at least 22 GB (20 GB free once formatted)'
         self.assertIn(f'  3) sdb1: 16 GB drive, Cruzer, named "SSD", ext4  - not this one: {too_small}', out)
-        self.assertIn('  4) sdc1: 466 GB drive, Samsung SSD 870, named "Fast", ext4', out)
+        self.assertIn('  4) sdc1: 466 GB drive, Samsung SSD 870, named "Fast", ext4  (recommended)', out)
         self.assertIn(
             '  2) nvme0n1: 477 GB NVMe SSD, WD SN770  - not this one: it has too little room: 0 GB free, and the app SSD needs at least 20 GB there',
             out,
@@ -757,7 +757,8 @@ class DriveSizeTests(unittest.TestCase):
             out,
         )
         self.assertIn(
-            'Number of the drive for your apps, photos and music (the app SSD) (Enter alone stops setup here): ', out
+            'Number of the drive for your apps, photos and music (the app SSD) (Enter for 4, the recommended one): ',
+            out,
         )
         self.assertIn(
             'Drive 4 (sdc1: 466 GB drive, Samsung SSD 870, named "Fast") is the app SSD. '
@@ -794,16 +795,16 @@ class DriveSizeTests(unittest.TestCase):
         self.assertGreater(storage.drive_needed(smallest), smallest)
         self.assertTrue(storage.big_enough({'size': f'{storage.drive_needed(smallest)}G'}, smallest))
 
-    def test_enter_alone_says_how_to_go_on(self):
+    def test_no_drive_chosen_says_how_to_go_on(self):
         with self.assertRaisesRegex(
             RuntimeError, r'No drive was chosen for the app SSD\. Run  sudo bash install\.sh  again'
         ):
-            self.resolve([''])
+            self.resolve(['99', '99', '99'])
 
     def test_the_size_is_checked_before_mounting_writing_fstab_or_saving(self):
         config = {**DRIVE_FOLDERS, 'storage': {}}
         context = mock.Mock(config=config, apply=True, log=lambda *_: None)
-        answers = iter(['1', '', ''])
+        answers = iter(['1', '1', '1'])  # a drive with no filesystem, three times
         with (
             mock.patch.object(storage, 'inventory_now', return_value=self.INVENTORY),
             mock.patch.object(storage.os, 'geteuid', return_value=0),
