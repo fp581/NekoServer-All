@@ -35,6 +35,7 @@ class ChangesTests(unittest.TestCase):
         after['photos'].update(external_backup_uuid='u9', external_backup_fstype='ext4')
         del after['photos']['external_backup_network']
         after[existing_page.ASKED] = True
+        after[existing_page.COPIES] = [{'holds': 'movies', 'path': '/mnt/tank/films'}]
         self.assertEqual(
             storage.section_changes(before, after),
             {
@@ -44,6 +45,7 @@ class ChangesTests(unittest.TestCase):
                     ['external_backup_network'],
                 ),
                 existing_page.ASKED: True,
+                existing_page.COPIES: [{'holds': 'movies', 'path': '/mnt/tank/films'}],
             },
         )
         self.assertEqual(storage.section_changes(before, copy.deepcopy(before)), {})
@@ -57,6 +59,7 @@ class ChangesTests(unittest.TestCase):
                 'storage': ({'data_ssd': {'uuid': 'u1', 'fstype': 'ext4'}}, []),
                 'photos': ({'external_backup_wanted': False}, ['external_backup_network']),
                 existing_page.ASKED: True,
+                existing_page.COPIES: [{'holds': 'music', 'path': '/mnt/tank/music'}],
             },
             'places': {'photos': 'ssd'},
             'lines': [],
@@ -66,6 +69,7 @@ class ChangesTests(unittest.TestCase):
         self.assertEqual(now['photos'], {'deploy_immich': False, 'external_backup_wanted': False})
         self.assertEqual(now['tv'], {'wanted': True})
         self.assertIs(now[existing_page.ASKED], True)
+        self.assertEqual(now[existing_page.COPIES], [{'holds': 'music', 'path': '/mnt/tank/music'}])
         self.assertEqual(drive_table.PLACES_AHEAD, {'photos': 'ssd'})
 
 
@@ -115,6 +119,21 @@ class AskedAheadTests(unittest.TestCase):
                 'Backups: the drive chosen before',
                 "Immich's photos and videos: on the drive of the backups. " + storage.SAME_DRIVE_AS_BACKUP,
                 'Offline backup: none for now',
+            ],
+        )
+
+    def test_the_review_says_what_happens_to_folders_of_the_persons_own(self):
+        own = {'path': '/mnt/tank/films', 'holds': 'movies', 'use': 'in_place', 'new_files': True}
+        new = {'path': '/mnt/big/shows', 'holds': 'tv', 'use': 'new_files', 'new_files': True}
+        config = settings(**{existing_page.COPIES: [{'holds': 'music', 'path': '/mnt/tank/music'}]})
+        with mock.patch('existing_media.extras', return_value=[own, new]):
+            lines = storage.ahead_lines(config, {'blockdevices': []}, {})
+        self.assertEqual(
+            lines[-3:],
+            [
+                'Your movies in /mnt/tank/films: used where they are, and new ones are saved there',
+                'New shows are saved in /mnt/big/shows',
+                'Your music in /mnt/tank/music: copied into the NekoServer library; your folder is kept as it is',
             ],
         )
 

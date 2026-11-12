@@ -1322,7 +1322,7 @@ def choose_ahead(config, log):
 
 def section_changes(before, after):
     """What the storage page changed, section by section: {section: (the keys it set,
-    the keys it took out)}, and the one top-level answer of the films question."""
+    the keys it took out)}, and the top-level answers of the films question as they are."""
     import existing_page
 
     changes = {}
@@ -1333,8 +1333,10 @@ def section_changes(before, after):
         gone = [key for key in old if key not in new]
         if added or gone:
             changes[section] = (added, gone)
-    if after.get(existing_page.ASKED) is True and before.get(existing_page.ASKED) is not True:
-        changes[existing_page.ASKED] = True
+    # The films question's two answers of their own: that it was asked, and the folders to copy.
+    for key in (existing_page.ASKED, existing_page.COPIES):
+        if after.get(key) and after.get(key) != before.get(key):
+            changes[key] = after[key]
     return changes
 
 
@@ -1344,8 +1346,8 @@ def keep_ahead(config, chosen):
     import drive_table
 
     for section, change in chosen['settings'].items():
-        if change is True:
-            config[section] = True
+        if not isinstance(change, tuple):
+            config[section] = change
             continue
         added, gone = change
         kept = config.setdefault(section, {})
@@ -1439,9 +1441,19 @@ def ahead_lines(config, inventory, places):
     elif photos.get(OFFLINE_WANTED) is False:
         lines.append('Offline backup: none for now')
     import existing_media
+    import existing_page
 
     for entry in existing_media.extras(config):
-        lines.append(f"Your {entry['holds']} in {entry['path']}: used where they are, nothing is copied")
+        new = ', and new ones are saved there' if entry['new_files'] else ''
+        if entry['use'] == existing_media.NEW:
+            lines.append(f"New {existing_media.WHAT[entry['holds']]} are saved in {entry['path']}")
+        else:
+            lines.append(f"Your {existing_media.WHAT[entry['holds']]} in {entry['path']}: used where they are{new}")
+    for wanted in config.get(existing_page.COPIES) or []:
+        lines.append(
+            f"Your {existing_media.WHAT[wanted['holds']]} in {wanted['path']}: copied into the NekoServer library; "
+            'your folder is kept as it is'
+        )
     return lines
 
 
