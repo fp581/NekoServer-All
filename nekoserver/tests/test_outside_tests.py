@@ -486,8 +486,9 @@ class NoGateTests(unittest.TestCase):
             with self.assertRaises(RuntimeError) as refused:
                 self.installed(notifications, *values)
             self.assertNotIn(token, str(refused.exception))
+        failing = a_ping_address() + '/fail'
         with self.assertRaises(RuntimeError):
-            self.installed(heartbeat, a_ping_address() + '/fail')
+            self.installed(heartbeat, failing)
 
     def test_set_up_later_is_a_step_still_to_do(self):
         for module in (notifications, heartbeat):

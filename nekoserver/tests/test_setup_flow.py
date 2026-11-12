@@ -607,7 +607,7 @@ class SetupWindowTests(unittest.TestCase):
         self.assertEqual(
             (shown['hidden'], shown['password'], shown['qr'], shown['button']), (False, fetched, login['qr'], 'Hide')
         )
-        self.assertEqual(seen['logins'][1]['hidden'], True)
+        self.assertTrue(seen['logins'][1]['hidden'])
         # Pressed again it is hidden, and gone from the page.
         seen = self.page([self.asked(question, page, login=login, showLogin=[1, 1])])
         self.assertEqual(
@@ -819,7 +819,7 @@ class SetupWindowTests(unittest.TestCase):
         question = 'Number of the drive for your apps (the app SSD) (Enter alone stops setup here): '
         seen = self.page([self.asked(question, page)])
         self.assertEqual((seen['prompt'], seen['send']), (page['title'], 'Use these drives'))
-        self.assertEqual(seen['skipHidden'], True)
+        self.assertTrue(seen['skipHidden'])
         lists = seen['storage']
         self.assertEqual([row['key'] for row in lists], ['data_ssd', 'media_hdd', 'usb', 'photos'])
         self.assertEqual(
@@ -987,7 +987,7 @@ class SetupWindowTests(unittest.TestCase):
         )
         self.assertEqual((seen['skipShown'], seen['yesnoHidden'], seen['pageHidden']), (True, False, True))
         seen = self.page([self.asked('Continue with these drives anyway? [yes/no]: ', kind='yesno')])
-        self.assertEqual(seen['skipShown'], False)
+        self.assertFalse(seen['skipShown'])
 
     def test_a_question_has_its_own_words_and_buttons_in_the_window(self):
         """0.50.0, item 13 redone: the window showed the terminal's line ("... [yes/no]:",
@@ -1021,7 +1021,7 @@ class SetupWindowTests(unittest.TestCase):
             ['Create strong passwords for me (recommended)', 'Choose my own logins'],
         )
         self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '2'}]])
-        self.assertEqual(seen['skipHidden'], True)
+        self.assertTrue(seen['skipHidden'])
         # A list made at run time (the assistants this PC can run).
         models = [('0', 'No assistant'), ('1', 'qwen3.5:4b')]
         seen = self.page([asked('assistant_model', models, pressChoice=2)])
@@ -1040,7 +1040,7 @@ class SetupWindowTests(unittest.TestCase):
         self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': ''}]])  # Enter alone, not Ctrl+D
         # A question about what was listed just before it keeps that list in view.
         seen = self.page([asked('drive_space')])
-        self.assertEqual(seen['contextHidden'], False)
+        self.assertFalse(seen['contextHidden'])
 
     def test_an_answer_that_was_not_delivered_can_be_sent_again(self):
         """The setup review (S8): when sending an answer failed, the window's buttons and
