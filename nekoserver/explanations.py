@@ -8,7 +8,7 @@ module adds the one-line explanation under each."""
 STEP_EXPLANATIONS = {
     'system': 'Checks this PC: processor, memory, Python, Docker, firewall and the Linux it runs.',
     'network_storage': 'Connects the drives on your NAS, over iSCSI or NFS, when you switched that on.',
-    'storage': 'Asks which drive is the SSD (apps), the HDD (your media) and the USB drive (backups), and mounts them.',
+    'storage': 'Asks which drives hold the apps, your media and the backups (one drive is enough), and mounts them.',
     'capacity': 'Makes sure each drive has room for what will go on it.',
     'recovery': 'Keeps a copy of NekoServer and your settings on the SSD, so a reinstall can find them.',
     'account_credentials': 'Prepares a username and password for every app (random, or ones you choose).',
@@ -336,8 +336,12 @@ def apps_to_install(config, now):
 def review(config):
     """What pressing Install will do, as headed lists, from the settings as they stand:
     [(heading, [line])]. The same in the window and in the terminal."""
+    import neko_common
+
     now = states(config)
     apps = apps_to_install(config, now)
+    # A server set up already (an update, gate run D): its apps are there, its PIN chosen.
+    again = neko_common.server_exists(config)
     extras = [extra['title'] for extra in EXTRAS if extra['part'] in ('extras', 'storage') and now[extra['id']]]
     left_out = [
         extra['title']
@@ -345,23 +349,24 @@ def review(config):
         if extra['part'] == 'apps' and not extra.get('under') and not now[extra['id']]
     ]
     asked = [words for key, words in ASKED_DURING.items() if key not in now or now[key]]
-    sections = [('Apps to install', apps or ['None: only what is always set up'])]
+    sections = [('Apps on this server' if again else 'Apps to install', apps or ['None: only what is always set up'])]
     if extras:
         sections.append(('Extras', extras))
     if left_out:
         sections.append(
             ('Left out', [title + ' (stopped if this server has it; its data is kept)' for title in left_out])
         )
-    sections.append(('Always set up', list(ALWAYS)))
-    sections.append(
-        (
-            'What happens next',
-            [
-                'Setup takes about an hour. It installs the apps, makes an account in each one and connects them.',
-                'It never formats a drive and never deletes your files.',
-            ],
-        )
+    always = list(ALWAYS)
+    if again:
+        always[0] = 'The dashboard, with the PIN it has'
+    sections.append(('Always set up', always))
+    happens = (
+        'This takes a few minutes, longer when new app versions are downloaded. Your accounts, settings and '
+        'files are kept.'
+        if again
+        else 'Setup takes about an hour. It installs the apps, makes an account in each one and connects them.'
     )
+    sections.append(('What happens next', [happens, 'It never formats a drive and never deletes your files.']))
     sections.append(('Setup stops to ask you', [words[0].upper() + words[1:] for words in asked]))
     return sections
 

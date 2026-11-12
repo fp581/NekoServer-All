@@ -92,6 +92,16 @@ WELCOME = [
 ]
 
 
+# The same on a server that is set up already (an update or a change, gate run D).
+UPDATE_WELCOME = [
+    f'Welcome to NekoServer {VERSION}.',
+    '',
+    'NekoServer is set up on this PC. Your apps, accounts, settings and files are kept: the pages',
+    'that follow show your saved answers, and nothing changes until you approve. You can stop with',
+    'Ctrl+C and run it again later; it continues where it stopped.',
+]
+
+
 def sudo_account():
     name = os.environ.get('SUDO_USER', '')
     if not name or name == 'root':
@@ -371,8 +381,15 @@ def first_page(path, asking):
     """The first page, shown until the person goes on: a number switches that line on
     or off (saved at once) and shows the page again. False when setup is to stop."""
     _, output, window, _ = asking
+    # On a server that is set up already (an update, gate run D) its apps are installed:
+    # what this page holds is that nothing changes before the approval.
+    first = (
+        'Nothing is installed yet.'
+        if not neko_common.server_exists(read_json(path) or {})
+        else ('Nothing changes until you approve.')
+    )
     question = (
-        '\nNothing is installed yet. Type the number of a line to switch it on or off, press Enter to go on, '
+        f'\n{first} Type the number of a line to switch it on or off, press Enter to go on, '
         'or type no to stop' + (' (or use the setup window)' if window is not None else '') + ': '
     )
     while True:
@@ -1139,7 +1156,7 @@ def run(execute, default_state, prompt=input, output=print, root=ROOT, config=No
     if settings is None:
         return 2
     path, created = settings
-    for line in WELCOME:
+    for line in WELCOME if not neko_common.server_exists(config) else UPDATE_WELCOME:
         output(line)
     output(
         '\nYour settings are in '
