@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use std::{
     fs,
     os::unix::fs::MetadataExt,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     thread,
     time::{Duration, Instant},
 };
@@ -1609,6 +1609,14 @@ fn restored_model(original: &Value, stage: &Path, data: &Path, media: &Path) -> 
                 } else {
                     return Err(Error::new("Unsafe restored bind mount"));
                 };
+                // Under the rehearsal's own folder, always: a source with ".." in it (from
+                // a snapshot's settings) would lead out of it, onto this PC's own files.
+                let inside = source
+                    .components()
+                    .all(|c| matches!(c, Component::RootDir | Component::Normal(_)));
+                if !inside {
+                    return Err(Error::new("Unsafe restored bind mount"));
+                }
                 if !target.exists() {
                     common::directory(&target, 0o755)?;
                     volume["read_only"] = json!(true);
@@ -7351,6 +7359,22 @@ mod tests {
             Path::new("/mnt/neko")
         )
         .is_err());
+        // A path that leads out of a drive's folder is refused, never bound.
+        for away in [
+            format!("{}/d3/../../../etc", common::EXTRA_MOUNTS),
+            "/srv/neko/appdata/../../../etc".to_string(),
+        ] {
+            assert!(
+                restored_model(
+                    &bind(&away),
+                    stage,
+                    Path::new("/srv/neko"),
+                    Path::new("/mnt/neko")
+                )
+                .is_err(),
+                "{away}"
+            );
+        }
         let _ = fs::remove_dir_all(stage);
     }
     #[test]
