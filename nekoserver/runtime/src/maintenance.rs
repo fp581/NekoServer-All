@@ -1599,6 +1599,11 @@ fn restored_model(original: &Value, stage: &Path, data: &Path, media: &Path) -> 
                     stage.join("data").join(relative)
                 } else if let Ok(relative) = source.strip_prefix(media) {
                     stage.join("media").join(relative)
+                } else if let Ok(relative) = source.strip_prefix(common::EXTRA_MOUNTS) {
+                    // A drive beyond the two (an app's files on a drive of their own, gate
+                    // run C14): its files are not in the snapshot, so the rehearsal gets an
+                    // empty folder of its own, read-only; the drive itself is never seen.
+                    stage.join("drives").join(relative)
                 } else if source == Path::new("/etc/localtime") {
                     continue;
                 } else {
@@ -7316,6 +7321,37 @@ mod tests {
         assert!(clone["services"]["redis"].get("volumes").is_none());
         assert!(clone["services"]["server"]["volumes"].is_array());
         let _ = fs::remove_dir_all("/tmp/neko-stage-novol");
+    }
+    /// Gate run C14: music on a drive of its own (and the person's own folder mounted in
+    /// its library) stopped the monthly run at "Unsafe restored bind mount". Such a bind
+    /// gets an empty read-only folder of the rehearsal's own; anything else stays refused.
+    #[test]
+    fn a_drive_beyond_the_two_gets_an_empty_folder_in_the_rehearsal() {
+        let stage = Path::new("/tmp/neko-stage-drives");
+        let _ = fs::remove_dir_all(stage);
+        let bind = |source: &str| json!({"services":{"navidrome":{"image":"n","volumes":[{"type":"bind","source":source,"target":"/music"}]}}});
+        let music = format!("{}/d3/library/music", common::EXTRA_MOUNTS);
+        let clone = restored_model(
+            &bind(&music),
+            stage,
+            Path::new("/srv/neko"),
+            Path::new("/mnt/neko"),
+        )
+        .unwrap();
+        let volume = &clone["services"]["navidrome"]["volumes"][0];
+        assert_eq!(
+            volume["source"],
+            json!(stage.join("drives/d3/library/music"))
+        );
+        assert_eq!(volume["read_only"], json!(true));
+        assert!(restored_model(
+            &bind("/home/someone/music"),
+            stage,
+            Path::new("/srv/neko"),
+            Path::new("/mnt/neko")
+        )
+        .is_err());
+        let _ = fs::remove_dir_all(stage);
     }
     #[test]
     fn rehearsal_never_joins_production_networks() {
