@@ -566,10 +566,102 @@ def sorted_steps(plan, states):
     return by_status
 
 
-def finishing_screen(config, states, page=None, output=print, checkup=None, ran=()):
+# ---- the finishing page's states (0.50.0, the wizard: P09) --------------------------------
+# What is so for each app, kept apart: installed, signed in, opens, tried by a person;
+# and for the server: a backup made, a restore tried. Nothing here sums them into one
+# "all done" (finish_states.py judges; these are the words).
+STATE_WORDS = {'done': 'done', 'failed': 'needs fixing', 'not_tested': 'not tried yet', 'waiting': 'waiting'}
+APP_STATES = (('installed', 'Installed'), ('login', 'Signed in'), ('address', 'Opens'), ('tried', 'Tried by you'))
+REASONS = {
+    'step_did_not_finish': 'its part of setup did not finish',
+    'step_waits_for_you': 'waiting for something only you can do',
+    'container_missing': 'it was not installed',
+    'container_not_running': 'it is installed but not running',
+    'still_starting': 'it is still starting; look again in a minute',
+    'docker_did_not_answer': 'NekoServer could not ask the program that runs the apps',
+    'saved_login_refused': 'the app did not take the saved login',
+    'account_step_not_finished': 'its account is not made yet',
+    'no_login_kept': 'NekoServer keeps no login for this app',
+    'not_installed_yet': 'comes after it is installed',
+    'no_answer': 'it did not answer when NekoServer opened it',
+    'not_asked': 'NekoServer has not opened it yet',
+    'nobody_tried_yet': 'nobody has tried this yet',
+    'empty_library': 'your library is empty: add a video or a song you own, or leave this test for later',
+    'you_chose_later': 'you chose to try this later',
+    'you_said_it_did_not_work': 'you said this did not work',
+    'has_not_run_yet': 'this backup has not run yet',
+    'did_not_finish': 'the last run did not finish',
+    'left_something_out': 'the last run left something out',
+    'no_backup_set_up': 'no backup is set up',
+    'no_backup_to_restore_from': 'there is no backup to restore from yet',
+    'running_now': 'it is running now',
+}
+TEST_TITLES = {
+    'play_video': 'Play a video in Jellyfin',
+    'play_song': 'Play a song in Navidrome',
+    'phone_photo': 'A photo taken on the phone appears in Immich',
+    'cloud_file': 'Open a file in Nextcloud',
+    'tv_picture': 'The TV shows the picture',
+    'tv_sound': 'Sound comes from the TV',
+    'tv_controller': 'The controller works',
+    'tv_steam': 'Steam Big Picture opens',
+}
+OUTCOMES = {
+    'ready': 'NekoServer is ready.',
+    'pending': 'Your apps are installed. Some setup is still waiting for you.',
+    'attention': 'Setup needs attention.',
+}
+
+
+def state_said(found):
+    """One state in words, with its reason when it is not done."""
+    word = STATE_WORDS.get(found.get('state'), 'not known')
+    reason = REASONS.get(found.get('reason'))
+    return f'{word} ({reason})' if reason and found.get('state') != 'done' else word
+
+
+def states_lines(summary):
+    """The finishing page's states as lines: each app, the server's backups and
+    restores, and the tests a person can still try (which never hold anything up)."""
+    lines = ['', 'How things stand: ' + OUTCOMES.get(summary.get('outcome'), OUTCOMES['pending'])]
+    for app in summary.get('apps', []):
+        said = [f'{label}: {state_said(app["states"][key])}' for key, label in APP_STATES if key in app['states']]
+        lines.append(f"  {app['name']}. " + '. '.join(said) + '.')
+    server = summary.get('server', {})
+    if server:
+        lines.append(
+            f"  Backups. Backup made: {state_said(server.get('backup', {}))}. "
+            f"Restore tried: {state_said(server.get('restore', {}))}."
+        )
+    open_tests = [test for test in summary.get('tests', []) if test.get('state') != 'done']
+    if open_tests:
+        lines.append('You can try these whenever you like; nothing waits for them:')
+        for test in open_tests:
+            title = TEST_TITLES.get(test['id'], str(test['id']).replace('_', ' ').capitalize())
+            lines.append(f'  - {title}: {state_said(test)}')
+    return lines
+
+
+def read_states(config, plan):
+    """What finish_states finds on this server, or None when it cannot be read (the page
+    then says nothing rather than guess)."""
+    import finish_states
+
+    try:
+        # Nothing to ask where no app was ever installed (Docker's folder is not on the app
+        # drive): the checks would only wait for programs that are not there.
+        if not (data_folder(config) / 'docker-engine').is_dir():
+            return None
+        return finish_states.summary(finish_states.collect(config, plan))
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+        return None
+
+
+def finishing_screen(config, states, page=None, output=print, checkup=None, ran=(), summary=None):
     """The summary shown at the end. Returns True when nothing is left to do. `ran`: the
     steps the installer ran this time (its plan, with the steps the others need), so the
-    count is the one the log and the window give."""
+    count is the one the log and the window give. `summary`: what finish_states found
+    (read_states), shown as each app's states; left out when it could not be read."""
     data = data_folder(config)
     plan, states = planned(config, states, ran)
     by_status = sorted_steps(plan, states)
@@ -599,6 +691,9 @@ def finishing_screen(config, states, page=None, output=print, checkup=None, ran=
     show_steps('Needs a look (optional: everything else works without it):', optional, states, 'did not finish', output)
     show_steps('Not available on this system:', by_status['unavailable'], states, 'not available', output)
     show_checkup(checkup, output)
+    if summary:
+        for text in states_lines(summary):
+            output(text)
     show_end(config, data, plan, states, page, output)
     output('\nWhat next:')
     steps_done = not (by_status['broken'] or by_status['waiting'] or blocked)
@@ -747,7 +842,8 @@ def after_setup(code, path, default_state, output, window):
         lines.append(str(line))
         output(line)
 
-    complete = finishing_screen(config, states, page, shown, checkup, steps)
+    summary = read_states(config, planned(config, states, steps)[0])
+    complete = finishing_screen(config, states, page, shown, checkup, steps, summary)
     if window is not None:
         # The window shows the same summary; give it a moment to fetch it.
         heading = next((text.strip() for text in lines[1:2]), '')  # under the first ruled line
