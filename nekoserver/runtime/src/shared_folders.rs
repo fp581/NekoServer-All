@@ -411,7 +411,10 @@ mod tests {
         fs::create_dir_all(elsewhere.join("library/existing")).unwrap();
         let linked = top.join("linked");
         std::os::unix::fs::symlink(&elsewhere, &linked).unwrap();
-        let mut around = settings(&linked.join("library/existing/movies").to_string_lossy(), json!(["jellyfin"]));
+        let mut around = settings(
+            &linked.join("library/existing/movies").to_string_lossy(),
+            json!(["jellyfin"]),
+        );
         around["media_mount"] = json!(linked.to_string_lossy());
         assert!(listed(&around).is_empty());
         let _ = fs::remove_dir_all(&top);
