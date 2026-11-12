@@ -11,6 +11,7 @@ socket is a local one that proves a redirect is not followed.
 import contextlib
 import http.server
 import io
+import json
 import logging
 import secrets
 import socket
@@ -129,8 +130,8 @@ class AlertTestTests(unittest.TestCase):
             (401, 'wrong_token'),
             (403, 'not_allowed'),
             (404, 'refused'),
-            (429, 'refused'),
-            (500, 'refused'),
+            (429, 'busy'),
+            (500, 'server_error'),
             (301, 'redirected'),
             (307, 'redirected'),
         ):
@@ -228,8 +229,9 @@ class CheckInTestTests(unittest.TestCase):
         for status, word in (
             (404, 'rejected'),
             (400, 'rejected'),
-            (429, 'rejected'),
-            (503, 'rejected'),
+            (429, 'busy'),
+            (503, 'busy'),
+            (500, 'server_error'),
             (302, 'redirected'),
         ):
             result = heartbeat.send_test_checkin(address, opener=FakeServer(status))
@@ -407,7 +409,7 @@ class SecretsStayOutTests(unittest.TestCase):
         self.run_everything()
         words = {
             'ok', 'invalid', 'none', 'accepted', 'open', 'allowed', 'wrong_token', 'not_allowed', 'refused',
-            'rejected', 'redirected', 'timed_out', 'unreachable', 'untrusted', 'not_sent', 'not_tested',
+            'rejected', 'redirected', 'timed_out', 'unreachable', 'untrusted', 'not_sent', 'not_tested', 'busy', 'server_error',
         }  # fmt: skip
         for result in self.results:
             for key, value in result.items():
@@ -487,3 +489,34 @@ class NoGateTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class GateRunCTests(unittest.TestCase):
+    """Gate run C (VM3): a busy server (429) was told as a wrong topic, a server error (500)
+    as a wrong address, and a retry after a failed test called the step done with no
+    request sent."""
+
+    def test_busy_and_a_server_error_are_told_apart_from_a_wrong_address(self):
+        from modules import heartbeat, notifications
+
+        self.assertEqual(notifications._answer_word('refused', 429, 'accepted'), 'busy')
+        self.assertEqual(notifications._answer_word('refused', 503, 'accepted'), 'busy')
+        self.assertEqual(notifications._answer_word('refused', 500, 'accepted'), 'server_error')
+        self.assertEqual(notifications._answer_word('refused', 404, 'accepted'), 'refused')
+        for module in (notifications, heartbeat):
+            self.assertIn('try later', module.TEST_SAID['busy'])
+            self.assertIn('problem of its own', module.TEST_SAID['server_error'])
+
+    def test_a_saved_address_whose_test_was_not_taken_is_tested_again(self):
+        from modules import notifications
+
+        with tempfile.TemporaryDirectory() as folder:
+            private = Path(folder) / 'config.json'
+            private.write_text(json.dumps({'endpoint': 'https://ntfy.example/topic'}))
+            self.assertFalse(notifications.untested(private))  # saved before 0.50.0: it stands
+            notifications.mark_tested(private, False)
+            self.assertTrue(notifications.untested(private))
+            notifications.mark_tested(private, True)
+            self.assertFalse(notifications.untested(private))
+            self.assertEqual(json.loads(private.read_text())['endpoint'], 'https://ntfy.example/topic')
+            self.assertFalse(notifications.untested(Path(folder) / 'missing.json'))

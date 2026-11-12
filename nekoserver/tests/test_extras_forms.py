@@ -117,7 +117,17 @@ class AlertTestTests(unittest.TestCase):
         self.assertFalse(any('Anyone who knows this address' in line for line in logs))
 
     def test_a_test_the_server_did_not_take_leaves_the_step_waiting_with_the_reason(self):
-        for server in ('wrong_token', 'not_allowed', 'refused', 'redirected', 'timed_out', 'unreachable', 'untrusted'):
+        for server in (
+            'wrong_token',
+            'not_allowed',
+            'refused',
+            'redirected',
+            'timed_out',
+            'unreachable',
+            'untrusted',
+            'busy',
+            'server_error',
+        ):
             with self.subTest(server=server):
                 result, _, asked = self.outcome(server)
                 self.assertEqual(result['status'], 'needs_setup')
@@ -135,6 +145,8 @@ class AlertTestTests(unittest.TestCase):
                 'timed_out',
                 'unreachable',
                 'untrusted',
+                'busy',
+                'server_error',
                 'not_sent',
             },
         )

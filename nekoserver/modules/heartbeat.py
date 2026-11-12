@@ -100,7 +100,10 @@ def send_test_checkin(address, opener=None):
     if result['address'] != 'ok':
         return result
     happened, status = outside_request.send(address, 'GET', None, None, opener)
-    result.update(server='rejected' if happened == outside_request.REFUSED else happened, http_status=status)
+    from modules.notifications import busy_or_broken
+
+    word = 'rejected' if happened == outside_request.REFUSED else happened
+    result.update(server=busy_or_broken(status) or word, http_status=status)
     return result
 
 
@@ -169,6 +172,9 @@ TEST_SAID = {
     "monitor's own test, to see it.",
     'rejected': "The monitor refused the check-in. Copy the Ping URL from the check's details again; it is not "
     "the web page's address.",
+    'busy': 'The monitor is busy and asked to try later. Retry this step in a few minutes.',
+    'server_error': 'The monitor had a problem of its own (it answered with an error). Retry this step later; the '
+    'address may be right.',
     'redirected': 'This address points somewhere else, and NekoServer does not follow that. Use the Ping URL itself.',
     'timed_out': 'The monitor did not answer in time. If it keeps happening, check the address.',
     'unreachable': "NekoServer could not reach the monitor. Check this server's internet connection and the "
@@ -182,16 +188,17 @@ def test_checkin(context, address):
     """One test check-in sent to the address just saved. None when the monitor took it
     (said with what that does and does not show); a needs_setup result with the reason
     when it did not."""
+    from modules.notifications import mark_tested
+
     result = send_test_checkin(address)
     said = TEST_SAID.get(result['server'], TEST_SAID['not_sent'])
     context.log('Outage warning test: ' + said)
+    mark_tested(safe_path(PRIVATE), result['server'] == 'accepted')
     if result['server'] == 'accepted':
         return None
     return {
         'status': 'needs_setup',
-        'reason': 'The check-in address is saved, but the test check-in was not taken. '
-        + said
-        + ' Then run  sudo bash install.sh  again.',
+        'reason': 'The check-in address is saved, but the test check-in was not taken. ' + said,
     }
 
 
@@ -268,8 +275,12 @@ def run(context):
         fresh = bool(address)
     if not address:
         return set_up_later()
-    # An address just typed in is tried for real before anything calls it set up.
-    return install(context, address) or (test_checkin(context, address) if fresh else None)
+    from modules.notifications import untested
+
+    # An address just typed in, or one saved at a run whose test was not taken, is tried
+    # for real before anything calls it set up.
+    again = fresh or untested(private)
+    return install(context, address) or (test_checkin(context, address) if again else None)
 
 
 def install(context, address):

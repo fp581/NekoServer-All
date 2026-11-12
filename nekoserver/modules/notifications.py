@@ -97,7 +97,37 @@ def _answer_word(happened, status, yes):
         return 'wrong_token'
     if status == 403:
         return 'not_allowed'
-    return happened
+    return busy_or_broken(status) or happened
+
+
+def busy_or_broken(status):
+    """'busy' for an answer that says to try later (429, 503), 'server_error' for any
+    other server error (5xx); None for anything else."""
+    if status in (429, 503):
+        return 'busy'
+    if isinstance(status, int) and 500 <= status <= 599:
+        return 'server_error'
+    return None
+
+
+def untested(private):
+    """The address saved has no passed test yet: a run cut off after saving it, or a
+    test that was not taken (gate run C: a retry then called the step done without any
+    request). Addresses saved before 0.50.0 have no record either way: those stand."""
+    try:
+        return private.exists() and json.loads(private.read_text()).get('tested') is False
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def mark_tested(private, passed):
+    """What the test of the saved address showed, kept beside it."""
+    try:
+        saved = json.loads(private.read_text())
+    except (OSError, ValueError):
+        return
+    saved['tested'] = bool(passed)
+    atomic_json(private, saved)
 
 
 def send_test(address, token='', opener=None):
@@ -285,6 +315,9 @@ TEST_SAID = {
     'not_allowed': 'The alert server knows this topic but does not let NekoServer send to it: it needs an access '
     'token that is allowed to send to it.',
     'refused': "The alert server answered no. Check that the address ends with your topic's name.",
+    'busy': 'The alert server is busy and asked to try later. Retry this step in a few minutes.',
+    'server_error': 'The alert server had a problem of its own (it answered with an error). Retry this step later; '
+    'the address may be right.',
     'redirected': 'This address points somewhere else, and NekoServer does not follow that. Use the final address '
     'of the topic.',
     'timed_out': 'The alert server did not answer in time. If it keeps happening, check the address.',
@@ -308,12 +341,11 @@ def test_alert(context, address, token, prompt=None):
     result = send_test(address, token)
     said = TEST_SAID.get(result['server'], TEST_SAID['not_sent'])
     context.log('Phone alerts test: ' + said)
+    mark_tested(safe_path(PRIVATE_CONFIG), result['server'] == 'accepted')
     if result['server'] != 'accepted':
         return {
             'status': 'needs_setup',
-            'reason': 'Phone alerts are saved, but the test message was not taken. '
-            + said
-            + ' Then run  sudo bash install.sh  again.',
+            'reason': 'Phone alerts are saved, but the test message was not taken. ' + said,
         }
     if reading_test(address, token)['server'] == 'open':
         context.log('Phone alerts: ' + OPEN_TOPIC)
@@ -392,7 +424,9 @@ def run(context):
             return install(context, address, token) or test_alert(context, address, token)
     if not address:
         return set_up_later()
-    return install(context, address, token)
+    # Saved at an earlier run whose test was not taken: tried again, never passed unseen.
+    again = untested(private)
+    return install(context, address, token) or (test_alert(context, address, token) if again else None)
 
 
 def install(context, address, token=''):
