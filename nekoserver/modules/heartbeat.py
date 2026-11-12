@@ -80,8 +80,8 @@ def send_test_checkin(address, opener=None):
     say what the monitor answered.
 
     Returns {'address': 'ok' | 'invalid',
-             'server': 'accepted' | 'rejected' | 'timed_out' | 'unreachable' | 'untrusted'
-                       | 'redirected' | 'not_sent',
+             'server': 'accepted' | 'wrong_address' | 'busy' | 'server_error' | 'rejected'
+                       | 'timed_out' | 'unreachable' | 'untrusted' | 'redirected' | 'not_sent',
              'http_status': the answer's number, or None when there was no answer,
              'timing': 'not_tested',
              'warning': 'not_tested'}
@@ -100,10 +100,8 @@ def send_test_checkin(address, opener=None):
     if result['address'] != 'ok':
         return result
     happened, status = outside_request.send(address, 'GET', None, None, opener)
-    from modules.notifications import busy_or_broken
-
-    word = 'rejected' if happened == outside_request.REFUSED else happened
-    result.update(server=busy_or_broken(status) or word, http_status=status)
+    word = outside_request.kind(happened, status)
+    result.update(server='rejected' if word == outside_request.REFUSED else word, http_status=status)
     return result
 
 
@@ -170,15 +168,19 @@ TEST_SAID = {
     'accepted': 'The monitor accepted a check-in. Open the check at the monitor and look for it in its log. '
     'Whether its warning reaches you is not tested yet: pause this server for a while, or use the '
     "monitor's own test, to see it.",
-    'rejected': "The monitor refused the check-in. Copy the Ping URL from the check's details again; it is not "
-    "the web page's address.",
-    'busy': 'The monitor is busy and asked to try later. Retry this step in a few minutes.',
-    'server_error': 'The monitor had a problem of its own (it answered with an error). Retry this step later; the '
-    'address may be right.',
+    'wrong_address': "The monitor has no check at this address (it answered \"not found\"). Copy the Ping URL from "
+    "the check's details again (not the web page's address), then enter it again.",
+    'rejected': 'The monitor turned the check-in down. Try again in a few minutes; if it keeps happening, look at '
+    "the check's settings on the monitor's website.",
+    'busy': 'The monitor is busy right now. Try again in a few minutes: retry this step then. Your address can stay '
+    'as it is.',
+    'server_error': 'Their server has a problem right now (the monitor answered with an error). This is not your '
+    'mistake: retry this step later. Your address can stay as it is.',
     'redirected': 'This address points somewhere else, and NekoServer does not follow that. Use the Ping URL itself.',
-    'timed_out': 'The monitor did not answer in time. If it keeps happening, check the address.',
-    'unreachable': "NekoServer could not reach the monitor. Check this server's internet connection and the "
-    'spelling of the address.',
+    'timed_out': 'The monitor did not answer in time. That is usually a network problem: check that this server is '
+    'connected to the internet, then retry this step.',
+    'unreachable': 'NekoServer got no answer from the monitor: a network problem. Check that this server is '
+    'connected to the internet, then retry this step.',
     'untrusted': "The monitor's security certificate could not be checked, so nothing was sent.",
     'not_sent': 'No test check-in was sent: the address is not one NekoServer can send to.',
 }
@@ -188,12 +190,10 @@ def test_checkin(context, address):
     """One test check-in sent to the address just saved. None when the monitor took it
     (said with what that does and does not show); a needs_setup result with the reason
     when it did not."""
-    from modules.notifications import mark_tested
-
     result = send_test_checkin(address)
     said = TEST_SAID.get(result['server'], TEST_SAID['not_sent'])
     context.log('Outage warning test: ' + said)
-    mark_tested(safe_path(PRIVATE), result['server'] == 'accepted')
+    outside_request.mark_tested(safe_path(PRIVATE), result['server'])
     if result['server'] == 'accepted':
         return None
     return {
@@ -269,18 +269,28 @@ def run(context):
     ):
         context.log('Outage monitor: skipped by choice')
         return
-    fresh = False
-    if not address and sys.stdin.isatty():
-        address = monitor_form(context)
-        fresh = bool(address)
+    address = asked_if_needed(context, private, address)
     if not address:
         return set_up_later()
-    from modules.notifications import untested
+    # An address just typed in, one saved at a run whose test was not taken, and one that
+    # changed since are tried for real (install keeps the record only for the same
+    # address): a retry never passes without a check-in the monitor took. The test goes to
+    # this step's own address, the one just saved.
+    install_result = install(context, address)
+    if install_result:
+        return install_result
+    return test_checkin(context, address) if outside_request.untested(private) else None
 
-    # An address just typed in, or one saved at a run whose test was not taken, is tried
-    # for real before anything calls it set up.
-    again = fresh or untested(private)
-    return install(context, address) or (test_checkin(context, address) if again else None)
+
+def asked_if_needed(context, private, address):
+    """The check-in address to use: the saved one, or the form when there is none or the
+    monitor had no check at the saved one (only a wrong address is asked again)."""
+    wrong = bool(address) and outside_request.wrong_address(private)
+    if (wrong or not address) and sys.stdin.isatty():
+        if wrong:
+            context.log('Outage monitor: the saved address was not found at the monitor, so it is asked again.')
+        return monitor_form(context)
+    return address
 
 
 def install(context, address):
@@ -297,7 +307,7 @@ def install(context, address):
     )
     units = definitions(context.config, binary, private)
     check_units(units, 'heartbeat')
-    atomic_json(private, {'endpoint': address})
+    atomic_json(private, {'endpoint': address, **outside_request.kept_test(private, endpoint=address)})
     write_units(units)
     for args in (['systemctl', 'daemon-reload'], ['systemctl', 'enable', '--now', 'nekoserver-heartbeat.timer']):
         subprocess.run(args, check=True, capture_output=True, timeout=30)
