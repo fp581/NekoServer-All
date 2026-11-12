@@ -1302,6 +1302,30 @@ def pull_images(argv, what, log=None, waits=PULL_RETRY_WAITS, sleep=time.sleep):
             sleep(wait)
 
 
+def answered_within(argv, seconds, start=subprocess.Popen, now=time.monotonic, sleep=time.sleep):
+    """The exit code of `argv`, or None when it does not end within `seconds`. For a look
+    at a folder a shared folder may hold: one mounted hard (as setup mounts them) holds
+    every look while the NAS is away, so only this child waits; it is killed, never
+    waited for (it may stay stuck until the share answers)."""
+    try:
+        child = start(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        return None
+    deadline = now() + seconds
+    while child.poll() is None:
+        if now() >= deadline:
+            child.kill()
+            return None
+        sleep(0.05)
+    return child.returncode
+
+
+def folder_answers(path, seconds=15):
+    """`path` is a folder, and answers within `seconds`. Looked into (`path/.`), so a
+    share mounted when first used (an automount) is mounted by the look."""
+    return answered_within(['test', '-d', str(path) + '/.'], seconds) == 0
+
+
 def findmnt(columns, target, by='--mountpoint', run=None, timeout=10):
     """findmnt's columns for the mount in effect at target: with mounts stacked on one
     folder it lists them oldest first, and the last one is the one in use. None when

@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 
 import host
-from neko_common import SETUP_LOCK, SHARED
+from neko_common import SETUP_LOCK, SHARED, answered_within
 
 ROOT = Path(__file__).resolve().parent
 SETTINGS = 'my-config.json'
@@ -1344,20 +1344,9 @@ def not_checked(plan, path):
 
 
 def answers(path, seconds=LOOK_SECONDS, start=subprocess.Popen, now=time.monotonic, sleep=time.sleep):
-    """Whether `path` can be looked at (stat) within `seconds`. Looked at by a child
-    process: a shared folder that is away (an NFS hard mount) can hold a look for ever,
-    and then only the child waits, never the uninstaller."""
-    try:
-        child = start(['stat', '--', str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except OSError:
-        return False
-    deadline = now() + seconds
-    while child.poll() is None:
-        if now() >= deadline:
-            child.kill()  # not waited for: it may stay stuck until the share answers
-            return False
-        sleep(0.05)
-    return True
+    """Whether `path` can be looked at (stat) within `seconds`, by a child process
+    (neko_common.answered_within): a shared folder that is away can hold a look for ever."""
+    return answered_within(['stat', '--', str(path)], seconds, start, now, sleep) is not None
 
 
 def own_bind_targets(plan):
