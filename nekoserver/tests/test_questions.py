@@ -40,7 +40,7 @@ class WordsTests(unittest.TestCase):
         asked = questions.terminal('logins_who')
         self.assertIn('How would you like to set up your app accounts?', asked)
         self.assertIn('  1) Create strong passwords for me (recommended)\n  2) Choose my own logins\n', asked)
-        self.assertTrue(asked.endswith('Type 1 or 2, then press Enter. '))
+        self.assertTrue(asked.endswith('Type 1 or 2, then press Enter. Enter alone takes the first. '))
         # Something that can wait says what Enter alone does.
         self.assertIn('Press Enter alone', questions.terminal('alerts_token'))
         self.assertIn('It is not shown while you type.', questions.terminal('alerts_token'))

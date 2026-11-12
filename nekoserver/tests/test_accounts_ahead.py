@@ -57,6 +57,15 @@ class AheadTests(unittest.TestCase):
         self.assertFalse((Path(self.folder) / 'secrets').exists())
         self.assertFalse(any(pin in line for line in self.said))  # never said
 
+    def test_enter_alone_takes_the_recommended_passwords_made_for_you(self):
+        # Gate run B1: "Type 1 or 2." answered Enter alone, the one question that did.
+        typed = iter([''])
+        account_store.ask_ahead(
+            settings(self.folder), lambda q='': next(typed), mock.Mock(side_effect=AssertionError), self.said.append
+        )
+        self.assertEqual(account_store.AHEAD['mode'], 'generate')
+        self.assertNotIn('Type 1 or 2.', self.said)
+
     def test_typed_ones_are_checked_and_a_pin_may_be_left_out(self):
         config = settings(self.folder)
         answers = iter(['2', 'neko@example.org'])

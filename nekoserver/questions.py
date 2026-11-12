@@ -150,7 +150,7 @@ Q = {
         'it can connect and check the apps.',
         'kind': 'choice',
         'choices': [('1', 'Create strong passwords for me (recommended)'), ('2', 'Choose my own logins')],
-        'how': 'Type 1 or 2, then press Enter.',
+        'how': 'Type 1 or 2, then press Enter. Enter alone takes the first.',
     },
     'login_name': {
         'screen': 'Logins for your apps',

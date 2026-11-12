@@ -433,8 +433,9 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
         if first:
             while True:
                 answer = setup_progress.page_field('mode', prompt, questions.terminal('logins_who')).strip()
-                if answer in ('1', '2'):
-                    value['mode'] = 'generate' if answer == '1' else 'custom'
+                # Enter alone takes the first, the recommended one (gate run B1).
+                if answer in ('', '1', '2'):
+                    value['mode'] = 'custom' if answer == '2' else 'generate'
                     break
                 output('Type 1 or 2.')
         for app in missing:
@@ -527,8 +528,9 @@ def ask_ahead(config, prompt=input, password_prompt=getpass.getpass, output=prin
         if not stored['apps']:
             while True:
                 answer = setup_progress.page_field('mode', prompt, questions.terminal('logins_who')).strip()
-                if answer in ('1', '2'):
-                    AHEAD['mode'] = 'generate' if answer == '1' else 'custom'
+                # Enter alone takes the first, the recommended one (gate run B1).
+                if answer in ('', '1', '2'):
+                    AHEAD['mode'] = 'custom' if answer == '2' else 'generate'
                     break
                 output('Type 1 or 2.')
         mode = 'generate' if AHEAD['mode'] == 'generate' else 'custom'
