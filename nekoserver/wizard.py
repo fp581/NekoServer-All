@@ -952,7 +952,8 @@ def installed_found(found):
     lines = [f'NekoServer{version} is set up on this PC.{place}']
     waiting = found.get('waiting') or []
     if waiting:
-        lines.append(f'{len(waiting)} things still wait for you: ' + ', '.join(title(step) for step in waiting) + '.')
+        count = '1 thing still waits' if len(waiting) == 1 else f'{len(waiting)} things still wait'
+        lines.append(count + ' for you: ' + ', '.join(title(step) for step in waiting) + '.')
     return lines
 
 

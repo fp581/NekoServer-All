@@ -48,6 +48,8 @@ class WordsTests(unittest.TestCase):
                 '2 things still wait for you: TV setup, Server heartbeat.',
             ],
         )
+        here_one = {**here, 'waiting': ['tv']}
+        self.assertEqual(wizard.found_said(here_one)[1], '1 thing still waits for you: TV setup.')
         self.assertEqual(wizard.choice_said(here, 'update')[0], 'Review this NekoServer update')
         self.assertIn('From 0.49.0 to 0.50.0.', wizard.choice_said(here, 'update')[1])
         self.assertEqual(wizard.choice_said(here, 'change')[0], 'Change apps or settings')
