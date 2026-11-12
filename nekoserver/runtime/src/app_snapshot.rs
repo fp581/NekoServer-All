@@ -224,16 +224,75 @@ fn entries(
     }
     Ok(())
 }
+/// The drive each folder the snapshot copies must be on, by its device number: the
+/// app drive's, and for an app installed on another drive (0.50.0, "installed" in the
+/// settings: {app: drive}) that drive's for its settings folder. A folder found on any
+/// other device is not that app's settings: the drive is away, or something else is
+/// mounted in its place.
+pub(crate) struct Devices {
+    data: u64,
+    apps: std::collections::BTreeMap<String, u64>,
+}
+impl Devices {
+    /// Every app on the app drive, as on every server before 0.50.0.
+    #[cfg(test)]
+    fn plain(data: u64) -> Self {
+        Devices {
+            data,
+            apps: Default::default(),
+        }
+    }
+    /// From the job's settings. `backup::guard` has checked each drive named there by
+    /// its UUID before this is asked.
+    fn of(cfg: &Value, data: &Path) -> Result<Self> {
+        let mut apps = std::collections::BTreeMap::new();
+        for (app, drive) in cfg["installed"].as_object().into_iter().flatten() {
+            let folder = drive
+                .as_str()
+                .filter(|name| common::extra_drive(cfg, name))
+                .and_then(|name| common::drive_folder(cfg, name))
+                .ok_or_else(|| {
+                    Error::new(&format!(
+                        "installed.{app} must name a drive under \"storage\""
+                    ))
+                })?;
+            apps.insert(app.clone(), fs::metadata(folder)?.dev());
+        }
+        Ok(Devices {
+            data: fs::metadata(data)?.dev(),
+            apps,
+        })
+    }
+    /// The device an app's settings folder must be on.
+    fn settings(&self, service: &str) -> u64 {
+        self.apps.get(service).copied().unwrap_or(self.data)
+    }
+}
 /// Everything the snapshot copies, listed in a fixed order.
 fn listing(
     data: &Path,
     names: &[String],
-    device: u64,
+    devices: &Devices,
     files: &mut Vec<Value>,
     skipped: &mut Vec<Value>,
 ) -> Result<()> {
     for service in names {
-        for folder in ["appdata", "compose"] {
+        // An app installed on another drive whose folder is not on that drive (the drive
+        // is away, so the empty folder of the app drive shows): said by name, and nothing
+        // is backed up. An empty copy published as tonight's would push a good one out.
+        let settings = data.join("appdata").join(service);
+        if devices.apps.contains_key(service)
+            && !fs::metadata(&settings).is_ok_and(|m| m.dev() == devices.settings(service))
+        {
+            return Err(Error::new(&format!(
+                "{service} is installed on another drive, and its settings folder ({}) is not on that drive now: the drive is away or not mounted. Nothing was backed up; connect the drive and the backup runs again tomorrow night",
+                settings.display()
+            )));
+        }
+        for (folder, device) in [
+            ("appdata", devices.settings(service)),
+            ("compose", devices.data),
+        ] {
             entries(
                 data,
                 &PathBuf::from(folder).join(service),
@@ -243,6 +302,7 @@ fn listing(
             )?;
         }
     }
+    let device = devices.data;
     if data.join("installer/releases").is_dir() {
         entries(
             data,
@@ -257,12 +317,12 @@ fn listing(
 fn unchanged_since_listing(
     data: &Path,
     names: &[String],
-    device: u64,
+    devices: &Devices,
     files: &[Value],
     skipped: &[Value],
 ) -> Result<()> {
     let (mut again, mut skipped_again) = (vec![], vec![]);
-    listing(data, names, device, &mut again, &mut skipped_again)?;
+    listing(data, names, devices, &mut again, &mut skipped_again)?;
     let strip = |rows: &[Value]| -> Vec<Value> {
         rows.iter()
             .map(|r| {
@@ -567,10 +627,10 @@ fn snapshot(
         // Half-made snapshots of runs that failed or were cut off go first (each is as
         // big as a whole snapshot), then room is made for this one.
         common::clear_leftovers(&root, true)?;
-        let device = fs::metadata(data)?.dev();
+        let devices = Devices::of(&common::json(cfgpath, 64000), data)?;
         let mut files = vec![];
         let mut skipped = vec![];
-        listing(data, names, device, &mut files, &mut skipped)?;
+        listing(data, names, &devices, &mut files, &mut skipped)?;
         let needed = files
             .iter()
             .map(|r| r["size"].as_u64().unwrap_or(0) as u128)
@@ -593,7 +653,7 @@ fn snapshot(
         // Containers are stopped, but installer and settings files can still have
         // other writers. List everything again: a file that changed, appeared or went
         // away since the first listing makes this snapshot inconsistent.
-        unchanged_since_listing(data, names, device, &files, &skipped)?;
+        unchanged_since_listing(data, names, &devices, &files, &skipped)?;
         verify_staged(payload, &files)?;
         let manifest = json!({"format":"neko-media-snapshot-v1","version":VERSION,"created_at":common::now(),"containers":containers,"files":files,"skipped":skipped,"storage":common::json(cfgpath,64000)["storage"]});
         // 1 to 7 (0.50.0), or the earlier count setup marked; a count that is neither
@@ -762,6 +822,80 @@ mod tests {
         assert_eq!(mode("appdata/jellyfin"), 0o2775); // a folder's setgid is kept (new files' group)
         let _ = fs::remove_dir_all(&data);
     }
+    /// An app installed on another drive (0.50.0). Its settings folder is that drive's
+    /// folder mounted at the usual place, so it is on another device than the app drive:
+    /// the snapshot takes it, where it used to refuse the whole night's backup ("not a
+    /// regular directory"). With the drive away the app drive's empty folder shows there
+    /// instead: that is never backed up as the app's settings, it stops the backup by name.
+    #[test]
+    fn an_app_on_another_drive_is_backed_up_from_that_drive_and_never_as_an_empty_folder() {
+        let data = scratch("installed-elsewhere");
+        for folder in [
+            "appdata/jellyfin",
+            "compose/jellyfin",
+            "appdata/sonarr",
+            "compose/sonarr",
+        ] {
+            dir(&data.join(folder));
+        }
+        fs::write(data.join("appdata/jellyfin/library.db"), b"films").unwrap();
+        let names = vec!["jellyfin".to_string(), "sonarr".to_string()];
+        let here = fs::metadata(&data).unwrap().dev();
+        let elsewhere = fs::metadata("/proc").unwrap().dev();
+        assert_ne!(here, elsewhere);
+        let placed = |jellyfin: u64| Devices {
+            data: here,
+            apps: [("jellyfin".to_string(), jellyfin)].into(),
+        };
+        // The folder is on the drive the settings name: listed with its files.
+        let (mut files, mut skipped) = (vec![], vec![]);
+        listing(&data, &names, &placed(here), &mut files, &mut skipped).unwrap();
+        assert!(files
+            .iter()
+            .any(|f| f["path"] == "appdata/jellyfin/library.db"));
+        // The device its folder must be on is the app's own, not the app drive's: with the
+        // app drive taken for another device, only the placed app's settings still pass.
+        let other_app_drive = Devices {
+            data: elsewhere,
+            apps: [("jellyfin".to_string(), here)].into(),
+        };
+        let (mut files, mut skipped) = (vec![], vec![]);
+        assert!(entries(
+            &data,
+            Path::new("appdata/jellyfin"),
+            other_app_drive.settings("jellyfin"),
+            &mut files,
+            &mut skipped
+        )
+        .is_ok());
+        assert!(entries(
+            &data,
+            Path::new("appdata/sonarr"),
+            other_app_drive.settings("sonarr"),
+            &mut files,
+            &mut skipped
+        )
+        .is_err());
+        // The drive is away: nothing is listed, and the reason names the app.
+        let (mut files, mut skipped) = (vec![], vec![]);
+        let error = listing(&data, &names, &placed(elsewhere), &mut files, &mut skipped)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with("jellyfin is installed on another drive"),
+            "{error}"
+        );
+        assert!(error.contains("Nothing was backed up"), "{error}");
+        assert!(files.is_empty());
+        // The settings name the apps and their drive; one that is no drive is refused.
+        let cfg = json!({"storage": {"d3": {"uuid": "u"}}, "installed": {"jellyfin": "media"}});
+        assert!(Devices::of(&cfg, &data).is_err());
+        assert_eq!(
+            Devices::of(&json!({}), &data).unwrap().settings("jellyfin"),
+            here
+        );
+        let _ = fs::remove_dir_all(data);
+    }
     #[test]
     fn a_file_changed_after_listing_is_never_published() {
         let data = scratch("changed-after-listing");
@@ -771,7 +905,14 @@ mod tests {
         let names = vec!["jellyfin".to_string()];
         let device = fs::metadata(&data).unwrap().dev();
         let (mut files, mut skipped) = (vec![], vec![]);
-        listing(&data, &names, device, &mut files, &mut skipped).unwrap();
+        listing(
+            &data,
+            &names,
+            &Devices::plain(device),
+            &mut files,
+            &mut skipped,
+        )
+        .unwrap();
         // Each entry keeps when it was last changed, for the restore to give back.
         let changed = fs::metadata(data.join("appdata/jellyfin/settings.xml")).unwrap();
         let row = files
@@ -800,16 +941,24 @@ mod tests {
                 row["sha256"] = json!(copy_file(&data.join(&rel), &payload.join(&rel)).unwrap());
             }
         }
-        let error = unchanged_since_listing(&data, &names, device, &files, &skipped)
-            .unwrap_err()
-            .to_string();
+        let error =
+            unchanged_since_listing(&data, &names, &Devices::plain(device), &files, &skipped)
+                .unwrap_err()
+                .to_string();
         assert!(error.contains("settings.xml"), "{error}");
         let error = verify_staged(&payload, &files).unwrap_err().to_string();
         assert!(error.contains("does not match its manifest"), "{error}");
         // Nothing changed: both checks pass.
         let (mut files, mut skipped) = (vec![], vec![]);
         fs::remove_dir_all(&payload).unwrap();
-        listing(&data, &names, device, &mut files, &mut skipped).unwrap();
+        listing(
+            &data,
+            &names,
+            &Devices::plain(device),
+            &mut files,
+            &mut skipped,
+        )
+        .unwrap();
         for row in &mut files {
             let rel = PathBuf::from(row["path"].as_str().unwrap());
             if row["kind"] == "directory" {
@@ -818,7 +967,7 @@ mod tests {
                 row["sha256"] = json!(copy_file(&data.join(&rel), &payload.join(&rel)).unwrap());
             }
         }
-        unchanged_since_listing(&data, &names, device, &files, &skipped).unwrap();
+        unchanged_since_listing(&data, &names, &Devices::plain(device), &files, &skipped).unwrap();
         verify_staged(&payload, &files).unwrap();
         let _ = fs::remove_dir_all(data);
     }

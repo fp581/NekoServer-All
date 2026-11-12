@@ -313,6 +313,14 @@ def storage_config(config):
     if config.get('locations'):
         found['locations'] = config['locations']
     found['paths'] = saved_paths(config)
+    import placement
+
+    elsewhere = placement.apps_elsewhere(config)
+    if elsewhere:
+        # The apps whose settings are on another drive than the apps' own (0.50.0): the
+        # app backup and the monthly update take each one's folder on that drive
+        # (app_snapshot.rs). Said only then: every other server keeps its settings files.
+        found['installed'] = elsewhere
     backup = config.get('photos', {}).get('external_backup_network') or {}
     if backup.get('wwn'):
         # The backup drive's NAS disk: the weekly copy checks it is that one (backup.rs).

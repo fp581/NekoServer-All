@@ -885,9 +885,17 @@ def movies_library(config):
     return files_root(config, 'movies') / 'library'
 
 
+# Where a group's apps keep their settings and databases when not on the apps' drive
+# (0.50.0): "install": {"photos": "d3"} in the settings, naming a drive under "storage".
+INSTALL_SECTION = 'install'
+
+
 def drives_in_use(config):
-    """The extra drives something is placed on: the ones setup mounts and every job checks."""
-    return sorted({drive for drive in (config.get('locations') or {}).values() if drive in extra_drives(config)})
+    """The extra drives something is placed on (an app's files, or its settings and
+    database): the ones setup mounts and every job checks."""
+    placed = [config.get('locations'), config.get(INSTALL_SECTION)]
+    named = {drive for section in placed if isinstance(section, dict) for drive in section.values()}
+    return sorted(drive for drive in named if isinstance(drive, str) and drive in extra_drives(config))
 
 
 def photo_library(config):

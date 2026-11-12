@@ -1269,8 +1269,112 @@ def place_drives(context, inventory):
         checked_before_mount(context.config, specs)
         save_storage(context)
         mount_all(context, specs)
+    mount_installed(context)
     choose_usb(context)
     existing_media_asked(context)
+
+
+# ---- an app's settings on another drive (0.50.0) -----------------------------------------
+# "install" in the settings places a group's apps on a drive of their own: each app's
+# settings folder there (<drive>/nekoserver/appdata/<app>) is mounted at its usual place
+# (<apps' drive>/appdata/<app>), so every path stays what it is. The folder underneath is
+# made unwritable: with the drive away, the app finds a folder it cannot write to
+# instead of starting over empty on the apps' drive.
+INSTALL_BEGIN = '# NekoServer: apps installed on another drive (written by setup from my-config.json)'
+INSTALL_END = '# NekoServer: end of apps installed on another drive'
+FSTAB = Path('/etc/fstab')
+
+
+def installed_binds(config):
+    """[(app, its folder on its drive, its usual place, where that drive is mounted)]."""
+    import placement
+    from neko_common import drive_folder
+
+    data = mount_path(config['data_mount'])
+    binds = []
+    for app, drive in sorted(placement.apps_elsewhere(config).items()):
+        mounted = Path(drive_folder(config, drive))
+        binds.append((app, mounted / 'nekoserver' / 'appdata' / app, data / 'appdata' / app, mounted))
+    return binds
+
+
+def installed_line(source, target, drive, data):
+    """The fstab line that mounts an app's folder on its drive at its usual place, once
+    both drives are there; a drive that is away never stops the PC from starting."""
+    if any(c.isspace() for c in f'{source}{target}{drive}{data}'):
+        raise RuntimeError('A folder of an app installed on another drive cannot contain spaces')
+    wait = f'x-systemd.requires-mounts-for={drive},x-systemd.requires-mounts-for={data}'
+    return f'{source} {target} none bind,nofail,{wait} 0 0'
+
+
+def with_block(text, begin, end, lines):
+    """The fstab text with NekoServer's block between `begin` and `end` holding `lines`
+    (no block at all with none); everything outside it is as it was."""
+    kept, inside = [], False
+    for line in text.splitlines():
+        if line.strip() == begin:
+            inside = True
+        elif line.strip() == end:
+            inside = False
+        elif not inside:
+            kept.append(line)
+    if inside:
+        raise RuntimeError(f'/etc/fstab has "{begin}" without its end line; look at the file before setup changes it')
+    body = '\n'.join(kept).rstrip('\n') + '\n'
+    return body + ''.join(line + '\n' for line in ([begin, *lines, end] if lines else []))
+
+
+def unwritable(folder, run=subprocess.run):
+    """The folder under a mount, closed to everyone: nothing is written there while the
+    drive is away. Immutable where the filesystem can; else nobody's to open."""
+    try:
+        done = run(['chattr', '+i', str(folder)], capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        done = None
+    if done is None or done.returncode:
+        os.chown(folder, 0, 0, follow_symlinks=False)
+        os.chmod(folder, 0o000)
+
+
+def on_its_drive(target, drive):
+    """The app's usual place is the mount of its folder on that drive."""
+    try:
+        return os.path.ismount(target) and os.stat(target).st_dev == os.stat(drive).st_dev
+    except OSError:
+        return False
+
+
+def mount_installed(context, fstab=FSTAB):
+    """Every app installed on another drive has its folder there mounted at its usual
+    place, now and at every start. An app whose settings are on the apps' drive already
+    is never moved: setup stops and says so before anything is changed."""
+    config = context.config
+    binds = installed_binds(config)
+    data = mount_path(config['data_mount'])
+    for app, _source, target, drive in binds:
+        if not on_its_drive(target, drive) and has_files(target):
+            raise RuntimeError(
+                f'{app} already keeps its settings on the drive of the apps ({target}), and the settings place it '
+                'on another drive. Moving an app that is set up is a job of its own, with the app stopped; take its '
+                'group out of "install" in my-config.json and run setup again. Nothing was changed.'
+            )
+    lines = [installed_line(source, target, drive, data) for _, source, target, drive in binds]
+    fstab = safe_path(fstab)
+    text = fstab.read_text() if fstab.exists() else ''
+    wanted = with_block(text, INSTALL_BEGIN, INSTALL_END, lines)
+    if wanted != text and (lines or INSTALL_BEGIN in text):
+        atomic_write(fstab, wanted, 0o644)
+        call(['systemctl', 'daemon-reload'])
+    for app, source, target, drive in binds:
+        if on_its_drive(target, drive):
+            continue
+        safe_path(source).mkdir(parents=True, exist_ok=True)
+        safe_path(target).mkdir(parents=True, exist_ok=True)
+        unwritable(target)
+        call(['mount', str(target)])
+        if not on_its_drive(target, drive):
+            raise RuntimeError(f'{target} is not the folder of {app} on its drive after mounting it')
+        context.log(f'{app}: its settings are kept on the drive at {drive} ({source})')
 
 
 def existing_media_asked(context):

@@ -20,7 +20,15 @@ settings on whatever drive the table names. This module says which drive that is
 folders belong to a row, and which rows share a drive; it changes nothing by itself.
 """
 
-from neko_common import APP_GROUPS, DOWNLOADS, LOCATIONS, MEDIA_GROUPS, extra_drives, media_group
+from neko_common import (
+    APP_GROUPS,
+    DOWNLOADS,
+    INSTALL_SECTION,
+    LOCATIONS,
+    MEDIA_GROUPS,
+    extra_drives,
+    media_group,
+)
 
 # The two drives every server before 0.50.0 has, by the names the table uses for them,
 # and where each is in the settings ("storage") and mounted.
@@ -76,6 +84,39 @@ def apps_of(row):
         return []
     home = {app: 'movies' if groups == (DOWNLOADS,) else groups[0] for app, groups in APP_GROUPS.items() if groups}
     return [app for app, group in home.items() if group == row]
+
+
+def install_of(config, row):
+    """The drive a row's apps keep their settings and databases on: the apps' drive, or
+    the drive "install" in the settings names for the row. Only a drive listed under
+    "storage" is taken, and never for NekoServer itself, which stays on the apps' drive."""
+    saved = config.get(INSTALL_SECTION)
+    drive = saved.get(row) if isinstance(saved, dict) else None
+    if drive is None or drive == SSD:
+        return SSD
+    placeable = {name for name, _words, installs, _data in ROWS if installs} - {CORE}
+    if row not in placeable or not isinstance(drive, str) or drive not in extra_drives(config):
+        raise RuntimeError(
+            f'"{row}" under "{INSTALL_SECTION}" in my-config.json names {drive!r}: it must be "ssd" or a drive listed '
+            'under "storage", for Photos, Movies and shows, Music or Nextcloud. Take the line out and run setup again.'
+        )
+    return drive
+
+
+def apps_elsewhere(config):
+    """{app: drive} for the apps whose settings and database are on another drive than
+    the apps' own: the apps of every row this server has that "install" places there."""
+    found = {}
+    saved = config.get(INSTALL_SECTION)
+    for row in saved if isinstance(saved, dict) else ():
+        install_of(config, row)  # every line of the table is checked, also of a group that is off
+    for row in rows(config):
+        if row == CORE or not has(row, INSTALL):
+            continue
+        drive = install_of(config, row)
+        if drive != SSD:
+            found.update({app: drive for app in apps_of(row)})
+    return found
 
 
 def install_folders(row):
@@ -146,7 +187,7 @@ def derived(config):
     for row, _name, installs, data in ROWS:
         entry = {}
         if installs:
-            entry[INSTALL] = SSD
+            entry[INSTALL] = install_of(config, row)
         if row == OFFLINE:
             entry[DATA] = OFFLINE_DRIVE if config.get('photos', {}).get('external_backup_uuid') else None
         elif data is not None:

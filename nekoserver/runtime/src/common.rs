@@ -350,12 +350,14 @@ pub fn drive_folder(cfg: &serde_json::Value, drive: &str) -> Option<PathBuf> {
         _ => None,
     }
 }
-/// The extra drives something is placed on ("locations"): the ones every job checks.
+/// The extra drives something is placed on: an app's files ("locations"), or its
+/// settings and database ("installed", 0.50.0). The ones every job checks.
 pub fn drives_in_use(cfg: &serde_json::Value) -> Vec<String> {
     let mut found: Vec<String> = cfg["locations"]
         .as_object()
         .into_iter()
         .flatten()
+        .chain(cfg["installed"].as_object().into_iter().flatten())
         .filter_map(|(_, drive)| drive.as_str())
         .filter(|drive| extra_drive(cfg, drive))
         .map(str::to_string)
@@ -1449,6 +1451,10 @@ mod media_answer_tests {
             Path::new("/mnt/nekoserver-media/library")
         );
         assert!(drives_in_use(&plain).is_empty());
+        // An app installed on another drive (0.50.0): that drive is checked by every job too.
+        let placed = json!({"storage": {"d4": {"uuid": "u4"}, "d3": {"uuid": "u3"}},
+            "locations": {"photos": "d3"}, "installed": {"immich": "d4", "jellyfin": "d4", "x": "nowhere"}});
+        assert_eq!(drives_in_use(&placed), ["d3", "d4"]);
         // A folder on a drive nothing is placed on is refused, and so is a drive not listed.
         let mut stray = cfg.clone();
         stray["paths"]["photos"] = json!("/mnt/nekoserver-drives/d9/photos");
