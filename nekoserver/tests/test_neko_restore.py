@@ -108,6 +108,13 @@ class Card:
         return self.nb / rec['archive_relative_path']
 
 
+def progress_done(path):
+    """The versions a progress file names as restored: its lines after the header."""
+    lines = Path(path).read_text().splitlines()
+    assert json.loads(lines[0]) == {'format': tool.PROGRESS_FORMAT, 'version': 2}, lines[0]
+    return {json.loads(line)['version_id']: json.loads(line) for line in lines[1:]}
+
+
 def said_text(case):
     """What the tool said in a test, as one text."""
     return '\n'.join(case.said)
@@ -323,7 +330,7 @@ class RestoreTests(Base):
         self.card.payload(broken).write_bytes(b'tw0')
         progress = self.tmp / 'progress.json'
         self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 1)
-        done = json.loads(progress.read_text())['done']
+        done = progress_done(progress)
         self.assertEqual(list(done), [uuid(1, 'bbbbbbbb')])
         first = os.stat(self.dest / A_JPG).st_mtime_ns
         self.card.payload(broken).write_bytes(good_bytes)  # the same file, from another card
@@ -331,7 +338,7 @@ class RestoreTests(Base):
         self.assertIn('done before a.jpg -> a.jpg', said_text(self))
         self.assertIn('restored    b.jpg -> b.jpg', said_text(self))
         self.assertEqual(os.stat(self.dest / A_JPG).st_mtime_ns, first, 'not copied again')
-        self.assertEqual(len(json.loads(progress.read_text())['done']), 2)
+        self.assertEqual(len(progress_done(progress)), 2)
 
     def test_the_report_names_every_file_and_where_it_went(self):
         self.card.add(X_A, b'a')
@@ -442,6 +449,50 @@ class ManyFilesTests(Base):
             self.assertEqual(self.run_tool('restore', str(self.dest)), 0)
         self.assertEqual(len(list((self.dest / 'DCIM').iterdir())), 300)
         self.assertLess(len(listed), 20, 'listings for 300 files')
+
+    def test_the_progress_file_is_added_to_not_written_again_for_every_file(self):
+        """The same review: the whole progress file was written again after every file, so
+        8,000 files with --progress took seven minutes."""
+        for n in range(300):
+            self.card.add('DCIM/IMG_%04d.jpg' % n, b'x')
+        progress = self.tmp / 'progress.json'
+        real = os.replace
+        replaced = []
+
+        def counting(*args, **kwargs):
+            replaced.append(args)
+            return real(*args, **kwargs)
+
+        with mock.patch.object(tool.os, 'replace', side_effect=counting):
+            self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 0)
+        self.assertLessEqual(len(replaced), 1)
+        self.assertEqual(len(progress_done(progress)), 300)
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 0)
+        self.assertIn('done before 300', said_text(self))
+
+    def test_a_progress_file_of_the_earlier_tool_is_read_and_carried_on(self):
+        self.card.add(A_JPG, b'one')
+        self.card.add('b.jpg', b'two')
+        progress = self.tmp / 'progress.json'
+        self.assertEqual(self.run_tool('restore', str(self.dest), SEARCH, A_JPG, '--progress', str(progress)), 0)
+        old = {'format': tool.PROGRESS_FORMAT, 'version': 1, 'done': progress_done(progress)}
+        progress.write_text(json.dumps(old, indent=1) + '\n')
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 0)
+        self.assertIn('done before a.jpg -> a.jpg', said_text(self))
+        self.assertEqual(len(progress_done(progress)), 2)
+
+    def test_a_line_cut_off_by_a_stop_is_not_counted(self):
+        self.card.add(A_JPG, b'one')
+        progress = self.tmp / 'progress.json'
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 0)
+        with open(progress, 'a') as f:
+            f.write('{"version_id": "cut off')
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 0)
+        self.assertIn('done before a.jpg', said_text(self))
+        # A broken line in the middle is no cut-off: the file is refused.
+        progress.write_text(progress.read_text().replace('{"version_id": "cut off', '') + 'garbage\n{}\n')
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 2)
+        self.assertIn('not usable', said_text(self))
 
     def test_a_name_restored_earlier_in_the_same_run_still_clashes_by_case(self):
         self.card.add('DCIM/IMG_1.JPG', b'upper')

@@ -65,6 +65,8 @@ THERE_ALREADY = '%s is there already'
 CARD_ROOTS = ('/media/', '/run/media/', '/mnt/')
 UNUSABLE = 'unusable %s: %s'
 PROGRESS_FORMAT = 'neko-restore-progress'
+PROGRESS_LIMIT = 1 << 30
+PROGRESS_LINE = 65536
 
 UUID = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
 TIME = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$')
@@ -668,20 +670,89 @@ def publish(dir_fd, temp, name, overwrite, listing=None):
 class Progress:
     """The versions already restored, kept in a file of the person's choice, so that a
     restore over several cards, or one that was interrupted, never copies a verified
-    file twice and never reports a file as restored that was not."""
+    file twice and never reports a file as restored that was not.
+
+    The file is one line of JSON for its header, then one line for each file restored,
+    added and flushed to the disk as it is restored; the last line of a version counts.
+    Rewriting the whole file for every file made a large restore take hours. A file of
+    an earlier tool (one JSON object) is read, and written again in this form."""
 
     def __init__(self, path):
         self.path = path
         self.done = {}
-        if path and os.path.exists(path):
+        self.at = {}  # (source ID, original path) -> the version IDs restored of that file
+        self.out = None
+        if os.path.exists(path):
             try:
                 with open(path, 'rb') as f:
-                    data = parse_bounded(f.read(64 * 1024 * 1024), 64 * 1024 * 1024, 3)
-            except (Invalid, OSError) as e:
-                raise Unusable('the progress file %s is not usable: %s' % (path, e)) from None
-            if data.get('format') != PROGRESS_FORMAT or not isinstance(data.get('done'), dict):
-                raise Unusable('%s is not a restore progress file' % path)
-            self.done = data['done']
+                    data = f.read(PROGRESS_LIMIT + 1)
+            except OSError as e:
+                raise Unusable('the progress file %s is not usable: %s' % (path, e.strerror)) from None
+            if len(data) > PROGRESS_LIMIT:
+                raise Unusable('the progress file %s is too large' % path)
+            if self._read(data):
+                self._open('a')
+                return
+        self._open('w')
+
+    def _read(self, data):
+        """Read the file; True when it is in this tool's form and can be added to."""
+        lines = data.split(b'\n')
+        try:
+            header = parse_bounded(lines[0], PROGRESS_LINE, 1)
+        except Invalid:
+            header = None
+        if header is not None and header.get('format') == PROGRESS_FORMAT and header.get('version') == 2:
+            for n, raw in enumerate(lines[1:], 2):
+                if raw:
+                    self._line(raw, last=n == len(lines))
+            return True
+        try:
+            old = parse_bounded(data, PROGRESS_LIMIT, 3)
+        except Invalid as e:
+            raise Unusable('the progress file %s is not usable: %s' % (self.path, e)) from None
+        if old.get('format') != PROGRESS_FORMAT or not isinstance(old.get('done'), dict):
+            raise Unusable('%s is not a restore progress file' % self.path)
+        for version_id, entry in old['done'].items():
+            if isinstance(entry, dict):
+                self._note(version_id, entry)
+        return False
+
+    def _line(self, raw, last):
+        try:
+            entry = parse_bounded(raw, PROGRESS_LINE, 1)
+        except Invalid:
+            if last:
+                return  # cut off while it was written (a stop, a power cut): not counted
+            raise Unusable('the progress file %s has a line that is not usable' % self.path) from None
+        if isinstance(entry.get('version_id'), str):
+            self._note(entry['version_id'], entry)
+
+    def _note(self, version_id, entry):
+        self.done[version_id] = entry
+        if isinstance(entry.get('original_path'), str):
+            self.at.setdefault((entry.get('source_id'), entry['original_path']), set()).add(version_id)
+
+    def _open(self, mode):
+        """The file opened to add lines; a new file (or one of an earlier tool) starts
+        with the header and the entries known so far, written to a new file first."""
+        if mode == 'a':
+            self.out = open(self.path, 'a', encoding='utf-8')  # noqa: SIM115 (closed by close())
+            return
+        temp = self.path + '.new'
+        with open(temp, 'w', encoding='utf-8') as f:
+            f.write(json.dumps({'format': PROGRESS_FORMAT, 'version': 2}) + '\n')
+            for version_id, entry in self.done.items():
+                f.write(json.dumps(dict(entry, version_id=version_id), ensure_ascii=False) + '\n')
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp, self.path)
+        self.out = open(self.path, 'a', encoding='utf-8')  # noqa: SIM115 (closed by close())
+
+    def close(self):
+        if self.out is not None:
+            self.out.close()
+            self.out = None
 
     def _entry(self, version_id):
         """A usable entry: its path below the destination, never an absolute one."""
@@ -707,39 +778,34 @@ class Progress:
     def at_original(self, rec):
         """(version ID, entry) of another version of rec's file restored under its own name
         by an earlier run (from another card, say), or None."""
-        for version_id, entry in self.done.items():
-            if version_id == rec['version_id'] or self._entry(version_id) is None:
-                continue
-            same_file = (entry.get('source_id'), entry.get('original_path')) == (
-                rec['source_id'],
-                rec['original_relative_path'],
-            )
-            if same_file and entry['path'] == rec['original_relative_path']:
+        for version_id in sorted(self.at.get((rec['source_id'], rec['original_relative_path']), ())):
+            entry = self._entry(version_id)
+            if version_id != rec['version_id'] and entry is not None and entry['path'] == rec['original_relative_path']:
                 return version_id, entry
         return None
 
+    def _write(self, version_id, entry):
+        self._note(version_id, entry)
+        self.out.write(json.dumps(dict(entry, version_id=version_id), ensure_ascii=False) + '\n')
+        self.out.flush()
+        os.fsync(self.out.fileno())
+
     def supersede(self, old_version_id, rec):
-        self.done[old_version_id]['superseded_by'] = rec['version_id']
+        self._write(old_version_id, dict(self.done[old_version_id], superseded_by=rec['version_id']))
 
     def add(self, rec, where):
-        if not self.path:
-            return
-        self.done[rec['version_id']] = {
-            'path': where,
-            'sha256': rec['checksum'],
-            'record_id': rec['record_id'],
-            'source_id': rec['source_id'],
-            'original_path': rec['original_relative_path'],
-            'source_mtime_ns': rec['source_mtime_ns'],
-            'committed_at': rec['committed_at'],
-        }
-        temp = self.path + '.new'
-        with open(temp, 'w', encoding='utf-8') as f:
-            json.dump({'format': PROGRESS_FORMAT, 'version': 1, 'done': self.done}, f, indent=1)
-            f.write('\n')
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(temp, self.path)
+        self._write(
+            rec['version_id'],
+            {
+                'path': where,
+                'sha256': rec['checksum'],
+                'record_id': rec['record_id'],
+                'source_id': rec['source_id'],
+                'original_path': rec['original_relative_path'],
+                'source_mtime_ns': rec['source_mtime_ns'],
+                'committed_at': rec['committed_at'],
+            },
+        )
 
 
 def restore_one(card, rec, dest_fd, rename, overwrite, listing=None):
@@ -1114,7 +1180,11 @@ def cmd_restore(card, args, say):
         say('Nothing on this card matches.')
         return 1
     progress = Progress(args.progress) if args.progress else None
-    report = restore(card, records, args.destination, args.rename, args.overwrite or (), progress, say)
+    try:
+        report = restore(card, records, args.destination, args.rename, args.overwrite or (), progress, say)
+    finally:
+        if progress is not None:
+            progress.close()
     if args.report:
         with open(args.report, 'x', encoding='utf-8') as f:
             json.dump({'card': card.identity['label'], 'restored_into': args.destination, 'files': report}, f, indent=1)
