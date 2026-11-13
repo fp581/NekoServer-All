@@ -25,6 +25,7 @@ import tempfile
 import time
 from pathlib import Path
 
+import custom_indexers
 import host
 from neko_common import SETUP_LOCK, SHARED, answered_within
 
@@ -1030,6 +1031,8 @@ class Plan:
             notes.append('Remove the Docker networks ' + ', '.join(networks))
         if not projects and not networks:
             notes.append('No app containers found (' + no_containers_why() + ')')
+        for path in custom_indexers.installed(self.at(self.data)) if self.identified.get('data') else ():
+            notes.append(f"Take NekoServer's download source {path.stem} out of Prowlarr's catalogue ({path})")
         return {'paths': [], 'notes': notes}
 
     def _mounts_group(self):
@@ -1654,8 +1657,18 @@ def _remove_docker_parts(plan, chosen, root, call, out):
     the folder it names goes). Called with the jobs' lock held, after the last checks."""
     if 'apps' in chosen:
         _remove_containers(plan, call, out)
+        _remove_definitions(plan, chosen, out)
     if plan.docker_root() and ('data' in chosen or 'mounts' in chosen):
         _reset_docker_root(system_file(root, DAEMON_JSON), call, out)
+
+
+def _remove_definitions(plan, chosen, out):
+    """The download sources NekoServer added to Prowlarr's catalogue (custom_indexers.py):
+    NekoServer's own files in Prowlarr's settings folder, so they go with the apps even when
+    the apps' data stays. Only those it wrote; with the apps' data chosen they go with it."""
+    if 'data' in chosen or not plan.identified.get('data'):
+        return
+    custom_indexers.remove(plan.at(plan.data), lambda line: out('  ' + line))
 
 
 def _remove_containers(plan, call, out):
