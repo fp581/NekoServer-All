@@ -158,7 +158,7 @@ Setup opens a **phone setup page** on the PC with a QR code for each app. Keep i
 3. **Signing in.** The terminal shows the app's username. To see its password, open a **second terminal** on the PC (Ctrl+Alt+T) and run the command the step shows, for example:
 
    ```bash
-   sudo python3 /srv/nekoserver/installer/releases/v0.50.0/account-setup.py show jellyfin
+   sudo python3 /srv/nekoserver/installer/releases/v0.51.1/account-setup.py show jellyfin
    ```
 
    It shows the username and password on the PC's screen, with a QR code you can scan with the phone to copy the password. Press Enter to hide it again. (Your server may keep its files somewhere other than `/srv/nekoserver`: copy the command exactly as the step shows it.)
@@ -223,7 +223,7 @@ Your app passwords are saved on the server, and only the administrator can read 
 **Any time later**, to see one app's login on the screen (with a QR code for your phone), run this in a terminal:
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.50.0/account-setup.py show
+sudo python3 /srv/nekoserver/installer/releases/v0.51.1/account-setup.py show
 ```
 
 It lists the saved logins. Type a number to show one. Press Enter to hide it again (the screen is cleared), and press Enter on the list to stop. To go straight to one app, add its name: `show jellyfin`, `show immich`, `show seerr`, `show nextcloud`, or `show navidrome` for music (on a server set up before 0.50.0 the phones' music login is `show navidrome_listener`; the tool says which is which). Check that nobody else can see your screen first.

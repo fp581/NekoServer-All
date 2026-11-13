@@ -7,6 +7,6 @@ Requires=docker.service
 Type=oneshot
 UMask=0077
 TimeoutStartSec=infinity
-ExecStart=/srv/nekoserver/installer/runtime/v0.50.0/nekoserver-runtime maintenance-resume --config /etc/nekoserver-backups/maintenance.json
+ExecStart=/srv/nekoserver/installer/runtime/v0.51.1/nekoserver-runtime maintenance-resume --config /etc/nekoserver-backups/maintenance.json
 [Install]
 WantedBy=multi-user.target
