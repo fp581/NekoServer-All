@@ -113,6 +113,14 @@ for point in Begun IntentWritten PayloadStarted PayloadWritten Checked VerifiedW
   fi
 done
 
+# The card's bytes are changed in its image file, under the mounted filesystem, where
+# filefrag says the payload is: a card that kept other bytes than it was given.
+echo '== a card that does not keep the bytes written (changed under the filesystem)'
+export NEKO_LOOP_WORK="$BASE/work-lying"
+card lying 400
+NEKO_LOOP_CARDS="$CARD" NEKO_LOOP_IMAGE="$BASE/lying.img" run_test loop_a_card_that_does_not_keep_the_bytes_is_caught
+result 'A33 a card that does not keep the bytes: no copy committed' $?
+
 echo '== the card unmounted while a file is written, then mounted again'
 export NEKO_LOOP_WORK="$BASE/work-pulled"
 card pulled 400
