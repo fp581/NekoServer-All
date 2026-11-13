@@ -188,7 +188,7 @@ SETUP_LOCK = Path(SHARED['setup_lock'])
 # Held for the whole of a NekoServer upgrade (upgrade.py) and a drive move (migrate.py),
 # also while they finish one that was cut off: the two never run at the same time,
 # whether started from the dashboard or a terminal. In /run: a restart lets it go.
-OPERATION_LOCK = Path('/run/nekoserver-operation.lock')
+OPERATION_LOCK = Path(SHARED['operation_lock'])
 
 
 def hold_operation(lock=None, wait=False):

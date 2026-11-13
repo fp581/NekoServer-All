@@ -895,6 +895,12 @@ pub static SETUP_LOCK: std::sync::LazyLock<&str> = std::sync::LazyLock::new(|| {
         .as_str()
         .expect("shared.json names the setup lock")
 });
+/// Held by an upgrade or a move to a new drive while it runs (Python takes it).
+pub static OPERATION_LOCK: std::sync::LazyLock<&str> = std::sync::LazyLock::new(|| {
+    SHARED["operation_lock"]
+        .as_str()
+        .expect("shared.json names the operation lock")
+});
 /// How a job begins its message when it gave way to setup. Not a failure: the job ends
 /// without an error (main.rs), so no alert is sent, and it runs at its next time.
 pub const POSTPONED: &str = "Postponed: setup is running";

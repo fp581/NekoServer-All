@@ -14,6 +14,8 @@ Fixes only: what 0.50.0 shipped without seeing it on a machine, and what the cod
 
 ### Tests
 - **A setup test no longer waits for the keyboard.** The test of "none for now" at the offline-backup question meant to answer it itself, but the question had taken `input` when its file was loaded, before the test put its answer in place: the test read the real terminal, hung when it was run from one, and its check that the question is not asked a second time could never fail. The three drive questions that took `input` that way look it up when they ask (setup's own, which reaches the window, as before).
+- **No test reads the terminal.** The whole suite now passes with the terminal made unreadable (every read fails, naming the test). One more test needed it: the drive size check ran into the media-apps question that 0.50.0 put before the drives, and answered it with whatever the terminal gave.
+- **The lock an upgrade or a drive move holds is named once.** Ask Neko's "run this backup now" checked `/run/nekoserver-operation.lock`, written out in the runtime as well as in setup; it is in `shared.json` now, with setup's lock, and the test that keeps journals and locks from being written out twice covers it.
 
 ## v0.51.0 — (in progress)
 
