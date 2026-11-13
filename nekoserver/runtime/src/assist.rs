@@ -71,8 +71,9 @@ pub const JOBS: [(&str, &str, &str); 4] = [
 /* ---------- secrets out ---------- */
 
 /// `text` with every secret taken out: values of settings named like a password, key,
-/// token, secret or cookie; "Bearer ..." credentials; Tailscale keys; a password in an
-/// address; e-mail addresses; long random strings (keys, tokens, IDs); and each of
+/// token, secret or cookie; a password written out in a sentence ("my password is X");
+/// "Bearer ..." credentials; Tailscale keys; a password in an address; e-mail
+/// addresses; long random strings (keys, tokens, IDs); and each of
 /// `known` (NekoServer's own secrets, see known_secrets) wherever it appears.
 pub fn redact(text: &str, known: &[String]) -> String {
     let mut out = text.to_string();
@@ -82,6 +83,7 @@ pub fn redact(text: &str, known: &[String]) -> String {
     for (pattern, with) in PATTERNS.iter() {
         out = pattern.replace_all(&out, *with).into_owned();
     }
+    let out = said_in_words(&out);
     LONG.replace_all(&out, |m: &regex::Captures| {
         let found = &m[0];
         // Keys, tokens and IDs are random: many digits among the letters. Long words
@@ -94,6 +96,136 @@ pub fn redact(text: &str, known: &[String]) -> String {
     })
     .into_owned()
 }
+/// A word that names a secret a person may write out in a sentence.
+static SECRET_WORD: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?i)\b(?:pass(?:word|wd|phrase|code)s?|pin)\b").unwrap()
+});
+static WORDS: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"\S+").unwrap());
+/// Words that follow "the password is" (or "to") in ordinary sentences and log lines,
+/// and so are not the secret itself, as in "is wrong", "is required", "to Jellyfin", "to log in".
+/// Anything else there is taken out: a word too many removed costs little, a password
+/// left in a report that is shared costs much.
+#[rustfmt::skip]
+const ORDINARY: &[&str] = &[
+    "a", "an", "the", "my", "your", "our", "his", "her", "their", "its", "this", "that", "it",
+    "not", "no", "never", "wrong", "incorrect", "invalid", "correct", "right", "valid",
+    "required", "needed", "missing", "empty", "blank", "set", "unset", "saved", "stored", "kept",
+    "shown", "hidden", "changed", "reset", "expired", "old", "new", "different", "same", "too",
+    "very", "also", "still", "now", "there", "here", "in", "on", "at", "for", "to", "from", "by",
+    "with", "of", "and", "or", "but", "if", "when", "what", "where", "which", "who", "why", "how",
+    "refused", "rejected", "accepted", "denied", "working", "broken", "fine", "ok", "okay",
+    "good", "bad", "weak", "strong", "short", "long", "unknown", "known", "lost", "forgotten",
+    "gone", "being", "been", "asked", "used", "safe", "secure", "secret", "something", "nothing",
+    "anything", "protected", "encrypted", "hashed", "written", "printed", "given", "sent",
+    "removed", "log", "sign", "get", "access", "open", "enter", "continue", "login", "use",
+    "jellyfin", "immich", "nextcloud", "navidrome", "sonarr", "radarr", "prowlarr", "seerr",
+    "qbittorrent", "tailscale", "nekoserver", "neko", "dashboard", "server", "nas", "app",
+    "apps", "account", "admin", "user", "root", "wifi", "router",
+];
+
+/// `text` without a password (passphrase, passcode, PIN) written out in a sentence:
+/// "my password is X", "I changed the password to X", "the password to Jellyfin is X",
+/// "the PIN was 1234". The settings form ("password: X", "password=X") is one of
+/// PATTERNS. Ordinary sentences stay as they are ("the password is wrong").
+fn said_in_words(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut done = 0;
+    for name in SECRET_WORD.find_iter(text) {
+        if name.start() < done {
+            continue; // inside a value already taken out
+        }
+        // "pin" in small letters is also a verb ("pin to core 3"): only "PIN is ...".
+        let noun_only = name.as_str() == "pin";
+        let line = text[name.end()..]
+            .find('\n')
+            .unwrap_or(text.len() - name.end());
+        let tail = &text[name.end()..name.end() + line];
+        if let Some((from, to)) = value_in_words(tail, noun_only) {
+            out.push_str(&text[done..name.end() + from]);
+            out.push_str("<removed>");
+            done = name.end() + to;
+        }
+    }
+    out.push_str(&text[done..]);
+    out
+}
+
+/// Where the secret's value is in the words after its name (`tail`, to the end of the
+/// line), or None when what follows is an ordinary sentence.
+fn value_in_words(tail: &str, noun_only: bool) -> Option<(usize, usize)> {
+    let words: Vec<regex::Match> = WORDS.find_iter(tail).take(8).collect();
+    // A word without its quotes and punctuation, in small letters.
+    let plain = |i: usize| {
+        words.get(i).map(|w| {
+            w.as_str()
+                .trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+    };
+    // A word in quotation marks is a value, whatever it says.
+    let quoted = |i: usize| {
+        words
+            .get(i)
+            .is_some_and(|w| w.as_str().starts_with(['"', '\'', '\u{201c}']))
+    };
+    let ordinary = |i: usize| {
+        !quoted(i) && plain(i).is_none_or(|w| w.is_empty() || ORDINARY.contains(&w.as_str()))
+    };
+    let is = |i: usize| plain(i).is_some_and(|w| matches!(w.as_str(), "is" | "was" | "are" | "as"));
+    let first = plain(0)?;
+    let mut at = if is(0) {
+        1
+    } else if !noun_only && matches!(first.as_str(), "for" | "to" | "of" | "on" | "in" | "at") {
+        if first == "to" && !ordinary(1) {
+            // "I changed the password to X". With a name nobody knows here ("the password
+            // to plex is X") either word may be the password: both go.
+            let (from, to) = whole_value(tail, &words, 1)?;
+            let after = (is(2) && !ordinary(3))
+                .then(|| whole_value(tail, &words, 3))
+                .flatten();
+            return Some((from, after.map_or(to, |(_, end)| end)));
+        }
+        // "the password to Jellyfin is X", "the password for the NAS was X"
+        (1..=4).find(|i| is(*i))? + 1
+    } else {
+        return None;
+    };
+    while plain(at).is_some_and(|w| {
+        matches!(
+            w.as_str(),
+            "now" | "still" | "currently" | "just" | "set" | "to"
+        )
+    }) {
+        at += 1;
+    }
+    if ordinary(at) {
+        return None;
+    }
+    whole_value(tail, &words, at)
+}
+
+/// The value that starts at word `at`: that word, or, when it opens a quotation that
+/// closes later on the line, everything up to the closing mark (a passphrase of several
+/// words).
+fn whole_value(tail: &str, words: &[regex::Match], at: usize) -> Option<(usize, usize)> {
+    let word = words.get(at)?;
+    let mut end = word.end();
+    let opens = word
+        .as_str()
+        .chars()
+        .next()
+        .filter(|c| matches!(c, '"' | '\'' | '\u{201c}'));
+    if let Some(open) = opens {
+        let close = if open == '\u{201c}' { '\u{201d}' } else { open };
+        let closed_here = word.as_str()[open.len_utf8()..].contains(close);
+        if let (false, Some(n)) = (closed_here, tail[word.end()..].find(close)) {
+            end = word.end() + n + close.len_utf8();
+        }
+    }
+    Some((word.start(), end))
+}
+
 /// Long strings that may be keys or tokens (never with "/", so a folder path stays).
 static LONG: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"\b[A-Za-z0-9+=_-]{32,}").unwrap());
@@ -222,9 +354,12 @@ const DOWNLOAD_QUIET: Duration = Duration::from_secs(120);
 /// answer.
 pub fn ollama_models(address: &str) -> Option<Vec<String>> {
     let at = address.parse::<SocketAddr>().ok()?;
-    let mut ollama = TcpStream::connect_timeout(&at, Duration::from_secs(3)).ok()?;
-    let _ = ollama.set_read_timeout(Some(Duration::from_secs(10)));
-    let _ = ollama.set_write_timeout(Some(Duration::from_secs(5)));
+    // Short waits (MODELS_WAIT in all): this is part of making a question ready, which
+    // must end well inside the web service's wait for it (PREPARE).
+    let step = MODELS_WAIT / 3; // to connect, to send the request, to read the answer
+    let mut ollama = TcpStream::connect_timeout(&at, step).ok()?;
+    let _ = ollama.set_read_timeout(Some(step));
+    let _ = ollama.set_write_timeout(Some(step));
     // The whole request at once: write! would send it in pieces.
     let request = format!("GET /api/tags HTTP/1.0\r\nHost: {address}\r\n\r\n");
     ollama.write_all(request.as_bytes()).ok()?;
@@ -301,9 +436,63 @@ pub fn item_id(value: &Value) -> Option<&str> {
     })
 }
 
+/// Said to the model in place of the readings when there are none (the collector has
+/// not run, or its file cannot be read): never "nothing needs attention", which nobody
+/// looked for.
+pub const NO_READINGS: &str =
+    "The dashboard's readings could not be read, so how the server is now is not known. \
+Say that you cannot see the readings; do not say that nothing needs attention.";
+/// Readings older than this are not "now" (the collector writes them every minute).
+const FRESH_SECONDS: f64 = 300.0;
+/// Readings stamped further ahead of the clock than this have no known age (the
+/// collector's own rule for a saved time: collect.rs trusts none more than a minute ahead).
+const AHEAD_SECONDS: f64 = 60.0;
+/// The heading over readings whose time cannot be trusted.
+pub const TIME_NOT_KNOWN: &str =
+    "The dashboard's last readings (the time of the readings is not known, so the server may be different now; \
+say that you do not know how old they are):";
+/// Said in place of the attention list when the readings have none (a file from another
+/// writer, or half a one): nobody looked, so it is not "nothing needs attention".
+pub const NO_ATTENTION_LIST: &str =
+    "What needs attention is not in these readings: do not say that nothing needs attention.";
+
+/// How long ago, in the largest unit that fits: "12 minutes", "3 hours", "2 days".
+fn ago(seconds: f64) -> String {
+    let (n, unit) = match seconds {
+        s if s < 7200.0 => ((s / 60.0).round(), "minute"),
+        s if s < 172_800.0 => ((s / 3600.0).round(), "hour"),
+        s => ((s / 86_400.0).round(), "day"),
+    };
+    format!("{n:.0} {unit}{}", if n == 1.0 { "" } else { "s" })
+}
+
+/// The readings for the model, under a line that says when they were taken: "now" only
+/// while they are fresh; older ones say how old (the collector stopped, or the app SSD
+/// was away), and missing ones say so (NO_READINGS). `now`: the time, in seconds.
+pub fn summary(status: &Value, now: f64) -> String {
+    let Some(taken) = status["generated_at"].as_f64() else {
+        return NO_READINGS.into();
+    };
+    let age = now - taken;
+    let heading = if age < -AHEAD_SECONDS {
+        // Stamped later than now: a clock was wrong when they were taken, or is wrong
+        // now. Either way their age cannot be worked out, so they are not "now".
+        TIME_NOT_KNOWN.to_string()
+    } else if age < FRESH_SECONDS {
+        "The dashboard now:".to_string()
+    } else {
+        format!(
+            "The dashboard as it was {} ago (its readings have not been updated since, so the server may be \
+             different now; say how old they are):",
+            ago(age)
+        )
+    };
+    format!("{heading}\n{}", readings(status))
+}
+
 /// A short summary of the readings: what needs attention, the backups, the drives, the
 /// apps. Plain lines, at most SUMMARY_CHARS characters.
-pub fn summary(status: &Value) -> String {
+fn readings(status: &Value) -> String {
     let rows = |key: &str| status[key].as_array().cloned().unwrap_or_default();
     let text = |v: &Value| v.as_str().unwrap_or("").to_string();
     let mut lines = vec![format!(
@@ -311,7 +500,9 @@ pub fn summary(status: &Value) -> String {
         status["version"].as_str().unwrap_or("?")
     )];
     let attention = rows("alerts");
-    if attention.is_empty() {
+    if !status["alerts"].is_array() {
+        lines.push(NO_ATTENTION_LIST.into());
+    } else if attention.is_empty() {
         lines.push("Nothing needs attention.".into());
     }
     for a in &attention {
@@ -333,14 +524,16 @@ pub fn summary(status: &Value) -> String {
         ));
     }
     for s in rows("storage") {
+        // The collector gives a drive's size and what is used (collect::drive_row);
+        // what is free is the difference. "?" only when either is not known.
+        let free = match (s["total"].as_f64(), s["used"].as_f64()) {
+            (Some(total), Some(used)) => format!("{:.1} GB", (total - used).max(0.0) / 1e9),
+            _ => "?".into(),
+        };
         lines.push(format!(
-            "Drive {}: {}, {} free",
+            "Drive {}: {}, {free} free",
             text(&s["name"]),
             text(&s["status"]),
-            s["free"]
-                .as_f64()
-                .map(|f| format!("{:.1} GB", f / 1e9))
-                .unwrap_or_else(|| "?".into())
         ));
     }
     for a in rows("applications") {
@@ -394,48 +587,77 @@ pub enum Source {
     None,
 }
 
+/// Making a question ready (is the model there, the log lines of what is asked about)
+/// takes at most this long in all. The web service waits 15 seconds for it
+/// (serve::CONTROL_WAIT): three commands of 15 seconds each could pass that, and the
+/// page then said "unavailable" for a question that was ready a second later (the review
+/// of 0.49.0). What is not in by then is left out, and the model is told so (LOG_LATE).
+pub const PREPARE: Duration = Duration::from_secs(8);
+/// The longest ollama_models may take (its connection, its request, its answer).
+pub const MODELS_WAIT: Duration = Duration::from_secs(5);
+/// Said to the model in place of a log that was not read in time.
+pub const LOG_LATE: &str = "(Its log could not be read in time, so it is not shown here.)";
+
 /// The last LOG_LINES lines of that log, as the system has them (journalctl for a
-/// service, docker logs for an app's main container).
-pub fn log_lines(source: &Source) -> String {
+/// service, docker logs for an app's main container): "" when there is none, None when
+/// it could not be read by `until`. Each command gets only the time that is left.
+pub fn log_lines(source: &Source, until: Instant) -> Option<String> {
+    log_lines_with(source, until, &common::probe)
+}
+
+/// A command run with a time limit in seconds: (its exit code, what it printed).
+type Probe<'a> = &'a dyn Fn(&[&str], u64) -> (i32, String);
+
+fn log_lines_with(source: &Source, until: Instant, probe: Probe) -> Option<String> {
+    // One command, given the whole seconds left (a command's time limit is in seconds).
+    // None when it is not in time: none left, so it is not run; or it ran until its time
+    // limit ended it. That is told apart from a command that failed or printed nothing,
+    // because a limit of whole seconds ends a moment before `until`, where a look at the
+    // clock alone would call it "no log" (the review of the 0.50.0 fixes).
+    let timed = |args: &[&str]| -> Option<(i32, String)> {
+        let limit = until.saturating_duration_since(Instant::now()).as_secs();
+        if limit == 0 {
+            return None;
+        }
+        let started = Instant::now();
+        let (code, text) = probe(args, limit);
+        let ran_out = code != 0 && started.elapsed() >= Duration::from_secs(limit);
+        (!ran_out).then_some((code, text))
+    };
     let (code, text) = match source {
-        Source::Unit(unit) => common::probe(
-            &[
-                "journalctl",
-                "-u",
-                unit,
-                "-n",
-                LOG_LINES,
-                "-o",
-                "cat",
-                "--no-pager",
-            ],
-            15,
-        ),
+        Source::Unit(unit) => timed(&[
+            "journalctl",
+            "-u",
+            unit,
+            "-n",
+            LOG_LINES,
+            "-o",
+            "cat",
+            "--no-pager",
+        ])?,
         Source::App(app) => {
             let service = apps::restart_plan(app).first().copied().unwrap_or("");
-            let (_, id) = common::probe(
-                &[
-                    "docker",
-                    "ps",
-                    "-aq",
-                    "--filter",
-                    &format!("label=com.docker.compose.project=neko-{app}"),
-                    "--filter",
-                    &format!("label=com.docker.compose.service={service}"),
-                ],
-                15,
-            );
+            let (_, id) = timed(&[
+                "docker",
+                "ps",
+                "-aq",
+                "--filter",
+                &format!("label=com.docker.compose.project=neko-{app}"),
+                "--filter",
+                &format!("label=com.docker.compose.service={service}"),
+            ])?;
             match id.split_whitespace().next() {
-                Some(id) => common::probe(&["docker", "logs", "--tail", LOG_LINES, id], 15),
+                Some(id) => timed(&["docker", "logs", "--tail", LOG_LINES, id])?,
                 None => (1, String::new()),
             }
         }
         Source::None => (1, String::new()),
     };
     if code != 0 {
-        return String::new();
+        // It failed in time, or there is no such container: no log.
+        return Some(String::new());
     }
-    plain_log(&text)
+    Some(plain_log(&text))
 }
 
 /// A log's last LOG_CHARS characters, without the terminal's colour codes.
@@ -504,11 +726,7 @@ pub fn messages(
          If the problem looks like a bug in NekoServer itself, end with a part that starts \"BUG REPORT:\": what \
          failed, what the log shows, and a fix you suggest in words."
     );
-    let mut user = format!(
-        "{}\n\nThe dashboard now:\n{}",
-        redact(question, known),
-        redact(summary, known)
-    );
+    let mut user = format!("{}\n\n{}", redact(question, known), redact(summary, known));
     if let Some((words, log)) = about {
         user.push_str(&format!(
             "\n\nThe problem asked about:\n{}",
@@ -530,6 +748,9 @@ pub struct Repair {
     pub id: String,
     pub does: String,
     pub warning: String,
+    /// For "update_app": the signature of the version the card names ("" otherwise).
+    /// Approve sends it back, and only that version is installed (approved_update).
+    pub sig: String,
 }
 
 /// The repair `id` names, checked: one of REPAIRS, for an app installed here (and, to
@@ -550,6 +771,7 @@ pub fn repair(
         id: id.to_string(),
         does,
         warning: warning.to_string(),
+        sig: String::new(),
     };
     match kind {
         "update_check" if name.is_empty() => Ok(made(
@@ -566,12 +788,15 @@ pub fn repair(
             .ok_or_else(|| "That app is not installed on this server".to_string()),
         "update_app" => {
             let app = installed().ok_or("That app is not installed on this server")?;
-            let (version, _) = waiting_update(data, app)
+            let (version, sig) = waiting_update(data, app)
                 .ok_or("No new version of that app is waiting; Check for updates looks again")?;
-            Ok(made(
-                format!("Updates {} to {version} now: a snapshot first, then the update, then a check; if the check fails, it is undone.", app_name(app)),
-                "The app is unavailable for a few minutes while it updates.",
-            ))
+            Ok(Repair {
+                sig,
+                ..made(
+                    format!("Updates {} to {version} now: a snapshot first, then the update, then a check; if the check fails, it is undone.", app_name(app)),
+                    "The app is unavailable for a few minutes while it updates.",
+                )
+            })
         }
         "run_job" => {
             let (job, _, warning) = JOBS
@@ -650,9 +875,20 @@ fn waiting_update(data: &Path, app: &str) -> Option<(String, String)> {
     ))
 }
 
-/// The signature "update_app" passes to "Update now".
-pub fn update_signature(data: &Path, app: &str) -> Option<String> {
-    waiting_update(data, app).map(|(_, sig)| sig)
+/// Said when the version waiting is no longer the one the card described.
+pub const NEWER_ARRIVED: &str =
+    "A newer version arrived meanwhile, so nothing was installed; ask again";
+
+/// The signature "update_app" passes to "Update now": the one the card showed (`shown`,
+/// sent back with Approve), and only while that is still the version waiting (`now`,
+/// checked again at Approve). The daily check can find a newer version between the card
+/// and the press; that one was never described to the person, so it is not installed.
+pub fn approved_update(now: &Repair, shown: &str) -> std::result::Result<String, &'static str> {
+    if crate::updates::valid_signature(shown) && now.sig == shown {
+        Ok(now.sig.clone())
+    } else {
+        Err(NEWER_ARRIVED)
+    }
 }
 
 fn app_name(app: &str) -> &'static str {
@@ -730,7 +966,11 @@ fn new_id() -> std::result::Result<String, String> {
     std::fs::File::open("/dev/urandom")
         .and_then(|mut f| f.read_exact(&mut bytes))
         .map_err(|e| format!("no random numbers ({e})"))?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+    use std::fmt::Write as _;
+    Ok(bytes.iter().fold(String::new(), |mut out, b| {
+        let _ = write!(out, "{b:02x}");
+        out
+    }))
 }
 
 /// Start answering in the background (the turn is held until the answer has ended) and
@@ -812,7 +1052,7 @@ pub fn progress(id: &str, owner: &str) -> Option<Value> {
         return None;
     }
     if a.ended.is_none() && a.started.elapsed() > a.total {
-        a.failed = Some("the answer took too long, so it was stopped".into());
+        a.failed = Some(TOO_LONG.into());
         a.ended = Some(Instant::now());
     }
     Some(json!({
@@ -887,6 +1127,66 @@ pub fn stream(
     let body = json!({"model": model, "messages": messages, "stream": true, "think": false,
         "options": {"num_predict": ANSWER_TOKENS, "num_thread": threads}})
     .to_string();
+    let tick = Duration::from_secs(1).min(limits.next).min(limits.first);
+    let mut reader = asked_ollama(address, &body, limits, tick, keep)?;
+    let mut line = vec![];
+    let started = Instant::now();
+    let mut asked = Instant::now();
+    let mut answer = String::new();
+    loop {
+        if started.elapsed() > limits.total {
+            return Err(TOO_LONG.into());
+        }
+        // A model that keeps printing never lets a read time out, which is where
+        // next_line asks `keep`: so it is asked here too, about once a second, and an
+        // answer nobody waits for is stopped while it streams (the review of 0.49.0).
+        if asked.elapsed() >= tick {
+            asked = Instant::now();
+            if !keep() {
+                return Err(why_none(Waited::NotWanted, TOO_LONG));
+            }
+        }
+        line.clear();
+        // The first words may take a while (the model is loaded first), the next ones less.
+        let limit = if answer.is_empty() {
+            limits.first
+        } else {
+            limits.next
+        };
+        match next_line(&mut reader, &mut line, limit, keep) {
+            // Closed before Ollama said "done": the answer is not whole (its runner was
+            // ended, or the connection dropped). What came so far is not passed off as it.
+            Ok(0) => return Err(CUT_OFF.into()),
+            Ok(_) => {}
+            Err(why) => return Err(why_none(why, TOO_LONG)),
+        }
+        if answer_line(&line, &mut answer, piece)? {
+            return Ok(answer);
+        }
+    }
+}
+
+/// Said when an answer passes its time limit (Limits.total, or a pause too long).
+const TOO_LONG: &str = "the answer took too long, so it was stopped";
+
+/// Why no line came, in words; `slow` is what to say when the wait was too long.
+fn why_none(why: Waited, slow: &str) -> String {
+    match why {
+        Waited::TooLong => slow.to_string(),
+        Waited::NotWanted => "the page stopped asking for the answer, so it was stopped".into(),
+        Waited::Broken => "the AI assistant stopped answering (out of memory, perhaps)".into(),
+    }
+}
+
+/// The question sent to Ollama and its answer's head read: what is left to read is the
+/// answer itself, line by line. An answer other than "200 OK" is why there is none.
+fn asked_ollama(
+    address: &str,
+    body: &str,
+    limits: &Limits,
+    tick: Duration,
+    keep: &dyn Fn() -> bool,
+) -> std::result::Result<BufReader<std::io::Take<TcpStream>>, String> {
     let at = address
         .parse::<SocketAddr>()
         .map_err(|_| "its address is not one".to_string())?;
@@ -894,7 +1194,6 @@ pub fn stream(
         "the AI assistant does not answer (it may be stopped, or still starting)".to_string()
     })?;
     let _ = ollama.set_write_timeout(Some(Duration::from_secs(5)));
-    let tick = Duration::from_secs(1).min(limits.next).min(limits.first);
     let _ = ollama.set_read_timeout(Some(tick));
     // HTTP/1.0: Ollama then sends the answer as it comes and closes, without chunks.
     let request = format!("POST /api/chat HTTP/1.0\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len());
@@ -903,26 +1202,22 @@ pub fn stream(
         .map_err(|_| "the AI assistant did not take the question".to_string())?;
     let mut reader = BufReader::new(ollama.take(4_000_000));
     let mut line = vec![];
-    let waited = |why: Waited, slow: &str| match why {
-        Waited::TooLong => slow.to_string(),
-        Waited::NotWanted => "the page stopped asking for the answer, so it was stopped".into(),
-        Waited::Broken => "the AI assistant stopped answering (out of memory, perhaps)".into(),
-    };
     let slow_start = "the AI assistant took too long to start answering";
     match next_line(&mut reader, &mut line, limits.first, keep) {
         Ok(0) => return Err(slow_start.into()),
         Ok(_) => {}
-        Err(why) => return Err(waited(why, slow_start)),
+        Err(why) => return Err(why_none(why, slow_start)),
     }
     let status = String::from_utf8_lossy(&line).to_string();
-    let code = status.split_whitespace().nth(1).unwrap_or("").to_string();
+    let code = status.split_whitespace().nth(1).unwrap_or("");
+    let stopped = "the AI assistant stopped answering";
     loop {
         line.clear();
         match next_line(&mut reader, &mut line, limits.next, keep) {
-            Ok(0) => return Err("the AI assistant stopped answering".into()),
+            Ok(0) => return Err(stopped.into()),
             Ok(_) if line.iter().all(u8::is_ascii_whitespace) => break,
             Ok(_) => {}
-            Err(why) => return Err(waited(why, "the AI assistant stopped answering")),
+            Err(why) => return Err(why_none(why, stopped)),
         }
     }
     if code != "200" {
@@ -934,41 +1229,43 @@ pub fn stream(
             .unwrap_or_else(|| format!("it answered {code}"));
         return Err(plain_error(&said));
     }
-    let started = Instant::now();
-    let mut answer = String::new();
-    let too_long = "the answer took too long, so it was stopped";
-    loop {
-        if started.elapsed() > limits.total {
-            return Err(too_long.into());
-        }
-        line.clear();
-        // The first words may take a while (the model is loaded first), the next ones less.
-        let limit = if answer.is_empty() {
-            limits.first
-        } else {
-            limits.next
-        };
-        match next_line(&mut reader, &mut line, limit, keep) {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(why) => return Err(waited(why, too_long)),
-        }
-        let Ok(part) = serde_json::from_slice::<Value>(line.trim_ascii()) else {
-            continue;
-        };
-        if let Some(why) = part["error"].as_str() {
-            return Err(plain_error(why));
-        }
-        if let Some(text) = part["message"]["content"].as_str() {
-            answer.push_str(text);
-            piece(text);
-        }
-        if part["done"] == true {
-            break;
-        }
-    }
-    Ok(answer)
+    Ok(reader)
 }
+
+/// One line of the answer taken in: its words are added to `answer` and handed to
+/// `piece`. True when it is the last line of a whole answer; an error line, or an
+/// answer ended by its length limit, is why there is no whole answer.
+fn answer_line(
+    line: &[u8],
+    answer: &mut String,
+    piece: &mut dyn FnMut(&str),
+) -> std::result::Result<bool, String> {
+    let Ok(part) = serde_json::from_slice::<Value>(line.trim_ascii()) else {
+        return Ok(false);
+    };
+    if let Some(why) = part["error"].as_str() {
+        return Err(plain_error(why));
+    }
+    if let Some(text) = part["message"]["content"].as_str() {
+        answer.push_str(text);
+        piece(text);
+    }
+    // Ollama ends an answer that reached its token limit (num_predict) with "done": true
+    // and "done_reason": "length": that answer stops in the middle of a sentence, so it
+    // is not whole either.
+    if part["done"] == true && part["done_reason"] == "length" {
+        return Err(LENGTH_LIMIT.into());
+    }
+    Ok(part["done"] == true)
+}
+
+/// Said when the answer stopped before Ollama marked it as finished.
+pub const CUT_OFF: &str = "the answer was cut off before it ended; ask again";
+
+/// Said when the answer reached the length an answer may have (ANSWER_TOKENS) before the
+/// model had finished it.
+pub const LENGTH_LIMIT: &str =
+    "the answer reached its length limit before it ended, so it is not whole; ask again about one thing at a time";
 
 /// Ollama's error in words a person can act on.
 fn plain_error(said: &str) -> String {
@@ -1124,6 +1421,81 @@ mod tests {
         );
     }
 
+    /// Review of the 0.50.0 fixes: the bug report said "passwords and keys removed", but
+    /// a password written out in a sentence stayed in the question.
+    #[test]
+    fn a_password_written_in_a_sentence_is_taken_out() {
+        // Made up here from pieces: not a saved login, not shaped like a key.
+        let word = ["Blue", "-Horse-", "77"].concat();
+        let digits = ["48", "15"].concat();
+        let phrase = ["correct", "pony", "staple"].join(" ");
+        let cases = [
+            (
+                format!("I changed the Jellyfin password to {word} and now it fails"),
+                "I changed the Jellyfin password to <removed> and now it fails".to_string(),
+            ),
+            (
+                format!("my password is {word}"),
+                "my password is <removed>".into(),
+            ),
+            (
+                format!("My password: {word}"),
+                "My password: <removed>".into(),
+            ),
+            (
+                format!("the password to Jellyfin is {word}, why is it refused?"),
+                "the password to Jellyfin is <removed> why is it refused?".into(),
+            ),
+            (
+                format!("The password for the admin account was {word}"),
+                "The password for the admin account was <removed>".into(),
+            ),
+            (
+                format!("the passphrase is now set to {word}"),
+                "the passphrase is now set to <removed>".into(),
+            ),
+            (
+                format!("the dashboard PIN is {digits} but it says wrong"),
+                "the dashboard PIN is <removed> but it says wrong".into(),
+            ),
+            (
+                format!("my passphrase is \"{phrase}\" and Immich refuses it"),
+                "my passphrase is <removed> and Immich refuses it".into(),
+            ),
+            (
+                format!("the password to plex is {word}"),
+                "the password to <removed>".into(),
+            ),
+            (
+                format!("first line\nPasswords are {word}\nlast line"),
+                "first line\nPasswords are <removed>\nlast line".into(),
+            ),
+        ];
+        for (typed, wanted) in cases {
+            let said = redact(&typed, &[]);
+            assert_eq!(said, wanted, "{typed}");
+            for secret in [&word, &digits, &phrase] {
+                assert!(!said.contains(secret.as_str()), "{said}");
+            }
+        }
+        // Ordinary sentences and log lines keep every word.
+        for line in [
+            "The password is wrong",
+            "Why is my password not accepted?",
+            "Jellyfin says the password is incorrect.",
+            "the password to log in is refused",
+            "Enter your password to continue",
+            "the password for Jellyfin is not saved",
+            "the password was changed yesterday",
+            "Is the PIN needed on this PC too?",
+            "taskset: pin to core 3",
+            "password is required",
+            "FATAL:  password authentication failed for user \"postgres\"",
+        ] {
+            assert_eq!(redact(line, &[]), line);
+        }
+    }
+
     #[test]
     fn an_apps_env_gives_up_its_secrets_and_keeps_the_rest() {
         let root = std::env::temp_dir().join(format!("neko-assist-env-{}", std::process::id()));
@@ -1205,15 +1577,126 @@ mod tests {
         let status = json!({"version": "0.49.0",
             "alerts": [{"id": "backup:host", "title": "Host and user snapshot failed", "level": "critical"}],
             "backups": [{"id": "host", "name": "Host and user snapshot", "status": "fail", "reason": "No space left"}],
-            "storage": [{"name": "Media HDD", "status": "mounted", "free": 12_000_000_000u64}],
+            "storage": [{"name": "Media HDD", "status": "mounted", "total": 20_000_000_000u64, "used": 8_000_000_000u64}],
             "applications": [{"name": "Jellyfin", "state": "running", "health": "unhealthy"}]});
-        let s = summary(&status);
+        let s = readings(&status);
         assert!(s.contains("NekoServer 0.49.0"));
         assert!(s.contains("Needs attention: Host and user snapshot failed (critical)"));
         assert!(s.contains("Backup Host and user snapshot: fail (No space left)"));
         assert!(s.contains("Drive Media HDD: mounted, 12.0 GB free"));
         assert!(s.contains("App Jellyfin: running, unhealthy"));
-        assert!(summary(&json!({})).contains("Nothing needs attention"));
+    }
+
+    /// Review of 0.49.0: an unreadable status file became {} and the model was told
+    /// "Nothing needs attention"; an old snapshot was handed over as "The dashboard now".
+    #[test]
+    fn missing_or_old_readings_are_never_passed_off_as_current() {
+        let now = 1_800_000_000.0;
+        // No readings (the file is missing, empty or not JSON: common::json gives {}).
+        for none in [json!({}), json!(null), json!({"version": "0.50.0"})] {
+            let s = summary(&none, now);
+            assert_eq!(s, NO_READINGS, "{none}");
+            assert!(!s.contains("Nothing needs attention.\n"));
+        }
+        let taken =
+            |age: f64| json!({"version": "0.50.0", "generated_at": now - age, "alerts": []});
+        // Fresh: "now", and with nothing in the list, nothing needs attention.
+        let fresh = summary(&taken(40.0), now);
+        assert!(
+            fresh.starts_with("The dashboard now:\nNekoServer 0.50.0\nNothing needs attention."),
+            "{fresh}"
+        );
+        // Old: how old, never "now".
+        for (age, said) in [
+            (20.0 * 60.0, "20 minutes"),
+            (3.0 * 3600.0, "3 hours"),
+            (2.0 * 86_400.0, "2 days"),
+            (3600.0, "60 minutes"),
+        ] {
+            let old = summary(&taken(age), now);
+            assert!(
+                old.starts_with(&format!("The dashboard as it was {said} ago")),
+                "{old}"
+            );
+            assert!(!old.contains("The dashboard now"), "{old}");
+        }
+        // A few seconds ahead of the clock (two clocks read a moment apart) is still now.
+        assert!(summary(&taken(-30.0), now).starts_with("The dashboard now:"));
+        // The model is handed the summary's own heading, not a fixed "now".
+        let m = messages("why", &summary(&taken(7200.0), now), None, &[], &[]);
+        let user = m[1]["content"].as_str().unwrap();
+        assert!(
+            user.contains("as it was 2 hours ago") && !user.contains("The dashboard now"),
+            "{user}"
+        );
+    }
+
+    /// Review of the 0.50.0 fixes: readings stamped in the future read as "now" for
+    /// ever, and readings without an "alerts" list said "Nothing needs attention".
+    #[test]
+    fn readings_from_the_future_or_without_a_list_are_not_passed_off_as_sound() {
+        let now = 1_800_000_000.0;
+        let taken =
+            |ahead: f64| json!({"version": "0.50.0", "generated_at": now + ahead, "alerts": []});
+        // A day ahead (the clock was wrong when the collector last ran, and it has not
+        // run since): the time is not known, never "now" and never an age.
+        for ahead in [61.0, 3600.0, 86_400.0] {
+            let s = summary(&taken(ahead), now);
+            assert!(s.starts_with(TIME_NOT_KNOWN), "{ahead}: {s}");
+            assert!(s.contains("the time of the readings is not known"), "{s}");
+            assert!(
+                !s.contains("The dashboard now") && !s.contains(" ago"),
+                "{s}"
+            );
+            // The readings themselves are still handed over.
+            assert!(
+                s.contains("NekoServer 0.50.0\nNothing needs attention."),
+                "{s}"
+            );
+        }
+        assert!(summary(&taken(59.0), now).starts_with("The dashboard now:"));
+        // No "alerts" list at all (not the collector's own file, or half of one): what
+        // needs attention is not known, which is not "nothing".
+        for odd in [
+            json!({"generated_at": now}),
+            json!({"generated_at": now, "alerts": null}),
+            json!({"generated_at": now, "alerts": "none"}),
+        ] {
+            let s = summary(&odd, now);
+            assert!(s.contains(NO_ATTENTION_LIST), "{odd}: {s}");
+            assert!(!s.contains("Nothing needs attention."), "{odd}: {s}");
+        }
+        // An empty list is the collector saying that nothing does.
+        let none = summary(&json!({"generated_at": now, "alerts": []}), now);
+        assert!(none.contains("Nothing needs attention.") && !none.contains(NO_ATTENTION_LIST));
+    }
+
+    /// Review of 0.49.0: the summary read a drive's "free", which the collector never
+    /// gives (it gives "total" and "used"), so every drive was "? free".
+    #[test]
+    fn a_drives_free_space_is_worked_out_from_the_collectors_own_row() {
+        // The row as the collector makes it, filled in as it fills a mounted drive.
+        let mut row = collect::drive_row(
+            "media_hdd",
+            "Media HDD",
+            Path::new("/mnt/nekoserver-media"),
+            &json!("mounted"),
+        );
+        assert!(row.get("total").is_some() && row.get("used").is_some());
+        assert!(row.get("free").is_none(), "the collector gives no \"free\"");
+        let not_mounted = readings(&json!({"storage": [row.clone()]}));
+        assert!(
+            not_mounted.contains("Drive Media HDD: mounted, ? free"),
+            "{not_mounted}"
+        );
+        row["total"] = json!(2_000_000_000_000u64);
+        row["used"] = json!(1_487_500_000_000u64);
+        let s = readings(&json!({"storage": [row]}));
+        assert!(s.contains("Drive Media HDD: mounted, 512.5 GB free"), "{s}");
+        // A reading that makes no sense (more used than there is) is never a negative.
+        let odd =
+            json!({"storage": [{"name": "SSD", "status": "mounted", "total": 10, "used": 20}]});
+        assert!(readings(&odd).contains("Drive SSD: mounted, 0.0 GB free"));
     }
 
     #[test]
@@ -1310,6 +1793,49 @@ mod tests {
         ] {
             assert!(ok(refused).is_err(), "{refused}");
         }
+    }
+
+    /// Review of 0.49.0: Approve took the newest version waiting when it was pressed,
+    /// not the one the card had named.
+    #[test]
+    fn approve_installs_only_the_version_the_card_showed() {
+        let (cfg, status) = installed();
+        let data = std::env::temp_dir().join(format!("neko-assist-update-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let waiting = |versions: &[(&str, &str)]| {
+            let list: Vec<Value> = versions
+                .iter()
+                .map(|(version, sig)| json!({"version": version, "sig": sig}))
+                .collect();
+            crate::updates::save_pending(
+                &data,
+                &json!({"format": "neko-pending-updates-v1", "apps": {"jellyfin": list}}),
+            )
+            .unwrap();
+        };
+        let (first, second) = ("a".repeat(16), "b".repeat(16));
+        waiting(&[("10.9.1", &first)]);
+        let card = repair(&cfg, &status, &data, "update_app:jellyfin").unwrap();
+        assert!(card.does.contains("to 10.9.1 now"), "{card:?}");
+        assert_eq!(card.sig, first);
+        // Unchanged between the card and Approve: that version is installed.
+        let now = repair(&cfg, &status, &data, "update_app:jellyfin").unwrap();
+        assert_eq!(approved_update(&now, &card.sig), Ok(first.clone()));
+        // The daily check found a newer one meanwhile: refused, nothing is installed.
+        waiting(&[("10.9.1", &first), ("10.9.2", &second)]);
+        let now = repair(&cfg, &status, &data, "update_app:jellyfin").unwrap();
+        assert_eq!(now.sig, second);
+        assert_eq!(approved_update(&now, &card.sig), Err(NEWER_ARRIVED));
+        // A press that names no version (an older page) installs nothing either.
+        assert_eq!(approved_update(&now, ""), Err(NEWER_ARRIVED));
+        // The other repairs have no target that can change, and carry no signature.
+        assert_eq!(
+            repair(&cfg, &status, &data, "restart_app:jellyfin")
+                .unwrap()
+                .sig,
+            ""
+        );
+        let _ = std::fs::remove_dir_all(&data);
     }
 
     #[test]
@@ -1450,6 +1976,232 @@ mod tests {
         assert!(asked.contains(r#""num_thread":2"#), "{asked}");
     }
 
+    /// Review of 0.49.0: making a question ready ran up to three commands of 15 seconds
+    /// each, past the web service's 15-second wait: "unavailable" at 15 s, ready at 16 s.
+    #[test]
+    fn making_a_question_ready_ends_inside_the_web_services_wait() {
+        // Everything it may take, with room to spare under the web service's wait.
+        assert!(PREPARE + MODELS_WAIT + Duration::from_secs(1) < crate::serve::CONTROL_WAIT);
+        let app = Source::App("jellyfin".into());
+        let given = std::cell::RefCell::new(vec![]);
+        // docker answers after `slow`; each call notes the time limit it was given.
+        let docker = |slow: Duration| {
+            let given = &given;
+            move |args: &[&str], limit: u64| {
+                given.borrow_mut().push(limit);
+                std::thread::sleep(slow);
+                match args[1] {
+                    "ps" => (0, "abc123\n".to_string()),
+                    _ => (0, "line one\nline two\n".to_string()),
+                }
+            }
+        };
+        // In time: both commands run, each with no more than what is left.
+        let until = Instant::now() + PREPARE;
+        let read = log_lines_with(&app, until, &docker(Duration::ZERO));
+        assert_eq!(
+            read.as_deref().map(str::trim_end),
+            Some("line one\nline two")
+        );
+        assert!(
+            given
+                .borrow()
+                .iter()
+                .all(|limit| *limit <= PREPARE.as_secs()),
+            "{given:?}"
+        );
+        assert_eq!(given.borrow().len(), 2);
+        // A slow first command uses the time up: the second is not started at all, and
+        // the log is "not in time" (None), never an empty log passed off as one.
+        given.borrow_mut().clear();
+        let until = Instant::now() + Duration::from_millis(2500);
+        let started = Instant::now();
+        let read = log_lines_with(&app, until, &docker(Duration::from_millis(1700)));
+        assert_eq!(read, None);
+        assert_eq!(
+            *given.borrow(),
+            [2],
+            "one command, given the 2 whole seconds left"
+        );
+        assert!(started.elapsed() < Duration::from_millis(2500));
+        // No time left: nothing is run.
+        given.borrow_mut().clear();
+        assert_eq!(
+            log_lines_with(&app, Instant::now(), &docker(Duration::ZERO)),
+            None
+        );
+        assert_eq!(
+            log_lines_with(
+                &Source::Unit("x.service".into()),
+                Instant::now(),
+                &docker(Duration::ZERO)
+            ),
+            None
+        );
+        assert!(given.borrow().is_empty());
+        // A command that failed in time is "no log", as before.
+        let failed = |_: &[&str], _: u64| (1, String::new());
+        let later = Instant::now() + PREPARE;
+        assert_eq!(
+            log_lines_with(&Source::Unit("x.service".into()), later, &failed).as_deref(),
+            Some("")
+        );
+        // No such container (docker ps prints nothing) is "no log" too.
+        let none = |_: &[&str], _: u64| (0, String::new());
+        assert_eq!(log_lines_with(&app, later, &none).as_deref(), Some(""));
+        // The control service starts the clock before it asks Ollama for its models (what
+        // it tells the model about a late log is run in control.rs's own test).
+        let control = include_str!("control.rs");
+        let asks = &control[control.find("fn assistant(").unwrap()..];
+        assert!(
+            asks.find("Instant::now() + assist::PREPARE").unwrap()
+                < asks.find("assist::ollama_models").unwrap()
+        );
+    }
+
+    /// Review of the 0.50.0 fixes: a command ended by its time limit (whole seconds, so
+    /// a moment before the deadline) was passed off as "no log", and the model was not
+    /// told that the log is missing.
+    #[test]
+    fn a_log_command_that_runs_out_of_time_is_late_not_empty() {
+        // As common::probe ends a command: after its limit, with a failure and no output.
+        let hangs = |_: &[&str], limit: u64| {
+            std::thread::sleep(Duration::from_secs(limit));
+            (-1, String::new())
+        };
+        // 1.6 s left: the command gets 1 s and is ended 0.6 s before the deadline.
+        let soon = || Instant::now() + Duration::from_millis(1600);
+        let until = soon();
+        assert_eq!(
+            log_lines_with(&Source::Unit("x.service".into()), until, &hangs),
+            None
+        );
+        assert!(Instant::now() < until, "ended before the deadline");
+        // docker ps hanging is the same: not "no such container".
+        assert_eq!(
+            log_lines_with(&Source::App("jellyfin".into()), soon(), &hangs),
+            None
+        );
+        // docker ps answers, docker logs hangs: late as well.
+        let logs_hang = |args: &[&str], limit: u64| match args[1] {
+            "ps" => (0, "abc123\n".to_string()),
+            _ => hangs(args, limit),
+        };
+        assert_eq!(
+            log_lines_with(&Source::App("jellyfin".into()), soon(), &logs_hang),
+            None
+        );
+    }
+
+    /// Review of 0.49.0: a connection closed before "done": true gave Ok(answer), so half
+    /// an answer was shown as a whole one, and a repair could be read from it.
+    #[test]
+    fn an_answer_that_closes_before_done_is_cut_off_not_complete() {
+        let body = [
+            r#"{"message":{"content":"Restart Jellyfin.\nACTION: restart_app:jellyfin"},"done":false}"#,
+            r#"{"message":{"content":" It has"},"done":false}"#,
+        ]
+        .join("\n");
+        let (address, _) = fake_ollama(Some(format!(
+            "HTTP/1.0 200 OK\r\nContent-Type: application/x-ndjson\r\n\r\n{body}\n"
+        )));
+        let (answer, pieces) = collect(&address, &LIMITS);
+        assert_eq!(answer.unwrap_err(), CUT_OFF);
+        // The page still gets what came, to show it marked as cut off.
+        assert_eq!(
+            pieces.concat(),
+            "Restart Jellyfin.\nACTION: restart_app:jellyfin It has"
+        );
+    }
+
+    /// The same answer as its page gets it: failed, not done, and no repair, though its
+    /// text names one that is on offer.
+    #[test]
+    fn a_cut_off_answer_offers_no_repair() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let said = "Restart Jellyfin.\nACTION: restart_app:jellyfin";
+        let body = json!({"message": {"content": said}, "done": false});
+        let (address, _) = fake_ollama(Some(format!("HTTP/1.0 200 OK\r\n\r\n{body}\n")));
+        let offered = vec![("restart_app:jellyfin".to_string(), String::new())];
+        // The text does name a repair on offer: a whole answer would have set it.
+        assert_eq!(
+            suggested(said, &offered).as_deref(),
+            Some("restart_app:jellyfin")
+        );
+        let id = begin(
+            Turn::take().unwrap(),
+            "local".into(),
+            address,
+            "m".into(),
+            2,
+            json!([]),
+            offered,
+            LIMITS,
+        )
+        .unwrap();
+        wait_until(|| asks().get(&id).is_some_and(|a| a.ended.is_some()));
+        wait_until(|| Turn::take().is_some());
+        let cut = progress(&id, "local").unwrap();
+        assert_eq!(
+            cut["failed"],
+            format!("{NOT_AVAILABLE}: {CUT_OFF}"),
+            "{cut}"
+        );
+        assert_eq!(cut["done"], false, "{cut}");
+        assert_eq!(cut["repair"], Value::Null, "{cut}");
+        assert_eq!(cut["text"], said);
+    }
+
+    /// Review of 0.49.0: `keep` was asked only when a read timed out, so an answer that
+    /// streamed steadily could not be stopped by the page leaving.
+    #[test]
+    fn a_steadily_streaming_answer_stops_when_the_page_leaves() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut got = vec![0u8; 65536];
+            let _ = s.read(&mut got);
+            let _ = s.write_all(b"HTTP/1.0 200 OK\r\n\r\n");
+            // A word every 20 ms for 6 seconds, unless the other side hangs up first.
+            for sent in 0..300 {
+                let line = "{\"message\":{\"content\":\"word \"},\"done\":false}\n";
+                if s.write_all(line.as_bytes()).is_err() {
+                    return sent;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            300
+        });
+        let limits = Limits {
+            first: Duration::from_secs(5),
+            next: Duration::from_secs(5),
+            total: Duration::from_secs(30),
+            abandon: Duration::from_secs(1),
+        };
+        let start = Instant::now();
+        let leaves = Duration::from_millis(400);
+        let mut pieces = 0;
+        let result = stream(
+            &address,
+            "qwen3.5:4b",
+            2,
+            &json!([{"role": "user", "content": "why"}]),
+            &limits,
+            &|| start.elapsed() < leaves,
+            &mut |_| pieces += 1,
+        );
+        let took = start.elapsed();
+        assert!(
+            result.unwrap_err().contains("stopped asking"),
+            "took {took:?}"
+        );
+        assert!(pieces > 5, "it was streaming: {pieces}");
+        // Within about a second of the page leaving, not after the whole answer.
+        assert!(took < leaves + Duration::from_millis(1800), "{took:?}");
+        assert!(server.join().unwrap() < 300, "Ollama's side was hung up on");
+    }
+
     #[test]
     fn the_threads_are_its_processor_share() {
         let data = std::env::temp_dir().join(format!("neko-assist-threads-{}", std::process::id()));
@@ -1588,6 +2340,55 @@ mod tests {
         assert!(progress("0123456789abcdef0123456789abcdef", "token:abc").is_none());
         // The slot is free again once the answer has ended.
         wait_until(|| Turn::take().is_some());
+    }
+
+    /// Review of the 0.50.0 fixes: an answer that Ollama ended at its token limit
+    /// ("done": true, "done_reason": "length") counted as whole: a repair was read from
+    /// it and a bug report made from half a report.
+    #[test]
+    fn an_answer_ended_by_the_length_limit_is_not_whole() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let ended = |reason: &str| {
+            let body = [
+                r#"{"message":{"content":"Look for updates.\nACTION: update_check\nBUG REPORT: the retention st"},"done":false}"#.to_string(),
+                format!(r#"{{"message":{{"content":""}},"done":true,"done_reason":"{reason}"}}"#),
+            ]
+            .join("\n");
+            let (address, _) = fake_ollama(Some(format!("HTTP/1.0 200 OK\r\n\r\n{body}\n")));
+            let id = begin(
+                Turn::take().unwrap(),
+                "local".into(),
+                address,
+                "m".into(),
+                2,
+                json!([]),
+                vec![("update_check".to_string(), String::new())],
+                LIMITS,
+            )
+            .unwrap();
+            wait_until(|| asks().get(&id).is_some_and(|a| a.ended.is_some()));
+            wait_until(|| Turn::take().is_some());
+            progress(&id, "local").unwrap()
+        };
+        // Ended by the limit: failed, said why, not done, and no repair read from it.
+        let cut = ended("length");
+        assert_eq!(cut["done"], false, "{cut}");
+        assert_eq!(cut["repair"], Value::Null, "{cut}");
+        assert_eq!(
+            cut["failed"],
+            format!("{NOT_AVAILABLE}: {LENGTH_LIMIT}"),
+            "{cut}"
+        );
+        // The page still gets what came, to show it marked as cut off.
+        assert!(
+            cut["text"].as_str().unwrap().ends_with("the retention st"),
+            "{cut}"
+        );
+        // The model's own end is a whole answer, and its repair is offered.
+        let whole = ended("stop");
+        assert_eq!(whole["done"], true, "{whole}");
+        assert_eq!(whole["repair"], "update_check", "{whole}");
+        assert_eq!(whole["failed"], Value::Null, "{whole}");
     }
 
     #[test]

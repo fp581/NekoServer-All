@@ -163,7 +163,7 @@ def disk_of(rows, uuid):
 
 
 def on_nas(rows, disks):
-    """True when one of `disks` is a disk on a network storage box (iSCSI)."""
+    """True when one of `disks` is a disk on a NAS (iSCSI)."""
     return any(r.get('tran') == 'iscsi' for r in rows if r.get('name') in disks)
 
 
@@ -221,7 +221,7 @@ def kept_for(drive, rows, disks, backup_disks):
     if disks & backup_disks:
         return 'the USB backup drive (a backup must stay on a drive of its own)'
     if drive == 'data_ssd' and on_nas(rows, disks):
-        return 'a disk on the network storage box; the SSD for the apps must be connected to this PC (it holds the databases)'
+        return 'a disk on the NAS; the SSD for the apps must be connected to this PC (it holds the databases)'
     return None
 
 
@@ -587,6 +587,14 @@ def move_held(settings, drive, new_uuid, out, journal, staging, fstab):
         out(FROM_THE_DOWNLOAD.format(label=label))
         return 2
     old = {k: v for k, v in config['storage'][drive].items() if k != 'previous_drive'}
+    if (old.get('network') or {}).get('transport') == 'nfs':
+        # A folder the NAS shares is no drive this can unmount, copy as a whole and swap.
+        out(
+            f"The {label} is a folder the NAS shares over NFS ({old['network'].get('export')}), which this move "
+            'cannot handle: it moves a drive to another drive. STORAGE.md, "Folders a NAS shares over NFS", says '
+            'how to go back to a drive. Nothing was changed.'
+        )
+        return 2
     # The drive as it is mounted now, its Btrfs subvolume included (the settings may not
     # name it): the move checks it is still that one before each step, and `back` needs it.
     mounted = mounted_identity(mountpoint)
@@ -620,30 +628,39 @@ def move_held(settings, drive, new_uuid, out, journal, staging, fstab):
     )
     new = {'uuid': new_uuid, 'fstype': fstype}
     try:
-        mount_staging(new_uuid, fstype, staging)
-        if not empty(staging) and not our_copy(journal, drive, old.get('uuid'), new_uuid):
-            raise RuntimeError(f'{name} is not empty; NekoServer only moves to an empty filesystem')
-        # A move started again goes on with the copy this one makes (its last pass removes
-        # what is no longer on the old drive, and every file is compared after it).
-        ensure_directory(Path(journal).parent, 0o700)
-        atomic_json(copy_note(journal), {'drive': drive, 'old': old.get('uuid'), 'new': new_uuid})
-        record(journal, phase='copying')
-        same_drives(mountpoint, old, staging, new)
-        copy(mountpoint, staging, out=out)
-        stop_writers(journal)
-        same_drives(mountpoint, old, staging, new)
-        copy(mountpoint, staging, final=True, out=out)
-        record(journal, phase='verifying')
-        out('Comparing every file on both drives by checksum (this reads both drives once more)...')
-        same_drives(mountpoint, old, staging, new)
-        differ = differences(mountpoint, staging)
-        if differ:
-            raise RuntimeError(f'{len(differ)} files differ after the copy (the first: {differ[0]})')
-        same_drives(mountpoint, old, staging, new)
+        copy_to_new(journal, drive, old, new, (mountpoint, staging, name), out)
     except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
         return stopped_safely(exc, label, journal, staging, out)
     switching(journal)
     return switch(path, config, drive, journal, staging, fstab, out)
+
+
+def copy_to_new(journal, drive, old, new, places, out):
+    """The copy of move_held, before its switch: the new drive mounted at the staging
+    folder, everything copied twice (the second time with the writers stopped), then every
+    file compared. `places`: (the drive's mount folder, the staging folder, the new drive's
+    name). Raises when the move must stop."""
+    mountpoint, staging, name = places
+    mount_staging(new['uuid'], new['fstype'], staging)
+    if not empty(staging) and not our_copy(journal, drive, old.get('uuid'), new['uuid']):
+        raise RuntimeError(f'{name} is not empty; NekoServer only moves to an empty filesystem')
+    # A move started again goes on with the copy this one makes (its last pass removes
+    # what is no longer on the old drive, and every file is compared after it).
+    ensure_directory(Path(journal).parent, 0o700)
+    atomic_json(copy_note(journal), {'drive': drive, 'old': old.get('uuid'), 'new': new['uuid']})
+    record(journal, phase='copying')
+    same_drives(mountpoint, old, staging, new)
+    copy(mountpoint, staging, out=out)
+    stop_writers(journal)
+    same_drives(mountpoint, old, staging, new)
+    copy(mountpoint, staging, final=True, out=out)
+    record(journal, phase='verifying')
+    out('Comparing every file on both drives by checksum (this reads both drives once more)...')
+    same_drives(mountpoint, old, staging, new)
+    differ = differences(mountpoint, staging)
+    if differ:
+        raise RuntimeError(f'{len(differ)} files differ after the copy (the first: {differ[0]})')
+    same_drives(mountpoint, old, staging, new)
 
 
 UUID = re.compile(r'[A-Za-z0-9-]{8,80}')

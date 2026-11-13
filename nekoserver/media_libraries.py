@@ -135,7 +135,7 @@ def jellyfin(client, media, apply, username, password):
         raise RuntimeError('Unsupported Jellyfin system response')
     if info.get('StartupWizardCompleted') is not True:
         raise SetupRequired('Complete the first administrator wizard at http://127.0.0.1:8096, then rerun --libraries')
-    user = username('Jellyfin administrator username (blank to skip): ').strip()
+    user = username('Jellyfin administrator username (Enter alone skips): ').strip()
     if not user:
         raise SetupRequired('Administrator authentication skipped')
     sign_in(client, user, password('Jellyfin administrator password: '))
@@ -289,8 +289,17 @@ def ensure_readiness_key(client, root, log=print):
 
 
 def configure(
-    root, media, apply=False, apps=('jellyfin', 'seerr'), factory=Client, username=input, password=getpass.getpass
+    root,
+    media,
+    apply=False,
+    apps=('jellyfin', 'seerr'),
+    factory=Client,
+    username=input,
+    password=getpass.getpass,
+    more=None,
 ):
+    """`more`: called with Jellyfin's signed-in client for further libraries (the
+    person's own folders, existing_page.libraries); its rows are added to the results."""
     if 'jellyfin' not in apps:
         return [row('media_libraries', 'needs_setup', 'Jellyfin is required for this library workflow')]
     stored = account_store.get({'data_mount': str(root)}, 'jellyfin', verified=True)
@@ -301,6 +310,8 @@ def configure(
     try:
         try:
             results, server_id, ids = jellyfin(jf, media, apply, username, password)
+            if more is not None:
+                results += more(jf)
             if apply:
                 ensure_readiness_key(jf, root)
         except SetupRequired as exc:

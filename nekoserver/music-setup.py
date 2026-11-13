@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 
 import music_client
-from neko_common import atomic_json, verify_storage, checked_settings, default_settings, music_library
+from neko_common import atomic_json, verify_storage, checked_settings, default_settings, media_services, music_library
 
 
 def main(argv=None):
@@ -23,8 +23,8 @@ def main(argv=None):
         parser.error('Run as root to protect the monitor token')
     config = json.loads(args.config.read_text())
     verify_storage(config)
-    if 'navidrome' not in config.get('media', {}).get('services', []):
-        parser.error('Select navidrome in media.services first')
+    if 'navidrome' not in media_services(config):
+        parser.error('Select navidrome in media.services first (and the Music group: "music" under "media_apps")')
     if args.configure:
         if not sys.stdin.isatty():
             parser.error('Credential setup requires an interactive local terminal')

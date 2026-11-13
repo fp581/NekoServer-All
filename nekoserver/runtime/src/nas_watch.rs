@@ -79,11 +79,14 @@ pub(crate) fn write_test(top: &Path) -> std::io::Result<()> {
 /// How the drive at `top` is: mounted there as the right filesystem (`uuid`), and taking
 /// a test write within PROBE_WAIT.
 pub(crate) fn health(top: &Path, uuid: &str) -> Health {
-    let mounted = common::findmnt("UUID", "--mountpoint", top, 8)
+    // drive_at: a shared folder (NFS) has no UUID, its identity stands in for it.
+    let mounted = common::drive_at(top, 8)
         .ok()
         .flatten()
-        .is_some_and(|u| u.trim() == uuid);
+        .is_some_and(|found| found.split_whitespace().next() == Some(uuid));
     if !mounted {
+        // A shared folder that is not mounted is away with its NAS (Absent): there is
+        // no disk that could be connected and still fail.
         let connected = Path::new("/dev/disk/by-uuid").join(uuid).exists();
         return if connected {
             Health::Fails
@@ -170,12 +173,21 @@ pub fn run(a: &crate::Args) -> Result<()> {
     // audit: a check already running wrote over the menu's note, and the apps the menu
     // stopped were never started).
     let _turn = state_lock()?;
+    // The person's own folders on a share (0.50.0): their apps stopped while it is away.
+    crate::shared_folders::check(&cfg);
     let drives = nas_drives(&cfg)?;
     let states: Vec<Health> = drives.iter().map(|(p, u, _)| health(p, u)).collect();
     // Logged in again when a drive is gone, or a target NekoServer uses has no session
     // (the backup drive's too, which no drive above shows: the 0.46.1 audit).
     if states.contains(&Health::Absent) || !missing_sessions(&cfg, &sessions()).is_empty() {
         log_in_again(&cfg);
+    }
+    let away = drives
+        .iter()
+        .zip(&states)
+        .any(|((_, uuid, _), h)| *h == Health::Absent && common::is_nfs_identity(uuid));
+    if away {
+        mount_shared_folder_again(&cfg);
     }
     let state = common::json(Path::new(*STATE), 64000);
     let held = state["held"] == true;
@@ -334,6 +346,29 @@ fn log_in_again(cfg: &Value) {
         Ok((15, _)) => {}
         Ok((code, _)) => println!("NAS watch: logging in to the network storage box did not work yet (iscsiadm exited {code}); trying again in a minute"),
         Err(e) => println!("NAS watch: logging in to the network storage box did not work yet ({e})"),
+    }
+}
+/// The media drive is a folder the NAS shares (NFS) and is not mounted: the NAS was off
+/// when this PC started, or went away for long. A disk that returns is seen by systemd,
+/// which starts drive-return; a shared folder has no disk to see. So once its NAS
+/// answers again, drive-return is started from here: it mounts the folder, checks it
+/// and starts the apps, as for a drive plugged in again.
+fn mount_shared_folder_again(cfg: &Value) {
+    let Some(export) = common::nfs_export(&cfg["storage"]["media_hdd"]) else {
+        return;
+    };
+    if !common::nfs_answers(export) {
+        return;
+    }
+    println!("NAS watch: the network storage box answers again; mounting its shared folder ({export}) and starting the apps");
+    let start = [
+        "systemctl",
+        "start",
+        "--no-block",
+        "nekoserver-drive-return.service",
+    ];
+    if let Err(e) = common::command(&start, 30) {
+        println!("NAS watch: the drive-return service could not be started ({e}); trying again in a minute");
     }
 }
 /// The lock on this check's record (shared.json nas_watch.lock), waited for.

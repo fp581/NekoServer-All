@@ -8,13 +8,14 @@ memory, the SSD space and the port. No other step needs it, and nothing that goe
 fails setup: a problem is said ("the AI assistant needs a look", with the reason) or the PC
 is "not available" for it, and every other step runs as usual. It runs as a Compose project
 of its own with a hard memory limit, half the processor cores at most, the lowest priority,
-and Linux stops it first when memory runs out, so it never slows the other apps down.
+and Linux stops it first when memory runs out: the other apps come before it.
 
 Every check reads kernel files and Python's own library only (/proc/meminfo, /proc/cpuinfo,
 platform.machine, a socket, the SSD's free space): no program of a package is run, so no
 checking tool can be missing. Docker comes from the docker step, which this one needs.
 """
 
+import questions
 import json
 import math
 import os
@@ -97,8 +98,8 @@ START_WAIT = 120
 EXPLAIN = (
     'A private assistant inside the dashboard ("Ask Neko"): it explains what the dashboard shows,',
     'reads the logs of a problem with passwords and keys taken out, and can suggest a fix from a short',
-    'list that runs only when you press Approve. It runs on this server only: nothing you ask leaves your home.',
-    'It never slows down or stops your other apps: they come first, and everything works without it.',
+    'list that runs only when you press Approve. Its model runs on this server, not at an outside service.',
+    'Your other apps come first: it has a memory limit and the lowest priority, and everything works without it.',
     'The model is downloaded from the Ollama library during setup (so it needs the internet) and kept on the',
     'app SSD (appdata/assistant/models). NekoServer itself and its backups never contain it.',
 )
@@ -151,8 +152,8 @@ def _run(ctx):
                 save_choice(ctx, False, 'auto')
                 return None
             save_choice(ctx, True, model)
-        model, size, memory = fitting(ctx.config, room)
-        check_space(ctx.config, size)
+        model, size, memory = fitting(ctx.config, total, room)
+        check_space(ctx.config, model, size)
         need_pin(ctx)
     except NotHere:
         # Not here (any more): one that runs is stopped, so it can never squeeze the
@@ -292,20 +293,62 @@ def size_gib(text):
     return float(found.group(1)) * {'K': 1024**-2, 'M': 1024**-1, 'G': 1}[found.group(2)]
 
 
+def reserve_gib(total):
+    """The memory kept for the other apps to grow into, in GiB."""
+    return max(RESERVE_GIB, total * RESERVE_SHARE)
+
+
 def memory_for_model(total, available, own=0):
-    """The memory left for a model, in GiB: what is free now (with the assistant's own use
-    counted as free) less the reserve the other apps keep."""
-    return available + own - max(RESERVE_GIB, total * RESERVE_SHARE)
+    """The memory left for a model, in GiB: what is free now (MemAvailable, the figure the
+    dashboard shows too, with the assistant's own use counted as free) less the reserve
+    the other apps keep."""
+    return available + own - reserve_gib(total)
 
 
-def check_space(config, size, usage=shutil.disk_usage):
-    """The SSD has room for the image and the model, with room left for everything else.
-    Setup run again: they are on the SSD already, so only the room for everything else."""
+def room_said(total, room, running=True):
+    """The free memory, the reserve and what that leaves, in numbers (gate run B: "0.0 GB
+    free with your apps running" on a server that had 1.6 GB free and kept 2 GB of it for
+    the apps read as if the memory were measured wrongly)."""
+    kept = reserve_gib(total)
+    with_apps = ' with your apps running' if running else ''
+    return (
+        f'{max(room + kept, 0):.1f} GB free{with_apps}, and keeps {kept:.1f} GB for the apps to grow into, '
+        f'which leaves {max(room, 0):.1f} GB for the assistant'
+    )
+
+
+def downloaded(config, model):
+    """The model is on the SSD already: Ollama keeps a record of each model it has
+    finished downloading (models/manifests/<where from>/<whose>/<name>/<tag>)."""
+    name, tag = tagged(model).rsplit(':', 1)
+    parts = name.split('/')
+    if len(parts) == 1:
+        parts = ['library', *parts]  # Ollama's own models
+    if len(parts) == 2:
+        parts = ['registry.ollama.ai', *parts]  # the Ollama library
+    store = os.path.realpath(folders(config)[1] / 'models' / 'manifests')
+    record = os.path.realpath(os.path.join(store, *parts, tag))
+    # A name can't point outside Ollama's own folder (its manifests).
+    return record.startswith(store + os.sep) and os.path.isfile(record)
+
+
+def check_space(config, model, size, usage=shutil.disk_usage):
+    """The SSD has room for what is still to download (Ollama's image, the chosen model),
+    with room left for everything else. What is on the SSD already is not counted again:
+    the image once the assistant is set up, the model once it is downloaded. Another
+    model than the one there is a new download (the review of 0.49.0: a 6.6 GB model
+    passed with 11 GB free, because the assistant was set up with a smaller one)."""
     free = usage(config['data_mount']).free / 1000**3
-    there = (folders(config)[0] / MANIFEST).is_file()
-    needed = SPARE_GB if there else math.ceil(IMAGES_GB + size + SPARE_GB)
+    parts = []
+    if not (folders(config)[0] / MANIFEST).is_file():
+        parts.append((IMAGES_GB, "Ollama's image"))
+    if not downloaded(config, model):
+        parts.append((size, f'the model {model}'))
+    needed = math.ceil(sum(amount for amount, _ in parts) + SPARE_GB)
     if free < needed:
-        raise NotHere(f'it needs {needed} GB free on the app SSD and there are {free:.0f} GB')
+        counted = ', '.join(f'{amount:g} GB for {what}' for amount, what in parts)
+        counted += (', ' if counted else '') + f'{SPARE_GB} GB kept free for everything else'
+        raise NotHere(f'it needs {needed} GB free on the app SSD ({counted}) and there are {free:.0f} GB')
 
 
 # ---- the choice -------------------------------------------------------------------------
@@ -323,8 +366,7 @@ def choices(total, room, cores):
     usable = fits(room)
     cpus = max(1, (cores or 1) // 2)
     lines = [
-        f'This PC has {total:.0f} GB of memory. With your apps running and room kept for them to grow, '
-        f'{max(room, 0):.1f} GB are free for the assistant.',
+        f'This PC has {total:.0f} GB of memory: {room_said(total, room)}.',
         '  0) No assistant (press Enter)',
     ]
     answers = {'0': 'none', '': 'none'}
@@ -338,10 +380,7 @@ def choices(total, room, cores):
         ]
         answers[str(number)] = model
     for model, _, need, _ in MODELS[len(usable) :]:
-        lines.append(
-            f'  Not possible here: {model} needs about {need} GB free; this PC has {max(room, 0):.1f} GB free '
-            'with your apps running.'
-        )
+        lines.append(f'  Not possible here: {model} needs about {need} GB; this PC has {room_said(total, room)}.')
     return lines, answers
 
 
@@ -350,7 +389,7 @@ def ask_model(ctx, total, room, cores, prompt=None, output=None):
     Enter is "no assistant", unless the setup window's switch for it was turned on: then
     Enter takes the recommended model. NotHere when no model fits."""
     if not fits(room):
-        raise NotHere(not_enough(room, MODELS[0][2]))
+        raise NotHere(not_enough(total, room, MODELS[0][2]))
     prompt, output = prompt or input, output or print
     output(f'\n=== Optional: {TITLE} ("Ask Neko" in the dashboard) ===')
     for line in EXPLAIN:
@@ -361,16 +400,25 @@ def ask_model(ctx, total, room, cores, prompt=None, output=None):
     switched_on = options(ctx.config).get('wanted') is True
     default = str(len(fits(room))) if switched_on else '0'
     last = len(answers) - 2
+    listed = [(number, model if model != 'none' else 'No assistant') for number, model in answers.items() if number]
+    kept = answers[default] if switched_on else 'no assistant'
     while True:
-        try:
-            typed = prompt(f'Which one? (0-{last}, Enter for {answers[default] if switched_on else "no assistant"}): ')
-        except EOFError:
+        typed = model_typed(prompt, listed, kept)
+        if typed is None:
             output('')
             return None
-        typed = typed.strip() or default
+        typed = typed or default
         if typed in answers:
             return answers[typed]
         output(f'Type a number from 0 to {last}, or press Enter.')
+
+
+def model_typed(prompt, listed, kept):
+    """What was typed at the model question; None when it was left (Ctrl+D)."""
+    try:
+        return questions.ask('assistant_model', prompt, choices=listed, default=kept).strip()
+    except EOFError:
+        return None
 
 
 def save_choice(ctx, wanted, model):
@@ -381,12 +429,12 @@ def save_choice(ctx, wanted, model):
     guided_setup.save_settings(ctx)
     if not wanted:
         ctx.log(
-            f'{TITLE}: none chosen. To add one later, set "wanted" to true under "assistant" in my-config.json '
-            'and run  sudo bash install.sh  again.'
+            f'{TITLE}: none chosen. To add one later, run  sudo bash install.sh  again and choose '
+            '"Add a local AI assistant" on the first page.'
         )
 
 
-def fitting(config, room):
+def fitting(config, total, room):
     """(model, its download in GB, its memory limit like "5g") for the chosen model, when it
     fits in `room` now. NotHere when it does not (the other apps may have grown)."""
     named = options(config).get('model', 'auto')
@@ -394,18 +442,15 @@ def fitting(config, room):
     if named in known:
         model, download, need, _ = known[named]
         if need > room:
-            raise NotHere(not_enough(room, need, model))
+            raise NotHere(not_enough(total, room, need, model))
         return model, download, f'{need}g'
     if room < NAMED_MODEL_GIB:
-        raise NotHere(not_enough(room, NAMED_MODEL_GIB, named))
+        raise NotHere(not_enough(total, room, NAMED_MODEL_GIB, named))
     return named, UNKNOWN_MODEL_GB, f'{math.floor(room)}g'
 
 
-def not_enough(room, need, model='a model'):
-    return (
-        f'there is not enough free memory: {model} needs about {need} GB free, and this PC has '
-        f'{max(room, 0):.1f} GB free with your apps running and room kept for them'
-    )
+def not_enough(total, room, need, model='a model'):
+    return f'there is not enough free memory: {model} needs about {need} GB, and this PC has {room_said(total, room)}'
 
 
 # ---- installing it ----------------------------------------------------------------------
@@ -492,6 +537,12 @@ def wait_until_answering(opener=urllib.request.urlopen, sleep=time.sleep, clock=
         sleep(5)
 
 
+def tagged(model):
+    """A model's name as Ollama lists it: one without a tag is its ":latest" ("qwen3.5"
+    is "qwen3.5:latest"). A colon before the last "/" is a port, not a tag."""
+    return model if ':' in model.rsplit('/', 1)[-1] else model + ':latest'
+
+
 def fetch_model(base, model, log, run=checked_run):
     """('ready', its ID) when the model is already there; else its download from the
     Ollama library is started in the background ('downloading', None): Ask Neko says so
@@ -500,7 +551,7 @@ def fetch_model(base, model, log, run=checked_run):
     listed = run([*base, 'exec', '-T', 'ollama', 'ollama', 'list'], 60, f'{TITLE} (ollama list)').stdout
     for line in listed.splitlines():
         fields = line.split()
-        if fields[:1] == [model]:
+        if fields and tagged(fields[0]) == tagged(model):
             return 'ready', fields[1] if len(fields) > 1 else None
     run([*base, 'exec', '-d', '-T', 'ollama', 'ollama', 'pull', model], 60, f'{TITLE} (ollama pull)')
     log(

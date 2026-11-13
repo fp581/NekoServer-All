@@ -100,6 +100,23 @@ class OwnershipTests(unittest.TestCase):
             self.apply()
         self.assertEqual(self.ts.calls, [])
 
+    def test_its_own_routes_are_taken_over_when_the_ssd_with_its_journal_was_replaced(self):
+        """Gate run C10: the app SSD replaced, so the journal of NekoServer's routes was
+        gone, and its own routes from before read as "a route of your own"."""
+        self.apply()
+        before = self.ts.current()
+        (self.data / 'gateway/tailnet-owned.json').unlink()
+        self.ts.calls.clear()
+        self.apply()
+        self.assertEqual(self.ts.current(), before)
+        self.assertEqual(self.ts.calls, [], 'nothing to change: the routes are the ones it sets')
+        self.assertEqual(sorted(self.ledger()['owned']['TCP']), ['8443', '8448'])
+        # The same port to another place on this PC is still yours: refused, untouched.
+        (self.data / 'gateway/tailnet-owned.json').unlink()
+        self.ts.state['Web']['neko.tail1.ts.net:8443']['Handlers']['/']['Proxy'] = 'http://127.0.0.1:9999'
+        with self.assertRaisesRegex(RuntimeError, 'port 8443 already has a route of your own'):
+            self.apply()
+
     def test_an_app_taken_out_loses_only_its_own_route(self):
         self.config['gateway']['services'] = self.config['gateway']['confirmed_services'] = ['jellyfin', 'immich']
         self.apply()

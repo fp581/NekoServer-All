@@ -206,6 +206,7 @@
     "steam_uid": null,
     "user": "neko",
     "minimum_free_bytes": 4294967296,
-    "keep_snapshots": 14
+    "keep_snapshots": 14,
+    "earlier": true
   }
 }

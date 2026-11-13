@@ -2,7 +2,7 @@
  * Each colour is written once, as light-dark(Lamplight, night): the page picks the theme
  * by its colour scheme. The dashboard sets it with its switch (data-neko-theme on the root:
  * its own name, so a page that hosts it, as the live preview's does, can't set it back),
- * the setup window follows the device.
+ * and the setup window with a switch of its own (setup-gui/theme.js); both start at night.
  * Night is a warm plum-charcoal; Lamplight a soft parchment with no bright white, so
  * switching to it never dazzles. Every text colour reads at 5:1 or better on every surface
  * it sits on, in both themes (WCAG AA asks 4.5:1): Lamplight's accents keep the night's

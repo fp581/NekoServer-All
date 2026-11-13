@@ -1,4 +1,4 @@
-# NekoServer v0.49.0
+# NekoServer v0.50.0
 
 NekoServer turns a PC running **Arch Linux**, **Nyarch**, **Debian**, **Ubuntu**, **Fedora**, **RHEL** (and Rocky Linux, AlmaLinux) or **openSUSE** into a home media server: your own Netflix-style video library, photo backup from your phone, music streaming, and a private cloud drive. One command sets up the apps, creates their accounts, connects them together, sets up your phone, makes them reachable from anywhere through **Tailscale** (privately, only for your own devices) and schedules backups.
 
@@ -10,7 +10,7 @@ It does **not** install Linux and it **never formats a drive**. You prepare thos
 
 | App | What it does | Where your files live |
 | --- | --- | --- |
-| **Jellyfin** | Watch your movies and TV shows on a TV, phone or browser | HDD |
+| **Jellyfin** | Watch your movies and shows on a TV, phone or browser | HDD |
 | **Seerr** | Request a movie or show; it is found and added for you | |
 | **Sonarr / Radarr / Lidarr** | Find and organise TV shows / movies / music | |
 | **Prowlarr** | Manages the sources Sonarr, Radarr and Lidarr search | |
@@ -21,7 +21,9 @@ It does **not** install Linux and it **never formats a drive**. You prepare thos
 | **Dashboard** | One page for your apps, backups, drives and live hardware: processor, graphics, temperatures, fans, network. Fan curves and RGB lighting (OpenRGB) too. Works on phone and tablet, installable as an app | |
 | **Tailscale** | Use your apps from anywhere, privately, on your own devices | |
 
-Seerr, Sonarr, Radarr, Lidarr, Prowlarr and qBittorrent are always set up, but you never have to use them: Jellyfin, Immich and Navidrome play and show your own files without them.
+Seerr, Sonarr, Radarr, Lidarr, Prowlarr and qBittorrent are set up with the media apps, but you never have to use them: Jellyfin, Immich and Navidrome play and show your own files without them.
+
+**Only want some of it?** Setup asks about the media apps in three groups, a yes or no each: Photos (Immich), Movies and shows (Jellyfin, Seerr and the download apps) and Music (Navidrome). Any combination works, photos alone or none included; Nextcloud, the dashboard, the backups, Tailscale and the shared folders are set up the same. You can answer yes at a later run, and no later never deletes anything ([GUIDED-SETUP.md](GUIDED-SETUP.md#the-media-apps-three-groups-a-yes-or-no-each)).
 
 Also included: shared folders on your home network (Samba) and, if you want them, watching on a TV connected to the server (Steam Big Picture) and phone alerts when something fails (ntfy).
 
@@ -40,16 +42,15 @@ Also included: shared folders on your home network (Samba) and, if you want them
   - **openSUSE Leap 16** or newer, **Tumbleweed** or **Slowroll** (tried on Leap 16 and Tumbleweed in a test setup; see *openSUSE* below). Leap 15 is not enough: its Python is too old.
 - **8 GB of memory or more.** The apps use about 2 GB when idle, and more while Immich looks at new photos or Jellyfin converts a video; with less, those can be stopped for lack of memory. Setup shows what it found.
 - **Your phone**, to set up the apps on it during installation.
-- **Three drives besides the disk Linux is on** (four drives in all), each already formatted (ext4 is the safe choice). NekoServer never puts your files on the disk Linux runs from, so a mini PC with one internal disk needs the three as extra (USB) drives:
+- **One drive is enough**, already formatted (ext4 is the safe choice). Any number of drives works: one drive of its own, or the disk Linux runs from, can hold everything (about 70 GB free); with more, setup asks which one does what. The roles:
 
-| Drive | Used for | Size | Notes |
+| Role | Used for | Size | Notes |
 | --- | --- | --- | --- |
-| **System disk** | Linux itself | 5 GB free for the packages | Your existing disk. NekoServer does not use it for data. |
-| **SSD** | Apps, photos, music | At least 20 GB free; 100 GB or more recommended | Fast drive. |
-| **HDD** | Movies, shows, Nextcloud files, backups | At least 50 GB free; 500 GB or more recommended | Large drive. |
-| **USB drive** | Weekly copy of your photos and Nextcloud files | At least 16 GB, and room for those files | Can be exFAT or ext4. Keep it plugged in. |
+| **Apps** (the "SSD") | NekoServer, the apps' settings and databases, photos and music unless placed elsewhere | At least 20 GB free; 100 GB or more recommended | The fastest drive you have. |
+| **Media and backups** (the "HDD") | Movies, shows, Nextcloud files, backups | At least 50 GB free; 500 GB or more recommended | The biggest drive you have. Can be the same drive as the apps. |
+| **Offline backup** (optional) | Weekly copy of your photos and Nextcloud files | At least 16 GB, and room for those files | A drive you can take away: exFAT or ext4. "None for now" is an answer. |
 
-Setup checks the sizes when you pick the drives, before it mounts or saves anything: a drive that is too small is refused at once and you pick another one.
+Immich's photos, the films and shows, the music and Nextcloud's files can each be kept on a drive of their own; the apps themselves are installed together on the apps' drive. Setup checks the sizes when you pick the drives, before it mounts or saves anything: a drive that is too small is said at once with its numbers, and you pick another one. A backup on the same drive as what it protects is said so, once.
 
 The SSD and HDD can be ext4, XFS or Btrfs (a Btrfs pool over several drives counts as one), also inside an LVM volume, a software RAID array or an encrypted (LUKS) drive. An encrypted drive must be unlocked by Linux at every start (listed in `/etc/crypttab`), because setup mounts it then.
 
@@ -95,22 +96,30 @@ While it installs, a package source that does not answer is tried again a little
 
 </details>
 
-Then the setup wizard explains what will happen and asks `Ready to start? [yes/no]`. Once you start, it first lists what it found on this computer (processor, systemd, Linux family, Docker, firewall and so on), then it:
+Then the setup wizard shows its first page, **What would you like this server to do?**: the apps (Photos and phone backup with Immich, Movies and shows with Jellyfin, Music with Navidrome, Personal files with Nextcloud) and the optional extras (a TV connected to this PC, alerts on your phone, a warning when the server stops checking in, a local AI assistant), each on a numbered line. Type a line's number to switch it on or off. Inside Movies and shows and inside Music there is one more line, **Also find and download new ones**: switched off, you get Jellyfin or Navidrome alone. Press Enter to go on: setup asks **where to store your apps and files** (below), then shows the review, **Ready to install NekoServer**: the apps that will be installed, where they and your files are kept, and what setup still stops to ask. Type `yes` to install (`back` returns to the first page; Enter alone approves nothing). Nothing is installed, mounted or saved before that yes. No step asks "install this?" again afterwards.
+
+On a PC that already has NekoServer, setup first says what it found (the release that is set up, a setup that was cut off and where, or saved answers) and offers the choices that apply.
+
+**Where to store your apps and files** is asked before that yes. Setup lists every drive connected to the PC (size, kind, model, the name you gave it, how full it is) and asks for the drive for NekoServer and your apps, the drive for the backups, where Immich's photos, the films and shows, the music and Nextcloud's files are kept (the drive of the apps, the backups' drive, or a drive of their own), and an optional removable drive for the offline backup. Each line comes with a recommended drive: press Enter to take it, or type another drive's number. No drive's name is typed, and choosing a drive changes nothing on it; setup never formats one. A drive that cannot have a role is in the list with the reason, the sizes in numbers (the apps need at least 20 GB free, the media and backups 50 GB). The disk Linux runs from can be chosen too, so a PC with one drive works; setup says what that means first. (An installation drive for one group's apps is not offered in 0.50.0; it moves to 0.51.x.)
+
+Then it asks **whether you already have films, shows or music**, and for their folder: used where it is (nothing is copied) or copied into the library, and whether new ones are saved there too.
+
+Once you start, it first lists what it found on this computer (processor, systemd, Linux family, Docker, firewall and so on), then it:
 
 1. **Connects the server to Tailscale** so you can use your apps from anywhere. It pauses, explains what Tailscale is, and opens the sign-in page. You create a free account (with Google, Microsoft, Apple or GitHub) and approve the server.
-2. **Asks you to pick your SSD, HDD and USB drive** from a list (with each drive's size and the name you gave it), confirms each one by its name, and **checks they have enough space** before installing anything. The question says how big each must be (SSD at least 20 GB, HDD at least 50 GB); a drive that is too small is refused straight away, before anything is mounted or saved, and you pick another.
-3. **Asks how to make the apps' logins**: generated passwords for all of them (recommended) or your own, app by app.
-4. **Installs the apps, creates an account for each one**, connects them to each other, and **turns on the graphics chip for video** in Jellyfin and Immich when your PC has an Intel or AMD one ([HARDWARE-VIDEO.md](HARDWARE-VIDEO.md)). Connecting the media apps, the music setup and the shared-folder password ask their questions in the terminal only.
+2. **Mounts the drives you chose** and checks each one is the drive you meant, at every start from then on. Files it finds on a drive stay where they are.
+3. **Asks how to set up your app accounts**: strong passwords made for you (recommended) or your own logins, and **when the backups run and how many nightly backups are kept** (1 to 7, 3 unless you choose).
+4. **Installs the apps, creates an account for each one**, connects them to each other, and **turns on the graphics chip for video** in Jellyfin and Immich when your PC has an Intel or AMD one ([HARDWARE-VIDEO.md](HARDWARE-VIDEO.md)). Their questions (download sources, the music check's login, the shared-folder password) are asked in the setup window as well as the terminal.
 5. **Asks you to choose a dashboard PIN** (6 to 8 digits, typed twice). It lets you change fans and lights from your phone, and restart or close apps from the dashboard. Press Enter to skip it.
 6. **Asks about a TV connected to the server** (an optional extra; answer `no` to skip it) and **puts shortcuts on the desktop** for the dashboard, the web browser, Steam and each app ([Desktop shortcuts](#desktop-shortcuts)).
-7. **Gives each app a private Tailscale address and sets up your phone, app by app.** A page with QR codes opens on the PC: scan a code with the phone camera to open each address. For every app it tells you which phone app to install (iPhone and Android), what to type, and which username to use.
-8. **Asks which network connection is your home network** (a numbered list such as `1. enp3s0 · 192.168.1.20`), for using the apps at home without Tailscale.
-9. **Asks about two more optional extras**, once each: phone alerts when something fails, and outage alerts. Answer `no` to skip either; nothing else needs them.
+7. **Gives each app a private Tailscale address and helps you set up your phone.** First it shows what it checked itself: this server signed in to Tailscale, the private addresses, a phone in your Tailscale account, each app. Then the steps for the phone, with a page of QR codes on the PC: scan a code with the phone camera to open each address. For every app it tells you which phone app to install (iPhone and Android), what to type, and which username to use.
+8. **Uses your home network by itself**, for the apps at home without Tailscale: with several connections it takes the cable before Wi-Fi and says which it uses.
+9. **Sets up the extras you switched on**: alerts on your phone (the steps, the topic's address, then a test message and "did it arrive?") and the outage warning (the steps for the monitoring service, the check-in address, then a test check-in).
 10. **Asks you to choose a backup password once** (typed twice), to lock the backup of your app passwords. Write it down: restoring that list needs it. You are never asked again; night-time backups run on their own.
 11. **Runs the first checkup and backup**, once every step is done: an app health check, then each backup you set up, straight away instead of the first night, then a check of the whole server. It says which ones finished and names anything that needs a look. This takes a few minutes to an hour, depending on how much is on the drives.
 12. **Shows a finishing screen**: what's done, what needs you first and what waits for it, your app addresses, whether a dashboard PIN is set, and how to see your passwords.
 
-Whenever it needs you, it shows numbered instructions, opens the right page, and asks `Have you completed this step successfully? [yes/no]`. Answer `no` to see the step again.
+Whenever it needs you, it shows numbered instructions, opens the right page, and asks in the step's own words, such as `Did the Tailscale page say this server is connected? [yes/no]`. Answer `no` to see the step again. Steps that belong together (setting up the phone, trying the TV) are listed as one part with one question at the end.
 
 ### Two ways to follow the installation: the terminal and the setup window
 
@@ -129,11 +138,11 @@ It is one installation, which you can follow and answer in two places at the sam
 3. Type your own login password when `sudo` asks for it (nothing appears while you type; that is normal) and press Enter.
 4. Answer the questions by typing and pressing Enter: `yes` or `no`, a number from a list, or a password. Keep this terminal open until the finishing screen: closing it stops the installation (running the command again continues where it stopped).
 
-**2. The setup window** (on a PC with a desktop). Once the packages are installed and NekoServer's program is built (usually 5 to 15 minutes after you start `sudo bash install.sh`), a small window opens in your web browser by itself, just before `Ready to start?`. The terminal says so and shows the window's address, for example `http://127.0.0.1:40123/t/AbC.../`. If setup stops before then (a site it downloads from cannot be reached, say), a window still opens to say why.
+**2. The setup window** (on a PC with a desktop). Once the packages are installed and NekoServer's program is built (usually 5 to 15 minutes after you start `sudo bash install.sh`), a small window opens in your web browser by itself, with setup's first page. The terminal says so and shows the window's address, for example `http://127.0.0.1:40123/t/AbC.../`. If setup stops before then (a site it downloads from cannot be reached, say), a window still opens to say why.
 
-- **Before setup starts** it explains the optional extras (a TV, phone alerts, outage alerts, Nextcloud) and has a switch for each. Switch off what you don't want (setup asks about the TV and the alerts you leave alone when it gets to them; Nextcloud is installed unless you switch it off), then press **Start setup** (the same as typing `yes` at "Ready to start?" in the terminal). From then on the choices are fixed; to change one later, edit `my-config.json` and run setup again.
+- **Before setup starts** it shows the same first page as cards, each with a switch that says yes or no, then **Continue** to the storage page and the review, and one button, **Install selected apps** (the same as typing `yes` in the terminal). From then on the choices are fixed for this run; run setup again to change one.
 - **While setup runs** it shows the step under way, what that step installs and why, and every question setup asks, with buttons and boxes to answer it. Answer it there or in the terminal: whichever comes first counts. A step you confirm yourself (the phone, a TV test) also has **Skip for now**: it leaves that step for later and setup goes on, the same as Ctrl+D in the terminal.
-- **"Answer this step in the terminal"**: a few steps run a program of their own (connecting the media apps, music setup, the shared-folder password) whose questions can only be answered in the terminal. The window says so while they run; switch to the terminal for them.
+- **Every question can be answered in the window or the terminal.** That includes the steps that used to say "Answer this step in the terminal" (connecting the media apps, music setup, the shared-folder password).
 - **Closed the window, or it did not open?** Copy the address the terminal showed into a browser **on this PC**, from your own account, and it opens again (a window still open elsewhere then says it was opened somewhere else). It works only on this PC (it is not reachable from another computer or a phone) and only while setup runs. Without a desktop, use the terminal alone; nothing is missing.
 - **At the end** it shows the finishing screen (what's done, what still needs you, your app addresses), which stays in the window until you close it, also after setup has closed.
 
@@ -218,7 +227,7 @@ What is copied, where, and when (times are in your `timezone`):
 | **Movies, shows and music** | **Not backed up** | |
 
 - **Photos, videos and Nextcloud files are only ever added to the backup.** Nothing on it is overwritten or deleted. If you edit a file, the new version is saved next to the old one with a date in its name.
-- **Old snapshots are cleaned up automatically:** the newest 7 nightly (apps and settings), 4 weekly Immich database copies and 3 monthly snapshots are kept. Only database copies that still match the checksum in their note count: a damaged copy, or one without its note, never pushes out a good older one. Change `keep_snapshots` and `database_keep` in `my-config.json` to keep more, or set them to `0` to keep everything.
+- **Old snapshots are cleaned up automatically:** the newest 3 nightly (apps and settings; setup takes 1 to 7), 4 weekly Immich database copies and 3 monthly snapshots are kept. Only database copies that still match the checksum in their note count: a damaged copy, or one without its note, never pushes out a good older one. Change `keep_snapshots` and `database_keep` in `my-config.json` to change the weekly and monthly ones; the nightly count is chosen on setup's backups page.
 - **On the 1st of each month**, at night, the server takes a snapshot, tests that it can be restored, then updates the apps. If an update fails, it goes back to the snapshot automatically. New major versions are only shown on the dashboard until you approve them (see [Optional settings](#optional-settings)).
 - **Weekly copies only add what is new.** Photos already backed up are recognised without being read again, so a weekly run takes minutes, not hours, even for a big library. Any file rewritten or replaced since its copy is compared by content. Once a month, as the first step of the monthly run (before its backup and updates), every copy is compared by checksum.
 - **An incomplete weekly copy is shown as one.** If some Nextcloud files could not be copied (open while copying, or names an exFAT USB drive cannot store, including two names that differ only in upper/lower case, such as `Documents` and `documents`, which exFAT treats as one), the dashboard and phone alerts say *Incomplete* and list them, instead of reporting success.
@@ -236,7 +245,7 @@ Everything works without editing anything. If you want to change something, edit
 | `"timezone"` | Timezone for the night-time backups and updates, e.g. `"Europe/London"` | `"auto"`: the PC's own timezone |
 | `"user"` under `"tv"` | Which account is the TV user (below) | `"auto"`: you |
 | `"torrent_port"` under `"media"` | Lets other peers connect to qBittorrent for faster downloads. Set a port such as `51413`, then forward it on your router. | off |
-| `"keep_snapshots"` and `"database_keep"` | How many backups to keep (`0` keeps all) | 7 nightly, 4 weekly database copies, 3 monthly |
+| `"keep_snapshots"` and `"database_keep"` | How many backups to keep (nightly: 1 to 7, chosen on setup's backups page; a count from before 0.50.0 stays until you choose) | 3 nightly, 4 weekly database copies, 3 monthly |
 | `"immich_major_update"`, `"nextcloud_major_update"` under `"maintenance"` | Approve a new major app version shown on the dashboard; an update night installs it once it has settled. See [MONTHLY-MAINTENANCE.md](MONTHLY-MAINTENANCE.md#major-version-updates). | empty (not installed) |
 | `"settle_days"` under `"maintenance"` | How many days a new app version waits before an update night installs it (1 to 30). See [MONTHLY-MAINTENANCE.md](MONTHLY-MAINTENANCE.md#weekly-app-updates). | `7` |
 | `"update_day"` under `"maintenance"` | The night of the week app updates are installed: `Mon` to `Sun`. | `"Wed"` |
@@ -279,7 +288,7 @@ It removes NekoServer from this PC: what you choose, after two confirmations, an
    ```
 
 2. **Look first** (optional, changes nothing, no password needed): `bash uninstall.sh --dry-run` shows what each choice would remove, with sizes.
-3. **Start it:** `sudo bash uninstall.sh`, then type your login password.
+3. **Start it:** `sudo bash uninstall.sh`, then type your login password. On a PC with a desktop the setup window opens with the same questions; the terminal keeps working, and is all there is without a desktop.
 4. **Choose what goes.** A numbered checklist appears; `[x]` means it will be removed. Type a number and press Enter to switch that line on or off (several at once work too: `3 4`), `all` to take everything, or just press Enter when the list is the way you want it. Only NekoServer itself and the app containers are switched on to begin with: your photos, movies, Nextcloud files and backups stay unless you switch them on.
 5. **Check the plan.** It lists every folder that would go, with its size, and what stays. Type `yes` to go on (anything else stops, with nothing changed).
 6. **Type the phrase** it shows, exactly, for example `remove NekoServer and delete my photos, backups`. Then it removes what you chose and says what it did. Nothing removed can be brought back.

@@ -9,13 +9,11 @@ import subprocess
 import sys
 from pathlib import Path
 from neko_common import (
-    MEDIA_APPS,
-    OPTIONAL_QUESTIONS,
     VERSION,
     app_port,
-    app_ports,
     atomic_json,
-    optional_answers,
+    apps_to_connect,
+    media_services,
     remember_answer,
     safe_path,
 )
@@ -24,11 +22,43 @@ DEPENDENCIES = ['media', 'recovery']
 DESCRIPTION = 'Wait for media startup, collect sources and run guided configuration/readiness reporting'
 
 
+DOCKER_DOWN = (
+    'Docker is not running, so none of the apps can be reached and nothing could be connected. '
+    'Start it (sudo systemctl start docker), then retry this step'
+)
+
+
+def docker_running(run=subprocess.run):
+    """Docker answers: the apps this step connects run in it. Asked first, so a Docker
+    that is down is said as that, with its fix, instead of each app as "unavailable"
+    (seen on the 0.50.0 gate with Docker stopped)."""
+    try:
+        done = run(
+            ['docker', 'info', '--format', '{{.ServerVersion}}'],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        done = None
+    if done is None or done.returncode != 0:
+        raise RuntimeError(DOCKER_DOWN)
+
+
 def run(ctx):
     settings = ctx.config.get('onboarding', {})
     if not ctx.apply or not settings.get('enabled', True):
         ctx.log('Guided media onboarding deferred')
         return
+    if not apps_to_connect(ctx.config):
+        # Jellyfin with its libraries, and the download apps, are what this step connects
+        # (and asks about: the download sources, the indexers, the playback test).
+        ctx.log(
+            'Connecting the apps: Movies and shows and the downloads are switched off, so there is nothing to connect'
+        )
+        return
+    docker_running()
     if account_store.enabled(ctx.config) and 'accounts' in getattr(ctx, 'plan', ()):
         required = account_store.selected(ctx.config, ['media'])
         if any(not account_store.get(ctx.config, app, verified=True) for app in required):
@@ -47,18 +77,18 @@ def run(ctx):
     cmd = [sys.executable, str(script), '--config', str(config), '--wait', str(wait)]
     if sys.stdin.isatty():
         cmd += ['--configure', '--apply']
-        if settings.get('configure_libraries', True) and 'jellyfin' in ctx.config.get('media', {}).get('services', []):
+        services = media_services(ctx.config)
+        if settings.get('configure_libraries', True) and 'jellyfin' in services:
             cmd.append('--libraries')
-        services = ctx.config.get('media', {}).get('services', [])
         if (
             settings.get('configure_request_providers', True)
             and 'seerr' in services
             and set(services) & {'sonarr', 'radarr'}
         ):
             cmd.append('--request-providers')
+        # Media a person already has is asked on setup's storage page (existing_page.py),
+        # used where it is or copied: the connecting step no longer asks for "sources".
         optional = []
-        if settings.get('collect_sources', True):
-            optional.append('sources')
         if settings.get('configure_indexers', True) and 'prowlarr' in services:
             optional.append('indexers')
         if not playback_record(ctx.config).exists():
@@ -69,11 +99,10 @@ def run(ctx):
         # while they are being connected would fail them half-way.
         from recovery_tools import lock
 
-        with (
-            lock(ctx.config),
-            setup_progress.in_terminal('Connecting the media apps: your download sources and sign-ins'),
-        ):
-            result = subprocess.run(cmd, check=False).returncode
+        # Inside setup's own process (setup_progress.run_program): its questions about
+        # download sources and sign-ins are asked in the setup window too.
+        with lock(ctx.config):
+            result = setup_progress.run_program(cmd[1], cmd[2:])
     else:
         cmd.append('--report-only')
         result = subprocess.run(cmd, check=False).returncode
@@ -90,31 +119,17 @@ def run(ctx):
             }
     remove_stale(ctx, release, config)
     if result:
-        # Something to fix, said with its reason (on the finishing screen too), not a
-        # failed step: what is left is finished in the apps, then setup runs again.
+        # Something to fix, said with its reason: a row of the finishing page, never a
+        # question here (the user: nothing is asked after the one approval that does not
+        # need the running server). What is left is finished in the apps; the step's
+        # Retry, or setup run again, checks it.
         why = first_problem(ctx.config)
-        ports = app_ports(MEDIA_APPS)
-        guided_setup.checkpoint(
-            ctx,
-            'Finish media provider setup',
-            [
-                'Read the onboarding results above to identify the remaining configuration.',
-                'Sign into the relevant opened applications using their saved app accounts. '
-                'Finish selected provider/indexer credentials or any provider verification in its own page.',
-                'Run  sudo bash install.sh  again afterwards: it checks the configuration again.',
-            ],
-            [
-                ('url', 'http://127.0.0.1:' + str(ports[a]) + '/')
-                for a in ctx.config.get('media', {}).get('services', [])
-                if a in ports
-            ],
-        )
         ctx.log('Media deployed; connecting the apps is not finished: ' + why)
         return {
             'status': 'needs_setup',
             'reason': 'Connecting the media apps is not finished: '
             + why
-            + '. Fix that, then run  sudo bash install.sh  again',
+            + '. Finish it in the app, then retry this step',
         }
     ctx.log('Onboarding configuration checks complete')
     witness_playback(ctx)
@@ -177,8 +192,8 @@ def remove_stale(ctx, release, config):
 
 # Said for the connector's row, which has no reason of its own: its messages are above.
 CONNECTOR = (
-    'the app connections (Prowlarr, the download client, the library folders, or a quality profile '
-    'that Enter skipped; the messages above say which)'
+    'the app connections (Prowlarr and the download sources it was given, the download client, or the '
+    "library folders; setup's log says which)"
 )
 
 
@@ -222,7 +237,10 @@ def witness_playback(ctx, checkpoint=None):
     if isinstance(kept, list) and 'playback' in kept:  # a rerun that said no to asking again
         ctx.log('Playback test: skipped last time and not asked again (optional)')
         return
-    services = ctx.config.get('media', {}).get('services', [])
+    services = media_services(ctx.config)
+    if 'jellyfin' not in services:
+        # No Jellyfin on this server (a music-only one): nothing to play a film in.
+        return
     try:
         done = (checkpoint or guided_setup.checkpoint)(
             ctx,
@@ -235,6 +253,7 @@ def witness_playback(ctx, checkpoint=None):
             ],
             [('url', f"http://127.0.0.1:{app_port('jellyfin')}/")],
             keys=guided_setup.SKIPPABLE,
+            ask='played',
         )
     except KeyboardInterrupt:
         done = False

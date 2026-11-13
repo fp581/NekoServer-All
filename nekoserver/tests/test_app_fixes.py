@@ -295,7 +295,7 @@ class SeerrSonarrVersionTests(unittest.TestCase):
             mock.patch.object(sp, 'app_key', return_value='key'),
             self.assertRaisesRegex(sp.SetupRequired, 'root folder'),
         ):
-            sp.provider(seerr, manager, '/srv', 'sonarr', False, input)
+            sp.provider(seerr, manager, '/srv', 'sonarr', False)
 
 
 class QbitAutomaticModeTests(unittest.TestCase):
@@ -371,8 +371,8 @@ class OnboardingReasonTests(unittest.TestCase):
                 ],
             )
         self.assertEqual(result['status'], 'needs_setup')
-        self.assertIn('a quality profile that Enter skipped', result['reason'])
-        self.assertIn('sudo bash install.sh', result['reason'])
+        self.assertIn('the download sources it was given', result['reason'])
+        self.assertIn('retry this step', result['reason'])
 
     def test_without_a_terminal_an_unfinished_step_is_not_passed(self):
         """Seen on a VM upgraded from 0.47.6 (an upgrade runs setup without a terminal): the
@@ -405,11 +405,11 @@ class OptionalAnswersTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(neko_common.optional_answers(d), {})  # the first run: nothing kept
-            neko_common.remember_answer(d, 'sources', 'none added')
+            neko_common.remember_answer(d, 'backup_times', 'kept')
             neko_common.remember_answer(d, 'indexers', 'none chosen')
             neko_common.remember_answer(d, 'playback', 'skipped')
             kept = json.loads(neko_common.optional_answers_file(d).read_text())
-            self.assertEqual(kept, {'sources': 'none added', 'indexers': 'none chosen', 'playback': 'skipped'})
+            self.assertEqual(kept, {'backup_times': 'kept', 'indexers': 'none chosen', 'playback': 'skipped'})
             neko_common.optional_answers_file(d).write_text(
                 json.dumps({'sources': 7, 'odd': 'x', 'playback': 'skipped'})
             )
@@ -440,12 +440,12 @@ class OptionalAnswersTests(unittest.TestCase):
         connect = load('media_connect', 'media-connect.py')
         with tempfile.TemporaryDirectory() as d:
             schemas = [{'name': 'Alpha', 'implementation': 'A', 'fields': []}]
-            answers = iter(['alp'])
+            answers = iter(['alp', ''])  # the filter, then Enter alone: none chosen
             with (
                 mock.patch.object(connect, 'app_key', return_value='k'),
                 mock.patch.object(connect, 'request', side_effect=[schemas, [], []]),
                 mock.patch('builtins.input', side_effect=answers),
-                mock.patch.object(connect, 'choose', return_value=None),
+                mock.patch('builtins.print'),
             ):
                 connect.configure_indexers(Path(d), False)
             self.assertEqual(
@@ -494,21 +494,23 @@ class OptionalAnswersTests(unittest.TestCase):
         with (
             mock.patch.object(onboarding.sys.stdin, 'isatty', return_value=True),
             mock.patch.object(onboarding.account_store, 'enabled', return_value=False),
-            mock.patch.object(onboarding.subprocess, 'run', return_value=mock.Mock(returncode=0)) as run,
+            # The connecting program runs inside setup's process (0.50.0): its script and options.
+            mock.patch.object(onboarding.setup_progress, 'run_program', return_value=0) as run,
             mock.patch.object(onboarding.guided_setup, 'checkpoint', checkpoint),
             mock.patch('recovery_tools.lock', return_value=mock.MagicMock()),
             mock.patch('builtins.input', typed_in),
             mock.patch('builtins.print', shown),
         ):
             onboarding.run(ctx)
-        return run.call_args[0][0], printed, asked, logs
+        return [run.call_args[0][0], *run.call_args[0][1]], printed, asked, logs
 
     def test_a_rerun_shows_the_last_answers_and_asks_again_only_on_yes(self):
         kept = {'sources': 'none added', 'indexers': 'none chosen', 'playback': 'skipped'}
         with tempfile.TemporaryDirectory() as d:
             # The first run: nothing kept, every question asked, nothing extra said.
             cmd, printed, asked, logs = self.gate(d, None, [])
-            self.assertIn('--sources', cmd)
+            # Media a person has is asked on the storage page (0.50.0), not here.
+            self.assertNotIn('--sources', cmd)
             self.assertIn('--indexers', cmd)
             self.assertEqual(asked, ['Test playback (optional)'])
             self.assertFalse([line for line in printed if 'Last time' in line])
@@ -523,16 +525,16 @@ class OptionalAnswersTests(unittest.TestCase):
             self.assertIn('--libraries', cmd)  # not a question: still done
             self.assertEqual(asked, [])
             self.assertIn('Last time, the optional questions were answered this way:', printed)
-            self.assertIn('  Download sources: none added', printed)
+            self.assertNotIn('  Download sources: none added', printed)
             self.assertIn('  Indexers (Prowlarr): none chosen', printed)
             self.assertIn('  Playback test: skipped', printed)
-            self.assertIn('Ask these questions again? [yes/no]: ', printed)
+            self.assertTrue(any('Change any of these answers?' in line for line in printed), printed)
             self.assertIn('Optional questions: kept as answered last time', logs)
             self.assertIn('Playback test: skipped last time and not asked again (optional)', logs)
         with tempfile.TemporaryDirectory() as d:
             # Yes: asked as on the first run.
             cmd, printed, asked, logs = self.gate(d, kept, ['yes'])
-            self.assertIn('--sources', cmd)
+            self.assertNotIn('--sources', cmd)
             self.assertIn('--indexers', cmd)
             self.assertEqual(asked, ['Test playback (optional)'])
             self.assertIn('Optional questions: asked again', logs)
@@ -675,6 +677,23 @@ class MusicOnTheMediaDriveTests(unittest.TestCase):
         ):
             source_import.run(config, [source])
         self.assertEqual(roots, [self.media])
+
+
+# The connecting step asks Docker first (modules/onboarding.docker_running); these tests
+# run it on a PC that may have no Docker, so Docker answers here.
+_DOCKER = None
+
+
+def setUpModule():
+    global _DOCKER
+    from modules import onboarding as _onboarding
+
+    _DOCKER = mock.patch.object(_onboarding, 'docker_running')
+    _DOCKER.start()
+
+
+def tearDownModule():
+    _DOCKER.stop()
 
 
 if __name__ == '__main__':

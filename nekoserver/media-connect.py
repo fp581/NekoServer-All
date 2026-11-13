@@ -17,6 +17,7 @@ from pathlib import Path
 from neko_common import (
     LOCATIONS,
     app_ports,
+    files_root,
     safe_path,
     local_opener,
     checked_settings,
@@ -24,8 +25,11 @@ from neko_common import (
     music_library,
     remember_answer,
 )
+import existing_media
 import qbit_setup
+import questions
 import account_store
+import setup_progress
 
 OPENER = local_opener()
 
@@ -101,25 +105,6 @@ def field_set(fields, name, value):
     return False
 
 
-def choose(items, prompt, ask=input, attempts=3):
-    """The item picked by its number; None when skipped (blank or Ctrl+D). A number not
-    in the list is asked again rather than failing the step."""
-    for i, item in enumerate(items, 1):
-        print(f" {i:3d}. {item.get('name') or item.get('implementationName') or item.get('implementation')}")
-    for _ in range(attempts):
-        try:
-            answer = ask(f'{prompt} (number, blank to skip): ').strip()
-        except EOFError:
-            print()
-            return None
-        if not answer:
-            return None
-        if answer.isdecimal() and 1 <= int(answer) <= len(items):
-            return items[int(answer) - 1]
-        print(f'Type a number from 1 to {len(items)}, or press Enter to skip.')
-    return None
-
-
 def prepared(selected, profiles):
     """A new indexer from Prowlarr's catalogue entry, ready to save: switched on, and in
     an app profile (the catalogue leaves the profile at 0, which Prowlarr refuses). The
@@ -137,108 +122,341 @@ def prepared(selected, profiles):
     return entry
 
 
-def configure_indexers(root, apply, config=None):
-    failures = []
-    key = app_key('prowlarr', root)
-    schemas = request('prowlarr', key, '/indexer/schema')
-    existing = request('prowlarr', key, '/indexer')
-    profiles = request('prowlarr', key, '/appprofile')
-    print(f'Prowlarr catalog: {len(schemas)} definitions; {len(existing)} configured indexers')
-    query = input('Filter catalog by name (blank for all): ').strip().casefold()
-    matches = [s for s in schemas if query in str(s.get('name', '')).casefold()]
+INDEXER_ADVICE = 'Use only providers and content you are authorized to access.'
+# The indexers NekoServer may offer as "Recommended": names from Prowlarr's own catalogue,
+# kept as data, not code. Every name in it was approved by the person who ships
+# NekoServer; one that Prowlarr no longer has is left out without a word.
+RECOMMENDED_FILE = Path(__file__).resolve().parent / 'recommended-indexers.json'
+# The values of an indexer that are a login: asked for hidden, and a reason to prepare
+# the provider's account first.
+AUTH_FIELDS = ('apikey', 'username', 'password', 'passkey', 'cookie')
+SECRET_WORDS = ('password', 'key', 'cookie', 'pass')
+
+
+def indexer_name(schema):
+    return str(schema.get('name') or schema.get('implementationName') or schema.get('implementation'))
+
+
+def indexer_note(schema):
+    """What Prowlarr says about a catalogue entry, in a few words: public or private
+    (needs an account), its language, torrents or Usenet."""
+    privacy = {'public': 'public', 'semiPrivate': 'needs a free account', 'private': 'private: needs an account'}
+    words = [privacy.get(schema.get('privacy')), schema.get('language'), schema.get('protocol')]
+    said = ', '.join(str(word) for word in words if word)
+    described = str(schema.get('description') or '').strip()
+    return (said + ('. ' if said and described else '') + described)[:200]
+
+
+def recommended_names(path=RECOMMENDED_FILE):
+    """The names in the recommended file, lower-cased; none when it is missing or broken."""
+    try:
+        listed = json.loads(Path(path).read_text()).get('indexers', [])
+    except (OSError, ValueError, AttributeError):
+        return []
+    if not isinstance(listed, list):
+        return []
+    return [str(name).casefold() for name in listed if isinstance(name, str) and name.strip()]
+
+
+def recommended_among(schemas, names):
+    """The numbers (from 1) of the catalogue entries that are recommended: an entry whose
+    name or definition name is in the list. A listed name the catalogue lacks is left out."""
+    wanted = set(names)
+    return [
+        number
+        for number, schema in enumerate(schemas, 1)
+        if indexer_name(schema).casefold() in wanted or str(schema.get('definitionName', '')).casefold() in wanted
+    ]
+
+
+def chosen_numbers(text, count, recommended=()):
+    """The numbers a person typed, in order and once each: "1 4 7", "1,4,7", "1-5", or "r"
+    for the recommended ones. None when a part of it is not a number from 1 to `count`."""
+    found = []
+    for part in text.replace(',', ' ').split():
+        if part.lower() == 'r' and recommended:
+            found += recommended
+            continue
+        first, dash, last = part.partition('-')
+        if not first.isdecimal() or (dash and not last.isdecimal()):
+            return None
+        low, high = int(first), int(last) if dash else int(first)
+        if not 1 <= low <= high <= count:
+            return None
+        found += range(low, high + 1)
+    return list(dict.fromkeys(found))
+
+
+def ticked_ones(matches, recommended, existing):
+    """The rows ticked when the list opens (the user's decision after the gate): the
+    recommended ones the live catalogue has, and the sources Prowlarr has already, so
+    Continue (or Enter alone) accepts them."""
+    have = {(row.get('implementation'), row.get('name')) for row in existing or []}
+    there = [n for n, schema in enumerate(matches, 1) if (schema.get('implementation'), schema.get('name')) in have]
+    return list(dict.fromkeys([*recommended, *there]))
+
+
+def chosen_indexers(schemas, names, ask=None, attempts=3, existing=()):
+    """The catalogue entries to add: several at once, once Prowlarr is running (after the
+    install: like the Tailscale sign-in, the one question allowed then, as it needs
+    Prowlarr). In the terminal, a filter by name, then the numbered list and numbers typed
+    together ("1 4 7", "1-5", "r"); Enter alone takes the ones ticked: the recommended and
+    the ones Prowlarr has (`existing`). In the setup window the same list is one page with
+    a search box, a tick box on every row with those ticked, a count of the ticked ones,
+    and one button for the recommended ones. Empty when none is chosen (Skip for now,
+    Ctrl+D)."""
+    ask = ask or input
+    query = questions.ask('source_filter', ask).strip().casefold()
+    matches = [schema for schema in schemas if query in indexer_name(schema).casefold()]
     if not matches:
         print('No matching definitions')
-        remember_answer(root, 'indexers', 'none chosen')
-        return
-    # No builtin hard-coded indexer catalog; everything comes from Prowlarr.
-    chosen = []
-    while True:
-        selected = choose(matches, 'Select an indexer')
-        if selected is None:
-            remember_answer(root, 'indexers', ', '.join(chosen) if chosen else 'none chosen')
-            if failures:
-                raise RuntimeError('One or more indexers were rejected; setup incomplete')
-            return
-        if any(
-            e.get('implementation') == selected.get('implementation') and e.get('name') == selected.get('name')
-            for e in existing
-        ):
-            print('Already configured; skipping duplicate')
+        return []
+    recommended = recommended_among(matches, names)
+    ticked = ticked_ones(matches, recommended, existing)
+    items = [{'label': indexer_name(schema), 'note': indexer_note(schema)} for schema in matches]
+    show_indexers(items, recommended, ticked)
+    page = setup_progress.page(
+        'pick',
+        {'choice': ''},
+        what='Download sources (indexers) to add',
+        items=items,
+        multiple=True,
+        recommended=recommended,
+        ticked=ticked,
+        advice=INDEXER_ADVICE,
+    )
+    with page:
+        setup_progress.page_asks('choice')
+        return picked_indexers(matches, recommended, ticked, ask, attempts)
+
+
+def show_indexers(items, recommended, ticked):
+    """The numbered list of indexers, with the recommended and the ticked ones named."""
+    for number, item in enumerate(items, 1):
+        print(f" {number:3d}. {item['label']}" + (f"  ({item['note']})" if item['note'] else ''))
+    if recommended:
+        print('Recommended (r): ' + ', '.join(items[number - 1]['label'] for number in recommended))
+    print(INDEXER_ADVICE)
+    if ticked:
+        print('Ticked already (Enter alone takes them): ' + ', '.join(items[n - 1]['label'] for n in ticked))
+
+
+def picked_indexers(matches, recommended, ticked, ask, attempts):
+    """The numbers typed for chosen_indexers, as catalogue entries; empty on Ctrl+D."""
+    question = 'Numbers to add, such as 1 4 7 or 1-5' + (', or r for the recommended ones' if recommended else '')
+    for _ in range(attempts):
+        try:
+            answer = ask(
+                question + (' (Enter alone takes the ticked ones): ' if ticked else ' (Enter alone skips): ')
+            ).strip()
+        except EOFError:
+            print()
+            return []
+        numbers = ticked if not answer else chosen_numbers(answer, len(matches), recommended)
+        if numbers is not None:
+            return [matches[number - 1] for number in numbers]
+        print(f'Type numbers from 1 to {len(matches)}, such as 1 4 7 or 1-5, or press Enter to skip.')
+    return []
+
+
+def asked_fields(entry):
+    """The values an indexer asks a person for: the required ones and its login."""
+    rows = []
+    for field in entry.get('fields', []):
+        name = field.get('name', '')
+        if not name or field.get('hidden') or field.get('type') in ('tag',):
             continue
-        entry = prepared(selected, profiles)
-        if apply and config is not None:
-            import guided_setup
-            from types import SimpleNamespace
+        if not field.get('required', False) and name.lower() not in ('baseurl', *AUTH_FIELDS):
+            continue
+        rows.append(
+            {
+                'key': name,
+                'label': str(field.get('label') or name),
+                'secret': any(word in name.lower() for word in SECRET_WORDS),
+            }
+        )
+    return rows
 
-            auth_fields = {'apikey', 'username', 'password', 'passkey', 'cookie'}
-            if any(str(f.get('name', '')).lower() in auth_fields for f in entry.get('fields', [])):
-                done = guided_setup.checkpoint(
-                    SimpleNamespace(config=config, apply=True),
-                    'Prepare the selected provider account: ' + str(entry.get('name', 'indexer')),
-                    [
-                        'In Prowlarr, read the selected provider definition and its own account requirements.',
-                        'If required, open that provider from its documented link, sign in/register on its own site, '
-                        'and finish any email verification or challenge there.',
-                        'Keep the required provider API key/credentials ready. After confirming here, '
-                        'enter the requested values into the terminal (what you type is not shown).',
-                        'Use only providers and content you are authorized to access.',
-                    ],
-                    [('url', 'http://127.0.0.1:9696/')],
-                )
-                if not done and guided_setup.interactive(SimpleNamespace(config=config, apply=True)):
-                    raise RuntimeError('Provider account preparation pending')
-        for f in entry.get('fields', []):
-            name = f.get('name', '')
-            if not name or f.get('hidden') or f.get('type') in ('tag',):
-                continue
-            required = f.get('required', False)
-            if not required and name.lower() not in ('baseurl', 'apikey', 'username', 'password', 'passkey', 'cookie'):
-                continue
-            visible = f.get('label') or name
-            value = (
-                getpass.getpass(f'{visible} (leave blank for default): ')
-                if any(x in name.lower() for x in ('password', 'key', 'cookie', 'pass'))
-                else input(f'{visible} (leave blank for default): ')
-            )
+
+def fill_fields(entry):
+    """Ask for the indexer's values, each kept only when something was typed. In the setup
+    window they are one small form (hidden fields for the login); in the terminal they
+    are asked one after the other. EOFError when the form is left (Skip for now, Ctrl+D):
+    this indexer is skipped, the others are not."""
+    rows = asked_fields(entry)
+    if not rows:
+        return
+    page = setup_progress.page(
+        'fields', {row['key']: '' for row in rows}, what=indexer_name(entry) + ' needs these', rows=rows
+    )
+    with page:
+        for row in rows:
+            ask = getpass.getpass if row['secret'] else input
+            value = setup_progress.page_field(row['key'], ask, f"{row['label']} (Enter alone keeps its default): ")
             if value:
-                field_set(entry['fields'], name, value)
-        print('Selected:', entry.get('name'), '| action:', 'create' if apply else 'PREVIEW ONLY')
-        if apply:
-            try:
-                result = request('prowlarr', key, '/indexer', 'POST', entry)
-                existing.append(result)
-                chosen.append(str(result.get('name') or entry.get('name') or 'indexer'))
-                print('Created indexer:', result.get('name', '(unnamed)'))
-            except RuntimeError as exc:
-                failures.append('indexer')
-                print('Rejected by Prowlarr:', exc)
-                print('Open Prowlarr UI if this indexer requires additional fields or challenge handling.')
-                if config is not None:
-                    import guided_setup
-                    from types import SimpleNamespace
+                field_set(entry['fields'], row['key'], value)
 
-                    def present(entry=entry):
-                        return any(
-                            row.get('name') == entry.get('name')
-                            and row.get('implementation') == entry.get('implementation')
-                            for row in request('prowlarr', key, '/indexer')
-                        )
 
-                    done = guided_setup.checkpoint(
-                        SimpleNamespace(config=config, apply=True),
-                        'Complete rejected provider setup in Prowlarr',
-                        [
-                            'Sign into Prowlarr, finish any provider fields/verification or challenge, '
-                            'test the provider connection and save this selected indexer.',
-                            'Return and confirm yes. The installer checks that the selected provider was saved. '
-                            'A real acquisition/import/playback still needs its separate test.',
-                        ],
-                        [('url', 'http://127.0.0.1:9696/')],
-                        verify=present,
-                    )
-                    if done:
-                        failures.pop()
-                        existing = request('prowlarr', key, '/indexer')
+def provider_account_ready(entry, config):
+    """An indexer with a login of its own: the person gets the provider's account ready
+    first (its site, its verification). False when they left that for later."""
+    import guided_setup
+    from types import SimpleNamespace
+
+    if config is None or not any(row['key'].lower() in AUTH_FIELDS for row in asked_fields(entry)):
+        return True
+    ctx = SimpleNamespace(config=config, apply=True)
+    done = guided_setup.checkpoint(
+        ctx,
+        'Prepare the selected provider account: ' + indexer_name(entry),
+        [
+            'In Prowlarr, read the selected provider definition and its own account requirements.',
+            'If required, open that provider from its documented link, sign in/register on its own site, '
+            'and finish any email verification or challenge there.',
+            'Keep the required provider API key/credentials ready. After confirming here, '
+            'enter the requested values (what you type is not shown).',
+            INDEXER_ADVICE,
+        ],
+        [('url', 'http://127.0.0.1:9696/')],
+        logins=['prowlarr'],
+        ask='source_account_ready',
+        values={'source': indexer_name(entry)},
+    )
+    return done or not guided_setup.interactive(ctx)
+
+
+def finished_in_prowlarr(entry, key, config):
+    """A rejected indexer finished by hand in Prowlarr's own page (a challenge, a field
+    only its page has): True when Prowlarr has it afterwards."""
+    import guided_setup
+    from types import SimpleNamespace
+
+    def present():
+        return any(
+            row.get('name') == entry.get('name') and row.get('implementation') == entry.get('implementation')
+            for row in request('prowlarr', key, INDEXERS)
+        )
+
+    return guided_setup.checkpoint(
+        SimpleNamespace(config=config, apply=True),
+        'Complete rejected provider setup in Prowlarr',
+        [
+            'Sign into Prowlarr, finish any provider fields/verification or challenge, '
+            'test the provider connection and save this selected indexer.',
+            'Return and confirm yes. The installer checks that the selected provider was saved. '
+            'A real acquisition/import/playback still needs its separate test.',
+        ],
+        [('url', 'http://127.0.0.1:9696/')],
+        verify=present,
+        logins=['prowlarr'],
+        ask='source_saved',
+        values={'source': indexer_name(entry)},
+    )
+
+
+# Prowlarr's list of indexers, in its API.
+INDEXERS = '/indexer'
+# How often one rejected indexer is tried again before it is left for Prowlarr's own page.
+INDEXER_RETRIES = 3
+
+
+def add_indexer(selected, key, profiles, apply, config):
+    """One chosen indexer: its values asked for, then created in Prowlarr. Returns
+    ('added', its name), ('skipped', why) or ('rejected', Prowlarr's reason). A rejected
+    one shows the reason with "Retry this step" (its values are asked for again, as a
+    mistyped key is the usual cause), then can be finished in Prowlarr's own page."""
+    import guided_setup
+
+    name = indexer_name(selected)
+    entry = prepared(selected, profiles)
+    if apply and not provider_account_ready(entry, config):
+        return 'skipped', 'its provider account is not ready yet'
+    for tried in range(INDEXER_RETRIES + 1):
+        outcome, reason = indexer_tried(entry, name, key, apply)
+        if outcome:
+            return outcome, reason
+        row = {'answer': 'yes', 'title': name, 'reason': 'Prowlarr refused it: ' + reason, 'fix': None}
+        if tried >= INDEXER_RETRIES or guided_setup.retry_question([row], leave='no') != 'yes':
+            break
+        entry = prepared(selected, profiles)  # its values are typed again
+    print('Open Prowlarr UI if this indexer requires additional fields or challenge handling.')
+    if config is not None and finished_in_prowlarr(entry, key, config):
+        return 'added', name
+    return 'rejected', reason
+
+
+def indexer_tried(entry, name, key, apply):
+    """One try of add_indexer: its values asked for, then the indexer created. Returns
+    (outcome, said) when that ends it, or (None, Prowlarr's reason) when Prowlarr refused it."""
+    try:
+        fill_fields(entry)
+    except EOFError:
+        print()
+        return 'skipped', 'left for later'
+    print('Selected:', name, '| action:', 'create' if apply else 'PREVIEW ONLY')
+    if not apply:
+        return 'skipped', 'preview only'
+    try:
+        result = request('prowlarr', key, INDEXERS, 'POST', entry)
+    except RuntimeError as exc:
+        print('Rejected by Prowlarr:', str(exc))
+        return None, str(exc)
+    print('Created indexer:', result.get('name', '(unnamed)'))
+    return 'added', str(result.get('name') or name)
+
+
+def already_there(existing, selected):
+    return any(
+        row.get('implementation') == selected.get('implementation') and row.get('name') == selected.get('name')
+        for row in existing
+    )
+
+
+def sources_kept(existing):
+    """The line said instead of the picker when Prowlarr has download sources already."""
+    names = ', '.join(str(row.get('name') or '(unnamed)') for row in existing)
+    return (
+        f'Your download sources are kept ({names}). To add more, open Prowlarr from the dashboard: '
+        'Indexers, then Add Indexer.'
+    )
+
+
+def configure_indexers(root, apply, config=None):
+    """Prowlarr's download sources: chosen several at once from its own catalogue (no list
+    of NekoServer's own, apart from the names marked recommended), then added one by one.
+    The ones that need no login go in at once; each one that does gets its own small
+    form and can be skipped; one Prowlarr refuses is said with its reason and can be
+    tried again, and the rest still go in."""
+    key = app_key('prowlarr', root)
+    schemas = request('prowlarr', key, '/indexer/schema')
+    existing = request('prowlarr', key, INDEXERS)
+    profiles = request('prowlarr', key, '/appprofile')
+    print(f'Prowlarr catalog: {len(schemas)} definitions; {len(existing)} configured indexers')
+    added, rejected = [], []
+    if existing:
+        # Prowlarr has sources already (an update, a rerun): they stay, and the picker is
+        # not shown; it comes only while there are none (an update asks nothing after the
+        # approval, gate run D).
+        print(sources_kept(existing))
+        remember_answer(root, 'indexers', ', '.join(str(row.get('name')) for row in existing))
+        return
+    for selected in chosen_indexers(schemas, recommended_names(), existing=existing):
+        if already_there(existing, selected):
+            print(indexer_name(selected) + ': already configured; skipping duplicate')
+            continue
+        outcome, said = add_indexer(selected, key, profiles, apply, config)
+        if outcome == 'added':
+            added.append(said)
+            existing.append({'name': selected.get('name'), 'implementation': selected.get('implementation')})
+        elif outcome == 'rejected':
+            rejected.append(indexer_name(selected))
+        else:
+            print(indexer_name(selected) + ': not added (' + said + ')')
+    remember_answer(root, 'indexers', ', '.join(added) if added else 'none chosen')
+    if added:
+        print(f'Added {len(added)}: ' + ', '.join(added))
+    if rejected:
+        raise RuntimeError('Prowlarr refused ' + ', '.join(rejected) + '; the others were added')
 
 
 def fields_match(entry, expected):
@@ -487,10 +705,10 @@ def configure_download_clients(root, apply, apps=('sonarr', 'radarr', 'lidarr'),
     if stored:
         user, password = stored['username'], stored['password']
     else:
-        password = getpass.getpass('qBittorrent WebUI password (not saved by this connector): ')
+        password = questions.ask('qbit_password', getpass.getpass)
         if not password:
             raise RuntimeError('No password supplied; download-client setup incomplete')
-        user = input('qBittorrent username [admin]: ').strip() or 'admin'
+        user = questions.ask('qbit_user', input).strip() or 'admin'
     if verify_qbit:
         categories = tuple({'sonarr': 'tv', 'radarr': 'movies', 'lidarr': 'music'}[app] for app in apps)
         qbit_setup.configure(user, password, apply, categories)
@@ -565,9 +783,20 @@ def library_host(category, root, media, music=None):
     return safe_path(Path(media) / 'library' / category)
 
 
+# The profile setup picks for Lidarr's music folder, without asking (the user: nothing is
+# asked after the one approval that does not need the running server). Its name in
+# Lidarr; the first one when Lidarr has none of that name. It can be changed in Lidarr.
+STANDARD_PROFILE = 'Standard'
+
+
+def standard_profile(options):
+    """The profile named Standard, else the first one Lidarr lists."""
+    return next((o for o in options if str(o.get('name', '')).casefold() == STANDARD_PROFILE.casefold()), options[0])
+
+
 def lidarr_profiles(app, key):
-    """The quality and metadata profiles Lidarr's root folder needs: the only one, or the
-    one chosen."""
+    """The quality and metadata profiles Lidarr's root folder needs: Standard (or the
+    first one), picked without asking and said."""
     chosen = {}
     for endpoint, field in [
         ('/qualityprofile', 'defaultQualityProfileId'),
@@ -576,12 +805,8 @@ def lidarr_profiles(app, key):
         options = request(app, key, endpoint)
         if not options:
             raise RuntimeError('Lidarr has no configured profiles')
-        profile = options[0] if len(options) == 1 else choose(options, 'Choose Lidarr ' + endpoint[1:])
-        if profile is None:
-            raise RuntimeError(
-                "Lidarr's quality and metadata profiles were not chosen (Enter skips them). Run  sudo bash "
-                'install.sh  again and choose one of each'
-            )
+        profile = standard_profile(options)
+        print(f"lidarr: {endpoint[1:]} {profile.get('name')} (change it in Lidarr when you want another)")
         chosen[field] = profile['id']
     return chosen
 
@@ -594,13 +819,25 @@ def kept(app, key, path):
     )
 
 
-def root_folder(app, root, media, apply, music=None):
-    """One app's library folder, made in the app when it is missing."""
+def root_folder(app, root, media, apply, music=None, config=None, ready=existing_media.new_files_ready):
+    """One app's library folders, made in the app when missing: NekoServer's own
+    (/data/tv), and the person's folder for new files when one was chosen
+    (/data/existing/tv; `config`: the settings that name it). The person's folder is added
+    only while it is there: with its share away the app would make the folder inside the
+    bare mount folder, so nothing is asked of the app then and the step says why."""
     category = ROOT_CATEGORY[app]
     path = '/data/' + category
     if not library_host(category, root, media, music).is_dir():
         raise RuntimeError('Host library directory missing')
     key = app_key(app, root)
+    one_root_folder(app, key, path, 'Neko Music', apply)
+    yours = ready(config, category) if config else None
+    if yours and yours != path:
+        one_root_folder(app, key, yours, 'Neko Music (your folder)', apply)
+
+
+def one_root_folder(app, key, path, name, apply):
+    """The root folder `path` in one app: left alone when it is there, else added."""
     found = next((r for r in request(app, key, ROOT_FOLDERS) if r.get('path', '').rstrip('/') == path), None)
     if found:
         if found.get('accessible') is False:
@@ -609,7 +846,7 @@ def root_folder(app, root, media, apply, music=None):
         return
     payload = {'path': path}
     if app == 'lidarr':
-        payload.update(name='Neko Music', defaultTags=[], **lidarr_profiles(app, key))
+        payload.update(name=name, defaultTags=[], **lidarr_profiles(app, key))
     print(f'{app}: root folder {path}', 'APPLY' if apply else 'PREVIEW')
     if apply:
         request(app, key, ROOT_FOLDERS, 'POST', payload)
@@ -617,11 +854,11 @@ def root_folder(app, root, media, apply, music=None):
             raise RuntimeError('Root folder was not retained or is inaccessible')
 
 
-def configure_root_folders(root, media, apply, apps=('sonarr', 'radarr', 'lidarr'), music=None):
+def configure_root_folders(root, media, apply, apps=('sonarr', 'radarr', 'lidarr'), music=None, config=None):
     failures = []
     for app in apps:
         try:
-            root_folder(app, root, media, apply, music)
+            root_folder(app, root, media, apply, music, config)
         except (RuntimeError, ValueError, OSError, KeyError) as exc:
             print(f'{app}: root folder incomplete ({exc})')
             failures.append(f'{app} ({exc})')
@@ -638,12 +875,14 @@ def chosen_actions(args, root, config, apps, selected):
                 'root folders',
                 lambda: configure_root_folders(
                     root,
-                    args.media_root or config['media_mount'],
+                    # The drive the films and shows are on: the media drive unless placed elsewhere.
+                    args.media_root or str(files_root(config, 'movies')),
                     args.apply,
                     apps,
                     music_library(
                         {**config, 'data_mount': str(root), 'media_mount': args.media_root or config['media_mount']}
                     ),
+                    config,
                 ),
             )
         )

@@ -12,7 +12,7 @@ import subprocess
 
 from guided_setup import PAGE_ROOT
 import host
-from neko_common import VERSION, atomic_write
+from neko_common import VERSION, atomic_write, navidrome_login
 
 PAGE = PAGE_ROOT / 'phone-setup.html'
 SHOW_TOOL = 'account-setup.py'
@@ -23,12 +23,14 @@ def show_command(config, app):
     the copy of this release kept on the SSD, so it still works once the downloaded
     folder is gone. Typing a 32-letter password read from a file is where phones fail."""
     tool = Path(config.get('data_mount', '/srv/nekoserver')) / 'installer/releases' / ('v' + VERSION) / SHOW_TOOL
-    return 'sudo python3 ' + shlex.quote(str(tool)) + ' show ' + LOGIN[app]
+    return 'sudo python3 ' + shlex.quote(str(tool)) + ' show ' + login_of(config, app)
 
 
 TAILSCALE_DOWNLOAD = 'https://tailscale.com/download'
 
-# Which login each app uses on the phone (account_store keys).
+# Which login each app uses on the phone (account_store keys). Navidrome's is the
+# administrator on a server set up with 0.50.0 or later, and the non-admin "listener" on
+# one set up before (login_of, neko_common.navidrome_login).
 LOGIN = {
     'jellyfin': 'jellyfin',
     'seerr': 'seerr',
@@ -37,11 +39,24 @@ LOGIN = {
     'nextcloud': 'nextcloud',
 }
 
+
+def login_of(config, app):
+    """The saved login the person signs in to `app` with."""
+    return navidrome_login(config) if app == 'navidrome' else LOGIN[app]
+
+
 OPEN_APP = 'Install the app and open it.'
+# Navidrome's sign-in step on a server set up before 0.50.0, which has two logins.
+MUSIC_SIGN_IN_BEFORE = (
+    'Sign in with your Navidrome music account, the "listener". This server has two Navidrome logins: the '
+    'listener, which is not an administrator and which phones set up so far use, and the administrator, for '
+    'managing Navidrome in a browser ({administrator}). Playlists and favourites belong to the login that made '
+    'them, so a phone that moves to the administrator starts without them.'
+)
 
 APPS = {
     'jellyfin': {
-        'title': 'Jellyfin: movies and TV',
+        'title': 'Jellyfin: movies and shows',
         'iphone': 'Jellyfin (App Store)',
         'android': 'Jellyfin (Google Play)',
         'steps': [
@@ -82,10 +97,7 @@ APPS = {
         'steps': [
             OPEN_APP,
             'Add a server: enter the server address below as the server URL.',
-            (
-                'Sign in with your Navidrome music account: the "listener", made for playing music '
-                '(not the administrator).'
-            ),
+            'Sign in with your Navidrome username and password.',
             'Play a song to check it works.',
         ],
     },
@@ -113,12 +125,22 @@ APPS = {
 }
 
 
+def steps_of(config, app):
+    """The app's steps on the phone. Navidrome's sign-in step names both logins on a
+    server set up before 0.50.0, where the phone's login is not the administrator."""
+    steps = list(APPS[app]['steps'])
+    if app == 'navidrome' and login_of(config, app) != 'navidrome':
+        tool = show_command(config, app).rsplit(' ', 1)[0]
+        steps[2] = MUSIC_SIGN_IN_BEFORE.format(administrator=tool + ' navidrome')
+    return steps
+
+
 def username(config, app):
     """The saved username for an app's phone login, or None if not set up yet."""
     try:
         import account_store
 
-        entry = account_store.get(config, LOGIN[app])
+        entry = account_store.get(config, login_of(config, app))
         return entry['username'] if entry else None
     except (ImportError, OSError, RuntimeError, KeyError):
         return None
@@ -154,16 +176,32 @@ def with_login(steps, login):
     return [*steps[:at], *login, *steps[at:]]
 
 
-def instructions(config, app, url):
-    """Numbered console steps for one app on the phone."""
+def instructions(config, app, url, asks=True):
+    """Console steps for one app on the phone. `asks`: the step ends in a question of its
+    own (it does not when the phone steps are one part with one question at the end)."""
     info = APPS[app]
-    steps = [step.replace('the server address below', 'this server address: ' + url) for step in info['steps']]
+    steps = [step.replace('the server address below', 'this server address: ' + url) for step in steps_of(config, app)]
     lines = [
         'Phone app: iPhone: ' + info['iphone'] + '. Android: ' + info['android'] + '.',
         'Make sure Tailscale is ON on the phone.',
         *with_login(steps, login_lines(config, app)),
     ]
-    return lines + ['Return here and answer yes once it works on the phone.']
+    return lines + (['Return here and answer yes once it works on the phone.'] if asks else [])
+
+
+def window_step(config, app, url):
+    """An app's phone step as the setup window shows it: which app to install on the
+    phone, then its address (with a QR code) and a Show login button, which the window
+    adds itself. No command: the window has a button for what the terminal types."""
+    info = APPS[app]
+    return {
+        'lines': [
+            'Install on the phone: ' + info['iphone'] + ' (iPhone), ' + info['android'] + ' (Android).',
+            'Open it, enter the address below (or scan its code), and sign in.',
+        ],
+        'address': url,
+        'login': login_of(config, app) if app in LOGIN else '',
+    }
 
 
 def qr_svg(text):
@@ -231,7 +269,7 @@ def page_html(config, links, qr=qr_svg):
     ]
     for number, (app, url) in enumerate(((a, links[a]) for a in APPS if a in links), 2):
         info = APPS[app]
-        steps = [s.replace('the server address below', 'the address above') for s in info['steps']]
+        steps = [s.replace('the server address below', 'the address above') for s in steps_of(config, app)]
         lines = with_login(steps, login_lines(config, app, page=True))
         intro = 'Phone app: iPhone: ' + info['iphone'] + '. Android: ' + info['android'] + '.'
         cards.append(card(str(number) + '. ' + info['title'], url, lines, qr(url), intro))

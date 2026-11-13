@@ -284,14 +284,60 @@ def saved_paths(config):
     """The folders setup decided for the apps' files, written down for the runtime: it reads
     them and never works them out again (common::saved_path), so the two halves can't
     disagree. Every settings file the runtime reads carries them."""
-    from neko_common import cloud_files, music_downloads, music_library, photo_library
+    from neko_common import (
+        LOCATIONS,
+        cloud_files,
+        location,
+        movies_library,
+        music_downloads,
+        music_library,
+        photo_library,
+    )
 
-    return {
+    paths = {
         'photos': str(photo_library(config)),
         'music': str(music_library(config)),
         'downloads': str(music_downloads(config)),
         'cloud': str(cloud_files(config)),
     }
+    if location(config, 'movies') != LOCATIONS['movies'][0]:
+        # The films and shows placed off the media drive (0.50.0): said only then, so a
+        # server that has them where they always were keeps the settings files it has.
+        paths['library'] = str(movies_library(config))
+    return paths
+
+
+# The apps that see each kind of the person's folders (their Compose files bind
+# library/existing of that kind's drive): the ones stopped while its share is away.
+SHARE_APPS = {
+    'movies': ('jellyfin', 'radarr', 'sonarr', 'qbittorrent'),
+    'tv': ('jellyfin', 'radarr', 'sonarr', 'qbittorrent'),
+    'music': ('navidrome', 'lidarr'),
+}
+
+
+def shared_folders(config):
+    """The person's own folders on a network share (NFS, SMB) used where they are
+    (existing_media.py), as the runtime checks them: what it holds, the folder and the
+    share it is on, where it is mounted into the library, and the apps that see it."""
+    import existing_media
+    from neko_common import media_services
+
+    found = []
+    for entry in existing_media.extras(config):
+        if entry['fstype'] not in existing_media.NETWORK:
+            continue
+        found.append(
+            {
+                'holds': entry['holds'],
+                'path': entry['path'],
+                'mount': entry['mount'],
+                'share': entry['share'],
+                'point': str(existing_media.mount_point(config, entry['holds'], entry['use'])),
+                'apps': [app for app in SHARE_APPS[entry['holds']] if app in media_services(config)],
+            }
+        )
+    return found
 
 
 def storage_config(config):
@@ -300,10 +346,33 @@ def storage_config(config):
     if config.get('locations'):
         found['locations'] = config['locations']
     found['paths'] = saved_paths(config)
-    backup = (config.get('photos', {}).get('external_backup_network') or {}).get('wwn')
-    if backup:
+    import placement
+
+    elsewhere = placement.apps_elsewhere(config)
+    if elsewhere:
+        # The apps whose settings are on another drive than the apps' own (0.50.0): the
+        # app backup and the monthly update take each one's folder on that drive
+        # (app_snapshot.rs). Said only then: every other server keeps its settings files.
+        found['installed'] = elsewhere
+    backup = config.get('photos', {}).get('external_backup_network') or {}
+    if backup.get('wwn'):
         # The backup drive's NAS disk: the weekly copy checks it is that one (backup.rs).
-        found['backup_drive'] = {'wwn': backup}
+        found['backup_drive'] = {'wwn': backup['wwn']}
+    elif backup.get('transport') == 'nfs':
+        # The backup drive is a folder the NAS shares: the weekly copy mounts it by this
+        # address (backup.rs UsbRun).
+        found['backup_drive'] = {'export': backup.get('export')}
+    import existing_media
+
+    extra = existing_media.backed_up(config)
+    if extra:
+        # The person's music folders the music backup copies too (G7; music_backup.rs).
+        found['music_extra'] = extra
+    shares = shared_folders(config)
+    if shares:
+        # The person's own folders on a network share, used where they are (0.50.0): the
+        # apps that see one stay stopped while it does not answer (shared_folders.rs).
+        found['shared_folders'] = shares
     nas = config.get('network_storage') or {}
     if nas.get('wanted') is True:
         # The NAS check logs in again once the NAS answers (runtime nas_watch.rs).
@@ -381,7 +450,9 @@ def acceptance_checks(config, modules):
         jobs += [('nekoserver-maintenance.service', code, 'maintenance', False)]
     if 'app_backup' in modules:
         jobs += [('nekoserver-app-backup.service', code, 'app-snapshot', False)]
-    if 'music_backup' in modules and config.get('music', {}).get('backup_enabled', True):
+    from neko_common import music_backed_up
+
+    if 'music_backup' in modules and music_backed_up(config):
         jobs += [('nekoserver-music-backup.service', code, 'music-backup', True)]
     if 'photo_backup' in modules:
         jobs += [('nekoserver-photo-backup.service', code, 'weekly', True)]

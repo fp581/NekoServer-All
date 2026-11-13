@@ -1,9 +1,8 @@
 """Selected-app HTTPS gateways; never publish Funnel or change Docker bindings."""
 
-import guided_setup
 import native_runtime
 import permission_checks
-import datetime as dt, hashlib, html, ipaddress, json, os, pwd, re, shutil, socket, ssl, subprocess, sys, tempfile, time
+import datetime as dt, hashlib, html, ipaddress, json, os, pwd, re, shutil, socket, ssl, subprocess, tempfile, time
 from pathlib import Path
 from urllib.parse import urlsplit
 import status_checks as health
@@ -21,6 +20,8 @@ from neko_common import (
     app_port,
     SYSTEMD_UNITS,
     dashboard_port,
+    immich_wanted,
+    media_services,
 )
 
 LOOPBACK = 'http://127.0.0.1:'
@@ -175,8 +176,21 @@ def installed(config, app):
     if app == 'nextcloud':
         return bool(config.get('nextcloud', {}).get('enabled'))
     if app == 'immich':
-        return bool(config.get('photos', {}).get('deploy_immich'))
-    return app in config.get('media', {}).get('services', [])
+        return immich_wanted(config)
+    return app in media_services(config)
+
+
+NO_APP_SAID = (
+    'no app is set up on this server, so there are no app addresses to make; the dashboard opens on this PC '
+    '(its shortcut on the desktop). Switch an app on and run setup again to get the addresses.'
+)
+
+
+def no_apps(config):
+    """The gateway list is the default one and none of its apps is set up (every group
+    off, gate runs B7 and J10): the address steps have nothing to do, and are done."""
+    apps = config.get('gateway', {}).get('services', list(APPS))
+    return list(apps) == list(DEFAULT_SERVICES) and not any(installed(config, a) for a in apps)
 
 
 def selected(config):
@@ -210,6 +224,46 @@ def logins_verified(config, apps):
         return False
 
 
+def unverified(config, apps):
+    """The apps among these whose saved login the accounts step has not verified."""
+    import account_store
+
+    try:
+        if not account_store.enabled(config):
+            return list(apps)
+        return [app for app in apps if not account_store.get(config, app, verified=True)]
+    except (OSError, RuntimeError, KeyError, ValueError):
+        return list(apps)
+
+
+def waiting_said(config):
+    """Why a gateway step waits, for the finishing screen: the logins that could not be
+    verified, or the home network not chosen yet."""
+    apps = selected(config)
+    if config.get('gateway', {}).get('confirmed_services') != apps and not logins_verified(config, apps):
+        return unverified_said(config, apps)
+    return 'This PC is not connected to a home network yet, so the apps have no address there'
+
+
+def unverified_said(config, apps):
+    """Why the apps' addresses stay off, and what to do about it."""
+    import account_store
+
+    names = ', '.join(APPS[app][0] for app in unverified(config, apps) if app in APPS) or ', '.join(apps)
+    if not account_store.enabled(config):
+        return (
+            'App addresses stay off: NekoServer does not keep the logins on this server ("accounts" is switched off '
+            'in the settings), so it cannot check that each app has a password and takes no strangers. Switch '
+            '"accounts" on and run setup again, or, when you have checked the apps yourself, list them as '
+            '"confirmed_services" under "gateway" in my-config.json.'
+        )
+    return (
+        f'App addresses stay off: the login of {names} could not be verified, so setup cannot tell that the app '
+        'has a password and takes no strangers. Run  sudo bash install.sh  again: the accounts step checks the '
+        'logins, and says what is wrong with one it cannot sign in with.'
+    )
+
+
 def configure(ctx, kind):
     cfg = ctx.config
     apps = selected(cfg)
@@ -227,18 +281,12 @@ def configure(ctx, kind):
             # a moment ago (their first-run setup done, no public sign-up): nothing is
             # left to check by hand.
             ctx.log('App logins: verified by the accounts step for ' + ', '.join(apps) + '; no manual check needed')
-        elif not sys.stdin.isatty():
-            return False
-        elif getattr(ctx, 'apply', False):
-            if not guided_setup.app_security(ctx, apps, {a: APPS[a][1] for a in apps}):
-                return False
         else:
-            print(
-                'Create administrator accounts, disable unwanted public signup and verify login/access permissions for: '
-                + ', '.join(apps)
-            )
-            if input('After verifying those settings, type SECURED to enable access: ').strip() != 'SECURED':
-                return False
+            # Not verified is not safe: nobody's word stands in for the check (0.50.0; a
+            # person used to confirm it, in one place by typing a word). The addresses
+            # stay off, and the reason says which apps and what to do.
+            ctx.log(unverified_said(cfg, apps))
+            return False
         opts['confirmed_services'] = list(apps)
         changed = True
     if changed:
@@ -952,7 +1000,10 @@ def _apply_tailnet(config):
         raise RuntimeError('Malformed gateway ownership journal preserved; review it locally')
     # NekoServer's routes are recognised by port and handler, so a renamed server, a
     # dashboard on another port or a route of your own on another port changes nothing.
-    mine = ours(state, owned)
+    # A route exactly as NekoServer sets it now (the same port, to the same app on this
+    # PC) is its own too: its journal is on the app SSD, and a replaced SSD lost it (gate
+    # run C10). Taking such a route over changes nothing in it.
+    mine = ours(state, owned) | ours(state, target)
     theirs = set(state['TCP']) - mine
     needed = sorted(theirs & set(target['TCP']))
     if needed:

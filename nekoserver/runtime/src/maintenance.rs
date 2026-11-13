@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use std::{
     fs,
     os::unix::fs::MetadataExt,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     thread,
     time::{Duration, Instant},
 };
@@ -65,20 +65,17 @@ fn private(path: &Path) -> Result<()> {
 }
 fn names(cfg: &Value) -> Result<Vec<String>> {
     let mut names = vec![];
-    for value in cfg["media"]["services"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-    {
-        let n = value
-            .as_str()
-            .ok_or_else(|| Error::new("Invalid media selection"))?;
+    let listed = cfg["media"]["services"].as_array();
+    if listed.is_some_and(|v| v.iter().any(|n| !n.is_string())) {
+        return Err(Error::new("Invalid media selection"));
+    }
+    for n in common::media_services(cfg) {
         if !MEDIA.contains(&n) || names.contains(&n.to_string()) {
             return Err(Error::new("Invalid media selection"));
         }
         names.push(n.to_string());
     }
-    if cfg["photos"]["deploy_immich"] == true {
+    if common::immich_wanted(cfg) {
         names.push("immich".into());
     }
     if cfg["nextcloud"]["enabled"] == true {
@@ -460,11 +457,17 @@ fn valid_model(model: &Value, name: &str, data: &Path, media: &Path, cfg: &Value
     let places = Places {
         name,
         data,
-        media,
         photos: common::saved_path(&view, "photos")?,
         cloud: common::saved_path(&view, "cloud")?,
         music: common::saved_path(&view, "music")?,
         downloads: common::saved_path(&view, "downloads")?,
+        library: common::movies_library(&view)?,
+        existing_media: common::files_root(&view, "movies")?
+            .join("library")
+            .join("existing"),
+        existing_music: common::files_root(&view, "music")?
+            .join("library")
+            .join("existing"),
     };
     let services = model["services"]
         .as_object()
@@ -722,20 +725,28 @@ fn isolated(name: &str, service: &str, v: &Value) -> bool {
 struct Places<'a> {
     name: &'a str,
     data: &'a Path,
-    media: &'a Path,
     photos: PathBuf,
     cloud: PathBuf,
     /// The music library and the downloaded music (common::saved_path "music", "downloads").
     music: PathBuf,
     downloads: PathBuf,
+    /// The films, the shows and their downloads (common::movies_library).
+    library: PathBuf,
+    /// Where setup mounts the person's own folders (existing_media.py, 0.50.0): library/
+    /// existing on the films' drive and on the music's drive.
+    existing_media: PathBuf,
+    existing_music: PathBuf,
 }
 impl Places<'_> {
     fn volume_ok(&self, service: &str, volume: &Value) -> Result<()> {
         if volume["type"] == "bind" {
-            // A bind's own options: only these two (propagation could carry mounts out).
+            // A bind's own options: only these, and propagation only inwards (rslave or
+            // slave: a share mounted later is seen; shared could carry mounts out).
             let options_ok = volume["bind"].as_object().is_none_or(|o| {
-                o.keys()
-                    .all(|k| ["create_host_path", "selinux"].contains(&k.as_str()))
+                o.iter().all(|(k, v)| {
+                    ["create_host_path", "selinux"].contains(&k.as_str())
+                        || (k == "propagation" && (v == "rslave" || v == "slave"))
+                })
             });
             if !options_ok {
                 return Err(Error::new("Uncovered container bind mount"));
@@ -760,16 +771,20 @@ impl Places<'_> {
     fn bind_ok(&self, p: &Path) -> bool {
         let name = self.name;
         let own = self.data.join("appdata").join(name);
-        let library = self.media.join("library");
+        let library = &self.library;
         p.starts_with(&own)
             || (name == "immich" && p == self.photos)
             || (name == "nextcloud" && p == self.cloud)
-            || (["radarr", "sonarr", "qbittorrent"].contains(&name) && p == library)
+            || (["radarr", "sonarr", "qbittorrent"].contains(&name) && p == library.as_path())
             || (name == "jellyfin" && ["movies", "tv"].iter().any(|n| p == library.join(n)))
             || (name == "navidrome" && p == self.music)
             // Lidarr sees the folder both music folders are in (it moves downloads in).
             || (name == "lidarr" && self.music.parent().is_some_and(|top| p == top))
             || (name == "qbittorrent" && p == self.downloads)
+            // The person's own folders, seen at /data/existing (existing_media.py).
+            || (["jellyfin", "radarr", "sonarr", "qbittorrent"].contains(&name)
+                && p == self.existing_media)
+            || (["navidrome", "lidarr"].contains(&name) && p == self.existing_music)
     }
 }
 /// The app's own port on this PC only (qBittorrent's peer port excepted); its helpers
@@ -1579,21 +1594,7 @@ fn restored_model(original: &Value, stage: &Path, data: &Path, media: &Path) -> 
             .flatten();
         for volume in listed {
             if volume["type"] == "bind" {
-                let source = Path::new(string(volume, "source")?);
-                let target = if let Ok(relative) = source.strip_prefix(data) {
-                    stage.join("data").join(relative)
-                } else if let Ok(relative) = source.strip_prefix(media) {
-                    stage.join("media").join(relative)
-                } else if source == Path::new("/etc/localtime") {
-                    continue;
-                } else {
-                    return Err(Error::new("Unsafe restored bind mount"));
-                };
-                if !target.exists() {
-                    common::directory(&target, 0o755)?;
-                    volume["read_only"] = json!(true);
-                }
-                volume["source"] = json!(target);
+                restored_bind(volume, stage, data, media)?;
             } else {
                 // Cache volumes are intentionally recreated in the rehearsal's private namespace.
                 let name = format!("cache-{service}");
@@ -1613,6 +1614,39 @@ fn restored_model(original: &Value, stage: &Path, data: &Path, media: &Path) -> 
         model["volumes"] = Value::Object(volumes);
     }
     Ok(model)
+}
+/// A bind mount of the restored model led into the rehearsal's own folder (`stage`), or
+/// left as it is for this PC's clock (/etc/localtime).
+fn restored_bind(volume: &mut Value, stage: &Path, data: &Path, media: &Path) -> Result<()> {
+    let source = Path::new(string(volume, "source")?);
+    let target = if let Ok(relative) = source.strip_prefix(data) {
+        stage.join("data").join(relative)
+    } else if let Ok(relative) = source.strip_prefix(media) {
+        stage.join("media").join(relative)
+    } else if let Ok(relative) = source.strip_prefix(common::EXTRA_MOUNTS) {
+        // A drive beyond the two (an app's files on a drive of their own, gate
+        // run C14): its files are not in the snapshot, so the rehearsal gets an
+        // empty folder of its own, read-only; the drive itself is never seen.
+        stage.join("drives").join(relative)
+    } else if source == Path::new("/etc/localtime") {
+        return Ok(());
+    } else {
+        return Err(Error::new("Unsafe restored bind mount"));
+    };
+    // Under the rehearsal's own folder, always: a source with ".." in it (from
+    // a snapshot's settings) would lead out of it, onto this PC's own files.
+    let inside = source
+        .components()
+        .all(|c| matches!(c, Component::RootDir | Component::Normal(_)));
+    if !inside {
+        return Err(Error::new("Unsafe restored bind mount"));
+    }
+    if !target.exists() {
+        common::directory(&target, 0o755)?;
+        volume["read_only"] = json!(true);
+    }
+    volume["source"] = json!(target);
+    Ok(())
 }
 /// Apps whose user data (photos, Nextcloud files) is kept out of the monthly
 /// snapshot, and a table that proves their restored database is the real one.
@@ -1993,32 +2027,18 @@ fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
                 {
                     continue;
                 }
-                let live = common::safe(&root.join(&relative))?;
+                let run = string(&journal, "run")?.to_string();
                 let stage = if kind == "data" {
-                    root.join("backups")
-                        .join(format!("rollback-{}", string(&journal, "run")?))
+                    root.join("backups").join(format!("rollback-{run}"))
                 } else {
                     snapshot.join("rollback-stage/media")
                 };
-                let source = common::safe(&stage.join(&relative))?;
-                let quarantine = live.with_file_name(format!(
-                    "{}.neko-failed-{}",
-                    live.file_name().unwrap().to_string_lossy(),
-                    string(&journal, "run")?
-                ));
-                if source.exists() {
-                    if live.exists() && !quarantine.exists() {
-                        fs::rename(&live, &quarantine)?;
-                        fs::File::open(live.parent().unwrap())?.sync_all()?;
-                    }
-                    if live.exists() {
-                        return Err(Error::new("Rollback destination collision"));
-                    }
-                    fs::rename(&source, &live)?;
-                    fs::File::open(live.parent().unwrap())?.sync_all()?;
-                } else if !live.exists() || !quarantine.exists() {
-                    return Err(Error::new("Rollback state incomplete"));
-                }
+                let base = if kind == "data" {
+                    placed_base(cfg, &relative)?
+                } else {
+                    None
+                };
+                put_back(root, &stage, &relative, &run, base.as_deref(), &remount)?;
                 journal["restored"].as_array_mut().unwrap().push(json!(key));
                 save_journal(&journal)?;
             }
@@ -2067,10 +2087,18 @@ fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
     }
     if phase != "snapshot" && phase != "backed_up" {
         // Rolled back and healthy: the stages the old data came from are spent.
+        let rollback = format!("rollback-{}", string(&journal, "run")?);
         let stage = Path::new(string(cfg, "data_mount")?)
             .join("backups")
-            .join(format!("rollback-{}", string(&journal, "run")?));
-        for spent in [snapshot.join("rollback-stage"), stage] {
+            .join(&rollback);
+        let mut spent = vec![snapshot.join("rollback-stage"), stage];
+        // ... and the stage of an app installed on another drive, on that drive.
+        for (name, _) in journal["models"].as_object().unwrap() {
+            if let Some(base) = common::installed_base(cfg, name)? {
+                spent.push(base.join(&rollback));
+            }
+        }
+        for spent in spent {
             if spent.exists() {
                 fs::remove_dir_all(common::safe(&spent)?)?;
             }
@@ -2080,6 +2108,115 @@ fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
     fs::File::open(Path::new(*JOURNAL).parent().unwrap())?.sync_all()?;
     scrub_all(Path::new(string(cfg, "media_mount")?));
     clear_work(Path::new(string(cfg, "data_mount")?));
+    Ok(())
+}
+/// For the settings folder of an app installed on another drive (0.50.0): the folder
+/// on that drive that holds it (<drive>/nekoserver). Its usual place is a mount of
+/// <drive>/nekoserver/appdata/<app> and cannot be renamed; on the drive itself it can.
+/// None for every other path: those are put back on the app drive as always.
+fn placed_base(cfg: &Value, relative: &str) -> Result<Option<PathBuf>> {
+    match relative.strip_prefix("appdata/") {
+        Some(app) if !app.contains('/') => common::installed_base(cfg, app),
+        _ => Ok(None),
+    }
+}
+/// The snapshot's copy of such an app's settings is unpacked on the app drive with the
+/// rest; a rename cannot cross drives, so it is copied to the app's own drive first
+/// (`on_drive`), whole or not at all: under another name until the copy is complete.
+fn stage_on_drive(unpacked: &Path, on_drive: &Path) -> Result<()> {
+    if on_drive.exists() || !unpacked.exists() {
+        return Ok(()); // copied already (a rollback cut off and run again), or put back
+    }
+    let parent = on_drive
+        .parent()
+        .ok_or_else(|| Error::new("Invalid path"))?;
+    common::directory(parent, 0o700)?;
+    let partial = on_drive.with_file_name(format!(
+        "{}.partial",
+        on_drive.file_name().unwrap().to_string_lossy()
+    ));
+    if partial.exists() {
+        fs::remove_dir_all(common::safe(&partial)?)?;
+    }
+    checked(
+        &[
+            "cp",
+            "--archive",
+            "--",
+            &unpacked.to_string_lossy(),
+            &partial.to_string_lossy(),
+        ],
+        21600,
+    )?;
+    fs::rename(&partial, on_drive)?;
+    fs::File::open(parent)?.sync_all()?;
+    fs::remove_dir_all(common::safe(unpacked)?)?;
+    Ok(())
+}
+/// The app's usual place shows the folder now at `home` on its drive: after a rollback
+/// swapped that folder, the mount still shows the one set aside until it is made again.
+fn remount(place: &Path, home: &Path) -> Result<()> {
+    if common::same_folder(place, home) {
+        return Ok(());
+    }
+    let at = place.to_string_lossy();
+    if common::command(&["mountpoint", "-q", &at], 30)?.0 == 0 {
+        checked(&["umount", &at], 300)?;
+    }
+    checked(&["mount", &at], 300)?;
+    if !common::same_folder(place, home) {
+        return Err(Error::new(
+            "The app's settings folder is not the one on its drive after the rollback",
+        ));
+    }
+    Ok(())
+}
+/// One path of a rollback put back: the failed update's copy is set aside beside it
+/// (`<name>.neko-failed-<run>`) and the snapshot's copy takes its place, each by a
+/// rename, so a rollback cut off half-way finds one or the other and goes on.
+/// `base`: for an app installed on another drive, the folder there that holds its
+/// settings (placed_base); the two renames are then made on that drive, and `remount`
+/// shows the folder put back at the app's usual place.
+fn put_back(
+    root: &Path,
+    stage: &Path,
+    relative: &str,
+    run: &str,
+    base: Option<&Path>,
+    remount: &dyn Fn(&Path, &Path) -> Result<()>,
+) -> Result<()> {
+    let unpacked = common::safe(&stage.join(relative))?;
+    let (live, source) = match base {
+        Some(base) => {
+            let on_drive = base.join(format!("rollback-{run}")).join(relative);
+            stage_on_drive(&unpacked, &on_drive)?;
+            (
+                common::safe(&base.join(relative))?,
+                common::safe(&on_drive)?,
+            )
+        }
+        None => (common::safe(&root.join(relative))?, unpacked),
+    };
+    let quarantine = live.with_file_name(format!(
+        "{}.neko-failed-{run}",
+        live.file_name().unwrap().to_string_lossy()
+    ));
+    if source.exists() {
+        if live.exists() && !quarantine.exists() {
+            fs::rename(&live, &quarantine)?;
+            fs::File::open(live.parent().unwrap())?.sync_all()?;
+        }
+        if live.exists() {
+            return Err(Error::new("Rollback destination collision"));
+        }
+        fs::rename(&source, &live)?;
+        fs::File::open(live.parent().unwrap())?.sync_all()?;
+    } else if !live.exists() || !quarantine.exists() {
+        return Err(Error::new("Rollback state incomplete"));
+    }
+    if base.is_some() {
+        remount(&root.join(relative), &live)?;
+    }
     Ok(())
 }
 /// Environment names that carry a password or secret.
@@ -2667,10 +2804,7 @@ fn automated_media_ready(report: &Value) -> bool {
 fn integrations(cfgpath: &Path, cfg: &Value, checking: bool) -> Result<()> {
     // Its own stage: a failure here was said "while checking free space", the stage before.
     common::stage("checking the connections between the media apps");
-    if cfg["media"]["services"]
-        .as_array()
-        .is_none_or(|v| v.is_empty())
-    {
+    if common::media_services(cfg).is_empty() {
         return Ok(());
     }
     let exe = std::env::current_exe()?;
@@ -2749,12 +2883,21 @@ fn same_manifest(a: &Path, b: &Path) -> bool {
 fn failed_copies(data: &Path, run: &str) -> Result<Vec<PathBuf>> {
     let suffix = format!(".neko-failed-{run}");
     let mut found = vec![];
-    for folder in [
+    let mut folders = vec![
         data.to_path_buf(),
         data.join("appdata"),
         data.join("compose"),
         data.join("secrets"),
-    ] {
+    ];
+    // An app installed on another drive is set aside there, beside its folder.
+    for drive in fs::read_dir(common::EXTRA_MOUNTS)
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        folders.push(drive.path().join("nekoserver/appdata"));
+    }
+    for folder in folders {
         let Ok(entries) = fs::read_dir(&folder) else {
             continue;
         };
@@ -3219,7 +3362,7 @@ fn open_up(
 /// is set up; the USB copy's options, when its drive is named and something is copied).
 fn copies_to_check(cfg: &Value, cfgpath: &Path) -> (Option<String>, Option<Args>) {
     let photos = &cfg["photos"];
-    let immich = photos["deploy_immich"] == true;
+    let immich = common::immich_wanted(cfg);
     let media = Path::new(cfg["media_mount"].as_str().unwrap_or(""));
     let archive_dir = photos["archive_dir"]
         .as_str()
@@ -3293,7 +3436,9 @@ fn check_copies(cfgpath: &Path, cfg: &Value) -> Result<Vec<String>> {
     }
     if let Some(options) = usb {
         let uuid = options.get("uuid")?;
-        if Path::new("/dev/disk/by-uuid").join(uuid).exists() {
+        // A backup folder on the NAS (NFS) has no disk to see plugged in: it is tried,
+        // and a NAS that is off is said like a drive that would not mount.
+        if common::is_nfs_identity(uuid) || Path::new("/dev/disk/by-uuid").join(uuid).exists() {
             common::stage("checking every copy on the USB drive by checksum");
             if let Err(e) = backup::monthly_usb_check(&options) {
                 if usb_damage(&e) {
@@ -3720,11 +3865,13 @@ fn room(
     };
     let (ssd, hdd) = space_needed(app_bytes, media_bytes, image_bytes(names)?);
     // The USB drive is not used by monthly maintenance.
-    for (root, needed, what) in [(data, ssd, "SSD"), (media, hdd, "HDD")] {
+    let one = common::same_filesystem(data, media);
+    for (root, needed, what) in space_checks(one, (data, ssd), (media, hdd)) {
         let (mut have, drive) = drive_space(root)?;
         let reserve = reserve_for(setting, drive);
         let wanted = needed.saturating_add(reserve);
-        if have < wanted && what == "HDD" && audit {
+        let snapshots_here = root == media;
+        if have < wanted && snapshots_here && audit {
             have = make_room(media, &mut retention, wanted)?;
         }
         // An update: its own undone updates' snapshots (HDD) and their failed app data (SSD).
@@ -3737,7 +3884,7 @@ fn room(
             have = drive_space(root)?.0;
         }
         if have < wanted {
-            let unfinished = if what == "HDD" {
+            let unfinished = if snapshots_here {
                 let runs: Vec<String> = retention["incomplete_not_removed"]
                     .as_array()
                     .into_iter()
@@ -3760,6 +3907,20 @@ fn room(
         }
     }
     Ok(retention)
+}
+/// The room checks of a run: the SSD for what it needs there, the HDD for what it needs
+/// there; or, with both on one filesystem (one drive for everything, or the disk Linux
+/// runs from), that one for the two together, so its free space is counted once.
+fn space_checks<'a>(
+    one: bool,
+    (data, ssd): (&'a Path, u64),
+    (media, hdd): (&'a Path, u64),
+) -> Vec<(&'a Path, u64, &'static str)> {
+    if one {
+        vec![(media, ssd.saturating_add(hdd), "drive")]
+    } else {
+        vec![(data, ssd, "SSD"), (media, hdd, "HDD")]
+    }
 }
 fn no_room(
     what: &str,
@@ -6042,6 +6203,118 @@ mod tests {
         assert!(out.status.success(), "{args:?}");
         out.stdout
     }
+    /// The rollback of an app whose settings are on another drive (0.50.0): its usual
+    /// place is a mount and cannot be renamed, and the snapshot's copy is unpacked on the
+    /// app drive, which a rename cannot leave. The copy is taken to the app's drive first
+    /// and the swap is made there; then the mount is made again. Cut off anywhere, the
+    /// same call goes on from where it stopped.
+    #[test]
+    fn a_rollback_puts_an_app_on_another_drive_back_on_that_drive() {
+        let root = scratch("placed-rollback");
+        let (data, base) = (root.join("ssd"), root.join("d3/nekoserver"));
+        let stage = data.join("backups/rollback-200-1");
+        let home = base.join("appdata/jellyfin");
+        for (folder, name, body) in [
+            (&home, "library.db", "after the failed update"),
+            (
+                &stage.join("appdata/jellyfin"),
+                "library.db",
+                "as the snapshot has it",
+            ),
+            (&data.join("compose/jellyfin"), "compose.yaml", "new"),
+            (&stage.join("compose/jellyfin"), "compose.yaml", "old"),
+        ] {
+            fs::create_dir_all(folder).unwrap();
+            fs::write(folder.join(name), body).unwrap();
+        }
+        let remounted = std::cell::RefCell::new(vec![]);
+        let shown = |place: &Path, home: &Path| {
+            remounted
+                .borrow_mut()
+                .push((place.to_path_buf(), home.to_path_buf()));
+            Ok(())
+        };
+        let read = |path: PathBuf| fs::read_to_string(path).unwrap();
+        // Cut off once the copy is on the app's drive: nothing is swapped yet.
+        stage_on_drive(
+            &stage.join("appdata/jellyfin"),
+            &base.join("rollback-200-1/appdata/jellyfin"),
+        )
+        .unwrap();
+        assert!(!stage.join("appdata/jellyfin").exists());
+        assert_eq!(read(home.join("library.db")), "after the failed update");
+        for _ in 0..2 {
+            // ... and run again, twice: the second time finds it done and changes nothing.
+            put_back(
+                &data,
+                &stage,
+                "appdata/jellyfin",
+                "200-1",
+                Some(&base),
+                &shown,
+            )
+            .unwrap();
+            assert_eq!(read(home.join("library.db")), "as the snapshot has it");
+            assert_eq!(
+                read(base.join("appdata/jellyfin.neko-failed-200-1/library.db")),
+                "after the failed update"
+            );
+        }
+        // The app's usual place is shown the folder put back, both times.
+        assert_eq!(
+            *remounted.borrow(),
+            vec![(data.join("appdata/jellyfin"), home.clone()); 2]
+        );
+        // Nothing of it was put on the app drive, where the closed folder under the mount is.
+        assert!(!data.join("appdata/jellyfin.neko-failed-200-1").exists());
+        // Its Compose file stays on the app drive and is put back there as always.
+        put_back(&data, &stage, "compose/jellyfin", "200-1", None, &shown).unwrap();
+        assert_eq!(read(data.join("compose/jellyfin/compose.yaml")), "old");
+        assert_eq!(remounted.borrow().len(), 2);
+        // A copy cut off half-way is made again from the start, never used as it is.
+        let again = stage.join("appdata/seerr");
+        fs::create_dir_all(&again).unwrap();
+        fs::write(again.join("settings.json"), "whole").unwrap();
+        let on_drive = base.join("rollback-200-1/appdata/seerr");
+        fs::create_dir_all(on_drive.with_file_name("seerr.partial")).unwrap();
+        fs::write(on_drive.with_file_name("seerr.partial").join("half"), "x").unwrap();
+        stage_on_drive(&again, &on_drive).unwrap();
+        assert_eq!(read(on_drive.join("settings.json")), "whole");
+        assert!(
+            !on_drive.join("half").exists() && !on_drive.with_file_name("seerr.partial").exists()
+        );
+        // Which paths: an app's settings folder only, for an app the settings place elsewhere.
+        let cfg = json!({"storage": {"d3": {"uuid": "u"}}, "installed": {"jellyfin": "d3"}});
+        assert_eq!(
+            placed_base(&cfg, "appdata/jellyfin").unwrap(),
+            Some(PathBuf::from("/mnt/nekoserver-drives/d3/nekoserver"))
+        );
+        for elsewhere in [
+            "compose/jellyfin",
+            "appdata/seerr",
+            "appdata/jellyfin/config",
+            "secrets/accounts",
+        ] {
+            assert_eq!(placed_base(&cfg, elsewhere).unwrap(), None, "{elsewhere}");
+        }
+        // A server with everything on the app drive (no "installed" in its settings, as
+        // every server before 0.50.0): no path is ever taken to another drive, so the
+        // rollback is the two renames on the app drive it always was.
+        for settings in [
+            json!({}),
+            json!({"storage": {"d3": {"uuid": "u"}}, "locations": {"photos": "d3"}}),
+        ] {
+            for path in [
+                "appdata/jellyfin",
+                "appdata/immich",
+                "compose/jellyfin",
+                "secrets/accounts",
+            ] {
+                assert_eq!(placed_base(&settings, path).unwrap(), None, "{path}");
+            }
+        }
+        let _ = fs::remove_dir_all(root);
+    }
     #[test]
     fn rollback_with_encryption_restores_the_left_out_config_files() {
         // A failed update with a backup key: data.tar lacks .env and config.php, and the
@@ -7063,6 +7336,53 @@ mod tests {
         assert!(clone["services"]["server"]["volumes"].is_array());
         let _ = fs::remove_dir_all("/tmp/neko-stage-novol");
     }
+    /// Gate run C14: music on a drive of its own (and the person's own folder mounted in
+    /// its library) stopped the monthly run at "Unsafe restored bind mount". Such a bind
+    /// gets an empty read-only folder of the rehearsal's own; anything else stays refused.
+    #[test]
+    fn a_drive_beyond_the_two_gets_an_empty_folder_in_the_rehearsal() {
+        let stage = Path::new("/tmp/neko-stage-drives");
+        let _ = fs::remove_dir_all(stage);
+        let bind = |source: &str| json!({"services":{"navidrome":{"image":"n","volumes":[{"type":"bind","source":source,"target":"/music"}]}}});
+        let music = format!("{}/d3/library/music", common::EXTRA_MOUNTS);
+        let clone = restored_model(
+            &bind(&music),
+            stage,
+            Path::new("/srv/neko"),
+            Path::new("/mnt/neko"),
+        )
+        .unwrap();
+        let volume = &clone["services"]["navidrome"]["volumes"][0];
+        assert_eq!(
+            volume["source"],
+            json!(stage.join("drives/d3/library/music"))
+        );
+        assert_eq!(volume["read_only"], json!(true));
+        assert!(restored_model(
+            &bind("/home/someone/music"),
+            stage,
+            Path::new("/srv/neko"),
+            Path::new("/mnt/neko")
+        )
+        .is_err());
+        // A path that leads out of a drive's folder is refused, never bound.
+        for away in [
+            format!("{}/d3/../../../etc", common::EXTRA_MOUNTS),
+            "/srv/neko/appdata/../../../etc".to_string(),
+        ] {
+            assert!(
+                restored_model(
+                    &bind(&away),
+                    stage,
+                    Path::new("/srv/neko"),
+                    Path::new("/mnt/neko")
+                )
+                .is_err(),
+                "{away}"
+            );
+        }
+        let _ = fs::remove_dir_all(stage);
+    }
     #[test]
     fn rehearsal_never_joins_production_networks() {
         let m = json!({"name":"production","networks":{"media":{"external":true}},"services":{"jellyfin":{"image":"test","container_name":"live","networks":["media"],"ports":[{"host_ip":"0.0.0.0","published":"8096","target":8096}],"volumes":[]}}});
@@ -7283,6 +7603,133 @@ mod tests {
         assert!(!image_id(&format!("sha256:{}", "g".repeat(64))));
         assert!(!image_id(&"a".repeat(71)));
     }
+    /// Gate run B: with one filesystem for the apps and the media, its free space is
+    /// counted once, for what the run needs on both; two drives are checked each alone.
+    #[test]
+    fn one_drive_is_checked_once_for_what_both_need() {
+        let (data, media) = (
+            Path::new("/srv/nekoserver"),
+            Path::new("/mnt/nekoserver-media"),
+        );
+        assert_eq!(
+            space_checks(true, (data, 3), (media, 5)),
+            [(media, 8, "drive")]
+        );
+        assert_eq!(
+            space_checks(false, (data, 3), (media, 5)),
+            [(data, 3, "SSD"), (media, 5, "HDD")]
+        );
+        assert_eq!(
+            space_checks(true, (data, u64::MAX), (media, 5))[0].1,
+            u64::MAX
+        );
+        let source = include_str!("maintenance.rs");
+        let room = &source[source.find("fn room(").unwrap()..];
+        assert!(room.contains("common::same_filesystem(data, media)"));
+    }
+    /// Gate runs C14 and C15: the Music group installed on a drive of its own (d3), its
+    /// music and downloads there, and the person's own folders (library/existing) of both
+    /// groups, exactly as the settings place them (storage, locations, paths, installed).
+    #[test]
+    fn the_update_accepts_the_binds_the_placement_gives_and_nothing_else() {
+        let root = scratch("placed");
+        let (data, media) = (root.join("srv"), root.join("mnt"));
+        let d3 = Path::new(common::EXTRA_MOUNTS).join("d3");
+        // The monthly run reads the settings file as setup keeps it (my-config.json with
+        // "paths" added); the other jobs read the drives' file with "installed" too.
+        let settings = json!({
+            "storage": {"d3": {"uuid": "d3-uuid", "fstype": "ext4"}},
+            "locations": {"music": "d3"},
+        });
+        let mut jobs = settings.clone();
+        jobs["paths"] = json!({
+            "music": d3.join("library/music"),
+            "downloads": d3.join("library/downloads/music"),
+            "photos": data.join("photos/immich-library"),
+            "cloud": media.join("cloud/files"),
+        });
+        jobs["installed"] = json!({"navidrome": "d3", "lidarr": "d3"});
+        let port = json!([{"host_ip": "127.0.0.1", "published": "4533", "target": 4533}]);
+        let binds = |name: &str, sources: &[PathBuf]| {
+            let volumes: Vec<Value> = sources
+                .iter()
+                .map(|source| {
+                    json!({"type": "bind", "source": source, "target": format!("/v{}", source.display()),
+                        "bind": {"propagation": "rslave", "create_host_path": false}})
+                })
+                .collect();
+            json!({"services": {name: {"image": "sha256:1", "ports": port, "volumes": volumes}}})
+        };
+        for cfg in [&settings, &jobs] {
+            let check = |name: &str, sources: &[PathBuf]| {
+                valid_model(&binds(name, sources), name, &data, &media, cfg)
+            };
+            let own = |name: &str| data.join("appdata").join(name);
+            // Each app with every folder its Compose file binds on such a server.
+            for (name, sources) in [
+                (
+                    "navidrome",
+                    vec![
+                        own("navidrome"),
+                        d3.join("library/music"),
+                        d3.join("library/existing"),
+                    ],
+                ),
+                (
+                    "lidarr",
+                    vec![
+                        own("lidarr"),
+                        d3.join("library"),
+                        d3.join("library/existing"),
+                    ],
+                ),
+                (
+                    "qbittorrent",
+                    vec![
+                        own("qbittorrent"),
+                        media.join("library"),
+                        d3.join("library/downloads/music"),
+                        media.join("library/existing"),
+                    ],
+                ),
+                (
+                    "jellyfin",
+                    vec![
+                        own("jellyfin"),
+                        media.join("library/movies"),
+                        media.join("library/existing"),
+                    ],
+                ),
+            ] {
+                assert!(
+                    check(name, &sources).is_ok(),
+                    "{name}: {:?}",
+                    check(name, &sources)
+                );
+            }
+            // Anything else is still refused: another drive, the top of the music's drive, a
+            // group's folder seen by an app of the other group, a drive the settings do not name.
+            for (name, source) in [
+                ("navidrome", d3.join("library")),
+                ("lidarr", d3.clone()),
+                ("jellyfin", d3.join("library/existing")),
+                ("navidrome", media.join("library/existing")),
+                ("lidarr", Path::new(common::EXTRA_MOUNTS).join("d4/library")),
+                ("qbittorrent", d3.join("library/music")),
+                ("navidrome", data.join("library/music")),
+            ] {
+                let said = check(name, std::slice::from_ref(&source))
+                    .unwrap_err()
+                    .to_string();
+                assert_eq!(
+                    said,
+                    "Uncovered container bind mount",
+                    "{name} {}",
+                    source.display()
+                );
+            }
+        }
+    }
     #[test]
     fn the_update_refuses_models_that_leave_their_sandbox() {
         let root = scratch("sandbox");
@@ -7398,6 +7845,46 @@ mod tests {
         ] {
             assert_eq!(
                 refused(&one(name, &folder), name),
+                "Uncovered container bind mount",
+                "{name}"
+            );
+        }
+        // Gate run C14: the person's own folders (library/existing, 0.50.0) as the Compose
+        // files bind them, inwards propagation included; nobody else's and never outwards.
+        fs::create_dir_all(media.join("library/existing")).unwrap();
+        fs::create_dir_all(data.join("library/existing")).unwrap();
+        let theirs = |name: &str, source: &Path, propagation: &str| {
+            json!({"services": {name: {"image": "sha256:1", "ports": port, "volumes": [{
+                "type": "bind", "source": source, "target": "/data/existing",
+                "bind": {"propagation": propagation, "create_host_path": true}}]}}})
+        };
+        for (name, folder) in [
+            ("jellyfin", media.join("library/existing")),
+            ("radarr", media.join("library/existing")),
+            ("sonarr", media.join("library/existing")),
+            ("qbittorrent", media.join("library/existing")),
+            ("navidrome", data.join("library/existing")),
+            ("lidarr", data.join("library/existing")),
+        ] {
+            fs::create_dir_all(data.join("appdata").join(name)).unwrap();
+            let model = theirs(name, &folder, "rslave");
+            assert!(
+                valid_model(&model, name, &data, &media, &Value::Null).is_ok(),
+                "{name}"
+            );
+            assert_eq!(
+                refused(&theirs(name, &folder, "rshared"), name),
+                "Uncovered container bind mount",
+                "{name}"
+            );
+        }
+        for (name, folder) in [
+            ("navidrome", media.join("library/existing")),
+            ("jellyfin", data.join("library/existing")),
+            ("seerr", media.join("library/existing")),
+        ] {
+            assert_eq!(
+                refused(&theirs(name, &folder, "rslave"), name),
                 "Uncovered container bind mount",
                 "{name}"
             );

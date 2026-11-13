@@ -4,8 +4,7 @@ import json, os, pwd, re, shutil, subprocess, sys
 import network_access
 from pathlib import Path
 import host
-import setup_progress
-from neko_common import safe_path, atomic_write, findmnt, last_words, SYSTEMD_UNITS
+from neko_common import safe_path, atomic_write, findmnt, immich_wanted, last_words, media_group, SYSTEMD_UNITS
 
 DEPENDENCIES = ['storage', 'system']
 DESCRIPTION = 'Set up explicit LAN or tailnet SMB shares with no guest access'
@@ -92,12 +91,21 @@ def storage_guard(media, unit, mode, tailscale):
 
 def wanted_shares(config):
     """The shares to set up: the settings' list, without the default Photos share when
-    Immich isn't set up (its photo archive only exists with Immich). A share you added
-    or changed yourself stays, and must exist."""
+    Immich isn't set up (its photo archive only exists with Immich), nor the default
+    Media share when the media apps are left out and its library folder was never made
+    (a server that had them keeps sharing its films). A share you added or changed
+    yourself stays, and must exist."""
     shares = dict(config.get('networking', {}).get('shares', {}))
     archive = config.get('photos', {}).get('archive_dir', 'photos/archive')
-    if not config.get('photos', {}).get('deploy_immich', False) and shares.get('Photos') == archive:
+    if not immich_wanted(config) and shares.get('Photos') == archive:
         del shares['Photos']
+    if (
+        # Neither group that makes the library (films and shows, music) is on.
+        not (media_group(config, 'movies') or media_group(config, 'music'))
+        and shares.get('Media') == 'library'
+        and not (Path(config['media_mount']) / 'library').is_dir()
+    ):
+        del shares['Media']
     return shares
 
 
@@ -163,17 +171,40 @@ def call(args, timeout=180):
     return p.stdout.strip()
 
 
-def samba_password(user, run=subprocess.run, tries=3):
-    """smbpasswd asks for the password twice on the terminal. Two that differ (or an
-    empty one) make it fail; that is a typo, not a broken setup, so it is asked again."""
-    for attempt in range(tries):
-        with setup_progress.in_terminal(f'The password for the shared folders (account {user}), typed twice'):
-            code = run(['smbpasswd', '-a', user], check=False).returncode
-        if code == 0:
-            return True
-        if attempt < tries - 1:
-            print('The two passwords did not match (or one was empty). Try again.')
-    return False
+NO_ANSWER = 'gave no answer within a minute'
+
+
+def samba_password(user, run=subprocess.run, ask=None, output=print):
+    """The shared folders' password: chosen through setup's own question (typed twice,
+    hidden; in the setup window too), then handed to smbpasswd on its input (-s), never
+    on a command line and never kept. Until 0.50.0 smbpasswd asked for it itself, on the
+    terminal only. False when no password was chosen or Samba refused it (said)."""
+    import guided_setup
+
+    import account_store
+
+    password = account_store.AHEAD.get('others', {}).get('shared_folders')
+    if not password:
+        password = guided_setup.new_password(f'Password for the shared folders (account {user})', ask, output)
+    if password is None:
+        return False
+    try:
+        done = run(
+            ['smbpasswd', '-s', '-a', user],
+            input=f'{password}\n{password}\n',
+            text=True,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        hung = isinstance(exc, subprocess.TimeoutExpired)
+        output('Samba did not take that password: smbpasswd ' + (NO_ANSWER if hung else 'could not be run'))
+        return False
+    if done.returncode:
+        output('Samba did not take that password: ' + last_words(done.stderr or done.stdout or 'no reason given'))
+        return False
+    return True
 
 
 def includes_ours(text):
@@ -228,6 +259,12 @@ def run(context):
     service = family.service('samba')
     settings = context.config.get('networking', {})
     settings = dict(settings, shares=wanted_shares(context.config))
+    if not settings['shares']:
+        context.log(
+            'Shared folders: nothing to share (the Media and Photos folders come with the media apps, which are '
+            'left out); add a share of your own under "shares" in my-config.json to have one'
+        )
+        return None
     mode = settings.get('share_mode', 'tailnet')
     if mode not in ('lan', 'tailnet'):
         raise RuntimeError('Samba share_mode must be lan or tailnet')
@@ -320,15 +357,19 @@ def run(context):
                 'status': 'needs_setup',
                 'reason': 'Run interactively to create the Samba password, or use sudo smbpasswd -a ' + user,
             }
-        # Samba prompts directly on the terminal; NekoServer does not store/log the password.
-        print(
-            '\nShared folders: choose a password for opening the server\'s folders from other '
-            'computers (user: ' + user + '). Type it twice; nothing is shown while you type.'
-        )
+        # The password chosen on the accounts page goes straight to Samba, in no log (the
+        # account store keeps it privately, for "Show login").
+        import account_store
+
+        if not account_store.AHEAD.get('others', {}).get('shared_folders'):
+            print(
+                '\nShared folders: choose a password for opening the server\'s folders from other '
+                'computers (user: ' + user + '). Type it twice; nothing is shown while you type.'
+            )
         if not samba_password(user):
             return {
                 'status': 'needs_setup',
-                'reason': 'No Samba password was set (the two did not match three times). Run setup again, or use  sudo smbpasswd -a '
+                'reason': 'No Samba password was set (the two did not match three times, or Samba refused it). Run setup again, or use  sudo smbpasswd -a '
                 + user,
             }
         account = subprocess.run(['pdbedit', '-L', '-u', user], capture_output=True, text=True, timeout=15, check=False)

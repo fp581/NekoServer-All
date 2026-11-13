@@ -14,7 +14,7 @@ import subprocess
 
 import gpu
 import host
-from neko_common import atomic_json, atomic_write, compose_image_override
+from neko_common import atomic_json, atomic_write, compose_image_override, immich_wanted, media_services
 
 DEPENDENCIES = ['media', 'photos', 'accounts']
 DESCRIPTION = 'Use the graphics chip for video in Jellyfin and Immich'
@@ -66,9 +66,9 @@ VAINFO = '/usr/lib/jellyfin-ffmpeg/vainfo'
 def selected_apps(config):
     """The apps this server runs that can use the graphics chip, in a fixed order."""
     apps = []
-    if 'jellyfin' in config.get('media', {}).get('services', []):
+    if 'jellyfin' in media_services(config):
         apps.append('jellyfin')
-    if config.get('photos', {}).get('deploy_immich', False):
+    if immich_wanted(config):
         apps.append('immich')
     return apps
 

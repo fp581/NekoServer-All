@@ -4,8 +4,10 @@ The phone guide used to send you to  sudo cat .../APP-CREDENTIALS.txt  for every
 to read a 32-letter password and type it on the phone, about five times."""
 
 import importlib.util
+import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -29,6 +31,46 @@ class Screen:
 
     def isatty(self):
         return self.tty
+
+
+class WhereTheLoginsAreTests(unittest.TestCase):
+    """The setup review (S4): the account step run by hand ended with "Private credential
+    inventory: <a file only root can read>" and no word on how to see a password."""
+
+    def test_every_ending_of_the_account_step_says_how_to_show_a_login(self):
+        from modules import accounts
+        from neko_common import VERSION
+
+        with tempfile.TemporaryDirectory() as folder:
+            config = {'data_mount': folder}
+            where, how = accounts.where_saved(config)
+        self.assertIn('a file only the administrator can read', where)
+        self.assertNotIn('/', where)  # no path to a file a beginner cannot open
+        self.assertIn(f'sudo python3 {folder}/installer/releases/v{VERSION}/account-setup.py show  (it lists', how)
+        self.assertIn('QR code', how)
+        # Both endings use it: the step in setup and account-setup.py run by hand; neither
+        # names the file alone any more, nor tells anyone to read it with cat.
+        by_hand = (ROOT / 'account-setup.py').read_text()
+        step = (ROOT / 'modules/accounts.py').read_text()
+        self.assertIn('for line in where_saved(config):', by_hand)
+        self.assertIn('for line in where_saved(ctx.config):', step)
+        for source in (by_hand, step):
+            self.assertNotIn('Private credential inventory', source)
+            self.assertNotIn('private APP-CREDENTIALS.txt updated', source)
+            self.assertNotIn('sudo cat', source)
+
+    def test_no_other_message_of_setup_points_at_the_file_alone(self):
+        """Every file of setup that names the passwords file: only the one
+        that writes it, and the recovery menu, whose file is a copy taken out of a backup
+        and comes with the command that opens it."""
+        named = sorted(
+            path.relative_to(ROOT).as_posix()
+            for path in [*ROOT.glob('*.py'), *ROOT.glob('modules/*.py')]
+            if 'APP-CREDENTIALS.txt' in path.read_text(encoding='utf-8')
+        )
+        self.assertEqual(named, ['account_store.py', 'recovery_wizard.py'])
+        recovery = (ROOT / 'recovery_wizard.py').read_text(encoding='utf-8')
+        self.assertEqual(recovery.count('APP-CREDENTIALS.txt'), recovery.count('Open it with:  sudo cat'))
 
 
 class ShowLoginTests(unittest.TestCase):
@@ -61,6 +103,24 @@ class ShowLoginTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn('account for playing music', text)
         self.assertIn('has not confirmed this login yet', text)
+
+    def test_navidromes_two_logins_say_which_one_is_yours(self):
+        # 0.50.0, item 11. A server set up before: the listener is the phones' login.
+        self.assertIn('not an administrator', setup.SHOW_HINT['navidrome_listener'])
+        self.assertIn('The administrator, for managing Navidrome', setup.SHOW_HINT['navidrome'])
+        # One whose Navidrome logins were made by 0.50.0 or later: the administrator is.
+        with tempfile.TemporaryDirectory() as folder:
+            settings = Path(folder) / 'my-config.json'
+            settings.write_text(json.dumps({'music': {'your_login': 'administrator'}}))
+            with mock.patch.object(setup, 'settings_path', side_effect=Path):
+                hints = setup.show_hints(settings)
+                self.assertIs(setup.show_hints(Path(folder) / 'missing.json'), setup.SHOW_HINT)
+        self.assertEqual(hints['navidrome'], 'Your Navidrome login, on your phone and computer too.')
+        self.assertIn("NekoServer's own login for checking the music library", hints['navidrome_listener'])
+        said = []
+        entry = {'username': 'neko_music', 'password': 'p' * 24, 'state': 'verified'}
+        setup.show_entry('navidrome', entry, lambda _: '', said.append, lambda text: '', hints)
+        self.assertIn('  Your Navidrome login, on your phone and computer too.', said)
 
     def test_never_shown_without_sudo_or_into_a_file(self):
         for kwargs, why in (({'root': False}, 'sudo'), ({'tty': False}, 'only on a screen')):

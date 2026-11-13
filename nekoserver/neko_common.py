@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.49.0'
+VERSION = '0.50.0'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -293,56 +293,12 @@ def pending_maintenance(journal=MAINTENANCE_JOURNAL, outcome='Nothing was change
     )
 
 
-def pick_drive(options, label, input_fn=input, out_fn=print, skippable=False, attempts=3, describe=None):
-    """The drive chosen by its number, then confirmed by typing its name. A typo is asked
-    again. ENTER (or Ctrl+D) stops: None when the choice may be left for later
-    (`skippable`), otherwise an error that says to run setup again. `describe` words each drive as the
-    other drive questions do (modules/storage.describe)."""
-    for n, v in enumerate(options, 1):
-        out_fn(f'  {n}) ' + (describe or drive_words)(v))
-    question = (
-        f'Choose {label} by number (Enter to skip for now): ' if skippable else 'Choose number (or ENTER to abort): '
-    )
-    stopped = f'No drive was chosen for {label}. Run  sudo bash install.sh  again to choose it; nothing was changed.'
-    for _ in range(attempts):
-        choice = typed(input_fn, question)
-        if not choice:
-            if skippable:
-                return None
-            raise RuntimeError(stopped)
-        if choice.isdigit() and 1 <= int(choice) <= len(options):
-            return confirmed(options[int(choice) - 1], label, input_fn, out_fn, attempts)
-        out_fn(f'Type a number from 1 to {len(options)}, or press Enter to stop.')
-    raise RuntimeError(stopped)
-
-
-def drive_words(v):
-    """A drive as lsblk names it, when no plainer wording is given."""
-    return f"/dev/{v['name']} {v.get('size', '')} {v['fstype']} UUID={v['uuid']} mounted={v.get('mountpoint') or '-'}"
-
-
 def typed(input_fn, question):
     """The answer, stripped; Ctrl+D is an empty answer."""
     try:
         return input_fn(question).strip()
     except EOFError:
         return ''
-
-
-def confirmed(device, label, input_fn, out_fn, attempts=3):
-    """The drive, once its name is typed back (a typo is asked again)."""
-    for _ in range(attempts):
-        if input_fn(f"Type {device['name']} to confirm it is {label}: ").strip() in (
-            device['name'],
-            '/dev/' + device['name'],
-            device['uuid'],
-        ):
-            return device
-        out_fn(f"That is not {device['name']}. Type {device['name']} exactly as shown, to be sure of the drive.")
-    raise RuntimeError(
-        f"{device['name']} was not typed back, so it was not used for {label}. Run  sudo bash install.sh  again "
-        "and type the drive's name as shown; nothing was changed."
-    )
 
 
 def nas_disk_wwn(saved, seen, label, choose):
@@ -869,7 +825,7 @@ TOP_FOLDERS = ('mnt', 'srv', 'home', 'var', 'tmp')
 
 
 # Where each app keeps your files, chosen at setup ("locations": "ssd" or "media"; the
-# apps' settings and databases always stay on the SSD, movies and TV on the media drive).
+# apps' settings and databases always stay on the SSD, movies and shows on the media drive).
 # Downloads live with the music: Lidarr moves finished downloads into the library, which
 # works only on one drive. A setting missing is the layout before 0.46.0.
 # Where each app's files live by default (shared with the runtime).
@@ -877,18 +833,89 @@ LOCATIONS = {what: (place['default'], tuple(place['folders'])) for what, place i
 DRIVE_KEYS = {'ssd': 'data_mount', 'media': 'media_mount'}
 
 
+# A drive beyond the app SSD and the media drive (0.50.0, free placement): listed under
+# "storage" by a short name of its own ("d3"), and mounted at /mnt/nekoserver-drives/d3.
+# A row's data may be put on one ("locations": {"photos": "d3"}).
+EXTRA_MOUNTS = Path('/mnt/nekoserver-drives')
+DRIVE_NAME = re.compile(r'[a-z][a-z0-9]{0,15}')
+OLD_STORAGE_KEYS = ('data_ssd', 'media_hdd')
+
+
+def extra_drives(config):
+    """{name: its record} of the drives under "storage" beyond the SSD and the media drive."""
+    storage = config.get('storage')
+    if not isinstance(storage, dict):
+        return {}
+    return {
+        name: record
+        for name, record in storage.items()
+        if name not in OLD_STORAGE_KEYS and name not in DRIVE_KEYS and isinstance(record, dict)
+    }
+
+
+def drive_folder(config, drive):
+    """Where a drive is mounted: /srv/nekoserver for "ssd", /mnt/nekoserver-media for
+    "media", /mnt/nekoserver-drives/<name> for another one under "storage"."""
+    if drive in DRIVE_KEYS:
+        return mount_path(config[DRIVE_KEYS[drive]])
+    if drive not in extra_drives(config) or not DRIVE_NAME.fullmatch(str(drive)):
+        raise RuntimeError(f'"{drive}" is not a drive under "storage" in my-config.json')
+    return EXTRA_MOUNTS / drive
+
+
+def music_backed_up(config):
+    """The nightly music copy runs on this server: Music is on, and its switch is on, or
+    the music is on a drive of its own (gate run C7: every place that holds data is in a
+    backup; the copy goes to the backups' drive, so a library beside them stays a
+    "not backed up" row of the backups page)."""
+    if not media_group(config, 'music'):
+        return False
+    if config.get('music', {}).get('backup_enabled', True) is not False:
+        return True
+    # A music folder of the person's own that they asked to back up (G7).
+    table = config.get('placement') if isinstance(config.get('placement'), dict) else {}
+    own = (table.get('music') or {}).get('extra') if isinstance(table.get('music'), dict) else None
+    if isinstance(own, list) and any(isinstance(e, dict) and e.get('backup') is True for e in own):
+        return True
+    try:
+        return location(config, 'music') not in DRIVE_KEYS
+    except RuntimeError:
+        return False
+
+
 def location(config, what):
-    """'ssd' or 'media': the drive that holds `what` (photos, music, cloud)."""
+    """The drive that holds `what` (photos, music, cloud, movies): 'ssd', 'media', or the
+    name of another drive under "storage"."""
     default, _ = LOCATIONS[what]
     chosen = (config.get('locations') or {}).get(what, default)
-    if chosen not in DRIVE_KEYS:
-        raise RuntimeError(f'locations.{what} must be "ssd" or "media"')
+    if chosen not in DRIVE_KEYS and chosen not in extra_drives(config):
+        raise RuntimeError(f'locations.{what} must be "ssd", "media" or a drive under "storage"')
     return chosen
 
 
 def files_root(config, what):
-    """The drive's folder (/srv/nekoserver or /mnt/nekoserver-media) that holds `what`."""
-    return mount_path(config[DRIVE_KEYS[location(config, what)]])
+    """The drive's folder (/srv/nekoserver, /mnt/nekoserver-media or another drive's) that
+    holds `what`."""
+    return drive_folder(config, location(config, what))
+
+
+def movies_library(config):
+    """The folder the films, the shows and their downloads are in (library/movies,
+    library/tv, library/downloads): on the media drive unless placed elsewhere."""
+    return files_root(config, 'movies') / 'library'
+
+
+# Where a group's apps keep their settings and databases when not on the apps' drive
+# (0.50.0): "install": {"photos": "d3"} in the settings, naming a drive under "storage".
+INSTALL_SECTION = 'install'
+
+
+def drives_in_use(config):
+    """The extra drives something is placed on (an app's files, or its settings and
+    database): the ones setup mounts and every job checks."""
+    placed = [config.get('locations'), config.get(INSTALL_SECTION)]
+    named = {drive for section in placed if isinstance(section, dict) for drive in section.values()}
+    return sorted(drive for drive in named if isinstance(drive, str) and drive in extra_drives(config))
 
 
 def photo_library(config):
@@ -1275,6 +1302,110 @@ def pull_images(argv, what, log=None, waits=PULL_RETRY_WAITS, sleep=time.sleep):
             sleep(wait)
 
 
+def output_within(argv, seconds, start=subprocess.Popen, now=time.monotonic, sleep=time.sleep):
+    """(exit code, what it printed) of `argv`, or None when it does not end within
+    `seconds`. For a look at a folder a shared folder may hold: one mounted hard (as setup
+    mounts them) holds every look while the NAS is away, so only this child waits; it is
+    killed, never waited for (it may stay stuck until the share answers). For short
+    answers only (a path, a word)."""
+    try:
+        child = start(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    except OSError:
+        return None
+    deadline = now() + seconds
+    while child.poll() is None:
+        if now() >= deadline:
+            child.kill()
+            with contextlib.suppress(AttributeError, OSError):
+                child.stdout.close()
+            return None
+        sleep(0.05)
+    said = child.stdout.read() if getattr(child, 'stdout', None) else ''
+    return child.returncode, said
+
+
+def answered_within(argv, seconds, start=subprocess.Popen, now=time.monotonic, sleep=time.sleep):
+    """The exit code of `argv`, or None when it does not end within `seconds` (output_within)."""
+    found = output_within(argv, seconds, start, now, sleep)
+    return None if found is None else found[0]
+
+
+# The filesystems whose folders can stop answering (a NAS that is away), and the
+# automounts that become one when first used.
+NETWORK_FILESYSTEMS = ('nfs', 'nfs4', 'cifs', 'smb3', 'smbfs', 'fuse.sshfs', 'autofs')
+MOUNTINFO = Path('/proc/self/mountinfo')
+# How long a share that did not answer counts as away without being asked again: one
+# setup run asks about the same folder many times, and each try waits its full limit.
+AWAY_FOR = 60
+_ASKED = {}  # (what, path) -> (answer, when): real paths for the run, "no answer" for AWAY_FOR
+
+
+def network_mounts(table=None):
+    """The mount points of network filesystems (and automounts) on this PC, from the
+    kernel's mount table (a file in /proc, never a look at a share). None when it can't
+    be read."""
+    try:
+        text = (table or MOUNTINFO).read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return None
+    found = []
+    for line in text.splitlines():
+        mine, _, theirs = line.partition(' - ')
+        fields, kind = mine.split(), theirs.split()[:1]
+        if len(fields) > 4 and kind and kind[0] in NETWORK_FILESYSTEMS:
+            found.append(re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), fields[4]))
+    return found
+
+
+def on_a_share(path, table=None):
+    """`path` is at or under a network mount (or that can't be told): a look at it may wait."""
+    mounts = network_mounts(table)
+    shown = str(path)
+    return mounts is None or any(shown == m or shown.startswith(m.rstrip('/') + '/') for m in mounts)
+
+
+def recently_away(path, now=time.monotonic):
+    """A look at `path` got no answer less than AWAY_FOR seconds ago."""
+    kept = _ASKED.get(('away', str(path)))
+    return bool(kept) and now() - kept[1] < AWAY_FOR
+
+
+def real_path(path, seconds=15, table=None, ask=None):
+    """os.path.realpath(path). On a share, asked by a child with a time limit (a share
+    that is away holds every look at its folders, the share's own folder too) and kept
+    for the run: None when no answer came (then not asked again for AWAY_FOR seconds).
+    A path on this PC's own drives is resolved directly."""
+    if not on_a_share(path, table):
+        return os.path.realpath(path)
+    kept = _ASKED.get(('real', str(path)))
+    if kept:
+        return kept[0]
+    if recently_away(path):
+        return None
+    found = (ask or output_within)(['realpath', '-m', '--', str(path)], seconds)
+    if found is None or found[0] != 0:
+        _ASKED[('away', str(path))] = (None, time.monotonic())
+        return None
+    answer = found[1].rstrip('\n') or None
+    _ASKED[('real', str(path))] = (answer, time.monotonic())
+    return answer
+
+
+def folder_answers(path, seconds=15, table=None):
+    """`path` is a folder, and answers within `seconds`. On a share, asked by a child
+    looking into it (`path/.`, so an automount is mounted by the look); one that did not
+    answer is not asked again for AWAY_FOR seconds. A folder on this PC's own drives is
+    looked at directly."""
+    if not on_a_share(path, table):
+        return os.path.isdir(path)
+    if recently_away(path):
+        return False
+    answered = answered_within(['test', '-d', str(path) + '/.'], seconds)
+    if answered is None:
+        _ASKED[('away', str(path))] = (None, time.monotonic())
+    return answered == 0
+
+
 def findmnt(columns, target, by='--mountpoint', run=None, timeout=10):
     """findmnt's columns for the mount in effect at target: with mounts stacked on one
     folder it lists them oldest first, and the last one is the one in use. None when
@@ -1339,11 +1470,198 @@ def atomic_json(path, payload):
     atomic_write(path, json.dumps(payload, indent=2) + '\n')
 
 
-# The optional questions setup asks when connecting the media apps, by the key their
-# last answer is kept under, and the words the next run shows them with.
+# ---- The media apps, a part of their own (since 0.50.0) ----------------------------------
+# The media apps (setup's first page; guided_setup.choose_media_apps without it): Jellyfin with Seerr, the
+# apps that find and download (Sonarr, Radarr, Lidarr, Prowlarr, qBittorrent), Immich,
+# Navidrome, video on the graphics chip, the hourly app check and the TV mode. The answer
+# is "wanted" under "media_apps"; nothing there means yes, as every server set up before
+# 0.50.0 has them. Every step that looks after these apps asks the two functions below,
+# never media.services or photos.deploy_immich alone.
+MEDIA_SECTION = 'media_apps'
+# The media apps come in three groups, each chosen on its own (the user, 2026-11-11):
+# any combination, none and photos alone included. Saved as "photos", "movies" and
+# "music" under "media_apps"; one not chosen yet is on. "wanted": false (the one yes/no
+# 0.50.0 first had, and a settings file written by hand) switches off every group that
+# has no answer of its own. Which apps a group holds is in shared.json ("groups"): an
+# app is set up when every group it names is on.
+MEDIA_GROUPS = ('photos', 'movies', 'music')
+GROUP_NAMES = {
+    'photos': 'Photos (Immich)',
+    'movies': 'Movies and shows (Jellyfin)',
+    'music': 'Music (Navidrome)',
+}
+# Finding and downloading is part of its group (the user, on seeing the first page:
+# "isn't the seer sonar radar part of jellyfin?"): Movies and shows is Jellyfin with
+# Seerr, Sonarr and Radarr; Music is Navidrome with Lidarr; Prowlarr and qBittorrent,
+# which those need, come with either. Each of the two groups has one small switch, "Also
+# find and download new ones", saved as "movies_downloads" and "music_downloads" beside
+# the groups and on unless switched off: off leaves Jellyfin, or Navidrome, alone.
+# "downloads" is not saved: it says whether any finding and downloading is set up.
+FINDING = {'movies': 'movies_downloads', 'music': 'music_downloads'}
+DOWNLOADS = 'downloads'
+APP_GROUPS = {app['id']: tuple(app.get('groups', ())) for app in SHARED['apps']}
+
+
+def server_exists(config):
+    """This PC has a NekoServer server already: one of its schedules is installed (on the
+    system disk, so it is seen with the app drive unplugged too), or Docker's folder is
+    on the app drive. Not so on a PC setup runs on for the first time."""
+    try:
+        if any(SYSTEMD_UNITS.glob('nekoserver-*')):
+            return True
+    except OSError:
+        pass
+    # The app drive's folder comes from the settings: looked at only once it is proved to
+    # be a mount folder, and Docker's folder to lie inside it with every link followed.
+    try:
+        data = os.path.realpath(mount_path(config.get('data_mount') or '/srv/nekoserver'))
+    except (RuntimeError, ValueError, TypeError):
+        return False
+    engine = os.path.realpath(os.path.join(data, 'docker-engine'))
+    return engine.startswith(data + os.sep) and os.path.isdir(engine)
+
+
+def media_group_chosen(config, group):
+    """This group has an answer: its own, or the one yes/no for all of them."""
+    section = config.get(MEDIA_SECTION)
+    return isinstance(section, dict) and (
+        isinstance(section.get(group), bool) or isinstance(section.get('wanted'), bool)
+    )
+
+
+def media_group(config, group):
+    """The group is part of this server: its own answer, else on unless "wanted" is false."""
+    section = config.get(MEDIA_SECTION)
+    if group == DOWNLOADS:
+        return any(media_group(config, of) and media_group(config, switch) for of, switch in FINDING.items())
+    if group in FINDING.values():
+        # On unless switched off (its group decides the rest: an app needs both).
+        return not (isinstance(section, dict) and section.get(group) is False)
+    if not isinstance(section, dict):
+        return True
+    if isinstance(section.get(group), bool):
+        return section[group]
+    return section.get('wanted') is not False
+
+
+def media_apps_wanted(config):
+    """Any of the media groups is part of this server."""
+    return any(media_group(config, group) for group in MEDIA_GROUPS)
+
+
+def listed(parts):
+    """'a', 'a and b', 'a, b and c'."""
+    return ', '.join(parts[:-1]) + ' and ' + parts[-1] if len(parts) > 1 else ''.join(parts)
+
+
+def drive_holds(config, key):
+    """What goes on the drive of this role ('data_ssd', 'media_hdd', 'usb'), naming only
+    what this server has (gate run C: "your apps, photos and music" with Photos off)."""
+    cloud = bool(config.get('nextcloud', {}).get('enabled', False))
+    if key == 'data_ssd':
+        return listed(
+            ['your apps'] + ['photos'] * media_group(config, 'photos') + ['music'] * media_group(config, 'music')
+        )
+    if key == 'media_hdd':
+        kept = ['movies', 'shows'] * media_group(config, 'movies') + ['Nextcloud files'] * cloud
+        return 'your ' + listed([*kept, 'the backups']) if kept else 'the backups'
+    copied = ['photos'] * immich_wanted(config) + ['Nextcloud files'] * cloud
+    return 'the weekly copy of your ' + (listed(copied) or 'files')
+
+
+def app_wanted(config, app):
+    """Every group the app belongs to is on (an app in no group is not a media app)."""
+    return all(media_group(config, group) for group in APP_GROUPS.get(app, ()))
+
+
+def media_services(config):
+    """The media apps set up: those in media.services whose groups are on (none with
+    every group off). One left out is stopped by the media step, and its data kept."""
+    return [app for app in config.get('media', {}).get('services', []) if app_wanted(config, app)]
+
+
+# Which Navidrome login the person is given. Navidrome has two: the administrator, and a
+# "listener" that is not one, which the music check signs in with (a login with the
+# least rights is the safer one to keep a token of). Up to 0.49.0 the person was given
+# the listener for their phone, so in Navidrome alone they were no administrator.
+# - A server whose Navidrome logins are made by 0.50.0 or later: the administrator, as
+#   in every other app ("your_login": "administrator" under "music", written by the
+#   App passwords step). The listener is then NekoServer's own checking account.
+# - A server set up before: the listener stays the one the guides give for phones, as
+#   they are signed in with it and Navidrome keeps playlists and favourites per
+#   account; the guides name both logins. Nothing is switched silently.
+ADMINISTRATOR = 'administrator'
+
+
+def navidrome_login(config):
+    """The saved login (account_store's name) the person signs in to Navidrome with."""
+    music = config.get('music')
+    yours = music.get('your_login') if isinstance(music, dict) else None
+    return 'navidrome' if yours == ADMINISTRATOR else 'navidrome_listener'
+
+
+def media_apps_installed(config):
+    """The media apps this server already has, Immich among them: those whose Compose
+    file is on the SSD. None on a new server (or before the SSD is mounted)."""
+    data = os.path.realpath(mount_path(config['data_mount']))
+    found = []
+    for app in (*MEDIA_APPS, 'immich'):
+        # The SSD's path comes from the settings file: a file is looked at only once it
+        # is proved to lie on the SSD with every link followed.
+        manifest = os.path.realpath(os.path.join(data, 'compose', app, 'compose.yaml'))
+        if manifest.startswith(data + os.sep) and os.path.isfile(manifest):
+            found.append(app)
+    return found
+
+
+# The steps that are only about the media apps: with them left out each one sets nothing
+# up (and stops or retires what it set up before), and nothing checks them afterwards.
+MEDIA_STEPS = (
+    'media',
+    'photos',
+    'photo_preservation',
+    'hardware_video',
+    'onboarding',
+    'music',
+    'music_backup',
+    'media_monitor',
+    'tv',
+    'app_backup',
+)
+# ... and the ones that are about one group alone.
+GROUP_STEPS = {
+    'photos': ('photos', 'photo_preservation'),
+    'movies': ('tv',),
+    'music': ('music', 'music_backup'),
+}
+
+
+def apps_to_connect(config):
+    """There are apps for the connecting step (onboarding) and the hourly check of them
+    (media_monitor) to work on: Jellyfin and its libraries, or the download apps."""
+    return media_group(config, 'movies') or media_group(config, DOWNLOADS)
+
+
+def media_steps_left_out(config):
+    """The steps that set nothing up on this server because their group is off: a
+    group's own steps, and with every group off all the media steps."""
+    if not media_apps_wanted(config):
+        return set(MEDIA_STEPS)
+    left = {step for group in MEDIA_GROUPS if not media_group(config, group) for step in GROUP_STEPS[group]}
+    return left if apps_to_connect(config) else left | {'onboarding', 'media_monitor'}
+
+
+def immich_wanted(config):
+    """Immich is set up: photos.deploy_immich, and the Photos group not left out."""
+    return media_group(config, 'photos') and config.get('photos', {}).get('deploy_immich') is True
+
+
+# The optional questions setup asks (the media apps, the backup times, and when it
+# connects the media apps), by the key their last answer is kept under, and the words
+# the next run shows them with.
 OPTIONAL_QUESTIONS = {
+    MEDIA_SECTION: 'Media apps',
     'backup_times': 'Backup times',
-    'sources': 'Download sources',
     'indexers': 'Indexers (Prowlarr)',
     'playback': 'Playback test',
 }
@@ -1588,7 +1906,14 @@ def mounted_identity(path):
     the Btrfs subvolume ("/@data"), or the folder of a drive mounted from a folder, as
     findmnt shows it in brackets (/dev/sdb1[/@data]); '' for the whole filesystem. The
     same reading as the runtime's drive check (backup.rs guard)."""
-    fields = (findmnt('UUID,FSTYPE,SOURCE', path) or '').split()
+    import nfs_exports
+
+    found = findmnt('UUID,FSTYPE,SOURCE', path) or ''
+    shared = nfs_exports.mounted(found)
+    if shared:
+        # A folder a NAS shares over NFS has no UUID: the identity made from its address.
+        return (*shared, '')
+    fields = found.split()
     if len(fields) < 3:
         return None
     tree = fields[2].split('[', 1)[1].rstrip(']').rstrip('/') if '[' in fields[2] else ''
@@ -1615,6 +1940,9 @@ def verify_storage(config, keys=('data_ssd', 'media_hdd'), ask=None):
 
     import native_runtime
 
+    if tuple(keys) == OLD_STORAGE_KEYS:
+        # ... and every other drive something is placed on (0.50.0).
+        keys = (*keys, *drives_in_use(config))
     settings = {k: config.get(k) for k in ('data_mount', 'media_mount', 'external_backup_mount', 'storage')}
     photos = config.get('photos') or {}
     settings['photos'] = {

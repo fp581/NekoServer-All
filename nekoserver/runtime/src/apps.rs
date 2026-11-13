@@ -142,11 +142,9 @@ pub fn installed(cfg: &Value) -> Vec<&'static str> {
     APPS.iter()
         .map(|a| a.0)
         .filter(|app| match *app {
-            "immich" => cfg["photos"]["deploy_immich"] == true,
+            "immich" => common::immich_wanted(cfg),
             "nextcloud" => cfg["nextcloud"]["enabled"] == true,
-            _ => cfg["media"]["services"]
-                .as_array()
-                .is_some_and(|s| s.iter().any(|v| v == app)),
+            _ => common::media_services(cfg).contains(app),
         })
         .collect()
 }
@@ -646,6 +644,16 @@ impl Close<'_> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn the_media_apps_left_out_are_not_among_the_apps() {
+        let mut cfg = serde_json::json!({"media": {"services": ["jellyfin", "sonarr"]},
+            "photos": {"deploy_immich": true}, "nextcloud": {"enabled": true}});
+        let mut all = installed(&cfg);
+        all.sort_unstable();
+        assert_eq!(all, ["immich", "jellyfin", "nextcloud", "sonarr"]);
+        cfg["media_apps"] = serde_json::json!({"wanted": false});
+        assert_eq!(installed(&cfg), ["nextcloud"]);
+    }
+    #[test]
     fn no_app_restarts_more_parts_than_the_shutdown_wait_covers() {
         for &(app, ..) in APPS.iter() {
             assert!(restart_plan(app).len() as u64 <= MOST_PARTS, "{app}");
@@ -866,7 +874,11 @@ mod tests {
             .unwrap();
         }
         fn members(&self, pids: &[u32]) {
-            let list = pids.iter().map(|p| format!("{p}\n")).collect::<String>();
+            use std::fmt::Write as _;
+            let list = pids.iter().fold(String::new(), |mut out, p| {
+                let _ = writeln!(out, "{p}");
+                out
+            });
             fs::write(
                 self.root
                     .join("cgroup")

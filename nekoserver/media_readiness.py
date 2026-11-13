@@ -2,7 +2,7 @@
 
 import json
 from media_libraries import Client, SetupRequired, folders, matching, LIBRARIES, open_seerr, row, readiness_key_path
-from neko_common import safe_path
+from neko_common import media_services, safe_path
 import seerr_providers
 
 # Checks only a person can do (a real playback or transfer). They are listed so the
@@ -53,14 +53,9 @@ def jellyfin_key(root, settings, server_id):
     )
 
 
-def refuse_prompt(_):
-    """The prompt a read-only readiness check hands out: it must never be asked anything."""
-    raise RuntimeError('Readiness must not prompt')
-
-
 def check(config, factory=ReadClient):
     root = safe_path(config['data_mount'])
-    apps = config.get('media', {}).get('services', [])
+    apps = media_services(config)
     results = []
     ids = []
     server_id = None
@@ -138,7 +133,6 @@ def check(config, factory=ReadClient):
                 apps=apps,
                 factory=factory,
                 verify_only=True,
-                prompt=refuse_prompt,
             )
     if 'navidrome' in apps:
         import music_client

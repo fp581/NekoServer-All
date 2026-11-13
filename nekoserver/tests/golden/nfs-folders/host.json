@@ -1,0 +1,222 @@
+{
+  "data_mount": "/srv/nekoserver",
+  "media_mount": "/mnt/nekoserver-media",
+  "storage": {
+    "data_ssd": {
+      "uuid": "1a2b3c4d-0001-4000-8000-00000000aaaa",
+      "fstype": "ext4"
+    },
+    "media_hdd": {
+      "uuid": "nfs-d7281cdfb4f7e9efe3f0cdfdc34adbd8",
+      "fstype": "nfs4",
+      "network": {
+        "transport": "nfs",
+        "export": "192.168.1.50:/volume1/media"
+      }
+    }
+  },
+  "paths": {
+    "photos": "/srv/nekoserver/photos/immich-library",
+    "music": "/srv/nekoserver/library/music",
+    "downloads": "/srv/nekoserver/library/downloads/music",
+    "cloud": "/mnt/nekoserver-media/cloud/files"
+  },
+  "backup_drive": {
+    "export": "192.168.1.50:/volume1/backup"
+  },
+  "network_storage": {
+    "wanted": true
+  },
+  "host_backup": {
+    "sources": [
+      {
+        "id": "source0",
+        "path": "/srv/nekoserver/installer/releases",
+        "optional": true
+      },
+      {
+        "id": "source1",
+        "path": "/srv/nekoserver/gateway",
+        "optional": true
+      },
+      {
+        "id": "source2",
+        "path": "/etc/systemd/system/nekoserver-host-backup.service",
+        "optional": true
+      },
+      {
+        "id": "source3",
+        "path": "/etc/systemd/system/nekoserver-host-backup.timer",
+        "optional": true
+      },
+      {
+        "id": "source4",
+        "path": "/etc/systemd/system/nekoserver-host-resume.service",
+        "optional": true
+      },
+      {
+        "id": "source5",
+        "path": "/etc/fstab",
+        "optional": true
+      },
+      {
+        "id": "source6",
+        "path": "/etc/hostname",
+        "optional": true
+      },
+      {
+        "id": "source7",
+        "path": "/etc/hosts",
+        "optional": true
+      },
+      {
+        "id": "source8",
+        "path": "/etc/locale.conf",
+        "optional": true
+      },
+      {
+        "id": "source9",
+        "path": "/etc/vconsole.conf",
+        "optional": true
+      },
+      {
+        "id": "source10",
+        "path": "/etc/passwd",
+        "optional": true
+      },
+      {
+        "id": "source11",
+        "path": "/etc/group",
+        "optional": true
+      },
+      {
+        "id": "source12",
+        "path": "/etc/docker/daemon.json",
+        "optional": true
+      },
+      {
+        "id": "source13",
+        "path": "/etc/iscsi/initiatorname.iscsi",
+        "optional": true
+      },
+      {
+        "id": "source14",
+        "path": "/etc/modules-load.d/nekoserver-i2c.conf",
+        "optional": true
+      },
+      {
+        "id": "source15",
+        "path": "/var/lib/nekoserver-openrgb/OpenRGB/OpenRGB.json",
+        "optional": true
+      },
+      {
+        "id": "source16",
+        "path": "/var/lib/nekoserver-openrgb/OpenRGB/sizes.ors",
+        "optional": true
+      },
+      {
+        "id": "source17",
+        "path": "/etc/pacman.conf",
+        "optional": true
+      },
+      {
+        "id": "source18",
+        "path": "/etc/pacman.d/mirrorlist",
+        "optional": true
+      },
+      {
+        "id": "source19",
+        "path": "/etc/nekoserver-backups",
+        "optional": true
+      },
+      {
+        "id": "source20",
+        "path": "/etc/nekoserver-os",
+        "optional": true
+      },
+      {
+        "id": "source21",
+        "path": "/etc/nekoserver-notifications",
+        "optional": true
+      },
+      {
+        "id": "source22",
+        "path": "/etc/nekoserver-gateway",
+        "optional": true
+      },
+      {
+        "id": "source23",
+        "path": "/etc/nekoserver-heartbeat",
+        "optional": true
+      },
+      {
+        "id": "source24",
+        "path": "/etc/systemd/sleep.conf.d",
+        "optional": true
+      },
+      {
+        "id": "source25",
+        "path": "/etc/systemd/logind.conf.d",
+        "optional": true
+      },
+      {
+        "id": "source26",
+        "path": "/etc/systemd/journald.conf.d",
+        "optional": true
+      },
+      {
+        "id": "source27",
+        "path": "/etc/nekoserver-control",
+        "optional": true
+      },
+      {
+        "id": "source28",
+        "path": "/etc/nekoserver-dashboard",
+        "optional": true
+      },
+      {
+        "id": "source29",
+        "path": "/etc/systemd/system/docker.service.d",
+        "optional": true
+      },
+      {
+        "id": "source30",
+        "path": "/etc/systemd/system/smb.service.d",
+        "optional": true
+      },
+      {
+        "id": "source31",
+        "path": "/home/neko/.local/share/Steam/config",
+        "optional": true,
+        "steam": true
+      },
+      {
+        "id": "source32",
+        "path": "/home/neko/.local/share/Steam/userdata",
+        "optional": true,
+        "steam": true
+      },
+      {
+        "id": "source33",
+        "path": "/home/neko/.local/share/Steam/steamapps/compatdata",
+        "optional": true,
+        "steam": true
+      },
+      {
+        "id": "source34",
+        "path": "/etc/samba",
+        "optional": true
+      },
+      {
+        "id": "source35",
+        "path": "/var/lib/samba",
+        "optional": true
+      }
+    ],
+    "samba": true,
+    "steam_uid": 1000,
+    "user": "neko",
+    "minimum_free_bytes": 2147483648,
+    "keep_snapshots": 3
+  }
+}

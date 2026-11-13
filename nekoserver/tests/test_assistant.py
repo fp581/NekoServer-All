@@ -254,12 +254,16 @@ class ChoiceTests(unittest.TestCase):
         self.assertEqual(answers, {'0': 'none', '': 'none', '1': 'qwen3.5:2b-q4_K_M', '2': 'qwen3.5:4b'})
         self.assertIn('2) qwen3.5:4b (recommended)', text)
         self.assertNotIn('1) qwen3.5:2b-q4_K_M (recommended)', text)
-        self.assertIn('Not possible here: qwen3.5:9b needs about 9 GB free; this PC has 6.3 GB free', text)
+        self.assertIn(
+            'Not possible here: qwen3.5:9b needs about 9 GB; this PC has 9.5 GB free with your apps running, '
+            'and keeps 3.2 GB for the apps to grow into, which leaves 6.3 GB for the assistant.',
+            text,
+        )
 
     def test_each_choice_says_what_it_costs_this_pc(self):
         text = '\n'.join(assistant.choices(16, 6.3, 8)[0])
         self.assertIn('This PC has 16 GB of memory', text)
-        self.assertIn('6.3 GB are free for the assistant', text)
+        self.assertIn('which leaves 6.3 GB for the assistant', text)
         self.assertIn('Downloads 3.3 GB', text)
         self.assertIn('about 5 GB of your 16 GB', text)
         self.assertIn('up to 4 of your 8 processor cores', text)
@@ -286,17 +290,17 @@ class ChoiceTests(unittest.TestCase):
         self.assertEqual(said.count('Type a number from 0 to 2, or press Enter.'), 2)
 
     def test_the_memory_limit_is_the_models_measured_need(self):
-        self.assertEqual(assistant.fitting({'assistant': {'model': 'qwen3.5:9b'}}, 9.5), ('qwen3.5:9b', 6.6, '9g'))
+        self.assertEqual(assistant.fitting({'assistant': {'model': 'qwen3.5:9b'}}, 16, 9.5), ('qwen3.5:9b', 6.6, '9g'))
 
     def test_a_chosen_model_that_no_longer_fits_is_said(self):
         with self.assertRaises(assistant.NotHere) as caught:
-            assistant.fitting({'assistant': {'model': 'qwen3.5:9b'}}, 6)
-        self.assertIn('qwen3.5:9b needs about 9 GB free', str(caught.exception))
+            assistant.fitting({'assistant': {'model': 'qwen3.5:9b'}}, 16, 6)
+        self.assertIn('qwen3.5:9b needs about 9 GB', str(caught.exception))
 
     def test_a_model_named_by_hand_gets_the_room_left(self):
-        self.assertEqual(assistant.fitting({'assistant': {'model': 'gemma4:12b'}}, 10.4), ('gemma4:12b', 7, '10g'))
+        self.assertEqual(assistant.fitting({'assistant': {'model': 'gemma4:12b'}}, 16, 10.4), ('gemma4:12b', 7, '10g'))
         with self.assertRaises(assistant.NotHere):
-            assistant.fitting({'assistant': {'model': 'gemma4:12b'}}, 0.5)
+            assistant.fitting({'assistant': {'model': 'gemma4:12b'}}, 16, 0.5)
 
     def test_no_room_any_more_stops_a_running_assistant(self):
         ctx = context({'assistant': {'wanted': True, 'model': 'qwen3.5:9b'}})
@@ -365,7 +369,7 @@ class CapabilityTests(unittest.TestCase):
             assistant.processor_ok(lambda: 'x86_64', self.cpuinfo('sse4_2'))
             assistant.port_free_for_us({'data_mount': tmp}, connect=mock.Mock(side_effect=OSError))
             assistant.memory_now()
-            assistant.check_space({'data_mount': tmp}, 3.3, lambda p: SimpleNamespace(free=10**12))
+            assistant.check_space({'data_mount': tmp}, 'qwen3.5:4b', 3.3, lambda p: SimpleNamespace(free=10**12))
 
 
 class MemoryTests(unittest.TestCase):
@@ -387,11 +391,38 @@ class MemoryTests(unittest.TestCase):
         room = assistant.memory_for_model(5.8, 1.5)
         self.assertEqual(assistant.fits(room), [])
         with self.assertRaises(assistant.NotHere):
-            assistant.fitting({'assistant': {'model': 'qwen3.5:0.8b'}}, room)
+            assistant.fitting({'assistant': {'model': 'qwen3.5:0.8b'}}, 5.8, room)
 
     def test_the_reserve_is_twenty_percent_or_two_gb(self):
         self.assertAlmostEqual(assistant.memory_for_model(16, 11), 11 - 3.2)
         self.assertAlmostEqual(assistant.memory_for_model(8, 7), 7 - 2)
+
+    def test_page_cache_counts_as_free(self):
+        """Gate run B: a 3 GB server said "0.0 GB free with your apps running". The figure
+        is MemAvailable (the page cache Linux gives back counts as free), never MemFree."""
+        with tempfile.NamedTemporaryFile('w', suffix='meminfo') as f:
+            f.write('MemTotal: 2936012 kB\nMemFree: 104857 kB\nMemAvailable: 1677721 kB\nCached: 1400000 kB\n')
+            f.flush()
+            total, available = assistant.memory_now(f.name)
+        self.assertAlmostEqual(available, 1.6, places=2)
+        # The dashboard counts memory the same way (its "used" is MemTotal less MemAvailable).
+        source = (ROOT / 'runtime' / 'src' / 'collect.rs').read_text()
+        self.assertIn('Some("MemAvailable:")', source)
+        self.assertNotIn('MemFree', source)
+
+    def test_the_message_says_the_free_memory_and_the_reserve_apart(self):
+        """The same server: 1.6 GB free, 2 GB kept for the apps, so nothing is left. Each
+        number is said, so "0.0" no longer reads as a wrong measurement."""
+        total, available = 2.8, 1.6
+        room = assistant.memory_for_model(total, available)
+        said = assistant.not_enough(total, room, 3)
+        self.assertEqual(
+            said,
+            'there is not enough free memory: a model needs about 3 GB, and this PC has 1.6 GB free with your '
+            'apps running, and keeps 2.0 GB for the apps to grow into, which leaves 0.0 GB for the assistant',
+        )
+        before = assistant.room_said(total, assistant.memory_for_model(total, 2.2), running=False)
+        self.assertTrue(before.startswith('2.2 GB free, and keeps 2.0 GB'), before)
 
     def test_setup_run_again_counts_the_assistants_own_use_as_free(self):
         self.assertAlmostEqual(assistant.memory_for_model(16, 5, own=6), assistant.memory_for_model(16, 11))
@@ -420,15 +451,19 @@ class MemoryTests(unittest.TestCase):
 class SpaceTests(unittest.TestCase):
     def test_too_little_ssd_space_is_not_available(self):
         with tempfile.TemporaryDirectory() as tmp, self.assertRaises(assistant.NotHere) as caught:
-            assistant.check_space({'data_mount': tmp}, 3.3, lambda p: SimpleNamespace(free=12 * 1000**3))
+            assistant.check_space({'data_mount': tmp}, 'qwen3.5:4b', 3.3, lambda p: SimpleNamespace(free=12 * 1000**3))
         self.assertIn('needs 19 GB free', str(caught.exception))
 
     def test_setup_run_again_does_not_count_what_is_there_already(self):
         with tempfile.TemporaryDirectory() as tmp:
             installed_project(tmp)
-            assistant.check_space({'data_mount': tmp}, 3.3, lambda p: SimpleNamespace(free=12 * 1000**3))
+            record = Path(tmp) / 'appdata/assistant/models/models/manifests/registry.ollama.ai/library/qwen3.5/4b'
+            record.parent.mkdir(parents=True)
+            record.write_text('{}')
+            config = {'data_mount': tmp}
+            assistant.check_space(config, 'qwen3.5:4b', 3.3, lambda p: SimpleNamespace(free=12 * 1000**3))
             with self.assertRaises(assistant.NotHere):
-                assistant.check_space({'data_mount': tmp}, 3.3, lambda p: SimpleNamespace(free=8 * 1000**3))
+                assistant.check_space(config, 'qwen3.5:4b', 3.3, lambda p: SimpleNamespace(free=8 * 1000**3))
 
 
 class TemplateTests(unittest.TestCase):

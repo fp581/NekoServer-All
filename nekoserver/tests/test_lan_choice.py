@@ -62,77 +62,88 @@ class LanChoiceTests(unittest.TestCase):
         ctx.persist_config = lambda: saved.append(dict(ctx.config['gateway']))
         return ctx, saved
 
-    def test_the_choice_is_asked_once_and_saved(self):
-        ctx, saved = self.ctx(lan_ip='auto', lan_cidr='auto')
-        with mock.patch.object(network_access, 'candidates', return_value=ROWS):
-            self.assertTrue(network_access.choose_lan(ctx, output=lambda *_: None, ask=lambda _: '1', interactive=True))
-            self.assertEqual(ctx.config['gateway'], {'lan_ip': '192.168.1.20', 'lan_cidr': '192.168.1.0/24'})
-            self.assertEqual(saved, [ctx.config['gateway']])
-            # The next step (the gateway after Samba, say) uses the answer without asking.
-            never = mock.Mock(side_effect=AssertionError('asked twice'))
-            self.assertTrue(network_access.choose_lan(ctx, output=lambda *_: None, ask=never, interactive=True))
+    # The user, 2026-11-11: "There is no reason for the local home pc to not use the local
+    # network so I don't get the question." Setup chooses by itself and says which.
+    CABLE = {'interface': 'enp3s0', 'ip': '192.168.1.50', 'cidr': '192.168.1.0/24'}
+    CABLE_2 = {'interface': 'enp4s0', 'ip': '192.168.7.9', 'cidr': '192.168.7.0/24'}
+    WIFI = {'interface': 'wlp2s0', 'ip': '192.168.1.73', 'cidr': '192.168.1.0/24'}
 
-    def test_an_address_the_router_changed_is_asked_again(self):
-        ctx, _ = self.ctx(lan_ip='192.168.1.77', lan_cidr='192.168.1.0/24')
+    def choose(self, rows, route=None, **gateway):
+        """choose_lan on a PC with these connections: (the settings after, what was said, what was saved)."""
+        ctx, saved = self.ctx(**(gateway or {'lan_ip': 'auto', 'lan_cidr': 'auto'}))
         shown = []
-        with mock.patch.object(network_access, 'candidates', return_value=ROWS):
-            self.assertTrue(network_access.choose_lan(ctx, output=shown.append, ask=lambda _: '1', interactive=True))
-        self.assertEqual(ctx.config['gateway']['lan_ip'], '192.168.1.20')
-        self.assertIn('no longer 192.168.1.77', ' '.join(shown))
-        # Nobody to choose: a clear message instead of "not on an active physical LAN interface".
-        ctx, _ = self.ctx(lan_ip='192.168.1.77', lan_cidr='192.168.1.0/24')
         with (
-            mock.patch.object(network_access, 'candidates', return_value=ROWS),
-            self.assertRaisesRegex(RuntimeError, 'router gave it another one.*in a terminal'),
+            mock.patch('builtins.input', side_effect=AssertionError('a question was asked')),
+            mock.patch.object(network_access, 'candidates', return_value=rows),
+            mock.patch.object(network_access, 'wireless', lambda name, sys_net=None: name.startswith('wl')),
+            mock.patch.object(network_access, 'default_route', return_value=route),
         ):
-            network_access.choose_lan(ctx, output=lambda *_: None, interactive=False)
+            self.assertTrue(network_access.choose_lan(ctx, output=shown.append))
+        return ctx.config['gateway'], shown, saved
 
-    def test_the_only_network_is_used_without_asking(self):
-        """The user's choice after a fresh Debian VM install: with one network that can be
-        the home network, setup uses it (and says which), with or without a keyboard."""
-        never = mock.Mock(side_effect=AssertionError('asked'))
-        for interactive in (True, False):
-            ctx, saved = self.ctx(lan_ip='auto', lan_cidr='auto')
-            shown = []
-            with mock.patch.object(network_access, 'candidates', return_value=ROWS[:1]):
-                self.assertTrue(network_access.choose_lan(ctx, output=shown.append, ask=never, interactive=interactive))
-            self.assertEqual(ctx.config['gateway'], {'lan_ip': '192.168.1.20', 'lan_cidr': '192.168.1.0/24'})
-            self.assertEqual(shown, ['Home network: enp3s0 · 192.168.1.20 · 192.168.1.0/24'])
-            self.assertEqual(saved, [ctx.config['gateway']])
-        # Two are still asked about; none is still said plainly.
-        asked = []
+    def test_one_connection_is_used_and_said(self):
+        gateway, shown, saved = self.choose([self.CABLE])
+        self.assertEqual(gateway, {'lan_ip': '192.168.1.50', 'lan_cidr': '192.168.1.0/24'})
+        self.assertEqual(shown, ['Home network: using your cable connection, 192.168.1.50'])
+        self.assertEqual(saved, [gateway])
+        gateway, shown, _ = self.choose([self.WIFI])
+        self.assertEqual(shown, ['Home network: using your Wi-Fi connection, 192.168.1.73'])
+
+    def test_a_cable_is_taken_before_wi_fi_whichever_is_listed_first(self):
+        for rows in ([self.CABLE, self.WIFI], [self.WIFI, self.CABLE]):
+            # Even when the internet goes out through the Wi-Fi.
+            gateway, shown, _ = self.choose(rows, route='wlp2s0')
+            self.assertEqual(gateway['lan_ip'], '192.168.1.50')
+            self.assertEqual(shown, ['Home network: using your cable connection, 192.168.1.50'])
+
+    def test_of_two_cables_the_one_the_internet_goes_through_is_taken(self):
+        self.assertEqual(self.choose([self.CABLE, self.CABLE_2], route='enp4s0')[0]['lan_ip'], '192.168.7.9')
+        self.assertEqual(self.choose([self.CABLE, self.CABLE_2], route='enp3s0')[0]['lan_ip'], '192.168.1.50')
+        # Neither carries it (or it cannot be told): the first Linux lists.
+        self.assertEqual(self.choose([self.CABLE, self.CABLE_2], route='')[0]['lan_ip'], '192.168.1.50')
+
+    def test_a_rerun_keeps_the_connection_the_server_uses_while_it_is_up(self):
+        saved_before = {'lan_ip': '192.168.1.73', 'lan_cidr': '192.168.1.0/24'}  # set up on Wi-Fi
+        gateway, shown, saved = self.choose([self.CABLE, self.WIFI], **saved_before)
+        self.assertEqual(gateway, saved_before)  # a cable plugged in since changes nothing
+        self.assertEqual((shown, saved), ([], []))
+
+    def test_a_rerun_whose_connection_is_gone_chooses_again_and_says_so(self):
+        gateway, shown, saved = self.choose([self.CABLE], lan_ip='192.168.1.77', lan_cidr='192.168.1.0/24')
+        self.assertEqual(gateway['lan_ip'], '192.168.1.50')
+        self.assertIn('no longer 192.168.1.77', shown[0])
+        self.assertIn('Reserve the new address for this server in your router', shown[0])
+        self.assertEqual(shown[1], 'Home network: using your cable connection, 192.168.1.50')
+        self.assertEqual(saved, [gateway])
+
+    def test_nothing_is_asked_with_or_without_a_keyboard(self):
         ctx, _ = self.ctx(lan_ip='auto', lan_cidr='auto')
-        with mock.patch.object(network_access, 'candidates', return_value=ROWS):
-            network_access.choose_lan(
-                ctx, output=lambda *_: None, ask=lambda q: asked.append(q) or '2', interactive=True
-            )
-        self.assertEqual((len(asked), ctx.config['gateway']['lan_ip']), (1, '10.0.0.5'))
+        with (
+            mock.patch.object(network_access, 'candidates', return_value=[self.CABLE, self.WIFI]),
+            mock.patch.object(network_access, 'wireless', lambda name, sys_net=None: name.startswith('wl')),
+            mock.patch.object(network_access, 'default_route', return_value=None),
+        ):
+            self.assertTrue(network_access.choose_lan(ctx, output=lambda *_: None))
+        self.assertEqual(ctx.config['gateway']['lan_ip'], '192.168.1.50')
+        source = (ROOT / 'network_access.py').read_text()
+        self.assertNotIn('questions.ask', source)
+        self.assertNotIn('def pick(', source)
+
+    def test_a_pc_that_is_not_connected_is_told_so_plainly(self):
         ctx, _ = self.ctx(lan_ip='auto', lan_cidr='auto')
         with (
             mock.patch.object(network_access, 'candidates', return_value=[]),
-            self.assertRaisesRegex(RuntimeError, 'no home-network address setup can use'),
+            self.assertRaisesRegex(
+                RuntimeError, 'This PC is not connected to your home network. Plug in a network cable'
+            ),
         ):
-            network_access.choose_lan(ctx, output=lambda *_: None, ask=never, interactive=True)
-
-    def test_without_anyone_to_choose_nothing_is_guessed(self):
-        ctx, saved = self.ctx(lan_ip='auto', lan_cidr='auto')
-        with mock.patch.object(network_access, 'candidates', return_value=ROWS):
-            self.assertFalse(network_access.choose_lan(ctx, output=lambda *_: None, interactive=False))
-        self.assertEqual((ctx.config['gateway']['lan_ip'], saved), ('auto', []))
-        # A wrong number is asked again (not a failed step); three wrong ones, or
-        # Ctrl+D, leave the choice for next time.
-        ctx, _ = self.ctx(lan_ip='auto', lan_cidr='auto')
-        answers = iter(['7', 'x', '1'])
-        with mock.patch.object(network_access, 'candidates', return_value=ROWS), mock.patch('builtins.print'):
-            self.assertTrue(
-                network_access.choose_lan(ctx, output=lambda *_: None, ask=lambda _: next(answers), interactive=True)
-            )
-        ctx, _ = self.ctx(lan_ip='auto', lan_cidr='auto')
-        with mock.patch.object(network_access, 'candidates', return_value=ROWS), mock.patch('builtins.print'):
-            self.assertFalse(
-                network_access.choose_lan(ctx, output=lambda *_: None, ask=lambda _: '7', interactive=True)
-            )
-        self.assertEqual(ctx.config['gateway']['lan_ip'], 'auto')
+            network_access.choose_lan(ctx, output=lambda *_: None)
+        routes = '[{"dst": "default", "gateway": "192.168.1.1", "dev": "enp3s0"}]'
+        self.assertEqual(network_access.default_route(lambda argv: routes), 'enp3s0')
+        self.assertIsNone(network_access.default_route(lambda argv: '[]'))
+        # No check of its own before the first download (the user: setup cannot start
+        # without the internet anyway): a download that fails says so, with Retry.
+        self.assertNotIn('network_access', (ROOT / 'modules/system.py').read_text())
 
     def test_samba_chooses_the_lan_itself_instead_of_waiting_for_the_gateway(self):
         ctx, _ = self.ctx(lan_ip='auto', lan_cidr='auto')
@@ -322,11 +333,49 @@ class SambaAccountTests(unittest.TestCase):
 
 
 class SambaPasswordTests(unittest.TestCase):
+    def password(self, typed, code=0):
+        """samba_password with these lines typed; (its answer, smbpasswd's calls, what was said)."""
+        answers, calls, said = iter(typed), [], []
+
+        def run(argv, **kwargs):
+            calls.append((argv, kwargs.get('input')))
+            return mock.Mock(returncode=code, stderr='Failed to add entry', stdout='')
+
+        done = samba.samba_password('neko', run=run, ask=lambda prompt: next(answers), output=said.append)
+        return done, calls, said
+
     def test_a_mistyped_password_is_asked_again(self):
-        codes = iter([1, 0])
-        with mock.patch('builtins.print'):
-            self.assertTrue(samba.samba_password('neko', run=lambda argv, **_: mock.Mock(returncode=next(codes))))
-            self.assertFalse(samba.samba_password('neko', run=lambda argv, **_: mock.Mock(returncode=1)))
+        chosen = 'chosen-' + 'x' * 9  # made here, not a literal
+        done, calls, said = self.password(['one', 'other', chosen, chosen])
+        self.assertTrue(done)
+        self.assertEqual(said, ['The two did not match (or were empty). Try again.'])
+        # Given to smbpasswd on its input, twice, never on its command line.
+        self.assertEqual(calls, [(['smbpasswd', '-s', '-a', 'neko'], f'{chosen}\n{chosen}\n')])
+
+    def test_three_mismatches_or_an_empty_one_set_nothing(self):
+        done, calls, _ = self.password(['a', 'b', '', '', 'c', 'd'])
+        self.assertFalse(done)
+        self.assertEqual(calls, [])
+
+    def test_a_smbpasswd_that_hangs_is_said_not_a_traceback(self):
+        import subprocess
+
+        said = []
+
+        def run(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, 60)
+
+        chosen = 'chosen-' + 'y' * 9  # made here, not a literal
+        typed = iter([chosen, chosen])
+        done = samba.samba_password('neko', run=run, ask=lambda prompt: next(typed), output=said.append)
+        self.assertFalse(done)
+        self.assertEqual(said, ['Samba did not take that password: smbpasswd gave no answer within a minute'])
+
+    def test_a_password_samba_refuses_is_said_and_sets_nothing(self):
+        done, calls, said = self.password(['same', 'same'], code=1)
+        self.assertFalse(done)
+        self.assertEqual(said, ['Samba did not take that password: Failed to add entry'])
+        self.assertEqual(len(calls), 1)
 
 
 class SambaRewriteTests(unittest.TestCase):

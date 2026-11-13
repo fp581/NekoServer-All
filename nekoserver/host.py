@@ -1058,6 +1058,8 @@ class Debian(PackageLock, Family):
             'vulkan-radeon': 'mesa-vulkan-drivers',
             'lib32-vulkan-radeon': 'mesa-vulkan-drivers:i386',
             'bluez-utils': 'bluez',
+            # The NFS tools (network_storage, a folder a NAS shares).
+            'nfs-utils': 'nfs-common',
             # Building the runtime: Rust comes as two packages here.
             'rust': ('rustc', 'cargo'),
         }
@@ -1852,6 +1854,8 @@ class Suse(Fedora):
             'bluez-utils': 'bluez',
             # Lighting: openSUSE spells the package with capitals (Tumbleweed has it).
             'openrgb': 'OpenRGB',
+            # The NFS tools (network_storage, a folder a NAS shares).
+            'nfs-utils': 'nfs-client',
             # Building the runtime: Rust comes as two packages here.
             'rust': ('rust', 'cargo'),
         }

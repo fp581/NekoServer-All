@@ -7,7 +7,6 @@ Runs locally, never exports secrets, and distinguishes configuration from valida
 import argparse
 import json
 import os
-import subprocess
 import sys
 import time
 import urllib.error
@@ -18,6 +17,7 @@ from pathlib import Path
 import media_libraries
 import media_readiness
 import seerr_providers
+from setup_progress import run_program
 from neko_common import (
     LOCATIONS,
     MEDIA_APPS,
@@ -25,6 +25,7 @@ from neko_common import (
     atomic_json,
     checked_settings,
     default_settings,
+    files_root,
     local_opener,
     music_library,
     safe_path,
@@ -173,7 +174,10 @@ def main(argv=None):
         if pending:
             print('Startup wait ended; still unavailable:', ', '.join(pending))
     music = music_library({**config, 'data_mount': str(root), 'media_mount': str(media)})
-    findings = report(root, media, not a.skip_http, apps, music)
+    # The films and shows are looked for on the drive they are placed on (the media drive
+    # unless placed elsewhere, or the folder given by hand).
+    films = media if a.media_root else files_root({**config, 'data_mount': str(root)}, 'movies')
+    findings = report(root, films, not a.skip_http, apps, music)
     output = root / 'reports' / 'onboarding.json'
     safe_report(output, findings)
     for r in findings:
@@ -184,22 +188,16 @@ def main(argv=None):
         p.error('--report-only cannot configure or import sources')
     if a.sources:
         wizard = Path(__file__).with_name('source-wizard.py')
-        result = subprocess.call(
-            [
-                sys.executable,
-                str(wizard),
-                '--config',
-                str(Path(a.config).resolve()),
-                '--output',
-                str(root / 'config' / 'media-sources.json'),
-            ]
+        # Each program below runs inside this process (run_program), so what it asks is
+        # asked in the setup window too when setup started this one.
+        result = run_program(
+            wizard,
+            ['--config', Path(a.config).resolve(), '--output', root / 'config' / 'media-sources.json'],
         )
         source_results.append({'check': 'source_inventory', 'status': 'pass' if result == 0 else 'fail'})
     if a.import_sources or a.sources:
         script = Path(__file__).with_name('source_import.py')
         cmd = [
-            sys.executable,
-            str(script),
             '--config',
             str(Path(a.config).resolve()),
             '--sources',
@@ -213,12 +211,18 @@ def main(argv=None):
             cmd.append('--selected-only')
         if a.apply:
             cmd.append('--apply')
-        result = subprocess.call(cmd)
+        result = run_program(script, cmd)
         source_results.append({'check': 'source_import', 'status': {0: 'pass', 1: 'needs_setup'}.get(result, 'fail')})
     findings += source_results
     library_results = []
     if a.libraries:
-        library_results = media_libraries.configure(root, media, a.apply, apps)
+        import existing_page
+
+        library_results = media_libraries.configure(
+            root, media, a.apply, apps, more=existing_page.libraries(config, a.apply)
+        )
+        # Navidrome's library for the person's own music folder, used where it is.
+        library_results += existing_page.music_libraries(config, a.apply)
         if a.request_providers:
             library_results = [r for r in library_results if r['check'] != 'seerr:request_providers']
         findings += library_results
@@ -226,7 +230,9 @@ def main(argv=None):
             print(f"{r['status']:>11}  {r['check']}" + (': ' + r['reason'] if r.get('reason') else ''))
     if a.report_only or not a.configure:
         if a.request_providers:
-            provider_results = seerr_providers.configure(root, a.apply, apps)
+            provider_results = seerr_providers.configure(
+                root, a.apply, apps, folders=seerr_providers.request_folders(config)
+            )
             findings += provider_results
             for r in provider_results:
                 print(f"{r['status']:>11}  {r['check']}" + (': ' + r['reason'] if r.get('reason') else ''))
@@ -250,7 +256,7 @@ def main(argv=None):
     script = Path(__file__).with_name('media-connect.py')
     if not script.is_file():
         p.error('media-connect.py is missing')
-    cmd = [sys.executable, str(script), '--config', str(Path(a.config).resolve()), '--data-root', str(root)]
+    cmd = ['--config', str(Path(a.config).resolve()), '--data-root', str(root)]
     managers = {'sonarr', 'radarr', 'lidarr'} & set(apps)
     if managers:
         cmd += ['--root-folders', '--media-root', str(media)]
@@ -271,13 +277,15 @@ def main(argv=None):
     if has_connector:
         print('Configuring selected Arr root folders, Prowlarr and download-client connections.')
         print('Indexer selection is optional; existing sources will be preserved.')
-        result = subprocess.call(cmd)
+        result = run_program(script, cmd)
     provider_results = []
     if a.request_providers:
-        provider_results = seerr_providers.configure(root, a.apply, apps)
+        provider_results = seerr_providers.configure(
+            root, a.apply, apps, folders=seerr_providers.request_folders(config)
+        )
         for r in provider_results:
             print(f"{r['status']:>11}  {r['check']}" + (': ' + r['reason'] if r.get('reason') else ''))
-    findings = report(root, media, not a.skip_http, apps, music)
+    findings = report(root, films, not a.skip_http, apps, music)
     findings += source_results
     findings += library_results
     findings += provider_results

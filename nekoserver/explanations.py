@@ -7,8 +7,8 @@ module adds the one-line explanation under each."""
 # What each step does, in one line a person who never ran a server can follow.
 STEP_EXPLANATIONS = {
     'system': 'Checks this PC: processor, memory, Python, Docker, firewall and the Linux it runs.',
-    'network_storage': 'Connects the drives on your network storage box (NAS) over iSCSI, when you switched that on.',
-    'storage': 'Asks which drive is the SSD (apps), the HDD (your media) and the USB drive (backups), and mounts them.',
+    'network_storage': 'Connects the drives on your NAS, over iSCSI or NFS, when you switched that on.',
+    'storage': 'Asks which drives hold the apps, your media and the backups (one drive is enough), and mounts them.',
     'capacity': 'Makes sure each drive has room for what will go on it.',
     'recovery': 'Keeps a copy of NekoServer and your settings on the SSD, so a reinstall can find them.',
     'account_credentials': 'Prepares a username and password for every app (random, or ones you choose).',
@@ -65,88 +65,334 @@ PACKAGES = {
     'bluez': 'Bluetooth, for controllers and headphones',
     'bluez-utils': 'The Bluetooth command-line tools',
     'python3': 'The language setup is written in',
-    'open-iscsi': "Connects this PC to the disks on your network storage box (iSCSI)",
+    'open-iscsi': "Connects this PC to the disks on your NAS (iSCSI)",
+    'nfs-utils': 'Opens the folders your NAS shares (NFS)',
 }
 
-# The parts a person can leave out. `section`/`key` is where the choice is saved in
-# my-config.json; `on_default` is what setup assumes when nothing was chosen.
+# Setup's first page, "What would you like this server to do?": every part a person can
+# leave out, chosen once, here. No step asks about one of them again.
+# `section`/`key` is where the choice is saved in my-config.json. `part` is the heading it
+# is listed under (PARTS). `on_default` is what a server set up before has when nothing
+# was saved; `new_default` what a new server is offered (an extra is an opt-in there).
+PAGE_TITLE = 'What would you like this server to do?'
+PAGE_HINT = (
+    'Backups, the dashboard and private access from your own devices are always set up. '
+    'Switching something off later stops it and keeps its data.'
+)
+PARTS = (
+    ('apps', 'Apps'),
+    ('extras', 'Optional extras'),
+    ('storage', 'Storage'),
+)
+# The small switch inside the Movies and shows card and the Music card (`under`): off
+# leaves Jellyfin, or Navidrome, alone. Offered while its card is on (`needs`).
+FINDING_SWITCH = {
+    group: {
+        'id': group + '_downloads',
+        'section': 'media_apps',
+        'key': group + '_downloads',
+        'group': True,
+        'part': 'apps',
+        'under': 'media_' + group,
+        'needs': ('media_' + group,),
+        'on_default': True,
+        'step': 'media',
+        'title': 'Also find and download new ones',
+        'explanation': 'Finds and downloads ' + what + ' you are entitled to, and adds them to your library. '
+        'You choose where it searches later.',
+        'installs': (),
+    }
+    for group, what in (('movies', 'films and shows'), ('music', 'music'))
+}
 EXTRAS = (
+    # The media apps (neko_common.MEDIA_GROUPS): each a switch of its own, saved under
+    # "media_apps". `group` marks them: one with no answer follows the one yes/no of
+    # before ("wanted"), which extra_state reads through neko_common.media_group.
     {
-        'id': 'network_storage',
-        'section': 'network_storage',
-        'key': 'wanted',
-        'on_default': False,
-        'step': 'network_storage',
-        'title': 'My media and backup drives are in a network storage box (NAS)',
-        'explanation': 'For a NAS that offers iSCSI disks (a WD My Cloud EX, Synology, QNAP...). The SSD for the apps '
-        "stays on this PC. Setup asks for the NAS's address and which of its disks to use; it never formats one. "
-        'Experimental: tried in a test lab, not yet on many real NAS boxes (SUPPORT.md).',
-        'installs': ('open-iscsi',),
-    },
-    {
-        'id': 'tv',
-        'section': 'tv',
-        'key': 'wanted',
+        'id': 'media_photos',
+        'section': 'media_apps',
+        'key': 'photos',
+        'group': True,
+        'part': 'apps',
         'on_default': True,
-        'step': 'tv',
-        'title': 'A TV connected to this PC',
-        'explanation': 'Steam Big Picture for Remote Play from your gaming PC, a YouTube shortcut and Bluetooth for a '
-        'controller. Skip it if this PC has no TV; your apps work on your other devices either way.',
-        'installs': ('steam', 'steam-devices', 'vulkan-intel', 'lib32-vulkan-intel', 'firefox', 'bluez'),
-    },
-    {
-        'id': 'notifications',
-        'section': 'notifications',
-        'key': 'wanted',
-        'on_default': True,
-        'step': 'notifications',
-        'title': 'Phone alerts when something fails',
-        'explanation': 'A message on your phone through the free ntfy app when a backup or an app fails. '
-        'You set up the ntfy app on your phone during setup.',
+        'step': 'photos',
+        'title': 'Photos and phone backup - Immich',
+        'explanation': 'Store and browse your photos and back them up from your phone.',
         'installs': (),
     },
     {
-        'id': 'heartbeat',
-        'section': 'heartbeat',
-        'key': 'wanted',
+        'id': 'media_movies',
+        'section': 'media_apps',
+        'key': 'movies',
+        'group': True,
+        'part': 'apps',
         'on_default': True,
-        'step': 'heartbeat',
-        'title': 'Outage alerts if the server goes offline',
-        'explanation': 'The server checks in with an outside service you choose (Healthchecks.io, say); when it stops '
-        'checking in, that service tells you.',
+        'step': 'media',
+        'title': 'Movies and shows - Jellyfin',
+        'explanation': 'Watch your films and shows on any device, and ask for new ones to be found and added.',
+        'small': 'Jellyfin. With finding and downloading: Seerr, Sonarr, Radarr, Prowlarr and qBittorrent.',
+        'installs': (),
+    },
+    {
+        'id': 'media_music',
+        'section': 'media_apps',
+        'key': 'music',
+        'group': True,
+        'part': 'apps',
+        'on_default': True,
+        'step': 'music',
+        'title': 'Music - Navidrome',
+        'explanation': 'Play your music collection from your phone or browser, and have new music found and added.',
+        'small': 'Navidrome. With finding and downloading: Lidarr, Prowlarr and qBittorrent.',
         'installs': (),
     },
     {
         'id': 'nextcloud',
         'section': 'nextcloud',
         'key': 'enabled',
+        'part': 'apps',
         'on_default': True,
         'step': 'nextcloud',
-        'title': 'Nextcloud, your private cloud drive',
-        'explanation': 'Your files on your own server, from the phone and the browser, with sharing. '
-        'Photos go to Immich either way.',
+        'title': 'Personal files - Nextcloud',
+        'explanation': 'Access your files from your devices.',
+        'installs': (),
+    },
+    # Drawn inside their cards (`under`); listed here after the cards themselves.
+    FINDING_SWITCH['movies'],
+    FINDING_SWITCH['music'],
+    {
+        'id': 'tv',
+        'section': 'tv',
+        'key': 'wanted',
+        'part': 'extras',
+        'on_default': True,
+        'new_default': False,
+        'step': 'tv',
+        'title': 'A TV connected to this PC',
+        'explanation': 'Play games from your gaming PC and watch YouTube on the TV this PC is plugged into: Steam Big '
+        'Picture with Remote Play, a YouTube shortcut and Bluetooth for a controller. Leave it off if this PC has no TV.',
+        'installs': ('steam', 'steam-devices', 'vulkan-intel', 'lib32-vulkan-intel', 'firefox', 'bluez'),
+    },
+    {
+        'id': 'notifications',
+        'section': 'notifications',
+        'key': 'wanted',
+        'part': 'extras',
+        'on_default': True,
+        'new_default': False,
+        'step': 'notifications',
+        'title': 'Send alerts to my phone',
+        'explanation': 'A message on your phone, through the free ntfy app, when a backup or an app fails.',
+        'installs': (),
+    },
+    {
+        'id': 'heartbeat',
+        'section': 'heartbeat',
+        'key': 'wanted',
+        'part': 'extras',
+        'on_default': True,
+        'new_default': False,
+        'step': 'heartbeat',
+        'title': 'Warn me if the server stops checking in',
+        'explanation': 'This server checks in with an outside service you choose (Healthchecks.io, say). When the '
+        'check-ins stop, after a power cut for example, that service warns you.',
         'installs': (),
     },
     {
         'id': 'assistant',
         'section': 'assistant',
         'key': 'wanted',
+        'part': 'extras',
         'on_default': False,
         'step': 'assistant',
-        'title': 'An AI assistant in the dashboard ("Ask Neko")',
-        'explanation': 'It explains what the dashboard shows and what to do about a problem, and can suggest a fix '
-        'that runs only when you approve it. The model runs on this server, so nothing you ask leaves your home. '
-        'Setup offers the models that fit the memory your apps leave free; it never slows them down (ASSISTANT.md).',
+        'title': 'Add a local AI assistant',
+        'explanation': 'Ask Neko, in the dashboard: it explains what the dashboard shows and what to do about a '
+        'problem, and can suggest a fix that runs only when you approve it. Its model runs on this PC; setup '
+        'shows how much memory each model needs before you choose one.',
         'installs': (),
+    },
+    {
+        'id': 'network_storage',
+        'section': 'network_storage',
+        'key': 'wanted',
+        'part': 'storage',
+        'on_default': False,
+        'step': 'network_storage',
+        'title': 'My media and backup drives are in a NAS (a storage device on my home network)',
+        'explanation': 'For a NAS that offers iSCSI disks (a WD My Cloud EX, Synology, QNAP...) or shares folders '
+        'over NFS. The SSD for the apps stays on this PC. Setup asks for the NAS\'s address, sees which of '
+        'the two it offers, and asks which disks or folders to use; it never formats one, and tries a shared '
+        'folder out before using it. '
+        'Experimental: tried in a test lab, not yet on many real NAS boxes (SUPPORT.md).',
+        # One of the two, by what the NAS offers.
+        'installs': ('open-iscsi', 'nfs-utils'),
     },
 )
 
 
+def shown():
+    """The extras in the order a list shows them: each card followed by the switches inside it."""
+    inside = [extra for extra in EXTRAS if extra.get('under')]
+    order = []
+    for extra in EXTRAS:
+        if not extra.get('under'):
+            order.append(extra)
+            order += [sub for sub in inside if sub['under'] == extra['id']]
+    return order
+
+
+def extra_chosen(config, extra):
+    """Whether this extra has a saved answer (from the first page, or by hand in the settings)."""
+    section = config.get(extra['section'])
+    own = isinstance(section, dict) and isinstance(section.get(extra['key']), bool)
+    if extra.get('group') and not extra.get('needs'):
+        from neko_common import media_group_chosen
+
+        return media_group_chosen(config, extra['key'])
+    return own
+
+
 def extra_state(config, extra):
-    """Whether this extra is on in the settings (its default when nothing was chosen)."""
-    value = config.get(extra['section'], {}).get(extra['key'])
-    return extra['on_default'] if not isinstance(value, bool) else value
+    """Whether this extra is on: its saved answer; with none, what a server set up
+    before has (`on_default`), or what a new server is offered (`new_default`)."""
+    import neko_common
+
+    chosen = extra_chosen(config, extra)
+    if not chosen and not neko_common.server_exists(config) and not extra.get('new_default', extra['on_default']):
+        return False
+    if extra.get('group'):
+        return neko_common.media_group(config, extra['key'])
+    return config[extra['section']][extra['key']] if chosen else extra['on_default']
 
 
 def set_extra(config, extra, on):
     config.setdefault(extra['section'], {})[extra['key']] = bool(on)
+
+
+def states(config):
+    """Every extra with what it is now: {id: on or off}."""
+    return {extra['id']: extra_state(config, extra) for extra in EXTRAS}
+
+
+def settle(config):
+    """Every extra saved as it stands (the first page was gone through): from here on
+    each one has an answer, so no step asks about it."""
+    now = states(config)
+    for extra in EXTRAS:
+        # A switch inside a card keeps its own answer while its card is off: it counts
+        # again when the card is switched back on.
+        needed = not extra.get('under') and extra.get('needs')
+        set_extra(config, extra, now[extra['id']] and (not needed or any(now[other] for other in extra['needs'])))
+
+
+def offered(config, extra):
+    """The extra can be switched on: what it needs (one of them) is on."""
+    now = states(config)
+    return not extra.get('needs') or any(now[other] for other in extra['needs'])
+
+
+# ---- the review before anything is installed ("Ready to install NekoServer")
+REVIEW_TITLE = 'Ready to install NekoServer'
+REVIEW_TITLE_AGAIN = 'Review your changes'
+STORAGE_HEADING = 'Where your apps and files are kept'
+INSTALL = 'Install selected apps'
+APPLY = 'Apply these changes'
+ALWAYS = (
+    # The accounts page, before the review, has made or been given the PIN already.
+    'The dashboard, with the PIN from the accounts page',
+    'Backups of your apps and settings, and a monthly checkup',
+    'Tailscale: private access from your own devices, not from the internet',
+    'Shared folders on your home network',
+)
+# Until each of these has its own page before the review, setup asks about it when it
+# gets there (the pages of 0.50.0 are built one by one; this list shrinks with them).
+# The drives are not among them any more: the storage page comes before the review.
+ASKED_DURING = {
+    'notifications': 'the address of your alerts topic',
+    'heartbeat': 'the check-in address of your outage service',
+    'assistant': 'which AI model to use',
+    'phone': 'signing in to Tailscale, and setting up your phone',
+}
+
+
+SOURCES_ASKED = 'which download sources to add (the recommended ones are ticked), once Prowlarr runs'
+
+
+def apps_to_install(config, now):
+    """The apps the switches as they stand (`now`) install, each with what it is for."""
+    import neko_common
+
+    apps = []
+    if now['media_photos'] and config.get('photos', {}).get('deploy_immich', True) is True:
+        apps.append('Immich: your photos, with a backup from your phone')
+    wanted = {**config, 'media_apps': {**_section(config, 'media_apps')}}
+    for extra in EXTRAS:
+        if extra.get('group'):
+            wanted['media_apps'][extra['key']] = now[extra['id']] and offered(config, extra)
+    for app in neko_common.media_services(wanted):
+        name, role, _port = neko_common.APPS[app]
+        apps.append(f'{name}: {role[0].lower()}{role[1:]}')
+    if now['nextcloud']:
+        apps.append('Nextcloud: your files on your own devices')
+    return apps
+
+
+def review(config):
+    """What pressing Install will do, as headed lists, from the settings as they stand:
+    [(heading, [line])]. The same in the window and in the terminal."""
+    import neko_common
+
+    now = states(config)
+    apps = apps_to_install(config, now)
+    # A server set up already (an update, gate run D): its apps are there, its PIN chosen.
+    again = neko_common.server_exists(config)
+    extras = [extra['title'] for extra in EXTRAS if extra['part'] in ('extras', 'storage') and now[extra['id']]]
+    left_out = left_out_titles(now)
+    asked = [words for key, words in ASKED_DURING.items() if key not in now or now[key]]
+    if neko_common.media_group(config, 'downloads'):
+        # Once Prowlarr runs (the user's decision after the gate: it needs Prowlarr).
+        asked.append(SOURCES_ASKED)
+    sections = [('Apps on this server' if again else 'Apps to install', apps or ['None: only what is always set up'])]
+    if extras:
+        sections.append(('Extras', extras))
+    if left_out:
+        sections.append(
+            ('Left out', [title + ' (stopped if this server has it; its data is kept)' for title in left_out])
+        )
+    sections += kept_or_made(again)
+    sections.append(('Setup stops to ask you', [words[0].upper() + words[1:] for words in asked]))
+    return sections
+
+
+# What the review says is always set up and what happens next: a first install's words,
+# or those of a server set up already (an update, gate run D).
+UPDATE_HAPPENS = (
+    'This takes a few minutes, longer when new app versions are downloaded. Your accounts, settings and files are kept.'
+)
+FIRST_HAPPENS = 'Setup takes about an hour. It installs the apps, makes an account in each one and connects them.'
+
+
+def left_out_titles(now):
+    """The first page's app cards switched off (not the switches inside a card)."""
+    return [
+        extra['title']
+        for extra in EXTRAS
+        if extra['part'] == 'apps' and not extra.get('under') and not now[extra['id']]
+    ]
+
+
+def kept_or_made(again):
+    """The review's "Always set up" and "What happens next" sections."""
+    always = list(ALWAYS)
+    if again:
+        always[0] = 'The dashboard, with the PIN it has'
+    happens = UPDATE_HAPPENS if again else FIRST_HAPPENS
+    return [
+        ('Always set up', always),
+        ('What happens next', [happens, 'It never formats a drive and never deletes your files.']),
+    ]
+
+
+def _section(config, name):
+    value = config.get(name)
+    return value if isinstance(value, dict) else {}

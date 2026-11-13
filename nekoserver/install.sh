@@ -568,7 +568,7 @@ if "$apply" && ! "$recover" && python3 "$ROOT/native_runtime.py" needs-build; th
   fi
 fi
 if "$apply" && ! "$recover"; then
-  # Once more after the packages and the build, before "Ready to start?": an
+  # Once more after the packages and the build, before setup's first page: an
   # automatic update (Ubuntu's unattended upgrades) may have installed a new kernel
   # in those minutes and be waiting for a restart.
   python3 "$ROOT/capabilities.py" preflight || exit 1

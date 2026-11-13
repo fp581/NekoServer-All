@@ -225,9 +225,18 @@ def guard_contents(config, runtime):
     paths = [str(mount_path(config[k])) for k in ('data_mount', 'media_mount')]
     units = [call(['systemd-escape', '--path', '--suffix=mount', p]) for p in paths]
     guard = str(runtime / 'nekoserver-runtime') + ' storage-guard'
+    # The folders of apps installed on another drive (0.50.0): Docker starts after they
+    # are mounted, and starts all the same when such a drive is away.
+    import placement
+
+    data = mount_path(config['data_mount'])
+    later = [
+        call(['systemd-escape', '--path', '--suffix=mount', str(data / 'appdata' / app)])
+        for app in sorted(placement.apps_elsewhere(config))
+    ]
     return (
         '# Managed by NekoServer\n[Unit]\nRequiresMountsFor=' + ' '.join(paths) + '\n'
-        'BindsTo=' + ' '.join(units) + '\nAfter=' + ' '.join(units) + '\n'
+        'BindsTo=' + ' '.join(units) + '\nAfter=' + ' '.join(units + later) + '\n'
         '[Service]\nExecStartPre=' + guard + ' --config ' + str(runtime / 'storage.json') + '\n'
     )
 

@@ -34,8 +34,10 @@ def settings(**times):
 
 
 def answers(*values):
+    """What is typed at each question in turn; Enter alone once these run out (the last
+    question of the page, how many nightly backups are kept, unless a test answers it)."""
     given = iter(values)
-    return lambda question='': next(given)
+    return lambda question='': next(given, '')
 
 
 class Ctx:
@@ -211,7 +213,8 @@ class SetupQuestionTests(unittest.TestCase):
         self.addCleanup(self.interactive.stop)
 
     def config(self, **extra):
-        return {'data_mount': self.dir.name, 'timezone': 'UTC', **extra}
+        # With Immich, so the weekly USB copy is on this server and its day and time are asked.
+        return {'data_mount': self.dir.name, 'timezone': 'UTC', 'photos': {'deploy_immich': True}, **extra}
 
     def ask(self, ctx, *typed):
         printed = []
@@ -252,7 +255,7 @@ class SetupQuestionTests(unittest.TestCase):
                 6: '21:00',
                 7: '06:30',
                 8: '01:00',
-            }[len(asked)]
+            }.get(len(asked), '')
 
         printed = []
         guided_setup.choose_backup_times(ctx, prompt=prompt, output=printed.append)
@@ -270,7 +273,9 @@ class SetupQuestionTests(unittest.TestCase):
         self.assertEqual(printed.count('Type a time of day as HH:MM, for example 04:15.'), 2)
         self.assertEqual(printed.count('Type the day as one of Mon, Tue, Wed, Thu, Fri, Sat, Sun.'), 1)
         self.assertEqual(printed.count('Type a time of day as HH:MM before 06:00, for example 02:30.'), 1)
-        self.assertFalse(any('[yes/no]' in q for q in asked), 'text questions: the setup window shows a field for them')
+        self.assertFalse(
+            any('yes or no' in q for q in asked), 'text questions: the setup window shows a field for them'
+        )
 
     def window_prompt(self, first, fields=None, skip=False):
         """A terminal prompt whose first question the setup window answers, with the rest
@@ -302,14 +307,17 @@ class SetupQuestionTests(unittest.TestCase):
             shown = setup_progress.page_shown()
             self.assertEqual(shown['form'], 'backup_times')
             self.assertEqual(
-                shown['fields'], {'daily': '04:15', 'weekly_day': 'Sun', 'weekly': '03:00', 'monthly': '02:30'}
+                shown['fields'],
+                {'daily': '04:15', 'weekly_day': 'Sun', 'weekly': '03:00', 'monthly': '02:30', 'keep_host_backup': '3'},
             )
             self.assertEqual((shown['asking'], shown['weekdays'][-1], shown['night_end']), ('daily', 'Sun', 6))
-            return self.window_prompt('23:30', page)(question)
+            return self.window_prompt('23:30', {**page, 'keep_host_backup': '5'})(question)
 
         guided_setup.choose_backup_times(ctx, prompt=prompt, output=printed.append)
         self.assertEqual(ctx.config['backup_times'], page)
-        self.assertEqual(sum('(from the setup window)' in line for line in printed), 3)
+        # How many settings backups are kept came with the page too (0.50.0: 1 to 7).
+        self.assertEqual(ctx.config['host_backup']['keep_snapshots'], 5)
+        self.assertEqual(sum('(from the setup window)' in line for line in printed), 4)
         self.assertIsNone(setup_progress.page_shown(), 'the page is over once the answers are saved')
 
     def test_the_windows_skip_for_now_keeps_the_times_shown(self):
@@ -327,10 +335,11 @@ class SetupQuestionTests(unittest.TestCase):
         ctx = Ctx(self.config())
         printed = []
         first = self.window_prompt('23:30', {'weekly_day': 'Sat', 'weekly': '21:00', 'monthly': '07:00'})
-        prompts = iter([first, answers('01:15')])
+        later = answers('01:15')
+        prompts = iter([first])
 
         def prompt(question=''):
-            return next(prompts)(question)
+            return next(prompts, later)(question)
 
         guided_setup.choose_backup_times(ctx, prompt=prompt, output=printed.append)
         self.assertEqual(
@@ -354,8 +363,11 @@ class SetupQuestionTests(unittest.TestCase):
         ctx = Ctx(self.config())
         printed = []
         first = self.window_prompt('23:30', {'weekly_day': 'Sat', 'weekly': '1٩:0٠', 'monthly': '01:00'})
-        prompts = iter([first, answers('21:15')])
-        guided_setup.choose_backup_times(ctx, prompt=lambda question='': next(prompts)(question), output=printed.append)
+        later = answers('21:15')
+        prompts = iter([first])
+        guided_setup.choose_backup_times(
+            ctx, prompt=lambda question='': next(prompts, later)(question), output=printed.append
+        )
         self.assertEqual(
             ctx.config['backup_times'], {'daily': '23:30', 'weekly_day': 'Sat', 'weekly': '21:15', 'monthly': '01:00'}
         )
@@ -381,7 +393,7 @@ class SetupQuestionTests(unittest.TestCase):
         ctx = Ctx(
             self.config(
                 app_backup={'time': '23:00'},
-                photos={'backup_weekday': 'Fri', 'backup_time': '22:00'},
+                photos={'deploy_immich': True, 'backup_weekday': 'Fri', 'backup_time': '22:00'},
                 maintenance={'time': '01:30'},
             )
         )
@@ -426,7 +438,7 @@ class SetupQuestionTests(unittest.TestCase):
 
         def prompt(question):
             asked.append(question)
-            return 'yes' if '[yes/no]' in question else ''
+            return 'yes' if 'yes or no' in question else ''
 
         guided_setup.choose_backup_times(ctx, prompt=prompt, output=lambda *_: None)
         self.assertIs(ctx.ask_optional_again, True)
@@ -447,6 +459,7 @@ class SetupQuestionTests(unittest.TestCase):
             host_backup={'time': '02:00'},
             music={'backup_time': '03:45'},
             photos={
+                'deploy_immich': True,
                 'backup_weekday': 'Fri',
                 'backup_time': '22:00',
                 'database_backup_time': '21:00',
@@ -520,8 +533,8 @@ class SetupQuestionTests(unittest.TestCase):
 
         printed = []
         guided_setup.choose_backup_times(ctx, prompt=prompt, output=printed.append)
-        self.assertFalse(any('[yes/no]' in question for question in asked), 'not offered to keep')
-        self.assertEqual(len(asked), 4)
+        self.assertFalse(any('yes or no' in question for question in asked), 'not offered to keep')
+        self.assertEqual(len(asked), 5)  # the three times, the day, and how many are kept
         self.assertIn(
             f'The backup times in the settings ({template}) are not the ones chosen last time ({old}), '
             'so they are asked again.',
@@ -634,13 +647,13 @@ class SetupQuestionTests(unittest.TestCase):
             asked = []
 
             def prompt(question):
-                if '[yes/no]' in question:  # the first round's answer, offered on the second: ask again
+                if 'yes or no' in question:  # the first round's answer, offered on the second: ask again
                     return 'yes'
                 asked.append(question)
                 return ''
 
             guided_setup.choose_backup_times(ctx, prompt=prompt, output=lambda *_: None)
-            self.assertEqual(len(asked), 4, plan)
+            self.assertEqual(len(asked), 5, plan)
         self.assertTrue(guided_setup.revisits_every_job(Ctx({})), 'no plan known: asked')
 
     def test_nobody_at_the_terminal_changes_nothing(self):
@@ -665,10 +678,71 @@ class SetupQuestionTests(unittest.TestCase):
             storage.choose_backup_times(other)
             self.assertEqual(asked, [ctx, other])
         source = (ROOT / 'modules/storage.py').read_text()
+        # Asked by the drives step, after the drives (which are one page of their own).
         self.assertLess(
-            source.index('    choose_usb(context)\n    choose_backup_times(context)'), source.index('def save_storage')
+            source.index('        place_drives(context, inventory)\n    choose_backup_times(context)'),
+            source.index('def save_storage'),
         )
 
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class OnlyWhatTheServerHasTests(unittest.TestCase):
+    """Gate runs B2 and B4: the page named the music copy with Music off, and asked the
+    weekly USB copy's day and time on a server with no USB drive, no Immich and no
+    Nextcloud."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        patch = mock.patch.object(guided_setup, 'interactive', return_value=True)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_the_daily_words_name_only_the_jobs_there_are(self):
+        films_only = {'media_apps': {'movies': True, 'music': False}}
+        self.assertNotIn('music', guided_setup.daily_words(films_only))
+        self.assertIn("the media apps' snapshot", guided_setup.daily_words(films_only))
+        both = {'media_apps': {'movies': True, 'music': True}}
+        self.assertIn('the music copy 30 minutes before it', guided_setup.daily_words(both))
+        neither = {'media_apps': {'movies': False, 'music': False}}
+        # It runs an hour after the time chosen (job_times), media apps or not (gate run J06).
+        self.assertEqual(
+            guided_setup.daily_words(neither), "the copy of this PC's own settings an hour after the time you choose"
+        )
+        self.assertEqual(neko_common.minutes_later('23:00', 60), job_times(settings(daily='23:00'))['host'])
+
+    def test_no_weekly_question_without_a_weekly_copy(self):
+        config = {
+            'data_mount': self.dir.name,
+            'timezone': 'UTC',
+            'media_apps': {'movies': True, 'music': False},
+            'photos': {'deploy_immich': False},
+            'nextcloud': {'enabled': False},
+        }
+        ctx = Ctx(config)
+        asked, printed = [], []
+
+        def prompt(question=''):
+            asked.append(question)
+            return ''
+
+        guided_setup.choose_backup_times(ctx, prompt=prompt, output=printed.append)
+        self.assertFalse([q for q in asked if 'weekly USB copy' in q or 'on that day' in q], asked)
+        self.assertFalse([line for line in printed if 'USB copy' in line or 'music copy' in line], printed)
+        # The weekly times stay what they were.
+        self.assertEqual(
+            (ctx.config['backup_times']['weekly_day'], ctx.config['backup_times']['weekly']), ('Sun', '03:00')
+        )
+
+    def test_the_offline_drive_left_out_asks_no_weekly_time(self):
+        config = {'photos': {'deploy_immich': True, 'external_backup_wanted': False}}
+        self.assertFalse(guided_setup.weekly_copy(config))
+        config['photos']['external_backup_wanted'] = True
+        self.assertTrue(guided_setup.weekly_copy(config))
+        self.assertEqual(
+            guided_setup.weekly_words({'photos': {'deploy_immich': False}, 'nextcloud': {'enabled': True}}),
+            'your Nextcloud files',
+        )

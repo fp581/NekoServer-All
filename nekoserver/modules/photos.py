@@ -11,6 +11,7 @@ from neko_common import (
     ensure_directory,
     verify_storage,
     host_timezone,
+    immich_wanted,
 )
 
 DEPENDENCIES = ['docker', 'account_credentials']  # Immich's login is chosen before it first starts
@@ -158,7 +159,7 @@ def switch_off(ctx, folder, run=subprocess.run, journal=None):
     setting deploy_immich back to true brings it back as it was."""
     compose, env = folder / 'compose.yaml', folder / '.env'
     if not compose.is_file():
-        ctx.log('Immich: switched off in the settings, not set up')
+        ctx.log('Immich: switched off in the settings (or left out with the media apps), not set up')
         return
     import neko_common
 
@@ -209,7 +210,7 @@ def _run(ctx):
         return
     if os.geteuid() != 0:
         raise RuntimeError('Root required')
-    if not opts.get('deploy_immich', False):
+    if not immich_wanted(cfg):
         return switch_off(ctx, Path(cfg['data_mount']) / 'compose' / 'immich')
     data = Path(cfg['data_mount'])
     media = Path(cfg['media_mount'])

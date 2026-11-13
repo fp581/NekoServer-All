@@ -5,7 +5,7 @@ that until 0.47.2."""
 
 import hashlib, json
 
-from neko_common import LOCATIONS, location
+from neko_common import LOCATIONS, immich_wanted, location, media_services
 
 # The photo and USB-copy settings whose change makes an earlier acceptance run outdated:
 # a different USB drive or archive folder was never checked by it.
@@ -15,7 +15,7 @@ PHOTO_SCOPE = ('external_backup_uuid', 'external_backup_fstype', 'archive_dir', 
 def photo_scope(config):
     photos = config.get('photos')
     photos = photos if isinstance(photos, dict) else {}
-    return {'deploy_immich': photos.get('deploy_immich') is True, **{k: photos.get(k) for k in PHOTO_SCOPE}}
+    return {'deploy_immich': immich_wanted(config), **{k: photos.get(k) for k in PHOTO_SCOPE}}
 
 
 def data_scope(config):
@@ -73,7 +73,7 @@ def scope_digest(config):
     if config.get('backup_times') is not None:  # since 0.48.0; settings from before have none
         values['backup_times'] = config['backup_times']
     values['gateway'] = {k: config.get('gateway', {}).get(k) for k in ('services', 'lan_ip', 'lan_cidr')}
-    values['services'] = config.get('media', {}).get('services', [])
+    values['services'] = media_services(config)
     values['photos'] = photo_scope(config)
     values = with_data_scope(values, config)
     return hashlib.sha256(json.dumps(values, sort_keys=True, separators=(',', ':')).encode()).hexdigest()

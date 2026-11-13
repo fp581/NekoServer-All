@@ -268,6 +268,9 @@ class WindowAgainTests(unittest.TestCase):
             self.assertFalse(window.admit('api/state', setup_gui.COOKIE + '=' + first, 'GET', lambda: 1000)[0])
             self.assertTrue(window.admit('api/state', setup_gui.COOKIE + '=' + again, 'GET', lambda: 1000)[0])
             self.assertTrue(window.admit('', None, 'GET', lambda: 0)[0])
+            # A cookie of other characters is simply not this window's.
+            odd = window.admit('api/state', setup_gui.COOKIE + '=caf\u00e9', 'GET', lambda: 1000)
+            self.assertEqual(odd, (False, None, setup_gui.SPENT))
 
     def test_the_refusal_is_a_page_that_wraps(self):
         for code, body, kind in (setup_gui.SPENT, setup_gui.OTHER_ACCOUNT):
@@ -296,23 +299,39 @@ class WindowPackageTests(unittest.TestCase):
         self.assertNotIn('vulkan-intel', names)
         self.assertIn('Vulkan', tv['installs'][2]['explanation'] + 'Vulkan')  # with what it is for
 
-    def test_a_switch_left_alone_is_asked_later(self):
+    def test_the_button_saves_every_switch_so_nothing_is_asked_later(self):
+        """Until the wizard of 0.50.0 a switch left alone was "asked later", by its step.
+        Now the first page is where each is chosen: pressing the button saves every one
+        as it stands, and a step that finds its answer does not ask."""
         with (
             tempfile.TemporaryDirectory() as d,
             mock.patch.object(setup_gui, 'family_packages', return_value={'names': lambda n: [n], 'vulkan': []}),
+            mock.patch.object(setup_gui.neko_common, 'server_exists', return_value=False),
         ):
-            window = setup_gui.Window(Path(d) / SETTINGS_NAME, {'tv': {'wanted': False}}, wizard.STEPS, [])
+            path = Path(d) / SETTINGS_NAME
+            path.write_text(json.dumps({'tv': {'wanted': True}}))
+            window = setup_gui.Window(path, {'tv': {'wanted': True}}, wizard.STEPS, [])
             self.addCleanup(window.stop)
-            asked = {e['id']: e['asked'] for e in window._extras()}
+            self.assertTrue(all('asked' not in extra for extra in window._extras()))
+            self.assertTrue(window.choose({'media_music': False}, start=True))
+            saved = json.loads(path.read_text())
         self.assertEqual(
-            asked,
+            saved,
             {
-                'network_storage': False,
-                'tv': False,
-                'notifications': True,
-                'heartbeat': True,
-                'nextcloud': False,
-                'assistant': True,
+                'tv': {'wanted': True},  # chosen before: kept
+                # A new server: the apps are offered on, with finding and downloading; the extras off.
+                'media_apps': {
+                    'photos': True,
+                    'movies': True,
+                    'music': False,
+                    'movies_downloads': True,
+                    'music_downloads': True,
+                },
+                'nextcloud': {'enabled': True},
+                'notifications': {'wanted': False},
+                'heartbeat': {'wanted': False},
+                'assistant': {'wanted': False},
+                'network_storage': {'wanted': False},
             },
         )
 
@@ -345,7 +364,6 @@ class WindowPageTests(unittest.TestCase):
             'done': 0,
             'total': 0,
             'question': None,
-            'terminal': None,
             'finish': [],
             'title': '',
             'complete': False,
@@ -390,6 +408,18 @@ class WindowPageTests(unittest.TestCase):
         self.assertEqual(seen['shown'], ['moved'])
         self.assertEqual(seen['badge'], 'Opened elsewhere')
 
+    def test_a_button_pressed_in_a_window_opened_again_elsewhere_says_so(self):
+        seen = self.page([self.state('choose', postFail=403), self.state('choose')], 'start')
+        self.assertEqual(seen['shown'], ['moved'])
+        self.assertEqual(seen['badge'], 'Opened elsewhere')
+
+    def test_a_state_the_page_cannot_draw_is_not_setup_ending(self):
+        # No list of steps: drawing it fails, every time, while setup still answers.
+        broken = {'version': 'x', 'phase': 'running', 'total': 3, 'current': 'docker'}
+        seen = self.page([self.state('running'), broken, broken, broken, broken, broken])
+        self.assertNotIn('gone', seen['shown'])
+        self.assertNotEqual(seen['badge'], 'Setup ended')
+
     def test_setup_stopped_before_it_began_has_no_step_count(self):
         seen = self.page(
             [
@@ -407,15 +437,17 @@ class WindowPageTests(unittest.TestCase):
         seen = self.page([self.state('finished', **self.FINISHED)])
         self.assertEqual(seen['label'], 'FINISHED')
 
-    def test_a_switch_left_alone_shows_asked_later_until_pressed(self):
+    def test_every_switch_says_yes_or_no_and_a_press_is_saved_at_once(self):
         extras = [
-            {'id': i, 'title': i, 'explanation': '', 'installs': [], 'on': True, 'asked': i != 'nextcloud'}
+            {'id': i, 'title': i, 'explanation': '', 'installs': [], 'on': i == 'nextcloud'}
             for i in ('tv', 'nextcloud')
         ]
         seen = self.page([self.state('choose', extras=extras)])
-        self.assertEqual(seen['cards'], [['extra undecided', 'asked later'], ['extra', '']])
+        # Nothing is "asked later" since the wizard of 0.50.0: every switch is a choice made
+        # here. (A card that is on shows it: a ring inside its border.)
+        self.assertEqual(seen['cards'], [['extra', 'no', False], ['extra on', 'yes', False]])
         seen = self.page([self.state('choose', extras=extras, press='tv')])
-        self.assertEqual(seen['cards'][0], ['extra', 'yes'])  # (the stand-in switch keeps its state: on)
+        self.assertEqual(seen['cards'][0], ['extra on', 'yes', False])
         self.assertEqual(seen['posts'], [['api/choose', {'tv': True}]])
 
 
@@ -676,6 +708,22 @@ class DriveSizeTests(unittest.TestCase):
         }
     )
 
+    def setUp(self):
+        # The disk Linux runs from, the same on every machine these tests run on: ext4 and
+        # full, so it is in the list and cannot be chosen (tests/test_drive_table.py has
+        # the one with room).
+        for name, value in (('system_filesystem', ('root-fs-0001', 'ext4')), ('system_free_gb', 0)):
+            patch = mock.patch.object(storage, name, return_value=value)
+            patch.start()
+            self.addCleanup(patch.stop)
+        # The list is shown afresh, and no drive of this computer is looked into.
+        import drive_table
+
+        drive_table.forget_shown()
+        look = mock.patch.object(drive_table, 'look_inside', return_value=(None, None))
+        look.start()
+        self.addCleanup(look.stop)
+
     def resolve(self, answers, config=None, inventory=None):
         config = config or dict(DRIVE_FOLDERS)
         given = iter(answers)
@@ -696,39 +744,62 @@ class DriveSizeTests(unittest.TestCase):
         # and a new Btrfs one looked for a subvolume it may not have.
         config = dict(DRIVE_FOLDERS)
         config['storage'] = {'data_ssd': {'uuid': '', 'fstype': 'btrfs', 'subvolume': '/@data'}}
-        config, _ = self.resolve(['2', 'sdc1', '2', 'sdd1'], config)
+        config, _ = self.resolve(['4', 'sdc1', '5', 'sdd1'], config)
         self.assertEqual(config['storage']['data_ssd'], {'uuid': 'ssd-0001', 'fstype': 'ext4'})
         self.assertIsNone(storage.subvolume_of(config['storage']['data_ssd']))
 
     def test_the_question_says_the_sizes_first_and_a_too_small_drive_is_asked_again(self):
-        config, out = self.resolve(
-            ['1', '2', 'sdc1', '2', 'sdd1']
-        )  # (the SSD's drive is no longer offered for the HDD)
+        # 3 is the 16 GB drive; every drive keeps its number from the list for both questions.
+        config, out = self.resolve(['3', '4', 'sdc1', '5', 'sdd1'])
         self.assertEqual(config['storage']['data_ssd']['uuid'], 'ssd-0001')
         self.assertEqual(config['storage']['media_hdd']['uuid'], 'hdd-0001')
-        self.assertEqual(
-            out[0],
-            'Now choose the SSD (apps, photos and music). It needs at least 20 GB free, so a drive of 22 GB or '
-            'more (100 GB or more is recommended).',
-        )
-        self.assertIn('  1) sdb1: 16 GB, named "SSD", Cruzer (ext4)  - too small, needs 22 GB', out)
-        self.assertIn('  2) sdc1: 466 GB, named "Fast", Samsung SSD 870 (ext4)', out)
-        self.assertIn('  (The disk Linux runs from is not in the list: it is never used for this.)', out)
+        self.assertEqual(out[0], 'Everything connected to this PC:')  # the list comes first (0.50.0)
         self.assertIn(
-            'sdb1 is 16 GB, too small for the SSD: it needs a drive of at least 22 GB (20 GB free once formatted). '
+            'Now choose the drive for your apps, photos and music (the app SSD). It needs at least 20 GB free, so '
+            'a drive of 22 GB or more (100 GB or more is recommended).',
+            out,
+        )
+        too_small = 'it is too small: the app SSD needs a drive of at least 22 GB (20 GB free once formatted)'
+        self.assertIn(f'  3) Cruzer, 16 GB drive, named "SSD"  - not this one: {too_small}', out)
+        self.assertIn('  4) Samsung SSD 870, 466 GB drive, named "Fast"  (recommended)', out)
+        self.assertIn(
+            '  2) WD SN770, 477 GB NVMe SSD  - not this one: it has too little room: 0 GB free, and the app SSD needs at least 20 GB there',
+            out,
+        )
+        self.assertIn(
+            f'Drive 3 (Cruzer, 16 GB drive, named "SSD") cannot be the app SSD: {too_small}. '
             'Choose another one from the list.',
             out,
         )
-        self.assertIn('Type sdc1 to confirm it is the SSD (466 GB): ', out)
-        self.assertTrue(any(line.startswith('Now choose the HDD') and '50 GB' in line for line in out))
+        self.assertIn(
+            'Number of the drive for your apps, photos and music (the app SSD) (Enter for 4, the recommended one): ',
+            out,
+        )
+        self.assertIn(
+            'Drive 4 (Samsung SSD 870, 466 GB drive, named "Fast") is the app SSD. '
+            'Nothing on it is changed by choosing it.',
+            out,
+        )
+        self.assertTrue(
+            any(line.startswith('Now choose the drive for your movies') and '50 GB' in line for line in out)
+        )
+        # The drive just chosen keeps its number, and may hold the media and backups too (0.50.0).
+        row = next(
+            line for line in out if line.startswith('  4) Samsung SSD 870') and 'media' not in line.split('(')[0]
+        )
+        self.assertNotIn('it is already the app SSD', row)
+        # The UUID is shown in the drive's details and never has to be typed.
+        self.assertIn('       Details: sdc1 on sdc; ext4, UUID ssd-0001; not open', out)
         self.assertFalse(any('UUID=' in line or 'mounted=' in line for line in out))
 
     def test_no_drive_big_enough_stops_before_anything_with_the_sizes(self):
         inventory = {'blockdevices': self.INVENTORY['blockdevices'][:5]}
         with self.assertRaises(RuntimeError) as caught:
             self.resolve([], inventory=inventory)
+        self.assertIn('No drive here can be the app SSD (your apps, photos and music).', str(caught.exception))
         self.assertIn(
-            'No drive here is big enough for the SSD (apps, photos and music): it needs a drive of at least 22 GB',
+            'drive 3 (Cruzer, 16 GB drive, named "SSD"): it is too small: the app SSD needs a drive of at '
+            'least 22 GB (20 GB free once formatted)',
             str(caught.exception),
         )
         self.assertIn('Nothing was changed', str(caught.exception))
@@ -742,16 +813,16 @@ class DriveSizeTests(unittest.TestCase):
         self.assertGreater(storage.drive_needed(smallest), smallest)
         self.assertTrue(storage.big_enough({'size': f'{storage.drive_needed(smallest)}G'}, smallest))
 
-    def test_enter_alone_says_how_to_go_on(self):
+    def test_no_drive_chosen_says_how_to_go_on(self):
         with self.assertRaisesRegex(
-            RuntimeError, r'No drive was chosen for the SSD .* Run  sudo bash install\.sh  again'
+            RuntimeError, r'No drive was chosen for the app SSD\. Run  sudo bash install\.sh  again'
         ):
-            self.resolve([''])
+            self.resolve(['99', '99', '99'])
 
     def test_the_size_is_checked_before_mounting_writing_fstab_or_saving(self):
         config = {**DRIVE_FOLDERS, 'storage': {}}
         context = mock.Mock(config=config, apply=True, log=lambda *_: None)
-        answers = iter(['1', '', ''])
+        answers = iter(['1', '1', '1'])  # a drive with no filesystem, three times
         with (
             mock.patch.object(storage, 'inventory_now', return_value=self.INVENTORY),
             mock.patch.object(storage.os, 'geteuid', return_value=0),
@@ -779,11 +850,11 @@ class DriveSizeTests(unittest.TestCase):
 
     def test_a_saved_drive_too_small_is_asked_for_again(self):
         config = {**self.EMPTY, 'storage': {'data_ssd': {'uuid': 'small-0001', 'fstype': 'ext4'}}}
-        config, out = self.resolve(['2', 'sdc1', '2', 'sdd1'], config)
+        config, out = self.resolve(['4', 'sdc1', '5', 'sdd1'], config)
         self.assertEqual(config['storage']['data_ssd']['uuid'], 'ssd-0001')
         self.assertIn(
-            'sdb1 (16 GB), the drive saved as the SSD, is too small: it needs a drive of at least 22 GB (20 GB '
-            'free once formatted). Choose the SSD (apps, photos and music) again:',
+            'Drive 3 (Cruzer, 16 GB drive, named "SSD"), the drive saved as the app SSD, is too small: it '
+            'needs a drive of at least 22 GB (20 GB free once formatted). Choose the SSD (your apps, photos and music) again:',
             out,
         )
 
@@ -797,9 +868,11 @@ class DriveSizeTests(unittest.TestCase):
         for step in (
             'sudo umount /nonexistent/nekoserver-test',
             'UUID=small-0001 out of /etc/fstab',
-            '"uuid" out of "data_ssd"',
+            'it asks for the drive anew',
         ):
             self.assertIn(step, message)
+        # Gate run C10: never "edit my-config.json"; unmounted, the next run asks for the drive.
+        self.assertNotIn('my-config.json', message)
 
     def test_the_drive_lines_leave_out_loop_devices_swap_and_tiny_ones(self):
         line = storage.disk_line(self.INVENTORY)
@@ -903,16 +976,20 @@ class RootWarningTests(unittest.TestCase):
 class DocsTests(unittest.TestCase):
     """D3, D6, D17, D18, IT-11, D2: what the READMEs promise is what setup does."""
 
-    def test_both_readmes_give_the_drive_sizes_and_say_three_drives_besides_linuxs(self):
+    def test_both_readmes_say_one_drive_is_enough(self):
+        # 0.50.0 (the user: any number of drives works, one drive included).
         for path in (ROOT.parent / README, ROOT / README):
             if not path.exists():
                 continue  # (a copy of the nekoserver folder alone)
             with self.subTest(readme=path.name):
                 text = path.read_text()
-                for size in ('20 GB', '100 GB', '50 GB', '500 GB', '16 GB'):
-                    self.assertIn(size, text)
-                self.assertIn('three drives besides the disk linux is on', text.lower().replace('*', ''))
+                self.assertIn('one drive is enough', text.lower().replace('*', ''))
+                self.assertNotIn('three drives besides the disk linux is on', text.lower().replace('*', ''))
+                self.assertIn('16 GB', text)
                 self.assertIn('sudo apt install git', text)
+        guide = (ROOT / README).read_text()
+        for size in ('20 GB', '100 GB', '50 GB', '500 GB'):
+            self.assertIn(size, guide)
 
     def test_the_guide_promises_what_happens_when_it_happens(self):
         text = (ROOT / README).read_text()
@@ -921,7 +998,7 @@ class DocsTests(unittest.TestCase):
         self.assertNotIn('Four drives', text)
         self.assertIn('Once you start, it first lists what it found on this computer', text)
         self.assertIn('opens again', text)
-        install = text[text.index('## Install') : text.index('Then the setup wizard explains')]
+        install = text[text.index('## Install') : text.index('Then the setup wizard shows')]
         # The useful part first; the details of each Linux folded away after it.
         self.assertLess(install.index('That\'s it'), install.index('<details>'))
         self.assertLess(install.index('<details>'), install.index('pacman -Syu'))
@@ -929,14 +1006,14 @@ class DocsTests(unittest.TestCase):
         self.assertIn('> **First, in your router, reserve that address', text)
         # The questions in the order setup asks them: the PIN, then the phone, the home
         # network, and the backup password last.
-        steps = text[text.index('Then the setup wizard explains') : text.index('### Two ways to follow')]
+        steps = text[text.index('Then the setup wizard shows') : text.index('### Two ways to follow')]
         order = [
             steps.index(words)
             for words in (
-                'pick your SSD',
+                'where to store your apps and files',
                 'dashboard PIN',
-                'sets up your phone',
-                'home network',
+                'set up your phone',
+                'Uses your home network',
                 'backup password',
                 'first checkup',
             )

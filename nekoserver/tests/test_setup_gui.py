@@ -1,7 +1,8 @@
 """The setup window: the words it shows, the events setup feeds it, its little server,
-and the wizard's "Ready to start?" that the window can answer."""
+and the wizard's approval that the window can answer."""
 
 import builtins
+import contextlib
 import json
 import os
 import sys
@@ -18,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 
 import explanations  # noqa: E402
 import host  # noqa: E402
+import neko_common  # noqa: E402
 import setup_gui  # noqa: E402
 import setup_progress  # noqa: E402
 import wizard  # noqa: E402
@@ -54,7 +56,12 @@ class ExplanationTests(unittest.TestCase):
     def test_extras_read_and_write_the_settings(self):
         config = {}
         extra = next(e for e in explanations.EXTRAS if e['id'] == 'tv')
-        self.assertTrue(explanations.extra_state(config, extra))  # assumed on until chosen
+        # Nothing saved: a server set up before has it, a new one is offered it off (an opt-in).
+        with mock.patch.object(neko_common, 'server_exists', return_value=True):
+            self.assertTrue(explanations.extra_state(config, extra))
+        with mock.patch.object(neko_common, 'server_exists', return_value=False):
+            self.assertFalse(explanations.extra_state(config, extra))
+            self.assertTrue(explanations.extra_state({'tv': {'wanted': True}}, extra))
         explanations.set_extra(config, extra, False)
         self.assertEqual(config, {'tv': {'wanted': False}})
         self.assertFalse(explanations.extra_state(config, extra))
@@ -218,6 +225,101 @@ class ProgressTests(unittest.TestCase):
                 setup_progress.question('x')
                 self.assertIsNone(setup_progress._wait_for_answer(plain, False))
                 setup_progress.answered()
+
+    def test_a_page_field_is_asked_once_and_the_windows_copy_is_never_reused(self):
+        """0.50.0: a password chosen now is one page in the window (two hidden fields). The
+        window sends both with the first question; a second try must ask again, not find
+        the first try's entry still there."""
+        setup_progress.enable()
+        self.addCleanup(setup_progress.disable)
+        asked = []
+
+        def ask(prompt):
+            asked.append(prompt)
+            record = setup_progress.question(prompt, secret=True)
+            # The window answers this question with both fields, as its page posts them.
+            sent = {'password': 'first-try', 'again': 'other'} if len(asked) == 1 else {'password': 'b', 'again': 'b'}
+            setup_progress.answer_from_window(record['seq'], sent['password'], fields=sent)
+            setup_progress.answered()
+            return sent['password']
+
+        with setup_progress.password_page('Backup password', least=8):
+            shown = setup_progress.page_shown()
+            self.assertEqual(
+                shown,
+                {
+                    'form': 'new_password',
+                    'fields': {'password': '', 'again': ''},
+                    'asking': None,
+                    'least': 8,
+                    'what': 'Backup password',
+                },
+            )
+            first = setup_progress.page_field('password', ask, 'Backup password: ')
+            again = setup_progress.page_field('again', ask, 'Same backup password again: ')
+            self.assertEqual((first, again), ('first-try', 'other'))
+            self.assertEqual(asked, ['Backup password: '])  # the second entry came with the first
+            # The second try: both asked for anew.
+            self.assertEqual(setup_progress.page_field('password', ask, 'Backup password: '), 'b')
+            self.assertEqual(setup_progress.page_field('again', ask, 'Same backup password again: '), 'b')
+            self.assertEqual(len(asked), 2)
+        # Neither entry is in any event.
+        recorded = json.dumps([{k: v for k, v in e.items() if k != 'at'} for e in setup_progress.events()])
+        self.assertNotIn('first-try', recorded)
+        self.assertNotIn('other', recorded)
+        # Skip for now on the page leaves it as Ctrl+D does.
+        with setup_progress.password_page('Dashboard PIN', optional=True):
+            record = setup_progress.question('PIN: ', secret=True)
+            setup_progress.answer_from_window(record['seq'], '', skip=True)
+            setup_progress.answered()
+            with self.assertRaises(EOFError):
+                setup_progress.page_field('again', ask, 'Same PIN again: ')
+        # Off a page, a field is simply asked.
+        self.assertEqual(setup_progress.page_field('password', lambda prompt: 'typed', 'PIN: '), 'typed')
+
+    def test_the_short_yes_or_no_gets_buttons_too(self):
+        for text in ('Ready to start? [yes/no]: ', 'Does the NAS ask for a CHAP login? [y/N]: ', 'Go on? [Y/n] '):
+            self.assertEqual(setup_progress.question_kind(text, False), 'yesno', text)
+        for text in ('qBittorrent username [admin]: ', 'Which one? [1/2] (Enter alone: 1): ', 'Number: '):
+            self.assertEqual(setup_progress.question_kind(text, False), 'text', text)
+        self.assertEqual(setup_progress.question_kind('Delete it? [y/N]: ', True), 'secret')
+
+    def test_the_typed_twice_prompts_are_pages_with_their_own_rules(self):
+        import backup_secrets
+        from modules import dashboard
+
+        setup_progress.enable()
+        self.addCleanup(setup_progress.disable)
+        pages = []
+
+        def typing(*answers):
+            typed = iter(answers)
+
+            def ask(prompt):
+                pages.append(setup_progress.page_shown())
+                return next(typed)
+
+            return ask
+
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(backup_secrets, 'create_key') as made:
+            backup_secrets.setup(typing('long-enough', 'long-enough'), lambda line: None, Path(folder))
+        made.assert_called_once()
+        self.assertEqual((pages[0]['what'], pages[0]['least'], pages[0]['asking']), ('Backup password', 8, 'password'))
+        self.assertEqual(pages[1]['asking'], 'again')
+        pages.clear()
+        saved = mock.Mock(returncode=0)
+        with (
+            mock.patch.object(dashboard, 'CONTROL_CONFIG', Path('/nonexistent-control')),
+            mock.patch.object(dashboard.sys.stdin, 'isatty', return_value=True),
+            mock.patch.object(dashboard.subprocess, 'run', return_value=saved) as run,
+            mock.patch('builtins.print'),
+        ):
+            self.assertTrue(dashboard.choose_pin('/bin/runtime', lambda line: None, typing('123456', '123456')))
+        rules = {k: pages[0][k] for k in ('what', 'least', 'most', 'digits', 'optional')}
+        self.assertEqual(rules, {'what': 'Dashboard PIN', 'least': 6, 'most': 8, 'digits': True, 'optional': True})
+        # The PIN goes to the control service on its input, never on its command line.
+        self.assertEqual(run.call_args.kwargs['input'], '123456\n')
+        self.assertNotIn('123456', json.dumps(run.call_args.args))
 
 
 class WindowTests(unittest.TestCase):
@@ -412,6 +514,8 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(state['phase'], 'choose')
         self.assertEqual([s['id'] for s in state['steps']], ['system', 'docker', 'tv', 'maintenance'])
         self.assertEqual(state['steps'][1]['title'], 'Docker')
+        self.assertEqual(self.post('api/choose', {'tv': True}), {'ok': True})
+        state = self.state()
         self.assertTrue(next(e for e in state['extras'] if e['id'] == 'tv')['on'])
         self.assertEqual(next(e for e in state['extras'] if e['id'] == 'tv')['installs'][0]['name'], 'steam')
         self.assertEqual(self.post('api/choose', {'tv': False, 'nonsense': True, 'heartbeat': 'yes'}), {'ok': True})
@@ -473,58 +577,187 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(after['storage'], {'data_ssd': {'uuid': 'bbbb-2222'}})
         self.assertFalse(after['tv']['wanted'])
 
-    def test_a_program_asking_in_the_terminal_is_handed_off_there(self):
+    def answered_from_the_window(self, work, answers):
+        """`work` run while setup watches its prompts, on a terminal nobody types in: each
+        question it asks is answered from the window with the next of `answers` (what the
+        page posts). Returns (what work returned, the questions as the window showed them)."""
+        import pty
+        import time
+
+        master, slave = pty.openpty()
+        self.addCleanup(os.close, master)
+        terminal = os.fdopen(slave, 'r')
+        self.addCleanup(terminal.close)
+        result, shown, pending = [], [], list(answers)
+
+        def run():
+            with mock.patch('sys.stdin', terminal), mock.patch('sys.stdout'), setup_progress.watching_prompts():
+                result.append(work())
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        last, deadline = 0, time.time() + 30
+        while thread.is_alive() and time.time() < deadline:
+            question = self.state()['question']
+            if question and question['seq'] != last and pending:
+                last = question['seq']
+                shown.append(question)
+                self.assertEqual(self.post('api/answer', {'seq': last, **pending.pop(0)}), {'ok': True})
+            time.sleep(0.05)
+        thread.join(5)
+        self.assertFalse(thread.is_alive(), 'a question was left waiting')
+        return result[0], shown
+
+    def recorded(self):
+        """Everything setup recorded for the window, and what the window shows now, as text."""
+        events = [{k: v for k, v in e.items() if k != 'at'} for e in setup_progress.events()]
+        return json.dumps(events) + json.dumps(self.state())
+
+    def test_a_program_of_setups_asks_its_questions_in_the_window_too(self):
+        """0.50.0, item 8: connecting the media apps, the music setup and the shared-folder
+        password ran as programs of their own, whose questions reached only the terminal
+        ("Answer this step in the terminal"). They now run inside setup's process."""
+        import secrets
+
         self.window.started.set()
-        self.assertIsNone(self.state()['terminal'])
-        seen = []
-        from modules import samba
-
-        samba.samba_password(
-            'neko', run=lambda argv, **_: seen.append(self.state()['terminal']) or mock.Mock(returncode=0)
+        hidden = 'typed-' + secrets.token_hex(8)
+        program = Path(self.tmp.name) / 'music-setup.py'
+        program.write_text(
+            'import getpass, sys\n'
+            'print("Open http://127.0.0.1:4533 on the server.")\n'
+            'user = input("Listener username: ").strip()\n'
+            'password = getpass.getpass("Listener password (never saved as plaintext): ")\n'
+            'sys.exit(0 if (user, password) == ("listener", sys.argv[2]) else 2)\n'
         )
-        self.assertIn('account neko', seen[0])
-        self.assertIsNone(self.state()['terminal'])  # over once the program ended
+        argv = list(sys.argv)
+        code, shown = self.answered_from_the_window(
+            lambda: setup_progress.run_program(program, ['--expect', hidden]), [{'text': 'listener'}, {'text': hidden}]
+        )
+        self.assertEqual(code, 0)  # both answers reached the program
+        self.assertEqual(sys.argv, argv)
+        self.assertEqual(
+            [q['text'] for q in shown], ['Listener username:', 'Listener password (never saved as plaintext):']
+        )
+        self.assertIn('Open http://127.0.0.1:4533 on the server.', shown[0]['context'])  # what it printed
+        self.assertEqual((shown[1]['secret'], shown[1]['kind']), (True, 'secret'))
+        # A password typed in the window is in no event and not in what the window shows.
+        self.assertNotIn(hidden, self.recorded())
+        self.assertNotIn('terminal', self.state())  # nothing is handed off to the terminal any more
+        self.assertFalse(hasattr(setup_progress, 'in_terminal'))
 
-        def failing_program():
-            with setup_progress.in_terminal('Music listener setup'):
-                seen.append(self.state()['terminal'])
-                raise RuntimeError('it failed')
+    def test_a_program_ends_as_it_would_on_its_own(self):
+        program = Path(self.tmp.name) / 'program.py'
+        for body, expected in (
+            ('pass\n', 0),
+            ('import sys\nsys.exit(3)\n', 3),
+            ('import sys\nsys.exit()\n', 0),
+            ('import sys\nsys.exit("Onboarding failed")\n', 1),
+            ('raise RuntimeError("an error it did not handle")\n', 1),
+            ('import argparse\nargparse.ArgumentParser().error("a wrong option")\n', 2),
+        ):
+            program.write_text(body)
+            with self.subTest(body=body), mock.patch('sys.stderr'):
+                self.assertEqual(setup_progress.run_program(program), expected)
+        # Ctrl+C is setup's to handle, as when the program was one of its own.
+        program.write_text('raise KeyboardInterrupt\n')
+        with self.assertRaises(KeyboardInterrupt):
+            setup_progress.run_program(program)
 
-        self.assertRaises(RuntimeError, failing_program)
-        self.assertEqual(seen[-1], 'Music listener setup')
-        self.assertIsNone(self.state()['terminal'])
-
-    def test_onboarding_asks_in_the_terminal_with_the_window_told(self):
-        from modules import onboarding
+    def test_the_steps_run_their_programs_inside_setup(self):
+        from modules import music, onboarding
 
         release = Path(self.tmp.name) / 'data/installer/releases' / ('v' + setup_gui.VERSION)
         release.mkdir(parents=True)
         (release / 'onboard.py').write_text('')
-        ctx = mock.Mock(
-            apply=True,
-            plan=(),
-            log=lambda line: None,
-            config={'data_mount': str(Path(self.tmp.name) / 'data'), 'onboarding': {}, 'media': {'services': []}},
-        )
-        seen = []
-
-        def ran(cmd, **_):
-            seen.append(setup_progress.terminal_handoff())
-            return mock.Mock(returncode=0)
-
+        data = str(Path(self.tmp.name) / 'data')
+        config = {'data_mount': data, 'onboarding': {}, 'media': {'services': []}}
+        ctx = mock.Mock(apply=True, plan=(), log=lambda line: None, config=config, config_path='/c.json')
         import recovery_tools
 
         with (
             mock.patch.object(onboarding.sys.stdin, 'isatty', return_value=True),
             mock.patch.object(onboarding.account_store, 'enabled', return_value=False),
-            mock.patch.object(onboarding.subprocess, 'run', side_effect=ran),
+            mock.patch.object(onboarding.setup_progress, 'run_program', return_value=0) as connected,
+            mock.patch.object(onboarding.subprocess, 'run', side_effect=AssertionError('a program of its own')),
             mock.patch.object(onboarding, 'witness_playback'),
+            mock.patch.object(onboarding, 'remove_stale'),
             # The lock asks about this PC's own monthly update (its journal, its service): not this test's business.
             mock.patch.object(recovery_tools.neko_common, 'pending_maintenance', return_value=None),
         ):
             onboarding.run(ctx)
-        self.assertIn('media apps', seen[0])
-        self.assertIsNone(setup_progress.terminal_handoff())
+        script, options = connected.call_args.args
+        self.assertEqual(Path(script), release / 'onboard.py')
+        self.assertIn('--configure', options)
+        with (
+            mock.patch.object(music.os, 'geteuid', return_value=0),
+            mock.patch('neko_common.verify_storage'),
+            mock.patch.object(music.music_client, 'check', return_value={'status': 'needs_setup'}),
+            mock.patch.object(music.sys.stdin, 'isatty', return_value=True),
+            mock.patch.object(music.setup_progress, 'run_program', return_value=1) as asked,
+            mock.patch.object(music, 'atomic_json'),
+        ):
+            ctx.config = {'data_mount': data, 'media_mount': data + '-media', 'media': {'services': ['navidrome']}}
+            music.run(ctx)
+        asked.assert_called_once_with(release / 'music-setup.py', ['--config', '/c.json', '--configure'])
+
+    def test_the_shared_folders_password_is_one_hidden_page_and_goes_to_samba_on_its_input(self):
+        import secrets
+
+        from modules import samba
+
+        self.window.started.set()
+        chosen = 'chosen-' + secrets.token_hex(8)
+        calls = []
+
+        def smbpasswd(argv, **kwargs):
+            calls.append((argv, kwargs.get('input')))
+            return mock.Mock(returncode=0)
+
+        # The first try differs (the page checks that too, before it sends); the second matches.
+        done, shown = self.answered_from_the_window(
+            lambda: samba.samba_password('neko', run=smbpasswd),
+            [{'text': chosen, 'fields': {'again': chosen + 'x'}}, {'text': chosen, 'fields': {'again': chosen}}],
+        )
+        self.assertTrue(done)
+        self.assertEqual(
+            shown[0]['page'],
+            {
+                'form': 'new_password',
+                'fields': {'password': '', 'again': ''},  # never the values
+                'asking': 'password',
+                'what': 'Password for the shared folders (account neko)',
+            },
+        )
+        self.assertTrue(shown[0]['secret'])
+        self.assertEqual(len(shown), 2)  # "the same again" was never asked: the page sent both
+        # Samba gets it on its input (-s), never on its command line.
+        self.assertEqual(calls, [(['smbpasswd', '-s', '-a', 'neko'], f'{chosen}\n{chosen}\n')])
+        self.assertNotIn(chosen, json.dumps([c[0] for c in calls]))
+        self.assertNotIn(chosen, self.recorded())
+
+    def test_every_question_goes_through_setup_from_its_first_line(self):
+        """A function that took `input` as its default when its file was loaded
+        (`def collect(prompt=input)`) asked in the terminal only, unless its file happened
+        to be loaded after the window started watching. installer.py now makes input() and
+        getpass() setup's own before any other file is loaded."""
+        import subprocess
+
+        check = (
+            'import installer, builtins, getpass, setup_progress, account_store, guided_setup, backup_secrets\n'
+            'assert builtins.input is setup_progress.asking_input\n'
+            'assert getpass.getpass is setup_progress.asking_getpass\n'
+            'assert account_store.collect.__defaults__[0] is setup_progress.asking_input\n'
+            'assert account_store.collect.__defaults__[1] is setup_progress.asking_getpass\n'
+            'assert guided_setup.ask_choice.__defaults__[0] is setup_progress.asking_input\n'
+            'assert backup_secrets.setup.__defaults__[0] is setup_progress.asking_getpass\n'
+            'print("ok")\n'
+        )
+        ran = subprocess.run([sys.executable, '-c', check], cwd=ROOT, capture_output=True, text=True, timeout=60)
+        self.assertEqual((ran.returncode, ran.stdout.strip()), (0, 'ok'), ran.stderr)
+        # Without a window watching they ask the plain way.
+        with mock.patch.object(setup_progress, '_real_input', return_value='typed') as plain:
+            self.assertEqual(setup_progress.asking_input('Name: '), 'typed')
+        plain.assert_called_once_with('Name: ')
 
     def test_the_run_as_the_window_sees_it(self):
         self.window.started.set()
@@ -563,7 +796,8 @@ class WindowTests(unittest.TestCase):
         setup_progress.answered()
         # The page offers the button for that question alone.
         page = (ROOT / 'setup-gui/setup.js').read_text()
-        self.assertIn("'Have you completed this step successfully?'", page)
+        self.assertIn("q.page?.form === 'confirm_step'", page)
+        self.assertNotIn('Have you completed this step successfully?', page)  # each step asks its own (0.50.0)
         self.assertIn('Skip for now', (ROOT / 'setup-gui/index.html').read_text())
         setup_progress.step('docker', 'needs_setup', 'Docker is installed as a snap')
         setup_progress.step('tv', 'unavailable', 'no Steam package')
@@ -687,6 +921,139 @@ class WindowTests(unittest.TestCase):
         self.assertNotIn('Traceback', err.getvalue())
 
 
+class MenuWindowTests(unittest.TestCase):
+    """0.50.0, item 8: the recovery menu and the uninstaller have the setup window too, when
+    there is a desktop; the terminal keeps working, and is all there is without one."""
+
+    def setUp(self):
+        packages = mock.patch.object(setup_gui, 'family_packages', return_value={'names': lambda n: [n], 'vulkan': []})
+        packages.start()
+        self.addCleanup(packages.stop)
+        self.addCleanup(setup_progress.disable)
+
+    def browser_of(self, window):
+        browser = WindowTests.cookie_browser()
+        browser.open(window.url, timeout=5).read()
+        return browser
+
+    def state(self, window, browser):
+        with browser.open(window.url + 'api/state', timeout=5) as response:
+            return json.loads(response.read())
+
+    def answer(self, window, browser, payload):
+        request = urllib.request.Request(
+            window.url + 'api/answer',
+            data=json.dumps(payload).encode(),
+            headers={'Content-Type': 'application/json'},
+            method='POST',
+        )
+        with browser.open(request, timeout=5) as response:
+            return json.loads(response.read())
+
+    def test_a_menu_is_followed_and_answered_in_the_window(self):
+        import pty
+        import time
+
+        master, slave = pty.openpty()
+        self.addCleanup(os.close, master)
+        terminal = os.fdopen(slave, 'r')
+        self.addCleanup(terminal.close)
+        said, picked, opened = [], [], []
+
+        def menu():
+            with mock.patch('sys.stdin', terminal), mock.patch('sys.stdout'):
+                with setup_gui.session('NekoServer recovery', {}, said.append, lambda config, url: True) as window:
+                    opened.append(window)
+                    print('What do you want to get back?')
+                    print('  1. Photos and videos (Immich)')
+                    print('  2. Nextcloud files')
+                    print('  0. Quit')
+                    picked.append(builtins.input('Choose a number: '))
+
+        thread = threading.Thread(target=menu)
+        thread.start()
+        deadline = time.time() + 20
+        while not opened and time.time() < deadline:
+            time.sleep(0.05)
+        window = opened[0]
+        browser = self.browser_of(window)
+        shown = None
+        while time.time() < deadline:
+            shown = self.state(window, browser)
+            if shown['question']:
+                break
+            time.sleep(0.05)
+        # The window follows the menu: its name, the terminal's words, no steps or switches.
+        self.assertEqual(shown['phase'], 'running')
+        self.assertEqual(shown['session']['title'], 'NekoServer recovery')
+        self.assertEqual(shown['steps'], [])
+        self.assertEqual(shown['question']['text'], 'Choose a number:')
+        self.assertEqual(
+            shown['question']['context'][-3:], ['  1. Photos and videos (Immich)', '  2. Nextcloud files', '  0. Quit']
+        )
+        self.assertEqual(self.answer(window, browser, {'seq': shown['question']['seq'], 'text': '2'}), {'ok': True})
+        thread.join(10)
+        self.assertEqual(picked, ['2'])  # the menu got the window's answer
+        self.assertIn('A window opened in your browser with the same questions', said[0])
+        # Its switches are never there to press: a menu changes no settings file.
+        self.assertTrue(window.frozen)
+
+    def test_without_a_desktop_the_menu_is_the_terminal_alone(self):
+        said = []
+        with setup_gui.session('NekoServer recovery', {}, said.append, lambda config, url: False) as window:
+            self.assertIsNone(window)
+            # Asked the plain way: nothing watches the prompts.
+            self.assertFalse(setup_progress._watching)
+        self.assertEqual(said, [])
+        # A window that cannot even be served changes nothing either.
+        with mock.patch.object(setup_gui, 'Window', side_effect=OSError('no port')):
+            with setup_gui.session('Removing NekoServer', {}, said.append) as window:
+                self.assertIsNone(window)
+
+    def test_the_recovery_menu_opens_it_only_when_a_person_runs_it(self):
+        import recovery_wizard
+
+        sessions = []
+
+        @contextlib.contextmanager
+        def session(title, config, output):
+            sessions.append(title)
+            yield None
+
+        with (
+            mock.patch.object(recovery_wizard.os, 'geteuid', return_value=0),
+            mock.patch.object(recovery_wizard, 'stop_on_sigterm'),
+            mock.patch.object(recovery_wizard, 'settings', return_value={}),
+            mock.patch.object(recovery_wizard, 'menu_loop', return_value=0) as loop,
+            mock.patch.object(setup_gui, 'session', session),
+        ):
+            # A prompt of someone's own (a test, another program): the menu alone.
+            self.assertEqual(recovery_wizard.run(lambda text: '0', lambda line: None), 0)
+            self.assertEqual(sessions, [])
+            # The person's own terminal: with the window.
+            self.assertEqual(recovery_wizard.run(builtins.input, lambda line: None), 0)
+            self.assertEqual(sessions, ['NekoServer recovery'])
+        self.assertEqual(loop.call_count, 2)
+
+    def test_the_uninstaller_never_depends_on_the_window(self):
+        import uninstaller
+
+        with mock.patch.dict(sys.modules, {'setup_gui': None}):  # its file cannot be loaded
+            with uninstaller.window_session({'data_mount': '/srv/nekoserver'}) as window:
+                self.assertIsNone(window)
+        seen = []
+
+        @contextlib.contextmanager
+        def session(title, config):
+            seen.append((title, config))
+            yield None
+
+        with mock.patch.object(setup_gui, 'session', session):
+            with uninstaller.window_session('not a settings object'):
+                pass
+        self.assertEqual(seen, [('Removing NekoServer', {})])
+
+
 class WindowPlacementTests(unittest.TestCase):
     """The small window sits low on the screen and never off it; without a known screen
     size the desktop places it."""
@@ -718,7 +1085,16 @@ class WindowPlacementTests(unittest.TestCase):
 
 
 class ReadyToStartTests(unittest.TestCase):
-    """The terminal's "Ready to start?" and the window's Start answer the same question."""
+    """The terminal's one approval and the window's Install button answer the same question."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.path = Path(folder.name) / 'my-config.json'
+        self.path.write_text('{}')
+        new = mock.patch.object(neko_common, 'server_exists', return_value=False)
+        new.start()
+        self.addCleanup(new.stop)
 
     def pipe(self, text=''):
         read_end, write_end = os.pipe()
@@ -728,28 +1104,74 @@ class ReadyToStartTests(unittest.TestCase):
         self.addCleanup(lambda: None)
         return os.fdopen(read_end)
 
-    def test_start_in_the_window_counts_as_yes(self):
+    def window(self):
         window = mock.Mock(started=threading.Event())
+        window.choose.return_value = True
+        return window
+
+    def test_install_in_the_window_counts_as_yes(self):
+        window = self.window()
         window.started.set()
         said = []
         with self.pipe() as stdin, mock.patch('sys.stdout'):
-            self.assertTrue(wizard.wait_to_start(builtins.input, said.append, window, stdin))
-        self.assertIn('Start pressed', said[0])
+            self.assertTrue(wizard.wait_to_start(self.path, builtins.input, said.append, window, stdin))
+        self.assertIn('pressed in the setup window', said[-1])
+        window.choose.assert_not_called()  # the window saved the switches itself
 
     def test_the_terminal_still_answers(self):
-        window = mock.Mock(started=threading.Event())
+        window = self.window()
+        said = []
         with self.pipe('maybe\nno\n') as stdin, mock.patch('sys.stdout'):
-            self.assertFalse(wizard.wait_to_start(builtins.input, lambda line: None, window, stdin))
-        with self.pipe('y\n') as stdin, mock.patch('sys.stdout'):
-            self.assertTrue(wizard.wait_to_start(builtins.input, lambda line: None, window, stdin))
+            self.assertFalse(wizard.wait_to_start(self.path, builtins.input, said.append, window, stdin))
+        self.assertIn('Type the number of a line (1 to 11), press Enter to go on, or type no to stop.', said)
+        window.choose.assert_not_called()
+        with self.pipe('\ny\n') as stdin, mock.patch('sys.stdout'):
+            self.assertTrue(wizard.wait_to_start(self.path, builtins.input, lambda line: None, window, stdin))
+        # Yes saves every switch as it stands and fixes them, through the window.
+        window.choose.assert_called_once_with({}, start=True)
         with self.pipe('') as stdin, mock.patch('sys.stdout'):  # Ctrl+D
-            self.assertFalse(wizard.wait_to_start(builtins.input, lambda line: None, window, stdin))
+            self.assertFalse(wizard.wait_to_start(self.path, builtins.input, lambda line: None, window, stdin))
+        # Enter alone approves nothing.
+        with self.pipe('\n\nno\n') as stdin, mock.patch('sys.stdout'):
+            self.assertFalse(wizard.wait_to_start(self.path, builtins.input, said.append, window, stdin))
+        self.assertIn('Enter alone does nothing here.', said[-1])
+
+    def test_a_number_switches_that_line_through_the_window(self):
+        window = self.window()
+        with self.pipe('2 7\nno\n') as stdin, mock.patch('sys.stdout'):
+            self.assertFalse(wizard.wait_to_start(self.path, builtins.input, lambda line: None, window, stdin))
+        # Line 2 (Movies and shows) was on, line 7 (a TV) off on a new server.
+        window.choose.assert_called_once_with({'media_movies': False, 'tv': True}, start=False)
 
     def test_without_a_window_or_in_tests_the_plain_question_is_asked(self):
-        answers = iter(['yes'])
-        self.assertTrue(wizard.wait_to_start(lambda question: next(answers), lambda line: None, None))
+        answers = iter(['', 'yes'])
+        asked = []
+        self.assertTrue(
+            wizard.wait_to_start(self.path, lambda question: asked.append(question) or next(answers), print, None)
+        )
+        self.assertIn('Install selected apps? Type yes to go on, back to change your choices, or no to stop', asked[1])
+        self.assertNotIn('setup window', asked[0] + asked[1])
         answers = iter(['no'])
-        self.assertFalse(wizard.wait_to_start(lambda question: next(answers), lambda line: None, mock.Mock()))
+        self.assertFalse(
+            wizard.wait_to_start(self.path, lambda question: next(answers), lambda line: None, mock.Mock())
+        )
+
+
+# The connecting step asks Docker first (modules/onboarding.docker_running); these tests
+# run it on a PC that may have no Docker, so Docker answers here.
+_DOCKER = None
+
+
+def setUpModule():
+    global _DOCKER
+    from modules import onboarding as _onboarding
+
+    _DOCKER = mock.patch.object(_onboarding, 'docker_running')
+    _DOCKER.start()
+
+
+def tearDownModule():
+    _DOCKER.stop()
 
 
 if __name__ == '__main__':

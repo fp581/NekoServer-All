@@ -21,6 +21,7 @@ mod notify;
 mod openrgb;
 mod os_policy;
 mod serve;
+mod shared_folders;
 mod startup;
 mod updates;
 use common::{Error, Result};

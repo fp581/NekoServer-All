@@ -5,8 +5,15 @@ from acceptance_summary import scope_digest
 import getpass, grp, json, os, platform, re, shutil, socket, subprocess, sys, time
 from pathlib import Path
 import host
+import setup_progress
 from neko_common import (
     SHARED,
+    immich_wanted,
+    media_apps_wanted,
+    media_group,
+    FINDING,
+    MEDIA_GROUPS,
+    media_services,
     verify_storage,
     APP_PORTS,
     DASHBOARD_DEFAULT_PORT,
@@ -167,7 +174,7 @@ def choose_port(ctx, port, running=None):
             f'Port {port} is used by another program on this PC, and none of the spare ports {SPARE_PORTS.start}-{SPARE_PORTS.stop - 1} is free either; set "port" under "dashboard" in my-config.json to a free port'
         )
     ctx.log(
-        f'Dashboard: port {port} is used by another program on this PC, so the dashboard uses port {spare} instead (kept in my-config.json, "port" under "dashboard")'
+        f'Dashboard: port {port} is used by another program on this PC, so the dashboard uses port {spare} instead (kept in the settings, so its address stays the same)'
     )
     ctx.config.setdefault('dashboard', {})['port'] = spare
     if hasattr(ctx, 'persist_config'):
@@ -415,6 +422,12 @@ def choose_pin(binary, log, ask=getpass.getpass):
     without a keyboard. Only a slow salted hash is kept."""
     if (CONTROL_CONFIG / 'pin.json').exists():
         return False
+    import account_store
+
+    chosen = account_store.AHEAD.get('others', {}).get('dashboard_pin')
+    if chosen:
+        # Chosen on the accounts page before the approval: set, nothing is asked.
+        return save_pin(binary, log, chosen)
     if not sys.stdin.isatty():
         log(
             'Dashboard: no PIN chosen, so fans and lights change on the server only and apps can\'t be restarted or closed from it (run setup in a terminal to choose one)'
@@ -424,8 +437,16 @@ def choose_pin(binary, log, ask=getpass.getpass):
         '\nChoose a PIN (6 to 8 digits) for the dashboard: it lets you change fans and lights from your phone or tablet,\n'
         'and restart or close apps (on every device, the server too).\nPress Enter to skip: fans and lights then change on the server itself only, and apps can\'t be restarted or closed from the dashboard.'
     )
+    # In the setup window the PIN and its second entry are one page (hidden, checked to
+    # match before they are sent); the terminal is asked twice.
+    with setup_progress.password_page('Dashboard PIN', least=6, most=8, digits=True, optional=True):
+        return asked_pin(binary, log, ask)
+
+
+def asked_pin(binary, log, ask):
+    """The PIN asked for and saved (choose_pin): True once one is saved."""
     for _ in range(3):
-        pin = ask('PIN: ').strip()
+        pin = setup_progress.page_field('password', ask, 'PIN: ').strip()
         if not pin:
             log('Dashboard: no PIN chosen; fans and lights change on the server only, and app controls stay off')
             return False
@@ -434,24 +455,32 @@ def choose_pin(binary, log, ask=getpass.getpass):
         if not re.fullmatch(r'\d{6,8}', pin, re.ASCII):
             print('A PIN is 6 to 8 digits (0-9).')
             continue
-        if ask('Same PIN again: ').strip() != pin:
+        if setup_progress.page_field('again', ask, 'Same PIN again: ').strip() != pin:
             print('The two PINs differ.')
             continue
-        saved = subprocess.run(
-            [str(binary), 'control', '--set-pin'],
-            input=pin + '\n',
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=120,
-        )
-        if saved.returncode:
-            print('That PIN was not accepted (' + (saved.stderr.strip() or 'no reason given') + '). Try another.')
-            continue
-        log('Dashboard: PIN saved')
-        return True
+        if save_pin(binary, log, pin, said=print):
+            return True
     log('Dashboard: no PIN chosen; fans and lights change on the server only, and app controls stay off')
     return False
+
+
+def save_pin(binary, log, pin, said=None):
+    """The PIN handed to the control service, which keeps only its slow salted hash: True
+    once saved. A refusal is said (`said`, else the log)."""
+    saved = subprocess.run(
+        [str(binary), 'control', '--set-pin'],
+        input=pin + '\n',
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    if saved.returncode:
+        why = saved.stderr.strip() or 'no reason given'
+        (said or log)('That PIN was not accepted (' + why + ').' + (' Try another.' if said else ''))
+        return False
+    log('Dashboard: PIN saved')
+    return True
 
 
 def runtime_binary():
@@ -500,18 +529,46 @@ def write_managed(path, text, mode, log):
 COLLECTOR_SETTINGS = Path('/etc/nekoserver-dashboard/config.json')
 
 
+def placed_on_other_drives(cfg):
+    """What the collector is told of a drive beyond the two that something is placed on
+    (0.50.0): which kinds of files and which apps are on it, so the drive has a card of
+    its own. Nothing on a server with no such drive, which keeps the file it had."""
+    from neko_common import drives_in_use
+
+    if not drives_in_use(cfg):
+        return {}
+    import placement
+
+    return {
+        'locations': {k: v for k, v in (cfg.get('locations') or {}).items() if isinstance(v, str)},
+        'installed': placement.apps_elsewhere(cfg),
+    }
+
+
 def collector_settings(cfg, smart, interval=60):
     """What the dashboard collector reads, including the fingerprint of the settings an
     acceptance report must match."""
     clean = {k: cfg[k] for k in ('data_mount', 'media_mount', 'external_backup_mount', 'storage')}
-    clean['media'] = {'services': cfg['media']['services']}
+    clean.update(placed_on_other_drives(cfg))
+    clean['media'] = {'services': media_services(cfg)}
+    # Whether any media group is on, and each group once one has an answer of its own (a
+    # server with none keeps the file it had: "wanted" alone says it all).
+    clean['media_apps'] = {'wanted': media_apps_wanted(cfg)}
+    own = cfg.get('media_apps') if isinstance(cfg.get('media_apps'), dict) else {}
+    if any(isinstance(own.get(group), bool) for group in MEDIA_GROUPS):
+        clean['media_apps'].update({group: media_group(cfg, group) for group in MEDIA_GROUPS})
+    for switch in FINDING.values():
+        if isinstance(own.get(switch), bool):
+            clean['media_apps'][switch] = own[switch]  # "Also find and download new ones", switched by hand
     clean['photos'] = {
-        'deploy_immich': cfg.get('photos', {}).get('deploy_immich', False),
+        'deploy_immich': immich_wanted(cfg),
         'archive_interval_minutes': cfg.get('photos', {}).get('archive_interval_minutes', 60),
         'backup_schedule': cfg.get('photos', {}).get('backup_schedule', 'legacy'),
         # The USB drive now: checksum results made on another one are not shown as its own.
         'external_backup_uuid': cfg.get('photos', {}).get('external_backup_uuid', ''),
     }
+    if cfg.get('photos', {}).get('external_backup_wanted') is False:
+        clean['photos']['external_backup_wanted'] = False  # the weekly copy left out by choice
     clean['music'] = {'backup_enabled': cfg.get('music', {}).get('backup_enabled', True)}
     clean['monitoring'] = {
         'enabled': cfg.get('monitoring', {}).get('enabled', True),

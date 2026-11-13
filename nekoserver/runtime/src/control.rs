@@ -66,7 +66,11 @@ fn coded(code: &str) -> Value {
 fn random_hex(bytes: usize) -> Result<String> {
     let mut buf = vec![0u8; bytes];
     fs::File::open("/dev/urandom")?.read_exact(&mut buf)?;
-    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
+    use std::fmt::Write as _;
+    Ok(buf.iter().fold(String::new(), |mut out, b| {
+        let _ = write!(out, "{b:02x}");
+        out
+    }))
 }
 /// A salted, slow hash: guessing a short PIN offline takes real time per try.
 fn pin_hash(salt: &str, pin: &str, rounds: u32) -> String {
@@ -74,7 +78,11 @@ fn pin_hash(salt: &str, pin: &str, rounds: u32) -> String {
     for _ in 1..rounds {
         digest = Sha256::digest(digest);
     }
-    digest.iter().map(|b| format!("{b:02x}")).collect()
+    use std::fmt::Write as _;
+    digest.iter().fold(String::new(), |mut out, b| {
+        let _ = write!(out, "{b:02x}");
+        out
+    })
 }
 pub fn valid_pin(pin: &str) -> bool {
     (4..=8).contains(&pin.len()) && pin.bytes().all(|b| b.is_ascii_digit())
@@ -956,13 +964,16 @@ fn assistant(service: &Arc<Service>, config: &Path, op: &str, request: &Value) -
     };
     let status = common::json(Path::new(assist::STATUS), 2_000_000);
     if op == "app_ask" {
+        // One time limit for making the question ready, well inside the web service's
+        // wait for this answer.
+        let until = Instant::now() + assist::PREPARE;
         // Downloaded during setup, never shipped with NekoServer: when it is not there
         // (yet), say so rather than ask Ollama for it.
         let have = assist::ollama_models(assist::OLLAMA);
         if let Some(why) = assist::model_missing(&data, &model, have.as_deref()) {
             return refuse("E21", &format!("{}: {why}", assist::NOT_AVAILABLE));
         }
-        return ask(&cfg, &data, &status, &model, request);
+        return ask(&cfg, &data, &status, &model, request, until);
     }
     let id = request["action"].as_str().unwrap_or("");
     let checked = match assist::repair(&cfg, &status, &data, id) {
@@ -977,25 +988,41 @@ fn assistant(service: &Arc<Service>, config: &Path, op: &str, request: &Value) -
         }
     };
     if op == "app_assist_check" {
-        return json!({"ok": true, "id": checked.id, "does": checked.does, "warning": checked.warning});
+        return json!({"ok": true, "id": checked.id, "does": checked.does, "warning": checked.warning, "sig": checked.sig});
     }
-    run_repair(service, config, &data, &checked.id)
+    run_repair(
+        service,
+        config,
+        &checked,
+        request["sig"].as_str().unwrap_or(""),
+    )
 }
 /// The question, made ready for the model: the messages (the readings summary, and the
 /// attention item asked about with its log lines, every secret taken out), the repairs
 /// it may suggest, and the excerpt the page may put in a bug report.
-fn ask(cfg: &Value, data: &Path, status: &Value, model: &str, request: &Value) -> Value {
+fn ask(
+    cfg: &Value,
+    data: &Path,
+    status: &Value,
+    model: &str,
+    request: &Value,
+    until: Instant,
+) -> Value {
     let Some(question) = assist::question(&request["question"]) else {
         return refuse("E42", "What would you like to ask Neko?");
     };
     let about = assist::item_id(&request["item"])
         .and_then(|id| assist::item(status, id))
-        .map(|(words, source)| (words, assist::log_lines(&source)));
+        .map(|(words, source)| match assist::log_lines(&source, until) {
+            Some(log) => (words, log),
+            // Not read in time: left out, and said so, rather than keeping the page waiting.
+            None => (format!("{words}\n{}", assist::LOG_LATE), String::new()),
+        });
     let known = assist::known_secrets(cfg, data);
     let repairs = assist::offered(cfg, status, data);
     let messages = assist::messages(
         &question,
-        &assist::summary(status),
+        &assist::summary(status, common::now()),
         about.as_ref().map(|(w, l)| (w.as_str(), l.as_str())),
         &repairs,
         &known,
@@ -1003,12 +1030,21 @@ fn ask(cfg: &Value, data: &Path, status: &Value, model: &str, request: &Value) -
     let excerpt = about
         .map(|(words, log)| assist::redact(&format!("{words}\n{log}"), &known))
         .unwrap_or_default();
+    // The question as the page may keep and copy it: what was typed, with the same
+    // secrets taken out as for the model (a password pasted into it, say).
     json!({"ok": true, "model": model, "threads": assist::threads(data), "messages": messages, "excerpt": excerpt,
+        "question": assist::redact(&question, &known),
         "repairs": repairs.iter().map(|(id, _)| id).collect::<Vec<_>>()})
 }
 /// An approved repair (checked again just before): each one an operation the dashboard
-/// already has.
-fn run_repair(service: &Arc<Service>, config: &Path, data: &Path, id: &str) -> Value {
+/// already has. `shown`: the version the card named, for an update (its signature).
+fn run_repair(
+    service: &Arc<Service>,
+    config: &Path,
+    checked: &assist::Repair,
+    shown: &str,
+) -> Value {
+    let id = checked.id.as_str();
     let (kind, name) = id.split_once(':').unwrap_or((id, ""));
     eprintln!("Ask Neko: running the approved repair {id}");
     match kind {
@@ -1019,9 +1055,14 @@ fn run_repair(service: &Arc<Service>, config: &Path, data: &Path, id: &str) -> V
         }
         .start(),
         "update_check" => start_update_job(config, "app_update_check", "", ""),
-        "update_app" => match assist::update_signature(data, name) {
-            Some(sig) => start_update_job(config, "app_update_run", name, &sig),
-            None => refuse("E42", "No new version of that app is waiting any more"),
+        "update_app" => match assist::approved_update(checked, shown) {
+            Ok(sig) => start_update_job(config, "app_update_run", name, &sig),
+            Err(why) => {
+                // The page shows the card afresh, with the version waiting now.
+                let mut answer = refuse("E42", why);
+                answer["changed"] = json!(true);
+                answer
+            }
         },
         "run_job" => {
             let Some((job, unit, _)) = assist::JOBS.iter().find(|j| j.0 == name) else {
@@ -1614,6 +1655,127 @@ mod tests {
         s.fans.lock().unwrap().controller.inventory.outputs[n]
             .id
             .clone()
+    }
+
+    /// Review of 0.49.0: the question went back to the page as typed, so a password typed
+    /// into it ended up in the bug report people copy and share.
+    #[test]
+    fn the_question_goes_back_to_the_page_with_its_secrets_removed() {
+        let data = std::env::temp_dir().join(format!("neko-ask-question-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&data);
+        fs::create_dir_all(data.join("secrets/accounts")).unwrap();
+        // Planted values, put together here so nothing in this file is shaped like one.
+        let saved = ["Saved", "-app-", "Pw", "-0042"].concat();
+        let key = ["tskey", "-auth-", "kAbCdEf1CNTRL", "-0123456789abcdef"].concat();
+        fs::write(
+            data.join("secrets/accounts/credentials.json"),
+            json!({"apps": {"jellyfin": {"username": "neko-admin", "password": saved}}})
+                .to_string(),
+        )
+        .unwrap();
+        // One written out in a sentence: not a saved login, not shaped like a key.
+        let spoken = ["Blue", "-Horse-", "77"].concat();
+        let typed = format!(
+            "Jellyfin refuses {saved} and tailscale said {key}, and I changed the Immich password to {spoken} today: why?"
+        );
+        let ready = ask(
+            &json!({}),
+            &data,
+            &json!({"generated_at": common::now()}),
+            "qwen3.5:4b",
+            &json!({"question": typed}),
+            Instant::now() + assist::PREPARE,
+        );
+        assert_eq!(ready["ok"], true, "{ready}");
+        let back = ready["question"].as_str().unwrap();
+        assert!(
+            back.starts_with("Jellyfin refuses ") && back.ends_with(": why?"),
+            "{back}"
+        );
+        // None of the values is in the question the page keeps, nor anywhere else in the answer.
+        let whole = ready.to_string();
+        for planted in [&saved, &key, &spoken] {
+            assert!(!back.contains(planted.as_str()), "{back}");
+            assert!(!whole.contains(planted.as_str()), "{whole}");
+        }
+        // The web service hands it on to the page with the ask's id.
+        let web = include_str!("serve.rs");
+        assert!(web.contains(r#""question": ready["question"]"#));
+        let _ = fs::remove_dir_all(&data);
+    }
+
+    /// What the control service itself does with the readings' age and a log that is
+    /// late (run here, not read from the source): the model is told both.
+    #[test]
+    fn the_model_is_told_how_old_the_readings_are_and_that_a_log_is_late() {
+        let data = std::env::temp_dir().join(format!("neko-ask-old-{}", std::process::id()));
+        let status = json!({"generated_at": common::now() - 7200.0, "alerts": [
+            {"id": "backup:music", "title": "Music library backup failed", "detail": "It stopped", "level": "warning"}]});
+        // No time left for the log: its command is not started, and that is said.
+        let ready = ask(
+            &json!({}),
+            &data,
+            &status,
+            "qwen3.5:4b",
+            &json!({"question": "why?", "item": "backup:music"}),
+            Instant::now(),
+        );
+        assert_eq!(ready["ok"], true, "{ready}");
+        let user = ready["messages"][1]["content"].as_str().unwrap();
+        assert!(user.contains("as it was 2 hours ago"), "{user}");
+        assert!(!user.contains("The dashboard now"), "{user}");
+        assert!(
+            user.contains("Music library backup failed: It stopped"),
+            "{user}"
+        );
+        assert!(user.contains(assist::LOG_LATE), "{user}");
+        assert!(!user.contains("Its last log lines"), "{user}");
+        // The excerpt a bug report quotes says so too.
+        assert!(
+            ready["excerpt"]
+                .as_str()
+                .unwrap()
+                .trim_end()
+                .ends_with(assist::LOG_LATE),
+            "{ready}"
+        );
+    }
+
+    /// Approve as the control service runs it: only the version the card showed goes on
+    /// to "Update now"; any other signature is refused and the page is told to show the
+    /// card again.
+    #[test]
+    fn an_approved_update_goes_on_only_with_the_signature_the_card_showed() {
+        let board = fans::tests::Board::new("ask-approve");
+        let s = service(&board, Some("4321"), 1);
+        let config = board.0.join("no-settings.json");
+        let (shown, newer) = ("a".repeat(16), "b".repeat(16));
+        let waiting = |sig: &str| assist::Repair {
+            id: "update_app:jellyfin".into(),
+            does: String::new(),
+            warning: String::new(),
+            sig: sig.into(),
+        };
+        // Another version waits than the one shown, or the press names none: refused,
+        // and marked so the page makes the card again.
+        for (now, sent) in [
+            (&newer, shown.as_str()),
+            (&shown, ""),
+            (&shown, "not-a-signature"),
+        ] {
+            let refused = run_repair(&s, &config, &waiting(now), sent);
+            assert_eq!(refused["ok"], false, "{refused}");
+            assert_eq!(refused["changed"], true, "{refused}");
+            assert_eq!(refused["message"], assist::NEWER_ARRIVED, "{refused}");
+        }
+        // The version shown is the one waiting: it goes on to "Update now", which then
+        // makes its own checks (here: these settings have no such app). Not "changed".
+        let went_on = run_repair(&s, &config, &waiting(&shown), &shown);
+        assert_eq!(went_on["changed"], Value::Null, "{went_on}");
+        assert_eq!(
+            went_on["message"], "That app isn't installed on this server",
+            "{went_on}"
+        );
     }
 
     #[test]

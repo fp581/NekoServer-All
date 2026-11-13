@@ -2,12 +2,11 @@
 
 import os
 from pathlib import Path
-import subprocess
 import sys
 
 import music_client
 import setup_progress
-from neko_common import VERSION, atomic_json, music_library
+from neko_common import VERSION, atomic_json, media_group, media_services, music_library
 
 DEPENDENCIES = ['media', 'recovery', 'music_backup']
 DESCRIPTION = 'Music library, private listener checks and browser/phone/desktop client handoff'
@@ -23,7 +22,10 @@ def options(config):
 
 def run(ctx):
     options(ctx.config)
-    if 'navidrome' not in ctx.config.get('media', {}).get('services', []):
+    if not media_group(ctx.config, 'music'):
+        ctx.log('Music: switched off (Music (Navidrome) in setup); no music player to set up')
+        return
+    if 'navidrome' not in media_services(ctx.config):
         # A server without the music player (taken out of media.services): nothing to do
         # here, and the rest of setup goes ahead. The music backup still keeps Lidarr's music.
         ctx.log('Music: Navidrome is not among your apps ("services" under "media"); no music player to set up')
@@ -39,11 +41,8 @@ def run(ctx):
     result = music_client.check(ctx.config)
     if result['status'] != 'pass' and sys.stdin.isatty():
         release = Path(ctx.config['data_mount']) / 'installer/releases' / ('v' + VERSION)
-        with setup_progress.in_terminal('Music listener setup'):
-            code = subprocess.run(
-                [sys.executable, str(release / 'music-setup.py'), '--config', str(ctx.config_path), '--configure'],
-                check=False,
-            ).returncode
+        # Inside setup's own process: its two questions are asked in the setup window too.
+        code = setup_progress.run_program(release / 'music-setup.py', ['--config', ctx.config_path, '--configure'])
         if code == 2:
             raise RuntimeError('Music listener setup failed; credentials/configuration preserved')
         result = music_client.check(ctx.config)

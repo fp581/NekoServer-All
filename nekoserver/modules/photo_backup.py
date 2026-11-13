@@ -21,8 +21,8 @@ from neko_common import (
     atomic_write,
     forget_last_run,
     host_timezone,
+    immich_wanted,
     mount_path,
-    pick_drive,
     relative_path,
     safe_path,
     job_times,
@@ -157,12 +157,15 @@ def select_external(config, inventory, input_fn=input, out_fn=print):
         raise RuntimeError('Duplicate external filesystem UUID; identify cloned drives first')
     if not candidates:
         raise RuntimeError(no_backup_drive(config, inventory))
-    from modules.storage import describe
+    import drive_table
 
-    # Worded as the SSD and HDD lists are (it listed UUIDs and mount points before).
-    chosen = pick_drive(candidates, 'the USB backup drive', input_fn, out_fn, skippable=True, describe=describe)
-    if chosen is None:
+    # Chosen in the same list as the app SSD and the media HDD, by the same numbers.
+    table = drive_table.rows(inventory, config)
+    drive_table.show_once(table, config, out_fn)
+    row = drive_table.ask(table, 'usb', config, input_fn, out_fn, skippable=True)
+    if row is None:
         return None  # skipped for now, as offered
+    chosen = row['backup']
     photos = config.setdefault('photos', {})
     photos.update(external_backup_uuid=chosen['uuid'], external_backup_fstype=chosen['fstype'])
     photos.pop('external_backup_network', None)  # an earlier drive's; check_drive notes this one's
@@ -172,7 +175,7 @@ def select_external(config, inventory, input_fn=input, out_fn=print):
 def copies(config):
     """What the weekly USB copy takes: (Immich's photo archive, Nextcloud's files)."""
     return (
-        bool(config.get('photos', {}).get('deploy_immich', False)),
+        immich_wanted(config),
         bool(config.get('nextcloud', {}).get('enabled', False)),
     )
 
@@ -196,6 +199,8 @@ def check_drive(config, uuid, fstype):
     a disk on a NAS, the same NAS disk as before (its WWN)."""
     from modules.storage import inventory_now
 
+    if shared_backup_folder(config):
+        return  # tried out by the network storage step; the weekly copy mounts it by its address
     inventory = inventory_now()
     problem = shared_disk(config, inventory, uuid)
     if problem:
@@ -205,6 +210,29 @@ def check_drive(config, uuid, fstype):
         raise RuntimeError('Unexpected backup filesystem')
     if uuid in {config.get('storage', {}).get(key, {}).get('uuid') for key in ('data_ssd', 'media_hdd')}:
         raise RuntimeError('USB UUID must differ from SSD/HDD')
+
+
+def shared_backup_folder(config):
+    """The address of the folder a NAS shares over NFS that is the backup drive (the
+    network storage step chose it and tried it out, nfs_exports.py), or None for a drive.
+    It is never the media drive's own folder: a copy kept with what it protects is lost
+    with it."""
+    import nfs_exports
+
+    photos = config.get('photos', {})
+    record = {
+        'uuid': photos.get('external_backup_uuid'),
+        'fstype': photos.get('external_backup_fstype'),
+        'network': photos.get('external_backup_network'),
+    }
+    export = nfs_exports.checked_record(record, '"external_backup_uuid" (and "external_backup_network") under "photos"')
+    if export and record['uuid'] == config.get('storage', {}).get('media_hdd', {}).get('uuid'):
+        raise RuntimeError(
+            f'The backup drive and the media drive are the same shared folder ({export}): a backup kept with '
+            'what it protects is lost with it. Share a second folder on the NAS for the backup, take "backup" '
+            'out of "nfs" under "network_storage" in my-config.json, and run setup again.'
+        )
+    return export
 
 
 def nas_identity(inventory, uuid):
@@ -233,6 +261,40 @@ def same_nas_disk(photos, wwn):
         'transport': 'iscsi',
         'wwn': nas_disk_wwn(saved, wwn, 'USB backup drive', choose),
     }
+
+
+def left_out_by_choice(ctx):
+    """The weekly copy left out: no removable drive was chosen for it."""
+    switch_off(ctx.log)
+    ctx.log('Offline backup: left out by choice (no removable drive was chosen)')
+    return {'status': 'unavailable', 'reason': 'Left out by choice: no removable drive for the weekly copy'}
+
+
+NO_DRIVE_YET = {
+    'status': 'needs_setup',
+    'reason': 'No USB backup drive is chosen yet, so the weekly copy of your photos and Nextcloud files waits for one. '
+    'Connect it and run  sudo bash install.sh  again to choose it',
+}
+
+
+def the_drive(ctx, opts):
+    """(the offline drive's UUID, None), or (None, the step's result) when there is none:
+    left out by choice, or not chosen yet. Asked for by name (install.sh --module
+    photo_backup; gate run B4) a drive left out is asked again, and "none for now" again
+    keeps it left out."""
+    left_out = opts.get('external_backup_wanted') is False and not str(opts.get('external_backup_uuid', '')).strip()
+    again = left_out and getattr(ctx, 'only', None) == 'photo_backup' and sys.stdin.isatty()
+    if left_out and not again:
+        return None, left_out_by_choice(ctx)
+    if again:
+        opts.pop('external_backup_wanted')
+    uuid = chosen_drive(ctx, opts)
+    if uuid is not None:
+        return uuid, None
+    if again:
+        opts['external_backup_wanted'] = False
+        return None, left_out_by_choice(ctx)
+    return None, dict(NO_DRIVE_YET)
 
 
 def chosen_drive(ctx, opts):
@@ -368,13 +430,9 @@ def run(ctx):
         switch_off(ctx.log)
         ctx.log('USB backup: neither Immich nor Nextcloud is set up, so there is nothing for it to copy')
         return {'status': 'unavailable', 'reason': 'Nothing to copy: Immich and Nextcloud are both switched off'}
-    uuid = chosen_drive(ctx, opts)
+    uuid, waiting = the_drive(ctx, opts)
     if uuid is None:
-        return {
-            'status': 'needs_setup',
-            'reason': 'No USB backup drive is chosen yet, so the weekly copy of your photos and Nextcloud files waits for one. '
-            'Connect it and run  sudo bash install.sh  again to choose it',
-        }
+        return waiting
     if not re.fullmatch(r'[A-Za-z0-9-]{8,80}', uuid):
         raise RuntimeError('Set photos.external_backup_uuid from lsblk -f')
     fstype = opts.get('external_backup_fstype', 'ext4')

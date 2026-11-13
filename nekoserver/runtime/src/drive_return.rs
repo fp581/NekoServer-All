@@ -121,10 +121,26 @@ fn mounted(path: &Path) -> Result<Option<(String, String)>> {
 fn alive(device: &str, source: &str, exists: impl Fn(&Path) -> bool) -> bool {
     if device.starts_with("0:") {
         let drive = source.split('[').next().unwrap_or("");
+        // A folder a NAS shares (NFS, "192.168.1.20:/volume1/media") has no device that
+        // could go away: while it is mounted its writes wait for the NAS, and the NAS
+        // check watches it. Never released from here.
+        if shared_folder_source(drive) {
+            return true;
+        }
         drive.starts_with("/dev/") && exists(Path::new(drive))
     } else {
         exists(&Path::new("/sys/dev/block").join(device))
     }
+}
+
+/// A mount's source is a shared folder's address (host:/folder), not a device.
+fn shared_folder_source(source: &str) -> bool {
+    !source.starts_with('/') && source.contains(":/")
+}
+/// The mount in effect is only systemd's automount (findmnt shows the source
+/// "systemd-1"): the shared folder behind it is not mounted.
+fn only_automount(found: Option<(String, String)>) -> Option<(String, String)> {
+    found.filter(|(_, source)| source != "systemd-1")
 }
 
 fn run_ok(args: &[&str], timeout: u64) -> Result<String> {
@@ -193,6 +209,8 @@ pub fn run(a: &Args) -> Result<()> {
     let cfgpath = a.path("config")?;
     let cfg = common::json(&cfgpath, 64000);
     let mut drives: Vec<(PathBuf, String, String)> = vec![];
+    // The media drive when it is a folder the NAS shares (NFS): its address.
+    let export = common::nfs_export(&cfg["storage"]["media_hdd"]);
     for (key, drive) in [("data_mount", "data_ssd"), ("media_mount", "media_hdd")] {
         let path = common::mount_path(cfg[key].as_str().unwrap_or(""))?;
         let uuid = cfg["storage"][drive]["uuid"].as_str().unwrap_or("");
@@ -202,6 +220,7 @@ pub fn run(a: &Args) -> Result<()> {
         let fstype = cfg["storage"][drive]["fstype"].as_str().unwrap_or("");
         drives.push((path, uuid.to_string(), fstype.to_string()));
     }
+    let watched = with_one_drive(&cfg, &drives);
     // systemd can start this before the drive is back: anything that asks for the drive
     // (Docker woken by a command, say) pulls this in at once. A drive still missing is
     // then waited for, so the services are started again once it returns. `recovering`
@@ -211,14 +230,9 @@ pub fn run(a: &Args) -> Result<()> {
     let mut told = false;
     loop {
         let mut waiting = false;
-        for (path, uuid, fstype) in &drives {
-            let present = Path::new("/dev/disk/by-uuid").join(uuid).exists();
-            let found = mounted(path)?;
-            let alive = found
-                .as_ref()
-                .is_some_and(|(device, source)| alive(device, source, Path::exists));
+        for (path, uuid, fstype) in &watched {
             let shown = path.to_string_lossy().into_owned();
-            match decide(found.as_ref().map(|(d, _)| d.as_str()), alive, present) {
+            match step_for(path, connected(export, uuid))? {
                 Step::Nothing => {}
                 Step::Wait => {
                     if !told {
@@ -231,11 +245,7 @@ pub fn run(a: &Args) -> Result<()> {
                     recovering = true;
                 }
                 Step::Remount { release } => {
-                    if release {
-                        println!("Drive return: the drive for {shown} is back; releasing the mount it left behind");
-                        run_ok(&["umount", "-l", &shown], 60)?;
-                    }
-                    mount_again(&shown, uuid, fstype)?;
+                    remount(&shown, uuid, fstype, release)?;
                     recovering = true;
                 }
             }
@@ -249,7 +259,12 @@ pub fn run(a: &Args) -> Result<()> {
         }
         thread::sleep(Duration::from_secs(5));
     }
-    if !recovering {
+    let remounted = bring_back_placed(&cfg)?;
+    if !recovering && !remounted {
+        // A drive of a group's own came back mounted by systemd, or this is an ordinary
+        // start: an app Docker could not start while its drive was away starts now.
+        start_failed_apps("Drive return");
+        crate::shared_folders::check(&cfg);
         return Ok(());
     }
     // A drive that "returns" while setup runs is setup's doing (a replaced HDD given its
@@ -271,7 +286,178 @@ pub fn run(a: &Args) -> Result<()> {
         return Ok(());
     }
     let paths: Vec<PathBuf> = drives.into_iter().map(|(p, _, _)| p).collect();
-    start_again(&cfgpath, &paths[0], &paths[1], "Drive return")
+    start_again(&cfgpath, &paths[0], &paths[1], "Drive return")?;
+    start_failed_apps("Drive return");
+    crate::shared_folders::check(&cfg);
+    Ok(())
+}
+
+/// The mounts to look at, in order: with one drive for both the apps and the media
+/// (common::one_drive), that drive's own mount first, then the two folders mounted from
+/// it at the roles' places; otherwise the two drives.
+fn with_one_drive(
+    cfg: &serde_json::Value,
+    roles: &[(PathBuf, String, String)],
+) -> Vec<(PathBuf, String, String)> {
+    let mut watched = vec![];
+    if common::one_drive(cfg) {
+        if let Some((_, uuid, fstype)) = roles.first() {
+            watched.push((
+                PathBuf::from(common::ONE_DRIVE),
+                uuid.clone(),
+                fstype.clone(),
+            ));
+        }
+    }
+    watched.extend(roles.iter().cloned());
+    watched
+}
+
+/// A drive is connected: a folder a NAS shares (its identity "nfs-...") when the NAS
+/// answers at `export`, any other drive when its UUID is listed by the kernel.
+fn connected(export: Option<&str>, uuid: &str) -> bool {
+    match export.filter(|_| common::is_nfs_identity(uuid)) {
+        Some(export) => common::nfs_answers(export),
+        None => Path::new("/dev/disk/by-uuid").join(uuid).exists(),
+    }
+}
+
+/// What to do for the drive mounted at `path` (or not): see `decide`.
+fn step_for(path: &Path, present: bool) -> Result<Step> {
+    let found = only_automount(mounted(path)?);
+    let alive = found
+        .as_ref()
+        .is_some_and(|(device, source)| alive(device, source, Path::exists));
+    Ok(decide(
+        found.as_ref().map(|(d, _)| d.as_str()),
+        alive,
+        present,
+    ))
+}
+
+/// The drive for `shown` is connected again: mounted again, the mount it left behind
+/// released first when there is one.
+fn remount(shown: &str, uuid: &str, fstype: &str, release: bool) -> Result<()> {
+    if release {
+        println!("Drive return: the drive for {shown} is back; releasing the mount it left behind");
+        run_ok(&["umount", "-l", shown], 60)?;
+    }
+    mount_again(shown, uuid, fstype)
+}
+
+/// The drives beyond the SSD and the HDD that something is placed on (0.50.0: a
+/// group's files or apps on a drive of its own) are never waited for: one that is away
+/// keeps only the apps with files there stopped (their Compose files never let Docker
+/// make a missing folder), and the others start. One that is connected again is mounted
+/// again. True when one was.
+fn bring_back_placed(cfg: &serde_json::Value) -> Result<bool> {
+    let mut remounted = false;
+    for name in common::drives_in_use(cfg) {
+        let record = &cfg["storage"][name.as_str()];
+        let uuid = record["uuid"].as_str().unwrap_or("");
+        let Some(folder) = common::drive_folder(cfg, &name).filter(|_| plain_uuid(uuid)) else {
+            continue;
+        };
+        let shown = folder.to_string_lossy().into_owned();
+        match step_for(&folder, connected(common::nfs_export(record), uuid))? {
+            Step::Nothing => {}
+            Step::Wait => println!(
+                "Drive return: the drive for {shown} is not connected; the apps with files there stay stopped until it is back, the others run"
+            ),
+            Step::Remount { release } => {
+                remount(&shown, uuid, record["fstype"].as_str().unwrap_or(""), release)?;
+                remounted = true;
+            }
+        }
+    }
+    Ok(remounted)
+}
+
+/// A drive's UUID as the settings may hold it (letters, digits and dashes): it is used
+/// in a path.
+fn plain_uuid(uuid: &str) -> bool {
+    !uuid.is_empty() && uuid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// The NekoServer apps Docker could not start (a folder of theirs was missing because its
+/// drive was away; their Compose files never let Docker make it) are started now. Docker
+/// tries such an app only once, when it starts, and `unless-stopped` does not try again.
+/// An app a person or a job stopped is never started here (Docker keeps no start error
+/// for it); one whose drive is still away fails again and is said.
+fn start_failed_apps(who: &str) {
+    if common::setup_running() {
+        return; // setup starts the apps itself
+    }
+    let listed = run_ok(
+        &[
+            "docker",
+            "ps",
+            "-a",
+            "-q",
+            "--filter",
+            "label=com.docker.compose.project",
+            "--filter",
+            "status=exited",
+            "--filter",
+            "status=created",
+        ],
+        30,
+    );
+    let ids: Vec<String> = listed
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    if ids.is_empty() {
+        return; // none stopped, or Docker is not running
+    }
+    let mut inspect = vec!["docker", "inspect"];
+    inspect.extend(ids.iter().map(String::as_str));
+    let inspected = run_ok(&inspect, 30)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    for (id, name) in failed_to_start(&inspected) {
+        match run_ok(&["docker", "start", &id], 120) {
+            Ok(_) => println!(
+                "{who}: started {name} again (Docker could not start it while its drive was away)"
+            ),
+            Err(e) => {
+                println!("{who}: {name} cannot start yet ({e}); it starts once its drive is back")
+            }
+        }
+    }
+}
+
+/// From `docker inspect`: (id, name) of each NekoServer app Docker could not start.
+fn failed_to_start(inspected: &serde_json::Value) -> Vec<(String, String)> {
+    inspected
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| could_not_start(c))
+        .map(|c| {
+            let text = |v: &serde_json::Value| v.as_str().unwrap_or("").to_string();
+            (
+                text(&c["Id"]),
+                text(&c["Name"]).trim_start_matches('/').to_string(),
+            )
+        })
+        .collect()
+}
+
+/// One container of a NekoServer app (Compose project neko-...), meant to run
+/// (unless-stopped or always), that is not running because Docker could not start it:
+/// its last start left an error. A container stopped on purpose has none.
+fn could_not_start(c: &serde_json::Value) -> bool {
+    let field = |v: &serde_json::Value| v.as_str().unwrap_or("").to_string();
+    let project = field(&c["Config"]["Labels"]["com.docker.compose.project"]);
+    let status = field(&c["State"]["Status"]);
+    let restart = field(&c["HostConfig"]["RestartPolicy"]["Name"]);
+    project.starts_with("neko-")
+        && ["exited", "created"].contains(&status.as_str())
+        && !field(&c["State"]["Error"]).is_empty()
+        && ["unless-stopped", "always"].contains(&restart.as_str())
 }
 
 /// True when every one of SERVICES that is switched on runs (the apps' services, started
@@ -313,7 +499,10 @@ fn start_services(who: &str, systemctl: &dyn Fn(&[&str], u64) -> Result<i32>) ->
 /// views of the drives refreshed, then each job a missing drive cut off finished. Only
 /// with both drives in place and the right ones. `who` begins each line said.
 pub(crate) fn start_again(cfgpath: &Path, data: &Path, media: &Path, who: &str) -> Result<()> {
-    backup::guard(cfgpath, data, media)?;
+    // A drive of a group's own that is away keeps only that group's apps stopped.
+    for name in backup::guard_present(cfgpath, data, media)? {
+        println!("{who}: the drive {name} is not connected; the apps with files there stay stopped until it is back");
+    }
     let failed = start_services(who, &|args, wait| {
         common::command(args, wait).map(|(code, _)| code)
     });
@@ -371,6 +560,130 @@ fn finish_interrupted_jobs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Gate run C9: with the Music group's drive away, Docker could not start Navidrome
+    /// and Lidarr (their folders there are missing, and never made in its place). Once
+    /// the drive is back, exactly those are started; never one stopped on purpose.
+    #[test]
+    fn only_the_apps_docker_could_not_start_are_started_again() {
+        let container = |name: &str, project: &str, status: &str, error: &str, restart: &str| {
+            serde_json::json!({
+                "Id": format!("id-{name}"),
+                "Name": format!("/{name}"),
+                "Config": {"Labels": {"com.docker.compose.project": project}},
+                "State": {"Status": status, "Error": error},
+                "HostConfig": {"RestartPolicy": {"Name": restart}},
+            })
+        };
+        let missing = "invalid mount config for type \"bind\": bind source path does not exist: /mnt/nekoserver-drives/d3/library";
+        let inspected = serde_json::json!([
+            container(
+                "neko-navidrome-navidrome-1",
+                "neko-navidrome",
+                "exited",
+                missing,
+                "unless-stopped"
+            ),
+            container(
+                "neko-lidarr-lidarr-1",
+                "neko-lidarr",
+                "created",
+                missing,
+                "unless-stopped"
+            ),
+            // Stopped by a person, or by a job (the monthly update): no start error.
+            container(
+                "neko-sonarr-sonarr-1",
+                "neko-sonarr",
+                "exited",
+                "",
+                "unless-stopped"
+            ),
+            // Running, someone else's, or one not meant to run by itself.
+            container(
+                "neko-jellyfin-jellyfin-1",
+                "neko-jellyfin",
+                "running",
+                "",
+                "unless-stopped"
+            ),
+            container("my-plex", "plex", "exited", missing, "unless-stopped"),
+            container("neko-seerr-seerr-1", "neko-seerr", "exited", missing, "no"),
+        ]);
+        assert_eq!(
+            failed_to_start(&inspected),
+            [
+                (
+                    "id-neko-navidrome-navidrome-1".to_string(),
+                    "neko-navidrome-navidrome-1".to_string()
+                ),
+                (
+                    "id-neko-lidarr-lidarr-1".to_string(),
+                    "neko-lidarr-lidarr-1".to_string()
+                ),
+            ]
+        );
+        assert!(failed_to_start(&serde_json::json!(null)).is_empty());
+    }
+    /// Gate run B: one drive holds the apps and the media (each a folder of it, mounted
+    /// at the role's place). Its own mount comes back first, then the two from it.
+    #[test]
+    fn one_drive_for_everything_is_brought_back_before_its_folders() {
+        let role = |folder: &str, kept: &str| serde_json::json!({"uuid": "one-1", "fstype": "ext4", "folder": folder, "subvolume": kept});
+        let roles = vec![
+            (
+                PathBuf::from("/srv/nekoserver"),
+                "one-1".to_string(),
+                "ext4".to_string(),
+            ),
+            (
+                PathBuf::from("/mnt/nekoserver-media"),
+                "one-1".to_string(),
+                "ext4".to_string(),
+            ),
+        ];
+        let one = serde_json::json!({"storage": {
+            "data_ssd": role("/mnt/nekoserver-drives/one/nekoserver/apps", "/nekoserver/apps"),
+            "media_hdd": role("/mnt/nekoserver-drives/one/nekoserver/media", "/nekoserver/media")}});
+        let watched: Vec<String> = with_one_drive(&one, &roles)
+            .iter()
+            .map(|(path, _, _)| path.display().to_string())
+            .collect();
+        assert_eq!(
+            watched,
+            [
+                "/mnt/nekoserver-drives/one",
+                "/srv/nekoserver",
+                "/mnt/nekoserver-media"
+            ]
+        );
+        // Two drives, or both on the disk Linux runs from: only the two roles.
+        let two =
+            serde_json::json!({"storage": {"data_ssd": {"uuid": "a"}, "media_hdd": {"uuid": "b"}}});
+        assert_eq!(with_one_drive(&two, &roles), roles);
+        let system = serde_json::json!({"storage": {
+            "data_ssd": role("/var/lib/nekoserver/apps", "/var/lib/nekoserver/apps"),
+            "media_hdd": role("/var/lib/nekoserver/media", "/var/lib/nekoserver/media")}});
+        assert_eq!(with_one_drive(&system, &roles), roles);
+    }
+    #[test]
+    fn a_drives_uuid_is_used_only_when_it_is_plain() {
+        assert!(plain_uuid("b7a99ae5-1c2d-4e5f-8a9b-0c1d2e3f4a5b"));
+        assert!(plain_uuid("nfs-0123abcd"));
+        for odd in ["", "../../etc", "a b", "x/y"] {
+            assert!(!plain_uuid(odd), "{odd}");
+        }
+    }
+    #[test]
+    fn a_group_drive_never_holds_the_rest() {
+        // The drive return waits for the SSD and the HDD only; the drives of a group's own
+        // are looked at once, after them, and the guard lets them be away.
+        let source = include_str!("drive_return.rs");
+        let run =
+            &source[source.find("pub fn run(").unwrap()..source.find("fn connected(").unwrap()];
+        assert!(run.find("thread::sleep").unwrap() < run.find("bring_back_placed(&cfg)").unwrap());
+        assert!(source.contains("backup::guard_present(cfgpath, data, media)?"));
+        assert!(!source.contains(concat!("backup::", "guard(cfgpath")));
+    }
     #[test]
     fn the_apps_count_as_up_when_docker_runs() {
         // The review of 0.46.3: Docker failing to start lifted the NAS hold all the same.
@@ -520,6 +833,27 @@ mod tests {
         // ext4 and XFS: the drive's own device number, as before.
         assert!(alive("8:17", "/dev/sdb1", here));
         assert!(!alive("8:33", "/dev/sdb1", here));
+    }
+    #[test]
+    fn a_mounted_shared_folder_is_never_released_and_an_automount_is_no_mount() {
+        // 0.50.0: a folder the NAS shares over NFS has no device that could go away.
+        let nothing = |_: &Path| false;
+        assert!(alive("0:51", "192.168.1.20:/volume1/media", nothing));
+        assert!(alive("0:51", "nas.home:/export/media", nothing));
+        assert!(!alive("0:51", "//nas/share", nothing)); // SMB: never a NekoServer drive
+        assert!(!alive("0:51", "systemd-1", nothing));
+        // Before its first use only systemd's automount holds the folder: nothing is
+        // mounted yet, so it is mounted once the NAS answers (Remount, nothing released).
+        let waiting = Some(("0:50".to_string(), "systemd-1".to_string()));
+        assert_eq!(only_automount(waiting), None);
+        let there = Some((
+            "0:51".to_string(),
+            "192.168.1.20:/volume1/media".to_string(),
+        ));
+        assert_eq!(only_automount(there.clone()), there);
+        assert_eq!(decide(None, false, true), Step::Remount { release: false });
+        assert_eq!(decide(None, false, false), Step::Wait);
+        assert_eq!(decide(Some("0:51"), true, false), Step::Nothing);
     }
     #[test]
     fn a_btrfs_pool_missing_a_drive_is_told_apart_from_a_whole_one() {

@@ -30,15 +30,16 @@ their names are given here so the coverage map can point at them.
 **Lab (before a release, when the code it covers changed).** `lab/nas_lab.py`: the iSCSI
 interruption tests, which need a kernel with iSCSI and a VM; run by hand as root.
 
-## The nine user journeys
+## The fourteen user journeys
 
-The same nine journeys are run for every release. Each has a record in
+The same fourteen journeys are run for every release (J10 to J14 since 0.50.0). Each has a record in
 `tests/journeys/<ID>-<name>.md` in the standard format below. A journey passes only when
 every expected result below is seen, not when a command exits 0.
 
 **J01 Fresh installation with default settings.** A blank PC (the VM from its clean
-snapshot, three blank drives), the README steps, `sudo bash install.sh`, Enter at every
-question, the phone confirmed. Expected: the finishing screen says `NekoServer is ready!`
+snapshot, three blank drives), the README steps, `sudo bash install.sh`, the first page as
+it comes, **Install selected apps** (in the terminal: `yes`), Enter at every question after
+it, the phone confirmed. Expected: the finishing screen says `NekoServer is ready!`
 and `Done: 32 of 32 steps.` (the count is the installer's plan, `wizard.finishing_screen`),
 then `Everything is set up. Backups and monthly updates run on their own;`, the line
 `Dashboard:          http://127.0.0.1:8787  (on this PC)` and `Dashboard PIN:      set`.
@@ -56,8 +57,8 @@ finishing screen, `systemctl list-timers 'nekoserver-*'`, the report files, a da
 screenshot. Cleanup: the VM goes back to the post-install snapshot.
 
 **J02 Installation with optional features disabled.** The TV, phone alerts, the outage
-monitor and Nextcloud switched off before Start (the window's switches, or `no` in the
-terminal). Expected: `"wanted": false` under each in `my-config.json`; no
+monitor and Nextcloud switched off on setup's first page (the window's switches, or each
+line's number in the terminal). Expected: `"wanted": false` under each in `my-config.json`; no
 `nekoserver-notifications.timer`, `nekoserver-heartbeat.timer` or Nextcloud container;
 those steps count as done, so the finishing screen still says `NekoServer is ready!`;
 the first checkup runs only the backups whose timers are enabled; the dashboard has no
@@ -125,6 +126,75 @@ and is named; a replaced HDD is refused while the settings name the old UUID, an
 replacement drive keeps nothing of the old one. Evidence: the checksum comparison, the
 menu's output, the refusal line.
 
+**J10 Installation without the media apps, then with them.** Photos, Movies and shows
+and Music switched off on setup's first page on a blank PC, then on at a later run, then
+off again with test data in the apps. Expected: with all three off,
+a `false` for each group under `"media_apps"` in `my-config.json`, no container, timer,
+dashboard tile, address, shortcut, login, checkup check or recovery-menu entry of
+Jellyfin, Seerr, the apps that find and download, Immich or Navidrome, and
+`NekoServer is ready!` all the same; the app and music backups show as switched off,
+never overdue; on at a later run installs them as J01 does; off on a server that has them
+stops them and every file of theirs is byte for byte the same. With **Also find and
+download new ones** off inside a card, Jellyfin (or Navidrome) is installed alone.
+Evidence: the settings file, `docker ps`, `systemctl list-timers`, the dashboard,
+checkdata.py. Cleanup: snapshot.
+
+**J11 The media drive and the backup drive as folders a NAS shares (NFS).** An NFS
+server on the test network with a good media export, a good backup export and one with
+root squash. Expected: setup says what the NAS offers and lists its exports; the
+squashed one is refused with the reason and what to change, with nothing mounted or
+saved; the good ones are tried out, the media folder gets its `/etc/fstab` line
+(`_netdev`, `nofail`, automount) and the apps run on it; the weekly copy mounts the
+backup folder, passes and unmounts it; with the server stopped the PC still starts, and
+once it answers again the folder is mounted and the apps start by themselves. Evidence:
+the setup log, `/etc/fstab`, `findmnt`, `external.json`, the journals of the NAS check
+and drive return. Cleanup: snapshot, the NFS server stopped.
+
+**J12 A PC with one drive.** The VM with no drive besides the disk Linux runs from,
+Photos alone, the terminal only. Expected: the storage page recommends the system disk
+for the apps and for the media and backups, and says first what that means; the two
+parts are the folders `/var/lib/nekoserver/apps` and `/var/lib/nekoserver/media`, each
+with its own `/etc/fstab` bind line, and the system's own lines are as they were; the
+room of the one disk is counted once; the offline backup is **None for now**, saved, and
+no weekly USB job exists; the backups being on the same disk as the apps is said once;
+the PC restarts into a running server; the nightly backup holds an uploaded photo; the
+uninstaller removes its own lines and folders and leaves the system's `/etc/fstab` lines
+alone. Evidence: the terminal log, `/etc/fstab` before and after, `findmnt`, the
+settings' drive records, `systemctl list-timers`. Cleanup: snapshot.
+
+**J13 Films, shows and music you already have (a folder shared over NFS).** A Linux
+box on the test network sharing folders of films and of music over NFS, mounted on the
+PC, and given at "Do you already have films, shows or music that this server should
+use?". Three ways, each with its own folder: (a) used where it is; (b) used where it is
+with **Save new ones here too?** yes, on a writable and on a read-only export; (c) copied
+into the NekoServer library. Expected: each folder is read as the apps' account before
+it is accepted, and one that account cannot read is refused with who and where to fix
+it; nothing of the person's is changed in any of the three; (a) the folder is bound
+read-only into the library at every start, waiting for the share, Jellyfin has a library
+at it and shows the films, Navidrome has a second library and plays a track; (b) Radarr
+and Sonarr list the person's folder as a root folder, a request made in Seerr lands
+there, the download is gone from the library's downloads afterwards, and the read-only
+export says why and asks for another place; (c) setup says what the copy will do, the
+files are in the library afterwards and the share is unchanged; with the share away the
+PC starts, nothing is written into the empty folder, and the other apps run. Evidence:
+the setup log, the placement table in the settings, `/etc/fstab`, `findmnt`, the
+libraries in Jellyfin and Navidrome, Radarr's root folders, a file list of the share
+before and after. Cleanup: snapshot, the NFS server stopped.
+
+**J14 A group's apps installed on a drive of their own.** The VM with a spare local
+drive besides the app drive and the backups' drive; on the storage page Movies and shows
+is installed on the spare drive. Expected: the review names that drive; each app's
+settings folder there is mounted at its usual place by a line in setup's own block of
+`/etc/fstab`; the nightly app backup holds those apps' settings; the monthly snapshot
+holds them; an update of one of them made to fail is rolled back, its settings as they
+were, on that drive; the dashboard has a card for the drive; with the drive detached the
+PC starts, Docker runs, that group's apps write nothing on the app drive, the other
+groups run, and every backup job stops with the app named; setup run then says what to
+do about a lost drive; the uninstaller leaves no line of the block in `/etc/fstab` and
+unmounts the drive. Evidence: the review, `/etc/fstab`, `findmnt`, the app snapshot's
+manifest, `tar -t` of the monthly snapshot, the rollback's log, the dashboard, the
+journal with the drive away. Cleanup: snapshot.
+
 ## The eight safety rules
 
 Each rule holds across many tests. The invariant is stated for NekoServer, with the
@@ -150,7 +220,11 @@ stops with `Application SSD missing` when nothing is mounted there. Tests:
 UUID only (`modules/storage.py:35`), two devices with one UUID are clones and stop setup
 (`CLONED`, `modules/storage.py:77`; `pool_members`, `modules/storage.py:192`); the runtime
 checks UUID, filesystem type and Btrfs subvolume together (`guard_data`, above); a NAS
-disk is known by its WWN and refused without one (`modules/network_storage.py:652`).
+disk is known by its WWN and refused without one (`modules/network_storage.py:652`); a
+folder a NAS shares over NFS has no UUID and is known by its address, from which setup
+and the runtime make the same identity (`identity`, `nfs_exports.py`; `nfs_identity`,
+`runtime/src/common.rs`), so another folder mounted in its place is refused like another
+drive, and it is never the application SSD.
 Tests: `a_btrfs_subvolume_is_part_of_the_drive_identity` (runtime/src/backup.rs:4905),
 `the_subvolume_is_checked_the_same_with_or_without_findmnt` (runtime/src/backup.rs:4574),
 `test_a_cloned_btrfs_drive_is_not_taken_for_a_pool` (tests/test_setup_flow.py:547),
@@ -159,7 +233,11 @@ Tests: `a_btrfs_subvolume_is_part_of_the_drive_identity` (runtime/src/backup.rs:
 `test_a_nas_disk_that_shows_no_wwn_is_refused_as_the_runtime_refuses_it` (tests/test_network_storage.py:619),
 `test_a_drive_on_another_nas_disk_than_the_settings_name_is_refused` (tests/test_migrate.py:463),
 `test_a_subvolume_the_settings_name_is_never_swapped_for_the_mounted_one` (tests/test_migrate.py:362),
-`test_the_wwn_check_looks_at_the_mounted_device_not_the_uuids_link` (tests/test_wizards.py:1799).
+`test_the_wwn_check_looks_at_the_mounted_device_not_the_uuids_link` (tests/test_wizards.py:1799),
+`a_folder_the_nas_shares_is_checked_by_its_address` (runtime/src/backup.rs:4800),
+`test_its_identity_stands_in_for_a_uuid_and_is_the_runtimes` (tests/test_nfs_storage.py:53),
+`test_what_is_mounted_is_checked_by_its_address` (tests/test_nfs_storage.py:606),
+`test_the_apps_ssd_is_never_a_shared_folder` (tests/test_nfs_storage.py:533).
 
 **S03 Failed inspection never means "safe", "empty" or "healthy".** `lsblk_row`
 (`modules/network_storage.py:396`) raises when lsblk fails, answers unreadably or lists no
@@ -254,6 +332,18 @@ never their answers. Tests:
 `test_the_qr_code_gets_the_password_on_its_input_not_its_command_line` (tests/test_show_login.py:97),
 `test_questions_are_seen_while_they_wait_and_never_their_answers` (tests/test_setup_gui.py:86),
 `test_the_pin_is_asked_twice_and_only_passed_to_the_runtime` (tests/test_dashboard.py:505).
+A login shown at a sign-in step (0.50.0, "Show login") goes to the terminal's screen alone or to the window's own
+page on request, never into an event, the log or a report:
+`test_the_login_is_offered_and_shown_on_the_screen_alone`,
+`test_the_words_for_the_terminal_alone_are_in_no_event`,
+`test_show_login_gives_the_login_of_the_step_under_way`,
+`test_only_a_login_the_question_waiting_offers`,
+`test_only_the_windows_own_page_may_ask`,
+`test_the_qr_code_is_made_from_qrencodes_input_never_its_command_line` (tests/test_sign_in_logins.py);
+a password typed in the window (0.50.0, item 8) likewise:
+`test_a_program_of_setups_asks_its_questions_in_the_window_too`,
+`test_the_shared_folders_password_is_one_hidden_page_and_goes_to_samba_on_its_input`,
+`test_a_page_field_is_asked_once_and_the_windows_copy_is_never_reused` (tests/test_setup_gui.py).
 
 **S08 NekoServer works the same without the AI assistant.** The assistant (ASSISTANT.md) is
 optional and off unless chosen; with its model missing, unsupported, slow, out of memory or
@@ -281,7 +371,7 @@ by the runtime and approved with the PIN. Tests:
 `only_an_exact_action_line_from_the_list_counts` (runtime/src/assist.rs:959),
 `ollama_is_asked_on_this_pc_only` (runtime/src/assist.rs:1140).
 
-## The eleven controlled failures
+## The thirteen controlled failures
 
 Failures are introduced at named checkpoints, in a disposable VM or on test storage,
 never against anyone's only data.
@@ -299,6 +389,8 @@ never against anyone's only data.
 | F09 | The model is killed for its memory | Only the model's container is stopped; SSH and every app keep working | `an_out_of_memory_model_is_said_as_such` (runtime/src/assist.rs:1069), `test_a_hard_memory_limit_and_the_lowest_priority` (tests/test_assistant.py:379); VM gate: a model whose need is over its limit, asked once (the 0.49.0 trial froze the VM for 12 minutes before the limits came from free memory) |
 | F10 | The model is too slow | The answer is stopped with the reason; the page stays usable | `a_model_too_slow_to_start_is_stopped` (runtime/src/assist.rs:1100) |
 | F11 | The model answers garbage | It is only text: no repair runs from it | `a_garbage_answer_is_only_text` (runtime/src/assist.rs:1087), `only_an_exact_action_line_from_the_list_counts` (runtime/src/assist.rs:959) |
+| F12 | A NAS that shares the media folder (NFS) is off when the PC starts | The PC starts; the apps stay stopped, never writing to the empty folder; once the NAS answers, the folder is mounted and the apps start | `a_mounted_shared_folder_is_never_released_and_an_automount_is_no_mount` (runtime/src/drive_return.rs:547), `a_folder_the_nas_shares_is_checked_by_its_address` (runtime/src/backup.rs:4800: only the automount there is "not mounted"), `test_the_line_in_fstab_never_holds_up_the_start` (tests/test_nfs_storage.py:79), `test_a_nas_that_is_off_is_said_when_the_folder_is_opened` (tests/test_nfs_storage.py:634); on the gate machine, J11 (d) |
+| F13 | A setup step fails (a blocked download, Docker stopped) | The reason is shown with the fix setup knows; "Retry this step" runs that step and the steps that waited for it, nothing that is done; three tries at most; the dashboard gives the fix and the command and never runs setup | `test_every_entry_is_found_by_the_words_of_its_failure`, `test_a_retry_that_works_lets_the_run_go_on_as_if_nothing_failed`, `test_a_retry_that_fails_again_is_asked_again_up_to_three_times`, `test_a_retry_run_does_only_those_steps`, `test_a_step_is_retried_three_times_at_most_then_left_for_later`, `test_the_dashboard_never_runs_setup` (tests/test_known_fixes.py), `a_setup_step_that_failed_is_said_with_its_fix_and_the_command` (runtime/src/collect.rs), `test_a_step_that_failed_has_its_reason_its_fix_and_retry` (tests/test_setup_flow.py); on the gate machine: one step broken on purpose, fixed, and retried from the window |
 
 ## Compatibility fixtures
 
@@ -339,7 +431,7 @@ Evidence: Browser result and received API request
 Cleanup: Close fixture and remove temporary state
 ```
 
-IDs: `J01`..`J09` for journeys, `S01`..`S08` for safety rules, `F01`..`F11` for
+IDs: `J01`..`J14` for journeys, `S01`..`S08` for safety rules, `F01`..`F13` for
 controlled failures, `UI-SETUP-nnn`, `UI-DASH-nnn`, `REC-nnn` for single cases, and
 `B-<release>-<nn>` for bugs (below). The record says what is manual.
 

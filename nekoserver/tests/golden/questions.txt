@@ -1,0 +1,75 @@
+acceptance.py
+    Type PASS {check['id']}, FAIL {check['id']}, or Enter to leave pending:
+account-setup.py
+    Press Enter to hide it (the screen is cleared).
+    Type a number to show that login (press Enter to stop):
+account_store.py
+    Password for {name} (it is not shown while you type):
+    The same password once more:
+    Password for {name} (it is not shown while you type):
+    The same password once more:
+    login_retry
+    {OTHERS[key]} (it is not shown while you type):
+    The same once more:
+backup_secrets.py
+    Backup password:
+    Same backup password again:
+existing_page.py
+    existing_new_files
+    existing_media
+guided_setup.py
+    Show a login now? Type its number (Enter alone: go on):
+    {asked['title']}
+    {what}:
+    The same password again:
+    ask_again
+    install_group
+    How many {field['what']} should be kept? ({least} to {most}, Enter for {offered} | leaves them as they are):
+    On which day should the weekly USB copy run? ({days}; Enter for {now['usb_day']}):
+    At what time on that day? (HH:MM, Enter for {now['usb']}):
+    When should the daily backups run? (HH:MM, Enter for {now['app']}):
+    At what time should the monthly check start? (HH:MM before {night_end}:00, Enter for {offered}{why}):
+installer.py
+    {said} Keep the newest {backup_plan.DEFAULT} {what} from now on?
+media-connect.py
+    source_filter
+    {question} (Enter alone takes the ticked ones): | (Enter alone skips):
+    {row['label']} (Enter alone keeps its default):
+    qbit_password
+    qbit_user
+modules/assistant.py
+    assistant_model
+modules/capacity.py
+    drive_space
+modules/dashboard.py
+    PIN:
+    Same PIN again:
+modules/heartbeat.py
+    The check-in address (hidden; Enter alone sets this up later):
+modules/notifications.py
+    alerts_switch
+    The address of your alerts topic (hidden; Enter alone sets alerts up later):
+    Its access token (hidden; Enter alone when it has none):
+    alert_arrived
+modules/samba.py
+    Password for the shared folders (account {user})
+modules/storage.py
+    install_drive_lost
+modules/tv.py
+    tv_worked
+music-setup.py
+    Listener username:
+    Listener password (never saved as plaintext):
+recovery_wizard.py
+    Type the full name of a NEW folder, for example /home/you/restored-photos (Enter alone goes back, with nothing restored):
+    repair_drive
+source-wizard.py
+    Category (movies/tv/music)
+    Type (local/remote/indexer)
+    Display name
+    Reference URL (no passwords)
+    Already mounted local folder (blank to defer)
+uninstaller.py
+    Numbers to switch, "all" for everything, or Enter to go on:
+    Remove everything listed above? Type yes to go on, anything else to stop:
+    Type exactly {phrase} to go on:

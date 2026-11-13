@@ -8,6 +8,7 @@ at the end it shows the finishing screen.
 It is served by setup itself on 127.0.0.1, on a port picked at random, behind a path
 nobody can guess (a token), and only for as long as setup runs."""
 
+import contextlib
 import ipaddress
 import json
 import os
@@ -24,6 +25,7 @@ from pathlib import Path
 import explanations
 import guided_setup
 import setup_progress
+import neko_common
 from neko_common import VERSION, atomic_json, find_program, settings_path
 
 ROOT = Path(__file__).resolve().parent
@@ -36,6 +38,7 @@ STATIC = {
     'theme.css': ('../dashboard/theme.css', 'text/css; charset=utf-8'),
     'setup.css': ('setup.css', 'text/css; charset=utf-8'),
     'setup.js': ('setup.js', 'text/javascript; charset=utf-8'),
+    'theme.js': ('theme.js', 'text/javascript; charset=utf-8'),
     'logo.svg': ('../dashboard/logo.svg', 'image/svg+xml'),
 }
 NOT_FOUND = (404, b'Not found', PLAIN)
@@ -81,10 +84,42 @@ APP_BROWSERS = (
     'microsoft-edge',
 )
 WINDOW = ('1180', '480')  # the small window's size; it is placed low on the screen
-LARGEST_BODY = 10_000
-# The extras setup asks about when it gets to their step, as long as nothing was chosen
-# for them (Nextcloud is not asked: it is set up unless switched off).
-ASKED_LATER = ('tv', 'notifications', 'heartbeat', 'assistant')
+LARGEST_BODY = 40_000  # a page of fields, each up to setup_progress.LONGEST_ANSWER
+
+
+# The window's buttons before setup starts, and the page each is on.
+BUTTON_STAGE = {'continue': 'apps', 'back': 'review'}
+STORAGE_AHEAD = 'Where should NekoServer store your apps and files?'
+
+
+def question_shown(question):
+    """The question setup is waiting on, as the window is told it; None when there is none."""
+    if question is None:
+        return None
+    return {
+        'seq': question['seq'],
+        'text': question['text'],
+        'secret': question['secret'],
+        'kind': question.get('form', 'text'),
+        'context': question.get('context', []),
+        'page': question.get('page'),
+    }
+
+
+def save_choices(path, config, changes, settle=False):
+    """The first page's switches written to the settings file (its owner kept): the ones
+    in `changes` ({id: on}), and with `settle` every one as it stands, so that no step
+    asks about it (explanations.settle). `config` is the file as it is now."""
+    by_id = {e['id']: e for e in explanations.EXTRAS}
+    for key, value in changes.items():
+        explanations.set_extra(config, by_id[key], value)
+    if settle:
+        explanations.settle(config)
+    path = Path(path)
+    owner = (path.stat().st_uid, path.stat().st_gid) if path.exists() else None
+    atomic_json(path, config)
+    if owner is not None and os.geteuid() == 0:
+        os.chown(path, *owner, follow_symlinks=False)
 
 
 def step_title(name):
@@ -183,7 +218,13 @@ UNREADABLE_SAID = (
 class Window:
     """The server behind the setup window, running in a thread of setup's own process."""
 
-    def __init__(self, config_path, config, titles, plan, version=VERSION, owners=None, tables=TCP_TABLES):
+    def __init__(
+        self, config_path, config, titles, plan, version=VERSION, owners=None, tables=TCP_TABLES, session=None
+    ):
+        # `session`: the name of a menu of its own the window follows instead of setup's
+        # steps (the recovery menu, the uninstaller): it shows what the terminal says and
+        # asks the menu's questions; there are no switches and no step list.
+        self.menu = session
         self.config_path = Path(config_path)
         self.config = config
         self.titles = dict(titles)
@@ -207,7 +248,13 @@ class Window:
         self.tables = tables
         self.packages = None  # this Linux's package names (family_packages), once asked
         self.started = threading.Event()  # Start was pressed in the window
-        self.frozen = False  # setup has started: the choices are fixed
+        # Before setup starts: 'apps' (the first page), 'storage' (the drives are being
+        # asked for), 'review'. The wizard says which (show); the window's Continue and
+        # Back are kept in `button` until the wizard takes them (pressed).
+        self.stage = 'apps'
+        self.button = None
+        self.storage_lines = []
+        self.frozen = bool(session)  # setup has started (or this is a menu): the choices are fixed
         self.delivered = threading.Event()  # the page has shown the finishing screen
         self.lock = threading.Lock()
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), self._handler())
@@ -231,7 +278,9 @@ class Window:
         for part in (cookie or '').split(';'):
             name, _, value = part.strip().partition('=')
             sent[name] = value
-        if secrets.compare_digest(sent.get(COOKIE, ''), self.session):
+        # Compared as bytes: compare_digest raises on text with non-ASCII characters (a
+        # cookie another page on 127.0.0.1 set, say), which would end every request.
+        if secrets.compare_digest(sent.get(COOKIE, '').encode(), self.session.encode()):
             return True, None, None
         if method != 'GET' or route not in ('', INDEX):
             return False, None, SPENT
@@ -292,11 +341,27 @@ class Window:
                     'explanation': e['explanation'],
                     'installs': self._installs(e),
                     'on': explanations.extra_state(self.config, e),
-                    'asked': e['id'] in ASKED_LATER
-                    and not isinstance(self.config.get(e['section'], {}).get(e['key']), bool),
+                    'part': dict(explanations.PARTS)[e['part']],
+                    'needs': list(e.get('needs', ())),
+                    'under': e.get('under', ''),
+                    'small': e.get('small', ''),
                 }
                 for e in explanations.EXTRAS
             ]
+
+    def _review(self):
+        """The page after the switches: what Install will do, and what its button says
+        (a server that exists is changed, not installed)."""
+        with self.lock:
+            again = neko_common.server_exists(self.config)
+            return {
+                'title': explanations.REVIEW_TITLE_AGAIN if again else explanations.REVIEW_TITLE,
+                'button': explanations.APPLY if again else explanations.INSTALL,
+                'sections': [{'title': title, 'lines': lines} for title, lines in explanations.review(self.config)]
+                + (
+                    [{'title': explanations.STORAGE_HEADING, 'lines': self.storage_lines}] if self.storage_lines else []
+                ),
+            }
 
     def _installs(self, extra):
         """What an extra installs, as this Linux names the packages (Ubuntu's
@@ -319,8 +384,12 @@ class Window:
     def _phase(self, finished, steps):
         if finished:
             return 'finished'
+        if self.menu:
+            return 'running'
         if self.frozen or self.started.is_set() or any(s['status'] != 'pending' for s in steps):
             return 'running'
+        if self.stage == 'storage':
+            return 'running'  # its questions are asked as a step's are
         return 'choose'
 
     def state(self):
@@ -328,36 +397,59 @@ class Window:
         finished = setup_progress.last('finished')
         phase = self._phase(finished, steps)
         current = next((s for s in steps if s['status'] == 'running'), None)
-        question = setup_progress.pending_question()
-        if question is not None:
-            question = {
-                'seq': question['seq'],
-                'text': question['text'],
-                'secret': question['secret'],
-                'kind': question.get('form', 'text'),
-                'context': question.get('context', []),
-                'page': question.get('page'),
-            }
+        question = question_shown(setup_progress.pending_question())
         if phase == 'finished':
             self.delivered.set()
         # Counted as the terminal's summary and the log count them: steps done, out of the
         # steps this PC can have (one not available here counts in neither).
         here = [s for s in steps if s['status'] != 'unavailable']
+        # The storage page before setup starts: a page of its own, no steps and no count yet.
+        ahead = self.stage == 'storage' and not self.frozen
+        if ahead:
+            here = []
+        session = self.menu or (STORAGE_AHEAD if ahead else None)
         return {
             'version': self.version,
             'phase': phase,
+            'stage': self.stage,
             'extras': self._extras(),
+            'review': self._review() if phase == 'choose' else None,
             'steps': steps,
             'current': current['id'] if current else None,
             'done': sum(1 for s in here if s['status'] == 'success'),
             'total': len(here),
             'question': question,
-            'terminal': setup_progress.terminal_handoff(),
+            # A menu of its own: its name and the terminal's last lines.
+            'session': {'title': session, 'lines': setup_progress.recent_lines(30)} if session else None,
             'finish': finished['lines'] if finished else [],
+            # The finishing page (finish_page.py); without one the window shows the lines.
+            'finish_page': finished.get('page') if finished else None,
             'title': (finished.get('title') or '') if finished else '',
             'stopped': bool(finished and finished.get('stopped') is True),
             'complete': bool(finished and finished.get('complete') is True),
         }
+
+    def show(self, stage, storage_lines=()):
+        """The page the window shows before setup starts, as the wizard goes through them."""
+        with self.lock:
+            self.stage = stage
+            self.storage_lines = list(storage_lines)
+            self.button = None
+
+    def press(self, button):
+        """Continue (on the first page) or Back (on the review) pressed in the window.
+        False once setup has started, or on a page that has no such button."""
+        with self.lock:
+            if self.frozen or self.stage != BUTTON_STAGE[button]:
+                return False
+            self.button = button
+            return True
+
+    def pressed(self):
+        """The button pressed since the wizard last asked, taken once."""
+        with self.lock:
+            button, self.button = self.button, None
+            return button
 
     def freeze(self):
         """Setup has started (in the terminal or the window): from now on the choices
@@ -382,26 +474,19 @@ class Window:
     def choose(self, changes, start=False):
         """Switch extras on or off, saved to the settings file at once (owner kept):
         only the switches change, on the file as it is now. False once setup has
-        started; with start, the choices are saved and setup starts in one step."""
+        started; with start, every extra is saved as it stands (explanations.settle: the
+        first page was gone through, so no step asks about one again) and setup starts
+        in one step."""
         by_id = {e['id']: e for e in explanations.EXTRAS}
         chosen = {k: v for k, v in changes.items() if k in by_id and isinstance(v, bool)}
         with self.lock:
             if self.frozen:
                 return False
-            if chosen:
+            if chosen or start:
                 config = self._saved()
                 if config is None:
                     return UNREADABLE
-                for key, value in chosen.items():
-                    explanations.set_extra(config, by_id[key], value)
-                owner = (
-                    (self.config_path.stat().st_uid, self.config_path.stat().st_gid)
-                    if self.config_path.exists()
-                    else None
-                )
-                atomic_json(self.config_path, config)
-                if owner is not None and os.geteuid() == 0:
-                    os.chown(self.config_path, *owner, follow_symlinks=False)
+                save_choices(self.config_path, config, chosen, settle=start)
                 self.config = config
             if start:
                 self.frozen = True
@@ -427,25 +512,87 @@ class Window:
         """(status, body, content type) for a POST with its JSON body."""
         if route == 'api/choose' and isinstance(body, dict):
             return self._fixed_or_ok(self.choose(body))
+        if route in ('api/continue', 'api/back'):
+            return self._fixed_or_ok(self.press(route[len('api/') :]))
         if route == 'api/start':
             choices = body.get('choices') if isinstance(body, dict) else None
             return self._fixed_or_ok(self.choose(choices if isinstance(choices, dict) else {}, start=True))
+        if route == 'api/login' and isinstance(body, dict):
+            return self.login(body.get('app'))
+        if route == 'api/test' and isinstance(body, dict):
+            return self.tried(body.get('test'), body.get('word'))
         if route == 'api/answer' and isinstance(body, dict):
-            # The window's answer to the question setup is waiting on; the terminal may
-            # have answered first, in which case this says so.
-            taken = (
-                isinstance(body.get('seq'), int)
-                and isinstance(body.get('text'), str)
-                and len(body['text']) <= 1000
-                and setup_progress.answer_from_window(
-                    body['seq'],
-                    body['text'],
-                    skip=body.get('skip') is True,
-                    fields=body.get('fields') if isinstance(body.get('fields'), dict) else None,
-                )
-            )
-            return 200, json.dumps({'ok': bool(taken)}).encode(), JSON
+            return 200, json.dumps({'ok': self.answered(body)}).encode(), JSON
         return NOT_FOUND
+
+    @staticmethod
+    def answered(body):
+        """The window's answer to the question setup is waiting on: True when it was taken.
+        The terminal may have answered first, and then it is not."""
+        fields = body.get('fields')
+        return bool(
+            isinstance(body.get('seq'), int)
+            and isinstance(body.get('text'), str)
+            and len(body['text']) <= setup_progress.LONGEST_ANSWER
+            and setup_progress.answer_from_window(
+                body['seq'],
+                body['text'],
+                skip=body.get('skip') is True,
+                fields=fields if isinstance(fields, dict) else None,
+            )
+        )
+
+    def login(self, app):
+        """A saved login for the window's "Show login" button. Only for an app the question
+        waiting offers (its "logins" page, guided_setup.show_logins, or a step of a part), read from the private
+        store when asked for and sent to the window's own page alone: the request needs
+        this window's cookie, on this PC's loopback. It is never recorded: no event, no
+        log, no report."""
+        asked = setup_progress.pending_question() or {}
+        page = asked.get('page') or {}
+        offered = [row.get('id') for row in page.get('apps', [])] if page.get('form') == 'logins' else []
+        if page.get('form') == 'part':
+            # A step of a part (the phone's): the login its own Show login button names.
+            offered = [step.get('login') for step in page.get('steps', []) if step.get('login')]
+        offered = [*offered, *self._finish_offers()[0]]  # the finishing page's cards
+        if not isinstance(app, str) or app not in offered:
+            return 403, b'{"ok": false, "reason": "No sign-in step is asking for that login now."}', JSON
+        try:
+            import account_store
+
+            entry = account_store.get(self._saved() or self.config, app)
+        except (OSError, RuntimeError, ValueError, KeyError):
+            entry = None
+        if not entry:
+            return 404, b'{"ok": false, "reason": "That login is not saved on this server."}', JSON
+        shown = {
+            'ok': True,
+            'username': entry['username'],
+            'password': entry['password'],
+            'qr': guided_setup.qr_image(entry['password']),
+        }
+        return 200, json.dumps(shown).encode(), JSON
+
+    def _finish_offers(self):
+        """(the logins, the tests) the finishing page has a button for, once it is shown."""
+        import finish_page
+
+        finished = setup_progress.last('finished')
+        return finish_page.offered(finished.get('page') if finished else None)
+
+    def tried(self, test, word):
+        """What the person said about a test on the finishing page (it worked, it did not,
+        later), kept where the dashboard and the next run read it (finish_states). Only a
+        test that page shows, and only one of its three answers."""
+        import finish_states
+
+        if not isinstance(test, str) or test not in self._finish_offers()[1]:
+            return 403, b'{"ok": false, "reason": "That test is not on this page."}', JSON
+        try:
+            finish_states.record_test(self._saved() or self.config, test, word)
+        except (ValueError, RuntimeError, OSError) as problem:
+            return 409, json.dumps({'ok': False, 'reason': str(problem)}).encode(), JSON
+        return 200, b'{"ok": true}', JSON
 
     @staticmethod
     def _fixed_or_ok(taken):
@@ -592,6 +739,40 @@ def open_window(config, url):
     else:
         return False
     return guided_setup.launch_quietly(config, argv)
+
+
+# ----- a menu of its own in the window: the recovery menu, the uninstaller
+
+
+@contextlib.contextmanager
+def session(title, config, output=print, opener=None):
+    """While this is active, a menu that is not setup (the recovery menu, the uninstaller)
+    has the setup window too, when there is a desktop: it shows what the terminal says
+    and asks every question the menu asks, and either place answers. Without a desktop,
+    or when the window cannot be served or opened, the menu runs in the terminal alone,
+    exactly as before: recovery is used when things are broken, so nothing here may
+    stop it. Yields the window, or None."""
+    setup_progress.enable()
+    window = None
+    try:
+        window = Window(Path('/nonexistent/no-settings-to-change.json'), config, {}, [], session=title)
+        if (opener or open_window)(config, window.url):
+            output('A window opened in your browser with the same questions: answer there or here, as you like.')
+        else:
+            window.stop()
+            window = None
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+        window = None
+    try:
+        if window is None:
+            yield None
+        else:
+            with setup_progress.watching_prompts():
+                yield window
+    finally:
+        if window is not None:
+            window.stop()
+        setup_progress.disable()
 
 
 # ----- setup stopped before the wizard

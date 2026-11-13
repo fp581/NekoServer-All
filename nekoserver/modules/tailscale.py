@@ -118,6 +118,7 @@ def run(context):
             ],
             prepare=login_targets,
             verify=connected,
+            ask='tailscale_connected',
         )
         if not done:
             return {

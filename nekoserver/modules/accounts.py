@@ -32,7 +32,21 @@ def run(ctx):
             'status': 'needs_setup',
             'reason': 'Account setup pending for: ' + ', '.join(pending) + '; saved passwords preserved',
         }
-    ctx.log('Selected app logins verified; private APP-CREDENTIALS.txt updated')
+    ctx.log('Selected app logins verified and saved.')
+    for line in where_saved(ctx.config):
+        ctx.log(line)
+
+
+def where_saved(config):
+    """Where the logins are, and how to see one: said wherever the account step ends. The
+    file is the administrator's alone, so naming it without the command that shows a
+    login left a beginner with a path they could not open (the setup review, S4)."""
+    command = guided_setup.login_command(config, '').rstrip()
+    return [
+        'The logins are saved on the app SSD, in a file only the administrator can read.',
+        f'To see one on this screen, with a QR code for a phone:  {command}  (it lists the apps: choose one by '
+        'its number; add the app, such as jellyfin, to go straight to it).',
+    ]
 
 
 def finish_pending(ctx, pending):
@@ -51,8 +65,8 @@ def finish_pending(ctx, pending):
             [
                 'Open the app and complete its remaining first-run or verification steps. '
                 'If data already exists, use its current account; do not reset it.',
-                'Use the saved username/email and password from the private '
-                'secrets/accounts/APP-CREDENTIALS.txt under your data SSD mount.',
+                'Use the saved username/email and password: "Show login" in the setup window, or the question '
+                'below this list in the terminal, shows them.',
                 'For an email verification explicitly requested by the app, open your email app '
                 'and approve the message. Local email-shaped logins usually do not need this.',
                 'If the saved credentials are wrong, leave this step pending with Ctrl+C, '
@@ -61,6 +75,9 @@ def finish_pending(ctx, pending):
             ],
             [('url', 'http://127.0.0.1:' + str(port) + '/')],
             verify=verify,
+            logins=[app],
+            ask='app_signed_in',
+            values={'app': title},
         )
         if not done:
             remaining.append(app)

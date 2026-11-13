@@ -14,6 +14,7 @@ import neko_common
 from modules import docker as docker_module, tv
 from neko_common import (
     files_root,
+    music_backed_up,
     music_downloads,
     photo_library,
     VERSION,
@@ -27,6 +28,9 @@ from neko_common import (
     dashboard_port,
     checked_settings,
     default_settings,
+    immich_wanted,
+    media_steps_left_out,
+    media_services,
     verify_storage,
 )
 from acceptance_summary import scope_digest, with_data_scope
@@ -246,7 +250,7 @@ def containers(config, photos=False):
     if photos:
         specs = [('immich', s) for s in ('immich-server', 'database', 'redis', 'immich-machine-learning')]
     else:
-        specs = [(a, a) for a in config.get('media', {}).get('services', []) if a in health.APPS and a != 'immich']
+        specs = [(a, a) for a in media_services(config) if a in health.APPS and a != 'immich']
     results = []
     for app, svc in specs:
         rc, out = health.run(
@@ -304,10 +308,8 @@ def containers(config, photos=False):
                     mounts = bound(str(Path(config['data_mount']) / 'appdata' / app), (destination,))
                     if app in ('jellyfin', 'navidrome', 'sonarr', 'radarr', 'lidarr', 'qbittorrent'):
                         library = (
-                            files_root(config, 'music')
-                            if app in ('navidrome', 'lidarr')
-                            else Path(config['media_mount'])
-                        ) / 'library'
+                            files_root(config, 'music' if app in ('navidrome', 'lidarr') else 'movies') / 'library'
+                        )
                         if app == 'jellyfin':
                             needed = [('movies', '/data/movies', True), ('tv', '/data/tv', True)]
                         elif app == 'navidrome':
@@ -558,7 +560,7 @@ def restore_tests(modules, config):
                 'Run  sudo bash install.sh --recover , choose "Nextcloud files" and restore one user into a new folder. Open a few files of different kinds and compare them with the originals. Uploading them back is your choice; nothing live is replaced.',
             )
         ]
-    if 'music_backup' in modules and config.get('music', {}).get('backup_enabled', True) is not False:
+    if 'music_backup' in modules and music_backed_up(config):
         out += [
             (
                 'music_restore',
@@ -614,7 +616,7 @@ def manual_tests(modules, config):
                 'Use the phone/desktop client through the intended HTTPS gateway; upload/download a disposable file, verify checksum and intended sharing permissions.',
             )
         ]
-    if 'photos' in modules and config.get('photos', {}).get('deploy_immich'):
+    if 'photos' in modules and immich_wanted(config):
         out += [
             (
                 'photo_preservation',
@@ -767,6 +769,10 @@ def accepted_modules(config, modules):
     # and its client test would only ever fail or wait (the nextcloud step skips itself).
     if config.get('nextcloud', {}).get('enabled', True) is not True:
         skipped = skipped | {'nextcloud'}
+    # A media group switched off (Photos, Movies and shows, Music): its steps set
+    # nothing up, so there is nothing of theirs to accept; with every group off, none
+    # of the media steps does.
+    skipped = skipped | media_steps_left_out(config)
     return [
         m
         for m in modules
@@ -950,7 +956,7 @@ def inspect(config, profile='full', now=None):
                 from cloud_checks import check
 
                 checks.extend(check(config))
-            if 'photos' in modules and config.get('photos', {}).get('deploy_immich'):
+            if 'photos' in modules and immich_wanted(config):
                 checks.extend(containers(config, photos=True))
         else:
             add(
@@ -974,13 +980,13 @@ def inspect(config, profile='full', now=None):
             add('backup:states', 'Backup states', 'blocked', 'The backups could not be judged: ' + why)
         # The photo archive and Immich's database copy only with Immich set up: with it
         # switched off those jobs are off too, and could never pass.
-        immich = config.get('photos', {}).get('deploy_immich', False)
+        immich = immich_wanted(config)
         selected = {'archive', 'database'} if 'photo_preservation' in modules and immich else set()
         if 'photo_backup' in modules:
             selected.add('external')
         if 'app_backup' in modules:
             selected.add('applications')
-        if 'music_backup' in modules and config.get('music', {}).get('backup_enabled', True):
+        if 'music_backup' in modules and music_backed_up(config):
             selected.add('music')
         if 'host_backup' in modules:
             selected.add('host')
@@ -1050,7 +1056,7 @@ def inspect(config, profile='full', now=None):
         )
     for module, enabled, unit in (
         ('media_monitor', config.get('monitoring', {}).get('enabled', True), 'nekoserver-media-health.timer'),
-        ('music_backup', config.get('music', {}).get('backup_enabled', True), 'nekoserver-music-backup.timer'),
+        ('music_backup', music_backed_up(config), 'nekoserver-music-backup.timer'),
     ):
         if module in modules and not enabled:
             add(
@@ -1267,6 +1273,8 @@ def guided_manual(config, report):
                 'and reopens any relevant local pages/apps; Ctrl+D leaves it pending.',
             ],
             targets,
+            ask='test_passed',
+            values={'name': check['name']},
         )
         if done:
             check.update(status='pass', confirmed_at=time.time(), evidence='user_reported')

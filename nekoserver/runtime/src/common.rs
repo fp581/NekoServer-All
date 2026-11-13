@@ -200,6 +200,98 @@ pub static MEDIA_APPS: std::sync::LazyLock<Vec<&str>> = std::sync::LazyLock::new
         .filter_map(|app| app["id"].as_str())
         .collect()
 });
+/// The media apps come in three groups, each chosen on its own in setup (0.50.0):
+/// "photos", "movies" and "music" under "media_apps". The same rules as neko_common
+/// (media_group, media_services, immich_wanted).
+/// A group is part of this server: its own answer, else on unless "wanted" is false
+/// (every server set up before 0.50.0 has all of them). "downloads" (the apps that find
+/// and download) is a switch beside the three: its own answer counts with films or music
+/// on; without one it is as "movies" is (the download apps were set up with it before).
+pub fn media_group(cfg: &Value, group: &str) -> bool {
+    // Finding and downloading, a small switch inside each of the two groups, on unless
+    // switched off; "downloads" (Prowlarr, qBittorrent) is whether either is set up.
+    if group == "movies_downloads" || group == "music_downloads" {
+        return cfg["media_apps"][group] != false;
+    }
+    if group == "downloads" {
+        return [("movies", "movies_downloads"), ("music", "music_downloads")]
+            .iter()
+            .any(|(of, switch)| media_group(cfg, of) && media_group(cfg, switch));
+    }
+    match cfg["media_apps"][group].as_bool() {
+        Some(chosen) => chosen,
+        None => cfg["media_apps"]["wanted"] != false,
+    }
+}
+/// Every group the app belongs to is on (shared.json "groups").
+pub fn app_wanted(cfg: &Value, app: &str) -> bool {
+    SHARED["apps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|a| a["id"] == app)
+        .and_then(|a| a["groups"].as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .all(|group| media_group(cfg, group))
+}
+/// The media apps set up: those in media.services whose groups are on.
+pub fn media_services(cfg: &Value) -> Vec<&str> {
+    cfg["media"]["services"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|app| app_wanted(cfg, app))
+        .collect()
+}
+/// The app drive and the media drive are one filesystem by choice (setup's storage page,
+/// 0.50.0: both kept on the disk Linux runs from, or both on one drive of their own,
+/// mounted at ONE_DRIVE). Each is then a folder of it ("folder" in its record), mounted
+/// at the role's place and told apart by the folder findmnt shows there ("subvolume"),
+/// which every drive check compares. Only then may the two carry one UUID: two drives
+/// with one UUID (a copy), or a drive mounted at the wrong place, are still refused.
+pub fn roles_share_one_filesystem(cfg: &Value) -> bool {
+    let storage = &cfg["storage"];
+    let folder = |key: &str| {
+        storage[key]["folder"]
+            .as_str()
+            .is_some_and(|f| !f.is_empty())
+    };
+    let kept = |key: &str| storage[key]["subvolume"].as_str().unwrap_or("");
+    folder("data_ssd")
+        && folder("media_hdd")
+        && !kept("data_ssd").is_empty()
+        && !kept("media_hdd").is_empty()
+        && kept("data_ssd") != kept("media_hdd")
+}
+/// Where one drive that holds both the apps and the media is mounted (modules/storage.py
+/// ONE_DRIVE); each role is a folder of it, bind-mounted at the role's own place.
+pub const ONE_DRIVE: &str = "/mnt/nekoserver-drives/one";
+/// Both roles are folders of the one drive mounted at ONE_DRIVE (not the disk Linux runs
+/// from): that drive's own mount is then the one to bring back first.
+pub fn one_drive(cfg: &Value) -> bool {
+    let inside = |key: &str| {
+        cfg["storage"][key]["folder"]
+            .as_str()
+            .is_some_and(|f| Path::new(f).starts_with(ONE_DRIVE) && f != ONE_DRIVE)
+    };
+    roles_share_one_filesystem(cfg) && inside("data_ssd") && inside("media_hdd")
+}
+/// Two folders are on one filesystem (the same device): one drive's free space counts
+/// once for both.
+pub fn same_filesystem(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (fs::metadata(a), fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev(),
+        _ => false,
+    }
+}
+/// Immich is set up: photos.deploy_immich, and the Photos group not left out.
+pub fn immich_wanted(cfg: &Value) -> bool {
+    media_group(cfg, "photos") && cfg["photos"]["deploy_immich"] == true
+}
 /// The private Tailscale port the gateway publishes `app` on (shared.json "tailnet"),
 /// for the apps it can publish.
 pub fn tailnet_port(app: &str) -> Option<u16> {
@@ -252,16 +344,88 @@ fn location_of(what: &str) -> (&'static str, Vec<&'static str>) {
 pub fn files_root(cfg: &serde_json::Value, what: &str) -> Result<PathBuf> {
     let (default, _) = location_of(what);
     let chosen = cfg["locations"][what].as_str().unwrap_or(default);
-    let key = match chosen {
-        "ssd" => "data_mount",
-        "media" => "media_mount",
-        _ => {
-            return Err(Error::new(&format!(
-                "locations.{what} must be \"ssd\" or \"media\""
-            )))
-        }
-    };
-    mount_path(cfg[key].as_str().unwrap_or(""))
+    drive_folder(cfg, chosen).ok_or_else(|| {
+        Error::new(&format!(
+            "locations.{what} must be \"ssd\", \"media\" or a drive under \"storage\""
+        ))
+    })
+}
+/// Where drives beyond the SSD and the media drive are mounted, each in a folder of its
+/// name (0.50.0, free placement; neko_common.EXTRA_MOUNTS).
+pub const EXTRA_MOUNTS: &str = "/mnt/nekoserver-drives";
+/// A drive beyond the two is listed under "storage" by a short name ("d3").
+pub fn extra_drive(cfg: &serde_json::Value, name: &str) -> bool {
+    let plain = !name.is_empty()
+        && name.len() <= 16
+        && name.starts_with(|c: char| c.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    plain && !["ssd", "media"].contains(&name) && cfg["storage"][name].is_object()
+}
+/// Where a drive is mounted: the app folder for "ssd", the media folder for "media",
+/// EXTRA_MOUNTS/<name> for another one under "storage"; None for anything else.
+pub fn drive_folder(cfg: &serde_json::Value, drive: &str) -> Option<PathBuf> {
+    match drive {
+        "ssd" => mount_path(cfg["data_mount"].as_str().unwrap_or("")).ok(),
+        "media" => mount_path(cfg["media_mount"].as_str().unwrap_or("")).ok(),
+        name if extra_drive(cfg, name) => Some(Path::new(EXTRA_MOUNTS).join(name)),
+        _ => None,
+    }
+}
+/// Where an app installed on another drive (0.50.0, "installed": {app: drive} in the
+/// settings setup writes for the jobs) keeps its settings on that drive: the folder
+/// <where the drive is mounted>/nekoserver, which holds appdata/<app>. That folder is
+/// mounted at the app's usual place (<app drive>/appdata/<app>). None for an app on the
+/// app drive; an error when the settings name something that is no drive.
+pub fn installed_base(cfg: &serde_json::Value, app: &str) -> Result<Option<PathBuf>> {
+    let named = &cfg["installed"][app];
+    if named.is_null() {
+        return Ok(None);
+    }
+    named
+        .as_str()
+        .filter(|drive| extra_drive(cfg, drive))
+        .and_then(|drive| drive_folder(cfg, drive))
+        .map(|folder| Some(folder.join("nekoserver")))
+        .ok_or_else(|| {
+            Error::new(&format!(
+                "installed.{app} must name a drive under \"storage\""
+            ))
+        })
+}
+/// Two paths are one folder (the same device and inode): a folder and the place it is
+/// mounted at, say.
+pub fn same_folder(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (fs::metadata(a), fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+/// The extra drives something is placed on: an app's files ("locations"), or its
+/// settings and database ("installed", 0.50.0). The ones every job checks.
+pub fn drives_in_use(cfg: &serde_json::Value) -> Vec<String> {
+    let mut found: Vec<String> = cfg["locations"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .chain(cfg["installed"].as_object().into_iter().flatten())
+        .filter_map(|(_, drive)| drive.as_str())
+        .filter(|drive| extra_drive(cfg, drive))
+        .map(str::to_string)
+        .collect();
+    found.sort();
+    found.dedup();
+    found
+}
+/// The folder the films, the shows and their downloads are in: as setup said ("paths":
+/// "library", written only when they are off the media drive), else the media drive's.
+pub fn movies_library(cfg: &serde_json::Value) -> Result<PathBuf> {
+    if cfg["paths"]["library"].is_string() {
+        return saved_path(cfg, "library");
+    }
+    Ok(files_root(cfg, "movies")?.join("library"))
 }
 /// How many errors Linux has counted on the ext4 filesystem mounted from `source`
 /// (/dev/sdb1): kept in the filesystem itself until it is checked and repaired (e2fsck
@@ -284,13 +448,16 @@ pub fn ext4_errors(source: &str, sys: &Path) -> Option<u64> {
 pub fn saved_path(cfg: &serde_json::Value, what: &str) -> Result<PathBuf> {
     if let Some(path) = cfg["paths"][what].as_str() {
         let path = safe(Path::new(path))?;
-        let drives = ["data_mount", "media_mount"]
+        // On the SSD, the media drive, or another drive something is placed on.
+        let drives = ["ssd", "media"]
             .iter()
-            .filter_map(|k| cfg[*k].as_str().and_then(|m| mount_path(m).ok()))
+            .map(ToString::to_string)
+            .chain(drives_in_use(cfg))
+            .filter_map(|d| drive_folder(cfg, &d))
             .collect::<Vec<_>>();
         if !drives.iter().any(|d| path.starts_with(d) && path != *d) {
             return Err(Error::new(&format!(
-                "paths.{what} is not on the SSD or the media drive"
+                "paths.{what} is not on the SSD, the media drive or a drive the settings place it on"
             )));
         }
         return Ok(path);
@@ -1069,6 +1236,67 @@ pub fn mount_in_effect(code: i32, out: &str) -> Option<String> {
         .rfind(|l| !l.is_empty())
         .map(str::to_string)
 }
+/// A folder a NAS shares over NFS, mounted: Linux names its type nfs4, or nfs for
+/// version 3 (nfs_exports.py).
+pub fn is_nfs(fstype: &str) -> bool {
+    matches!(fstype, "nfs" | "nfs4")
+}
+/// What stands in for a drive's UUID when the drive is a folder a NAS shares over NFS,
+/// which has none: "nfs-" and the first 32 hex digits of the SHA-256 of its address
+/// ("192.168.1.20:/volume1/media"). Setup saves the same one as the drive's "uuid"
+/// (nfs_exports.py identity), so every check that compares UUIDs works for it too.
+pub fn nfs_identity(export: &str) -> String {
+    format!("nfs-{}", &sha(export.as_bytes())[..32])
+}
+/// The "uuid" of a drive's record is the identity of a shared folder (no filesystem
+/// UUID starts this way): there is no disk to look for under /dev.
+pub fn is_nfs_identity(uuid: &str) -> bool {
+    uuid.starts_with("nfs-")
+}
+/// The NAS that shares `export` ("192.168.1.20:/volume1/media") answers on NFS's port
+/// within 3 s.
+pub fn nfs_answers(export: &str) -> bool {
+    use std::net::{TcpStream, ToSocketAddrs};
+    let host = export.split(':').next().unwrap_or("");
+    let Ok(addresses) = (host, 2049).to_socket_addrs() else {
+        return false;
+    };
+    addresses
+        .take(4)
+        .any(|a| TcpStream::connect_timeout(&a, std::time::Duration::from_secs(3)).is_ok())
+}
+/// The address of the shared folder (NFS) a drive's saved record names, if it is one:
+/// {"network": {"transport": "nfs", "export": "192.168.1.20:/volume1/media"}}.
+pub fn nfs_export(record: &Value) -> Option<&str> {
+    let network = &record["network"];
+    (network["transport"] == "nfs")
+        .then(|| network["export"].as_str())
+        .flatten()
+}
+/// findmnt's "UUID FSTYPE SOURCE" with the identity of a shared folder put where its
+/// UUID would be: findmnt prints none for one ("nfs4 192.168.1.20:/volume1/media").
+pub fn with_nfs_identity(found: &str) -> String {
+    match found.split_whitespace().collect::<Vec<_>>()[..] {
+        [fstype, source] if is_nfs(fstype) => {
+            format!("{} {fstype} {source}", nfs_identity(source))
+        }
+        _ => found.to_string(),
+    }
+}
+/// "UUID FSTYPE SOURCE" of the mount in effect at `path`, as findmnt says it; for a
+/// shared folder (NFS) the UUID is its identity (nfs_identity). None when nothing is
+/// mounted there.
+pub fn drive_at(path: &Path, timeout: u64) -> Result<Option<String>> {
+    Ok(
+        findmnt("UUID,FSTYPE,SOURCE", "--mountpoint", path, timeout)?
+            .map(|found| with_nfs_identity(&found)),
+    )
+}
+/// Only systemd's automount holds the folder (findmnt's "FSTYPE SOURCE" reads "autofs
+/// systemd-1"): the shared folder behind it is mounted at its first use, and is not now.
+pub fn waits_for_first_use(found: &str) -> bool {
+    found.split_whitespace().next() == Some("autofs")
+}
 pub fn mounted(path: &Path) -> bool {
     probe(
         &["findmnt", "-n", "--mountpoint", &path.to_string_lossy()],
@@ -1106,7 +1334,11 @@ pub(crate) fn mount_table_entry_in(table: &str, path: &Path, by_uuid: &Path) -> 
         found = Some((fstype, source, mount_table_name(fields[3])));
     }
     let (fstype, source, inside) = found?;
-    let uuid = uuid_link_of(&source, by_uuid).unwrap_or_default();
+    let uuid = if is_nfs(&fstype) {
+        nfs_identity(&source)
+    } else {
+        uuid_link_of(&source, by_uuid).unwrap_or_default()
+    };
     // A mount of a folder within the filesystem (a Btrfs subvolume, a bind mount) is shown
     // by findmnt as SOURCE[/that/folder]; the drive check reads the subvolume from there,
     // so the answer without findmnt says it the same way (the review of 0.47.10).
@@ -1186,6 +1418,267 @@ pub fn directory(path: &Path, mode: u32) -> Result<()> {
         Err(e) => return Err(e.into()),
     }
     Ok(())
+}
+#[cfg(test)]
+mod media_answer_tests {
+    use super::{immich_wanted, media_group, media_services};
+    use serde_json::Value;
+
+    /// Any of the media groups is part of this server (neko_common.media_apps_wanted).
+    fn media_wanted(cfg: &Value) -> bool {
+        ["photos", "movies", "music"]
+            .iter()
+            .any(|group| media_group(cfg, group))
+    }
+    use serde_json::json;
+    /// "wanted" under "media_apps" (neko_common.media_apps_wanted): yes unless
+    /// the answer is no, and no leaves the settings of the apps as they were.
+    #[test]
+    fn no_leaves_every_media_app_out_and_no_answer_keeps_them() {
+        let apps = json!({"services": ["jellyfin", "seerr"]});
+        let before = json!({"media": apps, "photos": {"deploy_immich": true}});
+        let yes = json!({"media_apps": {"wanted": true}, "media": apps, "photos": {"deploy_immich": true}});
+        for cfg in [&before, &yes] {
+            assert!(media_wanted(cfg));
+            assert_eq!(media_services(cfg), ["jellyfin", "seerr"]);
+            assert!(immich_wanted(cfg));
+        }
+        let no = json!({"media_apps": {"wanted": false}, "media": apps, "photos": {"deploy_immich": true}});
+        assert!(!media_wanted(&no));
+        assert!(media_services(&no).is_empty());
+        assert!(!immich_wanted(&no));
+        // Immich still follows its own switch.
+        let without = json!({"media_apps": {"wanted": true}, "photos": {"deploy_immich": false}});
+        assert!(!immich_wanted(&without));
+        assert!(media_services(&without).is_empty());
+    }
+
+    /// Free placement (0.50.0): a row's data on any drive under "storage", by the folder
+    /// setup names (tests/test_placement.py has setup's side of the same rules).
+    #[test]
+    fn data_may_be_on_any_drive_the_settings_list() {
+        use super::{
+            drive_folder, drives_in_use, extra_drive, files_root, movies_library, saved_path,
+        };
+        use std::path::Path;
+        let cfg = json!({"data_mount": "/srv/nekoserver", "media_mount": "/mnt/nekoserver-media",
+            "storage": {"data_ssd": {"uuid": "a"}, "media_hdd": {"uuid": "b"}, "d3": {"uuid": "c", "fstype": "xfs"}},
+            "locations": {"photos": "d3", "movies": "d3"},
+            "paths": {"photos": "/mnt/nekoserver-drives/d3/photos/immich-library",
+                "library": "/mnt/nekoserver-drives/d3/library"}});
+        assert!(extra_drive(&cfg, "d3"));
+        for not_one in ["ssd", "media", "d4", "", "../x", "D3", "data_ssd!"] {
+            assert!(!extra_drive(&cfg, not_one), "{not_one}");
+        }
+        assert_eq!(
+            drive_folder(&cfg, "d3").unwrap(),
+            Path::new("/mnt/nekoserver-drives/d3")
+        );
+        assert_eq!(
+            drive_folder(&cfg, "media").unwrap(),
+            Path::new("/mnt/nekoserver-media")
+        );
+        assert!(drive_folder(&cfg, "d4").is_none());
+        assert_eq!(drives_in_use(&cfg), ["d3"]);
+        assert_eq!(
+            files_root(&cfg, "photos").unwrap(),
+            Path::new("/mnt/nekoserver-drives/d3")
+        );
+        assert_eq!(
+            files_root(&cfg, "music").unwrap(),
+            Path::new("/srv/nekoserver")
+        );
+        assert_eq!(
+            saved_path(&cfg, "photos").unwrap(),
+            Path::new("/mnt/nekoserver-drives/d3/photos/immich-library")
+        );
+        assert_eq!(
+            movies_library(&cfg).unwrap(),
+            Path::new("/mnt/nekoserver-drives/d3/library")
+        );
+        // The films where they always were: the media drive's library, with no "paths" entry.
+        let plain =
+            json!({"data_mount": "/srv/nekoserver", "media_mount": "/mnt/nekoserver-media"});
+        assert_eq!(
+            movies_library(&plain).unwrap(),
+            Path::new("/mnt/nekoserver-media/library")
+        );
+        assert!(drives_in_use(&plain).is_empty());
+        // Where such an app keeps its settings on its drive; nothing for an app on the app drive.
+        let placed_cfg = json!({"storage": {"d4": {"uuid": "u4"}}, "installed": {"immich": "d4", "seerr": "media"}});
+        assert_eq!(
+            super::installed_base(&placed_cfg, "immich").unwrap(),
+            Some(std::path::PathBuf::from(
+                "/mnt/nekoserver-drives/d4/nekoserver"
+            ))
+        );
+        assert_eq!(
+            super::installed_base(&placed_cfg, "jellyfin").unwrap(),
+            None
+        );
+        assert!(super::installed_base(&placed_cfg, "seerr").is_err());
+        let here = std::env::temp_dir();
+        assert!(super::same_folder(&here, &here.join(".")));
+        assert!(!super::same_folder(&here, std::path::Path::new("/proc")));
+        assert!(!super::same_folder(
+            &here,
+            &here.join("no-such-folder-here")
+        ));
+        // An app installed on another drive (0.50.0): that drive is checked by every job too.
+        let placed = json!({"storage": {"d4": {"uuid": "u4"}, "d3": {"uuid": "u3"}},
+            "locations": {"photos": "d3"}, "installed": {"immich": "d4", "jellyfin": "d4", "x": "nowhere"}});
+        assert_eq!(drives_in_use(&placed), ["d3", "d4"]);
+        // A folder on a drive nothing is placed on is refused, and so is a drive not listed.
+        let mut stray = cfg.clone();
+        stray["paths"]["photos"] = json!("/mnt/nekoserver-drives/d9/photos");
+        assert!(saved_path(&stray, "photos").is_err());
+        let mut unknown = cfg.clone();
+        unknown["locations"]["photos"] = json!("d9");
+        assert!(files_root(&unknown, "photos").is_err());
+    }
+
+    /// One filesystem for the apps and the media only when both are folders of the system
+    /// disk by choice, each known by its own folder (modules/storage.py SYSTEM_FOLDERS).
+    #[test]
+    fn two_roles_share_a_filesystem_only_as_folders_of_the_system_disk() {
+        use super::roles_share_one_filesystem;
+        let role = |folder: &str, kept: &str| json!({"uuid": "root-1", "fstype": "ext4", "folder": folder, "subvolume": kept});
+        let apps = role("/var/lib/nekoserver/apps", "/var/lib/nekoserver/apps");
+        let media = role("/var/lib/nekoserver/media", "/var/lib/nekoserver/media");
+        assert!(roles_share_one_filesystem(
+            &json!({"storage": {"data_ssd": apps, "media_hdd": media}})
+        ));
+        // One of them a drive of its own, the folder not learned yet, or both the same folder: no.
+        let drive = json!({"uuid": "root-1", "fstype": "ext4"});
+        assert!(!roles_share_one_filesystem(
+            &json!({"storage": {"data_ssd": apps, "media_hdd": drive}})
+        ));
+        let unknown = role("/var/lib/nekoserver/media", "");
+        assert!(!roles_share_one_filesystem(
+            &json!({"storage": {"data_ssd": apps, "media_hdd": unknown}})
+        ));
+        assert!(!roles_share_one_filesystem(
+            &json!({"storage": {"data_ssd": apps, "media_hdd": apps}})
+        ));
+        assert!(!roles_share_one_filesystem(&json!({})));
+        // One drive of their own (gate run B0d): the same rule, and its mount is known.
+        let apps = role(
+            "/mnt/nekoserver-drives/one/nekoserver/apps",
+            "/nekoserver/apps",
+        );
+        let media = role(
+            "/mnt/nekoserver-drives/one/nekoserver/media",
+            "/nekoserver/media",
+        );
+        let one = json!({"storage": {"data_ssd": apps, "media_hdd": media}});
+        assert!(roles_share_one_filesystem(&one));
+        assert!(super::one_drive(&one));
+        let system = json!({"storage": {"data_ssd": role("/var/lib/nekoserver/apps", "/var/lib/nekoserver/apps"),
+            "media_hdd": role("/var/lib/nekoserver/media", "/var/lib/nekoserver/media")}});
+        assert!(
+            !super::one_drive(&system),
+            "the disk Linux runs from is never remounted"
+        );
+    }
+    #[test]
+    fn one_filesystem_is_told_by_its_device() {
+        use std::{fs, path::Path};
+        let root = std::env::temp_dir().join(format!("neko-same-fs-{}", std::process::id()));
+        fs::create_dir_all(root.join("apps")).unwrap();
+        fs::create_dir_all(root.join("media")).unwrap();
+        assert!(super::same_filesystem(
+            &root.join("apps"),
+            &root.join("media")
+        ));
+        assert!(!super::same_filesystem(
+            &root.join("apps"),
+            Path::new("/proc")
+        ));
+        assert!(!super::same_filesystem(
+            &root.join("gone"),
+            &root.join("media")
+        ));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The three groups (neko_common.media_group and tests/test_media_groups.py): each
+    /// chosen on its own, any combination, an app set up when every group it names is on.
+    #[test]
+    fn each_media_group_is_chosen_on_its_own() {
+        use super::app_wanted;
+        let all = [
+            "jellyfin",
+            "navidrome",
+            "sonarr",
+            "radarr",
+            "lidarr",
+            "prowlarr",
+            "seerr",
+            "qbittorrent",
+        ];
+        let with = |groups: Value| json!({"media_apps": groups, "media": {"services": all}, "photos": {"deploy_immich": true}});
+        // Photos alone: Immich, and none of the others (an empty list is a server like any other).
+        let photos = with(json!({"photos": true, "movies": false, "music": false}));
+        assert!(immich_wanted(&photos) && media_wanted(&photos));
+        assert!(media_services(&photos).is_empty());
+        // Music alone: Navidrome, with Lidarr and what it needs to find and download.
+        let music = with(json!({"photos": false, "movies": false, "music": true}));
+        assert_eq!(
+            media_services(&music),
+            ["navidrome", "lidarr", "prowlarr", "qbittorrent"]
+        );
+        assert!(!immich_wanted(&music));
+        // Movies and shows alone: everything but Navidrome and Lidarr.
+        let movies = with(json!({"photos": false, "movies": true, "music": false}));
+        assert_eq!(
+            media_services(&movies),
+            [
+                "jellyfin",
+                "sonarr",
+                "radarr",
+                "prowlarr",
+                "seerr",
+                "qbittorrent"
+            ]
+        );
+        // Finding and downloading is a small switch inside each of the two groups
+        // (neko_common.FINDING), on unless switched off: off leaves Jellyfin, or Navidrome,
+        // alone, and the other group keeps its own.
+        let playing = with(
+            json!({"photos": false, "movies": true, "music": true, "movies_downloads": false, "music_downloads": false}),
+        );
+        assert_eq!(media_services(&playing), ["jellyfin", "navidrome"]);
+        let films_played = with(
+            json!({"photos": false, "movies": true, "music": true, "movies_downloads": false}),
+        );
+        assert_eq!(
+            media_services(&films_played),
+            ["jellyfin", "navidrome", "lidarr", "prowlarr", "qbittorrent"]
+        );
+        let nothing_for = with(
+            json!({"photos": true, "movies": false, "music": false, "movies_downloads": true}),
+        );
+        assert!(media_services(&nothing_for).is_empty() && !media_group(&nothing_for, "downloads"));
+        // None, and all.
+        let none = with(json!({"photos": false, "movies": false, "music": false}));
+        assert!(!media_wanted(&none) && media_services(&none).is_empty() && !immich_wanted(&none));
+        let every = with(json!({"photos": true, "movies": true, "music": true}));
+        assert_eq!(media_services(&every), all);
+        // A group with no answer is on; the one yes/no of before switches off the groups
+        // that have none of their own, and a group's own answer wins over it.
+        assert!(
+            media_wanted(&json!({})) && immich_wanted(&json!({"photos": {"deploy_immich": true}}))
+        );
+        let old_no = with(json!({"wanted": false, "music": true}));
+        assert_eq!(
+            media_services(&old_no),
+            ["navidrome", "lidarr", "prowlarr", "qbittorrent"]
+        );
+        assert!(!immich_wanted(&old_no));
+        // Nextcloud is in no group, and an app that is not in the list is in none either.
+        assert!(app_wanted(&none, "nextcloud") && app_wanted(&none, "unknown"));
+        assert!(!app_wanted(&none, "immich"));
+    }
 }
 #[cfg(test)]
 mod catalogue_tests {
@@ -1393,6 +1886,35 @@ mod lock_tests {
             mount_table_entry_in(&table, Path::new("/nowhere"), &by_uuid),
             None
         );
+        // A folder a NAS shares over NFS has no UUID: the identity made from its address
+        // stands in for it, the one setup saved (nfs_exports.py). Before it is first used
+        // only systemd's automount is there, which is no drive.
+        let nfs = "44 30 0:50 / /mnt/nas rw - autofs systemd-1 rw\n\
+                   45 44 0:51 / /mnt/nas rw - nfs4 192.168.1.20:/volume1/media rw,hard\n";
+        let id = nfs_identity("192.168.1.20:/volume1/media");
+        assert_eq!(id, "nfs-445c95883321d23be4c45e535d45cc97");
+        assert_eq!(
+            mount_table_entry_in(nfs, Path::new("/mnt/nas"), &by_uuid),
+            Some(format!("{id} nfs4 192.168.1.20:/volume1/media"))
+        );
+        assert_eq!(
+            with_nfs_identity("nfs4 192.168.1.20:/volume1/media"),
+            format!("{id} nfs4 192.168.1.20:/volume1/media")
+        );
+        assert_eq!(
+            with_nfs_identity("1111-2222 ext4 /dev/sdb1"),
+            "1111-2222 ext4 /dev/sdb1"
+        );
+        assert_eq!(with_nfs_identity("cifs //nas/share"), "cifs //nas/share");
+        assert!(waits_for_first_use("autofs systemd-1"));
+        assert!(!waits_for_first_use(&format!(
+            "{id} nfs4 192.168.1.20:/volume1/media"
+        )));
+        let record = serde_json::json!({"uuid": id, "fstype": "nfs4",
+            "network": {"transport": "nfs", "export": "192.168.1.20:/volume1/media"}});
+        assert_eq!(nfs_export(&record), Some("192.168.1.20:/volume1/media"));
+        let lun = serde_json::json!({"uuid": "u", "network": {"transport": "iscsi", "wwn": "0x1"}});
+        assert_eq!(nfs_export(&lun), None);
         assert_eq!(mount_table_name("a\\040b\\011c\\x"), "a b\tc\\x");
         let _ = fs::remove_dir_all(root);
     }

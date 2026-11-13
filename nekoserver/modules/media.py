@@ -20,6 +20,7 @@ from neko_common import (
     verify_storage,
     atomic_write,
     host_timezone,
+    media_services,
     music_downloads,
     music_library,
 )
@@ -227,11 +228,23 @@ def _run(context):
         return
     if os.geteuid() != 0:
         raise RuntimeError('Media deployment requires root (sudo)')
+    # The apps asked for (media.services), then those whose group is on: the list may
+    # be empty (photos alone, or no media group at all), and then nothing is set up.
+    asked = settings.get('services', list(SERVICES))
+    if not isinstance(asked, list) or any(x not in SERVICES for x in asked):
+        raise RuntimeError('media.services must be a list of known services')
+    selected = media_services({**context.config, 'media': {**settings, 'services': asked}})
+    if not selected:
+        return left_out(context)
     data = Path(context.config['data_mount'])
     media = Path(context.config['media_mount'])
     if data == media or str(data) == '/' or str(media) == '/':
         raise RuntimeError('Data and media must be distinct dedicated mounts')
     src_data, src_media = check_mount(data), check_mount(media)
+    # Folders of the person's own, used where they are: mounted before any app starts.
+    import existing_page
+
+    existing_page.mount(context)
     if src_data == src_media:
         raise RuntimeError('Data and media appear to share the same filesystem')
     verify_storage(context.config)
@@ -242,9 +255,6 @@ def _run(context):
     # seconds failed this whole step on a PC still busy right after building the runtime
     # (a small VM, the 0.47.10 round), and setup told the user to run it again.
     run_cmd(['docker', 'info', '--format', '{{.ServerVersion}}'], timeout=120)
-    selected = settings.get('services', list(SERVICES))
-    if not isinstance(selected, list) or not selected or any(x not in SERVICES for x in selected):
-        raise RuntimeError('media.services must be a nonempty list of known services')
     uid, gid = int(settings.get('uid', 1000)), int(settings.get('gid', 1000))
     tz, bind = host_timezone(context.config), settings.get('bind_ip', '127.0.0.1')
     if uid <= 0 or gid <= 0 or not re.fullmatch(r'[A-Za-z0-9_+./-]+', tz):
@@ -253,6 +263,9 @@ def _run(context):
         raise RuntimeError('Media UIs must stay localhost-only behind the configured gateway')
     project_root = Path(__file__).resolve().parents[1]
     compose_dir = data / 'compose'
+    # The drive that holds the films, the shows and their downloads ("locations": the
+    # media drive unless placed elsewhere): what the apps are given as their library.
+    films = files_root(context.config, 'movies')
     # The drive that holds the music and its downloads, as setup chose it ("locations").
     music = files_root(context.config, 'music')
     configs = data / 'appdata'
@@ -265,7 +278,7 @@ def _run(context):
         if dest.is_symlink():
             raise RuntimeError(f'Refusing symlink manifest: {dest}')
         template = (project_root / 'compose' / f'{name}.yaml').read_text(encoding='utf-8')
-        values = (data, media, uid, gid, tz, bind, music)
+        values = (data, films, uid, gid, tz, bind, music)
         rendered = render(template, *values)
         desired = adapt_to_host(name, rendered, peer_port=torrent_port(settings))
         if dest.exists() and dest.read_text(encoding='utf-8') != desired:
@@ -278,17 +291,23 @@ def _run(context):
             if path.is_symlink():
                 raise RuntimeError(f'Refusing symlink path: {path}')
     context.log('Prepared all media Compose manifests without touching existing projects')
-    ensure_directory(media / 'library', 0o755)
+    ensure_directory(films / 'library', 0o755)
     ensure_directory(music / 'library', 0o755)
+    # Where the person's own folders are mounted (existing_media.py): there before the apps
+    # start, since their Compose files never let Docker make a missing folder.
+    for drive in dict.fromkeys((films, music)):
+        ensure_directory(drive / 'library' / 'existing', 0o755)
     # The music folders setup decided (neko_common, from shared.json's locations).
     for target in (music_library(context.config), music_downloads(context.config)):
         library_folder(safe_path(target), uid, gid, context.log)
     for folder in ('movies', 'tv', 'downloads'):
-        target = media / 'library' / folder
+        target = films / 'library' / folder
         safe_path(target)
         if target.is_symlink():
             raise RuntimeError(f'Refusing symlink media directory: {target}')
         library_folder(target, uid, gid, context.log)
+    # Folders the person chose to copy into the library: now that its folders are there.
+    existing_page.copy(context)
     # No recursive chown: preserve existing users and files. Create fresh appdata owned by configured user.
     for name in selected:
         target = configs / name
@@ -350,13 +369,36 @@ def _run(context):
     )
 
 
-def stop_unselected(compose_dir, selected, log, run=None):
+def left_out(context, run=None):
+    """The media apps left out (every group switched off): none is set
+    up, and any that were (a server answering no later) are stopped as an app taken out
+    of media.services is, with their settings, data and media kept."""
+    compose_dir = Path(context.config['data_mount']) / 'compose'
+    stopped = stop_unselected(compose_dir, [], context.log, run, LEFT_OUT)
+    if not stopped:
+        context.log('Media apps: left out (none of them is switched on); nothing was set up')
+
+
+# What the log says of an app stopped because the media apps were left out.
+LEFT_OUT = (
+    '{name}: stopped, as its group is switched off; its settings, data and media stay. To start it again, '
+    'run  sudo bash install.sh , answer yes to asking the questions again and yes to its group'
+)
+# ... and of one taken out of media.services.
+TAKEN_OUT = (
+    '{name}: not among your apps any more (its group is switched off, or it was taken out of media.services), '
+    'so it is stopped; its settings and data stay (switch it back on to start it again)'
+)
+
+
+def stop_unselected(compose_dir, selected, log, run=None, said=TAKEN_OUT):
     """A media app taken out of media.services is stopped: its containers are removed
     (`docker compose down`, never with its volumes), its settings, data and Compose file
     stay. Otherwise it would go on running, and changing files, without the dashboard,
     the nightly backup or the monthly update looking after it. Putting it back in the
-    list starts it again with everything as it was."""
+    list starts it again with everything as it was. Returns the apps stopped."""
     run = run or run_cmd
+    stopped = []
     for name in SERVICES:
         dest = compose_dir / name / 'compose.yaml'
         if name in selected or not dest.is_file() or dest.is_symlink():
@@ -365,10 +407,9 @@ def stop_unselected(compose_dir, selected, log, run=None):
             ['docker', 'compose', '-f', str(dest), '-p', f'neko-{name}', *compose_image_override(dest), 'down'],
             timeout=300,
         )
-        log(
-            f'{name}: not in media.services any more, so it is stopped; its settings and data stay '
-            f'(add it back to start it again)'
-        )
+        log(said.format(name=name))
+        stopped.append(name)
+    return stopped
 
 
 def adopt_seerr_folder(folder, uid, gid, log=print):

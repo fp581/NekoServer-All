@@ -10,7 +10,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from neko_common import safe_path, atomic_write, atomic_json, ensure_directory, find_program
+from neko_common import safe_path, atomic_write, atomic_json, ensure_directory, find_program, media_group
 import host
 
 DEPENDENCIES = ['system', 'recovery']
@@ -363,9 +363,24 @@ def not_possible(ctx):
     return None
 
 
+def wanted_packages(opts, vendors, has_browser):
+    """The packages the TV step installs: Steam and its controller rules, the Vulkan
+    driver for Intel or AMD graphics (`vendors`: gpu.graphics), Firefox when the PC has
+    no browser yet, and Bluetooth unless tv.bluetooth is false."""
+    packages = ['steam', 'steam-devices', *vulkan_packages(vendors)]
+    if not has_browser:
+        packages.append('firefox')
+    if opts.get('bluetooth', True):
+        packages += ['bluez', 'bluez-utils']
+    return packages
+
+
 def run(ctx):
     if not ctx.apply:
         ctx.log('TV setup available through the tv/full profile with --apply')
+        return
+    if not media_group(ctx.config, 'movies'):
+        ctx.log('TV setup: left out, as Movies and shows is switched off (the TV mode opens Jellyfin)')
         return
     impossible = not_possible(ctx)
     if impossible:
@@ -418,11 +433,7 @@ def run(ctx):
             + (" (NVIDIA needs its maker's driver, installed your Linux's own way)" if 'nvidia' in vendors else '')
             + '; installing Steam without a Vulkan driver package'
         )
-    packages = ['steam', 'steam-devices', *vulkan_packages(vendors)]
-    if not browser():
-        packages.append('firefox')
-    if opts.get('bluetooth', True):
-        packages += ['bluez', 'bluez-utils']
+    packages = wanted_packages(opts, vendors, bool(browser()))
     missing = [p for p in packages if not family.installed(p)]
     unavailable = [p for p in missing if not family.available(p) or (p == 'steam' and not steam_ready(family))]
     if unavailable:
@@ -497,14 +508,24 @@ def run(ctx):
             [
                 'On the connected TV, check the intended HDMI resolution and refresh rate in display settings.',
                 'Play a permitted sample in the browser, check TV audio, and use the controller to navigate.',
-                'Confirm yes only after testing this real display/audio/controller combination.',
+                'It counts only once tested on this real TV, sound and controller together.',
             ],
             [('settings', ''), ('url', 'https://www.youtube.com/')],
         ),
     ]
-    confirmed = previous_checks(root)
-    for key, title, instructions, targets in handoffs:
-        done = ('tv:' + key) in confirmed or guided_setup.checkpoint(ctx, title, instructions, targets)
+    # One part with one question (in the window, a sliding yes for each): the tests
+    # confirmed in an earlier run are not asked for again.
+    before = [key for key, *_ in handoffs if ('tv:' + key) in previous_checks(root)]
+    confirmed = guided_setup.part(
+        ctx,
+        'Try the TV: Steam, the controller, picture and sound',
+        [{'id': key, 'title': title, 'lines': instructions} for key, title, instructions, _ in handoffs],
+        'tv_worked',  # the question's words are in questions.py
+        done=before,
+        targets=[('steam', '')],
+    )
+    for key, _title, _instructions, _targets in handoffs:
+        done = key in confirmed
         results.append(
             {
                 'check': 'tv:' + key,

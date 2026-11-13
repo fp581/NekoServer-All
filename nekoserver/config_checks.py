@@ -46,11 +46,14 @@ def validate(config, plan):
     for name in plan:
         if name in validators:
             validators[name](config)
-    from neko_common import LOCATIONS
+    from neko_common import DRIVE_KEYS, LOCATIONS, extra_drives
 
     places = config.get('locations', {})
-    if not isinstance(places, dict) or any(k not in LOCATIONS or v not in ('ssd', 'media') for k, v in places.items()):
-        raise RuntimeError('locations must name photos, music or cloud, each "ssd" or "media"')
+    drives = {*DRIVE_KEYS, *extra_drives(config)}
+    if not isinstance(places, dict) or any(k not in LOCATIONS or v not in drives for k, v in places.items()):
+        raise RuntimeError(
+            'locations must name photos, music, cloud or movies, each "ssd", "media" or a drive under "storage"'
+        )
     for group in ('tv', 'onboarding', 'docker', 'photos', 'networking', 'guided_setup'):
         values = config.get(group, {})
         if not isinstance(values, dict):

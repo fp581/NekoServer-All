@@ -1,0 +1,981 @@
+"""Everything connected to this PC, as setup shows it before it asks for a drive (0.50.0).
+
+One table serves every drive question. The terminal prints it and the setup window
+draws it; each role (the app SSD, the media HDD, the USB backup drive) is chosen by a
+row's number (nothing is typed back: choosing formats nothing). A row says what the drive is in
+plain words, and every later message names the drive the same way, with the number it
+had: never by its Linux name alone, since sdb can be sdc at the next start. NekoServer
+itself remembers a drive by its UUID, which the table shows and nobody has to type.
+
+Nothing here changes a drive. It reads the list lsblk gave (modules/storage.inventory_now)
+and looks at how full a drive is.
+"""
+
+import contextlib
+import os
+import re
+import shutil
+import subprocess
+
+import setup_progress
+from neko_common import extra_drives, typed
+
+# The roles a drive can have, by what setup calls them; what goes on each is
+# neko_common.drive_holds, for the apps this server has.
+ROLES = {
+    'data_ssd': ('the app SSD',),
+    'media_hdd': ('the media HDD',),
+    'usb': ('the USB backup drive',),
+}
+NAMES_CHANGE = (
+    'The details give each drive Linux\'s own name for it (sdb1, nvme0n1p2), which can change at the next start. '
+    'NekoServer remembers a drive by the ID in its details, which you never have to type.'
+)
+NEVER_FORMATS = 'Setup never formats a drive and changes nothing by showing this list.'
+
+
+# Where each app keeps your files, as chosen on the storage page before the approval
+# (modules/storage.choose_ahead), for the storage step of the same run: {'photos': 'ssd' |
+# 'media' | a row of this list}. Kept here because the installer loads its steps as
+# modules of their own, and this one is shared by all of them.
+PLACES_AHEAD = {}
+# ... and the drive a group's apps are installed on, when not the apps' own: {'photos': a row of this list}.
+INSTALL_AHEAD = {}
+# ... and that the backups page was asked then ({'asked': True}): not asked again in the run.
+TIMES_AHEAD = {}
+# The UUIDs of drives the storage page chose for files or installs while it asks the
+# offline drive (not in the settings until the approval).
+TAKEN_AHEAD = []
+# The drives of a group's own given up as lost on the storage page (gate run C17), for the
+# finishing page: {name: {'what': the groups in words, 'apps': [...]}}.
+STARTED_EMPTY = {}
+
+
+def role(key):
+    """'the app SSD', 'the media HDD' or 'the USB backup drive'."""
+    return ROLES[key][0]
+
+
+def holds(config, key):
+    """What goes on the drive of this role, on this server."""
+    from neko_common import drive_holds
+
+    return drive_holds(config, key)
+
+
+def asked_for(config, key):
+    """The role as every drive question names it: what goes on the drive, then its name."""
+    return f'the drive for {holds(config, key)} ({role(key)})'
+
+
+# ----- what each row is
+
+
+def kind_of(disk):
+    """A disk's type in a word or two, from how it is connected and whether it spins."""
+    how, name = disk.get('tran'), str(disk.get('name', ''))
+    if how == 'iscsi':
+        return 'network disk (iSCSI)'
+    if how == 'usb':
+        return 'USB drive'
+    if how == 'nvme' or name.startswith('nvme'):
+        return 'NVMe SSD'
+    if name.startswith('mmcblk'):
+        return 'SD card or eMMC'
+    if disk.get('rota') in (False, 0, '0'):
+        return 'SSD'
+    if disk.get('rota') in (True, 1, '1'):
+        return 'HDD'
+    return 'drive'
+
+
+def still_that_drive(name, uuid, by_uuid=None):
+    """The device lsblk listed under this UUID is still the one Linux has under it."""
+    from modules.storage import BY_UUID, DEV
+
+    try:
+        return bool(uuid) and os.path.realpath((by_uuid or BY_UUID) + uuid) == os.path.realpath(DEV + name)
+    except OSError:
+        return False
+
+
+def ext_fullness(name, run=subprocess.run):
+    """How full an ext2, ext3 or ext4 drive that is not open is, in percent, read from its
+    own header (dumpe2fs -h, which changes nothing), or None when that can't be read."""
+    from modules.storage import DEV
+
+    try:
+        result = run(['dumpe2fs', '-h', DEV + name], capture_output=True, text=True, timeout=15, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    found = dict(re.findall(r'^(Block count|Free blocks):\s+(\d+)\s*$', result.stdout, re.MULTILINE))
+    total, free = int(found.get('Block count', 0)), int(found.get('Free blocks', 0))
+    return round((total - free) * 100 / total) if total else None
+
+
+def look_inside(name, uuid, fstype, mountpoint):
+    """(how full in percent, whether it holds files) for one filesystem; either is None
+    when setup cannot tell without opening the drive, which it does not do here."""
+    if mountpoint:
+        try:
+            usage = shutil.disk_usage(mountpoint)
+            with os.scandir(mountpoint) as entries:
+                files = any(entry.name != 'lost+found' for entry in entries)
+        except OSError:
+            return None, None
+        return (round(usage.used * 100 / usage.total) if usage.total else None), files
+    if fstype in ('ext2', 'ext3', 'ext4') and still_that_drive(name, uuid):
+        return ext_fullness(name), None
+    return None, None
+
+
+# What lsblk lists that is no drive of yours: files attached as disks, CD drives, memory.
+NOT_A_DRIVE = re.compile(r'(loop|sr|zram|ram|nbd|fd)\d|mmcblk\d+(boot|rpmb)')
+# What a partition holds when it is part of something else (listed under it), or swap.
+PART_OF_ANOTHER = ('LVM2_member', 'crypto_LUKS', 'linux_raid_member', 'swap')
+HOW_TO_FORMAT = (
+    'format it as ext4 yourself with the Disks app (GNOME) or KDE Partition Manager, or in a terminal with  '
+    'sudo mkfs.ext4 /dev/{name}  (this erases what is on it; setup never formats a drive)'
+)
+
+
+def entry(dev, disk, **more):
+    """One row of the table from one lsblk row and the disk it is on."""
+    from modules.storage import mount_points
+
+    return {
+        'name': str(dev.get('name', '')),
+        'size': dev.get('size'),
+        'size_note': '',
+        'type': kind_of(disk),
+        'model': str(dev.get('model') or disk.get('model') or '').strip(),
+        'label': dev.get('label') or '',
+        'fstype': dev.get('fstype') or '',
+        'uuid': dev.get('uuid') or '',
+        'mountpoint': dev.get('mountpoint') or next(iter(sorted(mount_points(dev))), None),
+        'disks': [str(disk.get('name', ''))],
+        'full': None,
+        'files': None,
+        'system': False,
+        'problem': '',  # why it can be no drive of NekoServer's at all
+        'export': '',  # the address, for a folder a NAS shares (NFS)
+        'device': None,  # as the app SSD or the media HDD (modules/storage.candidate)
+        'backup': None,  # as the USB backup drive (modules/photo_backup.eligible)
+        **more,
+    }
+
+
+def filesystem_row(dev, disk, usable, backups, look):
+    """The row of one filesystem: as setup would use it when it can, as lsblk shows it otherwise."""
+    row = entry(dev, disk)
+    device = usable.get(row['uuid'])
+    if device:
+        # A pool or an array over several drives: its name, size and disks as setup counts them.
+        row.update(
+            name=device['name'],
+            size=device.get('size'),
+            size_note=device.get('size_note') or '',
+            mountpoint=device.get('mountpoint'),
+            disks=list(device.get('physical_disks') or row['disks']),
+            device=device,
+        )
+    row['backup'] = backups.get(row['uuid'])
+    row['full'], row['files'] = look(row['name'], row['uuid'], row['fstype'], row['mountpoint'])
+    return row
+
+
+def shared_rows(config):
+    """The folders a NAS shares over NFS that the network storage step chose: each is a
+    row, so the list is everything this server keeps files on."""
+    from modules.photo_backup import shared_backup_folder
+    from modules.storage import shared_folders
+
+    # A record that is wrong is left out here: the step that uses it says what is wrong with it.
+    found = {}
+    try:
+        found.update(shared_folders(config))
+    except RuntimeError:
+        pass
+    try:
+        backup = shared_backup_folder(config)
+    except RuntimeError:
+        backup = None
+    if backup:
+        found.setdefault(config.get('photos', {}).get('external_backup_uuid'), backup)
+    return [
+        entry({'name': address, 'uuid': identity, 'fstype': 'nfs'}, {}, type='network folder (NFS)', export=address)
+        for identity, address in found.items()
+    ]
+
+
+# A network share mounted on this PC by hand or by the desktop (gate run C1: the page did
+# not list it at all): listed, with why it is no drive for NekoServer's roles.
+NETWORK_FILESYSTEMS = ('nfs', 'nfs4', 'cifs', 'smb3')
+SHARE_NOT_A_DRIVE = (
+    'a network share can hold data, not the apps. To use its films, shows or music, give its folder on the '
+    '"Media you already have" page'
+)
+
+
+def mounted_shares(listed, run=None):
+    """Rows for the network shares mounted here that the list has not got already
+    (`listed`: the NAS folders the network storage step chose)."""
+    import json
+    import subprocess
+
+    run = run or subprocess.run
+    try:
+        shown = run(
+            ['findmnt', '-J', '-t', ','.join(NETWORK_FILESYSTEMS), '-o', 'TARGET,SOURCE,FSTYPE'],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        mounts = json.loads(shown.stdout or '{}').get('filesystems') or []
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    known = {row['export'] for row in listed}
+    return [
+        entry(
+            {'name': m.get('source', ''), 'fstype': m.get('fstype', ''), 'mountpoint': m.get('target')},
+            {},
+            type=f"network share ({str(m.get('fstype', '')).upper()})",
+            problem=SHARE_NOT_A_DRIVE,
+        )
+        for m in mounts
+        if isinstance(m, dict) and m.get('source') and m.get('source') not in known
+    ]
+
+
+def with_children(dev, disk):
+    """A device and everything under it, each with the disk it is on."""
+    yield dev, disk
+    for child in dev.get('children', []):
+        yield from with_children(child, disk)
+
+
+def rows_of(top, seen, usable, backups, look):
+    """The rows of one disk that is not the system's: every filesystem on it (one that
+    spans several disks once, under the first), or the disk itself with the reason when
+    nothing on it can be used."""
+    from modules import storage
+
+    found = []
+    for dev, _ in with_children(top, top):
+        fstype = dev.get('fstype')
+        if fstype and fstype not in PART_OF_ANOTHER:
+            identity = dev.get('uuid') or dev.get('name')
+            if identity not in seen:  # a pool or an array is listed under each of its disks
+                seen.add(identity)
+                found.append(filesystem_row(dev, top, usable, backups, look))
+        elif storage.empty_disk(dev):
+            how = HOW_TO_FORMAT.format(name=dev.get('name', ''))
+            found.append(entry(dev, top, problem='it has no filesystem yet. To use it, ' + how))
+    if not found and top.get('type') == 'disk':
+        found.append(entry(top, top, problem='nothing on it is a filesystem Linux apps can keep files on'))
+    return found
+
+
+def not_a_drive(top):
+    """A loop device, an optical drive, or an empty card-reader slot (a disk of no size)."""
+    return bool(
+        NOT_A_DRIVE.match(str(top.get('name', ''))) or top.get('type') in ('loop', 'rom') or top.get('size') == '0B'
+    )
+
+
+def rows(inventory, config, items=None, look=None):
+    """Every drive connected to this PC, in lsblk's order, each with the number it is
+    chosen by: the disk Linux runs from (one row), every filesystem on the other disks,
+    every disk with nothing on it yet, and the folders a NAS shares. `items`: the drives
+    setup may use as it found them already (modules/storage.discover_filesystems)."""
+    from modules import storage
+    from modules.photo_backup import eligible
+
+    look = look or look_inside
+    usable = {v['uuid']: v for v in (storage.discover_filesystems(inventory) if items is None else items)}
+    backups = {v['uuid']: v for v in (eligible(config, inventory) if config.get('external_backup_mount') else [])}
+    tops = inventory.get('blockdevices', [])
+    placed = [pair for top in tops for pair in with_children(top, top.get('name', ''))]
+    os_disks, _ = storage.system_disks(placed)
+    found, seen = [], set()
+    for top in tops:
+        if not_a_drive(top):
+            continue
+        if str(top.get('name', '')) in os_disks:
+            found.append(entry(top, top, system=True, fstype='', uuid='', label='', mountpoint=None))
+        else:
+            found += rows_of(top, seen, usable, backups, look)
+    shared = shared_rows(config)
+    return numbered_rows(found + shared + mounted_shares(shared))
+
+
+def numbered_rows(found):
+    """The rows with the number each is chosen by, and what every message calls it after."""
+    on_disks = {row['uuid']: row['disks'] for row in found if row['uuid']}
+    told_apart(found)
+    for number, row in enumerate(found, 1):
+        row['number'] = number
+        row['on_disks'] = on_disks  # every drive's disks: two roles never share one
+        for device in (row['device'], row['backup']):
+            if device is not None:
+                device['said'] = brief(row)
+    return found
+
+
+# ----- how a row is said
+
+
+def size_of(row):
+    from modules.storage import size_words
+
+    return size_words(row.get('size')) if row.get('size') else ''
+
+
+def plain_words(row):
+    """What the drive is in plain words, without what tells two identical ones apart."""
+    if row['export']:
+        # Its folder on the NAS tells two of them apart; the NAS's address is in its details.
+        return f"a folder the NAS shares ({row['export'].partition(':')[2] or row['export']})"
+    named = f'named "{row["label"]}"' if row['label'] else ''
+    said = [row['model'] or named, ' '.join(part for part in (size_of(row), row['type']) if part)]
+    if row['model'] and named:
+        said.append(named)
+    if len(row['disks']) > 1:
+        said.append(f"over {len(row['disks'])} disks")
+    return ', '.join(part for part in said if part) or 'a drive'
+
+
+def told_apart(found):
+    """Drives that read the same (two of one model and size): each gets the end of its
+    ID in its main line, the same ID its details show in full."""
+    seen = {}
+    for row in found:
+        seen.setdefault(plain_words(row), []).append(row)
+    for same in seen.values():
+        endings = id_endings([row['uuid'] or row['name'] for row in same])
+        for row, ending in zip(same, endings):
+            row['twin'] = f'ID ending {ending}' if len(same) > 1 else ''
+
+
+def id_endings(ids):
+    """The shortest ends of these IDs that differ: their last 4 characters (enough for
+    real filesystem IDs), else whole dash-separated parts of them, never half a word."""
+    ends = [each[-4:] for each in ids]
+    parts = 1
+    while len(set(ends)) < len(ids) and parts <= max(each.count('-') for each in ids):
+        parts += 1
+        ends = ['-'.join(each.split('-')[-parts:]) for each in ids]
+    return ends if len(set(ends)) == len(ids) else ids
+
+
+def words(row):
+    """What the drive is: its model or the name it was given (its label), its size and
+    kind. Never its filesystem or its ID, which are in its details (`details`), unless two
+    drives would read the same."""
+    twin = row.get('twin')
+    return plain_words(row) + (f', {twin}' if twin else '')
+
+
+def details(row):
+    """The drive's details, shown under it and behind the window's Details: Linux's name
+    for it, the disk it is on, the filesystem and its ID, where it is open, how full it is."""
+    if row['export']:
+        return f"Details: the NAS shares it at {row['export']}"
+    disk = row['disks'][0] if row['disks'] else ''
+    name = row['name'] + (f' on {disk}' if disk and disk != row['name'] else '')
+    return '; '.join(part for part in (f'Details: {name}', inside(row)) if part)
+
+
+def state(row, config):
+    """How the drive stands, after its name: chosen already, ready to use, holding files
+    that are kept, or why it cannot be used (the first sentence of it: the way to make it
+    usable is said under it, and when it is chosen all the same)."""
+    has = role_of(row, config)
+    if has:
+        return f'chosen as {role(has)}'
+    if not any(not verdict(row, key, config) for key in ROLES):
+        return "can't be used: " + first_sentence(verdict(row, 'media_hdd', config))
+    if row['system']:
+        return 'the disk Linux runs from'
+    return 'has files: kept as they are' if row['files'] else 'ready to use'
+
+
+def first_sentence(text):
+    return text.split('. ')[0].rstrip('.')
+
+
+def how_to(row, config):
+    """The line under a drive's name: the roles it can have, or how to make it usable."""
+    if role_of(row, config):
+        return ''
+    roles = [role(key) for key in ROLES if not verdict(row, key, config)]
+    if roles:
+        return 'Can be ' + (', '.join(roles[:-1]) + ' or ' + roles[-1] if len(roles) > 1 else roles[0]) + '.'
+    rest = verdict(row, 'media_hdd', config).split('. ', 1)[1:]
+    return rest[0].rstrip('.') + '.' if rest else ''
+
+
+def brief(row):
+    """The drive as every message after the list names it: its number there and what it is."""
+    return f"drive {row['number']} ({words(row)})"
+
+
+def said(device, first=False):
+    """A chosen drive as the list named it (`first`: to start a sentence with); its Linux
+    name alone when it came from no list."""
+    named = device.get('said')
+    if not named:
+        return str(device.get('name', ''))
+    return named[0].upper() + named[1:] if first else named
+
+
+def fullness(row):
+    """'about 40 % full, holds files', 'empty', or '' when setup cannot tell."""
+    if row['files'] is False:
+        return 'empty'
+    known = [] if row['full'] is None else [f"about {row['full']} % full"]
+    return ', '.join(known + (['holds files'] if row['files'] else []))
+
+
+def inside(row):
+    """The filesystem's facts: its type and UUID, where it is open, how full it is."""
+    if row['export'] or not row['fstype']:
+        return ''
+    from modules.storage import NOT_LINUX
+
+    facts = [f"{NOT_LINUX.get(row['fstype'], row['fstype'])}, UUID {row['uuid'] or 'none'}"]
+    if (row['device'] or {}).get('wwn') and row['device'].get('network'):
+        facts.append(f"the NAS disk {row['device']['wwn']}")
+    facts.append(f"open at {row['mountpoint']}" if row['mountpoint'] else 'not open')
+    if fullness(row):
+        facts.append(fullness(row))
+    if row['size_note']:
+        facts.append(row['size_note'])
+    return '; '.join(facts)
+
+
+def system_roles(config):
+    """The roles kept on the disk Linux runs from (a folder of it each)."""
+    from modules.storage import on_one_drive
+
+    storage = config.get('storage', {})
+    return [
+        key
+        for key in ('data_ssd', 'media_hdd')
+        if isinstance(storage.get(key), dict)
+        and storage[key].get('folder')
+        and not on_one_drive(storage[key].get('folder'))
+    ]
+
+
+def shares_with_apps(row, key, config):
+    """The media and backups asked for on the drive just chosen for the apps (a new
+    choice in this run, not one set up already): both can be folders of it."""
+    apps = config.get('storage', {}).get('data_ssd') or {}
+    return key == 'media_hdd' and bool(row['uuid']) and apps.get('uuid') == row['uuid'] and not apps.get('subvolume')
+
+
+def role_of(row, config):
+    """The role this drive has in the settings now ('data_ssd', 'media_hdd', 'usb'), or None.
+    The disk Linux runs from may have both of the first two: the first is named."""
+    if row['system']:
+        return next(iter(system_roles(config)), None)
+    if not row['uuid']:
+        return None
+    storage = config.get('storage', {})
+    for key in ('data_ssd', 'media_hdd'):
+        if (storage.get(key) or {}).get('uuid') == row['uuid']:
+            return key
+    return 'usb' if config.get('photos', {}).get('external_backup_uuid') == row['uuid'] else None
+
+
+# Said with the disk Linux runs from wherever it can be chosen (0.50.0: a PC with one
+# drive, or with one drive beside it, is a server too).
+SYSTEM_DISK = (
+    'It is the disk Linux runs from: NekoServer keeps this in a folder of it (/var/lib/nekoserver). If that disk '
+    'fails, Linux and what is kept there are lost together, and a disk that fills up stops Linux too. A drive of '
+    'its own is the safer choice.'
+)
+# Said when the backups go to the disk the apps are on.
+SAME_DISK_BACKUPS = (
+    'The backups are then on the same disk as what they copy. They still help after a mistake or a broken app, '
+    'but not when that disk fails: an offline backup on a removable drive is what covers that.'
+)
+SYSTEM_NOT_OFFLINE = (
+    'it is the disk Linux runs from; the offline backup must be a drive of its own that you can take away'
+)
+SYSTEM_FILESYSTEMS = ('ext4', 'xfs', 'btrfs')
+
+
+def system_verdict(key, config):
+    """Why the disk Linux runs from cannot have the role `key`, or '': it can hold the
+    apps, the media and backups, or both, when its filesystem is one the apps can use and
+    it has room for what is put there (the minimums of both roles when both are on it)."""
+    from modules import storage
+
+    if key == 'usb':
+        return SYSTEM_NOT_OFFLINE
+    try:
+        _uuid, fstype = storage.system_filesystem()
+        free = storage.system_free_gb()
+    except (OSError, RuntimeError):
+        return 'setup cannot read the filesystem Linux runs from'
+    if fstype not in SYSTEM_FILESYSTEMS:
+        return f'Linux runs from a {fstype} filesystem, which the apps cannot keep their files on'
+    needed = sum(storage.sizes(role_key)[0] for role_key in {key, *system_roles(config)})
+    if free < needed:
+        both = ' together with what is already kept there' if set(system_roles(config)) - {key} else ''
+        return f'it has too little room: {free} GB free, and {role(key)} needs at least {needed} GB there{both}'
+    return ''
+
+
+def in_use(row, folder):
+    """Why a drive open somewhere of its own cannot be taken, or ''. One the desktop opened
+    by itself (/run/media, /media), or one open where setup would put it, is free."""
+    where = row['mountpoint']
+    if not where or where == folder or str(where).startswith(('/run/media/', '/media/')):
+        return ''
+    return f'it is in use at {where}. To use it, unmount it first (sudo umount {where}, and take out its line in /etc/fstab if you added one)'
+
+
+def verdict(row, key, config):
+    """Why this drive cannot have the role `key`, in words that follow "cannot be the app
+    SSD: "; '' when it can."""
+    if row['system']:
+        return system_verdict(key, config)
+    if row['problem']:
+        return row['problem']
+    has = role_of(row, config)
+    if shares_with_apps(row, key, config):
+        return shared_verdict(row)
+    if has and has != key:
+        return f'it is already {role(has)}'
+    if row['uuid'] and (
+        row['uuid'] in TAKEN_AHEAD or any(record.get('uuid') == row['uuid'] for record in extra_drives(config).values())
+    ):
+        return "it already holds an app's files (chosen as a drive of their own)"
+    if row['export']:
+        return 'it is a folder the NAS shares; the network storage step chooses those'
+    return backup_verdict(row, config) if key == 'usb' else drive_verdict(row, key, config)
+
+
+def shared_verdict(row):
+    """Why the apps' drive cannot hold the media and the backups too, or '': it must have
+    room for what both need."""
+    from modules import storage
+
+    device = row['device'] or {}
+    if device.get('network'):
+        return 'it is on the NAS'
+    needed = storage.sizes('data_ssd')[0] + storage.sizes('media_hdd')[0]
+    if not storage.big_enough(device, needed):
+        return f'it is too small for both: the apps and the media and backups together need {needed} GB free'
+    return ''
+
+
+def not_a_device(row):
+    """Why a filesystem setup found no usable device for cannot have a role."""
+    from modules import storage
+
+    if row['fstype'] in ('ext4', 'xfs', 'btrfs'):
+        return 'it is not a drive, a partition, an LVM volume, a RAID array or an encrypted drive'
+    return (
+        f"it is formatted {storage.NOT_LINUX.get(row['fstype'], row['fstype'])}, which Linux apps can't keep "
+        'their files on. To use it, copy its files elsewhere first, then ' + HOW_TO_FORMAT.format(name=row['name'])
+    )
+
+
+def drive_verdict(row, key, config):
+    """Why a filesystem cannot be the app SSD or the media HDD, or ''."""
+    from modules import storage
+
+    device = row['device']
+    if device is None:
+        return not_a_device(row)
+    busy = in_use(row, config.get('data_mount' if key == 'data_ssd' else 'media_mount'))
+    if busy:
+        return busy
+    if key == 'data_ssd' and device.get('network'):
+        return (
+            'it is on the NAS, and the app SSD must be connected to this PC (by USB 3, or '
+            'inside it): it holds the databases and is what makes the apps fast'
+        )
+    other = (config.get('storage', {}).get('media_hdd' if key == 'data_ssd' else 'data_ssd') or {}).get('uuid')
+    if other and set(row['disks']) & set(row['on_disks'].get(other, ())):
+        return 'it is on the same disk as ' + role('media_hdd' if key == 'data_ssd' else 'data_ssd')
+    smallest, _ = storage.sizes(key)
+    if not storage.big_enough(device, smallest):
+        counted = f" ({row['size_note']})" if row['size_note'] else ''
+        return (
+            f'it is too small{counted}: {role(key)} needs a drive of at least {storage.drive_needed(smallest)} GB '
+            f'({smallest} GB free once formatted)'
+        )
+    return ''
+
+
+def backup_verdict(row, config):
+    """Why a filesystem cannot be the USB backup drive, or ''."""
+    from modules.photo_backup import BACKUP_FILESYSTEMS, UNSUITABLE
+
+    if row['backup'] is not None:
+        return backup_size_verdict(row)
+    if row['fstype'] not in BACKUP_FILESYSTEMS:
+        return (
+            f"it is formatted {UNSUITABLE.get(row['fstype'], row['fstype'])}; a backup drive must be exFAT or ext4 "
+            '(FAT32 cannot hold files over 4 GB, such as videos). Copy off anything you need from it, then format '
+            'it yourself (this erases it) with the Disks app (GNOME) or KDE Partition Manager'
+        )
+    busy = in_use(row, config.get('external_backup_mount'))
+    if busy:
+        return busy
+    return (
+        'it must be a drive of its own: this one is on the same disk as the system, the app SSD or the media '
+        'HDD, and one disk failing would then lose both copies'
+    )
+
+
+def backup_size_verdict(row):
+    """Why a drive that could be the offline backup is too small for it, or '' (gate run
+    B4: an 8 GB drive was offered with nothing said)."""
+    from modules import storage
+    from modules.capacity import USB_MIN
+
+    found = storage.size_bytes(row['size'])
+    if found is None or found >= USB_MIN * storage.GIB:
+        return ''
+    counted = f" ({row['size_note']})" if row['size_note'] else ''
+    return f'it is too small{counted}: the offline backup needs at least {USB_MIN} GB'
+
+
+def usable(table, key, config):
+    """The rows that can have this role."""
+    return [row for row in table if not verdict(row, key, config)]
+
+
+def can_be(row, config):
+    """What the full list says under a drive: the role it has, the roles it can have, or
+    why it can have none."""
+    has = role_of(row, config)
+    if has:
+        return f'Chosen as {role(has)}.'
+    roles = [role(key) for key in ROLES if not verdict(row, key, config)]
+    if not roles:
+        return f"Cannot be used: {verdict(row, 'media_hdd', config)}."
+    return 'Can be ' + (', '.join(roles[:-1]) + ' or ' + roles[-1] if len(roles) > 1 else roles[0]) + '.'
+
+
+_last_shown = None  # the list last printed in this run (show_once)
+
+
+def forget_shown():
+    """The next show_once prints the list whatever was printed before (a new run)."""
+    global _last_shown
+    _last_shown = None
+
+
+def show_once(table, config, out_fn=print):
+    """The full list, printed before the first drive question of a run and again only
+    when what is connected has changed since."""
+    global _last_shown
+    now = [(row['name'], row['uuid']) for row in table]
+    if now != _last_shown:
+        _last_shown = now
+        for line in shown(table, config):
+            out_fn(line)
+
+
+def shown(table, config):
+    """The full list as the terminal prints it before the first drive question."""
+    lines = ['Everything connected to this PC:']
+    for row in table:
+        lines.append(f"  {row['number']}) {words(row)} - {state(row, config)}")
+        if how_to(row, config):
+            lines.append('       ' + how_to(row, config))
+        lines.append('       ' + details(row))
+    return [*lines, NAMES_CHANGE, NEVER_FORMATS]
+
+
+def needs(key):
+    """What a drive of this role must have, said with its question ('' for the USB drive)."""
+    if key == 'usb':
+        return ''
+    from modules import storage
+
+    smallest, recommended = storage.sizes(key)
+    return (
+        f'It needs at least {smallest} GB free, so a drive of {storage.drive_needed(smallest)} GB or more '
+        f'({recommended} GB or more is recommended).'
+    )
+
+
+def listed(table, key, config):
+    """The lines before one drive question: what is asked, then every drive by its number,
+    each with why it cannot be this one when it cannot."""
+    lines = [' '.join(part for part in (f'Now choose {asked_for(config, key)}.', needs(key)) if part)]
+    for row in table:
+        why = verdict(row, key, config)
+        facts = ', '.join(part for part in (words(row), fullness(row)) if part)
+        # The reason in short: how to make the drive usable is in the full list above, and
+        # said again when that drive is chosen all the same.
+        lines.append(f"  {row['number']}) {facts}" + (f'  - not this one: {first_sentence(why)}' if why else ''))
+    return lines
+
+
+def for_window(table, key, config):
+    """The same list as the setup window draws it: one card for each drive."""
+    return [
+        {
+            'number': row['number'],
+            'name': row['name'],
+            'what': words(row),
+            'state': state(row, config),
+            'details': details(row),
+            'role': (f'Chosen as {role(has)}' if (has := role_of(row, config)) else ''),
+            'why': verdict(row, key, config),
+            # What choosing it means, said before it is chosen (the disk Linux runs from).
+            'caution': SYSTEM_DISK if row['system'] and key != 'usb' and not verdict(row, key, config) else '',
+        }
+        for row in table
+    ]
+
+
+def none_usable(table, key, config):
+    """Why no drive here can have this role, drive by drive, and what to do."""
+    lines = [f"  - {brief(row)}: {verdict(row, key, config)}" for row in table]
+    found = (
+        '\n'.join(lines) if lines else '  No drive was found: check that it is connected and shows up in the Disks app.'
+    )
+    return (
+        f'No drive here can be {role(key)} ({holds(config, key)}). NekoServer never formats a drive by itself, '
+        f'and never takes a drive that is in use elsewhere.\n{found}\n'
+        'Then run  sudo bash install.sh  again. Nothing was changed.'
+    )
+
+
+# ----- the question
+
+
+def numbered(table, answer):
+    """The row with the number typed, or None."""
+    return table[int(answer) - 1] if answer.isdigit() and 1 <= int(answer) <= len(table) else None
+
+
+STORAGE_PAGE = 'storage'  # the page every drive question of the drives step is on (modules/storage.py)
+
+
+def size_bytes(row):
+    from modules import storage
+
+    return storage.size_bytes(row.get('size')) or 0
+
+
+def has_role_already(table, config):
+    """The drive each role has in the settings, where it is in the list: a role that has
+    its drive keeps it."""
+    saved = config.get('storage', {})
+    uuids = {
+        key: saved[key].get('uuid') if isinstance(saved.get(key), dict) else None for key in ('data_ssd', 'media_hdd')
+    }
+    uuids['usb'] = config.get('photos', {}).get('external_backup_uuid')
+    return {key: next((row for row in table if uuid and row['uuid'] == uuid), None) for key, uuid in uuids.items()}
+
+
+def free_for_a_role(row, chosen):
+    """Not chosen for another role, and on none of their disks."""
+    taken = [other for other in chosen.values() if other is not None]
+    return row not in taken and not any(set(row['disks']) & set(other['disks']) for other in taken)
+
+
+def drives_of_their_own(table, key, config, chosen):
+    """The drives besides the disk Linux runs from that may have the role and have none yet."""
+    return [
+        row for row in table if not row['system'] and free_for_a_role(row, chosen) and not verdict(row, key, config)
+    ]
+
+
+def best_for(table, key, config, chosen, order):
+    """The first drive of its own in `order`; the disk Linux runs from only where there is none."""
+    own = drives_of_their_own(table, key, config, chosen)
+    if own:
+        return min(own, key=order)
+    return next((row for row in table if row['system'] and not verdict(row, key, config)), None)
+
+
+def in_this_pc_first(row):
+    return bool((row['device'] or {}).get('network')), -size_bytes(row)
+
+
+def ssd_first(row):
+    return 'SSD' not in row['type'], -size_bytes(row)
+
+
+def of_its_own(row):
+    """A drive was chosen, and it is not the disk Linux runs from."""
+    return row is not None and not row['system']
+
+
+def recommended(table, config):
+    """The drive setup would choose for each role, so that a person who changes nothing
+    gets a sensible layout: {'data_ssd': row or None, 'media_hdd': ..., 'usb': ...}.
+
+    The media and backups get the biggest drive of their own that can hold them (one in
+    this PC before one on a NAS); the apps get an SSD among the others, the
+    biggest, else any other drive; the offline backup gets a USB drive that is neither.
+    With three drives that is the layout every server before 0.50.0 has. The disk Linux
+    runs from is recommended only where no drive of its own can have the role; with one
+    drive of its own, both are on it. A role that has its drive already keeps it, and that
+    drive is offered for no other."""
+    chosen = has_role_already(table, config)
+    if chosen['media_hdd'] is None:
+        chosen['media_hdd'] = best_for(table, 'media_hdd', config, chosen, in_this_pc_first)
+    if chosen['data_ssd'] is None:
+        chosen['data_ssd'] = best_for(table, 'data_ssd', config, chosen, ssd_first)
+        # No other drive of its own: both on that one drive, before the disk Linux runs from.
+        chosen['data_ssd'] = apps_beside_media(chosen['data_ssd'], chosen['media_hdd'], config)
+    # The apps' drive chosen, and no other drive of its own for the backups: that one, before the system disk.
+    chosen['media_hdd'] = media_beside_apps(chosen['media_hdd'], chosen['data_ssd'], config)
+    if chosen['usb'] is None:
+        usb = [row for row in drives_of_their_own(table, 'usb', config, chosen) if row['type'] == 'USB drive']
+        chosen['usb'] = usb[0] if usb else None
+    return chosen
+
+
+def apps_beside_media(apps, media, config):
+    """The apps' drive: the one found, or the media's drive of its own when no other
+    drive of its own was found for the apps and that one can hold both."""
+    if of_its_own(apps) or not of_its_own(media):
+        return apps
+    if verdict(media, 'data_ssd', config) or shared_verdict(media):
+        return apps
+    return media
+
+
+def media_beside_apps(media, apps, config):
+    """The media and backups' drive: the one found, or the apps' drive of its own when
+    no other drive of its own was found for them and it can hold both."""
+    if of_its_own(media) or not of_its_own(apps):
+        return media
+    if shares_with_apps(apps, 'media_hdd', config) and not shared_verdict(apps):
+        return apps
+    return media
+
+
+def field(key, input_fn, prompt):
+    """One answer of a page: what the setup window sent for it with an earlier question
+    of the page, else the question itself, asked in the terminal and in the window.
+    Ctrl+D, and the window's Skip, are an empty answer."""
+    sent = setup_progress.page_answer(key)
+    if sent is not None:
+        return '' if sent[0] == 'skip' else sent[1].strip()
+    setup_progress.page_asks(key)
+    answer = typed(input_fn, prompt)
+    setup_progress.page_answer(key)  # the window sends every field: this one's copy is not asked for twice
+    return answer
+
+
+def own_page(table, key, config, skippable):
+    """The page of a role asked alone; nothing more on the storage page, which shows
+    every role at once. Returns (the page, the name of this role's field on it)."""
+    shown = setup_progress.page_shown()
+    if shown and shown.get('form') == STORAGE_PAGE:
+        return contextlib.nullcontext(), key
+    page = setup_progress.page(
+        'drives',
+        {'choice': ''},
+        what=f'Choose {asked_for(config, key)}.',
+        needs=needs(key),
+        rows=for_window(table, key, config),
+        skippable=skippable,
+        names=NAMES_CHANGE,
+    )
+    return page, 'choice'
+
+
+def say_taken(row, key, config, out_fn):
+    """Say the choice back in words, with what the disk Linux runs from means."""
+    chosen = said({'said': brief(row)}, first=True)
+    out_fn(f'{chosen} is {role(key)}. Nothing on it is changed by choosing it.')
+    if row['system']:
+        out_fn(SYSTEM_DISK)
+        if key == 'media_hdd' and 'data_ssd' in system_roles(config):
+            out_fn(SAME_DISK_BACKUPS)
+    elif shares_with_apps(row, key, config):
+        out_fn(SAME_DISK_BACKUPS)
+    return row
+
+
+def answered(table, key, config, answer, out_fn):
+    """The row an answer names when it may have the role; None, with the reason said,
+    for a number that is not in the list or a drive that cannot have it."""
+    row = numbered(table, answer)
+    if row is None:
+        out_fn(f'Type a number from 1 to {len(table)}, as the list shows them.')
+        return None
+    why = verdict(row, key, config)
+    if why:
+        refused = said({'said': brief(row)}, first=True)
+        out_fn(f'{refused} cannot be {role(key)}: {why}. Choose another one from the list.')
+        return None
+    return say_taken(row, key, config, out_fn)
+
+
+def ask(table, key, config, input_fn=input, out_fn=print, attempts=3, skippable=False):
+    """The drive for the role `key`, chosen by its number in the list. Nothing is typed
+    back: choosing a drive formats nothing and changes nothing on it, and the choice is
+    said in words before anything is mounted. A drive that cannot have the role is
+    refused at once with the reason, and another asked for. Enter alone (or Ctrl+D)
+    stops: None when the choice may be left for later (`skippable`), otherwise an error
+    that says to run setup again.
+
+    On the storage page (modules/storage.py) the window shows every role at once and
+    sends them together; asked alone (the weekly backup step), the role is a page of
+    its own."""
+    what = asked_for(config, key)
+    best = recommended(table, config).get(key)
+    mark = f"  {best['number']}) " if best is not None else None
+    for line in listed(table, key, config):
+        out_fn(line + ('  (recommended)' if mark and line.startswith(mark) else ''))
+    best, leave = what_enter_does(best, skippable)
+    stopped = (
+        f'No drive was chosen for {role(key)}. Run  sudo bash install.sh  again to choose it; nothing was changed.'
+    )
+    page, name = own_page(table, key, config, skippable)
+    with page:
+        for _ in range(attempts):
+            answer = field(name, input_fn, f'Number of {what} ({leave}): ') or (str(best['number']) if best else '')
+            if not answer:
+                return none_chosen(skippable, stopped)
+            row = answered(table, key, config, answer, out_fn)
+            if row is not None:
+                return row
+    raise RuntimeError(stopped)
+
+
+def what_enter_does(best, skippable):
+    """(the drive Enter alone takes, or None; the words that say so). A role that may
+    be left for later is left by Enter; otherwise Enter takes the drive setup would
+    choose (nothing is changed by choosing it), or stops setup when there is none."""
+    if skippable:
+        return None, 'Enter to skip for now'
+    if best is None:
+        return None, 'Enter alone stops setup here'
+    return best, f"Enter for {best['number']}, the recommended one"
+
+
+def none_chosen(skippable, stopped):
+    """No drive chosen: None when the role may be left for later, else setup stops."""
+    if skippable:
+        return None
+    raise RuntimeError(stopped)
+
+
+def last_time(row, key):
+    """What a rerun says about a drive chosen before."""
+    chosen = brief(row)
+    return f'Last time you chose {chosen} as {role(key)}. It is used again.'
+
+
+def saved_row(table, uuid):
+    """The row of the drive saved under this UUID, or None when it is not connected."""
+    return next((row for row in table if row['uuid'] == uuid), None)

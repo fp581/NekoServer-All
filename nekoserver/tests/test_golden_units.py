@@ -40,7 +40,7 @@ from modules import (  # noqa: E402
     photo_preservation,
     server_os,
 )
-from neko_common import VERSION, atomic_json  # noqa: E402
+from neko_common import VERSION, atomic_json, media_apps_wanted, media_services  # noqa: E402
 
 GOLDEN = ROOT / 'tests' / 'golden'
 UPDATE = os.environ.get('NEKO_UPDATE_GOLDEN') == '1'
@@ -89,6 +89,8 @@ def media_drive():
     cfg['dashboard'].update(fan_control=False, rgb=False, port=8790, interval_seconds=120, smart_interval_seconds=3600)
     cfg['host_backup'].update(steam=False, extra_paths=['/srv/nekoserver/notes'], keep_snapshots=14, minimum_free_gb=4)
     cfg['app_backup']['keep_snapshots'] = 0
+    # Both counts are from before 0.50.0 (outside 1 to 7): kept, and marked as the earlier setting.
+    cfg['host_backup']['keep_snapshots_earlier'] = cfg['app_backup']['keep_snapshots_earlier'] = True
     cfg['maintenance'].update(keep_snapshots=0, update_day='Sat', nekoserver_channel='stable', settle_days=3)
     cfg['network_storage'] = {
         'wanted': True,
@@ -131,6 +133,36 @@ def past_midnight():
     return cfg
 
 
+def no_media():
+    """(e) The media apps left out ("media_apps.wanted": false, 0.50.0): no Jellyfin, Seerr, the apps
+    that find and download, Immich, Navidrome, hardware video, media monitor or TV mode;
+    Nextcloud, the dashboard, the backups and the USB copy of Nextcloud's files stay."""
+    cfg = base()
+    cfg['media_apps'] = {'wanted': False}
+    return cfg
+
+
+def nfs_folders():
+    """(f) The media drive and the backup drive are folders a NAS shares over NFS
+    (0.50.0, nfs_exports.py): no device to wait for behind either, the NAS check on, the
+    weekly copy told the backup folder's address."""
+    import nfs_exports
+
+    cfg = base()
+    media, backup = '192.168.1.50:/volume1/media', '192.168.1.50:/volume1/backup'
+    cfg['network_storage'] = {
+        'wanted': True,
+        'kind': 'nfs',
+        'nfs': {'server': '192.168.1.50', 'media': '/volume1/media', 'backup': '/volume1/backup'},
+    }
+    cfg['storage']['media_hdd'] = nfs_exports.record_for(media, 'nfs4')
+    kept = nfs_exports.record_for(backup, 'nfs4')
+    cfg['photos'].update(
+        external_backup_uuid=kept['uuid'], external_backup_fstype='nfs4', external_backup_network=kept['network']
+    )
+    return cfg
+
+
 # Each configuration, with the facts about the machine that are not settings (the
 # Tailscale name the dashboard answers, learned from the installed unit).
 CONFIGURATIONS = {
@@ -138,6 +170,8 @@ CONFIGURATIONS = {
     'media-drive': (media_drive, {'public_host': 'neko.tail1234.ts.net'}),
     'before-0.48.0': (before_0480, {}),
     'past-midnight': (past_midnight, {}),
+    'no-media': (no_media, {}),
+    'nfs-folders': (nfs_folders, {}),
 }
 
 
@@ -271,12 +305,15 @@ def rendered(cfg, facts, tmp):
     def lib(step):
         return Path('/usr/local/lib/nekoserver-' + step) / RELEASE / native_runtime.NAME
 
-    # The nightly snapshots and their settings files.
-    out.update(app_backup.definitions(cfg, runtime, app_backup.GUARD))
-    out['applications.json'] = as_json(tmp, app_backup.guard_config(cfg))
+    # The nightly snapshots and their settings files (the media apps' and the music's only
+    # with the media apps: left out, those steps retire their schedules).
+    if media_services(cfg):
+        out.update(app_backup.definitions(cfg, runtime, app_backup.GUARD))
+        out['applications.json'] = as_json(tmp, app_backup.guard_config(cfg))
     out.update(host_backup.definitions(cfg, runtime, host_backup.PRIVATE))
     out['host.json'] = as_json(tmp, host_guard(cfg))
-    out.update(music_backup.definitions(cfg, runtime, storage_guard))
+    if media_apps_wanted(cfg):
+        out.update(music_backup.definitions(cfg, runtime, storage_guard))
     out['backups-storage.json'] = as_json(tmp, native_runtime.storage_config(cfg))
     # The monthly check, the weekly updates, Update now, the upgrade and their recovery.
     out.update(maintenance.definitions(cfg, runtime, maintenance.GUARD))
@@ -284,8 +321,9 @@ def rendered(cfg, facts, tmp):
     # The photo jobs and the weekly USB copy.
     out.update(photo_jobs(cfg, runtime, tmp))
     out.update(usb_copy(cfg, runtime, storage_guard, tmp))
-    # The media audit.
-    out.update(media_audit(cfg, runtime, tmp))
+    # The media audit (retired with the media apps left out).
+    if media_apps_wanted(cfg):
+        out.update(media_audit(cfg, runtime, tmp))
     # The heartbeat and the phone alerts (their private files hold what you typed: not here).
     out.update(heartbeat.definitions(cfg, lib('heartbeat'), Path(heartbeat.PRIVATE)))
     out.update(notifications.definitions(lib('notifications'), Path(notifications.PRIVATE_CONFIG)))
@@ -392,6 +430,42 @@ class GoldenFileTests(unittest.TestCase):
         self.assertIn('nekoserver-photo-preservation.timer', produced)  # the old daily archive pass
         self.assertNotIn(server_os.HDD_UNIT, produced)  # hdd_policy unchanged
         self.assertIn('OnCalendar=*-*-* 01:00:00 UTC', produced['nekoserver-app-backup.timer'])
+
+    def test_no_media(self):
+        produced = self.check('no-media')
+        for left_out in (
+            'nekoserver-app-backup.timer',
+            'nekoserver-music-backup.timer',
+            'nekoserver-media-health.timer',
+            'nekoserver-photo-preservation.timer',
+            'nekoserver-immich-db-backup.timer',
+        ):
+            self.assertNotIn(left_out, produced)
+        # Nextcloud's files still get their weekly USB copy, without a photo source.
+        self.assertNotIn('--source', produced['nekoserver-photo-backup.service'])
+        self.assertIn('nekoserver-host-backup.timer', produced)
+        collector = json.loads(produced['dashboard-config.json'])
+        self.assertEqual(collector['media'], {'services': []})
+        self.assertEqual(collector['media_apps'], {'wanted': False})
+        self.assertIs(collector['photos']['deploy_immich'], False)
+        maintenance_settings = json.loads(produced['maintenance.json'])
+        self.assertEqual(maintenance_settings['media_apps'], {'wanted': False})
+
+    def test_nfs_folders(self):
+        produced = self.check('nfs-folders')
+        # Drive return waits for the SSD's device only: a shared folder has none, and the
+        # NAS check (every minute) starts it once the NAS answers again.
+        wanted_by = [line for line in produced[server_os.DRIVE_UNIT].splitlines() if line.startswith('WantedBy=')]
+        self.assertEqual(len(wanted_by[0].split()), 1)
+        self.assertIn(server_os.NAS_WATCH_TIMER, produced)
+        drives = json.loads(produced['os-drives.json'])
+        self.assertEqual(drives['backup_drive'], {'export': '192.168.1.50:/volume1/backup'})
+        self.assertEqual(
+            drives['storage']['media_hdd']['network'], {'transport': 'nfs', 'export': '192.168.1.50:/volume1/media'}
+        )
+        self.assertIn('--fstype nfs4 ', produced['nekoserver-photo-backup.service'])
+        # Docker still starts only once the media folder is mounted.
+        self.assertIn('/mnt/nekoserver-media', produced['docker.service.d-10-nekoserver-storage.conf'])
 
     def test_past_midnight(self):
         produced = self.check('past-midnight')

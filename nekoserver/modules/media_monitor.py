@@ -6,7 +6,16 @@ import shutil
 import subprocess
 
 import native_runtime
-from neko_common import VERSION, atomic_json, refresh_settings, safe_path, check_units, write_units, SYSTEMD_UNITS
+from neko_common import (
+    VERSION,
+    atomic_json,
+    apps_to_connect,
+    refresh_settings,
+    safe_path,
+    check_units,
+    write_units,
+    SYSTEMD_UNITS,
+)
 
 DEPENDENCIES = ['storage', 'recovery']
 DESCRIPTION = 'Install scheduled media connection checks (Rust runtime)'
@@ -25,21 +34,28 @@ def refresh(config, log, target=None):
     )
 
 
+def retire_monitor(context):
+    """The monitor switched off (or nothing for it to check): its schedule is taken away
+    when applied."""
+    if context.apply:
+        if os.geteuid() != 0:
+            raise RuntimeError('Root required')
+        from modules._schedules import retire
+
+        retire(
+            [SYSTEMD_UNITS / ('nekoserver-media-health.' + suffix) for suffix in ('timer', 'service')],
+            subprocess.run,
+        )
+    context.log('nekoserver-media-health: disabled; any old managed schedule is retired when applied')
+
+
 def run(context):
     enabled = context.config.get('monitoring', {}).get('enabled', True)
     if type(enabled) is not bool:
         raise RuntimeError('Schedule enable switch must be boolean')
-    if not enabled:
-        if context.apply:
-            if os.geteuid() != 0:
-                raise RuntimeError('Root required')
-            from modules._schedules import retire
-
-            retire(
-                [SYSTEMD_UNITS / ('nekoserver-media-health.' + suffix) for suffix in ('timer', 'service')],
-                subprocess.run,
-            )
-        context.log('nekoserver-media-health: disabled; any old managed schedule is retired when applied')
+    # The hourly check is of Jellyfin and the download apps working together.
+    if not enabled or not apps_to_connect(context.config):
+        retire_monitor(context)
         return
     if not context.apply:
         context.log('Media monitor available; use --apply to install its systemd timer')

@@ -12,16 +12,18 @@ import tempfile
 import time
 
 import guided_setup
+import questions
 from neko_common import cloud_files, photo_library, regular_files, sha256_file, usb_mount_options, version_parts
 
 DEPENDENCIES = ['storage']
-DESCRIPTION = 'Check there is enough space on the SSD, HDD and USB drive before installing'
+DESCRIPTION = 'Check there is enough space on the drives before installing'
 
 GIB = 1024**3
 # (hard minimum, recommended) free space in GiB.
 SSD = (20, 100)  # Docker images (~20 GB), app data, photos and music live here.
 HDD = (50, 500)  # Movies, shows, Nextcloud files and every HDD backup.
 USB_MIN = 16  # The USB copy must at least fit photos + Nextcloud files.
+INSTALLED_MIN = 10  # A group's apps on a drive of their own: their settings and databases.
 # What an empty drive sold as 1 GB has free once formatted, at the least: 10^9 bytes,
 # less what ext4 keeps for itself (about 5 %) and a little more for its tables.
 SOLD_AS_FREE = 0.9 * 10**9
@@ -298,10 +300,26 @@ def assess(
     drives is the monthly checksum check's job."""
     data, media = Path(config['data_mount']), Path(config['media_mount'])
     stop, warn = [], []
-    for name, path, (minimum, recommended), purpose in (
-        ('SSD', data, SSD, 'apps, photos and music'),
-        ('HDD', media, HDD, 'movies, shows, Nextcloud files and backups'),
-    ):
+    from neko_common import drive_holds
+
+    # What each drive holds on this server only (gate run C).
+    checks = (
+        ('SSD', data, SSD, drive_holds(config, 'data_ssd')),
+        ('HDD', media, HDD, drive_holds(config, 'media_hdd')),
+    )
+    if same_filesystem(data, media):
+        # Both kept on one filesystem (the disk Linux runs from, 0.50.0): its room is
+        # counted once, against what both need together.
+        both = (SSD[0] + HDD[0], SSD[1] + HDD[1])
+        checks = (
+            (
+                'disk that holds both the apps and the media',
+                data,
+                both,
+                'the apps, your files and the backups together',
+            ),
+        )
+    for name, path, (minimum, recommended), purpose in checks:
         space = free(path)
         if space < minimum * GIB:
             stop.append(
@@ -316,6 +334,7 @@ def assess(
                 f'The {name} has {gib(space)} free. A drive of {recommended} GB or more is recommended '
                 f'for {purpose}; it will fill up sooner.'
             )
+    stop += installed_elsewhere(config, free)
     # The archive also keeps photos deleted from Immich and earlier versions.
     photos = max(used(photo_library(config)), used(archive_folder(config)))
     cloud = used(cloud_files(config))
@@ -333,11 +352,53 @@ def assess(
         if free_now < needed:
             warn.append(
                 f'The USB drive has {gib(free_now)} free. The next weekly copy still has to add '
-                f'{gib(pending)} (photos and versions from the HDD archive, photos not archived yet, Nextcloud files and a database copy); '
+                f'{gib(pending)} ({usb_pending_words(config)}); '
                 f'{gib(needed)} or more free is recommended so it fits and has room to grow. '
                 'Free up space on it or use a bigger one.'
             )
     return stop, warn
+
+
+def usb_pending_words(config):
+    """What the next weekly copy still has to add, naming only what this server has."""
+    from neko_common import immich_wanted, listed
+
+    photos = immich_wanted(config)
+    cloud = bool(config.get('nextcloud', {}).get('enabled', False))
+    return listed(
+        ['photos and versions from the HDD archive', 'photos not archived yet'] * photos
+        + ['Nextcloud files'] * cloud
+        + ['a database copy'] * photos
+    )
+
+
+def installed_elsewhere(config, free=free_bytes):
+    """The problems of the drives a group's apps are installed on (0.50.0, "install" in the
+    settings): each needs room for those apps' settings and databases."""
+    import placement
+    from neko_common import APPS, drive_folder
+
+    by_drive = {}
+    for app, drive in sorted(placement.apps_elsewhere(config).items()):
+        by_drive.setdefault(drive, []).append(APPS[app][0])
+    problems = []
+    for drive, names in by_drive.items():
+        space = free(drive_folder(config, drive))
+        if space < INSTALLED_MIN * GIB:
+            problems.append(
+                f'The drive {", ".join(names)} would be installed on has only {gib(space)} free. Their settings and '
+                f'databases need at least {INSTALLED_MIN} GB there. Free up space on it, or choose another drive '
+                'for them on the storage page.'
+            )
+    return problems
+
+
+def same_filesystem(first, second):
+    """The two folders are on one filesystem (two roles kept on the disk Linux runs from)."""
+    try:
+        return os.stat(first).st_dev == os.stat(second).st_dev
+    except OSError:
+        return False
 
 
 def ask(question, prompt=input, output=print):
@@ -376,7 +437,7 @@ def run(ctx, prompt=input, output=print):
     output('\n=== Drive space ===')
     for number, line in enumerate(warn, 1):
         output(f'{number}. {line}')
-    if ask('Continue with these drives anyway?', prompt, output):
+    if questions.yes_no('drive_space', prompt, output):
         return
     return {
         'status': 'needs_setup',

@@ -24,6 +24,9 @@
       "qbittorrent"
     ]
   },
+  "media_apps": {
+    "wanted": true
+  },
   "photos": {
     "deploy_immich": true,
     "archive_interval_minutes": 10080,
@@ -67,7 +70,7 @@
   "assistant": {
     "wanted": false
   },
-  "acceptance_scope": "6e29d3e98f21c6e695ca4d9c64f38b579bc97095a5c116841965187ff3f99568",
+  "acceptance_scope": "1ece2bc21203bab182035f09565c2c719481bea9b4cdfd46bd940fb8f2eb268e",
   "acceptance_profiles": [
     "accounts",
     "app_backup",

@@ -116,17 +116,21 @@ def setup(ask=getpass.getpass, out=print, key_dir=KEY_DIR, tries=3):
     out('Choose a backup password for it (at least 8 characters; your login password is fine too).')
     out('You are asked for this only now. Nightly and monthly backups run on their own and never ask.')
     out('Write it down somewhere safe: without it the password list in your backups cannot be recovered.')
-    for _ in range(tries):
-        password = ask('Backup password: ')
-        if len(password) < MIN_LENGTH:
-            out(f'Use at least {MIN_LENGTH} characters.')
-            continue
-        if ask('Same backup password again: ') != password:
-            out('The two passwords differ. Try again.')
-            continue
-        create_key(password, key_dir)
-        out('Backup key created. Restoring the password list will ask for this backup password.')
-        return
+    import setup_progress
+
+    # In the setup window the two entries are one page; the terminal is asked twice.
+    with setup_progress.password_page('Backup password', least=MIN_LENGTH):
+        for _ in range(tries):
+            password = setup_progress.page_field('password', ask, 'Backup password: ')
+            if len(password) < MIN_LENGTH:
+                out(f'Use at least {MIN_LENGTH} characters.')
+                continue
+            if setup_progress.page_field('again', ask, 'Same backup password again: ') != password:
+                out('The two passwords differ. Try again.')
+                continue
+            create_key(password, key_dir)
+            out('Backup key created. Restoring the password list will ask for this backup password.')
+            return
     raise RuntimeError(
         'Backup key not created: no backup password was confirmed. Run  sudo python3 backup_secrets.py --setup  to try again'
     )

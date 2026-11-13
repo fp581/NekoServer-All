@@ -1,5 +1,127 @@
 # Changelog
 
+## v0.50.0 — 2026-11-12
+
+Setup was rebuilt around one idea: you choose once, approve once, and setup does the rest. It no longer needs three drives (one is enough), asks far fewer questions, asks nothing after the approval but what needs the running server, and never asks you to vouch for something it can check itself. A server that is already set up keeps exactly the apps, drives, logins and backups it has.
+
+### New
+
+**Setup's pages**
+- **One first page, "What would you like this server to do?"** Every part is a switch, chosen once: Photos and phone backup (Immich), Movies and shows (Jellyfin), Music (Navidrome), Personal files (Nextcloud); then a TV connected to this PC, alerts on your phone, a warning when the server stops checking in, a local AI assistant; and whether your drives are in a network storage box. Any combination works, none of the apps included.
+- **"Also find and download new ones"** is a small switch inside the Movies and shows card and the Music card, on unless you switch it off. On adds Seerr, Sonarr, Radarr; Lidarr; Prowlarr and qBittorrent. Off leaves Jellyfin, or Navidrome, alone.
+- **The storage page, "Where should NekoServer store your apps and files?"**: a line for the apps, a line for your media and the backups, an optional offline backup, and a line for where Immich's photos, the films and shows, the music and Nextcloud's files are kept. Each line is a list of drives; a drive that cannot be used for a line says why (too small, already chosen, the disk Linux runs from for the offline copy, a network share for the apps).
+- **"Media you already have"**: films, shows or music on another drive or a NAS are used where they are (nothing copied), with new ones saved there too if you like, or copied into the library. A music folder on a network share is asked about once, "Back this up too?" (yes unless you say no), and the nightly music copy then takes it.
+- **The accounts page**: strong passwords made for you (Enter takes this), or your own logins, one row per app, with the dashboard PIN and the shared folders' password made for you or typed. **Show login** shows any of them.
+- **The backups page**: when the backups run and how many nightly backups are kept, and a table of what is backed up, where, when and how far back, which also lists what is not backed up (films and shows, music while its copy is off, your own folders).
+- **One approval.** "Ready to install NekoServer" lists what will be installed, what is left out, what is always set up and what setup will still stop to ask. One button, **Install selected apps**, starts it; in the terminal `yes`. On a server that exists the page is "Review your changes", the welcome says nothing changes until you approve, and the review says what is kept.
+- **After the approval** only the Tailscale sign-in, a drive short of room, the download sources and the phone page stop setup. Lidarr's and Seerr's profiles are picked without asking.
+- **Download sources from a list you can search**, once Prowlarr runs: Prowlarr's whole catalogue with a search box and tick boxes, the recommended ones (The Pirate Bay, YTS, EZTV, those the catalogue has) ticked, so Continue (or Enter alone) takes them. One Prowlarr refuses gets a Retry page; the rest still go in. A server whose Prowlarr has sources already keeps them and is not asked: an update or a rerun stops at nothing after the approval.
+- **The phone page, "Use your apps away from home"**: status rows for what setup checked itself, each passed, not yet or not known, with the reason and the next step.
+- **The finishing page**: what is ready, what a program checked, what you tried yourself and what is still waiting, each with its own Retry, and the dashboard's address and PIN in words.
+
+**Drives**
+- **One drive is enough.** A drive of its own, or the disk Linux runs from, can hold the apps, the media and the backups; any number of drives works, in either order. The same-drive warning is asked once.
+- **An app's files can be kept on a drive of their own**: Immich's photos, the films and shows, the music, Nextcloud's files. Such a drive is checked, mounted and guarded like the others; while it is away its apps stay stopped and nothing is made in its place, and music on it is in the nightly music copy.
+- **Everything connected is shown** before you choose: each drive's size, kind, model, label and how full it is, network shares mounted on this PC too, and for one that cannot be used, the reason.
+- **The offline backup is optional.** "None for now" is saved and the weekly copy left out; the next setup run offers it again. A drive under 16 GB says it is too small.
+- **A NAS can share folders over NFS** (experimental), beside iSCSI disks. Each folder is tried out before it is used. A NAS that is off never keeps the PC from starting; the apps that use one of its folders stay stopped until it answers, then its folder is mounted again and they start.
+
+**While setup runs**
+- **"Retry this step".** A step that does not finish says why and what usually fixes it (no internet, another program installing packages, Docker not running, a full drive, a drive not connected, a download that timed out, Tailscale still getting its certificate), and can be tried again without starting setup over.
+- **A test alert and a test check-in**, each answer of the server said in its own words (a wrong address, busy, a server error), and a retry passes only on a good answer.
+
+**The setup window**
+- **Night and Lamplight** looks, with a button to switch.
+- **Every question has its own words**: a short title, one plain line, and buttons that say what they do.
+- **The recovery menu and the uninstaller** open the window too. The terminal alone still does everything.
+
+**Recovery**
+- **The recovery menu has three sections**: restore something from a backup; check or repair a drive; fix damaged backup copies. A restore is chosen first, then shown whole and approved once, and always goes into a new folder. A replaced drive is noticed and asked for; Enter takes the recommended answer.
+
+### Changed
+
+- **Backups kept: 3, from 1 to 7.** A new server keeps the newest 3 nightly app backups and 3 nightly settings backups (it was 7). A server that keeps a count from 1 to 7 keeps it; one outside is reviewed and nothing is removed until you choose.
+- **The extras are off on a new server** unless you switch them on. A server set up before keeps what it has.
+- **Music no longer needs Movies and shows**: Lidarr comes with Music's own download switch.
+- **The home network is not asked about.** With several connections setup takes the cable before Wi-Fi and says which.
+- **Addresses stay off until the logins are verified.**
+- **qBittorrent's login is made and used by setup.**
+- **A drive is named the same way everywhere**, by its number and description in the list, and by what this server keeps on it.
+- **A group switched off on a server that has it** is stopped and keeps everything.
+- **An update keeps the logins** of the apps whose settings were kept, and NekoServer's own Tailscale routes.
+
+### Fixed
+
+From the 0.50.0 gate on virtual machines (a fresh install in the window, one drive in the terminal, two drives with a network share and films already there, an update of a 0.48.2 server):
+- The one-drive layout could not be chosen, and the runtime refused two roles on one drive.
+- One drive was offered twice in the photos question ("the media drive" and "the SSD"), and the photos line spoke of a USB copy that was not chosen.
+- Questions were asked after the approval: the accounts page, the backup times, the PIN, the shared folders' password, "Add a media source?", Lidarr's and Seerr's profiles, "Did you finish what was left in the apps?"; on an update, the films question and "Change any of these answers?" a second time.
+- An update was told as a first install ("Nothing is installed yet", "Apps to install", "about an hour").
+- The logins question refused Enter alone, though its first answer is the recommended one; so did the recovery menu's.
+- The welcome asked for three data drives.
+- The backup-times page named the music copy with Music off, and asked the weekly USB copy's day and time with no copy to make.
+- The offline drive: an 8 GB drive was offered with nothing said; a drive just chosen for music was offered too; a drive was asked for with nothing to copy; "none" said to edit my-config.json.
+- Wording named apps the server does not have ("your apps, photos and music" with Photos off).
+- The films, shows and music were in no backup and in no list; music on a drive of its own was in no backup.
+- Docker stopped during the connecting step was told as each app failing, not as Docker down.
+- The monthly update and app updates refused every server with the new existing-media folders ("Uncovered container bind mount").
+- With a group's drive away at the start, Docker made its folders on the system disk and Lidarr started there; the dashboard's stopped list was incomplete.
+- A share away at the start: its apps started on the empty folder and the dashboard said nothing.
+- The alerts test said a busy server (429) was a wrong topic, a server error (500) a wrong address, and a retry passed with no request sent.
+- After a restore, an app whose settings were kept was given new logins; NekoServer's Tailscale routes were lost.
+- A replaced drive was not noticed by setup's first page, and a retry forgot the fix.
+- A group's drive replaced needed an edit of the settings.
+- The uninstaller did not list a group's own drive or the person's folders and shares.
+- A network share mounted on the PC was not in the drive list.
+- The fresh install stopped at the welcome on a PC with no settings yet (a change made during the gate).
+- With every app off, the home-addresses step failed and setup ended "almost ready".
+- "Continue unfinished setup" showed the first page, the offline drive question and "Change any of these answers?" again before going on.
+- The finishing page offered tries for apps this server does not have.
+- `sudo bash uninstall.sh --dry-run` crashed without root.
+- Ask Neko's memory said "0.0 GB free" where it meant free memory less the 2 GB kept for the apps; each number is said now.
+
+**The setup window**
+- Choosing something no longer moves the page.
+- Three steps whose questions reached only the terminal now ask in the window too.
+- A question is no longer missed because of when its file was loaded; an answer that was not delivered can be sent again.
+- A long list is shown whole with a search box.
+
+**Ask Neko** (from the review of 0.49.0)
+- Approve installs only the version the card showed.
+- An assistant that needs a look no longer stops the first checkup.
+- Changing the model counts its download in the space check; a model named without a tag is not downloaded again at every run.
+- An answer cut off part-way is marked as such; no fix or bug report is read from it.
+- Leaving the page stops an answer that is still streaming.
+- Missing, old or future-dated readings are said as such.
+- Drive free space reaches the assistant.
+- A copied bug report never carries a password typed into the question.
+- Copy works, or says so, on a page without a clipboard.
+
+### Removed
+
+- **Three drives are no longer required**, and the disk Linux runs from is no longer refused.
+- **Typing a drive's name to confirm a choice**, and **typing SECURED** to switch the apps' addresses on.
+- **"Ready to start? [yes/no]"**, "Install the media apps too?" and "Have you completed this step successfully?".
+- **The question about which connection is your home network.**
+- **LinuxTracker** as a suggested download source.
+
+### Not in this release
+
+- **An installation drive for one group's apps** (its settings and database on a drive of its own): built, but its gate failed with the drive away, so it is not offered; it moves to 0.51.x. The apps are installed together on one drive, as in 0.49.0.
+- **Torrentio** is not in Prowlarr's catalogue (it is a Stremio add-on), so it is not a recommended source; to 0.51.0.
+- **"Back this up too?" for films and shows** on a share: NekoServer has no backup job for films; they are listed as not backed up.
+- **Spin-down** covers only the media HDD; other drives keep their own power settings.
+
+### How it was tested
+
+On the release commit: 2409 Python tests (19 skipped) and 559 Rust tests pass, `cargo clippy --all-targets -D warnings` is clean, and no function this release made longer is over a cognitive complexity of 15. The gate ran on three virtual machines on 2026-11-12: a fresh install in the setup window, one drive in the terminal, two drives with a network share and films already there, and an update of an installed 0.48.2 server (with an update cut off midway and put right at the next start). Its failures are fixed above; the rows and what they looked at are in the gate results. Not tested on the gate: the assistant's model on the small VMs, the phone on mobile data, a real NAS or ZFS box, and real hardware (a TV, a controller, removable media).
+
+### Known limits
+
+- NFS was tried on virtual machines and with unit tests, not yet on a real NAS box. Folders shared the Windows way (SMB) are not supported.
+- A NAS used over iSCSI and NFS at once is not offered: choose one for both drives.
+- Restore and repair are in the terminal menu (the window follows it); they have no pages of their own yet.
+
 ## v0.49.0 — 2026-11-10
 
 One new, optional part, the one you asked for: an AI assistant inside the dashboard, "Ask Neko". Nothing else changes how NekoServer is used: without the assistant a server works as on 0.48.2, and the settings, timers and units setup writes are the same apart from the release number.

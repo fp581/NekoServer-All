@@ -160,14 +160,14 @@ class SetupWindowTests(unittest.TestCase):
             'done': 0,
             'total': 0,
             'question': None,
-            'terminal': None,
             'finish': [],
             'complete': False,
         }
 
     def test_start_without_touching_a_switch_decides_nothing(self):
-        # It sent every switch as it was drawn (all on): TV, alerts, heartbeat and
-        # Nextcloud were all saved as wanted, never asked about.
+        # The page sends only a switch pressed here that is not saved yet; setup's own
+        # server saves every switch as it stands when the button is pressed
+        # (tests/test_first_page.py).
         seen = self.page([self.choose()], 'start')
         self.assertEqual(seen['posts'], [['api/start', {'choices': {}}]])
 
@@ -178,8 +178,80 @@ class SetupWindowTests(unittest.TestCase):
         reason = "my-config.json can't be read right now: check it for a typo."
         seen = self.page([{**self.choose(), 'refuseStart': reason}], 'start')
         self.assertEqual(seen['posts'], [['api/start', {'choices': {}}]])
-        self.assertEqual(seen['start'], [False, 'Start setup'])
-        self.assertEqual(seen['chooseNote'], reason)
+        self.assertEqual(seen['start'], [False, 'Install selected apps'])
+        self.assertEqual(seen['review']['note'], reason)
+
+    def test_the_first_page_then_the_review_then_one_button(self):
+        """0.50.0, the wizard: the switches under their headings, Continue, the review of
+        what will be installed with Back, and one button that starts it."""
+        extras = [
+            {'id': 'media_movies', 'title': 'Movies and shows - Jellyfin', 'part': 'Apps', 'needs': [], 'on': False},
+            {'id': 'media_music', 'title': 'Music - Navidrome', 'part': 'Apps', 'needs': [], 'on': True},
+            # The switch inside each of the two cards: drawn in its card, offered while the card is on.
+            {
+                'id': 'movies_downloads',
+                'title': 'Also find and download new ones',
+                'part': 'Apps',
+                'under': 'media_movies',
+                'needs': ['media_movies'],
+                'on': True,
+            },
+            {
+                'id': 'music_downloads',
+                'title': 'Also find and download new ones',
+                'part': 'Apps',
+                'under': 'media_music',
+                'needs': ['media_music'],
+                'on': True,
+            },
+            {'id': 'tv', 'title': 'A TV connected to this PC', 'part': 'Optional extras', 'needs': [], 'on': False},
+        ]
+        extras = [{'explanation': '', 'installs': [], **extra} for extra in extras]
+        review = {
+            'title': 'Ready to install NekoServer',
+            'button': 'Install selected apps',
+            'sections': [{'title': 'Apps to install', 'lines': ['Jellyfin: movies & shows']}],
+        }
+        state = {**self.choose(), 'extras': extras, 'review': review}
+        seen = self.page([state])
+        self.assertEqual(seen['parts'], ['Apps', 'Optional extras'])
+        # Three cards; every card says yes or no (nothing is "asked later").
+        self.assertEqual(seen['cards'], [['extra', 'no', False], ['extra on', 'yes', False], ['extra', 'no', False]])
+        # The finding switch is inside its card, and cannot be pressed while the card is off.
+        self.assertEqual(
+            seen['subs'],
+            [
+                ['Movies and shows - Jellyfin', 'sub-switch unavailable', 'no', True],
+                ['Music - Navidrome', 'sub-switch', 'yes', False],
+            ],
+        )
+        self.assertEqual((seen['review']['appsHidden'], seen['review']['hidden']), (False, True))
+        # The card switched on: its switch is offered, on as it was saved.
+        seen = self.page([{**state, 'press': 'Movies and shows - Jellyfin'}])
+        self.assertEqual(seen['subs'][0], ['Movies and shows - Jellyfin', 'sub-switch', 'yes', False])
+        self.assertEqual(seen['posts'], [['api/choose', {'media_movies': True}]])
+        # The switch inside the Music card pressed: Navidrome alone.
+        seen = self.page([{**state, 'pressInside': 'Music - Navidrome'}])
+        self.assertEqual(seen['subs'][1], ['Music - Navidrome', 'sub-switch', 'no', False])
+        self.assertEqual(seen['posts'], [['api/choose', {'music_downloads': False}]])
+        # Continue is setup's to follow (it asks for the drives next); nothing has started.
+        seen = self.page([{**state, 'continue': True}])
+        self.assertEqual(seen['posts'], [['api/continue', {}]])
+        self.assertEqual((seen['review']['appsHidden'], seen['review']['hidden']), (False, True))
+        # The review, once setup says so, with what the button will do.
+        seen = self.page([{**state, 'stage': 'review'}])
+        self.assertEqual((seen['review']['appsHidden'], seen['review']['hidden']), (True, False))
+        self.assertEqual(seen['review']['title'], 'Ready to install NekoServer')
+        self.assertEqual(seen['review']['sections'], [['Apps to install', ['Jellyfin: movies & shows']]])
+        self.assertEqual(seen['start'], [False, 'Install selected apps'])
+        self.assertEqual(seen['posts'], [])
+        # Back: asked of setup, which shows the switches again.
+        seen = self.page([{**state, 'stage': 'review', 'back': True}])
+        self.assertEqual(seen['posts'], [['api/back', {}]])
+        # A server that exists is changed, not installed.
+        again = {**state, 'review': {**review, 'title': 'Review your changes', 'button': 'Apply these changes'}}
+        seen = self.page([{**again, 'stage': 'review'}])
+        self.assertEqual((seen['review']['title'], seen['start'][1]), ('Review your changes', 'Apply these changes'))
 
     def backup_times_question(self, **changes):
         step = {'id': 'storage', 'title': 'Drives', 'status': 'running', 'explanation': '', 'packages': [], 'notes': []}
@@ -241,6 +313,66 @@ class SetupWindowTests(unittest.TestCase):
             ],
         )
 
+    def test_the_backups_page_also_says_how_many_are_kept_and_what_goes_where(self):
+        """0.50.0, the wizard (P05): a number from 1 to 7 for each kind of nightly backup, and
+        the table of what is backed up, on the same page as the times."""
+        state = self.backup_times_question()
+        page = state['question']['page']
+        page['fields'].update(keep_app_backup='3', keep_host_backup='3')
+        page['counts'] = [
+            {'group': 'app_backup', 'what': 'nightly app backups', 'value': 3, 'least': 1, 'most': 7, 'review': None},
+            {
+                'group': 'host_backup',
+                'what': 'nightly settings backups',
+                'value': 3,
+                'least': 1,
+                'most': 7,
+                'review': None,
+            },
+        ]
+        page['table'] = [
+            {'key': 'app_backup', 'what': 'The media apps', 'drive': 'media', 'when': 'every night at 04:15',
+             'kept': 'the newest 3', 'covers': 'about the last 3 nights', 'same_drive': False, 'note': None},
+            {'key': 'offline', 'what': 'Photos and Nextcloud files', 'drive': None, 'when': '', 'kept': '', 'covers': '',
+             'same_drive': True, 'note': 'Not set up.'},
+        ]  # fmt: skip
+        seen = self.page([state])
+        self.assertEqual(
+            [row[0] for row in seen['rows']][3:],
+            ['Keep the latest nightly app backups', 'Keep the latest nightly settings backups'],
+        )
+        self.assertEqual([row[1] for row in seen['rows']][3:], [['3'], ['3']])
+        self.assertIn('An older one is removed only after a new backup has succeeded.', seen['rows'][3][2])
+        self.assertEqual(
+            seen['backups'],
+            [
+                ['The media apps', 'every night at 04:15 · the newest 3 · about the last 3 nights'],
+                [
+                    'Photos and Nextcloud files',
+                    '',
+                    'This backup is on the same drive as what it protects. If that drive fails, both are gone.',
+                    'Not set up.',
+                ],
+            ],
+        )
+        # A number outside the limits is said, not sent; within them it goes with the page.
+        seen = self.page([{**state, 'fill': {'ask-page-keep_app_backup': '14'}}])
+        self.assertEqual((seen['posts'], seen['note']), ([], 'Keep the latest nightly app backups: from 1 to 7.'))
+        seen = self.page([{**state, 'fill': {'ask-page-keep_app_backup': '5'}}])
+        self.assertEqual(
+            (seen['posts'][0][1]['fields']['keep_app_backup'], seen['posts'][0][1]['fields']['keep_host_backup']),
+            ('5', '3'),
+        )
+        # A count from before that is no longer offered: its review is beside it, and empty leaves it.
+        page['counts'][0].update(review='This server keeps the newest 14 nightly app backups.')
+        page['fields']['keep_app_backup'] = ''
+        seen = self.page([{**state, 'fill': {'ask-page-daily': '23:30'}}])
+        self.assertIn(
+            'This server keeps the newest 14 nightly app backups. Leave it empty to leave them as they are.',
+            seen['rows'][3][2],
+        )
+        self.assertEqual(seen['posts'][0][1]['fields']['keep_app_backup'], '')
+
     def test_a_monthly_time_after_the_night_is_refused_on_the_page(self):
         seen = self.page([self.backup_times_question(fill={'ask-page-monthly': '06:00'})])
         self.assertEqual(seen['posts'], [])
@@ -253,6 +385,716 @@ class SetupWindowTests(unittest.TestCase):
         plain['question'] = {**plain['question'], 'page': None}
         seen = self.page([plain])
         self.assertEqual((seen['pageHidden'], seen['answerHidden'], seen['rows']), (True, False, []))
+
+    def asked(self, text, page=None, context=(), kind='text', secret=False, **changes):
+        """The window with this question waiting."""
+        state = self.backup_times_question(**changes)
+        state['question'] = {
+            'seq': 9,
+            'text': text,
+            'secret': secret,
+            'kind': kind,
+            'context': list(context),
+            'page': page,
+        }
+        return state
+
+    PASSWORD = {'form': 'new_password', 'fields': {'password': '', 'again': ''}, 'asking': 'password'}
+
+    def test_a_password_chosen_now_is_two_hidden_fields_that_must_match(self):
+        """0.50.0, item 8: the shared-folder password, an app's own password, the backup
+        password and the dashboard PIN were two hidden prompts one after the other."""
+        page = {**self.PASSWORD, 'what': 'Password for the shared folders (account neko)'}
+        typed = 'typed-' + 'x' * 10
+        question = 'Password for the shared folders (account neko): '
+        seen = self.page([self.asked(question, page, secret=True, kind='secret')])
+        self.assertEqual([row[0] for row in seen['rows']], [page['what'], 'The same again'])
+        self.assertEqual(seen['fieldTypes'], [['password'], ['password']])
+        self.assertEqual(seen['prompt'], page['what'] + ': choose one, and fill it in in both boxes.')
+        self.assertEqual((seen['send'], seen['skipHidden'], seen['answerHidden']), ('Save', True, True))
+        self.assertIn('written to no log', seen['note'])
+        # Two that differ are not sent.
+        differ = {'ask-page-password': typed, 'ask-page-again': typed + 'y'}
+        seen = self.page([self.asked(question, page, secret=True, kind='secret', fill=differ)])
+        self.assertEqual((seen['posts'], seen['note']), ([], 'The two do not match. Fill in both again.'))
+        seen = self.page([self.asked(question, page, secret=True, kind='secret', fill={})])
+        self.assertEqual((seen['posts'], seen['note']), ([], 'Fill it in in both boxes.'))
+        # Two that match go together: the first as the answer, the second with it.
+        same = {'ask-page-password': typed, 'ask-page-again': typed}
+        seen = self.page([self.asked(question, page, secret=True, kind='secret', fill=same)])
+        self.assertEqual(
+            seen['posts'], [['api/answer', {'seq': 9, 'text': typed, 'fields': {'password': typed, 'again': typed}}]]
+        )
+
+    def test_the_rules_of_a_pin_or_a_backup_password_are_checked_before_sending(self):
+        pin = {**self.PASSWORD, 'what': 'Dashboard PIN', 'least': 6, 'most': 8, 'digits': True, 'optional': True}
+
+        def tried(first, again, page=pin):
+            fill = {'ask-page-password': first, 'ask-page-again': again}
+            seen = self.page([self.asked('PIN: ', page, secret=True, kind='secret', fill=fill)])
+            return seen['note'], seen['posts']
+
+        self.assertEqual(tried('12ab56', '12ab56')[0], 'Use digits only (0-9).')
+        self.assertEqual(tried('12345', '12345')[0], 'Use at least 6 digits.')
+        self.assertEqual(tried('123456789', '123456789')[0], 'Use at most 8 digits.')
+        self.assertEqual(tried('123456', '123457')[0], 'The two do not match. Fill in both again.')
+        self.assertEqual(tried('123456', '123456')[1][0][1]['text'], '123456')
+        # Optional: both left empty goes on without one, as Enter does in the terminal.
+        self.assertEqual(
+            tried('', '')[1], [['api/answer', {'seq': 9, 'text': '', 'fields': {'password': '', 'again': ''}}]]
+        )
+        backup = {**self.PASSWORD, 'what': 'Backup password', 'least': 8}
+        self.assertEqual(tried('short', 'short', backup)[0], 'Use at least 8 characters.')
+        self.assertEqual(tried('', '', backup)[0], 'Fill it in in both boxes.')
+        # The first typed in the terminal: the page asks only for the second.
+        again = {**backup, 'asking': 'again'}
+        seen = self.page(
+            [self.asked('Same backup password again: ', again, secret=True, fill={'ask-page-again': 'longer-one'})]
+        )
+        self.assertEqual([row[0] for row in seen['rows']], ['The same again'])
+        self.assertEqual(seen['posts'][0][1]['text'], 'longer-one')
+
+    def test_a_long_list_is_searched_and_picked_from(self):
+        items = [{'label': name} for name in ('1337x', 'Nyaa', 'Radarr list', 'The Pirate Bay', 'YTS')]
+        page = {
+            'form': 'pick',
+            'fields': {'choice': ''},
+            'asking': 'choice',
+            'what': 'Select an indexer',
+            'items': items,
+        }
+        question = 'Select an indexer (its number; Enter alone skips): '
+        seen = self.page([self.asked(question, page, search='ra')])
+        self.assertEqual([row[1] for row in seen['pick']], [item['label'] for item in items])
+        self.assertEqual({row[0] for row in seen['pick']}, {'radio'})  # one of them
+        self.assertEqual(
+            (seen['prompt'], seen['send'], seen['skipHidden']), ('Select an indexer', 'Choose this one', False)
+        )
+        # Nothing ticked: nothing sent.
+        seen = self.page([self.asked(question, page, tick=[])])
+        self.assertEqual((seen['posts'], seen['note']), ([], 'Tick one in the list first, or press Skip for now.'))
+        # The row's number is the answer, as the terminal takes it.
+        seen = self.page([self.asked(question, page, tick=[4])])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '4', 'fields': {'choice': '4'}}]])
+        seen = self.page([self.asked(question, page, skipPage=True)])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '', 'skip': True}]])
+        # Several at once (item 10): tick boxes, a count, and the numbers together.
+        many = {**page, 'multiple': True}
+        seen = self.page([self.asked(question, many, tick=[1, 3, 5])])
+        self.assertEqual({row[0] for row in seen['pick']}, {'checkbox'})
+        self.assertEqual((seen['send'], seen['pickCount']), ('Add the selected ones', '3 selected'))
+        self.assertEqual(seen['posts'][0][1], {'seq': 9, 'text': '1 3 5', 'fields': {'choice': '1 3 5'}})
+
+    def test_the_terminals_numbered_lines_can_be_clicked(self):
+        context = ['Now choose the SSD.', '  1) sdb: 232 GB, Samsung (ext4)', '  2) sdc: 1.8 TB, WD Red (ext4)']
+        seen = self.page([self.asked('Number of the SSD (Enter alone stops setup here): ', context=context, choose=2)])
+        self.assertEqual(
+            [option[:2] for option in seen['options']],
+            [['1', 'sdb: 232 GB, Samsung (ext4)'], ['2', 'sdc: 1.8 TB, WD Red (ext4)']],
+        )
+        self.assertEqual(seen['options'][1][2], 'option picked')
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '2'}]])
+        # Other shapes of a numbered line: " 1. name", "[1] ...", "1 = ...".
+        for lines in (
+            [' 1. Any', ' 2. HD-1080p'],
+            ['[1] generate random login', '[2] enter username/password'],
+            ['1 = NekoServer makes them', '2 = you choose them'],
+        ):
+            seen = self.page([self.asked('Choose a number (Enter alone skips): ', context=lines)])
+            self.assertEqual([option[0] for option in seen['options']], ['1', '2'], lines)
+        # Not for a question that asks for words, a hidden entry or a yes or no.
+        for text, extra in (
+            ('Type sdb to confirm it is the SSD: ', {}),
+            ('Number: ', {'secret': True}),
+            ('Use number 2? [yes/no]: ', {'kind': 'yesno'}),
+        ):
+            seen = self.page([self.asked(text, context=context, **extra)])
+            self.assertEqual((seen['options'], seen['optionsHidden']), ([], True), text)
+
+    def test_what_enter_alone_keeps_is_shown_in_the_field(self):
+        for text, kept in (
+            ('qBittorrent username [admin]: ', 'admin'),
+            ('When should the daily backups run? (HH:MM, Enter for 04:15): ', '04:15'),
+            ('Which one does NekoServer use? [1/2] (Enter alone: 1): ', '1'),
+        ):
+            seen = self.page([self.asked(text)])
+            # In the window's words: there is no Enter key to press alone there.
+            self.assertEqual(seen['placeholder'], 'Left empty, it keeps: ' + kept, text)
+        for text in ('Listener username: ', 'Does the NAS ask for a CHAP user name and password? [y/N]: '):
+            self.assertEqual(self.page([self.asked(text)])['placeholder'], '', text)
+
+    FIX = {
+        'id': 'docker_down',
+        'title': 'Docker, which runs the apps, is not running',
+        'steps': ['Start it:  sudo systemctl start docker', 'Then press Retry this step.'],
+    }
+
+    def retry_page(self, steps, leave):
+        return {'form': 'retry', 'fields': {'answer': ''}, 'asking': 'answer', 'steps': steps, 'leave': leave}
+
+    def test_a_step_that_failed_has_its_reason_its_fix_and_retry(self):
+        """0.50.0, item 7: a failed step said "did not finish" and its reason; trying again
+        meant running setup again."""
+        step = {'answer': 'yes', 'title': 'Docker', 'reason': 'Cannot connect to the Docker daemon', 'fix': self.FIX}
+        page = self.retry_page([step], 'no')
+        context = ['Docker did not finish: Cannot connect to the Docker daemon']
+        question = 'Retry this step now? [yes/no]: '
+        seen = self.page([self.asked(question, page, context, kind='yesno')])
+        self.assertEqual(seen['prompt'], 'Docker did not finish.')
+        self.assertEqual(
+            seen['retry'],
+            [
+                [
+                    'Docker',
+                    'Cannot connect to the Docker daemon',
+                    ['What usually fixes it: Docker, which runs the apps, is not running', self.FIX['steps']],
+                    'Retry this step',
+                ]
+            ],
+        )
+        # The cards say it all: not the terminal's lines again, nor plain Yes and No.
+        self.assertEqual(
+            (seen['contextHidden'], seen['yesnoHidden'], seen['send'], seen['skipHidden']),
+            (True, True, 'Not now', True),
+        )
+        seen = self.page([self.asked(question, page, context, kind='yesno', retry=1)])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': 'yes'}]])
+        seen = self.page([self.asked(question, page, context, kind='yesno', leave=True)])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': 'no', 'fields': {'answer': 'no'}}]])
+
+    def test_the_unfinished_steps_at_the_end_are_retried_one_at_a_time(self):
+        steps = [
+            {'answer': '1', 'title': 'Docker', 'reason': 'Cannot connect to the Docker daemon', 'fix': self.FIX},
+            {'answer': '2', 'title': 'Tailscale', 'reason': 'Sign in to Tailscale', 'fix': None},
+        ]
+        page = self.retry_page(steps, '')
+        question = 'Retry one now? Type its number (Enter alone: finish): '
+        seen = self.page([self.asked(question, page)])
+        self.assertEqual(seen['prompt'], 'These steps did not finish. Each can be tried again now.')
+        self.assertEqual([card[0] for card in seen['retry']], ['Docker', 'Tailscale'])
+        self.assertEqual(seen['retry'][1], ['Tailscale', 'Sign in to Tailscale', 'Retry this step'])  # no fix known
+        self.assertEqual(seen['send'], 'Finish')
+        seen = self.page([self.asked(question, page, retry=2)])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '2'}]])
+        seen = self.page([self.asked(question, page, leave=True)])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '', 'fields': {'answer': ''}}]])
+
+    def test_a_sign_in_step_has_show_login_for_each_saved_login(self):
+        """0.50.0, item 9: setup made the password, then asked the person to sign in with it."""
+        apps = [
+            {'id': 'jellyfin', 'title': 'Jellyfin administrator', 'username': 'neko_ab12'},
+            {'id': 'immich', 'title': 'Immich administrator', 'username': 'me@example.org'},
+        ]
+        page = {'form': 'logins', 'fields': {'answer': ''}, 'asking': 'answer', 'apps': apps}
+        question = 'Show a login now? Type its number (Enter alone: go on): '
+        fetched = 'fetched-' + 'x' * 12
+        login = {'ok': True, 'username': 'neko_ab12', 'password': fetched, 'qr': 'data:image/svg+xml;base64,QR'}
+        # Until the button is pressed nothing of the password is on the page.
+        seen = self.page([self.asked(question, page, login=login)])
+        self.assertEqual(seen['prompt'], 'Your login for this step is saved on this server.')
+        self.assertEqual([card['title'] for card in seen['logins']], ['Jellyfin administrator', 'Immich administrator'])
+        self.assertEqual(seen['logins'][0]['user'], 'Username: neko_ab12')
+        self.assertEqual(
+            [(card['hidden'], card['password'], card['button']) for card in seen['logins']],
+            [(True, None, 'Show login')] * 2,
+        )
+        self.assertEqual((seen['send'], seen['skipHidden'], seen['contextHidden']), ('Go on', True, True))
+        self.assertEqual(seen['posts'], [])
+        # Show login asks setup's own server for that one login and shows it.
+        seen = self.page([self.asked(question, page, login=login, showLogin=1)])
+        self.assertEqual(seen['posts'], [['api/login', {'app': 'jellyfin'}]])
+        shown = seen['logins'][0]
+        self.assertEqual(
+            (shown['hidden'], shown['password'], shown['qr'], shown['button']), (False, fetched, login['qr'], 'Hide')
+        )
+        self.assertTrue(seen['logins'][1]['hidden'])
+        # Pressed again it is hidden, and gone from the page.
+        seen = self.page([self.asked(question, page, login=login, showLogin=[1, 1])])
+        self.assertEqual(
+            (seen['logins'][0]['hidden'], seen['logins'][0]['password'], seen['logins'][0]['button']),
+            (True, None, 'Show login'),
+        )
+        # A login setup will not give (the step is over) is said, and nothing is shown.
+        refused = {'ok': False, 'reason': 'No sign-in step is asking for that login now.'}
+        seen = self.page([self.asked(question, page, login=refused, showLogin=2)])
+        self.assertEqual((seen['logins'][1]['hidden'], seen['logins'][1]['note']), (True, refused['reason']))
+        # Go on answers the terminal's question with Enter alone.
+        seen = self.page([self.asked(question, page, leave=True)])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '', 'fields': {'answer': ''}}]])
+
+    def test_download_sources_are_ticked_many_at_once_with_the_recommended_in_one_press(self):
+        """0.50.0, item 10: one indexer at a time from a numbered list, in the terminal only."""
+        items = [
+            {'label': 'Alpha', 'note': 'public, en-US, torrent'},
+            {'label': 'Beta', 'note': 'private: needs an account'},
+            {'label': 'Gamma', 'note': ''},
+            {'label': 'Delta', 'note': 'needs a free account, usenet'},
+        ]
+        advice = 'Use only providers and content you are authorized to access.'
+        page = {
+            'form': 'pick', 'fields': {'choice': ''}, 'asking': 'choice', 'what': 'Download sources (indexers) to add',
+            'items': items, 'multiple': True, 'recommended': [1, 3], 'advice': advice,
+        }  # fmt: skip
+        question = 'Numbers to add, such as 1 4 7 or 1-5, or r for the recommended ones (Enter alone skips): '
+        seen = self.page([self.asked(question, page)])
+        self.assertEqual(
+            seen['pickNotes'],
+            ['public, en-US, torrent', 'private: needs an account', '', 'needs a free account, usenet'],
+        )
+        self.assertEqual(seen['recommended'], ['Tick the 2 recommended', False])
+        self.assertEqual(
+            (seen['advice'], seen['send'], seen['pickCount']), (advice, 'Add the selected ones', '0 selected')
+        )
+        # The recommended ones in one press, another ticked by hand, all sent together.
+        seen = self.page([self.asked(question, page, tickRecommended=True, tick=[4])])
+        self.assertEqual(seen['pickCount'], '3 selected')
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '1 3 4', 'fields': {'choice': '1 3 4'}}]])
+        # Without a recommended list there is no such button, and no word of advice is missing.
+        plain = {**page, 'recommended': []}
+        seen = self.page([self.asked(question, plain)])
+        self.assertEqual((seen['recommended'][1], seen['advice']), (True, advice))
+
+    def test_a_download_source_that_needs_a_login_has_a_small_form_of_its_own(self):
+        rows = [
+            {'key': 'baseUrl', 'label': 'Site address', 'secret': False},
+            {'key': 'apiKey', 'label': 'API Key', 'secret': True},
+        ]
+        page = {
+            'form': 'fields',
+            'fields': {'baseUrl': '', 'apiKey': ''},
+            'asking': 'baseUrl',
+            'what': 'Beta needs these',
+            'rows': rows,
+        }
+        question = 'Site address (Enter alone keeps its default): '
+        typed = 'typed-' + 'k' * 12
+        seen = self.page([self.asked(question, page)])
+        self.assertEqual(seen['prompt'], 'Beta needs these')
+        self.assertEqual([row[0] for row in seen['rows']], ['Site address', 'API Key'])
+        self.assertEqual(seen['fieldTypes'], [['text'], ['password']])
+        self.assertEqual(seen['rows'][1][2], 'Hidden, and written to no log.')
+        self.assertEqual((seen['send'], seen['skipHidden']), ('Save', False))
+        # Saved together: the field the terminal asks for as the answer, the rest with it.
+        seen = self.page([self.asked(question, page, fill={'ask-page-apiKey': typed})])
+        self.assertEqual(
+            seen['posts'], [['api/answer', {'seq': 9, 'text': '', 'fields': {'baseUrl': '', 'apiKey': typed}}]]
+        )
+        # Skip for now leaves this one out (the terminal's Ctrl+D).
+        seen = self.page([self.asked(question, page, skipPage=True)])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '', 'skip': True}]])
+
+    DRIVES = [
+        {
+            'number': 1, 'name': 'nvme0n1', 'what': 'WD SN770, 477 GB NVMe SSD', 'state': 'the disk Linux runs from',
+            'details': 'Details: nvme0n1', 'role': '',
+            'why': 'it is the disk Linux runs from, which NekoServer never uses for your files',
+        },
+        {
+            'number': 2, 'name': 'sda1', 'what': 'Samsung SSD 870, 466 GB SSD, named "apps"', 'state': 'ready to use',
+            'details': 'Details: sda1 on sda; ext4, UUID ssd-0001; not open; about 1 % full', 'role': '', 'why': '',
+        },
+        {
+            'number': 3, 'name': 'sdb1', 'what': 'WDC WD20EZRZ, 1.8 TB HDD, named "media"',
+            'state': 'chosen as the media HDD', 'details': 'Details: sdb1 on sdb; ext4, UUID hdd-0001; not open',
+            'role': 'Chosen as the media HDD',
+            'why': 'it is already the media HDD',
+        },
+    ]  # fmt: skip
+
+    def test_the_drives_are_cards_chosen_by_clicking(self):
+        """0.50.0, item 5: the drive questions were the terminal's numbered lines only."""
+        names = 'The short names (sdb1) are Linux\'s own and can change at the next start.'
+        page = {
+            'form': 'drives', 'fields': {'choice': ''}, 'asking': 'choice', 'rows': self.DRIVES, 'skippable': False,
+            'what': 'Choose the drive for your apps, photos and music (the app SSD).',
+            'needs': 'It needs at least 20 GB free, so a drive of 22 GB or more (100 GB or more is recommended).',
+            'names': names,
+        }  # fmt: skip
+        question = 'Number of the drive for your apps, photos and music (the app SSD) (Enter alone stops setup here): '
+        seen = self.page([self.asked(question, page)])
+        self.assertEqual(seen['prompt'], page['what'])
+        self.assertEqual(
+            (seen['send'], seen['skipHidden'], seen['note'], seen['contextHidden']),
+            ('Use this drive', True, names, True),
+        )
+        self.assertEqual(
+            seen['drives'],
+            [
+                # In plain words; the filesystem and the ID are in each card's Details only.
+                {
+                    'name': '1 · WD SN770, 477 GB NVMe SSD',
+                    'facts': ['Not this one: it is the disk Linux runs from, which NekoServer never uses for your files'],
+                    'details': 'nvme0n1', 'off': True, 'radioHidden': False,
+                },
+                {
+                    'name': '2 · Samsung SSD 870, 466 GB SSD, named "apps"',
+                    'facts': ['ready to use'],
+                    'details': 'sda1 on sda; ext4, UUID ssd-0001; not open; about 1 % full', 'off': False, 'radioHidden': False,
+                },
+                {
+                    'name': '3 · WDC WD20EZRZ, 1.8 TB HDD, named "media"',
+                    'facts': ['Not this one: it is already the media HDD'],
+                    'details': 'sdb1 on sdb; ext4, UUID hdd-0001; not open', 'off': True, 'radioHidden': False,
+                },
+            ],
+        )  # fmt: skip
+        # Nothing chosen: said, not sent. A card clicked: its number is the answer.
+        seen = self.page([self.asked(question, page, leave=True)])
+        self.assertEqual((seen['posts'], seen['note']), ([], 'Choose a drive in the list first.'))
+        seen = self.page([self.asked(question, page, tick=[2])])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '2', 'fields': {'choice': '2'}}]])
+        # The USB backup drive may be left for later.
+        seen = self.page([self.asked(question, {**page, 'skippable': True}, skipPage=True)])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '', 'skip': True}]])
+
+    def test_the_accounts_page_is_one_choice_and_a_row_for_each_app(self):
+        """0.50.0, the wizard (P04): no question per app; a row is typed in only with your
+        own logins, or for an app that has data already."""
+        page = {
+            'form': 'accounts', 'asking': 'mode',
+            'fields': {'mode': '', 'problem': '', 'user:jellyfin': '', 'pass:jellyfin': '', 'again:jellyfin': '',
+                       'user:immich': '', 'pass:immich': '', 'again:immich': ''},
+            'title': 'How would you like to set up your app accounts?', 'hint': 'Each selected app has a separate account.',
+            'choices': [['1', 'Create strong passwords for me (recommended)'], ['2', 'Choose my own logins']],
+            'apps': [
+                {'id': 'jellyfin', 'name': 'Jellyfin administrator', 'email': False, 'existing': False},
+                {'id': 'immich', 'name': 'Immich administrator', 'email': True, 'existing': True},
+            ],
+            'existing': 'This app has data already: enter its current login.',
+        }  # fmt: skip
+        question = 'How would you like to set up your app accounts? Type 1 or 2, then press Enter. '
+        typed = 'typed-' + 'x' * 12
+        seen = self.page([self.asked(question, page)])
+        self.assertEqual((seen['prompt'], seen['send'], seen['skipHidden']), (page['title'], 'Save these logins', True))
+        # Strong passwords made for you is chosen to begin with: Jellyfin's row only says so;
+        # Immich has data already, so its current login is typed in whatever the choice.
+        self.assertEqual(
+            seen['accounts'], [['Jellyfin administrator', False, True], ['Immich administrator', True, False]]
+        )
+        seen = self.page([self.asked(question, page, leave=True)])
+        self.assertEqual((seen['posts'], seen['note']), ([], 'Immich administrator: fill in the email.'))
+        # Your own logins: every row is typed in, and two passwords that differ are said.
+        seen = self.page([self.asked(question, page, check=['ask-page-mode-2'])])
+        self.assertEqual(
+            seen['accounts'], [['Jellyfin administrator', True, False], ['Immich administrator', True, False]]
+        )
+        entries = {
+            'ask-page-user:jellyfin': 'dana', 'ask-page-pass:jellyfin': typed, 'ask-page-again:jellyfin': typed + '!',
+            'ask-page-user:immich': 'dana@example.org', 'ask-page-pass:immich': typed, 'ask-page-again:immich': typed,
+        }  # fmt: skip
+        seen = self.page([self.asked(question, page, check=['ask-page-mode-2'], fill=entries)])
+        self.assertEqual(
+            (seen['posts'], seen['note']), ([], 'Jellyfin administrator: the two passwords are not the same.')
+        )
+        # All in order: one answer carries the choice and every row.
+        entries['ask-page-again:jellyfin'] = typed
+        seen = self.page([self.asked(question, page, check=['ask-page-mode-2'], fill=entries)])
+        sent = seen['posts'][0][1]
+        self.assertEqual((sent['text'], sent['fields']['mode']), ('2', '2'))
+        self.assertEqual(
+            (sent['fields']['user:immich'], sent['fields']['pass:jellyfin'], sent['fields']['again:jellyfin']),
+            ('dana@example.org', typed, typed),
+        )
+
+    def test_the_storage_page_has_a_list_for_every_line_and_sends_them_together(self):
+        """0.50.0, the wizard (P02): every drive question on one page; a drive is chosen
+        in a list, no name is typed, and a drive that cannot have a role says why."""
+        places = [['', 'Let setup choose'], ['ssd', 'On the drive for your apps (faster)'], ['media', 'On the other']]
+        page = {
+            'form': 'storage', 'asking': 'data_ssd',
+            'fields': {'data_ssd': '', 'media_hdd': '', 'usb': '', 'photos': ''},
+            'title': 'Where should NekoServer store your apps and files?', 'hint': 'Choose a drive for each line.',
+            'roles': [
+                {'key': 'data_ssd', 'title': 'NekoServer and your apps', 'holds': 'your apps', 'needs': 'It needs 20 GB.',
+                 'optional': False, 'rows': self.DRIVES},
+                {'key': 'media_hdd', 'title': 'Backups', 'holds': 'every backup', 'needs': '',
+                 'optional': False, 'rows': [{**self.DRIVES[0]}, {**self.DRIVES[1]}, {**self.DRIVES[2], 'why': ''}]},
+                {'key': 'usb', 'title': 'Offline backup', 'holds': 'the weekly copy', 'needs': '', 'optional': True,
+                 'rows': []},
+            ],
+            'places': [{'key': 'photos', 'title': "Immich's photos and videos", 'options': places,
+                        'beside_backup': 'Their backup is then on the same drive.'}],
+            'names': 'The short names are Linux\'s own.', 'network': 'SMB is not supported yet.',
+        }  # fmt: skip
+        question = 'Number of the drive for your apps (the app SSD) (Enter alone stops setup here): '
+        seen = self.page([self.asked(question, page)])
+        self.assertEqual((seen['prompt'], seen['send']), (page['title'], 'Use these drives'))
+        self.assertTrue(seen['skipHidden'])
+        lists = seen['storage']
+        self.assertEqual([row['key'] for row in lists], ['data_ssd', 'media_hdd', 'usb', 'photos'])
+        self.assertEqual(
+            lists[0]['options'],
+            [
+                ['', 'Choose a drive…', False],
+                ['1', '1 · WD SN770, 477 GB NVMe SSD (not this one: it is the disk Linux runs from, which '
+                 'NekoServer never uses for your files)', True],
+                ['2', '2 · Samsung SSD 870, 466 GB SSD, named "apps"', False],
+                ['3', '3 · WDC WD20EZRZ, 1.8 TB HDD, named "media" (not this one: it is already the media HDD)', True],
+            ],
+        )  # fmt: skip
+        # The drive chosen: how it stands under its line, its filesystem and ID behind Details.
+        ready = {**page, 'fields': {**page['fields'], 'data_ssd': '2'}}
+        chosen = self.page([self.asked(question, ready)])['storage'][0]
+        self.assertEqual(chosen['note'], 'ready to use')
+        self.assertEqual(chosen['details'], 'sda1 on sda; ext4, UUID ssd-0001; not open; about 1 % full')
+        self.assertEqual(lists[2]['options'], [['', 'None for now', False]])  # the offline copy can wait
+        self.assertEqual([option[0] for option in lists[3]['options']], ['', 'ssd', 'media'])
+        # Files kept on the backups' drive: what that means is said under the line, only then.
+        self.assertEqual(lists[3]['note'], '')
+        beside = {**page, 'fields': {**page['fields'], 'photos': 'media'}}
+        seen = self.page([self.asked(question, beside)])
+        self.assertEqual(seen['storage'][3]['note'], 'Their backup is then on the same drive.')
+        # A group's row of the table, where there is a drive for it: the list of where its
+        # apps are installed beside the list of where its files are, both sent with the page.
+        install = {'key': 'install_photos', 'options': [['', 'Same drive as NekoServer and your apps'],
+                                                        ['drive:3', 'On a drive of its own: 3']]}  # fmt: skip
+        table = {**page, 'fields': {**page['fields'], 'install_photos': 'drive:3'},
+                 'places': [{**page['places'][0], 'group': 'Immich', 'install': install}]}  # fmt: skip
+        seen = self.page([self.asked(question, table)])
+        row = seen['storage'][3]
+        self.assertEqual((row['key'], row['title']), ('photos', 'Immich'))
+        self.assertEqual(row['install']['key'], 'install_photos')
+        self.assertEqual(row['install']['value'], 'drive:3')
+        self.assertEqual([option[0] for option in row['install']['options']], ['', 'drive:3'])
+        self.assertIsNone(lists[3]['install'])  # no such drive: the line as it always was
+        # The recommended drive is chosen already when the page opens, and says so.
+        ready = {**page, 'roles': [{**page['roles'][0], 'recommended': '2'}, *page['roles'][1:]]}
+        seen = self.page([self.asked(question, ready)])
+        self.assertEqual((seen['storage'][0]['value'], seen['storage'][1]['value']), ('2', ''))
+        self.assertEqual(
+            seen['storage'][0]['options'][2][1], '2 · Samsung SSD 870, 466 GB SSD, named "apps" (recommended)'
+        )
+        # Nothing chosen for a line that needs a drive: said, not sent.
+        seen = self.page([self.asked(question, page, leave=True)])
+        self.assertEqual((seen['posts'], seen['note']), ([], 'Choose a drive for “NekoServer and your apps” first.'))
+        # The apps and the backups on one drive: sent (setup says what that means).
+        both = {'ask-page-data_ssd': '2', 'ask-page-media_hdd': '2'}
+        seen = self.page([self.asked(question, page, fill=both)])
+        self.assertEqual(seen['posts'][0][1]['fields']['media_hdd'], '2')
+        # The offline backup on a drive of another line: said, not sent.
+        offline = {'ask-page-data_ssd': '2', 'ask-page-media_hdd': '3', 'ask-page-usb': '2'}
+        usb_rows = [{**self.DRIVES[0]}, {**self.DRIVES[1]}, {**self.DRIVES[2], 'why': ''}]
+        with_usb = {**page, 'roles': [*page['roles'][:2], {**page['roles'][2], 'rows': usb_rows}]}
+        seen = self.page([self.asked(question, with_usb, fill=offline)])
+        self.assertEqual(seen['posts'], [])
+        self.assertIn('One drive cannot be both', seen['note'])
+        # Chosen: every line goes in one answer, the asked one as the terminal takes it.
+        chosen = {'ask-page-data_ssd': '2', 'ask-page-media_hdd': '3', 'ask-page-photos': 'ssd'}
+        seen = self.page([self.asked(question, page, fill=chosen)])
+        self.assertEqual(
+            seen['posts'],
+            [['api/answer', {'seq': 9, 'text': '2', 'fields': {'data_ssd': '2', 'media_hdd': '3', 'usb': '', 'photos': 'ssd'}}]],
+        )  # fmt: skip
+
+    PART = {
+        'form': 'part', 'fields': {'answer': '', 'done': ''}, 'asking': 'answer', 'title': 'Set up your phone',
+        'question': 'Is your phone set up, and did an app open on mobile data?',
+        'steps': [
+            {'id': 'tailscale', 'title': 'Tailscale on the phone', 'lines': ['Install it.', 'Turn it on.'], 'done': False},
+            {'id': 'jellyfin', 'title': 'Jellyfin: movies and shows', 'lines': ['Open the app.'], 'done': True},
+            {'id': 'away_from_home', 'title': 'Check it works away from home', 'lines': ['Turn off Wi-Fi.'], 'done': False},
+        ],
+    }  # fmt: skip
+
+    def test_a_part_shows_what_setup_checked_itself_above_its_steps(self):
+        """0.50.0, the wizard (P08): passed, not yet, or not known (never shown as passed)."""
+        status = [
+            {'id': 'server', 'status': 'pass', 'title': 'This server is signed in to Tailscale',
+             'reason': 'This server is signed in to Tailscale.', 'next': '', 'shows': ''},
+            {'id': 'https', 'status': 'unknown', 'title': 'Private HTTPS addresses',
+             'reason': 'No certificate could be checked.', 'next': 'Check again.', 'shows': ''},
+            {'id': 'phone', 'status': 'fail', 'title': 'A phone in your Tailscale account',
+             'reason': 'No phone is signed in yet.', 'next': 'Install Tailscale on the phone.',
+             'shows': 'Setup cannot see whether a phone is on Wi-Fi or on mobile data.'},
+        ]  # fmt: skip
+        question = self.PART['question'] + ' [yes/no]: '
+        seen = self.page([self.asked(question, {**self.PART, 'status': status}, kind='yesno')])
+        self.assertEqual(
+            seen['status'],
+            [
+                [
+                    'status-row pass',
+                    '✓',
+                    'This server is signed in to Tailscale',
+                    'This server is signed in to Tailscale.',
+                ],
+                [
+                    'status-row unknown',
+                    '?',
+                    'Private HTTPS addresses',
+                    'No certificate could be checked.',
+                    'Check again.',
+                ],
+                [
+                    'status-row fail',
+                    '✕',
+                    'A phone in your Tailscale account',
+                    'No phone is signed in yet.',
+                    'Install Tailscale on the phone.',
+                    'Setup cannot see whether a phone is on Wi-Fi or on mobile data.',
+                ],
+            ],
+        )
+        self.assertEqual(len(seen['part']), 3)  # the steps are under the rows, as they were
+        # Without rows the page is as before.
+        self.assertEqual(self.page([self.asked(question, self.PART, kind='yesno')])['status'], [])
+
+    def test_a_part_is_one_page_with_a_sliding_yes_for_each_step(self):
+        """0.50.0, item 13: the phone was up to eight questions in a row, each a yes/no."""
+        question = self.PART['question'] + ' [yes/no]: '
+        seen = self.page([self.asked(question, self.PART, kind='yesno')])
+        self.assertEqual((seen['prompt'], seen['send'], seen['skipHidden']), ('Set up your phone', 'Continue', True))
+        self.assertEqual((seen['yesnoHidden'], seen['contextHidden']), (True, True))  # no second yes/no beside it
+        self.assertTrue(seen['note'].startswith('Slide each step to yes once it is done.'))
+        self.assertEqual(
+            seen['part'],
+            [
+                {
+                    'title': '1. Tailscale on the phone', 'lines': ['Install it.', 'Turn it on.'], 'caption': 'not yet',
+                    'on': False, 'off': False, 'role': 'switch', 'label': 'Done: Tailscale on the phone',
+                },
+                {
+                    'title': '2. Jellyfin: movies and shows (done last time)', 'lines': [], 'caption': 'yes',
+                    'on': True, 'off': True, 'role': 'switch', 'label': 'Done: Jellyfin: movies and shows',
+                },
+                {
+                    'title': '3. Check it works away from home', 'lines': ['Turn off Wi-Fi.'], 'caption': 'not yet',
+                    'on': False, 'off': False, 'role': 'switch', 'label': 'Done: Check it works away from home',
+                },
+            ],
+        )  # fmt: skip
+        # Every switch on yes: Continue confirms the part.
+        slid = self.asked(
+            question, self.PART, kind='yesno', slide=['tailscale', 'away_from_home'], **{'continue': True}
+        )
+        seen = self.page([slid])
+        done = 'tailscale jellyfin away_from_home'
+        self.assertEqual(
+            seen['posts'], [['api/answer', {'seq': 9, 'text': 'yes', 'fields': {'answer': 'yes', 'done': done}}]]
+        )
+        self.assertEqual([step['caption'] for step in seen['part']], ['yes', 'yes', 'yes'])
+        # One still off: Continue is there all the same, answers no, and says which are done.
+        seen = self.page([self.asked(question, self.PART, kind='yesno', slide=['tailscale'], **{'continue': True})])
+        self.assertEqual(
+            seen['posts'],
+            [['api/answer', {'seq': 9, 'text': 'no', 'fields': {'answer': 'no', 'done': 'tailscale jellyfin'}}]],
+        )
+
+    def test_a_steps_own_question_can_be_left_for_later_and_no_other_yes_no_can(self):
+        step = {'form': 'confirm_step', 'fields': {'answer': ''}, 'asking': 'answer'}
+        seen = self.page(
+            [self.asked('Did the Tailscale page say this server is connected? [yes/no]: ', step, kind='yesno')]
+        )
+        self.assertEqual((seen['skipShown'], seen['yesnoHidden'], seen['pageHidden']), (True, False, True))
+        seen = self.page([self.asked('Continue with these drives anyway? [yes/no]: ', kind='yesno')])
+        self.assertFalse(seen['skipShown'])
+
+    def test_a_question_has_its_own_words_and_buttons_in_the_window(self):
+        """0.50.0, item 13 redone: the window showed the terminal's line ("... [yes/no]:",
+        "Type 1 or 2", "Enter alone skips"). Each question now has a title, a hint and
+        buttons that say what they do; nothing in the window tells anyone to type."""
+        import questions
+
+        def asked(key, choices=None, leave=False, **more):
+            page = {'form': 'ask', 'fields': {'answer': ''}, 'asking': 'answer', 'leave': leave}
+            page.update(questions.window(key, choices, **questions.Q[key].get('example', {})))
+            kind = 'yesno' if page['kind'] == 'yesno' else 'text'
+            return self.asked(questions.terminal(key, choices), page, kind=kind, context=['An earlier line.'], **more)
+
+        # A yes or no: two buttons in the question's own words, no Send and no yes/no pair.
+        seen = self.page([asked('tailscale_connected', leave=True)])
+        self.assertEqual(seen['prompt'], 'Is this server connected to Tailscale?')
+        self.assertTrue(seen['note'].startswith('The Tailscale page in your browser says so'))
+        self.assertEqual(seen['choices'], [['Yes, it is connected', 'primary'], ['Not yet', 'secondary']])
+        self.assertEqual((seen['sendHidden'], seen['yesnoHidden'], seen['answerHidden']), (True, True, True))
+        self.assertEqual((seen['skipHidden'], seen['skipLabel'], seen['contextHidden']), (False, 'Skip for now', True))
+        seen = self.page([asked('tailscale_connected', leave=True, pressChoice=2)])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': 'no'}]])
+        # A step that can be left: Skip for now does what Ctrl+D does in the terminal.
+        seen = self.page([asked('tailscale_connected', leave=True, skipPage=True)])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '', 'skip': True}]])
+        # A choice: a button for each, sending what the terminal would be given.
+        seen = self.page([asked('logins_who', pressChoice=2)])
+        self.assertEqual(seen['prompt'], 'How would you like to set up your app accounts?')
+        self.assertEqual(
+            [label for label, _ in seen['choices']],
+            ['Create strong passwords for me (recommended)', 'Choose my own logins'],
+        )
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '2'}]])
+        self.assertTrue(seen['skipHidden'])
+        # A list made at run time (the assistants this PC can run).
+        models = [('0', 'No assistant'), ('1', 'qwen3.5:4b')]
+        seen = self.page([asked('assistant_model', models, pressChoice=2)])
+        self.assertEqual(seen['prompt'], 'Which AI assistant do you want?')
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '1'}]])
+        # Something to paste: a password box, Save, and a Skip that answers "not now".
+        seen = self.page([asked('alerts_token')])
+        self.assertEqual(seen['prompt'], 'Does your alerts topic have an access token? Paste it here')
+        self.assertEqual(
+            (seen['send'], seen['sendHidden'], seen['skipHidden'], seen['skipLabel']),
+            ('Save', False, False, 'It has none'),
+        )
+        seen = self.page([asked('alerts_token', fill={'ask-page-answer': 'pasted-here'})])
+        self.assertEqual(seen['posts'][0][1]['text'], 'pasted-here')
+        seen = self.page([asked('alerts_token', skipPage=True)])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': ''}]])  # Enter alone, not Ctrl+D
+        # A question about what was listed just before it keeps that list in view.
+        seen = self.page([asked('drive_space')])
+        self.assertFalse(seen['contextHidden'])
+
+    def test_an_answer_that_was_not_delivered_can_be_sent_again(self):
+        """The setup review (S8): when sending an answer failed, the window's buttons and
+        fields stayed off, and the same question on the next polls did not bring them back."""
+        question = self.asked('Username for the shared folders [neko]: ')
+        # Sent and delivered: the controls are off until the next question, as before.
+        seen = self.page([{**question, 'fill': {'ask-input': 'me'}}, question])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': 'me'}]])
+        self.assertIn('ask-send', seen['askOff'])
+        # Not delivered: they are on again, the note says so, and a second try goes through.
+        lost = {**question, 'failAnswer': 1, 'fill': {'ask-input': 'me'}}
+        seen = self.page([lost, question])
+        self.assertEqual(seen['askOff'], [])
+        self.assertEqual(
+            seen['note'], 'Could not reach setup, so that was not sent. Try again, or answer in the terminal.'
+        )
+        seen = self.page([lost, {**question, 'fill': {'ask-input': 'me'}}, question])
+        self.assertEqual(len(seen['posts']), 2)
+        self.assertEqual(seen['note'], 'Sent. Setup goes on in a moment…')
+
+    def test_a_menu_of_its_own_shows_its_name_and_the_terminals_words(self):
+        """The recovery menu and the uninstaller in the window (0.50.0): no steps, no
+        switches; what the terminal said, and the menu's questions."""
+        lines = ['What do you want to get back?', '  1. Photos and videos (Immich)', '  0. Quit']
+        state = {
+            **self.choose(),
+            'phase': 'running',
+            'extras': [],
+            'session': {'title': 'NekoServer recovery', 'lines': lines},
+        }
+        seen = self.page([state])
+        self.assertEqual(seen['now'], ['IN THE TERMINAL TOO', 'NekoServer recovery', '\n'.join(lines), 'said'])
+        self.assertEqual((seen['stepsHidden'], seen['running'], seen['progressHidden']), (True, 'running alone', True))
+        self.assertEqual(seen['badge'], 'Working…')
+        # A question of the menu is asked as setup's own are, under the menu's name.
+        asked = {
+            **state,
+            'question': {
+                'seq': 3,
+                'text': 'Choose a number: ',
+                'secret': False,
+                'kind': 'text',
+                'context': lines,
+                'page': None,
+            },
+            'choose': 1,
+        }
+        seen = self.page([asked])
+        self.assertEqual(seen['askLabel'], 'A QUESTION · NekoServer recovery')
+        self.assertEqual(seen['options'][0][:2], ['1', 'Photos and videos (Immich)'])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 3, 'text': '1'}]])
+        # Setup's own run is drawn as before: its steps, two columns.
+        seen = self.page([self.backup_times_question()])
+        self.assertEqual((seen['stepsHidden'], seen['running'], seen['now'][3]), (False, 'running', ''))
 
     def test_the_pages_rows_go_when_a_plain_question_follows(self):
         # The rows' inputs are `required` and sit in the same form as the plain answer:
@@ -446,16 +1288,16 @@ class DriveLayoutTests(unittest.TestCase):
 
         pool = self.pool_both_ways()
         self.assertEqual(storage.size_bytes(pool['size']), 32 * 1024**3)
-        self.assertIn('only its smallest drive is counted, to be safe', storage.describe(pool))
-        with self.assertRaisesRegex(RuntimeError, 'No drive here is big enough.*32 GB.*could not be read'):
-            storage.ask_drive([pool], 'media_hdd', 'the HDD', lambda q: '', lambda s: None)
+        self.assertIn('only its smallest drive is counted, to be safe', pool['size_note'])
+        self.assertIn('could not be read', pool['size_note'])
+        self.assertFalse(storage.big_enough(pool, storage.sizes('media_hdd')[0]))
 
     def test_a_raid1_pool_holds_what_its_smallest_mirror_holds_and_a_single_one_the_sum(self):
         from modules import storage
 
         mirrored = self.pool_both_ways(profiles={'RAID1'})
         self.assertEqual(storage.size_bytes(mirrored['size']), 32 * 1024**3)
-        self.assertIn('keeping its data as RAID1', storage.describe(mirrored))
+        self.assertIn('keeping its data as RAID1', mirrored['size_note'])
         self.assertFalse(storage.big_enough(mirrored, storage.sizes('media_hdd')[0]))
         single = self.pool_both_ways(profiles={'SINGLE'})
         self.assertEqual(storage.size_bytes(single['size']), (4 * 1024 + 32) * 1024**3)
@@ -470,9 +1312,18 @@ class DriveLayoutTests(unittest.TestCase):
         enough = {'name': 'sdc1', 'size': '54G', 'fstype': 'ext4', 'uuid': 'y'}
         self.assertFalse(storage.big_enough(exactly, 50))
         self.assertTrue(storage.big_enough(enough, 50))
-        said = []
-        with self.assertRaisesRegex(RuntimeError, 'No drive here is big enough'):
-            storage.ask_drive([exactly], 'media_hdd', 'the HDD', lambda q: '', said.append)
+        # The list says so with the size that would do, and the drive cannot be chosen.
+        import drive_table
+
+        inventory = {'blockdevices': [self.disk('sdb', {**exactly, 'type': 'part'})]}
+        config = {'media_mount': '/mnt/nekoserver-media'}
+        [row] = drive_table.rows(inventory, config)
+        self.assertEqual(
+            drive_table.verdict(row, 'media_hdd', config),
+            'it is too small: the media HDD needs a drive of at least 54 GB (50 GB free once formatted)',
+        )
+        with self.assertRaisesRegex(RuntimeError, 'No drive here can be the media HDD'):
+            storage.choose_new(config, [row], 'media_hdd', lambda q: '', lambda s: None)
 
     def test_a_mounted_pool_counts_what_the_pool_itself_reports(self):
         from modules import storage
@@ -480,7 +1331,7 @@ class DriveLayoutTests(unittest.TestCase):
         reported = mock.Mock(f_blocks=1000, f_bfree=900, f_bavail=700, f_frsize=1024**3 // 25)
         pool = self.pool_both_ways(statvfs=lambda folder: reported, mountpoint='/run/media/neko/pool')
         self.assertEqual(storage.size_bytes(pool['size']), 800 * (1024**3 // 25))
-        self.assertIn('usable space as the pool itself reports it', storage.describe(pool))
+        self.assertIn('usable space as the pool itself reports it', pool['size_note'])
 
     def test_usable_space_by_data_profile(self):
         from modules import storage

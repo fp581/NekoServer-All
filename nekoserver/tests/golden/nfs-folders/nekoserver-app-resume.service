@@ -1,0 +1,12 @@
+[Unit]
+Description=NekoServer restart applications after interrupted snapshot
+RequiresMountsFor=/srv/nekoserver
+After=docker.service
+Requires=docker.service
+[Service]
+Type=oneshot
+UMask=0077
+TimeoutStartSec=3h30min
+ExecStart=/srv/nekoserver/installer/runtime/v0.50.0/nekoserver-runtime app-resume --config /etc/nekoserver-backups/applications.json
+[Install]
+WantedBy=multi-user.target

@@ -2,6 +2,7 @@
 """NekoServer modular, standard-library-only orchestration framework."""
 
 import argparse
+import copy
 import fcntl
 import stat
 import datetime as dt
@@ -11,10 +12,16 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+import setup_progress
+
+# Before any other of NekoServer's files is loaded: every question setup asks, in whatever
+# file, then goes through setup_progress and reaches the setup window too.
+setup_progress.own_prompts()
+
 import capabilities
 import guided_setup
 import host
-import setup_progress
+import known_fixes
 from neko_common import (
     atomic_json,
     mount_path,
@@ -49,21 +56,55 @@ class InstallerError(Exception):
 
 
 class Context:
-    def __init__(self, config, logger, apply=False, config_path=None):
+    def __init__(self, config, logger, apply=False, config_path=None, saved=None):
         self.config = config
         self.log = logger
         self.apply = apply
         self.config_path = Path(config_path) if config_path else None
         self.original_config_path = self.config_path
+        # The settings as the file had them when this run read it (or last saved it): what
+        # differs from these is what the run changed.
+        self.saved = copy.deepcopy(config if saved is None else saved)
 
     def persist_config(self):
-        """Save the settings (drives chosen, say) to the settings file. The file keeps its
-        owner: the wizard makes my-config.json yours to edit, and setup runs as root."""
+        """Save what this run changed in the settings (drives chosen, say) into the settings
+        file as it is now. A change made to the file meanwhile is kept: the run never writes
+        back the settings it read at the start over it (gate run C10: a fix made while the
+        run went on was undone, and "Retry this step" failed again). The file keeps its
+        owner, and setup runs as root."""
         for path in dict.fromkeys(p for p in (self.original_config_path, self.config_path) if p is not None):
             owner = (path.stat().st_uid, path.stat().st_gid) if path.exists() else None
-            atomic_json(path, self.config)
+            now = file_settings(path)
+            atomic_json(path, self.config if now is None else merged(self.saved, self.config, now))
             if owner is not None and os.geteuid() == 0:
                 os.chown(path, *owner, follow_symlinks=False)
+        self.saved = copy.deepcopy(self.config)
+
+
+def file_settings(path):
+    """The settings file as it is now, or None when it is missing or can't be read."""
+    try:
+        value = json.loads(Path(path).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def merged(before, after, now):
+    """`now` (the file) with what changed from `before` to `after` (this run) put in, key
+    by key inside sections: what the run did not change stays as the file has it."""
+    result = copy.deepcopy(now)
+    for key in [key for key in before if key not in after]:
+        result.pop(key, None)
+    for key, value in after.items():
+        if key in before and before[key] == value:
+            continue
+        old, here = before.get(key), result.get(key)
+        if isinstance(old, dict) and isinstance(value, dict) and isinstance(here, dict):
+            result[key] = merged(old, value, here)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
 
 
 def read_json(path):
@@ -189,11 +230,9 @@ def require_settings(config):
 # cannot tell that from a choice, so fewer backups are never kept without asking: setup
 # asks once (when someone is at the keyboard), and the answer is kept.
 # (group, key, earlier default, current default, what is counted)
-RETIRED_DEFAULTS = (
-    ('app_backup', 'keep_snapshots', 14, 7, 'nightly app backups'),
-    ('host_backup', 'keep_snapshots', 14, 7, 'nightly settings backups'),
-    ('photos', 'database_keep', 8, 4, 'weekly Immich database copies'),
-)
+# (The nightly app and settings backups, 14 before v0.30.0 and 7 until 0.50.0, are
+# reviewed by review_backup_counts since 0.50.0: their count is 1 to 7 now, 3 by default.)
+RETIRED_DEFAULTS = (('photos', 'database_keep', 8, 4, 'weekly Immich database copies'),)
 
 # Set in the settings once the earlier defaults were reviewed: a number seen after that is
 # someone's choice, also when it equals an earlier default.
@@ -212,14 +251,7 @@ def retire_old_defaults(config, ask=None):
         options = config.get(group)
         if not (isinstance(options, dict) and type(options.get(key)) is int and options[key] == old):
             continue
-        if (
-            ask is not None
-            and ask(
-                f'Your settings keep the newest {old} {what}, the default before v0.30.0 '
-                f'(now {new}). Keep fewer from now on, the newest {new}?'
-            )
-            is True
-        ):
+        if ask is not None and ask(keep_fewer_words(old, new, what)) is True:
             options[key] = new
             lines.append(f'Backups: the newest {new} {what} are kept from now on, not {old}')
         else:
@@ -233,13 +265,56 @@ def retire_old_defaults(config, ask=None):
     return lines, True
 
 
+def review_backup_counts(config, ask=None, held=None):
+    """0.50.0 keeps 3 nightly app backups and 3 nightly settings backups on a new server,
+    and 1 to 7 at most. A server set up earlier may keep more (up to 3650), or every one
+    (0). Such a count is never changed, and nothing is removed, without the person's yes:
+    it is marked as the earlier setting and goes on working as it did. With `ask` (a
+    yes/no question to the person at the keyboard) each one is shown once with what the
+    change would do (backup_plan.review; `held(group)`: how many backups there are now)
+    and moves to 3 only on a yes. Returns (lines for the log, whether the settings
+    changed). Removing the older backups is the scheduled job's work, after its next
+    backup that succeeds; setup removes none."""
+    import backup_plan
+
+    if config.get(backup_plan.REVIEWED) is True:
+        return [], False
+    marked = backup_plan.note_earlier(config)
+    lines = []
+    waiting = backup_plan.earlier_groups(config)
+    for group in waiting:
+        what = backup_plan.COUNTED[group][0]
+        keep = backup_plan.count(config, group)[0]
+        kept = backup_plan.kept_words(keep, what)
+        said = backup_plan.review(config, group, backup_plan.DEFAULT, held(group) if held else None)
+        if ask is not None and ask(f'{said}\nKeep the newest {backup_plan.DEFAULT} {what} from now on?') is True:
+            backup_plan.set_count(config, group, backup_plan.DEFAULT)
+            lines.append(
+                f'Backups: the newest {backup_plan.DEFAULT} {what} are kept from now on, not {kept}; the older ones '
+                'are removed after the next backup that succeeds, none before'
+            )
+        else:
+            lines.append(
+                f'Backups: {kept} stay kept, as before (new servers keep {backup_plan.DEFAULT}, at most '
+                f'{backup_plan.MOST}); nothing was removed. The backup page of setup changes it'
+            )
+    if ask is None and waiting:
+        return lines, marked  # asked when someone is at the keyboard
+    config[backup_plan.REVIEWED] = True
+    return lines, True
+
+
 def review_retention(ctx, apply):
-    """The earlier default backup counts reviewed (retire_old_defaults), asking only
-    when someone is at the keyboard; the answer saved with --apply."""
-    lines, changed = retire_old_defaults(ctx.config, guided_setup.yes_no if apply and sys.stdin.isatty() else None)
-    for line in lines:
+    """The earlier backup counts reviewed (retire_old_defaults, review_backup_counts),
+    asking only when someone is at the keyboard; the answers saved with --apply."""
+    import backup_plan
+
+    ask = guided_setup.yes_no if apply and sys.stdin.isatty() else None
+    lines, changed = retire_old_defaults(ctx.config, ask)
+    more, counts = review_backup_counts(ctx.config, ask, lambda group: backup_plan.held(ctx.config, group))
+    for line in lines + more:
         ctx.log(line)
-    if changed and apply:
+    if (changed or counts) and apply:
         ctx.persist_config()
 
 
@@ -350,6 +425,7 @@ def record_profile(path, profile, plan, previous, log):
 
 def _execute(args, root=ROOT):
     config = read_json(Path(args.config))
+    as_read = copy.deepcopy(config)  # what the run changes is saved on the file as it is then
     validate_config(config)
     # A settings file keeps the profiles it was made with: the steps a newer release added
     # are added now (said in the log, and saved with --apply, once the log is open below).
@@ -384,6 +460,10 @@ def _execute(args, root=ROOT):
         selected = config['profiles'][args.profile]
     elif args.module:
         selected = [args.module]
+    elif getattr(args, 'retry_step', None):
+        # "Retry this step" at the end of a run: that step and the steps that waited for
+        # it, and nothing that is already done.
+        selected = retry_selection(args.retry_step, previous, modules)
     elif args.retry_failed:
         selected = [
             name
@@ -393,6 +473,8 @@ def _execute(args, root=ROOT):
     else:
         selected = enabled
     plan = ordered(modules, selected)
+    if getattr(args, 'retry_step', None):
+        plan = [name for name in plan if name in selected]
     from config_checks import validate
 
     validate(config, plan)
@@ -450,17 +532,18 @@ def _execute(args, root=ROOT):
         if not message.startswith(MARKERS):
             setup_progress.note(message)  # a step's own words, for the setup window
 
-    if args.apply and not (args.module or args.retry_failed):
+    if args.apply and not (args.module or args.retry_failed or getattr(args, 'retry_step', None)):
         record_profile(safe_path(state_dir / PROFILE_FILE), args.profile, plan, previous, log)
-    ctx = Context(config, log, apply=args.apply, config_path=args.config)
+    ctx = Context(config, log, apply=args.apply, config_path=args.config, saved=as_read)
     ctx.plan = plan  # the steps of this run (the drives step asks the backup times only when one writes a timer)
-    ctx.plan = plan
+    ctx.only = args.module  # the one step asked for by name (install.sh --module), or None
     ctx.previous = dict(previous)  # each step as the last run left it
     save_profiles(ctx, added, profiles_changed, args.apply)
     review_retention(ctx, args.apply)
     # The steps this run goes through (with the ones they need), for the setup window and
     # the finishing screen to count the same steps as the log.
-    setup_progress.event('plan', steps=list(plan))
+    if not getattr(args, 'retry_step', None):
+        setup_progress.event('plan', steps=list(plan))
     for name in plan:
         held = waiting_for(name, modules, states, complete_status)
         if held:
@@ -470,24 +553,33 @@ def _execute(args, root=ROOT):
             failures.append(name)
             atomic_json_write(state_path, states)
             continue
-        states[name] = {
-            'status': 'running',
-            'version': VERSION,
-            'started_at': dt.datetime.now(dt.timezone.utc).isoformat(),
-        }
-        atomic_json_write(state_path, states)
-        log(f'START {name}')
-        setup_progress.step(name, 'running')
-        try:
-            result = modules[name]['object'].run(ctx)
-        except KeyboardInterrupt:
-            stopped_by_hand(states, name, state_path, log)
-            raise
-        except Exception as exc:
-            reason = failure_reason(exc)
-            states[name] = {'status': 'failed', 'reason': reason}
-            log(f'FAILED {name}: {reason}')
-            # Avoid tracebacks from providers that may contain sensitive arguments.
+        tried = 0
+        while True:
+            states[name] = {
+                'status': 'running',
+                'version': VERSION,
+                'started_at': dt.datetime.now(dt.timezone.utc).isoformat(),
+            }
+            atomic_json_write(state_path, states)
+            log(f'START {name}')
+            setup_progress.step(name, 'running')
+            try:
+                result = modules[name]['object'].run(ctx)
+            except KeyboardInterrupt:
+                stopped_by_hand(states, name, state_path, log)
+                raise
+            except Exception as exc:
+                reason = failure_reason(exc)
+                states[name] = {'status': 'failed', 'reason': reason}
+                log(f'FAILED {name}: {reason}')
+                # Avoid tracebacks from providers that may contain sensitive arguments.
+                # With a person at the terminal: the reason, the fix when it is a known
+                # one, and "Retry this step now?", up to MOST_RETRIES times.
+                if args.apply and retry_now(name, reason, tried, log):
+                    tried += 1
+                    continue
+            break
+        if states[name]['status'] == 'failed':
             failures.append(name)
             failed.append(name)
         else:
@@ -533,6 +625,7 @@ def _execute(args, root=ROOT):
             except (OSError, RuntimeError, ValueError) as exc:
                 log(f'{name}: settings not refreshed: {exc}')
     if args.apply:
+        note_unfinished(config, states, log)
         # Also after a run with a step still pending (Tailscale not signed in, say), or
         # earlier releases' files would pile up with every upgrade: only folders no service
         # or drop-in names any more go.
@@ -549,6 +642,90 @@ def _execute(args, root=ROOT):
     if failed:
         return STEP_FAILED
     return WAITING if failures else 0
+
+
+def note_unfinished(config, states, log):
+    """The steps that failed, written on the SSD for the dashboard (reports/setup-
+    unfinished.json): its Needs attention then says each one with its reason, the fix
+    setup knows (known_fixes.py) and the command to run. The dashboard never runs setup
+    itself. Written after every run, so a step finished since is no longer said; left
+    out while the SSD is not mounted (nowhere of NekoServer's to write)."""
+    from wizard import title
+
+    data = os.path.realpath(mount_path(config['data_mount']))
+    if not os.path.ismount(data):
+        return
+    # The SSD's path comes from the settings file: the report is written only once its
+    # folder is proved to lie on the SSD with every link followed.
+    reports = os.path.realpath(os.path.join(data, 'reports'))
+    if not reports.startswith(data + os.sep):
+        raise InstallerError(f'The reports folder must lie on the app SSD: {reports}')
+    steps = [
+        {
+            'id': name,
+            'title': title(name),
+            'reason': str(record.get('reason', ''))[:1000],
+            'fix': known_fixes.fix_for(record.get('reason')),
+        }
+        for name, record in states.items()
+        if record.get('status') == 'failed'
+    ]
+    try:
+        ensure_directory(Path(reports), 0o700)
+        atomic_json_write(
+            Path(reports) / 'setup-unfinished.json',
+            {'format': 'neko-setup-unfinished-v1', 'version': VERSION, 'steps': steps},
+        )
+    except (OSError, RuntimeError) as exc:
+        log(f'The dashboard was not told which steps failed ({exc}); the terminal and the log have them')
+
+
+# How often one step is tried again in one run before setup says to come back later.
+
+
+def keep_fewer_words(old, new, what):
+    """ "Keep fewer old backups from now on?" in the words of questions.py: the question,
+    then the line that says what is kept now and what a new server keeps."""
+    import questions
+
+    asked = questions.words('keep_fewer', old=old, new=new, what=what)
+    return asked['title'] + ' ' + asked['hint']
+
+
+MOST_RETRIES = 3
+
+
+def retry_now(name, reason, tried, log, interactive=None, asked=None):
+    """A step just failed: with a person at the terminal, the fix setup knows for that
+    reason (known_fixes.py) and "Retry this step now?", in the setup window as a
+    button. True when the step is to run again. After MOST_RETRIES tries it is no
+    longer asked: the step stays failed, and setup says to run it again later."""
+    if not (sys.stdin.isatty() if interactive is None else interactive):
+        return False
+    if tried >= MOST_RETRIES:
+        log(
+            f'{name}: tried again {MOST_RETRIES} times and it still does not finish. Setup goes on with the '
+            'steps that do not need it; run  sudo bash install.sh  again later for this one.'
+        )
+        return False
+    from wizard import title
+
+    row = {'answer': 'yes', 'title': title(name), 'reason': reason, 'fix': known_fixes.fix_for(reason)}
+    return (asked or guided_setup.retry_question)([row], leave='no') == 'yes'
+
+
+def retry_selection(name, states, modules):
+    """What "Retry this step" runs at the end of a run: the step, then the steps that
+    waited for it (a waiting step names the steps it waits for). Steps already done
+    are not among them."""
+    if name not in modules:
+        raise InstallerError(f'Unknown step: {name}')
+    waited = [
+        other
+        for other, record in states.items()
+        if other in modules and record.get('status') == 'blocked' and name in (record.get('waiting_for') or [])
+    ]
+    return [name, *waited]
 
 
 def waiting_for(name, modules, states, complete_status):

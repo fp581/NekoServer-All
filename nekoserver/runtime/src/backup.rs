@@ -2756,8 +2756,10 @@ pub fn validate_external(dest: &Path, uuid: &str) -> Result<()> {
     if uuid.trim().is_empty() || !dest.is_dir() {
         return Err(Error::new("External drive identity required"));
     }
-    let s = common::findmnt("UUID", "--mountpoint", dest, 10)?.unwrap_or_default();
-    if !s.eq_ignore_ascii_case(uuid) {
+    // A backup drive that is a folder a NAS shares (NFS) has no UUID: its identity.
+    let found = common::drive_at(dest, 10)?.unwrap_or_default();
+    let fields = found.split_whitespace().collect::<Vec<_>>();
+    if fields.len() < 3 || !fields[0].eq_ignore_ascii_case(uuid) {
         return Err(Error::new("Wrong or unmounted external drive"));
     }
     Ok(())
@@ -3018,6 +3020,24 @@ pub fn publish_snapshot(
     common::prune_snapshots(root, keep, Some(&stage.name), protected)?;
     Ok(())
 }
+/// How many snapshots a nightly job keeps (0.50.0): a whole number from 1 to 7 (`keep`,
+/// from the job's settings, where setup wrote it). A count from before 0.50.0 outside
+/// that (up to 3650; 0 kept every snapshot) is kept to as before, but only when setup
+/// marked it as the earlier setting (`earlier` is true). Anything else is refused: the
+/// count comes back as 0, which removes nothing, with the reason to report. The backup
+/// itself still runs: a wrong number must never cost a night's backup, nor a backup.
+pub fn keep_count(keep: &Value, earlier: &Value, setting: &str) -> (u64, Option<String>) {
+    match keep.as_u64() {
+        Some(count) if (1..=7).contains(&count) => (count, None),
+        Some(count) if earlier.as_bool() == Some(true) && count <= 3650 => (count, None),
+        _ => (
+            0,
+            Some(format!(
+                "the number of backups to keep ({setting}.keep_snapshots) is {keep}, not a whole number from 1 to 7, so no older backup was removed; run  sudo bash install.sh  to set it"
+            )),
+        ),
+    }
+}
 /// Room in `root` for a new snapshot: `needed` bytes free (its files plus a reserve).
 /// While the drive is short, the oldest snapshots are removed first, but the newest
 /// complete one always stays, as the one good backup. Still short: the error `short`
@@ -3135,6 +3155,11 @@ fn identity_mismatch(key: &str, path: &Path, uuid: &str, fstype: &str, found: &s
     let drive = if key == "data_ssd" { "SSD" } else { "HDD" };
     let found = match found.trim() {
         "" => "nothing is mounted there".to_string(),
+        // A folder the NAS shares (NFS) that is not mounted: only systemd's automount
+        // holds its place, and mounts it at the next use once the NAS answers.
+        waiting if common::waits_for_first_use(waiting) => {
+            "the shared folder is not mounted: the NAS did not answer when it was last asked for. Check that the NAS is on; it is mounted again by itself once it answers".to_string()
+        }
         // Another drive there: replaced, and this service's record still names the old one.
         seen => format!("found {seen}. If the drive was replaced, run  sudo bash install.sh  so every service learns the new one"),
     };
@@ -3153,30 +3178,46 @@ pub fn check_drives(a: &crate::Args) -> Result<()> {
     let cfg = common::json(&a.path("config")?, 2_000_000);
     let keys = a.get("drives").unwrap_or("data_ssd,media_hdd");
     let keys: Vec<&str> = keys.split(',').collect();
-    let mut seen: Vec<String> = vec![];
+    let mut seen: Vec<(&str, String)> = vec![];
     for key in &keys {
         let mount = match *key {
             "data_ssd" => "data_mount",
             "media_hdd" => "media_mount",
             "usb" => "external_backup_mount",
+            // A drive beyond the two that something is placed on (0.50.0).
+            name if common::extra_drive(&cfg, name) => "",
             _ => return Err(Error::new("Unknown drive")),
         };
-        let path = common::mount_path(cfg[mount].as_str().unwrap_or(""))?;
+        let path = match common::drive_folder(&cfg, key).filter(|_| mount.is_empty()) {
+            Some(extra) => extra,
+            None => common::mount_path(cfg[mount].as_str().unwrap_or(""))?,
+        };
         let uuid = if *key == "usb" {
             checked_drive(&usb_spec(&cfg), "usb", &path)?
         } else {
             checked_drive(&cfg, key, &path)?
         };
-        if seen.contains(&uuid) {
+        let shared = seen
+            .iter()
+            .find(|(other, id)| *id == uuid && !may_share(&cfg, other, key));
+        if shared.is_some() {
             return Err(Error::new(
                 "The SSD and the HDD must be two different filesystems",
             ));
         }
-        seen.push(uuid);
+        seen.push((key, uuid));
     }
     crate::startup::copies_of(&cfg, &keys)?;
     println!("ok");
     Ok(())
+}
+/// Two drives of the settings may be one filesystem: the apps' and the media's, when
+/// the settings keep each as a folder of it on purpose (common::roles_share_one_filesystem:
+/// one drive for everything, or the disk Linux runs from). Every other pair, the USB
+/// drive and any drive something else is placed on, must be a drive of its own.
+fn may_share(cfg: &Value, a: &str, b: &str) -> bool {
+    let roles = ["data_ssd", "media_hdd"];
+    a != b && roles.contains(&a) && roles.contains(&b) && common::roles_share_one_filesystem(cfg)
 }
 /// The USB backup drive as a drive to check: its UUID and filesystem from the photo
 /// settings, and its NAS disk (WWN) when it is one: the check the weekly copy makes.
@@ -3189,7 +3230,7 @@ fn usb_spec(cfg: &Value) -> Value {
 /// The drive the settings (`c`) name under `key` is the one mounted at `path`: its UUID,
 /// filesystem type and Btrfs subvolume. Returns its UUID.
 pub(crate) fn checked_drive(c: &Value, key: &str, path: &Path) -> Result<String> {
-    let found = match common::findmnt("UUID,FSTYPE,SOURCE", "--mountpoint", path, 10) {
+    let found = match common::drive_at(path, 10) {
         Ok(found) => found.unwrap_or_default(),
         // findmnt killed after its 10 s on a drive a copy keeps busy (it reads the
         // filesystem's label block): the kernel's mount table knows without the read.
@@ -3256,15 +3297,80 @@ fn drive_check(c: &Value, key: &str, path: &Path, found: &str) -> Result<String>
 }
 pub fn guard(cfgpath: &Path, data: &Path, media: &Path) -> Result<()> {
     let c = common::json(cfgpath, 64000);
+    let mut ids = main_drives(&c, data, media)?;
+    // Every other drive something is placed on is the one setup chose, too: a job never
+    // reads or writes a folder of a drive that is away (the empty folder left on the
+    // system disk) or of another drive mounted in its place.
+    for name in common::drives_in_use(&c) {
+        let folder = placed_folder(&c, &name)?;
+        distinct(&mut ids, checked_drive(&c, &name, &folder)?)?;
+    }
+    installed_in_place(&c, data, &[])
+}
+/// The guard for bringing the apps back (drive_return.rs): the SSD and the HDD as
+/// `guard` checks them, and each other drive something is placed on either away (nothing
+/// mounted at its folder: its apps stay stopped, the others start) or the one setup
+/// chose. Another drive mounted in a placed drive's folder is still refused. Returns the
+/// names of the placed drives that are away.
+pub(crate) fn guard_present(cfgpath: &Path, data: &Path, media: &Path) -> Result<Vec<String>> {
+    let c = common::json(cfgpath, 64000);
+    let mut ids = main_drives(&c, data, media)?;
+    let mut away = vec![];
+    for name in common::drives_in_use(&c) {
+        let folder = placed_folder(&c, &name)?;
+        if matches!(common::drive_at(&folder, 10), Ok(None)) {
+            away.push(name);
+            continue;
+        }
+        distinct(&mut ids, checked_drive(&c, &name, &folder)?)?;
+    }
+    installed_in_place(&c, data, &away)?;
+    Ok(away)
+}
+/// The SSD and the HDD the settings name, mounted where they say: their identities.
+fn main_drives(c: &Value, data: &Path, media: &Path) -> Result<Vec<String>> {
     if c["data_mount"].as_str() != data.to_str() || c["media_mount"].as_str() != media.to_str() {
         return Err(Error::new("Backup paths must match verified configuration"));
     }
     let mut ids = vec![];
     for (key, path) in [("data_ssd", data), ("media_hdd", media)] {
-        ids.push(checked_drive(&c, key, path)?);
+        ids.push(checked_drive(c, key, path)?);
     }
-    if ids[0] == ids[1] {
+    if ids[0] == ids[1] && !common::roles_share_one_filesystem(c) {
         return Err(Error::new("Distinct backup filesystems required"));
+    }
+    Ok(ids)
+}
+fn placed_folder(c: &Value, name: &str) -> Result<PathBuf> {
+    common::drive_folder(c, name).ok_or_else(|| Error::new("Unknown drive in the settings"))
+}
+/// `id` is a drive not among `ids` yet: added.
+fn distinct(ids: &mut Vec<String>, id: String) -> Result<()> {
+    if ids.contains(&id) {
+        return Err(Error::new("Each drive must be a filesystem of its own"));
+    }
+    ids.push(id);
+    Ok(())
+}
+/// Every app installed on another drive (0.50.0) has its settings folder there mounted
+/// at its usual place. With the mount missing, that place is the empty, closed folder of
+/// the app drive: no job may read it as the app's settings, or write into it. The apps of
+/// the drives in `away` are left out (they stay stopped until their drive is back).
+fn installed_in_place(c: &Value, data: &Path, away: &[String]) -> Result<()> {
+    for (app, drive) in c["installed"].as_object().into_iter().flatten() {
+        if drive.as_str().is_some_and(|d| away.iter().any(|a| a == d)) {
+            continue;
+        }
+        let base = common::installed_base(c, app)?
+            .ok_or_else(|| Error::new("Unknown drive in the settings"))?;
+        let place = data.join("appdata").join(app);
+        if !common::same_folder(&place, &base.join("appdata").join(app)) {
+            return Err(Error::new(&format!(
+                "{app} is installed on another drive, and its settings folder ({}) is not mounted from that drive. Run  sudo mount {}  (or restart the PC) and try again; nothing was changed",
+                place.display(),
+                place.display()
+            )));
+        }
     }
     Ok(())
 }
@@ -4267,15 +4373,18 @@ struct UsbRun {
     /// The weekly copy, which makes Nextcloud's database copy with Nextcloud paused (the
     /// monthly run's check of the drive does not: its snapshot has its own).
     weekly: bool,
+    /// The backup drive is a folder a NAS shares over NFS: its address, from the
+    /// settings setup wrote ("backup_drive": {"export": ...}). None for a drive.
+    export: Option<String>,
 }
 impl UsbRun {
     fn from_args(a: &Args, check: Check, weekly: bool) -> Result<UsbRun> {
         let uuid = a.get("uuid")?.to_string();
         let fstype = a.get("fstype")?.to_string();
-        if !(8..=80).contains(&uuid.len())
-            || !uuid.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
-            || !["ext4", "xfs", "btrfs", "exfat"].contains(&fstype.as_str())
-        {
+        let export = common::json(&a.path("config")?, 64000)["backup_drive"]["export"]
+            .as_str()
+            .map(str::to_string);
+        if !external_identity_ok(&uuid, &fstype, export.as_deref()) {
             return Err(Error::new("Invalid external identity"));
         }
         let media = common::mount_path(a.get("media-root")?)?;
@@ -4320,6 +4429,7 @@ impl UsbRun {
             source,
             cloud,
             weekly,
+            export,
         })
     }
     /// The SSD and HDD are still the right drives.
@@ -4356,24 +4466,10 @@ impl UsbRun {
     fn usb_ready(&self) -> Result<bool> {
         common::stage("checking the USB drive");
         self.drives()?;
-        let device = Path::new("/dev/disk/by-uuid").join(&self.uuid);
-        if !device.exists() {
-            return Err(Error::new("External drive missing"));
-        }
-        own_disk(&device, &self.data, &self.media)?;
-        let (code, s) = common::command(
-            &[
-                "blkid",
-                "-s",
-                "TYPE",
-                "-o",
-                "value",
-                &device.to_string_lossy(),
-            ],
-            10,
-        )?;
-        if code != 0 || s.trim() != self.fstype {
-            return Err(Error::new("External filesystem mismatch"));
+        // A folder the NAS shares has no disk of its own to look at: mounting it, and
+        // the identity check after, say whether it is there and the one setup chose.
+        if self.export.is_none() {
+            self.own_disk_of_the_saved_type()?;
         }
         let dest = &self.dest;
         fs::create_dir_all(dest)?;
@@ -4396,6 +4492,43 @@ impl UsbRun {
         }
         Ok(already)
     }
+    /// The backup folder the NAS shares, mounted by its address with the options setup
+    /// tried it out with (nfs_exports.py): the NFS version saved, and writes that wait
+    /// for a NAS that stops answering instead of leaving a cut-off file.
+    fn mount_shared_folder(&self, export: &str) -> Result<()> {
+        let version = if self.fstype == "nfs" { "3" } else { "4" };
+        let options = format!("nfsvers={version},hard,nodev,nosuid");
+        let dest = self.dest.to_string_lossy();
+        success(&["mount", "-t", "nfs", "-o", &options, export, &dest], 120).map_err(|_| {
+            Error::new(&format!(
+                "The backup folder on the NAS ({export}) could not be mounted: check that the NAS is on and still shares it with this PC"
+            ))
+        })
+    }
+    /// The drive is plugged in, on a disk of its own (never the SSD's, the HDD's or the
+    /// system's) and of the filesystem saved.
+    fn own_disk_of_the_saved_type(&self) -> Result<()> {
+        let device = Path::new("/dev/disk/by-uuid").join(&self.uuid);
+        if !device.exists() {
+            return Err(Error::new("External drive missing"));
+        }
+        own_disk(&device, &self.data, &self.media)?;
+        let (code, s) = common::command(
+            &[
+                "blkid",
+                "-s",
+                "TYPE",
+                "-o",
+                "value",
+                &device.to_string_lossy(),
+            ],
+            10,
+        )?;
+        if code != 0 || s.trim() != self.fstype {
+            return Err(Error::new("External filesystem mismatch"));
+        }
+        Ok(())
+    }
     /// On a NAS: `device` is on the NAS disk setup chose, as for the SSD and the HDD (the
     /// 0.46.1 audit). Not on a NAS (no WWN saved): nothing to check.
     fn same_nas_disk(&self, device: &str) -> Result<()> {
@@ -4415,6 +4548,9 @@ impl UsbRun {
     /// Mounts the very device it checked (the UUID's link, followed once), never "UUID=",
     /// which may pick another LUN of the same UUID.
     fn mount(&self) -> Result<()> {
+        if let Some(export) = &self.export {
+            return self.mount_shared_folder(export);
+        }
         let device = fs::canonicalize(Path::new("/dev/disk/by-uuid").join(&self.uuid))
             .map_err(|_| Error::new("External drive missing"))?;
         let device = device.to_string_lossy().to_string();
@@ -4429,6 +4565,20 @@ impl UsbRun {
             ],
             30,
         )
+    }
+}
+/// The backup drive named on the job's command line can be one: a filesystem UUID with
+/// one of the types a backup drive may have, or, for a folder a NAS shares over NFS, the
+/// identity made from the address in the settings (`export`) with the type NFS mounts as.
+fn external_identity_ok(uuid: &str, fstype: &str, export: Option<&str>) -> bool {
+    if !(8..=80).contains(&uuid.len())
+        || !uuid.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+    {
+        return false;
+    }
+    match export {
+        Some(export) => common::is_nfs(fstype) && uuid == common::nfs_identity(export),
+        None => ["ext4", "xfs", "btrfs", "exfat"].contains(&fstype),
     }
 }
 fn usb_copy(a: &Args, check: Check, weekly: bool) -> Result<()> {
@@ -4746,6 +4896,41 @@ mod tests {
         assert_eq!(plain["storage"]["usb"]["fstype"], "ext4");
     }
     #[test]
+    fn a_folder_the_nas_shares_is_checked_by_its_address() {
+        // 0.50.0: a drive that is a folder shared over NFS has no UUID; the identity made
+        // from its address stands in for it, in the settings and in what is mounted.
+        let export = "192.168.1.20:/volume1/media";
+        let id = common::nfs_identity(export);
+        let c = json!({"storage": {"media_hdd": {"uuid": id, "fstype": "nfs4",
+            "network": {"transport": "nfs", "export": export}}}});
+        let at = Path::new("/mnt/media");
+        let mounted = common::with_nfs_identity(&format!("nfs4 {export}"));
+        assert_eq!(drive_check(&c, "media_hdd", at, &mounted).unwrap(), id);
+        // Another folder of the same NAS, or the other NFS version, is another drive.
+        let other = common::with_nfs_identity("nfs4 192.168.1.20:/volume1/films");
+        assert!(drive_check(&c, "media_hdd", at, &other).is_err());
+        let v3 = common::with_nfs_identity(&format!("nfs {export}"));
+        assert!(drive_check(&c, "media_hdd", at, &v3).is_err());
+        // Not mounted since the start (only systemd's automount there): said as it is.
+        let said = drive_check(&c, "media_hdd", at, "autofs systemd-1")
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("the shared folder is not mounted"), "{said}");
+        assert!(said.contains("Check that the NAS is on"), "{said}");
+        // The weekly copy's own drive: the identity must be the one of the address in the
+        // settings, with a type NFS mounts as; a disk keeps its own types.
+        let backup = "192.168.1.20:/volume1/backup";
+        let backup_id = common::nfs_identity(backup);
+        assert!(external_identity_ok(&backup_id, "nfs4", Some(backup)));
+        assert!(external_identity_ok(&backup_id, "nfs", Some(backup)));
+        assert!(!external_identity_ok(&backup_id, "nfs4", Some(export)));
+        assert!(!external_identity_ok(&backup_id, "ext4", Some(backup)));
+        assert!(!external_identity_ok(&backup_id, "nfs4", None));
+        assert!(external_identity_ok("usb-00000001", "exfat", None));
+        assert!(!external_identity_ok("short", "ext4", None));
+        assert!(!external_identity_ok("usb-0000 0001", "ext4", None));
+    }
+    #[test]
     fn a_nas_drive_is_the_nas_disk_setup_chose() {
         // The 0.46.0 review: a restored or cloned LUN, same filesystem UUID, passed.
         let path = Path::new("/mnt/nekoserver-media");
@@ -5008,6 +5193,66 @@ mod tests {
         ));
         assert!(!private_options("rw,relatime", "exfat"));
         assert!(private_options("rw,relatime", "ext4"));
+    }
+    /// Gate run C9: with the Music group's own drive away, the apps of the other groups
+    /// are brought back all the same; its own apps' settings are never read from the
+    /// empty folder left in its place, and with the drive here they must be on it.
+    #[test]
+    fn an_app_installed_on_a_drive_that_is_away_does_not_hold_the_others() {
+        let data = scratch("installed-away");
+        fs::create_dir_all(data.join("appdata/lidarr")).unwrap(); // the empty folder left behind
+        let c = json!({
+            "storage": {"d3": {"uuid": "d3-uuid", "fstype": "ext4"}},
+            "installed": {"lidarr": "d3"},
+        });
+        let said = installed_in_place(&c, &data, &[]).unwrap_err().to_string();
+        assert!(
+            said.contains("lidarr is installed on another drive"),
+            "{said}"
+        );
+        assert!(installed_in_place(&c, &data, &["d3".to_string()]).is_ok());
+        // Another drive away is no reason to pass: lidarr's own drive is checked.
+        assert!(installed_in_place(&c, &data, &["d4".to_string()]).is_err());
+    }
+    /// Gate run B0d: one drive for the apps, the media and the backups, chosen on
+    /// purpose, passes the drive check; any other pair of drives with one UUID does not.
+    #[test]
+    fn two_roles_may_be_one_filesystem_only_on_purpose() {
+        let role = |folder: &str, kept: &str| json!({"uuid": "one-1", "fstype": "ext4", "folder": folder, "subvolume": kept});
+        let one = json!({"storage": {
+            "data_ssd": role("/mnt/nekoserver-drives/one/nekoserver/apps", "/nekoserver/apps"),
+            "media_hdd": role("/mnt/nekoserver-drives/one/nekoserver/media", "/nekoserver/media")}});
+        let system = json!({"storage": {
+            "data_ssd": role("/var/lib/nekoserver/apps", "/var/lib/nekoserver/apps"),
+            "media_hdd": role("/var/lib/nekoserver/media", "/var/lib/nekoserver/media")}});
+        // Two drives (a copy of one carries its UUID): no folders kept, so never one filesystem.
+        let two = json!({"storage": {"data_ssd": {"uuid": "one-1", "fstype": "ext4"},
+            "media_hdd": {"uuid": "one-1", "fstype": "ext4"}}});
+        for cfg in [&one, &system] {
+            assert!(may_share(cfg, "data_ssd", "media_hdd"));
+            assert!(may_share(cfg, "media_hdd", "data_ssd"));
+            // The USB drive, or a drive something else is placed on, is a drive of its own.
+            assert!(!may_share(cfg, "data_ssd", "usb"));
+            assert!(!may_share(cfg, "media_hdd", "d3"));
+            assert!(!may_share(cfg, "data_ssd", "data_ssd"));
+        }
+        assert!(!may_share(&two, "data_ssd", "media_hdd"));
+        // Each role is still told apart by its folder: the apps' folder mounted at the
+        // media's place is refused by the drive check itself.
+        let wrong = drive_check(
+            &one,
+            "media_hdd",
+            Path::new("/mnt/nekoserver-media"),
+            "one-1 ext4 /dev/sdc[/nekoserver/apps]",
+        );
+        assert!(wrong.is_err());
+        let right = drive_check(
+            &one,
+            "media_hdd",
+            Path::new("/mnt/nekoserver-media"),
+            "one-1 ext4 /dev/sdc[/nekoserver/media]",
+        );
+        assert_eq!(right.unwrap(), "one-1");
     }
     fn scratch(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("neko-backup-{name}-{}", std::process::id()));
@@ -7337,6 +7582,119 @@ mod tests {
         assert_eq!(names(&root), ["snapshot-300-1"]);
         let _ = fs::remove_dir_all(root);
     }
+    /// A finished snapshot in `root`, as a job publishes it.
+    fn finished(root: &Path, name: &str) {
+        fs::create_dir_all(root.join(name)).unwrap();
+        fs::set_permissions(root.join(name), fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(root.join(name).join("manifest.json"), b"{}").unwrap();
+    }
+    /// The wizard specification's T20: older backups are removed only once a new one is
+    /// finished and published, and the last usable one never goes.
+    #[test]
+    fn older_snapshots_go_only_after_a_new_one_is_published_and_never_the_last_one() {
+        let root = scratch("prune-after");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        for name in ["snapshot-100-1", "snapshot-200-1", "snapshot-300-1"] {
+            finished(&root, name);
+        }
+        let old = ["snapshot-100-1", "snapshot-200-1", "snapshot-300-1"];
+        // A run that fails before it is published (here: its last check of the drives)
+        // removes nothing, though the settings keep only one.
+        let stage = stage_snapshot(&root).unwrap();
+        let failed = publish_snapshot(
+            &root,
+            &stage,
+            &[],
+            || Err(Error::new("the drive went away")),
+            &json!({}),
+            1,
+            None,
+        );
+        assert!(failed.is_err());
+        assert_eq!(
+            common::complete_snapshots(&root)
+                .unwrap()
+                .iter()
+                .map(|(_, name)| name.as_str())
+                .collect::<Vec<_>>(),
+            old
+        );
+        // Starting the next run clears the half-made one, and still none of the finished ones.
+        let stage = stage_snapshot(&root).unwrap();
+        assert_eq!(common::complete_snapshots(&root).unwrap().len(), 3);
+        // The run that succeeds: only now the older ones go, and the new one is the one kept.
+        publish_snapshot(&root, &stage, &[], || Ok(()), &json!({}), 1, None).unwrap();
+        assert_eq!(names(&root), std::slice::from_ref(&stage.name));
+        // With one backup left and a run that fails, that one stays: the count never
+        // takes the last usable backup.
+        let next = stage_snapshot(&root).unwrap();
+        assert!(publish_snapshot(
+            &root,
+            &next,
+            &[],
+            || Err(Error::new("no")),
+            &json!({}),
+            1,
+            None
+        )
+        .is_err());
+        assert_eq!(common::complete_snapshots(&root).unwrap().len(), 1);
+        assert!(root.join(&stage.name).join("manifest.json").is_file());
+        // Nor does pruning by itself, with nothing new published, go below what is kept,
+        // or ever remove the newest (a count of 1 with the newest named or not).
+        assert!(common::prune_snapshots(&root, 1, None, None)
+            .unwrap()
+            .is_empty());
+        assert!(common::prune_snapshots(&root, 1, Some(&stage.name), None)
+            .unwrap()
+            .is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn the_count_is_one_to_seven_and_an_earlier_count_only_when_setup_marked_it() {
+        let (yes, no) = (json!(true), Value::Null);
+        for count in 1..=7u64 {
+            assert_eq!(keep_count(&json!(count), &no, "app_backup"), (count, None));
+        }
+        // From before 0.50.0, marked by setup: kept to as it was (0: every snapshot).
+        for count in [0u64, 8, 14, 3650] {
+            assert_eq!(keep_count(&json!(count), &yes, "app_backup"), (count, None));
+        }
+        // Not marked, or no count at all: refused, and nothing is removed (0).
+        for wrong in [
+            json!(0),
+            json!(8),
+            json!(3650),
+            json!(-1),
+            json!(3.5),
+            json!("3"),
+            Value::Null,
+        ] {
+            let (keep, why) = keep_count(&wrong, &no, "host_backup");
+            assert_eq!(keep, 0, "{wrong}");
+            let why = why.unwrap();
+            assert!(
+                why.contains(&format!(
+                    "(host_backup.keep_snapshots) is {wrong}, not a whole number from 1 to 7"
+                )),
+                "{why}"
+            );
+            assert!(why.contains("no older backup was removed"), "{why}");
+        }
+        assert_eq!(keep_count(&json!(3651), &yes, "app_backup").0, 0);
+        // A refused count removes nothing even from a folder full of snapshots.
+        let root = scratch("refused-count");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        for name in ["snapshot-100-1", "snapshot-200-1", "snapshot-300-1"] {
+            finished(&root, name);
+        }
+        let (keep, _) = keep_count(&json!(30), &no, "app_backup");
+        assert!(common::prune_snapshots(&root, keep, None, None)
+            .unwrap()
+            .is_empty());
+        assert_eq!(common::complete_snapshots(&root).unwrap().len(), 3);
+        let _ = fs::remove_dir_all(root);
+    }
     #[test]
     fn a_failed_runs_half_made_snapshot_is_removed_at_the_next_start() {
         let root = scratch("stale-stage");
@@ -8458,8 +8816,14 @@ mod tests {
             only.contains("checked_drive(&c, \"data_ssd\", data)") && !only.contains("media"),
             "{only}"
         );
-        let full = &source[source.find("pub fn guard(").unwrap()..];
-        assert!(full[..full.find("\n}\n").unwrap()].contains("checked_drive(&c, key, path)"));
+        // The full guard and the one for bringing the apps back share the SSD and HDD check.
+        let body = |start: &str| {
+            let from = &source[source.find(start).unwrap()..];
+            from[..from.find("\n}\n").unwrap()].to_string()
+        };
+        assert!(body("fn main_drives(").contains("checked_drive(c, key, path)"));
+        assert!(body("pub fn guard(").contains("main_drives(&c, data, media)?"));
+        assert!(body("pub(crate) fn guard_present(").contains("main_drives(&c, data, media)?"));
     }
     /// Seen as a week of "failed" on the dashboard: the 1st fell on the weekly day, the
     /// monthly run had copied the drive, and the weekly copy's giving way to it was

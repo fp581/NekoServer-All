@@ -21,6 +21,7 @@ LINKS = {
 }
 USERS = {
     'jellyfin': {'username': 'neko_ab12'},
+    'navidrome': {'username': 'neko_music'},
     'navidrome_listener': {'username': 'listener'},
     'immich': {'username': 'me@example.org', 'password': 'SECRET-PW'},
 }
@@ -57,12 +58,43 @@ class PhoneGuideTests(unittest.TestCase):
         self.assertIn('Immich (App Store)', text)
         self.assertNotIn('SECRET-PW', text)
         self.assertIn('account-setup.py show immich', text)
-        # Navidrome uses the separate listener account on the phone, and says what it is.
+        # A server set up before 0.50.0: phones use Navidrome's listener, and the guide
+        # names both logins (test_the_person_is_the_administrator_in_navidrome_too).
         music = '\n'.join(phone_guide.instructions({}, 'navidrome', LINKS['navidrome']))
         self.assertIn('show navidrome_listener', music)
-        self.assertIn('made for playing music', music)
         # Not provisioned yet: still tells you how to see it.
         self.assertIn('account-setup.py show seerr', '\n'.join(phone_guide.instructions({}, 'seerr', LINKS['seerr'])))
+
+    def test_the_person_is_the_administrator_in_navidrome_too(self):
+        """0.50.0, item 11: Navidrome was the one app where the login the person was given
+        was no administrator (the "listener"). On a server whose Navidrome logins are made
+        by 0.50.0 or later it is the administrator, as in every other app."""
+        new = {'music': {'your_login': 'administrator'}}
+        self.assertEqual(phone_guide.login_of(new, 'navidrome'), 'navidrome')
+        music = '\n'.join(phone_guide.instructions(new, 'navidrome', LINKS['navidrome']))
+        self.assertIn('Your login is neko_music.', music)
+        self.assertIn('account-setup.py show navidrome', music)
+        self.assertNotIn('listener', music)
+        self.assertIn('Sign in with your Navidrome username and password.', music)
+        page = phone_guide.page_html(new, {'navidrome': LINKS['navidrome']}, qr=lambda text: '')
+        self.assertIn('Username: neko_music', page)
+        self.assertNotIn('listener', page)
+
+    def test_a_server_set_up_before_keeps_the_listener_and_is_told_of_both(self):
+        # Nothing is switched silently: phones are signed in with the listener, and
+        # Navidrome keeps playlists and favourites per login.
+        for before in ({}, {'music': {}}, {'music': {'your_login': 'listener'}}, {'music': 'broken'}):
+            with self.subTest(before=before):
+                self.assertEqual(phone_guide.login_of(before, 'navidrome'), 'navidrome_listener')
+        music = '\n'.join(phone_guide.instructions({}, 'navidrome', LINKS['navidrome']))
+        self.assertIn('Your login is listener.', music)
+        self.assertIn('This server has two Navidrome logins', music)
+        self.assertIn('which is not an administrator', music)
+        self.assertIn('account-setup.py show navidrome)', music)  # the administrator's
+        self.assertIn('Playlists and favourites belong to the login that made them', music)
+        # Every other app's login is unchanged by the setting.
+        for app in ('jellyfin', 'seerr', 'immich', 'nextcloud'):
+            self.assertEqual(phone_guide.login_of({'music': {'your_login': 'administrator'}}, app), app)
 
     def test_the_login_comes_before_the_sign_in_step(self):
         """D16: the username and how to see the password were the last lines, after

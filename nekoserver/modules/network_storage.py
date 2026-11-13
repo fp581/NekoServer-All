@@ -1,5 +1,8 @@
-"""Drives on a network storage box (a NAS) over iSCSI, for the media HDD and the backup
-drive. Off unless switched on ("network_storage": {"wanted": true}).
+"""Drives on a NAS, for the media HDD and the backup drive: over
+iSCSI (a disk of its own) or, since 0.50.0, NFS (a folder the NAS shares). Off unless
+switched on ("network_storage": {"wanted": true}). Setup looks at what the NAS offers at
+its address and asks when it offers both (chosen_kind); the NFS part is at the end of
+this file and in nfs_exports.py.
 
 iSCSI lets the NAS hand this PC a virtual disk (a LUN) over the network: it shows up here
 as a disk of its own, which this PC alone formats and mounts. So:
@@ -17,6 +20,7 @@ the NAS's address, finds the disks it offers, asks which ones NekoServer uses (w
 login if the NAS asks for one), logs in to them for good (again at every start), and lists
 them with their identity, size and filesystem for the drive questions that follow."""
 
+import questions
 import json
 import os
 import re
@@ -28,7 +32,7 @@ from pathlib import Path
 from neko_common import atomic_write
 
 DEPENDENCIES = ['system']
-DESCRIPTION = 'Connect the drives on a network storage box (NAS) over iSCSI, when switched on'
+DESCRIPTION = 'Connect the drives on a NAS over iSCSI, when switched on'
 
 SECTION = 'network_storage'
 PORT = 3260  # iSCSI's port
@@ -67,11 +71,16 @@ SESSIONS = Path('/sys/class/iscsi_session')
 COMMAND_TIMEOUT = 120
 UDEV_RULE = Path('/etc/udev/rules.d/90-nekoserver-nas-disks.rules')
 RULE = (
-    '# NekoServer: disks on a network storage box (iSCSI) wait for it to come back instead\n'
+    '# NekoServer: disks on a NAS (iSCSI) wait for it to come back instead\n'
     '# of failing writes after 3 minutes (network_storage.py).\n'
     'ACTION=="add|change", SUBSYSTEM=="scsi", KERNELS=="session[0-9]*", ATTR{type}=="0", '
     f'ATTR{{timeout}}="{COMMAND_TIMEOUT}"\n'
 )
+
+
+# How the NAS gives its drives to this PC ("kind"): a disk of its own, or a shared folder.
+ISCSI, NFS = 'iscsi', 'nfs'
+KINDS = (ISCSI, NFS)
 
 
 def wanted(config):
@@ -95,6 +104,9 @@ def options(config):
     chap = values.get('chap', [])
     if not isinstance(chap, list) or not all(t in targets for t in chap):
         raise RuntimeError('network_storage.chap must list targets of network_storage.targets')
+    if values.get('kind', ISCSI) not in KINDS:
+        raise RuntimeError('network_storage.kind must be "iscsi" or "nfs"')
+    saved_folders(values)
     return values
 
 
@@ -467,6 +479,13 @@ def ask(prompt, input_fn):
         return ''
 
 
+def asked_plainly(key, input_fn, **values):
+    """A question in the words of questions.py: its own page in the setup window, and the
+    same words with how to answer in the terminal."""
+    with questions.shown(key, **values):
+        return ask(questions.terminal(key, **values), input_fn)
+
+
 def chosen_targets(found, saved, input_fn, out_fn):
     """The targets NekoServer uses: those saved before (still offered), or those picked now."""
     names = [iqn for iqn, _ in found]
@@ -484,7 +503,7 @@ def chosen_targets(found, saved, input_fn, out_fn):
     for n, iqn in enumerate(names, 1):
         out_fn(f'  {n}) {iqn}')
     for _ in range(3):
-        answer = ask('Numbers of the ones NekoServer uses, separated by commas (Enter alone stops here): ', input_fn)
+        answer = asked_plainly('nas_disks', input_fn)
         if not answer:
             break
         picks = [p.strip() for p in answer.split(',') if p.strip()]
@@ -498,7 +517,7 @@ def asked_portal(saved, input_fn, out_fn):
     if saved and portal_of(saved):
         return portal_of(saved)
     for _ in range(3):
-        portal = portal_of(ask("The NAS's address on your network (such as 192.168.1.20): ", input_fn))
+        portal = portal_of(asked_plainly('nas_address', input_fn))
         if portal:
             return portal
         out_fn('Type its address as numbers (192.168.1.20) or its name on your network (nas.home).')
@@ -523,11 +542,11 @@ def asked_chap(iqn, portal, input_fn, out_fn, secret_fn, again=False):
     if again == 'missing':
         out_fn(f'The CHAP login of {iqn} is missing from its iSCSI settings; give it again.')
     else:
-        answer = ask(f'Does the NAS ask for a CHAP user name and password for {iqn}? [y/N]: ', input_fn).lower()
+        answer = asked_plainly('nas_login_needed', input_fn, iqn=iqn).lower()
         if answer not in ('y', 'yes'):
             return False
     for _ in range(3):
-        user = ask('CHAP user name: ', input_fn)
+        user = asked_plainly('nas_login_user', input_fn)
         try:
             password = secret_fn('CHAP password (not shown; at least 12 characters): ')
         except EOFError:
@@ -550,7 +569,7 @@ EXPERIMENTAL = (
 def run(context):
     config = context.config
     if not wanted(config):
-        context.log('Drives on a network storage box: not used (all drives are connected to this PC)')
+        context.log('Drives on a NAS: not used (all drives are connected to this PC)')
         return None
     if not context.apply:
         context.log('Drives on a NAS over iSCSI: connected with --apply')
@@ -562,6 +581,8 @@ def run(context):
 
     options = config.setdefault(SECTION, {})
     interactive = sys.stdin.isatty()
+    if chosen_kind(options, interactive, context.log) == NFS:
+        return shared_folders(context, options, interactive)
     install_tools(context.log)
     wait_for_network(context.log)
     say_initiator(context.log, kept_initiator(options, context.log))
@@ -708,3 +729,249 @@ def unformatted(empty):
             f'erases that LUN):\n{commands}\nThen run  sudo bash install.sh  again.'
         ),
     }
+
+
+# --- What the NAS offers: a disk of its own (iSCSI) or a shared folder (NFS) ------------
+
+KIND_WORDS = {ISCSI: 'iSCSI disks', NFS: 'folders shared over NFS'}
+
+
+def nfs_answers(host):
+    import nfs_exports
+
+    return nfs_exports.answers(host)
+
+
+def chosen_kind(options, interactive, log, input_fn=None):
+    """How the NAS gives its drives to this PC: 'iscsi' or 'nfs', kept in the settings
+    ("kind"). A NAS chosen before 0.50.0 (its targets are saved), or nobody at the
+    terminal: iSCSI, as it always was. Otherwise setup looks at what answers at the
+    NAS's address, and asks when both do."""
+    if options.get('kind') in KINDS:
+        return options['kind']
+    if options.get('targets') or not interactive:
+        return ISCSI
+    input_fn = input_fn or input
+    portal = asked_portal(options.get('portal'), input_fn, log)
+    host = portal.rpartition(':')[0]
+    offered = [kind for kind, there in ((ISCSI, answers(portal)), (NFS, nfs_answers(host))) if there]
+    if not offered:
+        raise RuntimeError(
+            f'Nothing answers at {host}, neither iSCSI (port {PORT}) nor NFS (port 2049): check that the NAS is '
+            'on, its address, that iSCSI or NFS is switched on in its settings, and that this PC is on the same '
+            'network. Then run setup again.'
+        )
+    if len(offered) == 1:
+        kind = offered[0]
+        log(f'The NAS at {host} offers {KIND_WORDS[kind]}: NekoServer uses those')
+    else:
+        kind = asked_kind(host, input_fn, log)
+    options['kind'] = kind
+    if kind == NFS:
+        options.setdefault('nfs', {})['server'] = host
+    else:
+        options['portal'] = portal
+    return kind
+
+
+def asked_kind(host, input_fn, out_fn):
+    out_fn(f'The NAS at {host} offers both:')
+    out_fn(
+        '  1) iSCSI: the NAS hands this PC a disk of its own. The apps see a real Linux drive. '
+        'Only this PC can use that disk.'
+    )
+    out_fn(
+        '  2) NFS: a folder the NAS shares. Nothing has to be formatted and the files stay '
+        'visible on the NAS itself. Setup tries the folder out first and says what to change when it cannot be used.'
+    )
+    for _ in range(3):
+        answer = asked_plainly('nas_kind', input_fn)
+        if answer in ('', '1', '2'):
+            return NFS if answer == '2' else ISCSI
+        out_fn('Type 1 or 2.')
+    raise RuntimeError('Neither iSCSI nor NFS was chosen; run setup again to choose. Nothing was changed.')
+
+
+# --- NFS: folders the NAS shares (nfs_exports.py) ---------------------------------------
+
+# The two drives a shared folder may be, by the name the settings keep its folder under
+# ("nfs": {"server": "192.168.1.20", "media": "/volume1/media", "backup": "/volume1/backup"}).
+# Never the application SSD: there is no question for it.
+FOLDER_ROLES = ('media', 'backup')
+BACKUP_WORDS = 'the backup drive (it gets a weekly copy of your photos and Nextcloud files)'
+
+
+def saved_folders(values):
+    """The shared folders in the settings, checked before setup changes anything."""
+    import nfs_exports
+
+    saved = values.get('nfs', {})
+    if not isinstance(saved, dict):
+        raise RuntimeError('network_storage.nfs must be an object')
+    for role in FOLDER_ROLES:
+        folder = saved.get(role)
+        if folder is not None and nfs_exports.address(saved.get('server', ''), folder) is None:
+            raise RuntimeError(
+                f'network_storage.nfs.{role} must be a folder the NAS shares, such as /volume1/media, with the '
+                'NAS\'s address as "server"'
+            )
+    return saved
+
+
+def install_nfs_tools(log):
+    """The NFS tools (nfs-common on Debian and Ubuntu, nfs-utils on Arch, Fedora and RHEL,
+    nfs-client on openSUSE), installed when they are missing."""
+    import host
+
+    added = host.current().install(['nfs-utils'])
+    log('NFS tools ' + ('installed' if added else 'ready'))
+
+
+def shared_folders(context, options, interactive, input_fn=None):
+    """The NAS's shared folders NekoServer uses as its media drive and its backup drive:
+    found, asked for, tried out (nfs_exports.tried) and kept in the settings, where the
+    drives step and the weekly copy find them. A folder that cannot be used stops setup
+    here with what to change on the NAS, before anything is mounted for good."""
+    import nfs_exports
+
+    config, log = context.config, context.log
+    input_fn = input_fn or input
+    saved = options.setdefault('nfs', {})
+    saved_folders(options)
+    install_nfs_tools(log)
+    wait_for_network(log)
+    host = saved.get('server')
+    if not host:
+        if not interactive:
+            raise RuntimeError("The NAS's address is not saved yet; run  sudo bash install.sh  in a terminal")
+        host = asked_portal(None, input_fn, log).rpartition(':')[0]
+    if not nfs_answers(host):
+        raise RuntimeError(
+            f'Nothing answers NFS at {host} (port 2049): check that the NAS is on, its address, that NFS is '
+            'switched on in its settings, and that this PC is on the same network. Then run setup again.'
+        )
+    saved['server'] = host
+    log(nfs_exports.WHAT_FOR)
+    if not any(saved.get(role) for role in FOLDER_ROLES):
+        if not interactive:
+            raise RuntimeError('No shared folder is chosen yet; run  sudo bash install.sh  in a terminal')
+        asked_folders(config, saved, nfs_exports.shared_folders(host), input_fn, log)
+    exports = {role: nfs_exports.address(host, saved[role]) for role in FOLDER_ROLES if saved.get(role)}
+    apart(exports)
+    media = config.get('media', {})
+    uid, gid = int(media.get('uid', 1000)), int(media.get('gid', 1000))
+    for role, export in exports.items():
+        found = nfs_exports.tried(export, uid, gid)
+        log(
+            f"{export}: tried out as root and as the apps' account ({uid}:{gid}): files, owners, permissions and "
+            f'locks work (NFS version {"3" if found["fstype"] == "nfs" else "4"}); '
+            f'{found["free"] // 1024**3} GB free of {found["size"] // 1024**3} GB'
+        )
+        keep_folder(config, role, export, found)
+    if len(exports) == 2:
+        log(
+            'Both NAS drives are in one box: a fault of the NAS (its power supply, a setting) can take the media '
+            'and the backup at once. Keep a second copy of what matters elsewhere when you can.'
+        )
+    if hasattr(context, 'persist_config'):
+        context.persist_config()
+    return None
+
+
+def asked_folders(config, saved, found, input_fn, out_fn):
+    """Which shared folder is the media drive and which the backup drive, each by its
+    number in the NAS's list or typed as the NAS names it; Enter alone leaves that drive
+    to one connected to this PC."""
+    from modules.storage import DRIVES, drive_label
+
+    if found:
+        out_fn(f'The NAS at {saved["server"]} shares these folders over NFS:')
+        for n, (folder, who) in enumerate(found, 1):
+            out_fn(f'  {n}) {folder}  (for: {who})')
+    else:
+        out_fn(
+            f'The NAS at {saved["server"]} answers NFS but gives no list of its shared folders (one that speaks '
+            "only NFS version 4 has none). Type each folder as the NAS's own page names it, such as /volume1/media."
+        )
+    names = [folder for folder, _ in found]
+    for role, words in (('media', drive_label(config, 'media_hdd', DRIVES[1][1])), ('backup', BACKUP_WORDS)):
+        folder = asked_folder(words, names, input_fn, out_fn)
+        if folder:
+            saved[role] = folder
+    if not any(saved.get(role) for role in FOLDER_ROLES):
+        raise RuntimeError('No shared folder was chosen; run setup again to choose one. Nothing was changed.')
+
+
+def asked_folder(words, names, input_fn, out_fn):
+    """One shared folder, or None when Enter alone was typed."""
+    import nfs_exports
+
+    for _ in range(3):
+        answer = asked_plainly('nas_folder', input_fn, words=words)
+        if not answer:
+            return None
+        if answer.isdigit() and 1 <= int(answer) <= len(names):
+            return names[int(answer) - 1]
+        if nfs_exports.FOLDER.fullmatch(answer.rstrip('/')):
+            return answer.rstrip('/')
+        out_fn(
+            'Type a number from the list, or the folder as the NAS names it, starting with / and without spaces '
+            '(such as /volume1/media).'
+        )
+    raise RuntimeError('No usable shared folder was typed; run setup again. Nothing was changed.')
+
+
+def apart(exports):
+    """The media drive and the backup drive are two shared folders, neither inside the
+    other: a backup kept in the folder it protects is lost with it."""
+    if len(exports) < 2:
+        return
+    media, backup = exports['media'], exports['backup']
+    if media == backup or media.startswith(backup + '/') or backup.startswith(media + '/'):
+        raise RuntimeError(
+            f'The media drive ({media}) and the backup drive ({backup}) must be two separate shared folders, '
+            'neither inside the other: a backup kept with what it protects is lost with it. Share a second folder '
+            'on the NAS (on other disks of it, when it has them), then run setup again. Nothing was changed.'
+        )
+
+
+def keep_folder(config, role, export, found):
+    """The shared folder kept as the drive it is: the media drive beside the SSD under
+    "storage" (the drives step mounts it), the backup drive in the photo settings (the
+    weekly copy mounts it). A drive already chosen is never replaced by itself."""
+    import nfs_exports
+    from modules import storage
+
+    record = nfs_exports.record_for(export, found['fstype'])
+    if role == 'media':
+        smallest, recommended = storage.sizes('media_hdd')
+        if found['size'] < smallest * storage.GIB:
+            raise RuntimeError(
+                f'{export} is {found["size"] // storage.GIB} GB, too small for the media drive: it needs at least '
+                f'{smallest} GB ({recommended} GB or more is recommended). Give the shared folder more room on the '
+                'NAS (or lift its quota), then run setup again. Nothing was changed.'
+            )
+        kept = config.setdefault('storage', {}).setdefault('media_hdd', {})
+        already_chosen(kept.get('uuid'), record['uuid'], 'media drive', '"uuid" out of "media_hdd" under "storage"')
+        kept.clear()
+        kept.update(record)
+        return
+    photos = config.setdefault('photos', {})
+    already_chosen(
+        photos.get('external_backup_uuid'), record['uuid'], 'backup drive', '"external_backup_uuid" out of "photos"'
+    )
+    photos.update(
+        external_backup_uuid=record['uuid'],
+        external_backup_fstype=record['fstype'],
+        external_backup_network=record['network'],
+    )
+
+
+def already_chosen(saved, uuid, what, setting):
+    if saved and saved != uuid:
+        raise RuntimeError(
+            f'This server already has a {what} (UUID {saved}). Setup never swaps it for a shared folder by '
+            'itself: what is on it would stay behind. To use the NAS instead, copy its files to the shared folder '
+            f'yourself first (STORAGE.md, "Folders a NAS shares over NFS"), then take {setting} in my-config.json '
+            'and run setup again. Nothing was changed.'
+        )

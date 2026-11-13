@@ -213,6 +213,21 @@ fn directory(app: &str) -> &str {
         _ => "/data/music",
     }
 }
+/// A person's own folder for new films or shows, as the apps see it ("save new ones
+/// here too": existing_media.container_path): /data/existing/movies, /data/existing/tv-new.
+fn own_folder(path: &str) -> bool {
+    let Some(name) = path.strip_prefix("/data/existing/") else {
+        return false;
+    };
+    let kind = name.strip_suffix("-new").unwrap_or(name);
+    !kind.is_empty() && kind.bytes().all(|b| b.is_ascii_lowercase())
+}
+/// Where Seerr's provider may save a request: the library's own folder, or the
+/// person's own. Setup chooses between them (seerr_providers.request_folders).
+fn request_folder<'a>(app: &str, saved: &'a str) -> Option<&'a str> {
+    let saved = saved.trim_end_matches('/');
+    (saved == directory(app) || own_folder(saved)).then_some(saved)
+}
 fn configured(app: &str, endpoint: &str, rows: &[Value], selected: &[&str], data: &Path) -> bool {
     match endpoint {
         "rootfolder" => rows
@@ -298,13 +313,15 @@ fn provider(data: &Path, key: &str, app: &str) -> Result<bool> {
         return Ok(false);
     }
     let normal_port = common::app_port(app).unwrap_or(0);
+    let Some(folder) = request_folder(app, text(&p["activeDirectory"])) else {
+        return Ok(false);
+    };
     if p["isDefault"] != true
         || p["hostname"] != app
         || p["port"] != normal_port
         || p["apiKey"] != manager_key
         || p["useSsl"] != false
         || text(&p["baseUrl"]) != base
-        || text(&p["activeDirectory"]).trim_end_matches('/') != directory(app)
         || p["preventSearch"] != false
     {
         return Ok(false);
@@ -312,7 +329,7 @@ fn provider(data: &Path, key: &str, app: &str) -> Result<bool> {
     let roots = arr(app, &manager_key, "rootfolder")?;
     let roots = array(&roots)?
         .iter()
-        .filter(|r| text(&r["path"]).trim_end_matches('/') == directory(app))
+        .filter(|r| text(&r["path"]).trim_end_matches('/') == folder)
         .collect::<Vec<_>>();
     if roots.len() != 1 || roots[0]["accessible"] != true {
         return Ok(false);
@@ -336,7 +353,7 @@ fn provider(data: &Path, key: &str, app: &str) -> Result<bool> {
         || text(&live["urlBase"]) != base
         || !array(&live["rootFolders"])?
             .iter()
-            .any(|r| text(&r["path"]).trim_end_matches('/') == directory(app))
+            .any(|r| text(&r["path"]).trim_end_matches('/') == folder)
     {
         return Ok(false);
     }
@@ -735,6 +752,8 @@ pub fn run(a: &Args) -> Result<()> {
     let data = common::mount_path(text(&cfg["data_mount"]))?;
     let media = common::mount_path(text(&cfg["media_mount"]))?;
     let music = common::files_root(&cfg, "music")?;
+    // The drive the films and shows are on (the media drive unless placed elsewhere).
+    let films = common::files_root(&cfg, "movies")?;
     backup::guard(&config, &data, &media)?;
     let output = common::safe(&a.path("output")?)?;
     if output != data.join("reports/media/latest.json") {
@@ -764,7 +783,7 @@ pub fn run(a: &Args) -> Result<()> {
     let mut integrations = json!({});
     let checking = a.flag("checking");
     for app in &selected {
-        services[app]=inspect(app,&data,&media,&music,checking).unwrap_or_else(|_|json!({"result":"fail","reason":"Container, mounts or local HTTP inspection failed"}));
+        services[app]=inspect(app,&data,&films,&music,checking).unwrap_or_else(|_|json!({"result":"fail","reason":"Container, mounts or local HTTP inspection failed"}));
     }
     for app in ["sonarr", "radarr", "lidarr", "prowlarr"]
         .iter()
@@ -839,6 +858,35 @@ mod tests {
             .iter()
             .map(|(n, v)| json!({"name": n, "value": v}))
             .collect::<Vec<_>>())
+    }
+    /// "Save new ones here too": Seerr's provider may save into the person's own folder,
+    /// and the readiness check does not call that a changed provider. Anything else is.
+    #[test]
+    fn a_request_may_be_saved_in_the_librarys_folder_or_the_persons_own() {
+        assert_eq!(
+            request_folder("radarr", "/data/movies/"),
+            Some("/data/movies")
+        );
+        assert_eq!(
+            request_folder("radarr", "/data/existing/movies"),
+            Some("/data/existing/movies")
+        );
+        assert_eq!(
+            request_folder("sonarr", "/data/existing/tv-new"),
+            Some("/data/existing/tv-new")
+        );
+        for elsewhere in [
+            "/data/tv",
+            "/data/existing",
+            "/data/existing/",
+            "/data/existing/-new",
+            "/data/existing/movies/more",
+            "/data/existing/../movies",
+            "/mnt/films",
+            "",
+        ] {
+            assert_eq!(request_folder("radarr", elsewhere), None, "{elsewhere}");
+        }
     }
     /// The download client is judged by each app's own category field, as the apps
     /// name it (tvCategory, movieCategory, musicCategory), not a field "category".

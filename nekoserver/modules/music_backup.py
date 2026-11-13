@@ -7,6 +7,7 @@ import subprocess
 import native_runtime
 from neko_common import (
     VERSION,
+    media_group,
     verify_storage,
     host_timezone,
     check_units,
@@ -25,7 +26,7 @@ def definitions(config, binary, guard):
     return {
         'nekoserver-music-backup.service': (
             '[Unit]\nDescription=NekoServer versioned music backup\n'
-            f'RequiresMountsFor={config["data_mount"]} {config["media_mount"]}\n'
+            f'RequiresMountsFor={config["data_mount"]} {config["media_mount"]}{music_drive(config)}\n'
             '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=6h\n'
             f'ExecStart={binary} music-backup --config {guard}\n'
         ),
@@ -35,11 +36,23 @@ def definitions(config, binary, guard):
     }
 
 
+def music_drive(config):
+    """' <its mount folder>' for music kept on a drive of its own, so the copy waits for it."""
+    from neko_common import DRIVE_KEYS, files_root, location
+
+    try:
+        return '' if location(config, 'music') in DRIVE_KEYS else ' ' + str(files_root(config, 'music'))
+    except RuntimeError:
+        return ''
+
+
 def run(ctx):
     enabled = ctx.config.get('music', {}).get('backup_enabled', True)
     if type(enabled) is not bool:
         raise RuntimeError('Schedule enable switch must be boolean')
-    if not enabled:
+    from neko_common import music_backed_up
+
+    if not music_backed_up(ctx.config):
         if ctx.apply:
             if os.geteuid() != 0:
                 raise RuntimeError('Root required')

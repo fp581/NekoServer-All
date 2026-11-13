@@ -95,18 +95,31 @@ class ComposeTests(unittest.TestCase):
             with self.subTest(path=path.name):
                 self.assertNotIn('1000:1000', path.read_text())
 
+    @staticmethod
+    def drive_binds(name):
+        """(source, target) of each bind of the app's files: never one Docker would make."""
+        text = render(name)
+        found = []
+        for volume in yaml.safe_load(text)['services'][name.split('.')[0]]['volumes']:
+            if isinstance(volume, dict) and volume['source'] != '/srv/nekoserver/appdata/' + name.split('.')[0]:
+                assert volume['bind']['create_host_path'] is False, volume
+                found.append((volume['source'], volume['target']))
+        return text, found
+
+    @unittest.skipUnless(yaml, 'PyYAML is not installed')
     def test_lidarr_has_single_ssd_mount_for_downloads_and_library(self):
-        text = render('lidarr.yaml')
-        self.assertIn('"/srv/nekoserver/library:/data"', text)
+        text, binds = self.drive_binds('lidarr.yaml')
+        self.assertIn(('/srv/nekoserver/library', '/data'), binds)
         # No nested bind mounts: they split downloads and library across mount points (EXDEV on import).
-        self.assertNotIn(':/data/downloads/music', text)
-        self.assertNotIn(':/data/music', text)
+        self.assertNotIn('/data/downloads/music', [target for _, target in binds])
+        self.assertNotIn('/data/music', [target for _, target in binds])
         self.assertNotIn('/mnt/nekoserver-media', text)
 
+    @unittest.skipUnless(yaml, 'PyYAML is not installed')
     def test_qbittorrent_still_sees_hdd_and_ssd_music_downloads(self):
-        text = render('qbittorrent.yaml')
-        self.assertIn('"/mnt/nekoserver-media/library:/data"', text)
-        self.assertIn('"/srv/nekoserver/library/downloads/music:/data/downloads/music"', text)
+        _, binds = self.drive_binds('qbittorrent.yaml')
+        self.assertIn(('/mnt/nekoserver-media/library', '/data'), binds)
+        self.assertIn(('/srv/nekoserver/library/downloads/music', '/data/downloads/music'), binds)
 
 
 class JellyfinGpuTests(unittest.TestCase):
@@ -251,7 +264,8 @@ class NotificationTopicTests(unittest.TestCase):
         self.assertEqual(self.switch(True, self.OLD, ('yes',)), (self.NEW, 'tk_new'))
         kept = self.switch(True, self.OLD, ('no',))
         self.assertEqual(kept['status'], 'needs_setup')
-        self.assertIn('Put it back in notifications.endpoint', kept['reason'])
+        self.assertIn('run setup again and answer yes when it asks', kept['reason'])
+        self.assertNotIn('my-config.json', kept['reason'])  # gate run C10: never "edit the file"
         unattended = self.switch(False, self.OLD)
         self.assertEqual(unattended['status'], 'needs_setup')
         self.assertIn('--module notifications --apply', unattended['reason'])
@@ -338,28 +352,7 @@ class JellyfinLibraryLoginTests(unittest.TestCase):
 
 
 class ConnectorChoiceTests(unittest.TestCase):
-    """A mistyped number in the connector's lists is asked again, not a failed step."""
-
-    def choose(self, answers):
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location('media_connect', ROOT / 'media-connect.py')
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        replies = iter(answers)
-
-        def ask(_):
-            value = next(replies)
-            if value is EOFError:
-                raise EOFError
-            return value
-
-        items = [{'name': 'Standard', 'id': 1}, {'name': 'Lossless', 'id': 2}]
-        with mock.patch('builtins.print'):
-            return module.choose(items, 'Choose', ask=ask)
-
-    def test_a_wrong_number_is_asked_again(self):
-        self.assertEqual(self.choose(['7', 'two', '2'])['id'], 2)
+    """The connector stopped by Ctrl+D is a step left, not a crash."""
 
     def test_ctrl_d_stops_the_connector_cleanly(self):
         import importlib.util
@@ -377,15 +370,6 @@ class ConnectorChoiceTests(unittest.TestCase):
             ):
                 self.assertEqual(module.main(['--config', str(config), '--indexers']), 1)
         self.assertIn('indexers: incomplete (stopped)', str(shown.call_args_list))
-
-    def test_skips(self):
-        self.assertIsNone(self.choose(['']))
-        self.assertIsNone(self.choose([EOFError]))
-        self.assertIsNone(self.choose(['0', '9', 'x']))  # three tries, then skipped
-
-
-class WithoutNavidromeTests(unittest.TestCase):
-    """Navidrome taken out of media.services: setup goes ahead, the music step has nothing to do."""
 
     def test_the_full_setup_is_not_refused(self):
         import installer
@@ -777,6 +761,34 @@ class AccountSetupReasonTests(unittest.TestCase):
             )
         self.assertEqual(pending, ['jellyfin'])
         self.assertIn('Jellyfin administrator: not verified (Local account API request failed (HTTP 503)', logged[-1])
+        self.assertNotIn('hunter2', ' '.join(logged))
+
+    def test_a_reply_of_another_shape_is_not_verified_and_said_in_words(self):
+        import account_setup
+
+        class Client:
+            headers = {}
+
+            def call(self, *args, **kwargs):
+                return ['not', 'a', 'record']  # where Navidrome answers a sign-in with a record
+
+            def close(self):
+                pass
+
+        entry = {'username': 'admin', 'password': 'hunter2hunter2', 'state': 'planned', 'allow_create': False}
+        logged, updates = [], []
+        with (
+            mock.patch.object(account_setup.store, 'get', return_value=entry),
+            mock.patch.object(account_setup.store, 'update', side_effect=lambda *a, **k: updates.append(k)),
+            mock.patch.object(account_setup, 'verify_project'),
+            mock.patch.object(account_setup, 'wait'),
+        ):
+            pending = account_setup.provision(
+                {'data_mount': '/srv/x'}, ['navidrome'], output=logged.append, client_factory=lambda app: Client()
+            )
+        self.assertEqual(pending, ['navidrome'])
+        self.assertEqual(updates[-1], {'state': 'needs_setup'})
+        self.assertIn('not verified (the app answered in a form setup does not know)', logged[-1])
         self.assertNotIn('hunter2', ' '.join(logged))
 
 
@@ -1212,23 +1224,43 @@ class GatewayConfirmationTests(unittest.TestCase):
 
         config = {'gateway': {'services': ['jellyfin', 'immich']}, 'accounts': {'enabled': True}}
         saved = []
+        self.said = []
         ctx = mock.Mock(
-            config=config, apply=True, log=lambda m: None, persist_config=lambda: saved.append(dict(config['gateway']))
+            config=config,
+            apply=True,
+            log=self.said.append,
+            persist_config=lambda: saved.append(dict(config['gateway'])),
         )
         entry = {'state': 'verified'} if verified else None
         with (
             mock.patch.object(gateway_tools, 'selected', return_value=['jellyfin', 'immich']),
             mock.patch('account_store.get', return_value=entry),
             mock.patch('sys.stdin.isatty', return_value=interactive),
-            mock.patch.object(gateway_tools.guided_setup, 'app_security', side_effect=AssertionError('asked')),
+            mock.patch('builtins.input', side_effect=AssertionError('asked')),
         ):
             return gateway_tools.configure(ctx, 'tailnet'), config['gateway'].get('confirmed_services')
 
     def test_verified_logins_confirm_the_apps_by_themselves(self):
         self.assertEqual(self.configure(verified=True, interactive=False), (True, ['jellyfin', 'immich']))
 
-    def test_unverified_logins_still_wait_for_a_person(self):
-        self.assertEqual(self.configure(verified=False, interactive=False), (False, None))
+    def test_unverified_logins_keep_the_addresses_off_and_nobody_is_asked_to_vouch(self):
+        """0.50.0, the wizard (T19): a person used to confirm it (in one place by typing
+        SECURED). Not verified is not safe: the addresses stay off, with the reason."""
+        import gateway_tools
+        import guided_setup
+        import questions
+
+        for interactive in (False, True):
+            self.assertEqual(self.configure(verified=False, interactive=interactive), (False, None))
+            self.assertIn('App addresses stay off: the login of Jellyfin, Immich could not be verified', self.said[-1])
+        self.assertFalse(hasattr(guided_setup, 'app_security'))
+        for gone in ('access_checked', 'apps_signed_in'):
+            self.assertNotIn(gone, questions.Q)
+        source = (Path(gateway_tools.__file__).parent / 'gateway_tools.py').read_text()
+        self.assertNotIn('SECURED', source)
+        # A server that does not keep the logins says so, and how to vouch in the settings.
+        off = {'accounts': {'enabled': False}}
+        self.assertIn('"confirmed_services" under "gateway"', gateway_tools.unverified_said(off, ['jellyfin']))
 
 
 class StackedMountTests(unittest.TestCase):
@@ -1336,7 +1368,7 @@ class OnboardingCompletionTests(unittest.TestCase):
                 with (
                     mock.patch.object(onboard, 'mount_ok', return_value=True),
                     mock.patch.object(onboard, 'report', return_value=[{'check': apps[0], 'status': 'pass'}]),
-                    mock.patch.object(onboard.subprocess, 'call') as call,
+                    mock.patch.object(onboard, 'run_program') as call,
                     mock.patch.object(onboard.media_readiness, 'check', return_value=[]),
                     mock.patch('builtins.print'),
                 ):
@@ -1362,14 +1394,15 @@ class OnboardingCompletionTests(unittest.TestCase):
             self.assertIn('Playback verification pending', logs[-1])
             out = []
             states = {'onboarding': {'status': 'success'}}
-            wizard.finishing_screen({'data_mount': d, 'profiles': {'full': ['onboarding']}}, states, output=out.append)
+            config = {'data_mount': d, 'profiles': {'full': ['onboarding']}, 'media': {'services': ['jellyfin']}}
+            wizard.finishing_screen(config, states, output=out.append)
             text = '\n'.join(out)
             self.assertIn('NekoServer is ready!', text)
             self.assertIn('Playback verification pending', text)
             onboarding.witness_playback(ctx, checkpoint=lambda *a, **k: True)
             self.assertTrue(onboarding.playback_record(ctx.config).exists())
             out = []
-            wizard.finishing_screen({'data_mount': d, 'profiles': {'full': ['onboarding']}}, states, output=out.append)
+            wizard.finishing_screen(config, states, output=out.append)
             self.assertNotIn('Playback verification pending', '\n'.join(out))
 
 
@@ -2523,6 +2556,23 @@ class NextcloudFirstInstallTests(unittest.TestCase):
             self.assertRaisesRegex(RuntimeError, 'did not finish installing within 15 minutes.*docker logs'),
         ):
             nextcloud.finish_install(self.BASE, lambda m: None, run=run, sleep=lambda s: None, now=lambda: next(clock))
+        checked.assert_not_called()
+
+    def test_a_status_or_log_read_that_hangs_while_it_starts_is_waited_through(self):
+        import subprocess
+
+        from modules import nextcloud
+
+        answered = self.fake(True, '')[0]
+        hung = iter([True, True, False])  # the first status read, then its log read, hang
+
+        def run(argv, **kwargs):
+            if next(hung, False):
+                raise subprocess.TimeoutExpired(argv, kwargs.get('timeout'))
+            return answered(argv, **kwargs)
+
+        with mock.patch.object(nextcloud, 'checked_run') as checked:
+            self.assertFalse(nextcloud.finish_install(self.BASE, lambda m: None, run=run, sleep=lambda s: None))
         checked.assert_not_called()
 
 

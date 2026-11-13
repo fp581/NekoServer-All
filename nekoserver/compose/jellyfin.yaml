@@ -9,8 +9,32 @@ services:
       TZ: "${NEKO_TZ}"
     volumes:
       - "${NEKO_DATA}/appdata/jellyfin:/config"
-      - "${NEKO_MEDIA}/library/movies:/data/movies:ro"
-      - "${NEKO_MEDIA}/library/tv:/data/tv:ro"
+      # Your files on a drive (or a share) of their own are bound in the long form with
+      # create_host_path false: when the drive is away, Docker does not make the folder on
+      # the disk Linux runs from, and this app does not start (drive-return starts it
+      # once the drive is back).
+      - type: bind
+        source: "${NEKO_MEDIA}/library/movies"
+        target: /data/movies
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${NEKO_MEDIA}/library/tv"
+        target: /data/tv
+        read_only: true
+        bind:
+          create_host_path: false
+      # Media you already have, used where it is (existing_media.py): each folder is
+      # mounted under library/existing by setup, and seen here as /data/existing/<kind>.
+      # rslave: a share that comes back after this app started is seen without a restart.
+      - type: bind
+        source: "${NEKO_MEDIA}/library/existing"
+        target: /data/existing
+        read_only: true
+        bind:
+          propagation: rslave
+          create_host_path: false
     devices:
       - /dev/dri:/dev/dri
     restart: unless-stopped

@@ -30,6 +30,7 @@ _recent = collections.deque(maxlen=40)  # the terminal's last lines, for a quest
 _pending = None  # {'seq', 'event', 'answer'} while a question waits
 _page = None  # a group of questions the window shows as one page (page()), while it is asked
 CONTEXT_LINES = 14
+LONGEST_ANSWER = 4000  # an answer from the window (a provider's cookie can be long)
 POLL = 0.3  # seconds between looks at the terminal and the window while waiting
 
 
@@ -109,7 +110,8 @@ def note(text):
 def question_kind(text, secret):
     if secret:
         return 'secret'
-    return 'yesno' if '[yes/no]' in text else 'text'
+    # "[yes/no]", and the short "[y/N]": the window answers both with Yes and No.
+    return 'yesno' if '[yes/no]' in text or re.search(r'\[[yY]/[nN]\]', text) else 'text'
 
 
 CUT = '\x00'  # in _recent: where the last answered question, or the step before, ended
@@ -148,6 +150,16 @@ def question_context():
     return lines[-CONTEXT_LINES:]
 
 
+def recent_lines(count=CONTEXT_LINES):
+    """The last lines the terminal printed (the installer's time stamps taken off): what a
+    window that follows a menu of its own, the recovery menu or the uninstaller, shows
+    between two questions."""
+    with _lock:
+        raw = [line for line in _recent if line != CUT]
+    lines = [STAMP.sub('', line).rstrip() for line in raw]
+    return [line for line in lines if line.strip()][-count:]
+
+
 _asked = {'text': None, 'context': []}  # the question asked last, and what was shown with it
 RETRY_LINES = 2  # at most this much new text: the same question asked again after a wrong answer
 
@@ -169,12 +181,16 @@ def question(text, secret=False):
     global _pending
     # A hidden entry's own words are shown too ("PIN:", "Same PIN again:"): only its answer is secret.
     shown = str(text).strip()[:300]
+    # A question of several lines (its hint, its choices by number, how to answer in the
+    # terminal) has printed them already: they are the question, not what came before it.
+    own = {line.strip() for line in str(text).splitlines()}
+    context = [line for line in context_for(shown, question_context()) if line.strip() not in own]
     record = event(
         'question',
         text=shown,
         secret=bool(secret),
         form=question_kind(shown, secret),
-        context=context_for(shown, question_context()),
+        context=context,
         page=page_shown(),
     )
     with _lock:
@@ -217,7 +233,7 @@ def answer_from_window(seq, text, skip=False, fields=None):
                 _page['skipped'] = True
             elif isinstance(fields, dict):
                 _page['answers'].update(
-                    {key: str(value)[:100] for key, value in fields.items() if key in _page['fields']}
+                    {key: str(value)[:LONGEST_ANSWER] for key, value in fields.items() if key in _page['fields']}
                 )
         return True
 
@@ -286,26 +302,75 @@ def page_answer(key):
         return None
 
 
+def screen_only(text):
+    """Words for the person at the terminal alone (a saved login shown on request): written
+    straight to the terminal, never kept among the last lines a question shows in the
+    window, so they are in no event."""
+    stream = sys.stdout._inner if isinstance(sys.stdout, _Tee) else sys.stdout
+    stream.write(text)
+    stream.flush()
+
+
+def ask_terminal(prompt):
+    """A question for the terminal alone ("Press Enter to hide it"): the window is not asked."""
+    screen_only(prompt)
+    return (_plain['input'] if _watching else _real_input)('')
+
+
+def page_field(key, ask, prompt):
+    """One field of the page being asked: what the window sent for it with an earlier
+    field's question, else the question itself (asked in both places). EOFError when the
+    window left the whole page ("Skip for now"), as Ctrl+D in the terminal raises."""
+    sent = page_answer(key)
+    if sent is not None:
+        if sent[0] == 'skip':
+            raise EOFError
+        return sent[1]
+    page_asks(key)
+    answer = ask(prompt)
+    page_answer(key)  # the window sends every field: this one's copy is not kept for a second ask
+    return answer
+
+
 @contextlib.contextmanager
-def in_terminal(what):
-    """A program of its own asks questions now (onboarding, music setup, smbpasswd):
-    its prompts reach only the terminal, so the window says to answer there."""
-    event('terminal', text=str(what)[:300])
-    try:
+def password_page(what, **rules):
+    """While this is active, a password (or PIN) chosen now and its second entry are one
+    page in the window: two hidden fields that must match before they are sent. The
+    terminal is still asked twice (page_field 'password', then 'again'). `rules` are what
+    the window checks before sending, as the caller checks them itself: `least` and
+    `most` (its length), `digits` (0-9 only), `optional` (both may be left empty).
+    Neither entry is ever in an event: the page's fields carry no values."""
+    with page('new_password', {'password': '', 'again': ''}, what=what, **rules):
         yield
+
+
+def run_program(script, args=()):
+    """One of NekoServer's own programs (onboard.py, media-connect.py, music-setup.py)
+    run inside this process, as `python3 script args` would run it. What it prints is
+    the terminal's, and every question it asks goes the way setup's own do, so the
+    window asks it too. (Until 0.50.0 these ran as programs of their own, whose
+    questions reached only the terminal, and the window said "answer in the terminal".)
+    Returns its exit code: what it ended with, 1 for an error it did not handle (said
+    in the terminal, as Python says it)."""
+    import runpy
+    import traceback
+
+    saved = sys.argv
+    sys.argv = [str(script), *(str(arg) for arg in args)]
+    try:
+        runpy.run_path(str(script), run_name='__main__')
+        return 0
+    # The program's own end (sys.exit), run inside setup: that program ends, setup goes on.
+    except SystemExit as stop:  # NOSONAR
+        if stop.code is None or isinstance(stop.code, int):
+            return stop.code or 0
+        print(stop.code, file=sys.stderr)  # sys.exit('a message'), as Python ends it
+        return 1
+    except Exception:  # any error of the program ends that program, not setup
+        traceback.print_exc()
+        return 1
     finally:
-        event('terminal_done')
-
-
-def terminal_handoff():
-    """What is being answered in the terminal right now, or None."""
-    with _lock:
-        for record in reversed(_events):
-            if record['kind'] == 'terminal_done':
-                return None
-            if record['kind'] == 'terminal':
-                return record['text']
-    return None
+        sys.argv = saved
 
 
 class _Unwatchable(Exception):
@@ -437,34 +502,71 @@ class _Tee:
         return getattr(self._inner, name)
 
 
+# ----- every question setup asks goes through these two
+
+_real_input, _real_getpass = builtins.input, getpass.getpass
+_plain = {'input': _real_input, 'getpass': _real_getpass}  # how to ask without the window
+_watching = False
+
+
+def asking_input(prompt=''):
+    """input(), asked in the window too while setup watches its prompts."""
+    return _ask_both(str(prompt), False) if _watching else _real_input(prompt)
+
+
+def asking_getpass(prompt='Password: ', stream=None):
+    """getpass.getpass(), asked in the window too (hidden there as well)."""
+    return _ask_both(str(prompt), True) if _watching else _real_getpass(prompt, stream)
+
+
+def own_prompts():
+    """Called first thing by a program that runs setup (installer.py, uninstaller.py),
+    before any other of NekoServer's files is loaded: input() and getpass() are the two
+    functions above from then on. A function that takes `input` as a default when its
+    file is loaded (`def ask(prompt=input)`) then holds this one, so its question
+    reaches the window whenever its file was loaded: before 0.50.0 that depended on the
+    file being loaded after the window started watching. Without a window watching
+    they ask the plain way."""
+    builtins.input, getpass.getpass = asking_input, asking_getpass
+
+
+def _ask_both(prompt, secret):
+    """A question put in the terminal and in the window; the first answer is the answer."""
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    question(prompt, secret=secret)
+    try:
+        answer = _wait_for_answer(sys.stdin, secret)
+    except BaseException:  # Ctrl+D, Ctrl+C: the window stops showing the question too
+        answered()
+        raise
+    if answer is None:
+        # The terminal can't be watched (not a real stream): the plain way, prompt shown already.
+        try:
+            return _plain['getpass']('') if secret else _plain['input']('')
+        finally:
+            answered()
+    answered()
+    return answer
+
+
 @contextlib.contextmanager
 def watching_prompts():
     """While this is active, every input() and getpass() setup asks is also asked in the
     window, and either can answer it."""
-    real_input, real_getpass, real_stdout = builtins.input, getpass.getpass, sys.stdout
-    sys.stdout = _Tee(real_stdout)
-
-    def asked(prompt, secret):
-        sys.stdout.write(prompt)
-        sys.stdout.flush()
-        question(prompt, secret=secret)
-        try:
-            answer = _wait_for_answer(sys.stdin, secret)
-        except BaseException:  # Ctrl+D, Ctrl+C: the window stops showing the question too
-            answered()
-            raise
-        if answer is None:
-            # The terminal can't be watched (not a real stream): the plain way, prompt shown already.
-            try:
-                return real_getpass('') if secret else real_input('')
-            finally:
-                answered()
-        answered()
-        return answer
-
-    builtins.input = lambda prompt='': asked(str(prompt), False)
-    getpass.getpass = lambda prompt='Password: ', stream=None: asked(str(prompt), True)
+    global _watching
+    before = (builtins.input, getpass.getpass, sys.stdout)
+    # Asked the plain way when the terminal can't be watched: whatever input() and
+    # getpass() were before (setup's own two stand for the real ones).
+    _plain.update(
+        input=_real_input if before[0] is asking_input else before[0],
+        getpass=_real_getpass if before[1] is asking_getpass else before[1],
+    )
+    sys.stdout = _Tee(before[2])
+    builtins.input, getpass.getpass = asking_input, asking_getpass
+    _watching = True
     try:
         yield
     finally:
-        builtins.input, getpass.getpass, sys.stdout = real_input, real_getpass, real_stdout
+        _watching = False
+        builtins.input, getpass.getpass, sys.stdout = before

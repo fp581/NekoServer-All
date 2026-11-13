@@ -43,7 +43,7 @@ class UnselectedAppTests(unittest.TestCase):
             )
             self.assertNotIn('-v', ran[0])
             self.assertTrue((compose / 'qbittorrent/compose.yaml').is_file())
-            self.assertIn('qbittorrent: not in media.services', logged[0])
+            self.assertIn('qbittorrent: not among your apps any more', logged[0])
 
     def test_nothing_to_stop_when_every_installed_app_is_selected(self):
         with tempfile.TemporaryDirectory() as d:

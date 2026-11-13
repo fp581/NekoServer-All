@@ -29,8 +29,10 @@ committing: that diff is the review of what the change does to the installed ser
 | `media-drive` | Photos, music and Nextcloud's files on the media drive (`locations`), no USB drive, the drives on a NAS (`network_storage.wanted`), HDD kept spinning, fan and lighting control off, a dashboard that also answers a Tailscale name, snapshots kept without limit. |
 | `before-0.48.0` | A settings file from before 0.48.0: no `backup_times`, each job's own time (`app_backup.time`, `host_backup.time`, `music.backup_time`, `photos.backup_time`/`backup_weekday`/`database_backup_time`, `maintenance.time`), the old daily photo schedule (`backup_schedule: legacy`), `hdd_policy: unchanged`. |
 | `past-midnight` | `backup_times` that cross midnight: weekly USB copy Sun 00:20 (so the Immich database copy lands on Sat 23:35), daily 23:30 (the host snapshot at 00:30), monthly 05:45 just before `night_end_hour` 6, Asia/Jerusalem, an exFAT USB drive. |
+| `no-media` | The shipped `config.json` with the media apps left out (`media_apps.wanted: false`, what a settings file says by hand; setup's first page saves a yes or no for each group, 0.50.0): no app backup, music backup, media check or Immich copy units, no `applications.json`; the photo backup copies Nextcloud alone; the dashboard and the monthly maintenance are told of no media app. |
+| `nfs-folders` | The media drive and the backup drive are folders a NAS shares over NFS (0.50.0): the drives' records name each folder's address, drive return waits for the SSD's device alone, the NAS check is on, the weekly copy is told the backup folder's address (`backup_drive.export`). |
 
-In every configuration the optional jobs are switched on (`monitoring.enabled`,
+In every configuration but `no-media` the optional jobs are switched on (`monitoring.enabled`,
 `music.backup_enabled`, `photos.deploy_immich`, `nextcloud.enabled`) so that each producer
 renders; the shipped file leaves them off until setup asks.
 
@@ -58,6 +60,17 @@ Machine facts that are not settings are fixed in the test: the drives' UUIDs, th
 desktop account for host snapshots, `systemd-escape`'s answers for the drive devices and
 mount units, systemd's socket proxy at `/usr/lib/systemd/systemd-socket-proxyd`, and the
 Tailscale name of the `media-drive` dashboard.
+
+`questions.txt` is not a file setup writes either: it lists every question setup, the recovery
+menu and the uninstaller ask, read from the source by `tests/test_question_texts.py` (0.50.0), so
+a change to a question shows in review. Write it again with
+`NEKO_UPDATE_GOLDEN=1 python3 -m unittest tests.test_question_texts`.
+
+`drive-questions.txt` is not a file setup writes: it is the whole conversation of the drive
+questions (0.50.0: the list of everything connected, each question, the refusals, the
+confirmation, a rerun's "Last time ...", a PC with no drive to use), held so that a change
+to their words shows in review. `tests/test_drive_table.py` makes it; write it again with
+`NEKO_UPDATE_GOLDEN=1 python3 -m unittest tests.test_drive_table`.
 
 Not frozen here, and why: the heartbeat's and the phone alerts' private files (they hold
 the URL and token you typed), the gateway's `/etc/nekoserver-gateway/storage.json` and

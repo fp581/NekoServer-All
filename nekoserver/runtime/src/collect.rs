@@ -67,7 +67,7 @@ fn made_on_this_drive(id: &str, s: &Value, usb: &str) -> bool {
     if id.starts_with("usb_") && !usb.is_empty() {
         return drive == Some(usb);
     }
-    !drive.is_some_and(|drive| drive != usb)
+    drive.is_none_or(|drive| drive == usb)
 }
 /// Every monitored job; notify.rs names an alert for each (checked by a test).
 pub(crate) const JOBS: [(&str, &str, &str, f64); 10] = [
@@ -278,7 +278,7 @@ fn mount_info(path: &Path, expected: Option<&str>, fstype: &str) -> Value {
     if expected == Some("") {
         return json!({"status":"not_configured"});
     }
-    let s = match common::findmnt("UUID,FSTYPE,SOURCE", "--mountpoint", path, 8) {
+    let s = match common::drive_at(path, 8) {
         Ok(found) => found.unwrap_or_default(),
         // findmnt killed after its 8 s: it reads the filesystem's label block, which a
         // drive saturated by a backup can hold back. The kernel's mount table says the
@@ -630,31 +630,80 @@ fn mounted_details(
         )
     };
 }
-fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, Vec<Value>, bool, bool)> {
-    let rows = [
-        ("os", "OS SSD", PathBuf::from("/"), None, ""),
+/// What a drive beyond the two holds, for its card's name: the kinds of files placed
+/// on it ("locations") and the apps installed on it ("installed"), as the settings say.
+fn extra_drive_name(cfg: &Value, drive: &str) -> String {
+    let on_it = |section: &str| -> Vec<String> {
+        cfg[section]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(_, placed)| placed.as_str() == Some(drive))
+            .map(|(what, _)| chars(what, 20))
+            .collect()
+    };
+    let (files, apps) = (on_it("locations"), on_it("installed"));
+    let mut holds = vec![];
+    if !files.is_empty() {
+        holds.push(format!("files: {}", files.join(", ")));
+    }
+    if !apps.is_empty() {
+        holds.push(format!("apps: {}", apps.join(", ")));
+    }
+    format!("Drive {drive} ({})", holds.join("; "))
+}
+/// The drives the cards show: the disk Linux runs from, the two every server has, and
+/// every other drive something is placed on (0.50.0), each as (id, name, where it is
+/// mounted, the UUID it must have, its filesystem).
+type DriveCard = (String, String, PathBuf, Option<String>, String);
+fn storage_rows(cfg: &Value) -> Result<Vec<DriveCard>> {
+    let saved = |key: &str, field: &str| text(&cfg["storage"][key][field]).to_string();
+    let mut rows = vec![
         (
-            "data_ssd",
-            "Application SSD",
-            common::mount_path(text(&cfg["data_mount"]))?,
-            Some(text(&cfg["storage"]["data_ssd"]["uuid"])),
-            text(&cfg["storage"]["data_ssd"]["fstype"]),
+            "os".to_string(),
+            "OS SSD".to_string(),
+            PathBuf::from("/"),
+            None,
+            String::new(),
         ),
         (
-            "media_hdd",
-            "Media HDD",
+            "data_ssd".to_string(),
+            "Application SSD".to_string(),
+            common::mount_path(text(&cfg["data_mount"]))?,
+            Some(saved("data_ssd", "uuid")),
+            saved("data_ssd", "fstype"),
+        ),
+        (
+            "media_hdd".to_string(),
+            "Media HDD".to_string(),
             common::mount_path(text(&cfg["media_mount"]))?,
-            Some(text(&cfg["storage"]["media_hdd"]["uuid"])),
-            text(&cfg["storage"]["media_hdd"]["fstype"]),
+            Some(saved("media_hdd", "uuid")),
+            saved("media_hdd", "fstype"),
         ),
     ];
+    for drive in common::drives_in_use(cfg) {
+        if let Some(folder) = common::drive_folder(cfg, &drive) {
+            let name = extra_drive_name(cfg, &drive);
+            let (uuid, fs) = (saved(&drive, "uuid"), saved(&drive, "fstype"));
+            rows.push((drive, name, folder, Some(uuid), fs));
+        }
+    }
+    Ok(rows)
+}
+fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, Vec<Value>, bool, bool)> {
     let mut disks = vec![];
     let mut mounted = vec![];
     let mut data_ok = false;
     let mut media_ok = false;
-    for (key, name, path, expected, fs) in rows {
+    for (key, name, path, expected, fs) in storage_rows(cfg)? {
+        let (key, name, expected, fs) = (
+            key.as_str(),
+            name.as_str(),
+            expected.as_deref(),
+            fs.as_str(),
+        );
         let info = app_drive(cfg, key, &path, expected, fs);
-        let mut r = json!({"id":key,"name":name,"mount":path,"status":info["status"],"total":null,"used":null,"used_percent":null,"smart":{"status":"unknown","checked_at":null}});
+        let mut r = drive_row(key, name, &path, &info["status"]);
         if info["status"] == "mounted" {
             let source = text(&info["source"]);
             mounted_details(&mut r, cfg, cache, now, (key, &path, source, fs, expected));
@@ -672,6 +721,12 @@ fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, Vec<Value
         disks.push(r)
     }
     Ok((json!(disks), mounted, data_ok, media_ok))
+}
+/// One drive's row in the readings before its details are known: its space ("total"
+/// and "used", in bytes) is filled in once it is mounted (mounted_details). Whatever
+/// reads a drive's row (the page, the alerts, Ask Neko's summary) reads this shape.
+pub(crate) fn drive_row(key: &str, name: &str, path: &Path, status: &Value) -> Value {
+    json!({"id":key,"name":name,"mount":path,"status":status,"total":null,"used":null,"used_percent":null,"smart":{"status":"unknown","checked_at":null}})
 }
 /// The NekoServer drives (by their ids and names) an array holds: the SSD mounted from
 /// /dev/md0 belongs to the RAID1 row md0, so its alerts can say which drive is at risk.
@@ -918,16 +973,13 @@ fn applications(
         }
     };
     let now = common::now();
-    let selected = cfg["media"]["services"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    let selected = common::media_services(cfg);
     let mut out = vec![];
     for &(app, name, description, port) in APPS.iter() {
-        if !selected.iter().any(|v| v == app)
-            && !(app == "immich" && cfg["photos"]["deploy_immich"] == true)
-            && !(app == "nextcloud" && cfg["nextcloud"]["enabled"] == true)
-        {
+        let wanted = selected.contains(&app)
+            || (app == "immich" && common::immich_wanted(cfg))
+            || (app == "nextcloud" && cfg["nextcloud"]["enabled"] == true);
+        if !wanted {
             continue;
         }
         let project = format!("neko-{app}");
@@ -1178,14 +1230,42 @@ fn parse_startup(out: &str) -> Vec<Value> {
 /// Why a job is intentionally not part of this server now (its app or backup switched
 /// off), or None when its schedule is expected.
 fn retired(cfg: &Value, key: &str) -> Option<&'static str> {
-    let immich = cfg["photos"]["deploy_immich"] == true;
+    let immich = common::immich_wanted(cfg);
     match key {
-        "music" if cfg["music"]["backup_enabled"] == false => {
+        // Music on a drive of its own is copied whatever the switch says (gate run C7,
+        // neko_common.music_backed_up).
+        "music"
+            if cfg["music"]["backup_enabled"] == false
+                && !cfg["locations"]["music"]
+                    .as_str()
+                    .is_some_and(|d| d != "ssd" && d != "media") =>
+        {
             Some("Switched off: the music backup is turned off in the settings")
+        }
+        "music" if !common::media_group(cfg, "music") => {
+            Some("Switched off: Music (Navidrome) is left out")
+        }
+        // The nightly app backup is of the media apps: off when none of them is set up
+        // (their groups off, or a list of apps that is empty).
+        "applications"
+            if cfg["media"]["services"].is_array() && common::media_services(cfg).is_empty()
+                || !(common::media_group(cfg, "movies") || common::media_group(cfg, "music")) =>
+        {
+            Some("Switched off: the media apps are left out")
         }
         "archive" | "database" if !immich => Some("Switched off: Immich is not set up"),
         "external" if !immich && cfg["nextcloud"]["enabled"] != true => {
             Some("Switched off: neither Immich nor Nextcloud is set up")
+        }
+        // "None for now" on setup's storage page (modules/storage.py OFFLINE_WANTED).
+        "external"
+            if cfg["photos"]["external_backup_wanted"] == false
+                && cfg["photos"]["external_backup_uuid"]
+                    .as_str()
+                    .unwrap_or("")
+                    .is_empty() =>
+        {
+            Some("Switched off: no removable drive was chosen for the offline backup")
         }
         _ => None,
     }
@@ -1193,7 +1273,7 @@ fn retired(cfg: &Value, key: &str) -> Option<&'static str> {
 /// The witnessed restore tests (acceptance.py manual tests) that show this backup can
 /// be restored: one per kind of data it holds.
 fn restore_tests(cfg: &Value, key: &str) -> Value {
-    let immich = cfg["photos"]["deploy_immich"] == true;
+    let immich = common::immich_wanted(cfg);
     let cloud = cfg["nextcloud"]["enabled"] == true;
     let tests: Vec<&str> = match key {
         "archive" | "database" => vec!["independent_restore"],
@@ -2163,16 +2243,84 @@ fn held_apps(s: &Value) -> Vec<&str> {
         .into_iter()
         .flatten()
         .any(|d| d["id"] != "os" && d["status"] != "mounted");
-    if !away && !nas_held(s) {
-        return vec![];
-    }
+    // The apps stopped while a shared folder of yours does not answer (shared_folders.rs).
+    let for_shares: Vec<&str> = s["shared_folders"]["held"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    let any_stopped = away || nas_held(s);
     s["applications"]
         .as_array()
         .into_iter()
         .flatten()
         .filter(|a| ["exited", "created", "dead"].contains(&text(&a["state"])))
+        .filter(|a| any_stopped || for_shares.contains(&text(&a["id"])))
         .map(|a| text(&a["name"]))
         .filter(|n| !n.is_empty())
+        .collect()
+}
+/// What the check of your shared folders found (shared_folders.rs), from its report on
+/// the app SSD: each folder, the share it is on, whether it answers, and the apps it
+/// stopped. Null without one.
+fn shared_folders(data: &Path, ok: bool) -> Value {
+    if !ok {
+        return Value::Null;
+    }
+    let found = common::json(&data.join("reports/shared-folders.json"), 64000);
+    if found["shares"].is_array() {
+        found
+    } else {
+        Value::Null
+    }
+}
+/// The name the page uses for an app id ("jellyfin" is "Jellyfin").
+fn shown_app(id: &str) -> &str {
+    APPS.iter().find(|a| a.0 == id).map_or(id, |a| a.1)
+}
+/// The share answers, and only its place in the library is missing, because that place
+/// is on one of the drives that is away (gate run C9): that drive's alert says it.
+fn only_its_drive_away(s: &Value, row: &Value) -> bool {
+    let point = text(&row["point"]);
+    row["answers"] == true
+        && !point.is_empty()
+        && s["storage"].as_array().into_iter().flatten().any(|d| {
+            let mount = text(&d["mount"]).trim_end_matches('/');
+            d["status"] != "mounted" && !mount.is_empty() && point.starts_with(&format!("{mount}/"))
+        })
+}
+/// One alert for each shared folder of yours that does not answer, naming the share,
+/// the folder and the apps stopped for it.
+fn share_alerts(s: &Value) -> Vec<(String, String, String)> {
+    s["shared_folders"]["shares"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|row| row["ready"] == false && !only_its_drive_away(s, row))
+        .map(|row| {
+            let apps: Vec<&str> = row["apps"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(shown_app)
+                .collect();
+            let stopped = if apps.is_empty() {
+                "Nothing is written in its place.".to_string()
+            } else {
+                format!("{} stopped until it is back, so nothing is written in its place.", apps.join(", "))
+            };
+            (
+                format!("share:{}", chars(text(&row["holds"]), 20)),
+                format!("Your shared folder {} does not answer", chars(text(&row["share"]), 80)),
+                format!(
+                    "{} on {} is not connected. {stopped} Switch the network storage box on (or check its network): the folder is connected again and the apps start by themselves within a minute.",
+                    chars(text(&row["path"]), 120),
+                    chars(text(&row["share"]), 80)
+                ),
+            )
+        })
         .collect()
 }
 /// Marks the apps stopped on purpose (`held`), so the page says the drive's one alert
@@ -2186,11 +2334,95 @@ fn mark_held(s: &mut Value) {
         }
     }
 }
+/// The steps of setup that failed in its last run, as setup wrote them down
+/// (installer.py, reports/setup-unfinished.json): each with its reason and, when the
+/// reason is a kind setup knows a fix for (known_fixes.py), the fix. Only what the page
+/// shows is kept, cut to a sensible length; anything else in the file is dropped.
+fn setup_unfinished(report: &Value) -> Value {
+    let steps: Vec<Value> = report["steps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|step| !text(&step["id"]).is_empty() && !text(&step["title"]).is_empty())
+        .take(40)
+        .map(|step| {
+            let fix_steps: Vec<String> = step["fix"]["steps"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .take(6)
+                .map(|line| chars(line, 600))
+                .collect();
+            json!({"id": chars(text(&step["id"]), 60), "title": chars(text(&step["title"]), 120),
+                "reason": chars(text(&step["reason"]), 1000),
+                "fix": chars(text(&step["fix"]["title"]), 200), "fix_steps": fix_steps})
+        })
+        .collect();
+    json!({ "unfinished": steps })
+}
+/// What Needs attention says of a setup step that failed: its reason, the fix when
+/// there is one, and the command to run. Setup itself is never started from the page:
+/// that would be root's setup run from a web page.
+fn setup_step_detail(step: &Value) -> String {
+    let mut said = text(&step["reason"]).trim().to_string();
+    if !said.is_empty() && !said.ends_with(['.', '!', '?']) {
+        said.push('.');
+    }
+    let fix = text(&step["fix"]);
+    if !fix.is_empty() {
+        said.push_str(&format!(" What usually fixes it: {fix}."));
+        for (number, line) in step["fix_steps"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter(|line| !line.starts_with("Then press Retry"))
+            .enumerate()
+        {
+            said.push_str(&format!(" {}. {line}", number + 1));
+        }
+    }
+    said.push_str(" Then, in a terminal on the server, run  sudo bash install.sh  : it carries on with this step and leaves what is done as it is. (Setup is never started from this page.)");
+    said.trim().to_string()
+}
+/// Where the backups are kept, for the page: on the same filesystem as what they copy
+/// (one drive for the apps, the media and the backups, or the disk Linux runs from), and
+/// whether a weekly copy goes to a USB drive of its own.
+fn backup_place(cfg: &Value) -> Value {
+    json!({
+        "same_drive": common::roles_share_one_filesystem(cfg),
+        "offline": !text(&cfg["photos"]["external_backup_uuid"]).is_empty(),
+    })
+}
+/// Said for as long as the backups are on the drive they copy and no copy goes anywhere
+/// else (the placement design's standing item; setup said it once, before choosing it).
+const SAME_DRIVE: &str = "One drive holds the apps, your files and their backups. The backups protect you from a mistake (a file deleted or changed), not from losing that drive. Add a second drive for the backups, or a USB drive for the weekly copy, and run setup again.";
 pub(crate) fn alerts(s: &Value) -> Value {
     let mut out = vec![];
     let mut add = |id: String, level: &str, title: String, detail: &str| {
         out.push(json!({"id":id,"level":level,"title":title,"detail":detail}))
     };
+    for (id, title, detail) in share_alerts(s) {
+        add(id, "critical", title, &detail);
+    }
+    if s["backup_place"]["same_drive"] == true && s["backup_place"]["offline"] != true {
+        add(
+            "backup:same-drive".into(),
+            "warning",
+            "Your backups are on the same drive as your files".into(),
+            SAME_DRIVE,
+        );
+    }
+    // A step of setup that failed in its last run: said until a later run finishes it.
+    for step in s["setup"]["unfinished"].as_array().into_iter().flatten() {
+        add(
+            format!("setup:{}", text(&step["id"])),
+            "warning",
+            format!("Setup: {} did not finish", text(&step["title"])),
+            &setup_step_detail(step),
+        );
+    }
     // Alerts that fail to reach anyone are still said on the page.
     if s["notifications"]["status"] == "fail" {
         add(
@@ -2651,7 +2883,8 @@ pub fn job_states(a: &Args) -> Result<()> {
         checked("data_ssd", "data_mount")?,
         checked("media_hdd", "media_mount")?,
     );
-    let apart = !matches!((&data, &media), (Some(a), Some(b)) if a == b);
+    let apart = common::roles_share_one_filesystem(&cfg)
+        || !matches!((&data, &media), (Some(a), Some(b)) if a == b);
     let ok = data.is_some() && apart;
     let media_ok = media.is_some() && apart;
     let states = json!({
@@ -2722,6 +2955,11 @@ pub fn run(a: &Args) -> Result<()> {
     let (apps, containers, services) = applications(&cfg, report.as_ref(), ok.then_some(data));
     let mut result = json!({"format":"neko-dashboard-v1","version":VERSION,"generated_at":now,"metrics":host,"history":history,"storage":disks,"applications":apps,"backups":backups(&cfg,now,ok,away),"media":media(report.as_ref()),"recovery":recovery(&cfg,ok,media_ok),"heartbeat":heartbeat(&cfg,now),"acceptance":acceptance(&if ok{common::json(&data.join("reports/acceptance/latest.json"),2_000_000)}else{empty()},&cfg,now)});
     result["notifications"] = notification_status(now);
+    result["setup"] = setup_unfinished(&if ok {
+        common::json(&data.join("reports/setup-unfinished.json"), 200_000)
+    } else {
+        empty()
+    });
     result["containers"] = containers;
     result["container_services"] = services;
     result["gpu_telemetry"] = gpu_telemetry();
@@ -2773,6 +3011,8 @@ pub fn run(a: &Args) -> Result<()> {
     };
     result["integrity"] = integrity(data, ok, away, text(&cfg["photos"]["external_backup_uuid"]));
     result["backup_key"] = json!(backup_key_ready());
+    result["backup_place"] = backup_place(&cfg);
+    result["shared_folders"] = shared_folders(data, ok);
     result["tailscale"] = tailscale_login(now);
     result["network_storage"] = network_storage(&cfg, Path::new("/sys/class/iscsi_session"));
     result["arrays"] = arrays;
@@ -2823,6 +3063,107 @@ fn unwritable(result: &mut Value, why: &str) {
 #[cfg(test)]
 mod os_tests {
     use super::*;
+    /// Gate run C8: the share of your films does not answer: the page names it, the
+    /// folder and the apps stopped for it, and counts those as stopped on purpose.
+    #[test]
+    fn a_shared_folder_that_does_not_answer_is_named_with_its_apps() {
+        let s = json!({
+            "storage": [{"id": "data_ssd", "status": "mounted"}, {"id": "media_hdd", "status": "mounted"}],
+            "applications": [
+                {"id": "jellyfin", "name": "Jellyfin", "state": "exited"},
+                {"id": "radarr", "name": "Radarr", "state": "exited"},
+                {"id": "prowlarr", "name": "Prowlarr", "state": "running"},
+                {"id": "navidrome", "name": "Navidrome", "state": "exited"},
+            ],
+            "shared_folders": {"held": ["jellyfin", "radarr"], "shares": [
+                {"holds": "movies", "path": "/mnt/tank/films", "share": "nas:/tank", "ready": false, "apps": ["jellyfin", "radarr"]},
+                {"holds": "music", "path": "/mnt/tank/music", "share": "nas:/music", "ready": true, "apps": ["navidrome"]},
+            ]},
+        });
+        let shown = alerts(&s);
+        let found: Vec<&Value> = shown
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|a| text(&a["id"]).starts_with("share:"))
+            .collect();
+        assert_eq!(found.len(), 1, "{shown}");
+        assert_eq!(found[0]["id"], "share:movies");
+        assert_eq!(
+            found[0]["title"],
+            "Your shared folder nas:/tank does not answer"
+        );
+        let detail = text(&found[0]["detail"]);
+        assert!(detail.starts_with("/mnt/tank/films on nas:/tank is not connected. Jellyfin, Radarr stopped until it is back"), "{detail}");
+        // Held on purpose: those two; Navidrome, stopped for another reason, is not.
+        assert_eq!(held_apps(&s), ["Jellyfin", "Radarr"]);
+        // No report: nothing said, nothing held.
+        let plain = json!({"storage": s["storage"], "applications": s["applications"]});
+        assert!(held_apps(&plain).is_empty());
+        assert!(!alerts(&plain).to_string().contains("share:"));
+    }
+    /// Gate run C9: the music's own drive away and its share up says the drive's alert
+    /// only; the share away and the drive up says the share's alert only.
+    #[test]
+    fn a_share_shown_on_a_drive_that_is_away_is_the_drives_alert_not_the_shares() {
+        let point = "/mnt/nekoserver-drives/d3/library/existing/music";
+        let with = |answers: bool, drive: &str| {
+            json!({
+                "storage": [
+                    {"id": "data_ssd", "name": "App SSD", "mount": "/srv/nekoserver", "status": "mounted"},
+                    {"id": "media_hdd", "name": "Media HDD", "mount": "/mnt/nekoserver-media", "status": "mounted"},
+                    {"id": "d3", "name": "Drive d3", "mount": "/mnt/nekoserver-drives/d3", "status": drive},
+                ],
+                "applications": [{"id": "navidrome", "name": "Navidrome", "state": "exited"}],
+                "shared_folders": {"held": ["navidrome"], "shares": [
+                    {"holds": "music", "path": "/mnt/tank/music", "share": "nas:/music", "ready": false,
+                     "answers": answers, "point": point, "apps": ["navidrome"]},
+                ]},
+            })
+        };
+        let ids = |s: &Value| -> Vec<String> {
+            alerts(s)
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| text(&a["id"]).to_string())
+                .filter(|id| id.starts_with("share:") || id.starts_with("mount:"))
+                .collect()
+        };
+        assert_eq!(ids(&with(true, "missing")), ["mount:d3"]);
+        assert_eq!(ids(&with(false, "mounted")), ["share:music"]);
+        // An older report, with no "answers": as before, the share's alert.
+        let mut older = with(true, "missing");
+        older["shared_folders"]["shares"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("answers");
+        assert!(ids(&older).contains(&"share:music".to_string()));
+    }
+    /// Gate run B3: with one drive for everything, the dashboard keeps saying that the
+    /// backups are on it, until a USB drive takes a weekly copy (or setup moves them).
+    #[test]
+    fn a_backup_on_the_drive_it_copies_is_a_standing_item() {
+        let role = |folder: &str, kept: &str| json!({"uuid": "one-1", "fstype": "ext4", "folder": folder, "subvolume": kept});
+        let one = json!({"storage": {
+            "data_ssd": role("/mnt/nekoserver-drives/one/nekoserver/apps", "/nekoserver/apps"),
+            "media_hdd": role("/mnt/nekoserver-drives/one/nekoserver/media", "/nekoserver/media")}});
+        let ids = |cfg: &Value| -> Vec<String> {
+            let shown = alerts(&json!({"backup_place": backup_place(cfg)}));
+            shown
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| text(&a["id"]).to_string())
+                .collect()
+        };
+        assert!(ids(&one).contains(&"backup:same-drive".to_string()));
+        let mut with_usb = one.clone();
+        with_usb["photos"] = json!({"external_backup_uuid": "usb-1"});
+        assert!(!ids(&with_usb).contains(&"backup:same-drive".to_string()));
+        let two = json!({"storage": {"data_ssd": {"uuid": "a"}, "media_hdd": {"uuid": "b"}}});
+        assert!(!ids(&two).contains(&"backup:same-drive".to_string()));
+    }
     #[test]
     fn readings_count_as_late_by_one_rule_written_into_them() {
         assert_eq!(late_after(60), 180);
@@ -2885,6 +3226,48 @@ mod os_tests {
         assert!(start.elapsed() < Duration::from_secs(1));
         // A drive that answers is shown as usual.
         assert!(usage(Path::new("/")).is_some());
+    }
+    #[test]
+    fn a_setup_step_that_failed_is_said_with_its_fix_and_the_command() {
+        // 0.50.0, item 7: the dashboard gives the fix and the command; it never runs setup.
+        let report = json!({"format": "neko-setup-unfinished-v1", "steps": [
+            {"id": "docker", "title": "Docker", "reason": "Cannot connect to the Docker daemon",
+             "fix": {"id": "docker_down", "title": "Docker, which runs the apps, is not running",
+                     "steps": ["Start it:  sudo systemctl start docker", "Then press Retry this step (or answer yes)."]}},
+            {"id": "media", "title": "Movie, TV and music apps", "reason": "something else", "fix": null},
+            {"id": "", "title": "no id"}, {"title": 7}]});
+        let setup = setup_unfinished(&report);
+        assert_eq!(setup["unfinished"].as_array().unwrap().len(), 2);
+        let shown = alerts(&json!({"setup": setup}));
+        assert_eq!(shown[0]["id"], "setup:docker");
+        assert_eq!(shown[0]["level"], "warning");
+        assert_eq!(shown[0]["title"], "Setup: Docker did not finish");
+        let detail = shown[0]["detail"].as_str().unwrap();
+        assert!(detail.starts_with("Cannot connect to the Docker daemon. What usually fixes it: Docker, which runs the apps, is not running. 1. Start it:  sudo systemctl start docker Then, in a terminal"), "{detail}");
+        assert!(detail.contains("sudo bash install.sh"));
+        assert!(detail.contains("Setup is never started from this page"));
+        assert!(
+            !detail.contains("Retry this step"),
+            "the page has no Retry: {detail}"
+        );
+        // No fix known: the reason and the command.
+        let plain = shown[1]["detail"].as_str().unwrap();
+        assert!(
+            plain.starts_with("something else. Then, in a terminal on the server"),
+            "{plain}"
+        );
+        // No report, an empty one or a broken one: nothing is said.
+        for none in [
+            json!({}),
+            json!({"steps": []}),
+            json!({"steps": "x"}),
+            json!(null),
+        ] {
+            assert_eq!(
+                alerts(&json!({"setup": setup_unfinished(&none)})),
+                json!([])
+            );
+        }
     }
     #[test]
     fn failing_alert_delivery_is_said_on_the_page() {
@@ -2980,6 +3363,15 @@ mod os_tests {
         }
     }
     #[test]
+    fn music_on_a_drive_of_its_own_is_backed_up_whatever_the_switch() {
+        let off = json!({"music": {"backup_enabled": false}});
+        assert!(retired(&off, "music").is_some());
+        let own = json!({"music": {"backup_enabled": false}, "locations": {"music": "d3"}});
+        assert!(retired(&own, "music").is_none());
+        let beside = json!({"music": {"backup_enabled": false}, "locations": {"music": "media"}});
+        assert!(retired(&beside, "music").is_some());
+    }
+    #[test]
     fn jobs_of_a_switched_off_app_are_retired_not_overdue() {
         let both = json!({"photos":{"deploy_immich":true},"nextcloud":{"enabled":true}});
         for key in ["music", "archive", "database", "external", "host"] {
@@ -2989,10 +3381,43 @@ mod os_tests {
         assert!(retired(&cloud_only, "archive").is_some());
         assert!(retired(&cloud_only, "database").is_some());
         assert_eq!(retired(&cloud_only, "external"), None);
+        // "None for now" for the offline backup (setup's storage page): off by choice,
+        // until a drive is chosen after all.
+        let no_usb = json!({"photos":{"deploy_immich":true,"external_backup_wanted":false},
+            "nextcloud":{"enabled":true}});
+        assert!(retired(&no_usb, "external").is_some());
+        let usb_after_all = json!({"photos":{"deploy_immich":true,"external_backup_wanted":false,
+            "external_backup_uuid":"cccc-3333"},"nextcloud":{"enabled":true}});
+        assert_eq!(retired(&usb_after_all, "external"), None);
         let neither = json!({"photos":{"deploy_immich":false},"music":{"backup_enabled":false}});
         assert!(retired(&neither, "external").is_some());
         assert!(retired(&neither, "music").is_some());
         assert_eq!(retired(&neither, "applications"), None);
+        // The media apps left out (0.50.0): their backups are off, the others expected.
+        let no_media = json!({"media_apps":{"wanted":false},"photos":{"deploy_immich":true},
+            "nextcloud":{"enabled":true}});
+        for key in ["music", "applications", "archive", "database"] {
+            assert!(retired(&no_media, key).is_some(), "{key}");
+        }
+        for key in ["external", "host"] {
+            assert_eq!(retired(&no_media, key), None, "{key}");
+        }
+        // One group off (0.50.0): only that group's backups are off.
+        let apps = json!(["jellyfin", "navidrome"]);
+        let no_music = json!({"media_apps":{"music":false},"media":{"services":apps},
+            "photos":{"deploy_immich":true}});
+        assert!(retired(&no_music, "music").is_some());
+        for key in ["applications", "archive", "database"] {
+            assert_eq!(retired(&no_music, key), None, "{key}");
+        }
+        let photos_only = json!({"media_apps":{"movies":false,"music":false},
+            "media":{"services":apps},"photos":{"deploy_immich":true}});
+        for key in ["music", "applications"] {
+            assert!(retired(&photos_only, key).is_some(), "{key}");
+        }
+        for key in ["archive", "database", "external"] {
+            assert_eq!(retired(&photos_only, key), None, "{key}");
+        }
     }
     #[test]
     fn a_wanted_schedule_that_stopped_is_flagged() {
@@ -3774,6 +4199,36 @@ mod user_panel_tests {
             app_drive(&json!({}), "os", Path::new("/nonexistent-neko"), None, "")["status"],
             "missing"
         );
+    }
+    /// A drive beyond the two (0.50.0: a group's files, or its apps, on a drive of
+    /// their own) has a card like the two, named by what it holds; a server with
+    /// nothing placed there has the three cards it always had.
+    #[test]
+    fn a_drive_something_is_placed_on_has_its_own_card() {
+        let plain = json!({"data_mount": "/srv/nekoserver", "media_mount": "/mnt/nekoserver-media",
+            "storage": {"data_ssd": {"uuid": "u1", "fstype": "ext4"}, "media_hdd": {"uuid": "u2", "fstype": "xfs"}}});
+        let ids = |cfg: &Value| -> Vec<String> {
+            storage_rows(cfg)
+                .unwrap()
+                .into_iter()
+                .map(|row| row.0)
+                .collect()
+        };
+        assert_eq!(ids(&plain), ["os", "data_ssd", "media_hdd"]);
+        let mut placed = plain.clone();
+        placed["storage"]["d3"] = json!({"uuid": "u3", "fstype": "ext4"});
+        placed["storage"]["d4"] = json!({"uuid": "u4", "fstype": "ext4"});
+        placed["locations"] = json!({"photos": "d3", "music": "ssd"});
+        placed["installed"] = json!({"immich": "d3"});
+        let rows = storage_rows(&placed).unwrap();
+        assert_eq!(rows.len(), 4, "a drive nothing is placed on has no card");
+        let (id, name, folder, uuid, fs) = rows[3].clone();
+        assert_eq!(
+            (id.as_str(), name.as_str()),
+            ("d3", "Drive d3 (files: photos; apps: immich)")
+        );
+        assert_eq!(folder, Path::new("/mnt/nekoserver-drives/d3"));
+        assert_eq!((uuid.as_deref(), fs.as_str()), (Some("u3"), "ext4"));
     }
     #[test]
     fn a_failing_job_stays_a_failure_and_a_switched_off_timer_is_never_late() {

@@ -10,8 +10,31 @@ services:
       - "${NEKO_BIND}:8080:8080"
     volumes:
       - "${NEKO_DATA}/appdata/qbittorrent:/config"
-      - "${NEKO_MEDIA}/library:/data"
-      - "${NEKO_MUSIC}/library/downloads/music:/data/downloads/music"
+      # Your files on a drive (or a share) of their own are bound in the long form with
+      # create_host_path false: when the drive is away, Docker does not make the folder on
+      # the disk Linux runs from, and this app does not start (drive-return starts it
+      # once the drive is back).
+      - type: bind
+        source: "${NEKO_MEDIA}/library"
+        target: /data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${NEKO_MUSIC}/library/downloads/music"
+        target: /data/downloads/music
+        bind:
+          create_host_path: false
+      # Media you already have (existing_media.py): the folders setup mounts under
+      # library/existing are seen at /data/existing/<kind>, the path Jellyfin and Navidrome
+      # use. A mount of its own with rslave: a share that comes back, or a folder chosen
+      # after this app started, is seen without a restart. Whether it can be written is
+      # the mount's own setting (read-only unless new files are saved there).
+      - type: bind
+        source: "${NEKO_MEDIA}/library/existing"
+        target: /data/existing
+        bind:
+          propagation: rslave
+          create_host_path: false
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

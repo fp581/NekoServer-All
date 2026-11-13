@@ -227,7 +227,7 @@ fn allowed(port: u16, public: Option<&str>) -> (Vec<String>, Vec<String>) {
 }
 
 /// How long the web server waits for the control service's answer.
-const CONTROL_WAIT: Duration = Duration::from_secs(15);
+pub(crate) const CONTROL_WAIT: Duration = Duration::from_secs(15);
 /// Largest request body accepted (fan curves and colours are small).
 const MAX_BODY: usize = 4096;
 
@@ -882,7 +882,9 @@ fn ask(
         repairs,
         assist::LIMITS,
     ) {
-        Ok(id) => json!({"ok": true, "id": id, "model": model, "excerpt": ready["excerpt"]}),
+        Ok(id) => {
+            json!({"ok": true, "id": id, "model": model, "excerpt": ready["excerpt"], "question": ready["question"]})
+        }
         Err(why) => {
             json!({"ok": false, "error": "E21", "message": format!("{}: {why}", assist::NOT_AVAILABLE)})
         }
@@ -1330,14 +1332,12 @@ mod tests {
             let mut bytes = [0u8; 16];
             bytes[10..12].copy_from_slice(&[0xff, 0xff]);
             bytes[12..].copy_from_slice(&[127, 0, 0, 1]);
-            let words = (0..4)
-                .map(|i| {
-                    format!(
-                        "{:08X}",
-                        u32::from_ne_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap())
-                    )
-                })
-                .collect::<String>();
+            use std::fmt::Write as _;
+            let words = (0..4).fold(String::new(), |mut out, i| {
+                let word = u32::from_ne_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
+                let _ = write!(out, "{word:08X}");
+                out
+            });
             format!("{words}:{port:04X}")
         };
         let v6 = format!(

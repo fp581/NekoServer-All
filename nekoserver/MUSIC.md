@@ -9,7 +9,7 @@ Use Navidrome's browser player on the TV/Linux PC, **Amperfy on iPhone**, and op
 - The drive setup asked you to pick for music (the SSD by default, or the media drive: STORAGE.md, "Where each app keeps your files"): library/music, shared by Lidarr as /data/music and Navidrome as read-only /music. Music downloads (library/downloads/music) use the same drive.
 - SSD: appdata/navidrome, containing its database/accounts/playlists/history/art cache; appdata/lidarr and their independent Compose files.
 - Browser setup: http://127.0.0.1:4533 on the server itself.
-- Phone/remote clients: the configured LAN HTTPS music URL, https://YOUR-SERVER-IP:8446, or your configured private Tailscale Serve music URL on port 8446. localhost on your phone refers to the phone, not the server. Use the same listener account across clients to share that account's playlists/favourites.
+- Phone/remote clients: the configured LAN HTTPS music URL, https://YOUR-SERVER-IP:8446, or your configured private Tailscale Serve music URL on port 8446. localhost on your phone refers to the phone, not the server. Use the same login on every client to share its playlists and favourites ("Your logins" below says which one is yours).
 - Container UIs stay bound to loopback. Remote access uses the existing secured-account confirmation and HTTPS gateway; nothing opens public router ports.
 - Navidrome watches file changes with a short settling delay and performs an hourly fallback scan using its current Scanner settings. No artificial read loop is added to keep the HDD active. Embedded tags and cover art improve browsing; imported files need proper artist/album/title tags. An empty library is reported honestly.
 
@@ -23,7 +23,12 @@ The full profile includes music setup. A music profile is also provided; it resp
 sudo bash install.sh --profile music --apply --config /absolute/path/to/confirmed-config.json
 ```
 
-**Your logins.** Setup creates two Navidrome accounts for you: an **administrator** (for managing Navidrome) and a separate **listener** that is not an administrator. Use the listener on your phone and desktop. To see the listener's login on the screen (with a QR code for your phone): `sudo python3 /srv/nekoserver/installer/releases/v0.49.0/account-setup.py show navidrome_listener` (`show navidrome` for the administrator; see ACCOUNT-SETUP.md). If you change one of these passwords in Navidrome, tell setup: in the NekoServer folder (where `install.sh` is) run `sudo python3 account-setup.py --apply --config my-config.json`; it finds that the saved login no longer works. Run it once more: it asks about that account; press **c** and type the new password.
+**Your logins.** Setup creates two Navidrome accounts: an **administrator** and a separate **listener** that is not an administrator.
+
+- **A server set up with 0.50.0 or later:** your Navidrome login is the **administrator**, on your phone and computer too, as in every other app. To see it on the screen (with a QR code for your phone): `sudo python3 /srv/nekoserver/installer/releases/v0.50.0/account-setup.py show navidrome` (see ACCOUNT-SETUP.md). The listener is NekoServer's own login for checking the music library: a login with the fewest rights is the safer one to keep a token of.
+- **A server set up before 0.50.0:** nothing was switched. Your phones are signed in with the **listener** (`show navidrome_listener`) and keep working. The administrator (`show navidrome`) is the one that manages Navidrome: users, settings, libraries. Navidrome keeps playlists and favourites per login, so a phone you move to the administrator starts without the listener's; stay with the listener on a phone whose playlists you want to keep, or make them again after moving.
+
+If you change one of these passwords in Navidrome, tell setup: in the NekoServer folder (where `install.sh` is) run `sudo python3 account-setup.py --apply --config my-config.json`; it finds that the saved login no longer works. Run it once more: it asks about that account; press **c** and type the new password.
 
 Only with account setup switched off (`accounts.enabled: false`) do you make them yourself: in Navidrome's first web page create the administrator, then in its Users settings create a separate non-administrator listener.
 
@@ -39,7 +44,7 @@ Noninteractive setup stays pending until the listener is configured. Missing cre
 
 ## Phone and desktop
 
-1. Install Amperfy: https://apps.apple.com/app/amperfy-music/id1530145038 . Choose its Subsonic/Navidrome-compatible connection, enter the HTTPS music base URL and your listener credentials. Amperfy provides offline caching, CarPlay, Siri integration and gapless playback for supported files; test those features on the actual phone.
+1. Install Amperfy: https://apps.apple.com/app/amperfy-music/id1530145038 . Choose its Subsonic/Navidrome-compatible connection, enter the HTTPS music base URL and your Navidrome login ("Your logins" above). Amperfy provides offline caching, CarPlay, Siri integration and gapless playback for supported files; test those features on the actual phone.
 2. Optional desktop player: https://github.com/jeffvli/feishin . Select Navidrome as the server type and use the same HTTPS URL/account. Linux Flatpak listing: https://flathub.org/apps/org.jeffvli.feishin . This is an optional user-facing upstream client, not another server daemon installed by the NekoServer release.
 3. Test a tagged album: play/pause, next track, seeking, album artwork, favourites and a playlist. Cache an album on the iPhone and test offline playback. Verify away-from-home access through Tailscale if selected. LAN-only HTTPS requires the server's private CA to be trusted by the phone and client.
 
