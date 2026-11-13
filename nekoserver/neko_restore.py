@@ -495,14 +495,36 @@ def safe_ext(name):
     return '.' + ext if dot and stem and EXTENSION.match(ext) else ''
 
 
-def descend(dest_fd, parts, make=True):
+class Listing:
+    """The names of each destination folder, folded for upper and lower case: listed once
+    per restore and kept up to date as the restore adds names. Listing a folder again for
+    every file made a restore of a folder with many thousand photos take hours."""
+
+    def __init__(self):
+        self.folded = {}
+
+    def of(self, dir_fd):
+        st = os.fstat(dir_fd)
+        key = (st.st_dev, st.st_ino)
+        if key not in self.folded:
+            folded = {}
+            for other in os.listdir(dir_fd):
+                folded.setdefault(other.casefold(), set()).add(other)
+            self.folded[key] = folded
+        return self.folded[key]
+
+    def add(self, dir_fd, name):
+        self.of(dir_fd).setdefault(name.casefold(), set()).add(name)
+
+
+def descend(dest_fd, parts, make=True, listing=None):
     """The folder of parts[:-1] below the open destination, opened one by one without
     following links, made when missing. Raises Taken when a link, a file or a name that
     differs only in case is in the way. The caller closes the returned descriptor."""
     fd = os.dup(dest_fd)
     try:
         for part in parts:
-            clash(fd, part)
+            clash(fd, part, listing)
             try:
                 nxt = open_dir(part, fd)
             except FileNotFoundError:
@@ -511,6 +533,8 @@ def descend(dest_fd, parts, make=True):
                 try:
                     os.mkdir(part, 0o755, dir_fd=fd)
                     os.fsync(fd)
+                    if listing is not None:
+                        listing.add(fd, part)
                 except OSError as e:
                     raise Taken('the folder %s cannot be made here (%s)' % (show(part), e.strerror)) from None
                 nxt = open_dir(part, fd)
@@ -524,12 +548,16 @@ def descend(dest_fd, parts, make=True):
         raise
 
 
-def clash(dir_fd, name):
+def clash(dir_fd, name, listing=None):
     """Another entry whose name differs from `name` only in case: on a destination that
     ignores case they would be one file, so it counts as taken."""
     folded = name.casefold()
-    for other in os.listdir(dir_fd):
-        if other != name and other.casefold() == folded:
+    if listing is None:
+        others = [other for other in os.listdir(dir_fd) if other.casefold() == folded]
+    else:
+        others = sorted(listing.of(dir_fd).get(folded, ()))
+    for other in others:
+        if other != name:
             raise Taken('%s is there under the name %s' % (show(name), show(other)))
 
 
@@ -619,7 +647,7 @@ def give_name(dir_fd, temp, name):
     os.rename(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
 
 
-def publish(dir_fd, temp, name, overwrite):
+def publish(dir_fd, temp, name, overwrite, listing=None):
     """`temp` under its final name. Never over an existing file unless `overwrite` (a
     plain file the person named). Raises Taken, with `temp` removed, when it is taken."""
     try:
@@ -628,6 +656,8 @@ def publish(dir_fd, temp, name, overwrite):
         else:
             give_name(dir_fd, temp, name)
         os.fsync(dir_fd)
+        if listing is not None:
+            listing.add(dir_fd, name)
     finally:
         try:
             os.unlink(temp, dir_fd=dir_fd)
@@ -712,21 +742,21 @@ class Progress:
         os.replace(temp, self.path)
 
 
-def restore_one(card, rec, dest_fd, rename, overwrite):
+def restore_one(card, rec, dest_fd, rename, overwrite, listing=None):
     """One record restored below the open destination. Returns (outcome, where):
     outcome is restored, renamed, skipped or failed."""
     parts = rec['original_relative_path'].split('/')
     temp = '.neko-restore-%s.part' % rec['record_id']
     target = rec['original_relative_path']
     try:
-        d = descend(dest_fd, parts[:-1])
+        d = descend(dest_fd, parts[:-1], listing=listing)
         try:
-            clash(d, parts[-1])
+            clash(d, parts[-1], listing)
             named = target in overwrite
             if exists(d, parts[-1]) and not named:
                 raise Taken('a file is there already')
             copy_verified(card, rec, d, temp)
-            publish(d, temp, parts[-1], named)
+            publish(d, temp, parts[-1], named, listing)
         finally:
             os.close(d)
         return 'restored', target
@@ -739,19 +769,19 @@ def restore_one(card, rec, dest_fd, rename, overwrite):
         if e.errno not in (errno.EINVAL, errno.ENAMETOOLONG, errno.EILSEQ) or not rename:
             return 'failed', '%s (%s)' % (e.strerror, show(target))
     # The destination cannot take it under its own name: _renamed/<record id><.ext>.
-    return renamed_copy(card, rec, dest_fd, temp)
+    return renamed_copy(card, rec, dest_fd, temp, listing)
 
 
-def renamed_copy(card, rec, dest_fd, temp):
+def renamed_copy(card, rec, dest_fd, temp, listing=None):
     """`rec` restored as _renamed/<record id><.ext>."""
     other = rec['record_id'] + safe_ext(rec['original_relative_path'].rsplit('/', 1)[-1])
     try:
-        d = descend(dest_fd, [RENAMED])
+        d = descend(dest_fd, [RENAMED], listing=listing)
         try:
             if exists(d, other):
                 return 'skipped', THERE_ALREADY % (RENAMED + '/' + other)
             copy_verified(card, rec, d, temp)
-            publish(d, temp, other, False)
+            publish(d, temp, other, False, listing)
         finally:
             os.close(d)
     except (Taken, Invalid) as why:
@@ -813,34 +843,35 @@ def holds(dest_fd, path, checksum):
         os.close(fd)
 
 
-def older(card, rec, dest_fd, rename, newer_where):
+def older(card, rec, dest_fd, opts, newer_where):
     """A version older than the one restored under the file's name: kept under _renamed/
     with --rename, else named and left on the card."""
+    rename, _overwrite, _progress, listing = opts
     if rename:
-        return renamed_copy(card, rec, dest_fd, '.neko-restore-%s.part' % rec['record_id'])
+        return renamed_copy(card, rec, dest_fd, '.neko-restore-%s.part' % rec['record_id'], listing)
     return 'older', 'a newer version is restored as %s' % newer_where
 
 
 def one_version(card, rec, dest_fd, opts, chosen):
     """One record of a file, after the newer versions of it were handled. `chosen` is the
     (record, where) restored for that file in this run, if any."""
-    rename, overwrite, progress = opts
+    rename, overwrite, progress, listing = opts
     if progress is not None and progress.has(dest_fd, rec):
         return 'done before', progress.done[rec['version_id']]['path']
     if chosen is not None:
         if chosen[0]['version_id'] == rec['version_id']:
             return 'same version', chosen[1]
-        return older(card, rec, dest_fd, rename, chosen[1])
+        return older(card, rec, dest_fd, opts, chosen[1])
     earlier = progress.at_original(rec) if progress is not None else None
     allowed = overwrite
     if earlier is not None and entry_age(earlier[1]) is not None:
         entry = earlier[1]
         if entry_age(entry) > age(rec):
-            return older(card, rec, dest_fd, rename, entry['path'])
+            return older(card, rec, dest_fd, opts, entry['path'])
         # An older version this restore put there itself, unchanged since: replaced.
         if holds(dest_fd, entry['path'], entry.get('sha256')):
             allowed = overwrite | {rec['original_relative_path']}
-    outcome, where = restore_one(card, rec, dest_fd, rename, allowed)
+    outcome, where = restore_one(card, rec, dest_fd, rename, allowed, listing)
     if outcome == 'restored' and allowed is not overwrite:
         progress.supersede(earlier[0], rec)
     return outcome, where
@@ -855,7 +886,7 @@ def restore(card, records, destination, rename=False, overwrite=(), progress=Non
     except OSError as e:
         raise Unusable('the destination %s cannot be opened (%s)' % (show(destination), e.strerror)) from None
     report = []
-    opts = (rename, set(overwrite), progress)
+    opts = (rename, set(overwrite), progress, Listing())
     try:
         for recs in by_file(records):
             chosen = None

@@ -423,6 +423,34 @@ class VersionTests(Base):
 RENAMED_DIR = '_renamed'
 
 
+class ManyFilesTests(Base):
+    """The review of 0.51.0: every file restored listed its whole destination folder (to
+    find a name that differs only in case), so a folder of 8,000 photos took 23 seconds
+    and one of 100,000 about an hour. Each folder is now listed once per restore."""
+
+    def test_a_folder_is_listed_once_however_many_files_go_in(self):
+        for n in range(300):
+            self.card.add('DCIM/IMG_%04d.jpg' % n, b'x')
+        listed = []
+        real = os.listdir
+
+        def counting(path='.'):
+            listed.append(path)
+            return real(path)
+
+        with mock.patch.object(tool.os, 'listdir', side_effect=counting):
+            self.assertEqual(self.run_tool('restore', str(self.dest)), 0)
+        self.assertEqual(len(list((self.dest / 'DCIM').iterdir())), 300)
+        self.assertLess(len(listed), 20, 'listings for 300 files')
+
+    def test_a_name_restored_earlier_in_the_same_run_still_clashes_by_case(self):
+        self.card.add('DCIM/IMG_1.JPG', b'upper')
+        self.card.add('DCIM/img_1.jpg', b'lower')
+        self.assertEqual(self.run_tool('restore', str(self.dest)), 1)
+        self.assertEqual([p.name for p in (self.dest / 'DCIM').iterdir()], ['IMG_1.JPG'])
+        self.assertIn('img_1.jpg is there under the name IMG_1.JPG', said_text(self))
+
+
 class WhereTests(Base):
     def snapshot(self, lines):
         body = b''.join(json.dumps(line).encode() + b'\n' for line in lines)
