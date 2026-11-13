@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -107,11 +108,24 @@ class Card:
         return self.nb / rec['archive_relative_path']
 
 
+def said_text(case):
+    """What the tool said in a test, as one text."""
+    return '\n'.join(case.said)
+
+
+def cards_under(folder):
+    """The tool reads cards mounted under `folder` (a test's own) instead of /media and /mnt."""
+    return mock.patch.object(tool, 'CARD_ROOTS', (os.path.realpath(folder) + '/',))
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)
+        roots = cards_under(self.tmp)
+        roots.start()
+        self.addCleanup(roots.stop)
         self.card = Card(self.tmp / 'card')
         self.dest = self.tmp / 'restored'
         self.dest.mkdir()
@@ -120,9 +134,6 @@ class Base(unittest.TestCase):
     def run_tool(self, *args):
         self.said = []
         return tool.main([CARD_FLAG, str(self.card.top), *args], say=self.said.append)
-
-    def text(self):
-        return '\n'.join(self.said)
 
 
 class SameReaderTests(unittest.TestCase):
@@ -141,13 +152,55 @@ class SameReaderTests(unittest.TestCase):
                         tool.parse_record(data)
 
     def test_another_archive_format_is_not_read(self):
-        with tempfile.TemporaryDirectory() as d:
-            card = Card(d)
+        with tempfile.TemporaryDirectory() as d, cards_under(d):
+            card = Card(Path(d) / 'card')
             card.identity['archive_format_version'] = 2
             (card.nb / 'identity.json').write_text(json.dumps(card.identity))
             said = []
-            self.assertEqual(tool.main([CARD_FLAG, d, 'info'], say=said.append), 2)
+            self.assertEqual(tool.main([CARD_FLAG, str(card.top), 'info'], say=said.append), 2)
             self.assertIn('archive format 2, not format 1', said[0])
+
+
+class WhereACardMustBeTests(unittest.TestCase):
+    """--card reads only a card mounted where Linux mounts one, every link resolved first
+    (SonarCloud pythonsecurity:S8707: a path from the command line, proved before use)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(os.path.realpath(tmp.name))
+        self.mounts = self.tmp / 'media'
+        self.card = Card(self.mounts / 'me' / 'CARD')
+
+    def info(self, path):
+        said = []
+        with cards_under(self.mounts):
+            code = tool.main([CARD_FLAG, str(path), 'info'], say=said.append)
+        return code, '\n'.join(said)
+
+    def test_the_places_are_where_linux_mounts_a_card(self):
+        self.assertEqual(tool.CARD_ROOTS, ('/media/', '/run/media/', '/mnt/'))
+
+    def test_a_card_under_those_places_is_read(self):
+        for path in (self.card.top, self.card.nb):  # its top folder or its NekoBackup folder
+            code, said = self.info(path)
+            self.assertEqual(code, 0, said)
+            self.assertIn('Example set - 001', said)
+
+    def test_a_folder_elsewhere_is_refused_in_plain_words(self):
+        elsewhere = Card(self.tmp / 'home' / 'CARD')
+        code, said = self.info(elsewhere.top)
+        self.assertEqual(code, 2)
+        self.assertIn('is not where a card is mounted. Mount the card under /media or /mnt', said)
+        self.assertIn('or run this tool from the card', said)
+
+    def test_a_link_out_of_those_places_is_refused(self):
+        outside = Card(self.tmp / 'home' / 'CARD')
+        link = self.mounts / 'link-to-home'
+        link.symlink_to(outside.top)
+        code, said = self.info(link)
+        self.assertEqual(code, 2)
+        self.assertIn(str(outside.top) + ' is not where a card is mounted', said)
 
 
 class ListAndVerifyTests(Base):
@@ -155,14 +208,14 @@ class ListAndVerifyTests(Base):
         self.card.add('2001/beach.jpg', SAND * 100)
         self.card.add('2002/city\nnight.png', b'lights')
         self.assertEqual(self.run_tool('info'), 0)
-        self.assertIn('Card:        Example set - 001', self.text())
-        self.assertIn('Not encrypted', self.text())
+        self.assertIn('Card:        Example set - 001', said_text(self))
+        self.assertIn('Not encrypted', said_text(self))
         self.assertEqual(self.run_tool('list'), 0)
-        self.assertIn('2002/city\\nnight.png', self.text(), 'a control character is shown escaped')
+        self.assertIn('2002/city\\nnight.png', said_text(self), 'a control character is shown escaped')
         self.assertEqual(self.run_tool('list', SEARCH, 'beach'), 0)
-        self.assertIn('1 file(s)', self.text())
+        self.assertIn('1 file(s)', said_text(self))
         self.assertEqual(self.run_tool('verify'), 0)
-        self.assertIn('ok 2, damaged 0, missing 0', self.text())
+        self.assertIn('ok 2, damaged 0, missing 0', said_text(self))
 
     def test_damage_missing_files_and_unusable_records_are_all_said(self):
         good = self.card.add(A_JPG, b'one')
@@ -177,7 +230,7 @@ class ListAndVerifyTests(Base):
         (self.card.nb / 'records/zz').mkdir()
         (self.card.nb / 'records/zz/junk.json').write_text('{"schema_version": 1}')
         self.assertEqual(self.run_tool('verify'), 1)
-        text = self.text()
+        text = said_text(self)
         self.assertIn('damaged  b.jpg', text)
         self.assertIn('missing  c.jpg', text)
         self.assertIn('it names another card or set than this one', text)
@@ -193,7 +246,7 @@ class ListAndVerifyTests(Base):
         self.card.payload(rec).unlink()
         self.card.payload(rec).symlink_to(secret)
         self.assertEqual(self.run_tool('verify'), 1)
-        self.assertIn('damaged  x.jpg', self.text())
+        self.assertIn('damaged  x.jpg', said_text(self))
         # A NekoBackup folder that is a link is not a card.
         linked = self.tmp / 'linked'
         linked.mkdir()
@@ -221,7 +274,7 @@ class RestoreTests(Base):
         self.assertEqual(back.read_bytes(), SAND * 1000)
         self.assertEqual(os.stat(back).st_mtime_ns, int(a['source_mtime_ns']))
         self.assertEqual((self.dest / '2002/שלום \U0001f408.png').read_bytes(), b'cat')
-        self.assertIn('restored 2', self.text())
+        self.assertIn('restored 2', said_text(self))
         leftovers = [p for p in self.dest.rglob('*') if p.name.startswith('.neko-restore-')]
         self.assertEqual(leftovers, [])
 
@@ -230,7 +283,7 @@ class RestoreTests(Base):
         rec = self.card.add('broken.jpg', b'original bytes')
         self.card.payload(rec).write_bytes(b'Original bytes')
         self.assertEqual(self.run_tool('restore', str(self.dest)), 1)
-        self.assertIn('failed      broken.jpg', self.text())
+        self.assertIn('failed      broken.jpg', said_text(self))
         self.assertEqual(list(self.dest.iterdir()), [])
 
     def test_nothing_is_overwritten_without_a_named_approval(self):
@@ -245,10 +298,10 @@ class RestoreTests(Base):
         self.assertEqual((self.dest / A_2001).read_bytes(), b'mine')
         self.assertFalse((self.dest / '2001/b.jpg').exists())
         self.assertEqual((self.dest / '2001/c.jpg').read_bytes(), b'card c')
-        self.assertIn('skipped     2001/b.jpg -> b.jpg is there under the name B.JPG', self.text())
+        self.assertIn('skipped     2001/b.jpg -> b.jpg is there under the name B.JPG', said_text(self))
         # --rename puts each taken one under _renamed/ and says where.
         self.assertEqual(self.run_tool('restore', str(self.dest), '--rename', SEARCH, '2001/b'), 0)
-        self.assertIn('renamed     2001/b.jpg -> _renamed/aaaaaaaa-0000-4000-8000-000000000002.jpg', self.text())
+        self.assertIn('renamed     2001/b.jpg -> _renamed/aaaaaaaa-0000-4000-8000-000000000002.jpg', said_text(self))
         # --overwrite names the one file that may be replaced.
         self.assertEqual(self.run_tool('restore', str(self.dest), SEARCH, '2001/a', '--overwrite', A_2001), 0)
         self.assertEqual((self.dest / A_2001).read_bytes(), b'card a')
@@ -260,7 +313,7 @@ class RestoreTests(Base):
         (self.dest / '2001').symlink_to(outside)
         self.assertEqual(self.run_tool('restore', str(self.dest)), 1)
         self.assertEqual(list(outside.iterdir()), [], 'nothing written through the link')
-        self.assertIn('skipped', self.text())
+        self.assertIn('skipped', said_text(self))
 
     def test_a_restore_over_several_cards_or_after_a_stop_never_copies_twice(self):
         # A35: the progress file keeps what is done; a file that failed is not in it.
@@ -275,8 +328,8 @@ class RestoreTests(Base):
         first = os.stat(self.dest / A_JPG).st_mtime_ns
         self.card.payload(broken).write_bytes(good_bytes)  # the same file, from another card
         self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 0)
-        self.assertIn('done before a.jpg -> a.jpg', self.text())
-        self.assertIn('restored    b.jpg -> b.jpg', self.text())
+        self.assertIn('done before a.jpg -> a.jpg', said_text(self))
+        self.assertIn('restored    b.jpg -> b.jpg', said_text(self))
         self.assertEqual(os.stat(self.dest / A_JPG).st_mtime_ns, first, 'not copied again')
         self.assertEqual(len(json.loads(progress.read_text())['done']), 2)
 
@@ -290,7 +343,7 @@ class RestoreTests(Base):
         self.assertEqual(data['files'][0]['where'], X_A)
         # The report never replaces a file that is there: said before anything is restored.
         self.assertEqual(self.run_tool('restore', str(self.dest), '--report', str(report)), 2)
-        self.assertIn('is there already', self.text())
+        self.assertIn('is there already', said_text(self))
 
 
 class WhereTests(Base):
@@ -343,14 +396,14 @@ class WhereTests(Base):
             ]
         )
         self.assertEqual(self.run_tool('where', 'beach'), 0)
-        self.assertIn('2003/beach.jpg (5 bytes): Example set - 002 (in_use): committed', self.text())
-        self.assertIn('a card written later may know more', self.text())
+        self.assertIn('2003/beach.jpg (5 bytes): Example set - 002 (in_use): committed', said_text(self))
+        self.assertIn('a card written later may know more', said_text(self))
 
     def test_a_tampered_inventory_is_refused(self):
         sid = self.snapshot([{'path': 'x.jpg', 'copies': []}])
         (self.card.nb / 'inventory' / (sid + VERSIONS)).write_bytes(b'{"path": "y.jpg"}\n')
         self.assertEqual(self.run_tool('where', 'x'), 1)
-        self.assertIn('does not match its header', self.text())
+        self.assertIn('does not match its header', said_text(self))
 
 
 if __name__ == '__main__':

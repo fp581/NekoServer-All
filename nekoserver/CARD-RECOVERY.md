@@ -38,6 +38,11 @@ cd /mnt/card
 The card's top folder holds `NekoBackup/`, with `README.txt`, `identity.json` and the
 tool, `NekoBackup/tools/neko-restore.py`.
 
+**Where the card must be:** the tool reads the card it is on, or, with `--card`, a card
+mounted where Linux mounts one: under `/media`, `/run/media` or `/mnt`. A folder anywhere
+else (or a link that leads elsewhere) is refused, so that a mistyped path never makes it
+read some other folder. A desktop mounts a card under `/media` or `/run/media` by itself.
+
 ## 2. Look at the card
 
 Run these from the card's top folder (or add `--card /mnt/card` from anywhere):
