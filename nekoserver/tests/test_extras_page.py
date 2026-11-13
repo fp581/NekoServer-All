@@ -23,6 +23,15 @@ SMALL, MEDIUM, LARGE = (model for model, *_ in assistant.MODELS)
 GB = 1000**3
 
 
+class ModelNamesTests(unittest.TestCase):
+    def test_every_model_has_its_plain_name(self):
+        """The review of 0.51.0: the names were paired with assistant.MODELS by zip(), so a
+        model added to that list without a name here was silently never offered."""
+        self.assertEqual(len(extras_page.PLAIN_NAMES), len(extras_page.assistant.MODELS))
+        sizes = [model[1] for model in extras_page.assistant.MODELS]
+        self.assertEqual(sizes, sorted(sizes), 'smallest first, as the names say')
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
