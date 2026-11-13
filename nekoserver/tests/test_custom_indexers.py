@@ -71,13 +71,18 @@ def render(template, variables):
 
 
 def query(imdb=None, season=None, ep=None, keywords='', categories=()):
-    """The variables Prowlarr gives a search, and the categories it asks for."""
+    """The variables Prowlarr gives a search, and the categories it asks for. `.Query.Q` is
+    what was typed; `.Query.Keywords` adds a TV search's episode ("S02E05", "S02"), so it
+    is set for every search with a season (seen with Prowlarr 2.7.0)."""
+    episode = (f'S{int(season):02d}' + (f'E{int(ep):02d}' if ep else '')) if season else ''
+    said = f'{keywords} {episode}'.strip()
     variables = {
         '.Query.IMDBID': imdb,
         '.Query.Season': season,
         '.Query.Ep': ep,
-        '.Query.Keywords': keywords,
-        '.Keywords': keywords,
+        '.Query.Q': keywords,
+        '.Query.Keywords': said,
+        '.Keywords': said,
         '.Config.sitelink': SITE,
         '.True': 'True',
         '.False': None,
@@ -85,17 +90,19 @@ def query(imdb=None, season=None, ep=None, keywords='', categories=()):
     return variables, set(categories)
 
 
-def requested(definition, variables, categories):
-    """The addresses Prowlarr asks for one search: every path, unless the path names
-    categories and the search asks for none of them."""
+def asked(definition, variables, categories):
+    """The one address Prowlarr asks for a search: the first path whose categories the
+    search asks for (every path, when it asks for none). The paths of a search share one
+    paging loop that stops at the first page that is not full, and Torrentio's answer never
+    fills one, so the later paths are never asked (Prowlarr 2.7.0, HttpIndexerBase); its
+    test when the indexer is added asks only the first request too."""
     names = {m['id']: m['cat'] for m in definition['caps']['categorymappings']}
-    urls = []
     for path in definition['search']['paths']:
         wanted = {names[c] for c in path.get('categories', [])}
         if wanted and categories and not wanted & categories:
             continue
-        urls.append(SITE + render(path['path'], variables))
-    return urls
+        return SITE + render(path['path'], variables)
+    return None
 
 
 def run_filter(text, step):
@@ -170,48 +177,43 @@ class DefinitionTests(unittest.TestCase):
         self.assertNotIn('download', fields)
 
     def test_a_film_is_asked_for_by_its_imdb_number(self):
+        # Radarr asks for Movies (2000): the film path, alone.
         variables, categories = query('tt0133093', categories=['Movies'])
-        self.assertEqual(
-            requested(self.definition, variables, categories),
-            [SITE + 'stream/movie/tt0133093.json', SITE + 'stream/series/none.json'],
-        )
+        self.assertEqual(asked(self.definition, variables, categories), SITE + 'stream/movie/tt0133093.json')
 
     def test_an_episode_and_a_season_are_asked_for_as_torrentio_names_them(self):
+        # Sonarr asks for TV (5000): the series path, although Keywords carries "S02E05".
         variables, categories = query('tt0903747', season='2', ep='5', categories=['TV'])
-        self.assertEqual(
-            requested(self.definition, variables, categories),
-            [SITE + 'stream/series/tt0903747:2:5.json', SITE + 'stream/series/none.json'],
-        )
+        self.assertEqual(variables['.Query.Keywords'], 'S02E05')
+        self.assertEqual(asked(self.definition, variables, categories), SITE + 'stream/series/tt0903747:2:5.json')
         # A whole season: episode 1, whose answer also lists the season's packs.
         variables, categories = query('tt0903747', season='2', categories=['TV'])
-        self.assertIn(SITE + 'stream/series/tt0903747:2:1.json', requested(self.definition, variables, categories))
+        self.assertEqual(asked(self.definition, variables, categories), SITE + 'stream/series/tt0903747:2:1.json')
 
-    def test_with_no_categories_every_path_still_asks_only_for_what_applies(self):
-        # Torrentio answers {"streams": []} for "none", "tt...-none" and "::1".
-        variables, categories = query('tt0133093')
-        self.assertEqual(
-            requested(self.definition, variables, categories),
-            [SITE + 'stream/movie/tt0133093.json', SITE + 'stream/series/::1.json', SITE + 'stream/series/none.json'],
-        )
+    def test_each_search_finds_its_own_path_first(self):
+        # Only the first path that applies is ever asked: a film path first would answer
+        # every TV search with nothing, so the categories must send Sonarr past it.
+        paths = self.definition['search']['paths']
+        self.assertEqual([p.get('categories') for p in paths], [['movie'], ['series']])
+        # A TV search that names no category reaches the film path: "-none", no streams.
         variables, categories = query('tt0903747', season='1', ep='1')
-        self.assertEqual(
-            requested(self.definition, variables, categories)[:2],
-            [SITE + 'stream/movie/tt0903747-none.json', SITE + 'stream/series/tt0903747:1:1.json'],
-        )
+        self.assertEqual(asked(self.definition, variables, categories), SITE + 'stream/movie/tt0903747-none.json')
 
     def test_a_search_by_name_alone_finds_nothing_and_never_guesses_an_id(self):
         # Torrentio answers ANY "tt" number with streams, so none may be made up.
-        variables, categories = query(keywords='the matrix')
-        urls = requested(self.definition, variables, categories)
-        self.assertEqual(
-            urls, [SITE + 'stream/movie/none.json', SITE + 'stream/series/::1.json', SITE + 'stream/series/none.json']
-        )
-        self.assertFalse(any('tt' in url.rsplit('/', 1)[1] for url in urls))
+        for cats in ([], ['Movies'], ['TV']):
+            variables, categories = query(keywords='the matrix', categories=cats)
+            url = asked(self.definition, variables, categories)
+            self.assertIn(url, (SITE + 'stream/movie/none.json', SITE + 'stream/series/none:1:1.json'))
+            self.assertNotIn('tt', url.rsplit('/', 1)[1])
 
-    def test_prowlarrs_empty_test_search_gets_one_known_episode(self):
-        # Prowlarr refuses an indexer whose empty test search returns nothing.
+    def test_prowlarrs_empty_test_search_gets_one_known_title(self):
+        # Prowlarr refuses an indexer whose empty test search returns nothing; its test
+        # names no category and asks only the first request. RSS (no query) asks the same.
         variables, categories = query()
-        self.assertIn(SITE + 'stream/series/tt0903747:1:1.json', requested(self.definition, variables, categories))
+        self.assertEqual(asked(self.definition, variables, categories), SITE + 'stream/movie/tt0111161.json')
+        variables, categories = query(categories=['TV'])
+        self.assertEqual(asked(self.definition, variables, categories), SITE + 'stream/series/tt0903747:1:1.json')
 
     def test_magnet_links_are_made_from_the_streams(self):
         answer = {
