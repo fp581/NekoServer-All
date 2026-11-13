@@ -135,7 +135,7 @@ def bundled_binary_current():
         return None  # not built here (install.sh or runtime/build.py builds it)
     manifest = json.loads((RUNTIME / 'build.json').read_text())
     digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()  # noqa: E731
-    sources = {str(p.relative_to(RUNTIME)) for p in (RUNTIME / 'src').glob('*.rs')}
+    sources = {str(p.relative_to(RUNTIME)) for p in (RUNTIME / 'src').rglob('*.rs')}
     if (
         not binary.is_file()
         or digest(binary) != manifest.get('binary_sha256')

@@ -12,6 +12,7 @@ SOURCES = ('Cargo.toml', 'Cargo.lock', 'build.py', 'src/shared.json')
 
 
 def expected_sources(root):
+    # Every Rust source, those in folders of their own too (src/cardset/, 0.51.0).
     return {*SOURCES, *[str(p.relative_to(root)) for p in (root / 'src').rglob('*.rs')]}
 
 
