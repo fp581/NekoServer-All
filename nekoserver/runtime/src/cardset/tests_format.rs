@@ -4,7 +4,9 @@ use super::format::{self, CopyMeta, Identity, Intent, Record, SourceIdentity, Tx
 use super::fsat::Dir;
 use super::lock::SetLock;
 use super::planner::{self, Fit, Space};
-use super::testkit::*;
+use super::testkit::{
+    card, enrolment, expect, fs_uuid, volume_id, Scratch, MIB, OTHER_SET, RESTORE_TOOL_SOURCE, SET,
+};
 use super::volume::{MountRule, Volume};
 use serde_json::Value;
 use std::fs;

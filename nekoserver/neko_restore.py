@@ -54,6 +54,8 @@ MAX_LINES = 5000000
 MAX_BYTES = 9007199254740991
 CHUNK = 1 << 20
 RENAMED = '_renamed'
+THERE_ALREADY = '%s is there already'
+UNUSABLE = 'unusable %s: %s'
 PROGRESS_FORMAT = 'neko-restore-progress'
 
 UUID = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
@@ -574,26 +576,41 @@ def copy_verified(card, rec, dir_fd, temp):
         pass  # a destination without times: the file is still the right one
 
 
+# A filesystem without links (FAT, exFAT) says one of these to os.link.
+NO_LINKS = (errno.EPERM, errno.EOPNOTSUPP, errno.EXDEV, errno.EMLINK, errno.ENOTSUP)
+
+
+def replace_named(dir_fd, temp, name):
+    """`temp` over the plain file `name`, which the person named for overwriting."""
+    if exists(dir_fd, name) and not stat.S_ISREG(os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode):
+        raise Taken('%s is not a plain file: it is not overwritten' % show(name))
+    os.replace(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+
+
+def give_name(dir_fd, temp, name):
+    """`temp` as `name`, which must not exist: a new link where the filesystem has links,
+    else a check and a rename."""
+    try:
+        os.link(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd, follow_symlinks=False)
+        return
+    except FileExistsError:
+        raise Taken(THERE_ALREADY % show(name)) from None
+    except OSError as e:
+        if e.errno not in NO_LINKS:
+            raise
+    if exists(dir_fd, name):
+        raise Taken(THERE_ALREADY % show(name))
+    os.rename(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+
+
 def publish(dir_fd, temp, name, overwrite):
     """`temp` under its final name. Never over an existing file unless `overwrite` (a
     plain file the person named). Raises Taken, with `temp` removed, when it is taken."""
     try:
         if overwrite:
-            if exists(dir_fd, name) and not stat.S_ISREG(os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode):
-                raise Taken('%s is not a plain file: it is not overwritten' % show(name))
-            os.replace(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+            replace_named(dir_fd, temp, name)
         else:
-            try:
-                os.link(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd, follow_symlinks=False)
-            except FileExistsError:
-                raise Taken('%s is there already' % show(name)) from None
-            except OSError as e:
-                if e.errno not in (errno.EPERM, errno.EOPNOTSUPP, errno.EXDEV, errno.EMLINK, errno.ENOTSUP):
-                    raise
-                # A filesystem without links (FAT, exFAT): a check, then a rename.
-                if exists(dir_fd, name):
-                    raise Taken('%s is there already' % show(name)) from None
-                os.rename(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+            give_name(dir_fd, temp, name)
         os.fsync(dir_fd)
     finally:
         try:
@@ -675,7 +692,7 @@ def restore_one(card, rec, dest_fd, rename, overwrite):
         d = descend(dest_fd, [RENAMED])
         try:
             if exists(d, other):
-                return 'skipped', '%s/%s is there already' % (RENAMED, other)
+                return 'skipped', THERE_ALREADY % (RENAMED + '/' + other)
             copy_verified(card, rec, d, temp)
             publish(d, temp, other, False)
         finally:
@@ -732,41 +749,54 @@ def inventory_snapshots(card):
         if not name.endswith('.json') or not UUID.match(name[:-5]):
             continue
         try:
-            header = parse_bounded(read_limited(inv, name, HEADER_LIMIT), HEADER_LIMIT, HEADER_DEPTH)
-            f = Fields(header)
-            f.int('schema_version', 1, 1)
-            if f.uuid('snapshot_id') != name[:-5]:
-                raise Invalid('its name is not its snapshot ID')
-            if f.uuid('written_to_volume_id') != card.identity['volume_id']:
-                raise Invalid('it names another card')
-            vf = header.get('versions_file')
-            if not isinstance(vf, dict):
-                raise bad('versions_file')
-            vff = Fields(vf)
-            if vff.str('name') != name[:-5] + '.versions.jsonl':
-                raise bad('versions_file')
-            want = (vff.checked('sha256', SHA256), vff.bytes('byte_size'), vff.int('lines', 0, MAX_LINES))
-            fd = os.open(vff.str('name'), FILE_FLAGS, dir_fd=inv)
-            try:
-                digest, size = hash_fd(fd, want[1])
-                os.lseek(fd, 0, os.SEEK_SET)
-                lines = 0
-                while True:
-                    chunk = os.read(fd, CHUNK)
-                    if not chunk:
-                        break
-                    lines += chunk.count(b'\n')
-            finally:
-                os.close(fd)
-            if (digest, size, lines) != want:
-                raise Invalid('its version list does not match its header')
-            f.int('revision', 1, MAX_BYTES)
-            f.uuid('catalogue_epoch_id')
-            f.time('exported_at')
-            found.append(header)
+            found.append(checked_snapshot(card, inv, name))
         except (Invalid, OSError) as e:
             refused.append((name, str(e)))
     return found, refused, inv
+
+
+def checked_snapshot(card, inv, name):
+    """One snapshot header, checked against this card and against its version list
+    (size, line count and checksum); raises Invalid when they disagree."""
+    header = parse_bounded(read_limited(inv, name, HEADER_LIMIT), HEADER_LIMIT, HEADER_DEPTH)
+    f = Fields(header)
+    f.int('schema_version', 1, 1)
+    if f.uuid('snapshot_id') != name[:-5]:
+        raise Invalid('its name is not its snapshot ID')
+    if f.uuid('written_to_volume_id') != card.identity['volume_id']:
+        raise Invalid('it names another card')
+    vf = header.get('versions_file')
+    if not isinstance(vf, dict):
+        raise bad('versions_file')
+    vff = Fields(vf)
+    if vff.str('name') != name[:-5] + '.versions.jsonl':
+        raise bad('versions_file')
+    want = (vff.checked('sha256', SHA256), vff.bytes('byte_size'), vff.int('lines', 0, MAX_LINES))
+    if list_facts(inv, vff.str('name'), want[1]) != want:
+        raise Invalid('its version list does not match its header')
+    f.int('revision', 1, MAX_BYTES)
+    f.uuid('catalogue_epoch_id')
+    f.time('exported_at')
+    return header
+
+
+def list_facts(inv, name, size_named):
+    """(sha256, size, line count) of a version list, reading at most size_named + 1 bytes."""
+    fd = os.open(name, FILE_FLAGS, dir_fd=inv)
+    try:
+        digest, size = hash_fd(fd, size_named)
+        os.lseek(fd, 0, os.SEEK_SET)
+        lines = 0
+        read = 0
+        while read <= size_named:
+            chunk = os.read(fd, min(CHUNK, size_named + 1 - read))
+            if not chunk:
+                break
+            read += len(chunk)
+            lines += chunk.count(b'\n')
+    finally:
+        os.close(fd)
+    return digest, size, lines
 
 
 def where(card, text, say=print):
@@ -782,14 +812,7 @@ def where(card, text, say=print):
         return 1
     try:
         header = max(found, key=lambda h: (h['exported_at'], h['revision']))
-        labels = {}
-        for v in header.get('volumes', []):
-            if isinstance(v, dict) and isinstance(v.get('volume_id'), str):
-                labels[v['volume_id']] = '%s - %03d (%s)' % (
-                    show(str(header.get('set_display_name', ''))),
-                    v.get('sequence_number', 0) if isinstance(v.get('sequence_number'), int) else 0,
-                    show(str(v.get('state', ''))),
-                )
+        labels = card_labels(header)
         say(
             'From the inventory of %s, revision %s: a card written later may know more.'
             % (header['exported_at'], header['revision'])
@@ -800,25 +823,47 @@ def where(card, text, say=print):
                 if len(raw) > LINE_LIMIT + 1:
                     say('a line of the inventory is too long: stopped')
                     return 1
-                try:
-                    line = parse_bounded(raw.rstrip(b'\n'), LINE_LIMIT, 3)
-                    lf = Fields(line)
-                    path = lf.text('path', 4096)
-                    check_relative_path(path)
-                except Invalid:
-                    continue
-                if text not in path:
-                    continue
-                copies = line.get('copies') if isinstance(line.get('copies'), list) else []
-                held = ', '.join(
-                    '%s: %s' % (labels.get(c.get('volume_id'), 'an unknown card'), show(str(c.get('state'))))
-                    for c in copies
-                    if isinstance(c, dict)
-                )
-                say('%s (%s bytes): %s' % (show(path), line.get('byte_size'), held or 'no copy known'))
+                said = version_said(raw, text, labels)
+                if said:
+                    say(said)
     finally:
         os.close(inv)
     return 0
+
+
+def card_labels(header):
+    """{volume ID: 'Set - NNN (state)'} for the cards a snapshot knows."""
+    labels = {}
+    for v in header.get('volumes', []):
+        if not (isinstance(v, dict) and isinstance(v.get('volume_id'), str)):
+            continue
+        seq = v.get('sequence_number')
+        labels[v['volume_id']] = '%s - %03d (%s)' % (
+            show(str(header.get('set_display_name', ''))),
+            seq if isinstance(seq, int) else 0,
+            show(str(v.get('state', ''))),
+        )
+    return labels
+
+
+def version_said(raw, text, labels):
+    """One version line of an inventory as a line for a person, or None when its path
+    does not hold `text` or the line is not usable."""
+    try:
+        line = parse_bounded(raw.rstrip(b'\n'), LINE_LIMIT, 3)
+        path = Fields(line).text('path', 4096)
+        check_relative_path(path)
+    except Invalid:
+        return None
+    if text not in path:
+        return None
+    copies = line.get('copies') if isinstance(line.get('copies'), list) else []
+    held = ', '.join(
+        '%s: %s' % (labels.get(c.get('volume_id'), 'an unknown card'), show(str(c.get('state'))))
+        for c in copies
+        if isinstance(c, dict)
+    )
+    return '%s (%s bytes): %s' % (show(path), line.get('byte_size'), held or 'no copy known')
 
 
 # ---- the commands ---------------------------------------------------------------------
@@ -865,7 +910,7 @@ def cmd_list(card, args, say):
             )
         )
     for where_, why in unusable:
-        say('unusable %s: %s' % (where_, why))
+        say(UNUSABLE % (where_, why))
     say('%d file(s)' % len(records))
     return 1 if unusable else 0
 
@@ -879,7 +924,7 @@ def cmd_verify(card, args, say):
         if result != 'ok':
             say('%-8s %s' % (result, show(rec['original_relative_path'])))
     for where_, why in unusable:
-        say('unusable %s: %s' % (where_, why))
+        say(UNUSABLE % (where_, why))
     say('ok %(ok)d, damaged %(damaged)d, missing %(missing)d' % counts + ', unusable records %d' % len(unusable))
     return 0 if counts['ok'] == len(records) and not unusable else 1
 
@@ -902,7 +947,7 @@ def cmd_restore(card, args, say):
         counts[row['outcome']] = counts.get(row['outcome'], 0) + 1
     say(', '.join('%s %d' % kv for kv in sorted(counts.items())))
     for where_, why in unusable:
-        say('unusable %s: %s' % (where_, why))
+        say(UNUSABLE % (where_, why))
     fine = all(row['outcome'] in ('restored', 'renamed', 'done before') for row in report)
     return 0 if fine and not unusable else 1
 

@@ -7,7 +7,9 @@ use super::inventory;
 use super::rebuild;
 use super::run::RunState;
 use super::store::{SourceRow, Store, VolumeState};
-use super::testkit::*;
+use super::testkit::{
+    bytes, cands, card, put, records, run, source, volume_id, Scratch, MIB, RESERVE_FLOOR,
+};
 use super::volume::Volume;
 use std::fs;
 use std::path::{Path, PathBuf};

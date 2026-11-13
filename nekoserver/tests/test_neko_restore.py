@@ -22,6 +22,15 @@ FIXTURES = ROOT / 'tests/fixtures/cardset/records'
 SET = '00000000-0000-4000-8000-0000000000aa'
 VOLUME = '00000000-0000-4000-8000-000000000001'
 SOURCE = 'cccccccc-0000-4000-8000-000000000001'
+VOLUME_2 = '00000000-0000-4000-8000-000000000002'
+A_2001 = '2001/a.jpg'
+X_A = 'x/a.jpg'
+A_JPG = 'a.jpg'
+JSON = '.json'
+CARD_FLAG = '--card'
+SEARCH = '--search'
+VERSIONS = '.versions.jsonl'
+SAND = b'sand'
 
 
 def uuid(n, prefix='aaaaaaaa'):
@@ -91,7 +100,7 @@ class Card:
         }
         folder = self.nb / 'records' / rid[:2]
         folder.mkdir(exist_ok=True)
-        (folder / (rid + '.json')).write_text(json.dumps(rec, ensure_ascii=False) + '\n')
+        (folder / (rid + JSON)).write_text(json.dumps(rec, ensure_ascii=False) + '\n')
         return rec
 
     def payload(self, rec):
@@ -110,7 +119,7 @@ class Base(unittest.TestCase):
 
     def run_tool(self, *args):
         self.said = []
-        return tool.main(['--card', str(self.card.top), *args], say=self.said.append)
+        return tool.main([CARD_FLAG, str(self.card.top), *args], say=self.said.append)
 
     def text(self):
         return '\n'.join(self.said)
@@ -137,34 +146,34 @@ class SameReaderTests(unittest.TestCase):
             card.identity['archive_format_version'] = 2
             (card.nb / 'identity.json').write_text(json.dumps(card.identity))
             said = []
-            self.assertEqual(tool.main(['--card', d, 'info'], say=said.append), 2)
+            self.assertEqual(tool.main([CARD_FLAG, d, 'info'], say=said.append), 2)
             self.assertIn('archive format 2, not format 1', said[0])
 
 
 class ListAndVerifyTests(Base):
     def test_info_list_and_verify_from_the_card_alone(self):
-        self.card.add('2001/beach.jpg', b'sand' * 100)
+        self.card.add('2001/beach.jpg', SAND * 100)
         self.card.add('2002/city\nnight.png', b'lights')
         self.assertEqual(self.run_tool('info'), 0)
         self.assertIn('Card:        Example set - 001', self.text())
         self.assertIn('Not encrypted', self.text())
         self.assertEqual(self.run_tool('list'), 0)
         self.assertIn('2002/city\\nnight.png', self.text(), 'a control character is shown escaped')
-        self.assertEqual(self.run_tool('list', '--search', 'beach'), 0)
+        self.assertEqual(self.run_tool('list', SEARCH, 'beach'), 0)
         self.assertIn('1 file(s)', self.text())
         self.assertEqual(self.run_tool('verify'), 0)
         self.assertIn('ok 2, damaged 0, missing 0', self.text())
 
     def test_damage_missing_files_and_unusable_records_are_all_said(self):
-        good = self.card.add('a.jpg', b'one')
+        good = self.card.add(A_JPG, b'one')
         damaged = self.card.add('b.jpg', b'two')
         missing = self.card.add('c.jpg', b'three')
         self.card.payload(damaged).write_bytes(b'tw0')
         self.card.payload(missing).unlink()
         # A record that names another card, and one that is not a record at all.
         other = self.card.add('d.jpg', b'four')
-        path = self.card.nb / 'records' / other['record_id'][:2] / (other['record_id'] + '.json')
-        path.write_text(path.read_text().replace(VOLUME, '00000000-0000-4000-8000-000000000002'))
+        path = self.card.nb / 'records' / other['record_id'][:2] / (other['record_id'] + JSON)
+        path.write_text(path.read_text().replace(VOLUME, VOLUME_2))
         (self.card.nb / 'records/zz').mkdir()
         (self.card.nb / 'records/zz/junk.json').write_text('{"schema_version": 1}')
         self.assertEqual(self.run_tool('verify'), 1)
@@ -190,7 +199,7 @@ class ListAndVerifyTests(Base):
         linked.mkdir()
         (linked / 'NekoBackup').symlink_to(self.card.nb)
         said = []
-        self.assertEqual(tool.main(['--card', str(linked), 'info'], say=said.append), 2)
+        self.assertEqual(tool.main([CARD_FLAG, str(linked), 'info'], say=said.append), 2)
         self.assertIn('no NekoBackup folder', said[0])
 
     def test_run_from_the_card_it_finds_the_card(self):
@@ -205,11 +214,11 @@ class ListAndVerifyTests(Base):
 
 class RestoreTests(Base):
     def test_files_come_back_with_their_bytes_and_times_in_their_folders(self):
-        a = self.card.add('2001/deep/beach.jpg', b'sand' * 1000)
+        a = self.card.add('2001/deep/beach.jpg', SAND * 1000)
         self.card.add('2002/שלום \U0001f408.png', b'cat')
         self.assertEqual(self.run_tool('restore', str(self.dest)), 0)
         back = self.dest / '2001/deep/beach.jpg'
-        self.assertEqual(back.read_bytes(), b'sand' * 1000)
+        self.assertEqual(back.read_bytes(), SAND * 1000)
         self.assertEqual(os.stat(back).st_mtime_ns, int(a['source_mtime_ns']))
         self.assertEqual((self.dest / '2002/שלום \U0001f408.png').read_bytes(), b'cat')
         self.assertIn('restored 2', self.text())
@@ -226,28 +235,28 @@ class RestoreTests(Base):
 
     def test_nothing_is_overwritten_without_a_named_approval(self):
         # A34: a file there, a name that differs only in case, a link in the way.
-        self.card.add('2001/a.jpg', b'card a')
+        self.card.add(A_2001, b'card a')
         self.card.add('2001/b.jpg', b'card b')
         self.card.add('2001/c.jpg', b'card c')
         (self.dest / '2001').mkdir()
-        (self.dest / '2001/a.jpg').write_bytes(b'mine')
+        (self.dest / A_2001).write_bytes(b'mine')
         (self.dest / '2001/B.JPG').write_bytes(b'mine too')
         self.assertEqual(self.run_tool('restore', str(self.dest)), 1)
-        self.assertEqual((self.dest / '2001/a.jpg').read_bytes(), b'mine')
+        self.assertEqual((self.dest / A_2001).read_bytes(), b'mine')
         self.assertFalse((self.dest / '2001/b.jpg').exists())
         self.assertEqual((self.dest / '2001/c.jpg').read_bytes(), b'card c')
         self.assertIn('skipped     2001/b.jpg -> b.jpg is there under the name B.JPG', self.text())
         # --rename puts each taken one under _renamed/ and says where.
-        self.assertEqual(self.run_tool('restore', str(self.dest), '--rename', '--search', '2001/b'), 0)
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--rename', SEARCH, '2001/b'), 0)
         self.assertIn('renamed     2001/b.jpg -> _renamed/aaaaaaaa-0000-4000-8000-000000000002.jpg', self.text())
         # --overwrite names the one file that may be replaced.
-        self.assertEqual(self.run_tool('restore', str(self.dest), '--search', '2001/a', '--overwrite', '2001/a.jpg'), 0)
-        self.assertEqual((self.dest / '2001/a.jpg').read_bytes(), b'card a')
+        self.assertEqual(self.run_tool('restore', str(self.dest), SEARCH, '2001/a', '--overwrite', A_2001), 0)
+        self.assertEqual((self.dest / A_2001).read_bytes(), b'card a')
 
     def test_a_link_in_the_destination_is_never_followed(self):
         outside = self.tmp / 'outside'
         outside.mkdir()
-        self.card.add('2001/a.jpg', b'card a')
+        self.card.add(A_2001, b'card a')
         (self.dest / '2001').symlink_to(outside)
         self.assertEqual(self.run_tool('restore', str(self.dest)), 1)
         self.assertEqual(list(outside.iterdir()), [], 'nothing written through the link')
@@ -255,7 +264,7 @@ class RestoreTests(Base):
 
     def test_a_restore_over_several_cards_or_after_a_stop_never_copies_twice(self):
         # A35: the progress file keeps what is done; a file that failed is not in it.
-        self.card.add('a.jpg', b'one')
+        self.card.add(A_JPG, b'one')
         broken = self.card.add('b.jpg', b'two')
         good_bytes = self.card.payload(broken).read_bytes()
         self.card.payload(broken).write_bytes(b'tw0')
@@ -263,22 +272,22 @@ class RestoreTests(Base):
         self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 1)
         done = json.loads(progress.read_text())['done']
         self.assertEqual(list(done), [uuid(1, 'bbbbbbbb')])
-        first = os.stat(self.dest / 'a.jpg').st_mtime_ns
+        first = os.stat(self.dest / A_JPG).st_mtime_ns
         self.card.payload(broken).write_bytes(good_bytes)  # the same file, from another card
         self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 0)
         self.assertIn('done before a.jpg -> a.jpg', self.text())
         self.assertIn('restored    b.jpg -> b.jpg', self.text())
-        self.assertEqual(os.stat(self.dest / 'a.jpg').st_mtime_ns, first, 'not copied again')
+        self.assertEqual(os.stat(self.dest / A_JPG).st_mtime_ns, first, 'not copied again')
         self.assertEqual(len(json.loads(progress.read_text())['done']), 2)
 
     def test_the_report_names_every_file_and_where_it_went(self):
-        self.card.add('x/a.jpg', b'a')
+        self.card.add(X_A, b'a')
         report = self.tmp / 'report.json'
         self.assertEqual(self.run_tool('restore', str(self.dest), '--report', str(report)), 0)
         data = json.loads(report.read_text())
         self.assertEqual(data['card'], 'Example set - 001')
-        self.assertEqual(data['files'][0]['original_path'], 'x/a.jpg')
-        self.assertEqual(data['files'][0]['where'], 'x/a.jpg')
+        self.assertEqual(data['files'][0]['original_path'], X_A)
+        self.assertEqual(data['files'][0]['where'], X_A)
         # The report never replaces a file that is there: said before anything is restored.
         self.assertEqual(self.run_tool('restore', str(self.dest), '--report', str(report)), 2)
         self.assertIn('is there already', self.text())
@@ -288,7 +297,7 @@ class WhereTests(Base):
     def snapshot(self, lines):
         body = b''.join(json.dumps(line).encode() + b'\n' for line in lines)
         sid = uuid(7, 'ffffffff')
-        (self.card.nb / 'inventory' / (sid + '.versions.jsonl')).write_bytes(body)
+        (self.card.nb / 'inventory' / (sid + VERSIONS)).write_bytes(body)
         header = {
             'schema_version': 1,
             'snapshot_id': sid,
@@ -302,16 +311,16 @@ class WhereTests(Base):
             'sources': [],
             'volumes': [
                 {'volume_id': VOLUME, 'sequence_number': 1, 'state': 'in_use'},
-                {'volume_id': '00000000-0000-4000-8000-000000000002', 'sequence_number': 2, 'state': 'in_use'},
+                {'volume_id': VOLUME_2, 'sequence_number': 2, 'state': 'in_use'},
             ],
             'versions_file': {
-                'name': sid + '.versions.jsonl',
+                'name': sid + VERSIONS,
                 'lines': len(lines),
                 'byte_size': len(body),
                 'sha256': hashlib.sha256(body).hexdigest(),
             },
         }
-        (self.card.nb / 'inventory' / (sid + '.json')).write_text(json.dumps(header))
+        (self.card.nb / 'inventory' / (sid + JSON)).write_text(json.dumps(header))
         return sid
 
     def test_the_card_needed_is_named_from_the_inventory(self):
@@ -326,7 +335,7 @@ class WhereTests(Base):
                     'copies': [
                         {
                             'record_id': uuid(9),
-                            'volume_id': '00000000-0000-4000-8000-000000000002',
+                            'volume_id': VOLUME_2,
                             'state': 'committed',
                         }
                     ],
@@ -339,7 +348,7 @@ class WhereTests(Base):
 
     def test_a_tampered_inventory_is_refused(self):
         sid = self.snapshot([{'path': 'x.jpg', 'copies': []}])
-        (self.card.nb / 'inventory' / (sid + '.versions.jsonl')).write_bytes(b'{"path": "y.jpg"}\n')
+        (self.card.nb / 'inventory' / (sid + VERSIONS)).write_bytes(b'{"path": "y.jpg"}\n')
         self.assertEqual(self.run_tool('where', 'x'), 1)
         self.assertIn('does not match its header', self.text())
 

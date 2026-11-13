@@ -7,7 +7,10 @@ use super::error::{CardError, Kind};
 use super::format;
 use super::run::{self, Decision, RunState};
 use super::source::{self, Source};
-use super::testkit::*;
+use super::testkit::{
+    attach, bytes, cands, card, files, payload, put, records, run, source, volume_id, Scratch, MIB,
+    SET,
+};
 use std::fs;
 
 fn names(paths: &[String]) -> Vec<&str> {

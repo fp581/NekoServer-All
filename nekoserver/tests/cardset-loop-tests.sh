@@ -9,9 +9,9 @@
 # handed to the kernel is still written (archive format 1, section 11).
 set -u
 cd "$(dirname "$0")/../runtime" || exit 2
-[ "$(id -u)" = 0 ] || { echo 'Run it as root: it makes loop devices and mounts them.' >&2; exit 2; }
+[[ "$(id -u)" = 0 ]] || { echo 'Run it as root: it makes loop devices and mounts them.' >&2; exit 2; }
 BIN=$(cargo test --no-run 2>&1 | sed -n 's/^ *Executable unittests src\/main.rs (\(.*\))$/\1/p' | tail -1)
-[ -x "$BIN" ] || { echo 'The test binary was not built.' >&2; exit 2; }
+[[ -x "$BIN" ]] || { echo 'The test binary was not built.' >&2; exit 2; }
 BASE=$(mktemp -d /tmp/neko-loop.XXXXXX)
 MOUNTS=()
 DEVICES=()
@@ -28,8 +28,9 @@ trap cleanup EXIT
 # card <name> <MiB>: a fresh ext4 card mounted at $BASE/<name>, which is left in CARD.
 # Not called in a subshell, so that cleanup knows every mount and device.
 card() {
-  local img="$BASE/$1.img" mnt="$BASE/$1" dev
-  truncate -s "$2M" "$img"
+  local name="$1" size_mib="$2"
+  local img="$BASE/$name.img" mnt="$BASE/$name" dev
+  truncate -s "${size_mib}M" "$img"
   mkfs.ext4 -q -m 0 -F "$img" >/dev/null
   dev=$(losetup -f --show "$img") || return 1
   DEVICES+=("$dev")
@@ -39,22 +40,29 @@ card() {
   CARD="$mnt"
 }
 
-device_of() { findmnt -n -o SOURCE --target "$1"; }
+device_of() {
+  local folder="$1"
+  findmnt -n -o SOURCE --target "$folder"
+}
 
-# test <name>: runs one ignored test of tests_loop.rs.
+# run_test <name>: runs one ignored test of tests_loop.rs.
 run_test() {
-  "$BIN" --ignored --exact "cardset::tests_loop::$1" --nocapture --test-threads 1 2>&1 | tail -20
+  local name="$1"
+  "$BIN" --ignored --exact "cardset::tests_loop::$name" --nocapture --test-threads 1 2>&1 | tail -20
   return "${PIPESTATUS[0]}"
 }
 
+# result <what> <exit code>
 result() {
-  if [ "$2" = 0 ]; then echo "PASS  $1"; else echo "FAIL  $1"; FAILED=1; fi
+  local what="$1" code="$2"
+  if [[ "$code" = 0 ]]; then echo "PASS  $what"; else echo "FAIL  $what"; FAILED=1; fi
 }
 
 # wait_ready <work>: until the copy waits at its step (at most two minutes).
 wait_ready() {
+  local work="$1"
   for _ in $(seq 1200); do
-    [ -f "$1/signals/ready" ] && return 0
+    [[ -f "$work/signals/ready" ]] && return 0
     sleep 0.1
   done
   return 1
@@ -83,7 +91,7 @@ for c in "$c1" "$c2"; do
     --progress "$HOME_OF/progress.json" >/dev/null || code=1
 done
 diff -r "$NEKO_LOOP_WORK/a01" "$OUT" || code=1
-[ "$(find "$OUT" -name '.neko-restore-*' | wc -l)" = 0 ] || code=1
+[[ "$(find "$OUT" -name '.neko-restore-*' | wc -l)" = 0 ]] || code=1
 result "A32 the tool on the cards restores the whole library as $RESTORER" "$code"
 
 for point in Begun IntentWritten PayloadStarted PayloadWritten Checked VerifiedWritten Published \

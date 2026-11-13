@@ -9,7 +9,7 @@
 //! - A damaged file is never restored (A33); a taken place is never overwritten (A34).
 use super::commit;
 use super::format::Record;
-use super::testkit::*;
+use super::testkit::{bytes, cands, card, put, records, run, source, Scratch, MIB};
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};

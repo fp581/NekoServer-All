@@ -8,7 +8,10 @@ use super::format;
 use super::reconcile::{self, Report};
 use super::run::RunState;
 use super::source::Candidate;
-use super::testkit::*;
+use super::testkit::{
+    attach, bytes, cands, card, crash_at, fail_at, files, payload, put, records, run, source,
+    Scratch, MIB,
+};
 use super::volume::Volume;
 use std::fs;
 use std::path::{Path, PathBuf};
