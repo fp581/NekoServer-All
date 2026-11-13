@@ -42,3 +42,5 @@ mod tests_accept;
 mod tests_crash;
 #[cfg(test)]
 mod tests_format;
+#[cfg(test)]
+mod tests_loop;

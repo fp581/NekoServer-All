@@ -220,7 +220,7 @@ fn space(free: u64, capacity: u64) -> Space {
 fn reserve_is_the_larger_of_256_mib_and_one_percent() {
     let small = space(0, 8 << 30);
     let r = planner::reserve(&small, 0, 2);
-    assert!(r >= 256 * MIB && r < 257 * MIB);
+    assert!((256 * MIB..257 * MIB).contains(&r));
     let big = space(0, 100 << 30);
     assert!(planner::reserve(&big, 0, 0) >= (100 << 30) / 100);
     // the inventory budget grows with the versions of the set

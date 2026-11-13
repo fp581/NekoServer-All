@@ -91,7 +91,7 @@ pub enum Outcome {
     /// Committed on the card and counted by the catalogue. A failed D8 is reported here;
     /// it does not undo the commit.
     Committed {
-        record: Record,
+        record: Box<Record>,
         cleanup_failed: Option<CardError>,
     },
     /// Nothing committed and this transaction's staging files removed: the file is
@@ -304,7 +304,7 @@ pub fn finish(
     let cleanup_failed = clean_up(vol, &txn.transaction_id).err();
     hook.at(Point::CleanedUp)?;
     Ok(Outcome::Committed {
-        record,
+        record: Box::new(record),
         cleanup_failed,
     })
 }
