@@ -14,7 +14,9 @@ card it is on:
     python3 .../neko-restore.py where beach        (which card holds what, from the card's inventory)
 
 With --card PATH it reads another card: PATH is the card's top folder or its NekoBackup
-folder. Read the card as root, or as the user who owns its files.
+folder, mounted where Linux mounts a card (under /media, /run/media or /mnt); a folder
+anywhere else is refused, links included. Read the card as root, or as the user who owns
+its files.
 
 The card's format is "archive format 1" (NekoServer's plans/0.51.0-archive-format-v1.md).
 Everything on the card is treated as untrusted: every metadata file is read with its size
@@ -55,6 +57,9 @@ MAX_BYTES = 9007199254740991
 CHUNK = 1 << 20
 RENAMED = '_renamed'
 THERE_ALREADY = '%s is there already'
+# Where Linux mounts a removable card: a card given with --card must be below one of these
+# (or be the card this tool runs from).
+CARD_ROOTS = ('/media/', '/run/media/', '/mnt/')
 UNUSABLE = 'unusable %s: %s'
 PROGRESS_FORMAT = 'neko-restore-progress'
 
@@ -96,7 +101,7 @@ def parse_bounded(data, limit, max_depth):
         raise Invalid('metadata file has a byte-order mark')
     try:
         value = json.loads(data.decode('utf-8'), parse_constant=_no_constants)
-    except (UnicodeDecodeError, ValueError, RecursionError):
+    except (ValueError, RecursionError):  # a UnicodeDecodeError is a ValueError
         raise Invalid('metadata file is not JSON') from None
     if depth(value) > max_depth:
         raise Invalid('metadata file nested too deep')
@@ -329,9 +334,17 @@ class Card:
     it is opened relative to an open folder, never through a link."""
 
     def __init__(self, path):
-        top = os.path.abspath(path)
-        if os.path.basename(top.rstrip('/')) == ROOT_NAME:
-            top = os.path.dirname(top.rstrip('/'))
+        # The card's folder with every link resolved, then held to the places Linux mounts
+        # a removable card (or the card this tool runs from): only that folder is opened.
+        top = os.path.realpath(path)
+        if os.path.basename(top) == ROOT_NAME:
+            top = os.path.dirname(top)
+        own = default_card()
+        if not (top == own or any(top.startswith(root) for root in CARD_ROOTS)):
+            raise Unusable(
+                '%s is not where a card is mounted. Mount the card under /media or /mnt (as Linux does '
+                'by itself), or run this tool from the card' % show(top)
+            )
         try:
             self.top = open_dir(top)
             self.nb = open_dir(ROOT_NAME, self.top)
@@ -871,7 +884,7 @@ def version_said(raw, text, labels):
 
 def default_card():
     """The card this file is on, when it is run from NekoBackup/tools/."""
-    here = os.path.dirname(os.path.abspath(__file__))
+    here = os.path.dirname(os.path.realpath(__file__))
     if os.path.basename(here) == 'tools' and os.path.basename(os.path.dirname(here)) == ROOT_NAME:
         return os.path.dirname(os.path.dirname(here))
     return None
@@ -958,7 +971,11 @@ def cmd_where(card, args, say):
 
 def main(argv=None, say=print):
     parser = argparse.ArgumentParser(prog='neko-restore', description=__doc__.split('\n\n')[0])
-    parser.add_argument('--card', help='the card: its top folder or its NekoBackup folder')
+    parser.add_argument(
+        '--card',
+        help='the card: its top folder or its NekoBackup folder, mounted under /media, /run/media or /mnt '
+        '(without --card: the card this tool is on)',
+    )
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('info', help='what this card is')
     for name, helptext in (('list', 'the files on this card'), ('verify', 'check every file against its record')):

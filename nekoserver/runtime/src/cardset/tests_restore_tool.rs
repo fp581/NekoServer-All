@@ -119,9 +119,11 @@ fn written(name: &str) -> Written {
     }
 }
 
+/// The tool written onto the card, run from there as the card's README says: it reads the
+/// card it is on (no --card, which takes only a card mounted under /media or /mnt).
 fn tool(w: &Written, args: &[&str]) -> Output {
     let path = w.card.join("NekoBackup/tools/neko-restore.py");
-    let mut all = vec![path.to_str().unwrap(), "--card", w.card.to_str().unwrap()];
+    let mut all = vec![path.to_str().unwrap()];
     all.extend_from_slice(args);
     python(&all)
 }
