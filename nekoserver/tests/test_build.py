@@ -129,23 +129,41 @@ class BuiltPathTests(unittest.TestCase):
 
 class PlanTests(unittest.TestCase):
     def test_static_only_with_the_musl_library_and_rust_lld(self):
+        with_cc = {'x86_64-linux-musl-gcc': '/usr/bin/x86_64-linux-musl-gcc'}.get
         with tempfile.TemporaryDirectory() as tmp:
             sysroot = Path(tmp)
             host = 'x86_64-unknown-linux-gnu'
             # A distribution's toolchain: the host library alone.
             (sysroot / 'lib/rustlib' / host / 'lib').mkdir(parents=True)
-            self.assertEqual(build.plan(host, sysroot), (host, []))
+            self.assertEqual(build.plan(host, sysroot, with_cc), (host, []))
             # The musl library without rust-lld: still this PC's own build.
             (sysroot / 'lib/rustlib' / build.STATIC / 'lib').mkdir(parents=True)
-            self.assertEqual(build.plan(host, sysroot), (host, []))
+            self.assertEqual(build.plan(host, sysroot, with_cc), (host, []))
             # Both: the static release build, linked by rust-lld.
             linker = sysroot / 'lib/rustlib' / host / 'bin/rust-lld'
             linker.parent.mkdir(parents=True)
             linker.write_text('')
-            target, arguments = build.plan(host, sysroot)
+            target, arguments = build.plan(host, sysroot, with_cc)
             self.assertEqual(target, build.STATIC)
             self.assertEqual(arguments[:2], ['--target', build.STATIC])
             self.assertEqual(arguments[3], 'target.' + build.STATIC + '.linker=' + json.dumps(str(linker)))
+
+    def test_static_only_with_a_musl_c_compiler_for_sqlite(self):
+        # SQLite (the catalogue of the removable-media backup sets) is C: without a musl C
+        # compiler the static build cannot be made, so this PC's own build is made instead.
+        with tempfile.TemporaryDirectory() as tmp:
+            sysroot = Path(tmp)
+            host = 'x86_64-unknown-linux-gnu'
+            (sysroot / 'lib/rustlib' / build.STATIC / 'lib').mkdir(parents=True)
+            linker = sysroot / 'lib/rustlib' / host / 'bin/rust-lld'
+            linker.parent.mkdir(parents=True)
+            linker.write_text('')
+            self.assertEqual(build.plan(host, sysroot, {}.get), (host, []))
+            # Named musl-gcc only (Arch, Fedora): cargo is told to use it for the C code.
+            only_musl_gcc = {'musl-gcc': '/usr/bin/musl-gcc'}.get
+            target, arguments = build.plan(host, sysroot, only_musl_gcc)
+            self.assertEqual(target, build.STATIC)
+            self.assertEqual(arguments[-2:], ['--config', 'env.CC_x86_64_unknown_linux_musl="/usr/bin/musl-gcc"'])
 
     def test_a_rust_new_enough_is_found_under_its_plain_or_versioned_name(self):
         # Ubuntu 24.04: rustc 1.75 as "rustc", and 1.85 beside it as "rustc-1.85".
