@@ -60,6 +60,8 @@ MAX_BYTES = 9007199254740991
 CHUNK = 1 << 20
 RENAMED = '_renamed'
 THERE_ALREADY = '%s is there already'
+# A file already at its place with exactly the record's bytes (an earlier restore's).
+SAME_FILE = 'same file'
 # Where Linux mounts a removable card: a card given with --card must be below one of these
 # (or be the card this tool runs from).
 CARD_ROOTS = ('/media/', '/run/media/', '/mnt/')
@@ -850,7 +852,7 @@ def restore_one(card, rec, dest_fd, rename, overwrite, listing=None):
             named = target in overwrite
             if exists(d, parts[-1]) and not named:
                 if same_file(d, parts[-1], rec):
-                    return 'same file', target  # restored before (by a run without --progress)
+                    return SAME_FILE, target  # restored before (by a run without --progress)
                 raise Taken('a file is there already')
             copy_verified(card, rec, d, temp)
             publish(d, temp, parts[-1], named, listing)
@@ -876,6 +878,8 @@ def renamed_copy(card, rec, dest_fd, temp, listing=None):
         d = descend(dest_fd, [RENAMED], listing=listing)
         try:
             if exists(d, other):
+                if same_file(d, other, rec):
+                    return SAME_FILE, '%s/%s' % (RENAMED, other)
                 return 'skipped', THERE_ALREADY % (RENAMED + '/' + other)
             copy_verified(card, rec, d, temp)
             publish(d, temp, other, False, listing)
@@ -889,7 +893,7 @@ def renamed_copy(card, rec, dest_fd, temp, listing=None):
 
 
 # What became of a record that leaves the file in place: no failure.
-KEPT = ('restored', 'renamed', 'done before', 'same file')
+KEPT = ('restored', 'renamed', 'done before', SAME_FILE)
 FINE = KEPT + ('older', 'same version')
 
 
@@ -989,7 +993,7 @@ def restore(card, records, destination, rename=False, overwrite=(), progress=Non
             chosen = None
             for rec in recs:
                 outcome, where = one_version(card, rec, dest_fd, opts, chosen)
-                if outcome in ('restored', 'renamed', 'same file') and progress is not None:
+                if outcome in ('restored', 'renamed', SAME_FILE) and progress is not None:
                     progress.add(rec, where)
                 if chosen is None and outcome in KEPT:
                     chosen = (rec, where)

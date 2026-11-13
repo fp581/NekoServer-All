@@ -529,6 +529,10 @@ class ManyFilesTests(Base):
             self.assertEqual(self.run_tool('restore', str(self.dest), '--rename'), 0, said_text(self))
         self.assertIn('renamed     DCIM/meeting 10:30.jpg -> _renamed/', said_text(self))
         self.assertEqual([p.read_bytes() for p in (self.dest / RENAMED_DIR).iterdir()], [b'colon'])
+        # A third run: the copy under _renamed/ is the same file, no failure.
+        with mock.patch.object(tool.os, 'rename', like_exfat), mock.patch.object(tool.os, 'link', no_links):
+            self.assertEqual(self.run_tool('restore', str(self.dest), '--rename'), 0, said_text(self))
+        self.assertIn('same file   DCIM/meeting 10:30.jpg -> _renamed/', said_text(self))
         self.assertEqual([p for p in self.dest.rglob('.neko-restore-*')], [])
 
     def test_a_file_already_restored_counts_as_done_without_a_progress_file(self):
