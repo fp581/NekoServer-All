@@ -9,6 +9,12 @@ Fixes only: what 0.50.0 shipped without seeing it on a machine, and what the cod
 - **A big folder restores in minutes, not hours.** For every file it restored, the tool listed the whole destination folder again, to find a name that differs only in upper and lower case. A folder of 8,000 photos took 23 seconds and one of 100,000 about an hour; 32,000 now take 24 seconds (measured on test cards). Each folder is listed once per restore, and names that differ only in case are still refused, also between two files of the same restore.
 - **A restore with a progress file is as quick as one without.** The progress file (`--progress`, for several cards or after a stop) was written again in full after every file, so 8,000 files took seven minutes; they now take 10 seconds. Each restored file adds one line to it, flushed to the disk at once; a line cut off by a stop or a power cut is not counted. A progress file of the earlier tool is read and carried on.
 
+### Fixed: Ask Neko
+- **A password that holds another is kept out of the question whole.** Before a question goes to the model, NekoServer takes out the apps' passwords and logins. When one of them held another (an app's login inside another app's password), the shorter was taken out first and the rest of the longer one was left in: `<removed>-Fern-Oak`. The longest are now taken out first.
+
+### Tests
+- **A setup test no longer waits for the keyboard.** The test of "none for now" at the offline-backup question meant to answer it itself, but the question had taken `input` when its file was loaded, before the test put its answer in place: the test read the real terminal, hung when it was run from one, and its check that the question is not asked a second time could never fail. The three drive questions that took `input` that way look it up when they ask (setup's own, which reaches the window, as before).
+
 ## v0.51.0 — (in progress)
 
 Planned: removable-media backup sets (photos and videos from Immich onto numbered SD cards or other removable drives), Torrentio as a download source, and the fixes from the 0.50.0 sweep. Each is listed here as it lands.
