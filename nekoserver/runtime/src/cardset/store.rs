@@ -315,6 +315,24 @@ fn insert_copy(
     Ok(())
 }
 
+/// A new, empty file at `path` that only its owner can read (0600); Exists if one is there.
+fn private_file(path: &Path) -> Res<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+    {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(CardError::new(
+            Kind::Exists,
+            "the catalogue's file exists already",
+        )),
+        Err(e) => Err(CardError::io("the catalogue's file", &e)),
+    }
+}
+
 pub struct Store {
     conn: Connection,
 }
@@ -322,13 +340,16 @@ pub struct Store {
 impl Store {
     /// Open (or make) the catalogue at `path`. A new file is the server's own (0600).
     pub fn open(path: &Path) -> Res<Store> {
-        let fresh = !path.exists();
-        let conn = Connection::open(path).map_err(|e| db("open", e))?;
-        if fresh {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-                .map_err(|e| CardError::io("the catalogue's permissions", &e))?;
+        if !path.exists() {
+            // Made the server's own before SQLite writes a byte into it (an empty file is a
+            // new database to SQLite): made by SQLite, it was readable by others for a moment.
+            match private_file(path) {
+                Ok(()) => {}
+                Err(e) if e.kind == Kind::Exists => {}
+                Err(e) => return Err(e),
+            }
         }
+        let conn = Connection::open(path).map_err(|e| db("open", e))?;
         Store::prepare(conn)
     }
 
@@ -725,15 +746,13 @@ impl Store {
         let path = target
             .to_str()
             .ok_or_else(|| CardError::new(Kind::Invalid, "the export's path is not UTF-8"))?;
-        if target.exists() {
-            return Err(CardError::new(
-                Kind::Exists,
-                "the export's file exists already",
-            ));
+        // The server's own, like the catalogue (VACUUM INTO fills an empty file): left to
+        // the umask, the paths of the person's files were readable by every user.
+        private_file(target)?;
+        if let Err(e) = self.conn.execute("VACUUM INTO ?1", params![path]) {
+            let _ = std::fs::remove_file(target);
+            return Err(db("export", e));
         }
-        self.conn
-            .execute("VACUUM INTO ?1", params![path])
-            .map_err(|e| db("export", e))?;
         Ok(())
     }
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.51.2 — (in progress)
+
+Fixes only, from a wider review of 0.51.0's card engine, setup and dashboard. Nothing changes in how NekoServer is used. Each fix is listed here as it lands.
+
+### Fixed: SD-card backup sets (the engine, not switched on yet)
+- **The catalogue's copy for the host backup is private.** The catalogue (which files are on which card: the paths of your files) is the server's own, readable only by root, but its copy for the host backup was left readable by every user of the server, and a new catalogue was readable by others for a moment before it was narrowed. Both files are now made private before anything is written into them.
+
 ## v0.51.1 — 2026-11-13
 
 Fixes only, found by a code review of 0.51.0 and by trying the restore tool on real card images: mostly in the tool that gets files back from a backup card. Nothing changes in how NekoServer is used.
