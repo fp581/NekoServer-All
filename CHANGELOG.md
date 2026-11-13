@@ -4,6 +4,9 @@
 
 Fixes only: what 0.50.0 shipped without seeing it on a machine, and what the code reviews and small runs of 0.50.0 and 0.51.0 find. Nothing changes in how NekoServer is used. Each fix is listed here as it lands.
 
+### Fixed: getting files back from a backup card
+- **The newest version of a file is the one restored.** A file that changed between two backups has a copy of each version, on one card or on several. The restore tool restored the oldest under the file's name and skipped the newer one as "a file is there already"; restoring several cards with one progress file did the same whichever card came first. The newest version now gets the file's name and each older one is listed as `older` (with `--rename` it is restored under `_renamed/` too). With a progress file, a newer version found on a later card replaces the older one the tool put there itself, unless that file was changed since. A second copy of the same version (made because the first was damaged) is tried when the first fails, and is not counted as a failure. Covered by tests only: the cards were written by the tests.
+
 ## v0.51.0 — (in progress)
 
 Planned: removable-media backup sets (photos and videos from Immich onto numbered SD cards or other removable drives), Torrentio as a download source, and the fixes from the 0.50.0 sweep. Each is listed here as it lands.

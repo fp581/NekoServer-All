@@ -24,7 +24,10 @@ and nesting limits and every field checked, the same way NekoServer's engine rea
 path is never joined as text, folders are opened one by one without following links.
 Checksums find accidental damage; they cannot prove a card was not changed on purpose.
 
-Restoring never overwrites anything unless you name the file with --overwrite. A file
+Of several versions of one file, the newest gets the file's name; the older ones are listed
+as "older" (with --rename they go under _renamed/ too). Restoring never overwrites anything
+unless you name the file with --overwrite, or it is an older version this restore put there
+itself (named in the --progress file and unchanged since). A file
 whose place is taken (a file already there, a name that differs only in upper and lower
 case, a name the destination cannot hold) is skipped, or with --rename put under
 _renamed/<record id>.<ext>; the report lists each file and where it went. Every restored
@@ -650,9 +653,20 @@ class Progress:
                 raise Unusable('%s is not a restore progress file' % path)
             self.done = data['done']
 
+    def _entry(self, version_id):
+        """A usable entry: its path below the destination, never an absolute one."""
+        entry = self.done.get(version_id)
+        if not isinstance(entry, dict) or not isinstance(entry.get('path'), str) or entry.get('superseded_by'):
+            return None
+        try:
+            check_relative_path(entry['path'])
+        except Invalid:
+            return None
+        return entry
+
     def has(self, dest_fd, rec):
-        entry = self.done.get(rec['version_id'])
-        if not isinstance(entry, dict) or not isinstance(entry.get('path'), str):
+        entry = self._entry(rec['version_id'])
+        if entry is None:
             return False
         try:
             st = os.stat(entry['path'], dir_fd=dest_fd, follow_symlinks=False)
@@ -660,10 +674,35 @@ class Progress:
             return False
         return stat.S_ISREG(st.st_mode) and st.st_size == rec['byte_size']
 
+    def at_original(self, rec):
+        """(version ID, entry) of another version of rec's file restored under its own name
+        by an earlier run (from another card, say), or None."""
+        for version_id, entry in self.done.items():
+            if version_id == rec['version_id'] or self._entry(version_id) is None:
+                continue
+            same_file = (entry.get('source_id'), entry.get('original_path')) == (
+                rec['source_id'],
+                rec['original_relative_path'],
+            )
+            if same_file and entry['path'] == rec['original_relative_path']:
+                return version_id, entry
+        return None
+
+    def supersede(self, old_version_id, rec):
+        self.done[old_version_id]['superseded_by'] = rec['version_id']
+
     def add(self, rec, where):
         if not self.path:
             return
-        self.done[rec['version_id']] = {'path': where, 'sha256': rec['checksum'], 'record_id': rec['record_id']}
+        self.done[rec['version_id']] = {
+            'path': where,
+            'sha256': rec['checksum'],
+            'record_id': rec['record_id'],
+            'source_id': rec['source_id'],
+            'original_path': rec['original_relative_path'],
+            'source_mtime_ns': rec['source_mtime_ns'],
+            'committed_at': rec['committed_at'],
+        }
         temp = self.path + '.new'
         with open(temp, 'w', encoding='utf-8') as f:
             json.dump({'format': PROGRESS_FORMAT, 'version': 1, 'done': self.done}, f, indent=1)
@@ -700,7 +739,12 @@ def restore_one(card, rec, dest_fd, rename, overwrite):
         if e.errno not in (errno.EINVAL, errno.ENAMETOOLONG, errno.EILSEQ) or not rename:
             return 'failed', '%s (%s)' % (e.strerror, show(target))
     # The destination cannot take it under its own name: _renamed/<record id><.ext>.
-    other = rec['record_id'] + safe_ext(parts[-1])
+    return renamed_copy(card, rec, dest_fd, temp)
+
+
+def renamed_copy(card, rec, dest_fd, temp):
+    """`rec` restored as _renamed/<record id><.ext>."""
+    other = rec['record_id'] + safe_ext(rec['original_relative_path'].rsplit('/', 1)[-1])
     try:
         d = descend(dest_fd, [RENAMED])
         try:
@@ -717,32 +761,121 @@ def restore_one(card, rec, dest_fd, rename, overwrite):
     return 'renamed', '%s/%s' % (RENAMED, other)
 
 
+# What became of a record that leaves the file in place: no failure.
+KEPT = ('restored', 'renamed', 'done before')
+FINE = KEPT + ('older', 'same version')
+
+
+def age(rec):
+    """How new a version is: the source file's modification time when it was copied, then
+    when its copy was committed. A new copy of an old version (its first copy was damaged)
+    keeps that version's age."""
+    return rec['source_mtime_ns'], rec['committed_at']
+
+
+def entry_age(entry):
+    """The age of a version a progress file names, or None (a file of an earlier tool)."""
+    mtime, committed = entry.get('source_mtime_ns'), entry.get('committed_at')
+    if isinstance(mtime, int) and not isinstance(mtime, bool) and isinstance(committed, str):
+        return mtime, committed
+    return None
+
+
+def by_file(records):
+    """The records grouped by the file they are a version of, the newest version first;
+    the groups in the order of the records."""
+    groups = {}
+    for rec in records:
+        groups.setdefault((rec['source_id'], rec['original_relative_path']), []).append(rec)
+    for recs in groups.values():
+        recs.sort(key=age, reverse=True)
+    return list(groups.values())
+
+
+def holds(dest_fd, path, checksum):
+    """Whether the plain file at `path` below the destination has exactly that checksum."""
+    parts = path.split('/')
+    try:
+        d = descend(dest_fd, parts[:-1], make=False)
+    except (Taken, OSError):
+        return False
+    try:
+        fd = os.open(parts[-1], FILE_FLAGS, dir_fd=d)
+    except OSError:
+        return False
+    finally:
+        os.close(d)
+    try:
+        return stat.S_ISREG(os.fstat(fd).st_mode) and hash_fd(fd, MAX_BYTES)[0] == checksum
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+
+
+def older(card, rec, dest_fd, rename, newer_where):
+    """A version older than the one restored under the file's name: kept under _renamed/
+    with --rename, else named and left on the card."""
+    if rename:
+        return renamed_copy(card, rec, dest_fd, '.neko-restore-%s.part' % rec['record_id'])
+    return 'older', 'a newer version is restored as %s' % newer_where
+
+
+def one_version(card, rec, dest_fd, opts, chosen):
+    """One record of a file, after the newer versions of it were handled. `chosen` is the
+    (record, where) restored for that file in this run, if any."""
+    rename, overwrite, progress = opts
+    if progress is not None and progress.has(dest_fd, rec):
+        return 'done before', progress.done[rec['version_id']]['path']
+    if chosen is not None:
+        if chosen[0]['version_id'] == rec['version_id']:
+            return 'same version', chosen[1]
+        return older(card, rec, dest_fd, rename, chosen[1])
+    earlier = progress.at_original(rec) if progress is not None else None
+    allowed = overwrite
+    if earlier is not None and entry_age(earlier[1]) is not None:
+        entry = earlier[1]
+        if entry_age(entry) > age(rec):
+            return older(card, rec, dest_fd, rename, entry['path'])
+        # An older version this restore put there itself, unchanged since: replaced.
+        if holds(dest_fd, entry['path'], entry.get('sha256')):
+            allowed = overwrite | {rec['original_relative_path']}
+    outcome, where = restore_one(card, rec, dest_fd, rename, allowed)
+    if outcome == 'restored' and allowed is not overwrite:
+        progress.supersede(earlier[0], rec)
+    return outcome, where
+
+
 def restore(card, records, destination, rename=False, overwrite=(), progress=None, say=print):
-    """Restore `records` into `destination` (an existing folder). Returns the report:
-    one row per record with its original path, what happened and where it went."""
+    """Restore `records` into `destination` (an existing folder). Of several versions of
+    one file, the newest gets the file's name. Returns the report: one row per record with
+    its original path, what happened and where it went."""
     try:
         dest_fd = os.open(destination, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     except OSError as e:
         raise Unusable('the destination %s cannot be opened (%s)' % (show(destination), e.strerror)) from None
     report = []
+    opts = (rename, set(overwrite), progress)
     try:
-        for rec in records:
-            if progress is not None and progress.has(dest_fd, rec):
-                outcome, where = 'done before', progress.done[rec['version_id']]['path']
-            else:
-                outcome, where = restore_one(card, rec, dest_fd, rename, set(overwrite))
+        for recs in by_file(records):
+            chosen = None
+            for rec in recs:
+                outcome, where = one_version(card, rec, dest_fd, opts, chosen)
                 if outcome in ('restored', 'renamed') and progress is not None:
                     progress.add(rec, where)
-            row = {
-                'record_id': rec['record_id'],
-                'version_id': rec['version_id'],
-                'original_path': rec['original_relative_path'],
-                'source': rec['source_display_name'],
-                'outcome': outcome,
-                'where': where,
-            }
-            report.append(row)
-            say('%-11s %s -> %s' % (outcome, show(rec['original_relative_path']), show(where)))
+                if chosen is None and outcome in KEPT:
+                    chosen = (rec, where)
+                report.append(
+                    {
+                        'record_id': rec['record_id'],
+                        'version_id': rec['version_id'],
+                        'original_path': rec['original_relative_path'],
+                        'source': rec['source_display_name'],
+                        'outcome': outcome,
+                        'where': where,
+                    }
+                )
+                say('%-11s %s -> %s' % (outcome, show(rec['original_relative_path']), show(where)))
     finally:
         os.close(dest_fd)
     return report
@@ -961,7 +1094,7 @@ def cmd_restore(card, args, say):
     say(', '.join('%s %d' % kv for kv in sorted(counts.items())))
     for where_, why in unusable:
         say(UNUSABLE % (where_, why))
-    fine = all(row['outcome'] in ('restored', 'renamed', 'done before') for row in report)
+    fine = all(row['outcome'] in FINE for row in report)
     return 0 if fine and not unusable else 1
 
 

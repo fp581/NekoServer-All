@@ -346,6 +346,83 @@ class RestoreTests(Base):
         self.assertIn('is there already', said_text(self))
 
 
+def version(card, rec, n, mtime_ns, committed_at):
+    """Make `rec` (already on `card`) version `n` of its file, seen at `mtime_ns`."""
+    rec.update(
+        version_id=uuid(n, 'ffffffff'),
+        source_mtime_ns=str(mtime_ns),
+        committed_at=committed_at,
+    )
+    folder = card.nb / 'records' / rec['record_id'][:2]
+    (folder / (rec['record_id'] + JSON)).write_text(json.dumps(rec) + '\n')
+    return rec
+
+
+OLD_TIME, NEW_TIME = 981173106000000000, 1700000000000000000
+DOC = 'docs/plan.txt'
+
+
+class VersionTests(Base):
+    """The review of 0.51.0: a file edited between two backups has two versions in the
+    set. The tool restored the oldest under the file's name and skipped the newer one as
+    "a file is there already"; over two cards with a progress file, too."""
+
+    def test_the_newest_version_on_a_card_gets_the_files_name(self):
+        new = version(self.card, self.card.add(DOC, b'second draft'), 2, NEW_TIME, '2023-11-14T22:13:21Z')
+        old = version(self.card, self.card.add(DOC, b'first draft'), 1, OLD_TIME, '2001-02-03T04:05:08Z')
+        self.assertEqual(self.run_tool('restore', str(self.dest)), 0, said_text(self))
+        self.assertEqual((self.dest / DOC).read_bytes(), b'second draft')
+        self.assertIn('older       %s -> a newer version is restored as %s' % (DOC, DOC), said_text(self))
+        # With --rename the older one is kept too, under _renamed/.
+        self.dest = self.tmp / 'again'
+        self.dest.mkdir()
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--rename'), 0, said_text(self))
+        self.assertEqual((self.dest / DOC).read_bytes(), b'second draft')
+        kept = self.dest / RENAMED_DIR / (old['record_id'] + '.txt')
+        self.assertEqual(kept.read_bytes(), b'first draft')
+        self.assertNotEqual(new['record_id'], old['record_id'])
+
+    def test_over_two_cards_the_newest_wins_in_either_order(self):
+        second = Card(self.tmp / 'card2', seq=2, volume=VOLUME_2)
+        version(self.card, self.card.add(DOC, b'first draft'), 1, OLD_TIME, '2001-02-03T04:05:08Z')
+        version(second, second.add(DOC, b'second draft'), 2, NEW_TIME, '2023-11-14T22:13:21Z')
+        for order in ((self.card, second), (second, self.card)):
+            dest = self.tmp / ('dest-%d' % order[0].identity['sequence_number'])
+            dest.mkdir()
+            progress = self.tmp / ('progress-%d.json' % order[0].identity['sequence_number'])
+            for card in order:
+                self.said = []
+                code = tool.main([CARD_FLAG, str(card.top), 'restore', str(dest), '--progress', str(progress)],
+                                 say=self.said.append)  # fmt: skip
+                self.assertEqual(code, 0, said_text(self))
+            with self.subTest(first=order[0].identity['sequence_number']):
+                self.assertEqual((dest / DOC).read_bytes(), b'second draft')
+
+    def test_a_file_changed_after_it_was_restored_is_not_replaced(self):
+        second = Card(self.tmp / 'card2', seq=2, volume=VOLUME_2)
+        version(self.card, self.card.add(DOC, b'first draft'), 1, OLD_TIME, '2001-02-03T04:05:08Z')
+        version(second, second.add(DOC, b'second draft'), 2, NEW_TIME, '2023-11-14T22:13:21Z')
+        progress = str(self.tmp / 'progress.json')
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', progress), 0)
+        (self.dest / DOC).write_bytes(b'my own edit')
+        self.said = []
+        code = tool.main([CARD_FLAG, str(second.top), 'restore', str(self.dest), '--progress', progress],
+                         say=self.said.append)  # fmt: skip
+        self.assertEqual(code, 1)
+        self.assertEqual((self.dest / DOC).read_bytes(), b'my own edit')
+
+    def test_a_second_copy_of_the_same_version_is_no_failure(self):
+        """A version whose first copy was damaged gets a new copy, on the same card too."""
+        first = version(self.card, self.card.add(DOC, b'the text'), 1, OLD_TIME, '2001-02-03T04:05:08Z')
+        version(self.card, self.card.add(DOC, b'the text'), 1, OLD_TIME, '2002-02-03T04:05:08Z')
+        self.card.payload(first).write_bytes(b'the tEXt')
+        self.assertEqual(self.run_tool('restore', str(self.dest)), 0, said_text(self))
+        self.assertEqual((self.dest / DOC).read_bytes(), b'the text')
+
+
+RENAMED_DIR = '_renamed'
+
+
 class WhereTests(Base):
     def snapshot(self, lines):
         body = b''.join(json.dumps(line).encode() + b'\n' for line in lines)

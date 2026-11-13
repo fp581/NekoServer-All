@@ -85,6 +85,13 @@ systems), the file is `skipped`. You can choose instead:
 - `--overwrite PATH` (the file's original path, as `list` shows it): replace that one file,
   and only that one. Name each file you want replaced.
 
+**A file with several versions.** A file that changed between two backups has a copy of
+each version, on one card or on several. The newest version gets the file's name; each
+older one is listed as `older` and stays on the card (with `--rename` it is restored too,
+under `_renamed/`). Restoring from several cards with one progress file, a newer version
+found on a later card replaces the older one the tool put there itself, unless you changed
+that file since.
+
 Add `--report report.json` to keep the list of every file, what happened to it and where it
 went. The restore does not bring back owners, permissions or extended attributes.
 
