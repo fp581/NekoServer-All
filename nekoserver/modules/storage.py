@@ -528,8 +528,9 @@ def role_drive(config, key, label, found, asking):
     return device['uuid']
 
 
-def resolve_storage_identity(config, inventory, apply=False, interactive=False, input_fn=input, out_fn=print):
+def resolve_storage_identity(config, inventory, apply=False, interactive=False, input_fn=None, out_fn=print):
     """Identify disks by verified UUID. Explicit confirmation is required for unknown devices."""
+    input_fn = input_fn or input  # looked up now: setup's own, or a test's stand-in
     import drive_table
 
     items = discover_filesystems(inventory)

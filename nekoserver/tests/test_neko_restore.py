@@ -108,6 +108,13 @@ class Card:
         return self.nb / rec['archive_relative_path']
 
 
+def progress_done(path):
+    """The versions a progress file names as restored: its lines after the header."""
+    lines = Path(path).read_text().splitlines()
+    assert json.loads(lines[0]) == {'format': tool.PROGRESS_FORMAT, 'version': 2}, lines[0]
+    return {json.loads(line)['version_id']: json.loads(line) for line in lines[1:]}
+
+
 def said_text(case):
     """What the tool said in a test, as one text."""
     return '\n'.join(case.said)
@@ -186,6 +193,16 @@ class WhereACardMustBeTests(unittest.TestCase):
             code, said = self.info(path)
             self.assertEqual(code, 0, said)
             self.assertIn('Example set - 001', said)
+
+    def test_a_card_mounted_on_one_of_those_places_itself_is_read(self):
+        """The review of 0.51.0: a card mounted on /mnt itself was refused with "Mount the
+        card under /media or /mnt"."""
+        Card(self.mounts)
+        code, said = self.info(self.mounts)
+        self.assertEqual(code, 0, said)
+        # A folder beside it whose name only starts the same is still elsewhere.
+        Card(self.tmp / 'mediax')
+        self.assertEqual(self.info(self.tmp / 'mediax')[0], 2)
 
     def test_a_folder_elsewhere_is_refused_in_plain_words(self):
         elsewhere = Card(self.tmp / 'home' / 'CARD')
@@ -323,7 +340,7 @@ class RestoreTests(Base):
         self.card.payload(broken).write_bytes(b'tw0')
         progress = self.tmp / 'progress.json'
         self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 1)
-        done = json.loads(progress.read_text())['done']
+        done = progress_done(progress)
         self.assertEqual(list(done), [uuid(1, 'bbbbbbbb')])
         first = os.stat(self.dest / A_JPG).st_mtime_ns
         self.card.payload(broken).write_bytes(good_bytes)  # the same file, from another card
@@ -331,7 +348,7 @@ class RestoreTests(Base):
         self.assertIn('done before a.jpg -> a.jpg', said_text(self))
         self.assertIn('restored    b.jpg -> b.jpg', said_text(self))
         self.assertEqual(os.stat(self.dest / A_JPG).st_mtime_ns, first, 'not copied again')
-        self.assertEqual(len(json.loads(progress.read_text())['done']), 2)
+        self.assertEqual(len(progress_done(progress)), 2)
 
     def test_the_report_names_every_file_and_where_it_went(self):
         self.card.add(X_A, b'a')
@@ -344,6 +361,199 @@ class RestoreTests(Base):
         # The report never replaces a file that is there: said before anything is restored.
         self.assertEqual(self.run_tool('restore', str(self.dest), '--report', str(report)), 2)
         self.assertIn('is there already', said_text(self))
+
+
+def version(card, rec, n, mtime_ns, committed_at):
+    """Make `rec` (already on `card`) version `n` of its file, seen at `mtime_ns`."""
+    rec.update(
+        version_id=uuid(n, 'ffffffff'),
+        source_mtime_ns=str(mtime_ns),
+        committed_at=committed_at,
+    )
+    folder = card.nb / 'records' / rec['record_id'][:2]
+    (folder / (rec['record_id'] + JSON)).write_text(json.dumps(rec) + '\n')
+    return rec
+
+
+OLD_TIME, NEW_TIME = 981173106000000000, 1700000000000000000
+DOC = 'docs/plan.txt'
+
+
+class VersionTests(Base):
+    """The review of 0.51.0: a file edited between two backups has two versions in the
+    set. The tool restored the oldest under the file's name and skipped the newer one as
+    "a file is there already"; over two cards with a progress file, too."""
+
+    def test_the_newest_version_on_a_card_gets_the_files_name(self):
+        new = version(self.card, self.card.add(DOC, b'second draft'), 2, NEW_TIME, '2023-11-14T22:13:21Z')
+        old = version(self.card, self.card.add(DOC, b'first draft'), 1, OLD_TIME, '2001-02-03T04:05:08Z')
+        self.assertEqual(self.run_tool('restore', str(self.dest)), 0, said_text(self))
+        self.assertEqual((self.dest / DOC).read_bytes(), b'second draft')
+        self.assertIn('older       %s -> a newer version is restored as %s' % (DOC, DOC), said_text(self))
+        # With --rename the older one is kept too, under _renamed/.
+        self.dest = self.tmp / 'again'
+        self.dest.mkdir()
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--rename'), 0, said_text(self))
+        self.assertEqual((self.dest / DOC).read_bytes(), b'second draft')
+        kept = self.dest / RENAMED_DIR / (old['record_id'] + '.txt')
+        self.assertEqual(kept.read_bytes(), b'first draft')
+        self.assertNotEqual(new['record_id'], old['record_id'])
+
+    def test_over_two_cards_the_newest_wins_in_either_order(self):
+        second = Card(self.tmp / 'card2', seq=2, volume=VOLUME_2)
+        version(self.card, self.card.add(DOC, b'first draft'), 1, OLD_TIME, '2001-02-03T04:05:08Z')
+        version(second, second.add(DOC, b'second draft'), 2, NEW_TIME, '2023-11-14T22:13:21Z')
+        for order in ((self.card, second), (second, self.card)):
+            dest = self.tmp / ('dest-%d' % order[0].identity['sequence_number'])
+            dest.mkdir()
+            progress = self.tmp / ('progress-%d.json' % order[0].identity['sequence_number'])
+            for card in order:
+                self.said = []
+                code = tool.main([CARD_FLAG, str(card.top), 'restore', str(dest), '--progress', str(progress)],
+                                 say=self.said.append)  # fmt: skip
+                self.assertEqual(code, 0, said_text(self))
+            with self.subTest(first=order[0].identity['sequence_number']):
+                self.assertEqual((dest / DOC).read_bytes(), b'second draft')
+
+    def test_a_file_changed_after_it_was_restored_is_not_replaced(self):
+        second = Card(self.tmp / 'card2', seq=2, volume=VOLUME_2)
+        version(self.card, self.card.add(DOC, b'first draft'), 1, OLD_TIME, '2001-02-03T04:05:08Z')
+        version(second, second.add(DOC, b'second draft'), 2, NEW_TIME, '2023-11-14T22:13:21Z')
+        progress = str(self.tmp / 'progress.json')
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', progress), 0)
+        (self.dest / DOC).write_bytes(b'my own edit')
+        self.said = []
+        code = tool.main([CARD_FLAG, str(second.top), 'restore', str(self.dest), '--progress', progress],
+                         say=self.said.append)  # fmt: skip
+        self.assertEqual(code, 1)
+        self.assertEqual((self.dest / DOC).read_bytes(), b'my own edit')
+
+    def test_a_second_copy_of_the_same_version_is_no_failure(self):
+        """A version whose first copy was damaged gets a new copy, on the same card too."""
+        first = version(self.card, self.card.add(DOC, b'the text'), 1, OLD_TIME, '2001-02-03T04:05:08Z')
+        version(self.card, self.card.add(DOC, b'the text'), 1, OLD_TIME, '2002-02-03T04:05:08Z')
+        self.card.payload(first).write_bytes(b'the tEXt')
+        self.assertEqual(self.run_tool('restore', str(self.dest)), 0, said_text(self))
+        self.assertEqual((self.dest / DOC).read_bytes(), b'the text')
+
+
+RENAMED_DIR = '_renamed'
+
+
+class ManyFilesTests(Base):
+    """The review of 0.51.0: every file restored listed its whole destination folder (to
+    find a name that differs only in case), so a folder of 8,000 photos took 23 seconds
+    and one of 100,000 about an hour. Each folder is now listed once per restore."""
+
+    def test_a_folder_is_listed_once_however_many_files_go_in(self):
+        for n in range(300):
+            self.card.add('DCIM/IMG_%04d.jpg' % n, b'x')
+        listed = []
+        real = os.listdir
+
+        def counting(path='.'):
+            listed.append(path)
+            return real(path)
+
+        with mock.patch.object(tool.os, 'listdir', side_effect=counting):
+            self.assertEqual(self.run_tool('restore', str(self.dest)), 0)
+        self.assertEqual(len(list((self.dest / 'DCIM').iterdir())), 300)
+        self.assertLess(len(listed), 20, 'listings for 300 files')
+
+    def test_the_progress_file_is_added_to_not_written_again_for_every_file(self):
+        """The same review: the whole progress file was written again after every file, so
+        8,000 files with --progress took seven minutes."""
+        for n in range(300):
+            self.card.add('DCIM/IMG_%04d.jpg' % n, b'x')
+        progress = self.tmp / 'progress.json'
+        real = os.replace
+        replaced = []
+
+        def counting(*args, **kwargs):
+            replaced.append(args)
+            return real(*args, **kwargs)
+
+        with mock.patch.object(tool.os, 'replace', side_effect=counting):
+            self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 0)
+        self.assertLessEqual(len(replaced), 1)
+        self.assertEqual(len(progress_done(progress)), 300)
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 0)
+        self.assertIn('done before 300', said_text(self))
+
+    def test_a_progress_file_of_the_earlier_tool_is_read_and_carried_on(self):
+        self.card.add(A_JPG, b'one')
+        self.card.add('b.jpg', b'two')
+        progress = self.tmp / 'progress.json'
+        self.assertEqual(self.run_tool('restore', str(self.dest), SEARCH, A_JPG, '--progress', str(progress)), 0)
+        old = {'format': tool.PROGRESS_FORMAT, 'version': 1, 'done': progress_done(progress)}
+        progress.write_text(json.dumps(old, indent=1) + '\n')
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 0)
+        self.assertIn('done before a.jpg -> a.jpg', said_text(self))
+        self.assertEqual(len(progress_done(progress)), 2)
+
+    def test_a_line_cut_off_by_a_stop_is_not_counted(self):
+        self.card.add(A_JPG, b'one')
+        progress = self.tmp / 'progress.json'
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 0)
+        with open(progress, 'a') as f:
+            f.write('{"version_id": "cut off')
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 0)
+        self.assertIn('done before a.jpg', said_text(self))
+        # A broken line in the middle is no cut-off: the file is refused.
+        progress.write_text(progress.read_text().replace('{"version_id": "cut off', '') + 'garbage\n{}\n')
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 2)
+        self.assertIn('not usable', said_text(self))
+
+    def test_a_name_an_exfat_stick_cannot_hold_is_skipped_or_renamed(self):
+        """Seen restoring onto exFAT (through FUSE): a name with ":" or "?" failed with "No
+        such file or directory", --rename or not. exFAT through FUSE says ENOENT to such a
+        name, Linux's own FAT and exFAT EINVAL; neither has links (EPERM)."""
+        self.card.add('DCIM/meeting 10:30.jpg', b'colon')
+        self.card.add('DCIM/fine.jpg', b'fine')
+        real_rename, real_link = os.rename, os.link
+
+        def like_exfat(src, dst, **kwargs):
+            if ':' in dst:
+                raise FileNotFoundError(2, 'No such file or directory')
+            return real_rename(src, dst, **kwargs)
+
+        def no_links(*args, **kwargs):
+            raise PermissionError(1, 'Operation not permitted')
+
+        with mock.patch.object(tool.os, 'rename', like_exfat), mock.patch.object(tool.os, 'link', no_links):
+            self.assertEqual(self.run_tool('restore', str(self.dest)), 1)
+            self.assertIn(
+                'skipped     DCIM/meeting 10:30.jpg -> this destination cannot hold the name', said_text(self)
+            )
+            self.assertEqual((self.dest / 'DCIM/fine.jpg').read_bytes(), b'fine')
+            self.assertEqual(self.run_tool('restore', str(self.dest), '--rename'), 0, said_text(self))
+        self.assertIn('renamed     DCIM/meeting 10:30.jpg -> _renamed/', said_text(self))
+        self.assertEqual([p.read_bytes() for p in (self.dest / RENAMED_DIR).iterdir()], [b'colon'])
+        # A third run: the copy under _renamed/ is the same file, no failure.
+        with mock.patch.object(tool.os, 'rename', like_exfat), mock.patch.object(tool.os, 'link', no_links):
+            self.assertEqual(self.run_tool('restore', str(self.dest), '--rename'), 0, said_text(self))
+        self.assertIn('same file   DCIM/meeting 10:30.jpg -> _renamed/', said_text(self))
+        self.assertEqual([p for p in self.dest.rglob('.neko-restore-*')], [])
+
+    def test_a_file_already_restored_counts_as_done_without_a_progress_file(self):
+        """Seen on the same stick: the same restore run again (no --progress) skipped every
+        file it had restored, or with --rename made a second copy of each."""
+        self.card.add(A_2001, b'card a')
+        self.assertEqual(self.run_tool('restore', str(self.dest)), 0)
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--rename'), 0, said_text(self))
+        self.assertIn('same file   2001/a.jpg -> 2001/a.jpg', said_text(self))
+        self.assertFalse((self.dest / RENAMED_DIR).exists())
+        # A file of the same name with other bytes is still not the same file.
+        (self.dest / A_2001).write_bytes(b'card A')
+        self.assertEqual(self.run_tool('restore', str(self.dest)), 1)
+        self.assertIn('skipped     2001/a.jpg -> a file is there already', said_text(self))
+
+    def test_a_name_restored_earlier_in_the_same_run_still_clashes_by_case(self):
+        self.card.add('DCIM/IMG_1.JPG', b'upper')
+        self.card.add('DCIM/img_1.jpg', b'lower')
+        self.assertEqual(self.run_tool('restore', str(self.dest)), 1)
+        self.assertEqual([p.name for p in (self.dest / 'DCIM').iterdir()], ['IMG_1.JPG'])
+        self.assertIn('img_1.jpg is there under the name IMG_1.JPG', said_text(self))
 
 
 class WhereTests(Base):

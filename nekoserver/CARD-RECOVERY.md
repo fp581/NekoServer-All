@@ -76,14 +76,23 @@ Before a file gets its name it is checked twice: the card's bytes while they are
 and the restored file read back afterwards. A file that does not match is **not** restored
 (and no half-written copy is left); the tool says `failed` for it.
 
-**Nothing is ever overwritten.** When a file's place is taken, by a file already there or
-by a name that differs only in upper and lower case (two such files are one file on many
-systems), the file is `skipped`. You can choose instead:
+**Nothing is ever overwritten.** A file that is there already with exactly the same bytes
+(from an earlier restore) is `same file`, and left as it is. When a file's place is taken,
+by another file already there, by a name that differs only in upper and lower case (two
+such files are one file on many systems), or by a name the destination cannot hold (`:` or
+`?` on a USB stick formatted exFAT or FAT), the file is `skipped`. You can choose instead:
 
 - `--rename`: put each such file under `_renamed/<its ID>.<ext>`; the tool says which
   original path went where;
 - `--overwrite PATH` (the file's original path, as `list` shows it): replace that one file,
   and only that one. Name each file you want replaced.
+
+**A file with several versions.** A file that changed between two backups has a copy of
+each version, on one card or on several. The newest version gets the file's name; each
+older one is listed as `older` and stays on the card (with `--rename` it is restored too,
+under `_renamed/`). Restoring from several cards with one progress file, a newer version
+found on a later card replaces the older one the tool put there itself, unless you changed
+that file since.
 
 Add `--report report.json` to keep the list of every file, what happened to it and where it
 went. The restore does not bring back owners, permissions or extended attributes.

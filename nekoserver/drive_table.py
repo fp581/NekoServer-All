@@ -920,7 +920,7 @@ def answered(table, key, config, answer, out_fn):
     return say_taken(row, key, config, out_fn)
 
 
-def ask(table, key, config, input_fn=input, out_fn=print, attempts=3, skippable=False):
+def ask(table, key, config, input_fn=None, out_fn=print, attempts=3, skippable=False):
     """The drive for the role `key`, chosen by its number in the list. Nothing is typed
     back: choosing a drive formats nothing and changes nothing on it, and the choice is
     said in words before anything is mounted. A drive that cannot have the role is
@@ -931,6 +931,7 @@ def ask(table, key, config, input_fn=input, out_fn=print, attempts=3, skippable=
     On the storage page (modules/storage.py) the window shows every role at once and
     sends them together; asked alone (the weekly backup step), the role is a page of
     its own."""
+    input_fn = input_fn or input  # looked up now: setup's own, or a test's stand-in
     what = asked_for(config, key)
     best = recommended(table, config).get(key)
     mark = f"  {best['number']}) " if best is not None else None

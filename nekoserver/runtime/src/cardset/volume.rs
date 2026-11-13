@@ -138,8 +138,9 @@ To get files back, on any Linux computer, with no NekoServer and no network
   python3 NekoBackup/tools/neko-restore.py where beach
 
 Run them from the card's top folder (or give the card with --card). restore never
-overwrites a file: one whose place is taken is skipped, or put under _renamed/ with
---rename, and the tool says where each file went. Each file is checked against
+overwrites a file of yours: one whose place is taken is skipped, or put under
+_renamed/ with --rename, and the tool says where each file went. Of several
+versions of one file, the newest gets its name. Each file is checked against
 its record before it gets its name. 'where' tells, from this card's inventory,
 which card of the set held a file when this card was last written.
 

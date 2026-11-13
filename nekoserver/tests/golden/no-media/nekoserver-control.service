@@ -5,8 +5,8 @@ Wants=nekoserver-openrgb.service nekoserver-openrgb-proxy.socket
 StartLimitIntervalSec=0
 [Service]
 Type=simple
-ExecStart=/usr/local/lib/nekoserver-dashboard/v0.50.0/nekoserver-runtime control --config /etc/nekoserver-dashboard/config.json
-ExecStopPost=/usr/local/lib/nekoserver-dashboard/v0.50.0/nekoserver-runtime control --restore
+ExecStart=/usr/local/lib/nekoserver-dashboard/v0.51.1/nekoserver-runtime control --config /etc/nekoserver-dashboard/config.json
+ExecStopPost=/usr/local/lib/nekoserver-dashboard/v0.51.1/nekoserver-runtime control --restore
 TimeoutStopSec=600
 Restart=always
 RestartSec=3
