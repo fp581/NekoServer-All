@@ -96,7 +96,7 @@ pub fn reconcile(vol: &Volume, cat: &mut dyn Catalogue) -> Res<Report> {
         }
     }
     let evidence: HashSet<String> = cat
-        .orphans(vol.volume_id())
+        .orphans(vol.volume_id())?
         .into_iter()
         .map(|o| o.transaction_id)
         .collect();
@@ -118,7 +118,7 @@ pub fn reconcile(vol: &Volume, cat: &mut dyn Catalogue) -> Res<Report> {
 /// True when staging holds nothing but kept evidence: a new transaction may start.
 pub fn staging_clear(vol: &Volume, cat: &dyn Catalogue) -> Res<bool> {
     let evidence: HashSet<String> = cat
-        .orphans(vol.volume_id())
+        .orphans(vol.volume_id())?
         .into_iter()
         .map(|o| o.transaction_id)
         .collect();
@@ -206,16 +206,7 @@ impl Recovery<'_> {
 
     /// The payload's checksum and size equal `checksum` and `size`.
     fn payload_matches(&self, txn: &Txn, checksum: &str, size: u64) -> Res<bool> {
-        let Some(dir) = self.vol.existing(&self.vol.objects, txn.hh())? else {
-            return Ok(false);
-        };
-        let file = match dir.open_file(txn.payload_name()) {
-            Ok(f) => f,
-            Err(e) if e.errno == Some(libc::ENOENT) => return Ok(false),
-            Err(e) => return Err(e),
-        };
-        let (sum, n) = hash_reader(file)?;
-        Ok(sum == checksum && n == size)
+        self.vol.payload_matches(txn, checksum, size)
     }
 
     fn partial_matches(&self, meta: &CopyMeta) -> Res<bool> {
@@ -292,7 +283,7 @@ impl Recovery<'_> {
         }
         let elsewhere = self
             .cat
-            .copies_of(&meta.txn.version_id)
+            .copies_of(&meta.txn.version_id)?
             .iter()
             .any(|c| c.state.protects());
         if elsewhere {
@@ -336,7 +327,7 @@ impl Recovery<'_> {
         if record.meta.txn != meta.txn {
             return self.orphan(&meta.txn, "its record contradicts the verified intent");
         }
-        if self.cat.copy(&meta.txn.record_id).is_none() {
+        if self.cat.copy(&meta.txn.record_id)?.is_none() {
             self.import(&record)?;
         }
         commit::clean_up(self.vol, tx)?;
@@ -403,7 +394,7 @@ fn rows_without_staging(
     groups: &BTreeMap<String, Staged>,
     report: &mut Report,
 ) -> Res<()> {
-    for row in cat.open_txs(vol.volume_id()) {
+    for row in cat.open_txs(vol.volume_id())? {
         if groups.contains_key(&row.transaction_id) {
             continue;
         }

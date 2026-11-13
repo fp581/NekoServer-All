@@ -18,13 +18,15 @@ DEVICES=()
 FAILED=0
 
 cleanup() {
-  for m in "${MOUNTS[@]}"; do umount -l "$m" 2>/dev/null; done
+  for m in "${MOUNTS[@]}"; do umount "$m" 2>/dev/null || umount -l "$m" 2>/dev/null; done
   for d in "${DEVICES[@]}"; do losetup -d "$d" 2>/dev/null; done
   rm -rf "$BASE"
+  if findmnt -rn -o TARGET | grep -q "^$BASE/"; then echo "LEFT MOUNTED under $BASE" >&2; fi
 }
 trap cleanup EXIT
 
-# card <name> <MiB>: a fresh ext4 card mounted at $BASE/<name>; prints the mount folder.
+# card <name> <MiB>: a fresh ext4 card mounted at $BASE/<name>, which is left in CARD.
+# Not called in a subshell, so that cleanup knows every mount and device.
 card() {
   local img="$BASE/$1.img" mnt="$BASE/$1" dev
   truncate -s "$2M" "$img"
@@ -34,7 +36,7 @@ card() {
   mkdir -p "$mnt"
   mount -o rw,nosuid,nodev,noexec "$dev" "$mnt" || return 1
   MOUNTS+=("$mnt")
-  echo "$mnt"
+  CARD="$mnt"
 }
 
 device_of() { findmnt -n -o SOURCE --target "$1"; }
@@ -60,7 +62,7 @@ wait_ready() {
 
 echo '== A01 on real cards: the first fills by its real free space, the second takes the rest'
 export NEKO_LOOP_WORK="$BASE/work-a01"
-c1=$(card a01-1 320) && c2=$(card a01-2 400)
+card a01-1 320 && c1="$CARD" && card a01-2 400 && c2="$CARD"
 NEKO_LOOP_CARDS="$c1,$c2" run_test loop_a_library_larger_than_one_card
 result 'A01 a library larger than one card' $?
 
@@ -68,8 +70,8 @@ for point in Begun IntentWritten PayloadStarted PayloadWritten Checked VerifiedW
   RecordTempWritten RecordPublished CatalogueCommitted; do
   echo "== killed with SIGKILL at $point (a simulated crash), then the card alone recovered"
   export NEKO_LOOP_WORK="$BASE/work-$point" NEKO_LOOP_KILL_AT="$point"
-  c=$(card "kill-$point" 400)
-  export NEKO_LOOP_CARDS="$c"
+  card "kill-$point" 400
+  export NEKO_LOOP_CARDS="$CARD"
   "$BIN" --ignored --exact cardset::tests_loop::loop_copy_until_killed --test-threads 1 >/dev/null 2>&1 &
   pid=$!
   if wait_ready "$NEKO_LOOP_WORK"; then
@@ -85,7 +87,8 @@ done
 
 echo '== the card unmounted while a file is written, then mounted again'
 export NEKO_LOOP_WORK="$BASE/work-pulled"
-c=$(card pulled 400)
+card pulled 400
+c="$CARD"
 dev=$(device_of "$c")
 export NEKO_LOOP_CARDS="$c"
 run_test loop_card_pulled_mid_copy > "$BASE/pulled.log" 2>&1 &
@@ -101,7 +104,7 @@ if wait_ready "$NEKO_LOOP_WORK"; then
   for _ in $(seq 100); do findmnt -n "$dev" >/dev/null || break; sleep 0.1; done
   mount -o rw,nosuid,nodev,noexec "$dev" "$c"
   run_test loop_card_returns
-  result 'A14 the card returns: the interrupted file copied again' $?
+  result 'A14 the card returns: the interrupted file copied again or finished from its verified intent' $?
 else
   kill -9 "$pid" 2>/dev/null
   result 'A11 card unmounted mid-copy: the copy never reached the step' 1

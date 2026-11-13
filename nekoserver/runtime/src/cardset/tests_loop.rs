@@ -13,12 +13,13 @@
 //! - `NEKO_LOOP_CARDS`: the mount folders of fresh cards, separated by commas;
 //! - `NEKO_LOOP_WORK`: a folder on the server's own disk for the sources and the signals;
 //! - `NEKO_LOOP_KILL_AT`: the step at which the copy waits to be killed (`Point`'s name).
-use super::catalogue::Memory;
+use super::catalogue::Catalogue;
 use super::commit::{self, Hook, Point};
 use super::error::{CardError, Kind, Res};
 use super::format;
 use super::run::{self, Run, RunResult, RunState};
 use super::source::Source;
+use super::store::Store;
 use super::testkit::{bytes, cands, enrolment, payload, put, records, volume_id, SET};
 use super::volume::{Expect, MountRule, Volume};
 use std::fs;
@@ -83,8 +84,14 @@ fn source(name: &str, count: u8, size: usize) -> Source {
     src
 }
 
+/// The catalogue in the work folder: on the server's own disk, so it outlives a killed
+/// process and a pulled card, as it does on a server.
+fn catalogue() -> Store {
+    Store::open(&work("catalogue").join("catalogue.db")).unwrap()
+}
+
 /// A run on the real card, with its real free space.
-fn go(vol: &Volume, cat: &mut Memory, src: &Source, hook: &mut dyn Hook) -> RunResult {
+fn go(vol: &Volume, cat: &mut Store, src: &Source, hook: &mut dyn Hook) -> RunResult {
     let run_id = format::new_uuid().unwrap();
     let mut space = run::card_space;
     Run {
@@ -168,7 +175,7 @@ fn loop_a_library_larger_than_one_card() {
     // the rest, nothing is copied twice.
     let cards = cards();
     let src = source("a01", 6, 12);
-    let mut cat = Memory::default();
+    let mut cat = catalogue();
     let v1 = card(&cards[0], 1);
     let r1 = go(&v1, &mut cat, &src, &mut commit::no_hook);
     assert_eq!(r1.state, RunState::WaitingForNextCard, "{r1:?}");
@@ -186,7 +193,7 @@ fn loop_copy_until_killed() {
     // The second file waits at the step named; the script kills the process there.
     let src = source("killed", 3, 8);
     let vol = card(&cards()[0], 1);
-    let mut cat = Memory::default();
+    let mut cat = catalogue();
     let mut hook = wait_at(point_named(&env("NEKO_LOOP_KILL_AT")), 2, "never");
     go(&vol, &mut cat, &src, &mut hook);
     panic!("the script was to kill this process before the run ended");
@@ -200,7 +207,7 @@ fn loop_recover_after_kill() {
     let src = source("killed", 3, 8);
     let card_path = cards()[0].clone();
     let vol = card(&card_path, 1);
-    let mut cat = Memory::default();
+    let mut cat = catalogue();
     let r = go(&vol, &mut cat, &src, &mut commit::no_hook);
     assert_eq!(r.state, RunState::Complete, "{r:?}");
     let report = &r.reconcile;
@@ -228,7 +235,7 @@ fn loop_card_pulled_mid_copy() {
     let src = source("pulled", 2, 32);
     let card_path = cards()[0].clone();
     let vol = card(&card_path, 1);
-    let mut cat = Memory::default();
+    let mut cat = catalogue();
     let mut hook = wait_at(Point::PayloadStarted, 1, "pulled");
     let r = go(&vol, &mut cat, &src, &mut hook);
     assert_eq!(r.state, RunState::Stopped, "{r:?}");
@@ -238,7 +245,7 @@ fn loop_card_pulled_mid_copy() {
         "{kind:?}"
     );
     assert!(
-        r.committed.is_empty() && cat.copies.is_empty(),
+        r.committed.is_empty() && cat.version_count().unwrap() == 0,
         "nothing counted"
     );
     let left: Vec<_> = fs::read_dir(&card_path).unwrap().flatten().collect();
@@ -248,13 +255,17 @@ fn loop_card_pulled_mid_copy() {
 #[test]
 #[ignore = "started by loop-tests.sh after the pulled card is mounted again"]
 fn loop_card_returns() {
-    // A14: the card comes back; the interrupted file is copied again, nothing else lost.
+    // A14: the card comes back and is reconciled: the interrupted file is copied again,
+    // or, when its verified intent reached the card before the copy stopped (the kernel
+    // still writes to an unmounted filesystem that a file holds open), finished from it.
+    // Either way nothing is lost and nothing is there twice.
     let src = source("pulled", 2, 32);
     let card_path = cards()[0].clone();
     let vol = card(&card_path, 1);
-    let mut cat = Memory::default();
+    let mut cat = catalogue();
     let r = go(&vol, &mut cat, &src, &mut commit::no_hook);
     assert_eq!(r.state, RunState::Complete, "{r:?}");
-    assert!(!r.reconcile.retry.is_empty(), "{:?}", r.reconcile);
+    let rec = &r.reconcile;
+    assert!(!rec.retry.is_empty() || !rec.finished.is_empty(), "{rec:?}");
     assert_whole(&card_path, &src, 2);
 }

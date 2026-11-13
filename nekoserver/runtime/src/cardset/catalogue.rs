@@ -29,6 +29,9 @@ pub enum CopyState {
     Missing,
     /// The person marked the card lost.
     Lost,
+    /// Known from an inventory snapshot only: its card's content was not observed by this
+    /// catalogue. Shown, never counted as protection (A29).
+    Historical,
 }
 
 impl CopyState {
@@ -80,12 +83,12 @@ pub trait Catalogue {
     /// An unchanged file seen again with another date: the version notes the new one.
     fn note_dates(&mut self, version_id: &str, mtime_ns: i64, ctime_ns: i64) -> Res<()>;
 
-    fn open_txs(&self, volume_id: &str) -> Vec<TxRow>;
-    fn newest_version(&self, source_id: &str, path: &str) -> Option<VersionRow>;
-    fn copies_of(&self, version_id: &str) -> Vec<CopyRow>;
-    fn copy(&self, record_id: &str) -> Option<CopyRow>;
-    fn orphans(&self, volume_id: &str) -> Vec<OrphanRow>;
-    fn version_count(&self) -> u64;
+    fn open_txs(&self, volume_id: &str) -> Res<Vec<TxRow>>;
+    fn newest_version(&self, source_id: &str, path: &str) -> Res<Option<VersionRow>>;
+    fn copies_of(&self, version_id: &str) -> Res<Vec<CopyRow>>;
+    fn copy(&self, record_id: &str) -> Res<Option<CopyRow>>;
+    fn orphans(&self, volume_id: &str) -> Res<Vec<OrphanRow>>;
+    fn version_count(&self) -> Res<u64>;
 }
 
 /// The catalogue contract kept in memory.
@@ -155,41 +158,46 @@ impl Catalogue for Memory {
         }
         Ok(())
     }
-    fn open_txs(&self, volume_id: &str) -> Vec<TxRow> {
-        self.txs
+    fn open_txs(&self, volume_id: &str) -> Res<Vec<TxRow>> {
+        Ok(self
+            .txs
             .iter()
             .filter(|t| t.volume_id == volume_id)
             .cloned()
-            .collect()
+            .collect())
     }
-    fn newest_version(&self, source_id: &str, path: &str) -> Option<VersionRow> {
-        self.versions
+    fn newest_version(&self, source_id: &str, path: &str) -> Res<Option<VersionRow>> {
+        Ok(self
+            .versions
             .iter()
             .rev()
             .find(|v| v.source_id == source_id && v.path == path)
-            .cloned()
+            .cloned())
     }
-    fn copies_of(&self, version_id: &str) -> Vec<CopyRow> {
-        self.copies
+    fn copies_of(&self, version_id: &str) -> Res<Vec<CopyRow>> {
+        Ok(self
+            .copies
             .iter()
             .filter(|c| c.version_id == version_id)
             .cloned()
-            .collect()
+            .collect())
     }
-    fn copy(&self, record_id: &str) -> Option<CopyRow> {
-        self.copies
+    fn copy(&self, record_id: &str) -> Res<Option<CopyRow>> {
+        Ok(self
+            .copies
             .iter()
             .find(|c| c.record_id == record_id)
-            .cloned()
+            .cloned())
     }
-    fn orphans(&self, volume_id: &str) -> Vec<OrphanRow> {
-        self.orphan_rows
+    fn orphans(&self, volume_id: &str) -> Res<Vec<OrphanRow>> {
+        Ok(self
+            .orphan_rows
             .iter()
             .filter(|o| o.volume_id == volume_id)
             .cloned()
-            .collect()
+            .collect())
     }
-    fn version_count(&self) -> u64 {
-        self.versions.len() as u64
+    fn version_count(&self) -> Res<u64> {
+        Ok(self.versions.len() as u64)
     }
 }

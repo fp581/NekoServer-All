@@ -126,11 +126,17 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           targets: ${{ matrix.targets }}
+      - name: A musl C compiler for the static build (SQLite, in the runtime, is C)
+        if: matrix.targets != ''
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
       - name: Build (writes bin/ and build.json)
         working-directory: ${{ env.RELEASE_DIR }}/runtime
         run: |
           python3 build.py
           python3 -c "import json; m = json.load(open('build.json')); print('target', m['target'], 'static', m['static'], 'version', m['version'])"
+          # The static job must really be static: build.py falls back to this PC's own build
+          # when something it needs (the musl C compiler, say) is missing.
+          if [ -n "${{ matrix.targets }}" ]; then python3 -c "import json, sys; sys.exit(0 if json.load(open('build.json'))['static'] else 'not a static build')"; fi
           ./bin/nekoserver-runtime --version
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
         if: matrix.targets != ''
