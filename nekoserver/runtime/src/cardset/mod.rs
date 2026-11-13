@@ -52,3 +52,5 @@ mod tests_crash;
 mod tests_format;
 #[cfg(test)]
 mod tests_loop;
+#[cfg(test)]
+mod tests_restore_tool;

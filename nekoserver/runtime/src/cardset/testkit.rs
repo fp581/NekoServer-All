@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 pub const MIB: u64 = 1 << 20;
+/// The release's standalone restore tool, as enrolment writes it onto every card.
+pub const RESTORE_TOOL_SOURCE: &[u8] = include_bytes!("../../../neko_restore.py");
 /// The reserve is at least 256 MiB; a test card is that plus `usable` bytes.
 pub const RESERVE_FLOOR: u64 = 256 * MIB + 128 * 1024;
 
@@ -74,6 +76,7 @@ pub fn enrolment(seq: u64) -> Enrolment {
         filesystem_type: "ext4".to_string(),
         filesystem_uuid: fs_uuid(seq),
         privacy_acknowledged_at: "2001-02-03T04:05:00Z".to_string(),
+        restore_tool: RESTORE_TOOL_SOURCE.to_vec(),
     }
 }
 

@@ -219,6 +219,22 @@ class BuildNeededTests(unittest.TestCase):
             )
         )
 
+    def test_a_module_in_a_folder_of_its_own_is_one_of_the_sources(self):
+        # 0.51.0: the card engine is in src/cardset/. A change there is a change of the
+        # runtime's sources too, so a build without it in its record is built again.
+        import native_runtime
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.project(tmp)
+            (root / 'src/cardset').mkdir()
+            (root / 'src/cardset/mod.rs').write_text('// card engine\n')
+            self.record(root)
+            self.assertIn('src/cardset/mod.rs', native_runtime.expected_sources(root))
+            self.assertTrue(native_runtime.build_needed(root.parent, run=mock.Mock()))
+        # The real runtime: build.py writes the same list native_runtime expects.
+        real = native_runtime.expected_sources(ROOT / 'runtime')
+        self.assertIn('src/cardset/store.rs', real)
+
     def test_none_yet_other_sources_or_a_matching_build(self):
         import native_runtime
         from neko_common import VERSION

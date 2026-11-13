@@ -46,6 +46,9 @@ pub struct Enrolment {
     pub filesystem_type: String,
     pub filesystem_uuid: String,
     pub privacy_acknowledged_at: String,
+    /// The standalone restore tool (the release's neko_restore.py), written onto the card
+    /// as NekoBackup/tools/neko-restore.py so that the card can be read without NekoServer.
+    pub restore_tool: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -116,14 +119,34 @@ fn check_identity(identity: &Identity, expect: &Expect) -> Res<()> {
     Ok(())
 }
 
+/// Where the standalone restore tool goes on a card (archive format 1, section 2).
+pub const TOOLS: &str = "tools";
+pub const RESTORE_TOOL: &str = "neko-restore.py";
+
 const README_TEXT: &str = "\
 This folder is a NekoBackup volume: one card of a numbered backup set.
 
 The files are NOT encrypted. Anyone holding this card can read them.
 
-Every file under objects/ is an ordinary copy of one original photo, video or
-document and can be opened or copied directly. Its original name and folder are
-in the file of the same name (ending in .json) under records/.
+To get files back, on any Linux computer, with no NekoServer and no network
+(Python 3, which almost every Linux has, runs the tool; nothing to install):
+
+  python3 NekoBackup/tools/neko-restore.py info
+  python3 NekoBackup/tools/neko-restore.py list --search 2021
+  python3 NekoBackup/tools/neko-restore.py verify
+  python3 NekoBackup/tools/neko-restore.py restore /home/me/restored --search 2021
+  python3 NekoBackup/tools/neko-restore.py where beach
+
+Run them from the card's top folder (or give the card with --card). restore never
+overwrites a file: one whose place is taken is skipped, or put under _renamed/ with
+--rename, and the tool says where each file went. Each file is checked against
+its record before it gets its name. 'where' tells, from this card's inventory,
+which card of the set held a file when this card was last written.
+
+Without the tool: every file under objects/ is an ordinary copy of one original
+photo, video or document and can be opened or copied directly. Its original name
+and folder are in the file of the same name (ending in .json) under records/,
+with its size and its SHA-256 checksum (sha256sum shows the file's own).
 
 This card holds only its own files; the other cards of the set hold the rest.
 These are original media files, not Immich's accounts, albums or sharing.
@@ -164,6 +187,12 @@ impl Volume {
                 "a NekoBackup folder is already on this card: it is not adopted",
             ));
         }
+        if e.restore_tool.is_empty() {
+            return Err(CardError::new(
+                Kind::Invalid,
+                "the restore tool is missing: a card is never enrolled without it",
+            ));
+        }
         let identity = Identity {
             backup_set_id: e.backup_set_id.clone(),
             volume_id: e.volume_id.clone(),
@@ -183,6 +212,8 @@ impl Volume {
         ] {
             nb.ensure_dir(name)?;
         }
+        nb.ensure_dir(TOOLS)?
+            .write_new(RESTORE_TOOL, &e.restore_tool)?;
         nb.write_new(format::README, README_TEXT.as_bytes())?;
         nb.write_new(format::IDENTITY, &identity.to_bytes())?;
         root.sync()?;

@@ -394,11 +394,23 @@ fn enrolment_writes_identity_readme_and_folders() {
             "inventory",
             "objects",
             "records",
-            "staging"
+            "staging",
+            "tools"
         ]
     );
     let readme = fs::read_to_string(nb.join("README.txt")).unwrap();
     assert!(readme.contains("NOT encrypted"));
+    assert!(readme.contains("python3 NekoBackup/tools/neko-restore.py restore"));
+    // The standalone restore tool is on every card, byte for byte the release's.
+    assert_eq!(
+        fs::read(nb.join("tools/neko-restore.py")).unwrap(),
+        RESTORE_TOOL_SOURCE
+    );
+    let mut without = enrolment(4);
+    without.restore_tool.clear();
+    let other = s.dir("card-without-tool");
+    assert!(Volume::enrol(&other, &expect(&other, 4), &without).is_err());
+    assert_eq!(fs::read_dir(&other).unwrap().count(), 0, "nothing made");
     // a second enrolment of the same card is refused
     assert_eq!(
         Volume::enrol(&path, &expect(&path, 3), &enrolment(3))

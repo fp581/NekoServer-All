@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "record_id": "aaaaaaaa-0000-4000-8000-000000000001",
+  "version_id": "bbbbbbbb-0000-4000-8000-000000000001",
+  "replaces_record_id": null,
+  "backup_set_id": "00000000-0000-4000-8000-0000000000aa",
+  "volume_id": "00000000-0000-4000-8000-000000000001",
+  "source_id": "cccccccc-0000-4000-8000-000000000001",
+  "source_display_name": "Example photos",
+  "original_relative_path": "upload/example-user/2001/EXAMPLE 0001.JPG",
+  "original_file_name": "EXAMPLE 0001.JPG",
+  "archive_relative_path": "objects/aa/aaaaaaaa-0000-4000-8000-000000000001.jpg",
+  "byte_size": 123456,
+  "source_mtime_ns": "981173106000000000",
+  "source_identity": {
+    "device": "2049",
+    "inode": "123456",
+    "ctime_ns": "981173106000000000"
+  },
+  "checksum_algorithm": "sha256",
+  "checksum": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "source_observed_at": "2001-02-03T04:05:06Z",
+  "copy_verified_at": "2001-02-03T04:05:09Z",
+  "committed_at": "2001-02-03T04:05:10Z",
+  "run_id": "dddddddd-0000-4000-8000-000000000001",
+  "transaction_id": "eeeeeeee-0000-4000-8000-000000000001",
+  "completion_state": "partial",
+  "consistency": {
+    "mode": "live-file-observation",
+    "snapshot": null
+  },
+  "written_by": "nekoserver 0.0.0-example"
+}

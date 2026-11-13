@@ -1,5 +1,5 @@
 //! The engine on real cards: ext4 filesystems in loop devices, mounted by
-//! `loop-tests.sh` in this folder, which also kills the process and pulls the card. These
+//! `tests/cardset-loop-tests.sh`, which also kills the process and pulls the card. These
 //! tests are `#[ignore]`d: they need root, loop devices and the script's setup, and run
 //! only when it starts them (`cargo test cardset::tests_loop -- --ignored`).
 //!
@@ -33,7 +33,7 @@ const MIB: usize = 1 << 20;
 const WAIT: Duration = Duration::from_secs(120);
 
 fn env(name: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| panic!("{name} is set by loop-tests.sh"))
+    std::env::var(name).unwrap_or_else(|_| panic!("{name} is set by cardset-loop-tests.sh"))
 }
 
 fn cards() -> Vec<PathBuf> {
@@ -169,7 +169,7 @@ fn assert_whole(card: &Path, src: &Source, count: usize) {
 }
 
 #[test]
-#[ignore = "needs root and two loop cards: run loop-tests.sh"]
+#[ignore = "needs root and two loop cards: run cardset-loop-tests.sh"]
 fn loop_a_library_larger_than_one_card() {
     // A01 on real ext4: the first card fills by its real free space, the second takes
     // the rest, nothing is copied twice.
@@ -188,7 +188,7 @@ fn loop_a_library_larger_than_one_card() {
 }
 
 #[test]
-#[ignore = "started by loop-tests.sh, which kills it at NEKO_LOOP_KILL_AT"]
+#[ignore = "started by cardset-loop-tests.sh, which kills it at NEKO_LOOP_KILL_AT"]
 fn loop_copy_until_killed() {
     // The second file waits at the step named; the script kills the process there.
     let src = source("killed", 3, 8);
@@ -200,7 +200,7 @@ fn loop_copy_until_killed() {
 }
 
 #[test]
-#[ignore = "started by loop-tests.sh after loop_copy_until_killed was killed"]
+#[ignore = "started by cardset-loop-tests.sh after loop_copy_until_killed was killed"]
 fn loop_recover_after_kill() {
     // No catalogue survived the kill: the card alone is reconciled, the run finishes, and
     // every file is there once with its bytes.
@@ -228,7 +228,7 @@ fn loop_recover_after_kill() {
 }
 
 #[test]
-#[ignore = "started by loop-tests.sh, which unmounts the card while a file is written"]
+#[ignore = "started by cardset-loop-tests.sh, which unmounts the card while a file is written"]
 fn loop_card_pulled_mid_copy() {
     // A11 with a real unmount: the copy stops at its next identity check, nothing is
     // counted, and nothing is written into the bare mount folder.
@@ -253,7 +253,7 @@ fn loop_card_pulled_mid_copy() {
 }
 
 #[test]
-#[ignore = "started by loop-tests.sh after the pulled card is mounted again"]
+#[ignore = "started by cardset-loop-tests.sh after the pulled card is mounted again"]
 fn loop_card_returns() {
     // A14: the card comes back and is reconciled: the interrupted file is copied again,
     // or, when its verified intent reached the card before the copy stopped (the kernel

@@ -12,7 +12,7 @@ SOURCES = ('Cargo.toml', 'Cargo.lock', 'build.py', 'src/shared.json')
 
 
 def expected_sources(root):
-    return {*SOURCES, *[str(p.relative_to(root)) for p in (root / 'src').glob('*.rs')]}
+    return {*SOURCES, *[str(p.relative_to(root)) for p in (root / 'src').rglob('*.rs')]}
 
 
 def runs_here(binary, run=subprocess.run):

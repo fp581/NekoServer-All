@@ -4,11 +4,11 @@
 # fresh cards, runs one ignored test, and kills the process or unmounts the card where the
 # case says. Needs root, losetup, mkfs.ext4 and about 2 GB of free space for the images
 # (sparse files). Run it from the runtime folder:
-#   sudo bash src/cardset/loop-tests.sh
+#   sudo bash ../tests/cardset-loop-tests.sh
 # A process killed with SIGKILL is a simulated crash, not a power cut: what the process had
 # handed to the kernel is still written (archive format 1, section 11).
 set -u
-cd "$(dirname "$0")/../.." || exit 2
+cd "$(dirname "$0")/../runtime" || exit 2
 [ "$(id -u)" = 0 ] || { echo 'Run it as root: it makes loop devices and mounts them.' >&2; exit 2; }
 BIN=$(cargo test --no-run 2>&1 | sed -n 's/^ *Executable unittests src\/main.rs (\(.*\))$/\1/p' | tail -1)
 [ -x "$BIN" ] || { echo 'The test binary was not built.' >&2; exit 2; }
@@ -65,6 +65,26 @@ export NEKO_LOOP_WORK="$BASE/work-a01"
 card a01-1 320 && c1="$CARD" && card a01-2 400 && c2="$CARD"
 NEKO_LOOP_CARDS="$c1,$c2" run_test loop_a_library_larger_than_one_card
 result 'A01 a library larger than one card' $?
+
+echo '== A32: the restore tool on each card, as an ordinary user, nothing but the cards'
+# What a person does on another computer: the tool written onto the card, no catalogue,
+# no NekoServer; one progress file across the two cards. The result must be the library.
+RESTORER=$(getent passwd 1000 | cut -d: -f1)
+RESTORER=${RESTORER:-root}
+chmod 755 "$BASE" # the cards are mounted below it: an ordinary user may read them
+HOME_OF="$BASE/as-$RESTORER"
+mkdir -p "$HOME_OF" && chown "$RESTORER" "$HOME_OF"
+OUT="$HOME_OF/restored"
+runuser -u "$RESTORER" -- mkdir "$OUT"
+code=0
+for c in "$c1" "$c2"; do
+  runuser -u "$RESTORER" -- python3 "$c/NekoBackup/tools/neko-restore.py" verify || code=1
+  runuser -u "$RESTORER" -- python3 "$c/NekoBackup/tools/neko-restore.py" restore "$OUT" \
+    --progress "$HOME_OF/progress.json" >/dev/null || code=1
+done
+diff -r "$NEKO_LOOP_WORK/a01" "$OUT" || code=1
+[ "$(find "$OUT" -name '.neko-restore-*' | wc -l)" = 0 ] || code=1
+result "A32 the tool on the cards restores the whole library as $RESTORER" "$code"
 
 for point in Begun IntentWritten PayloadStarted PayloadWritten Checked VerifiedWritten Published \
   RecordTempWritten RecordPublished CatalogueCommitted; do
