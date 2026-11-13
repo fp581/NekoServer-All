@@ -6,6 +6,7 @@ Fixes only, from a wider review of 0.51.0's card engine, setup and dashboard. No
 
 ### Fixed: SD-card backup sets (the engine, not switched on yet)
 - **The catalogue's copy for the host backup is private.** The catalogue (which files are on which card: the paths of your files) is the server's own, readable only by root, but its copy for the host backup was left readable by every user of the server, and a new catalogue was readable by others for a moment before it was narrowed. Both files are now made private before anything is written into them.
+- **A card never gets a set inventory it cannot read back.** Each card carries a list of the whole set (which cards hold which files). Reading it, the engine refuses a list past its limits (more than 5 million versions, a million records on one card, 9,999 cards or 32 sources), but writing it checked none of them: a set that grew past one would have written a full list onto the card at every checkpoint, each one refused when read. The engine now stops before it writes such a list and says which limit was reached.
 
 ## v0.51.1 — 2026-11-13
 
