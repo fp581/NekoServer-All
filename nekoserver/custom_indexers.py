@@ -72,9 +72,9 @@ def install(data_root, uid, gid, log=print):
         for part in (folder.parent, folder):
             if not part.exists():
                 part.mkdir(mode=0o755)
-                os.chown(part, uid, gid)
+                os.chown(part, uid, gid, follow_symlinks=False)
         atomic_write(target, wanted, 0o644)
-        os.chown(target, uid, gid)
+        os.chown(target, uid, gid, follow_symlinks=False)
         written.append(name)
         log(f"Prowlarr: the download source {DEFINITIONS[name][0]} added to its catalogue ({target})")
     return written

@@ -145,7 +145,7 @@ def indexer_note(schema):
     own = custom_indexers.note(schema)
     if own:
         return own
-    privacy ={'public': 'public', 'semiPrivate': 'needs a free account', 'private': 'private: needs an account'}
+    privacy = {'public': 'public', 'semiPrivate': 'needs a free account', 'private': 'private: needs an account'}
     words = [privacy.get(schema.get('privacy')), schema.get('language'), schema.get('protocol')]
     said = ', '.join(str(word) for word in words if word)
     described = str(schema.get('description') or '').strip()

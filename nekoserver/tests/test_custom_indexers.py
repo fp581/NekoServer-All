@@ -252,7 +252,7 @@ class InstallTests(unittest.TestCase):
         self.custom = self.data / 'appdata' / 'prowlarr' / 'Definitions' / 'Custom'
         self.target = self.custom / 'torrentio.yml'
         self.owners = []
-        noted = lambda path, uid, gid: self.owners.append((path, uid, gid))  # noqa: E731
+        noted = lambda path, uid, gid, follow_symlinks=True: self.owners.append((path, uid, gid, follow_symlinks))  # noqa: E731
         chown = mock.patch.object(custom_indexers.os, 'chown', noted)
         chown.start()
         self.addCleanup(chown.stop)
@@ -264,8 +264,8 @@ class InstallTests(unittest.TestCase):
     def test_the_definition_goes_into_prowlarrs_custom_folder_owned_by_prowlarrs_account(self):
         self.assertEqual(self.install(), ['torrentio.yml'])
         self.assertEqual(self.target.read_text(encoding='utf-8'), custom_indexers.shipped_text('torrentio.yml'))
-        self.assertIn((self.target, 1000, 1001), self.owners)
-        self.assertIn((self.custom, 1000, 1001), self.owners)
+        self.assertIn((self.target, 1000, 1001, False), self.owners)  # never through a link
+        self.assertIn((self.custom, 1000, 1001, False), self.owners)
         self.assertIn('Torrentio'.lower(), self.said[0])
         # Again: nothing written, so Prowlarr is not restarted for nothing.
         self.assertEqual(self.install(), [])
@@ -374,6 +374,22 @@ class PickerTests(unittest.TestCase):
         names = self.connect.recommended_names()
         self.assertNotIn('torrentio', names)
         self.assertEqual(self.connect.recommended_among(self.schemas, names), [1])
+
+    def test_after_the_install_enter_takes_the_recommended_ones_without_torrentio(self):
+        # 0.50.0's picker comes after the install with the recommended ones ticked: Enter
+        # alone adds those, and Torrentio only when it is typed (or Prowlarr has it already).
+        recommended = self.connect.recommended_among(self.schemas, {'thepiratebay'})
+        ticked = self.connect.ticked_ones(self.schemas, recommended, existing=())
+        self.assertEqual(ticked, [1])
+        typed = iter(['', '1 2'])
+        with mock.patch('builtins.print'):
+            enter = self.connect.picked_indexers(self.schemas, recommended, ticked, lambda q: next(typed), 3)
+            both = self.connect.picked_indexers(self.schemas, recommended, ticked, lambda q: next(typed), 3)
+        self.assertEqual([schema['name'] for schema in enter], ['The Pirate Bay'])
+        self.assertEqual([schema['name'] for schema in both], ['The Pirate Bay', 'Torrentio'])
+        there = [{**schema, 'implementation': 'Cardigann'} for schema in self.schemas]
+        added = [{'implementation': 'Cardigann', 'name': 'Torrentio'}]
+        self.assertEqual(self.connect.ticked_ones(there, recommended, existing=added), [1, 2])
 
     def test_the_definition_is_shipped_with_every_release(self):
         recovery = load('recovery_torrentio', 'modules/recovery.py')
