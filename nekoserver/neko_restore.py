@@ -978,6 +978,29 @@ def one_version(card, rec, dest_fd, opts, chosen):
     return outcome, where
 
 
+def inside(dir_fd, top_fd):
+    """Whether the open folder `dir_fd` is `top_fd` or below it, by device and inode,
+    walking up through ".." to the root (a link or another name of the card counts too)."""
+    want = os.fstat(top_fd)
+    want = (want.st_dev, want.st_ino)
+    fd = os.dup(dir_fd)
+    try:
+        seen = None
+        while True:
+            st = os.fstat(fd)
+            here = (st.st_dev, st.st_ino)
+            if here == want:
+                return True
+            if here == seen:
+                return False  # the root: its ".." is itself
+            seen = here
+            up = os.open('..', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=fd)
+            os.close(fd)
+            fd = up
+    finally:
+        os.close(fd)
+
+
 def restore(card, records, destination, rename=False, overwrite=(), progress=None, say=print):
     """Restore `records` into `destination` (an existing folder). Of several versions of
     one file, the newest gets the file's name. Returns the report: one row per record with
@@ -986,6 +1009,13 @@ def restore(card, records, destination, rename=False, overwrite=(), progress=Non
         dest_fd = os.open(destination, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     except OSError as e:
         raise Unusable('the destination %s cannot be opened (%s)' % (show(destination), e.strerror)) from None
+    # Never onto the card itself: it is the backup, maybe the last copy of these files.
+    if inside(dest_fd, card.top):
+        os.close(dest_fd)
+        raise Unusable(
+            '%s is on the card itself. Restore onto another drive: the card is your backup, and '
+            'is kept as it is' % show(destination)
+        )
     report = []
     opts = (rename, set(overwrite), progress, Listing())
     try:

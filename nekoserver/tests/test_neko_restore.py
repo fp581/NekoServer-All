@@ -548,6 +548,22 @@ class ManyFilesTests(Base):
         self.assertEqual(self.run_tool('restore', str(self.dest)), 1)
         self.assertIn('skipped     2001/a.jpg -> a file is there already', said_text(self))
 
+    def test_nothing_is_restored_onto_the_card_itself(self):
+        """Seen on an ext4 card image mounted read-write: `restore /mnt` (the card) and even
+        `restore /mnt/NekoBackup` restored every file onto the card, among its records."""
+        self.card.add(A_2001, b'card a')
+        before = sorted(str(p.relative_to(self.card.top)) for p in self.card.top.rglob('*'))
+        for dest in (self.card.top, self.card.nb, self.card.nb / 'records'):
+            with self.subTest(dest=dest.name):
+                self.assertEqual(self.run_tool('restore', str(dest)), 2)
+                self.assertIn('is on the card itself', said_text(self))
+        # Another name of the same folder (a link) is the card too.
+        link = self.tmp / 'link-to-card'
+        link.symlink_to(self.card.top)
+        self.assertEqual(self.run_tool('restore', str(link)), 2)
+        self.assertEqual(sorted(str(p.relative_to(self.card.top)) for p in self.card.top.rglob('*')), before)
+        self.assertEqual(self.run_tool('restore', str(self.dest)), 0)
+
     def test_a_name_restored_earlier_in_the_same_run_still_clashes_by_case(self):
         self.card.add('DCIM/IMG_1.JPG', b'upper')
         self.card.add('DCIM/img_1.jpg', b'lower')

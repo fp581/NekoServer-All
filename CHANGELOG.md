@@ -8,6 +8,9 @@ Fixes only, from a wider review of 0.51.0's card engine, setup and dashboard. No
 - **The catalogue's copy for the host backup is private.** The catalogue (which files are on which card: the paths of your files) is the server's own, readable only by root, but its copy for the host backup was left readable by every user of the server, and a new catalogue was readable by others for a moment before it was narrowed. Both files are now made private before anything is written into them.
 - **A card never gets a set inventory it cannot read back.** Each card carries a list of the whole set (which cards hold which files). Reading it, the engine refuses a list past its limits (more than 5 million versions, a million records on one card, 9,999 cards or 32 sources), but writing it checked none of them: a set that grew past one would have written a full list onto the card at every checkpoint, each one refused when read. The engine now stops before it writes such a list and says which limit was reached.
 
+### Fixed: getting files back from a backup card
+- **Nothing is restored onto the card itself.** Restoring into the card (`restore /mnt` from a card mounted at `/mnt`, or even into its `NekoBackup` folder among the card's own records) copied every file onto the card: the backup, maybe the last copy of those files, filled up with a second copy. The tool now refuses a folder on the card, also when it is named through a link, and says to restore onto another drive. Tried on an ext4 card image mounted read-write.
+
 ## v0.51.1 — 2026-11-13
 
 Fixes only, found by a code review of 0.51.0 and by trying the restore tool on real card images: mostly in the tool that gets files back from a backup card. Nothing changes in how NekoServer is used.
