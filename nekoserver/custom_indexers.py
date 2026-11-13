@@ -52,6 +52,25 @@ def ours(path):
         return False
 
 
+def to_write(target, name, wanted, log):
+    """The definition is to be written: it is not there, or it is NekoServer's and differs.
+    One someone else put there is left as it is, and said."""
+    if not target.exists():
+        return True
+    if not ours(target):
+        log(f"Prowlarr: {target} was put there by someone else; NekoServer's {name} is not installed")
+        return False
+    return target.read_text(encoding='utf-8') != wanted
+
+
+def made_for(folder, uid, gid):
+    """The custom folder and its parent, made for Prowlarr's account when they are not there."""
+    for part in (folder.parent, folder):
+        if not part.exists():
+            part.mkdir(mode=0o755)
+            os.chown(part, uid, gid, follow_symlinks=False)
+
+
 def install(data_root, uid, gid, log=print):
     """Copy every shipped definition into Prowlarr's custom folder, owned by the account
     Prowlarr runs as. Returns the names written (new or changed): Prowlarr reads the folder
@@ -63,16 +82,9 @@ def install(data_root, uid, gid, log=print):
         if target.is_symlink():
             raise RuntimeError(f'Refusing symlink definition: {target}')
         wanted = shipped_text(name)
-        if target.exists():
-            if not ours(target):
-                log(f"Prowlarr: {target} was put there by someone else; NekoServer's {name} is not installed")
-                continue
-            if target.read_text(encoding='utf-8') == wanted:
-                continue
-        for part in (folder.parent, folder):
-            if not part.exists():
-                part.mkdir(mode=0o755)
-                os.chown(part, uid, gid, follow_symlinks=False)
+        if not to_write(target, name, wanted, log):
+            continue
+        made_for(folder, uid, gid)
         atomic_write(target, wanted, 0o644)
         os.chown(target, uid, gid, follow_symlinks=False)
         written.append(name)

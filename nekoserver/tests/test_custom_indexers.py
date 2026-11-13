@@ -340,15 +340,16 @@ class UninstallerTests(unittest.TestCase):
         self.assertTrue(self.file.exists())
 
     def test_the_removal_is_part_of_taking_out_the_apps(self):
-        calls = []
+        # One parent records both, in the order they were called.
+        calls = mock.Mock(containers=mock.Mock(return_value=None), definitions=mock.Mock(return_value=None))
         with (
-            mock.patch.object(self.uninstaller, '_remove_containers', lambda *a: calls.append('containers')),
-            mock.patch.object(self.uninstaller, '_remove_definitions', lambda *a: calls.append('definitions')),
+            mock.patch.object(self.uninstaller, '_remove_containers', calls.containers),
+            mock.patch.object(self.uninstaller, '_remove_definitions', calls.definitions),
         ):
             self.plan.docker_root = lambda: None
             self.uninstaller._remove_docker_parts(self.plan, {'apps'}, '/', None, print)
             self.uninstaller._remove_docker_parts(self.plan, {'server'}, '/', None, print)
-        self.assertEqual(calls, ['containers', 'definitions'])
+        self.assertEqual([name for name, _args, _kwargs in calls.mock_calls], ['containers', 'definitions'])
 
 
 class PickerTests(unittest.TestCase):
