@@ -255,13 +255,17 @@ fn loop_card_pulled_mid_copy() {
 #[test]
 #[ignore = "started by loop-tests.sh after the pulled card is mounted again"]
 fn loop_card_returns() {
-    // A14: the card comes back; the interrupted file is copied again, nothing else lost.
+    // A14: the card comes back and is reconciled: the interrupted file is copied again,
+    // or, when its verified intent reached the card before the copy stopped (the kernel
+    // still writes to an unmounted filesystem that a file holds open), finished from it.
+    // Either way nothing is lost and nothing is there twice.
     let src = source("pulled", 2, 32);
     let card_path = cards()[0].clone();
     let vol = card(&card_path, 1);
     let mut cat = catalogue();
     let r = go(&vol, &mut cat, &src, &mut commit::no_hook);
     assert_eq!(r.state, RunState::Complete, "{r:?}");
-    assert!(!r.reconcile.retry.is_empty(), "{:?}", r.reconcile);
+    let rec = &r.reconcile;
+    assert!(!rec.retry.is_empty() || !rec.finished.is_empty(), "{rec:?}");
     assert_whole(&card_path, &src, 2);
 }
