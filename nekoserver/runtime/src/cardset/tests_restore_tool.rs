@@ -247,3 +247,57 @@ fn a_damaged_file_is_never_restored_and_a_taken_place_never_overwritten() {
         fs::read(w.src.root.join("2001/beach.jpg")).unwrap()
     );
 }
+
+#[test]
+fn of_two_versions_the_engine_wrote_the_tool_restores_the_newest() {
+    // The review of 0.51.0: a file edited between two runs has two versions on the card,
+    // and the tool restored the first one under the file's name.
+    let s = Scratch::new("tool-versions");
+    let src = source(&s, "photos", 1);
+    put(&src, "docs/plan.txt", b"first draft");
+    let (card, vol) = card(&s, 1);
+    let mut cat = super::catalogue::Memory::default();
+    let first = run(
+        &vol,
+        &mut cat,
+        &card,
+        4 * MIB,
+        &cands(&src),
+        &mut commit::no_hook,
+    );
+    assert_eq!(first.committed.len(), 1);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    put(&src, "docs/plan.txt", b"second draft, longer");
+    let second = run(
+        &vol,
+        &mut cat,
+        &card,
+        4 * MIB,
+        &cands(&src),
+        &mut commit::no_hook,
+    );
+    assert_eq!(
+        second.committed.len(),
+        1,
+        "the edited file is a new version"
+    );
+    assert_eq!(records(&card).len(), 2);
+    let w = Written {
+        dest: s.dir("restored"),
+        card,
+        src,
+        _s: s,
+    };
+    let out = tool(&w, &["restore", w.dest.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert_eq!(
+        fs::read(w.dest.join("docs/plan.txt")).unwrap(),
+        b"second draft, longer"
+    );
+    assert!(
+        text(&out)
+            .contains("older       docs/plan.txt -> a newer version is restored as docs/plan.txt"),
+        "{}",
+        text(&out)
+    );
+}
