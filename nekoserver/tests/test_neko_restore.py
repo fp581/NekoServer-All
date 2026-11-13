@@ -194,6 +194,16 @@ class WhereACardMustBeTests(unittest.TestCase):
             self.assertEqual(code, 0, said)
             self.assertIn('Example set - 001', said)
 
+    def test_a_card_mounted_on_one_of_those_places_itself_is_read(self):
+        """The review of 0.51.0: a card mounted on /mnt itself was refused with "Mount the
+        card under /media or /mnt"."""
+        Card(self.mounts)
+        code, said = self.info(self.mounts)
+        self.assertEqual(code, 0, said)
+        # A folder beside it whose name only starts the same is still elsewhere.
+        Card(self.tmp / 'mediax')
+        self.assertEqual(self.info(self.tmp / 'mediax')[0], 2)
+
     def test_a_folder_elsewhere_is_refused_in_plain_words(self):
         elsewhere = Card(self.tmp / 'home' / 'CARD')
         code, said = self.info(elsewhere.top)
