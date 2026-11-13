@@ -30,7 +30,7 @@ def bundle_files(project):
             project / 'runtime/bin/nekoserver-runtime',
         ]
     )
-    files.extend((project / 'runtime/src').glob('*.rs'))
+    files.extend((project / 'runtime/src').rglob('*.rs'))  # with the folders, src/cardset/ (0.51.0)
     files.extend(
         (
             project / 'runtime/src/shared.json',  # the facts setup and the runtime share

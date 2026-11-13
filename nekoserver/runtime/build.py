@@ -189,7 +189,7 @@ def main():
         ROOT / 'Cargo.lock',
         ROOT / 'build.py',
         ROOT / 'src/shared.json',
-        *sorted((ROOT / 'src').glob('*.rs')),
+        *sorted((ROOT / 'src').rglob('*.rs')),  # src/cardset/ too
     ]
     version = subprocess.check_output([out, '--version'], text=True, timeout=60).strip().split()[-1]
     metadata = {'version': version}
