@@ -76,9 +76,11 @@ Before a file gets its name it is checked twice: the card's bytes while they are
 and the restored file read back afterwards. A file that does not match is **not** restored
 (and no half-written copy is left); the tool says `failed` for it.
 
-**Nothing is ever overwritten.** When a file's place is taken, by a file already there or
-by a name that differs only in upper and lower case (two such files are one file on many
-systems), the file is `skipped`. You can choose instead:
+**Nothing is ever overwritten.** A file that is there already with exactly the same bytes
+(from an earlier restore) is `same file`, and left as it is. When a file's place is taken,
+by another file already there, by a name that differs only in upper and lower case (two
+such files are one file on many systems), or by a name the destination cannot hold (`:` or
+`?` on a USB stick formatted exFAT or FAT), the file is `skipped`. You can choose instead:
 
 - `--rename`: put each such file under `_renamed/<its ID>.<ext>`; the tool says which
   original path went where;

@@ -504,6 +504,46 @@ class ManyFilesTests(Base):
         self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 2)
         self.assertIn('not usable', said_text(self))
 
+    def test_a_name_an_exfat_stick_cannot_hold_is_skipped_or_renamed(self):
+        """Seen restoring onto exFAT (through FUSE): a name with ":" or "?" failed with "No
+        such file or directory", --rename or not. exFAT through FUSE says ENOENT to such a
+        name, Linux's own FAT and exFAT EINVAL; neither has links (EPERM)."""
+        self.card.add('DCIM/meeting 10:30.jpg', b'colon')
+        self.card.add('DCIM/fine.jpg', b'fine')
+        real_rename, real_link = os.rename, os.link
+
+        def like_exfat(src, dst, **kwargs):
+            if ':' in dst:
+                raise FileNotFoundError(2, 'No such file or directory')
+            return real_rename(src, dst, **kwargs)
+
+        def no_links(*args, **kwargs):
+            raise PermissionError(1, 'Operation not permitted')
+
+        with mock.patch.object(tool.os, 'rename', like_exfat), mock.patch.object(tool.os, 'link', no_links):
+            self.assertEqual(self.run_tool('restore', str(self.dest)), 1)
+            self.assertIn(
+                'skipped     DCIM/meeting 10:30.jpg -> this destination cannot hold the name', said_text(self)
+            )
+            self.assertEqual((self.dest / 'DCIM/fine.jpg').read_bytes(), b'fine')
+            self.assertEqual(self.run_tool('restore', str(self.dest), '--rename'), 0, said_text(self))
+        self.assertIn('renamed     DCIM/meeting 10:30.jpg -> _renamed/', said_text(self))
+        self.assertEqual([p.read_bytes() for p in (self.dest / RENAMED_DIR).iterdir()], [b'colon'])
+        self.assertEqual([p for p in self.dest.rglob('.neko-restore-*')], [])
+
+    def test_a_file_already_restored_counts_as_done_without_a_progress_file(self):
+        """Seen on the same stick: the same restore run again (no --progress) skipped every
+        file it had restored, or with --rename made a second copy of each."""
+        self.card.add(A_2001, b'card a')
+        self.assertEqual(self.run_tool('restore', str(self.dest)), 0)
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--rename'), 0, said_text(self))
+        self.assertIn('same file   2001/a.jpg -> 2001/a.jpg', said_text(self))
+        self.assertFalse((self.dest / RENAMED_DIR).exists())
+        # A file of the same name with other bytes is still not the same file.
+        (self.dest / A_2001).write_bytes(b'card A')
+        self.assertEqual(self.run_tool('restore', str(self.dest)), 1)
+        self.assertIn('skipped     2001/a.jpg -> a file is there already', said_text(self))
+
     def test_a_name_restored_earlier_in_the_same_run_still_clashes_by_case(self):
         self.card.add('DCIM/IMG_1.JPG', b'upper')
         self.card.add('DCIM/img_1.jpg', b'lower')

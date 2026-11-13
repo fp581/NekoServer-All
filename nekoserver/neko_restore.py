@@ -650,14 +650,25 @@ def give_name(dir_fd, temp, name):
     os.rename(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
 
 
+# What a destination says to a name it cannot hold (":" or "?" on exFAT and FAT, say):
+# EINVAL from Linux's own drivers, ENOENT from exFAT through FUSE.
+NAME_REFUSED = (errno.EINVAL, errno.ENOENT, errno.EILSEQ, errno.ENAMETOOLONG)
+
+
 def publish(dir_fd, temp, name, overwrite, listing=None):
     """`temp` under its final name. Never over an existing file unless `overwrite` (a
-    plain file the person named). Raises Taken, with `temp` removed, when it is taken."""
+    plain file the person named). Raises Taken, with `temp` removed, when it is taken or
+    the destination cannot hold the name."""
     try:
-        if overwrite:
-            replace_named(dir_fd, temp, name)
-        else:
-            give_name(dir_fd, temp, name)
+        try:
+            if overwrite:
+                replace_named(dir_fd, temp, name)
+            else:
+                give_name(dir_fd, temp, name)
+        except OSError as e:
+            if e.errno not in NAME_REFUSED or not exists(dir_fd, temp):
+                raise
+            raise Taken('this destination cannot hold the name %s' % show(name)) from None
         os.fsync(dir_fd)
         if listing is not None:
             listing.add(dir_fd, name)
@@ -809,9 +820,26 @@ class Progress:
         )
 
 
+def same_file(dir_fd, name, rec):
+    """The plain file `name` holds exactly the bytes of `rec` (its size, then its checksum)."""
+    try:
+        fd = os.open(name, FILE_FLAGS, dir_fd=dir_fd)
+    except OSError:
+        return False
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size != rec['byte_size']:
+            return False
+        return hash_fd(fd, rec['byte_size']) == (rec['checksum'], rec['byte_size'])
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+
+
 def restore_one(card, rec, dest_fd, rename, overwrite, listing=None):
     """One record restored below the open destination. Returns (outcome, where):
-    outcome is restored, renamed, skipped or failed."""
+    outcome is restored, same file (exactly this file is there already), renamed, skipped or failed."""
     parts = rec['original_relative_path'].split('/')
     temp = '.neko-restore-%s.part' % rec['record_id']
     target = rec['original_relative_path']
@@ -821,6 +849,8 @@ def restore_one(card, rec, dest_fd, rename, overwrite, listing=None):
             clash(d, parts[-1], listing)
             named = target in overwrite
             if exists(d, parts[-1]) and not named:
+                if same_file(d, parts[-1], rec):
+                    return 'same file', target  # restored before (by a run without --progress)
                 raise Taken('a file is there already')
             copy_verified(card, rec, d, temp)
             publish(d, temp, parts[-1], named, listing)
@@ -859,7 +889,7 @@ def renamed_copy(card, rec, dest_fd, temp, listing=None):
 
 
 # What became of a record that leaves the file in place: no failure.
-KEPT = ('restored', 'renamed', 'done before')
+KEPT = ('restored', 'renamed', 'done before', 'same file')
 FINE = KEPT + ('older', 'same version')
 
 
@@ -959,7 +989,7 @@ def restore(card, records, destination, rename=False, overwrite=(), progress=Non
             chosen = None
             for rec in recs:
                 outcome, where = one_version(card, rec, dest_fd, opts, chosen)
-                if outcome in ('restored', 'renamed') and progress is not None:
+                if outcome in ('restored', 'renamed', 'same file') and progress is not None:
                     progress.add(rec, where)
                 if chosen is None and outcome in KEPT:
                     chosen = (rec, where)
