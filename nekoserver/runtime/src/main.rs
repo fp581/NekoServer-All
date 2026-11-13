@@ -3,6 +3,7 @@ mod apps;
 mod array_health;
 mod assist;
 mod backup;
+mod cardset;
 mod collect;
 mod common;
 mod control;

@@ -67,9 +67,14 @@ class PageCatalogue(unittest.TestCase):
 
 
 class RecoveryRecords(unittest.TestCase):
-    PLACES = [record['journal'] for record in SHARED['recovery'].values()] + [SHARED['setup_lock']]
+    PLACES = [record['journal'] for record in SHARED['recovery'].values()] + [
+        SHARED['setup_lock'],
+        SHARED['operation_lock'],
+    ]
 
-    def test_no_journal_or_setup_lock_is_written_out_twice(self):
+    def test_no_journal_or_lock_is_written_out_twice(self):
+        """The operation lock (an upgrade, a drive move) was written out in neko_common.py
+        and in control.rs until the review of 0.51.0."""
         sources = {path: path.read_text() for path in ROOT.rglob('*.py') if not {'tests', 'lab'} & set(path.parts)}
         sources.update({ROOT / 'runtime/src' / name: rust_code(text) for name, text in RUST.items()})
         for path, text in sources.items():

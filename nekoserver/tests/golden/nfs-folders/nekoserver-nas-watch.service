@@ -3,7 +3,7 @@ Description=NekoServer check the drives on the network storage box
 After=remote-fs.target
 [Service]
 Type=oneshot
-ExecStart=/usr/local/lib/nekoserver-os/v0.50.0/nekoserver-runtime nas-watch --config /etc/nekoserver-os/drives.json
+ExecStart=/usr/local/lib/nekoserver-os/v0.51.1/nekoserver-runtime nas-watch --config /etc/nekoserver-os/drives.json
 TimeoutStartSec=infinity
 NoNewPrivileges=yes
 RestrictRealtime=yes

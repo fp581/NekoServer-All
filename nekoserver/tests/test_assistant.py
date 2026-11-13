@@ -501,6 +501,10 @@ class TemplateTests(unittest.TestCase):
         self.assertIn('OLLAMA_MAX_LOADED_MODELS: "1"', text)
         self.assertIn(f'OLLAMA_KEEP_ALIVE: "{assistant.IDLE_MINUTES}m"', text)
 
+    def test_the_lowest_disk_priority(self):
+        # cgroup io.weight: the model's download and load wait for the apps and the system.
+        self.assertIn('    blkio_config:\n      weight: 10\n', self.rendered())
+
     def test_the_image_is_pinned(self):
         text = (ROOT / 'compose/assistant.yaml').read_text()
         self.assertIn('image: ollama/ollama:0.40.16', text)
@@ -569,6 +573,26 @@ class InstallTests(unittest.TestCase):
             )
             self.assertTrue(neko_common.assistant_installed({**config, 'assistant': {'wanted': True}}))
             self.assertTrue(any('Ask Neko' in line for line in ctx.said))
+
+    def test_the_answer_threads_are_the_processor_share(self):
+        # The compose file's processor limit and the report's "cpus" are one number: the
+        # runtime sends that as Ollama's num_thread with every question (assist.rs
+        # threads()), so the model never starts one thread per core of the whole machine.
+        for cores, share in ((1, '1'), (2, '1'), (8, '4'), (16, '8')):
+            with self.subTest(cores=cores), tempfile.TemporaryDirectory() as tmp:
+                with (
+                    mock.patch.object(assistant.os, 'cpu_count', return_value=cores),
+                    mock.patch.object(assistant, 'compose_up'),
+                    mock.patch.object(assistant, 'wait_until_answering'),
+                    mock.patch.object(assistant, 'fetch_model', return_value=('ready', 'abc')),
+                    mock.patch.object(assistant, 'tell_dashboard'),
+                ):
+                    assistant.install(context({'data_mount': tmp}), 'qwen3.5:4b', '5g')
+                text = (Path(tmp) / 'compose/assistant/compose.yaml').read_text()
+                self.assertIn(f'cpus: "{share}"', text)
+                self.assertIn('blkio_config:\n      weight: 10\n', text)
+                report = json.loads((Path(tmp) / 'reports/assistant.json').read_text())
+                self.assertEqual(share, report['cpus'])
 
     def test_stopping_keeps_its_model_and_says_it_is_off(self):
         with tempfile.TemporaryDirectory() as tmp:

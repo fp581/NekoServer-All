@@ -1068,10 +1068,9 @@ fn run_repair(
             let Some((job, unit, _)) = assist::JOBS.iter().find(|j| j.0 == name) else {
                 return refuse("E42", "That backup does not run on this server");
             };
-            if let Some(why) = assist::job_blocked(
-                Path::new("/run/nekoserver-operation.lock"),
-                &assist::unit_active,
-            ) {
+            if let Some(why) =
+                assist::job_blocked(Path::new(*common::OPERATION_LOCK), &assist::unit_active)
+            {
                 return refuse(
                     "E47",
                     &format!("Not now: {why}. Try again once it has finished."),

@@ -7,6 +7,6 @@ Requires=docker.service
 Type=oneshot
 UMask=0077
 TimeoutStartSec=3h30min
-ExecStart=/srv/nekoserver/installer/runtime/v0.50.0/nekoserver-runtime cloud-resume --config /etc/nekoserver-backups/storage.json
+ExecStart=/srv/nekoserver/installer/runtime/v0.51.1/nekoserver-runtime cloud-resume --config /etc/nekoserver-backups/storage.json
 [Install]
 WantedBy=multi-user.target

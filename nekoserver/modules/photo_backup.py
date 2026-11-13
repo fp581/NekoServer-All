@@ -150,8 +150,9 @@ def no_backup_drive(config, inventory):
     )
 
 
-def select_external(config, inventory, input_fn=input, out_fn=print):
+def select_external(config, inventory, input_fn=None, out_fn=print):
     """Explicitly identify a formatted external filesystem; never guess or format."""
+    input_fn = input_fn or input  # looked up now: setup's own, or a test's stand-in
     candidates = eligible(config, inventory)
     if len({v['uuid'] for v in candidates}) != len(candidates):
         raise RuntimeError('Duplicate external filesystem UUID; identify cloned drives first')

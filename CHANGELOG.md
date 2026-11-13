@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.51.1 — 2026-11-13
+
+Fixes only, found by a code review of 0.51.0 and by trying the restore tool on real card images: mostly in the tool that gets files back from a backup card. Nothing changes in how NekoServer is used.
+
+### Fixed: getting files back from a backup card
+- **The newest version of a file is the one restored.** A file that changed between two backups has a copy of each version, on one card or on several. The restore tool restored the oldest under the file's name and skipped the newer one as "a file is there already"; restoring several cards with one progress file did the same whichever card came first. The newest version now gets the file's name and each older one is listed as `older` (with `--rename` it is restored under `_renamed/` too). With a progress file, a newer version found on a later card replaces the older one the tool put there itself, unless that file was changed since. A second copy of the same version (made because the first was damaged) is tried when the first fails, and is not counted as a failure. Tested on cards the backup engine wrote itself (a file backed up, edited, backed up again), not yet on a real SD card.
+- **A big folder restores in minutes, not hours.** For every file it restored, the tool listed the whole destination folder again, to find a name that differs only in upper and lower case. A folder of 8,000 photos took 23 seconds and one of 100,000 about an hour; 32,000 now take 24 seconds (measured on test cards). Each folder is listed once per restore, and names that differ only in case are still refused, also between two files of the same restore.
+- **A restore with a progress file is as quick as one without.** The progress file (`--progress`, for several cards or after a stop) was written again in full after every file, so 8,000 files took seven minutes; they now take 10 seconds. Each restored file adds one line to it, flushed to the disk at once; a line cut off by a stop or a power cut is not counted. A progress file of the earlier tool is read and carried on.
+- **A card mounted on `/mnt` itself is read.** `sudo mount /dev/sdb1 /mnt` is a usual way to mount a card, but the tool took only a card below `/mnt/`, `/media/` or `/run/media/`, and refused this one with "Mount the card under /media or /mnt". Those folders themselves count now; a folder elsewhere is still refused. Tried on an ext4 card image mounted read-only at `/mnt`: info, verify, and a restore with a progress file.
+- **Restoring onto a USB stick formatted exFAT works as the guide says.** A name such a stick cannot hold (`meeting 10:30.jpg`, `what?.png`) ended as "failed: No such file or directory", with `--rename` too; it is now skipped, saying the stick cannot hold the name, or with `--rename` put under `_renamed/`. Running the same restore again without a progress file skipped every file it had restored before (or with `--rename` made a second copy of each); a file that is there with exactly the same bytes now counts as `same file`, under `_renamed/` too. Found by restoring a card onto an exFAT image (exFAT through FUSE: Linux's own exFAT driver was not there to try).
+
+### Fixed: Ask Neko
+- **A password that holds another is kept out of the question whole.** Before a question goes to the model, NekoServer takes out the apps' passwords and logins. When one of them held another (an app's login inside another app's password), the shorter was taken out first and the rest of the longer one was left in: `<removed>-Fern-Oak`. The longest are now taken out first.
+
+### Tests
+- **A setup test no longer waits for the keyboard.** The test of "none for now" at the offline-backup question meant to answer it itself, but the question had taken `input` when its file was loaded, before the test put its answer in place: the test read the real terminal, hung when it was run from one, and its check that the question is not asked a second time could never fail. The three drive questions that took `input` that way look it up when they ask (setup's own, which reaches the window, as before).
+- **No test reads the terminal.** The whole suite now passes with the terminal made unreadable (every read fails, naming the test). One more test needed it: the drive size check ran into the media-apps question that 0.50.0 put before the drives, and answered it with whatever the terminal gave.
+- **The lock an upgrade or a drive move holds is named once.** Ask Neko's "run this backup now" checked `/run/nekoserver-operation.lock`, written out in the runtime as well as in setup; it is in `shared.json` now, with setup's lock, and the test that keeps journals and locks from being written out twice covers it.
+
+## v0.51.0 — 2026-11-13
+
+Two new parts and the first fixes from the 0.50.0 sweep. One of them is not switched on yet: read "SD-card backup sets" before you count on it.
+
+### New: SD-card backup sets (the engine and the restore tool; not switched on yet)
+- **The copy engine** that puts photos and personal videos from Immich onto a numbered set of SD cards, USB sticks or external drives, and asks for the next card when one is full. Every file is checked against its checksum before it counts as backed up; a card pulled out, a power cut or a crash at any step leaves nothing counted that is not on the card, and the next run finishes or undoes what was half done. The catalogue of what is on which card is kept in SQLite on the server, and each card carries an inventory of the whole set, so the catalogue can be rebuilt from the cards.
+- **Not switched on yet:** no service, timer or dashboard button runs the engine in 0.51.0; setting it up comes in a later release. Nothing is copied to a card yet.
+- **The restore tool goes onto every card** (`neko_restore.py`, with its guide `CARD-RECOVERY.md`): on any Linux computer, with Python 3 only, it lists, checks and restores the files on one card, and says which card of the set holds a file it does not have. It never overwrites a file of yours.
+- **The runtime is built statically** (musl, SQLite compiled in), so the same binary runs on every supported system.
+- **How it was tested:** unit and crash tests, and the 13 loop-device cases on real ext4 cards (`tests/cardset-loop-tests.sh`: killed at each of the 9 points between the commit steps, the card pulled, the card back). Not yet on a physical SD card.
+
+### New: Torrentio as a download source
+- **Torrentio** (a Stremio add-on, not in Prowlarr's catalogue) is a download source NekoServer adds to Prowlarr itself, as a custom definition. Setup's source picker offers it after the install and never ticks it for you. It searches the way Prowlarr 2.7.0 runs it: one path per search, movies or series chosen by category.
+
+### Changed: Ask Neko
+- **The model's download and loading get the lowest disk priority**, so pulling a model does not slow down the apps or the backups.
+
 ## v0.50.0 — 2026-11-12
 
 Setup was rebuilt around one idea: you choose once, approve once, and setup does the rest. It no longer needs three drives (one is enough), asks far fewer questions, asks nothing after the approval but what needs the running server, and never asks you to vouch for something it can check itself. A server that is already set up keeps exactly the apps, drives, logins and backups it has.

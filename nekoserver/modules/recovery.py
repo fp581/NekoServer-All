@@ -30,7 +30,7 @@ def bundle_files(project):
             project / 'runtime/bin/nekoserver-runtime',
         ]
     )
-    files.extend((project / 'runtime/src').glob('*.rs'))
+    files.extend((project / 'runtime/src').rglob('*.rs'))  # with the folders, src/cardset/ (0.51.0)
     files.extend(
         (
             project / 'runtime/src/shared.json',  # the facts setup and the runtime share
@@ -38,6 +38,7 @@ def bundle_files(project):
             project / 'runtime/THIRD-PARTY-NOTICES.md',
         )
     )
+    files.extend((project / 'prowlarr-definitions').glob('*.yml'))  # what setup adds to Prowlarr's catalogue
     files.extend(p for p in (project / 'runtime/licenses').rglob('*') if p.is_file())
     return files
 

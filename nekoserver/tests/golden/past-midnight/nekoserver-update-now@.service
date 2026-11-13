@@ -9,5 +9,5 @@ UMask=0077
 Environment=TZ=Asia/Jerusalem
 TimeoutStartSec=6h
 TimeoutStopSec=infinity
-ExecStart=/srv/nekoserver/installer/runtime/v0.50.0/nekoserver-runtime update-apps --config /etc/nekoserver-backups/maintenance.json --app %i
-ExecStopPost=/srv/nekoserver/installer/runtime/v0.50.0/nekoserver-runtime maintenance-resume --config /etc/nekoserver-backups/maintenance.json
+ExecStart=/srv/nekoserver/installer/runtime/v0.51.1/nekoserver-runtime update-apps --config /etc/nekoserver-backups/maintenance.json --app %i
+ExecStopPost=/srv/nekoserver/installer/runtime/v0.51.1/nekoserver-runtime maintenance-resume --config /etc/nekoserver-backups/maintenance.json

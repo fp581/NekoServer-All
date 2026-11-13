@@ -77,7 +77,11 @@ pub const JOBS: [(&str, &str, &str); 4] = [
 /// `known` (NekoServer's own secrets, see known_secrets) wherever it appears.
 pub fn redact(text: &str, known: &[String]) -> String {
     let mut out = text.to_string();
-    for value in known.iter().filter(|v| v.chars().count() >= 6) {
+    // The longest first: a secret that holds a shorter one (an app's login inside another
+    // app's password) would otherwise be cut where the shorter one was, its rest left in.
+    let mut known: Vec<&String> = known.iter().filter(|v| v.chars().count() >= 6).collect();
+    known.sort_by_key(|v| std::cmp::Reverse(v.len()));
+    for value in known {
         out = out.replace(value.as_str(), "<removed>");
     }
     for (pattern, with) in PATTERNS.iter() {
@@ -1517,6 +1521,16 @@ mod tests {
             "{said}"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_secret_that_holds_another_is_taken_out_whole() {
+        // The review of 0.51.0: the shorter was replaced first and the longer's rest stayed.
+        let known = ["Moss-Lark".to_string(), "Moss-Lark-Fern-Oak".to_string()];
+        for order in [known.clone(), [known[1].clone(), known[0].clone()]] {
+            let said = redact("signed in with Moss-Lark-Fern-Oak, then Moss-Lark", &order);
+            assert_eq!(said, "signed in with <removed>, then <removed>");
+        }
     }
 
     #[test]

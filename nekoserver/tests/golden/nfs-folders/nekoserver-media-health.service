@@ -6,4 +6,4 @@ After=docker.service
 Type=oneshot
 SuccessExitStatus=3
 TimeoutStartSec=300
-ExecStart=/srv/nekoserver/installer/runtime/v0.50.0/nekoserver-runtime media-health --config /srv/nekoserver/scripts/config.json --output /srv/nekoserver/reports/media/latest.json
+ExecStart=/srv/nekoserver/installer/runtime/v0.51.1/nekoserver-runtime media-health --config /srv/nekoserver/scripts/config.json --output /srv/nekoserver/reports/media/latest.json

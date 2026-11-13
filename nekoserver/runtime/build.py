@@ -2,7 +2,7 @@
 """Build the locked Linux runtime and write its record (build.json).
 
 Static (musl, linked by rust-lld) when the toolchain has the musl standard library and
-rust-lld, as the release builds are; otherwise for this PC alone, with its own C
+rust-lld and a musl C compiler is installed, as the release builds are; otherwise for this PC alone, with its own C
 library, which is what `sudo bash install.sh` builds on the PC that installs NekoServer
 (git keeps the sources, not the binary). As an ordinary user, or as root from
 install.sh (NEKOSERVER_BUILD_AS_ROOT=1)."""
@@ -72,11 +72,30 @@ def toolchain():
     )
 
 
-def plan(host, sysroot):
-    """(target, cargo arguments): static when the toolchain can, else this PC's own."""
+# A C compiler for musl: SQLite (the catalogue of the removable-media backup sets) is C,
+# compiled with the runtime. Debian and Ubuntu's musl-tools has both names, others musl-gcc.
+MUSL_CC = ('x86_64-linux-musl-gcc', 'musl-gcc')
+
+
+def musl_cc(which=shutil.which):
+    """The musl C compiler on PATH, or None."""
+    return next((which(name) for name in MUSL_CC if which(name)), None)
+
+
+def plan(host, sysroot, which=shutil.which):
+    """(target, cargo arguments): static when the toolchain can (the musl library,
+    rust-lld and a musl C compiler), else this PC's own."""
     linker = sysroot / 'lib/rustlib' / host / 'bin/rust-lld'
-    if (sysroot / 'lib/rustlib' / STATIC / 'lib').is_dir() and linker.is_file():
-        return STATIC, ['--target', STATIC, '--config', f'target.{STATIC}.linker=' + json.dumps(str(linker))]
+    cc = musl_cc(which)
+    if (sysroot / 'lib/rustlib' / STATIC / 'lib').is_dir() and linker.is_file() and cc:
+        return STATIC, [
+            '--target',
+            STATIC,
+            '--config',
+            f'target.{STATIC}.linker=' + json.dumps(str(linker)),
+            '--config',
+            'env.CC_x86_64_unknown_linux_musl=' + json.dumps(cc),
+        ]
     return host, []
 
 
@@ -170,7 +189,7 @@ def main():
         ROOT / 'Cargo.lock',
         ROOT / 'build.py',
         ROOT / 'src/shared.json',
-        *sorted((ROOT / 'src').glob('*.rs')),
+        *sorted((ROOT / 'src').rglob('*.rs')),  # src/cardset/ too
     ]
     version = subprocess.check_output([out, '--version'], text=True, timeout=60).strip().split()[-1]
     metadata = {'version': version}

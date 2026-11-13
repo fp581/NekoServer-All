@@ -828,6 +828,8 @@ class DriveSizeTests(unittest.TestCase):
             mock.patch.object(storage.os, 'geteuid', return_value=0),
             mock.patch.object(storage.shutil, 'which', return_value='/usr/bin/x'),
             mock.patch.object(storage.sys.stdin, 'isatty', return_value=True),
+            # The media apps are asked before the drives (0.50.0): not this test's question.
+            mock.patch.object(storage, 'choose_media_apps'),
             mock.patch.object(
                 storage,
                 'resolve_storage_identity',

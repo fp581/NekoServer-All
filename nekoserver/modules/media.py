@@ -1,6 +1,7 @@
 """Deploy isolated media Compose projects with guarded SSD/HDD mounts."""
 
 from neko_common import compose_image_override
+import custom_indexers
 import hashlib
 import os
 import re
@@ -317,6 +318,9 @@ def _run(context):
             raise RuntimeError(f'Refusing symlink appdata: {target}')
         if name == 'seerr':
             adopt_seerr_folder(target, uid, gid, context.log)
+    # The download sources NekoServer adds to Prowlarr's catalogue (Torrentio), in its
+    # custom definitions folder before it starts; Prowlarr reads that folder only then.
+    new_definitions = custom_indexers.install(data, uid, gid, context.log) if 'prowlarr' in selected else []
     run_cmd(['docker', 'network', 'inspect', 'nekoserver-media'], timeout=15) if network_exists() else run_cmd(
         ['docker', 'network', 'create', 'nekoserver-media'], timeout=20
     )
@@ -348,11 +352,11 @@ def _run(context):
                 timeout=30,
             )
             verify_storage(context.config)
-            compose_up(
-                ['docker', 'compose', '-f', str(dest), '-p', f'neko-{name}', *compose_image_override(dest)],
-                name,
-                context.log,
-            )
+            base = ['docker', 'compose', '-f', str(dest), '-p', f'neko-{name}', *compose_image_override(dest)]
+            compose_up(base, name, context.log)
+            if name == 'prowlarr' and new_definitions:
+                # Already running from an earlier run: it sees a new definition only after a restart.
+                run_cmd([*base, 'restart'], timeout=120)
             context.log(f'Deployed {name} (localhost only); project neko-{name}')
         except Exception as exc:
             context.log(f'{name} failed: {exc}. Manifest preserved: {dest}; others will continue.')

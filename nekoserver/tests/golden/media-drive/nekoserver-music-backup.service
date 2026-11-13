@@ -5,4 +5,4 @@ RequiresMountsFor=/srv/nekoserver /mnt/nekoserver-media
 Type=oneshot
 UMask=0077
 TimeoutStartSec=6h
-ExecStart=/srv/nekoserver/installer/runtime/v0.50.0/nekoserver-runtime music-backup --config /etc/nekoserver-backups/storage.json
+ExecStart=/srv/nekoserver/installer/runtime/v0.51.1/nekoserver-runtime music-backup --config /etc/nekoserver-backups/storage.json
