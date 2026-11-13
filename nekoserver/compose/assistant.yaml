@@ -4,9 +4,9 @@
 # dashboard's own service talks to it, nothing on the home network or Tailscale can.
 # Its limits keep it out of the other apps' way: at most the processor share and the
 # memory setup chose (a hard limit with no swap, so a model that needs more is stopped
-# instead of the server running out), the lowest processor priority, and the first to
-# go when memory runs out (oom_score_adj). Setup fills in the NEKO_ values; the defaults
-# after ":-" are only for `docker compose config` in CI.
+# instead of the server running out), the lowest processor and disk priority, and the
+# first to go when memory runs out (oom_score_adj). Setup fills in the NEKO_ values; the
+# defaults after ":-" are only for `docker compose config` in CI.
 services:
   ollama:
     image: ollama/ollama:0.40.16
@@ -23,6 +23,11 @@ services:
       - "${NEKO_DATA:-/srv/nekoserver}/appdata/assistant/models:/root/.ollama"
     cpus: "${NEKO_CPUS:-2}"
     cpu_shares: 256
+    # The lowest disk priority (cgroup io.weight): the model's download and its load
+    # from the SSD wait for the apps and the system. The answers' threads match the
+    # processor share (the runtime's assist.rs sends "num_thread" with every question).
+    blkio_config:
+      weight: 10
     mem_limit: "${NEKO_MODEL_MEMORY:-4g}"
     memswap_limit: "${NEKO_MODEL_MEMORY:-4g}"
     oom_score_adj: 1000
