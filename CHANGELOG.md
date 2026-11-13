@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.51.1 — (in progress)
+
+Fixes only: what 0.50.0 shipped without seeing it on a machine, and what the code reviews and small runs of 0.50.0 and 0.51.0 find. Nothing changes in how NekoServer is used. Each fix is listed here as it lands.
+
 ## v0.51.0 — (in progress)
 
 Planned: removable-media backup sets (photos and videos from Immich onto numbered SD cards or other removable drives), Torrentio as a download source, and the fixes from the 0.50.0 sweep. Each is listed here as it lands.
