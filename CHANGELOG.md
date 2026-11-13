@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.51.0 — (in progress)
+
+Planned: removable-media backup sets (photos and videos from Immich onto numbered SD cards or other removable drives), Torrentio as a download source, and the fixes from the 0.50.0 sweep. Each is listed here as it lands.
+
 ## v0.50.0 — 2026-11-12
 
 Setup was rebuilt around one idea: you choose once, approve once, and setup does the rest. It no longer needs three drives (one is enough), asks far fewer questions, asks nothing after the approval but what needs the running server, and never asks you to vouch for something it can check itself. A server that is already set up keeps exactly the apps, drives, logins and backups it has.
