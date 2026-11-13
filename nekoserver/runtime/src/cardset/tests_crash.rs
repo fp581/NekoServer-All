@@ -96,7 +96,7 @@ fn assert_committed_once(case: &mut Case) {
     );
     assert!(staging(&case.card).is_empty());
     assert!(case.cat.txs.is_empty());
-    let copy = case.cat.copy(&recs[1].txn().record_id).unwrap();
+    let copy = case.cat.copy(&recs[1].txn().record_id).unwrap().unwrap();
     assert_eq!(copy.state, CopyState::Committed);
     let vol = attach(&case.card, 1);
     let both = [case.first.clone(), case.second.clone()];
@@ -326,7 +326,7 @@ fn a_record_whose_payload_was_damaged_is_never_counted() {
     let vol = attach(&case.card, 1);
     let report = reconcile::reconcile(&vol, &mut case.cat).unwrap();
     assert_eq!(report.damaged, [second.txn().record_id.clone()]);
-    let copy = case.cat.copy(&second.txn().record_id).unwrap();
+    let copy = case.cat.copy(&second.txn().record_id).unwrap().unwrap();
     assert_eq!(copy.state, CopyState::Damaged);
     let both = [case.first.clone(), case.second.clone()];
     let r = run(

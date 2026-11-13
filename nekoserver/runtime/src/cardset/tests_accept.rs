@@ -149,7 +149,10 @@ fn a_normal_run_trusts_size_and_dates() {
     let (p, v) = card(&s, 1);
     let mut cat = Memory::default();
     run(&v, &mut cat, &p, MIB, &cands(&src), &mut commit::no_hook);
-    let version = cat.newest_version(&src.source_id, "edit.jpg").unwrap();
+    let version = cat
+        .newest_version(&src.source_id, "edit.jpg")
+        .unwrap()
+        .unwrap();
     put(&src, "edit.jpg", &bytes(2, 4000));
     // the clock's tick may be coarser than two writes: give the edit a date of its own
     filetime(&src, "edit.jpg");

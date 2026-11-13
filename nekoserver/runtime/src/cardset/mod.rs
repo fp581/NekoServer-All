@@ -19,6 +19,9 @@
 //! - `commit`: one file through D1 to D8.
 //! - `reconcile`: the recovery of every gap between two durable steps.
 //! - `run`: a run over the pending files on one card.
+//! - `store`: the catalogue in SQLite (decision Q2), and its search.
+//! - `inventory`: the set inventory snapshot written onto each card at a checkpoint.
+//! - `rebuild`: the catalogue rebuilt from the cards and their inventories.
 //! - `lock`: one writer per backup set.
 #![allow(dead_code)]
 
@@ -27,17 +30,22 @@ pub mod commit;
 pub mod error;
 pub mod format;
 pub mod fsat;
+pub mod inventory;
 pub mod lock;
 pub mod planner;
+pub mod rebuild;
 pub mod reconcile;
 pub mod run;
 pub mod source;
+pub mod store;
 pub mod volume;
 
 #[cfg(test)]
 mod testkit;
 #[cfg(test)]
 mod tests_accept;
+#[cfg(test)]
+mod tests_catalogue;
 #[cfg(test)]
 mod tests_crash;
 #[cfg(test)]

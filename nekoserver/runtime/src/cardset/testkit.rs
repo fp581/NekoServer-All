@@ -1,7 +1,6 @@
 //! Shared pieces of the card engine's tests: a scratch folder that stands for the mounted
 //! card (`MountRule::TestFolder`), sources with files, a card size that the tests choose,
 //! and hooks that stop at a point as a killed process would.
-use super::catalogue::Memory;
 use super::commit::Point;
 use super::error::{CardError, Kind, Res};
 use super::format::{self, Record};
@@ -168,7 +167,7 @@ pub fn fail_at(point: Point, errno: i32) -> impl FnMut(Point) -> Res<()> {
 /// Run over `cands` on `vol` with a card of `usable` bytes.
 pub fn run(
     vol: &Volume,
-    cat: &mut Memory,
+    cat: &mut dyn super::catalogue::Catalogue,
     card: &Path,
     usable: u64,
     cands: &[Candidate],

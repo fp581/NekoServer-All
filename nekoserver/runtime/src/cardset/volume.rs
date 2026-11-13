@@ -7,8 +7,9 @@
 //! is pulled makes the calls fail instead of reaching the empty folder underneath, and
 //! `confirm` notices that the path no longer leads to the folder that was opened.
 use super::error::{CardError, Kind, Res};
-use super::format::{self, Identity};
+use super::format::{self, Identity, Txn};
 use super::fsat::{Dir, Room, Stat};
+use super::source::hash_reader;
 use std::path::{Path, PathBuf};
 
 /// How the card's folder must relate to its parent.
@@ -247,6 +248,20 @@ impl Volume {
     /// `records/<hh>/`, made when first needed (D3).
     pub fn records_dir(&self, hh: &str) -> Res<Dir> {
         self.records.ensure_dir(hh)
+    }
+
+    /// The payload of `txn` is on the card with this checksum and size (read in full).
+    pub fn payload_matches(&self, txn: &Txn, checksum: &str, size: u64) -> Res<bool> {
+        let Some(dir) = self.existing(&self.objects, txn.hh())? else {
+            return Ok(false);
+        };
+        let file = match dir.open_file(txn.payload_name()) {
+            Ok(f) => f,
+            Err(e) if e.errno == Some(libc::ENOENT) => return Ok(false),
+            Err(e) => return Err(e),
+        };
+        let (sum, n) = hash_reader(file)?;
+        Ok(sum == checksum && n == size)
     }
 
     /// `objects/<hh>/` or `records/<hh>/` when it exists, without making it.

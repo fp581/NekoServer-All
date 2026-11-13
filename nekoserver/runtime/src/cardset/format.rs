@@ -125,7 +125,12 @@ fn depth(v: &Value) -> usize {
 
 /// Parse one small metadata file: UTF-8 JSON, no byte-order mark, an object, bounded.
 pub fn parse_small(bytes: &[u8]) -> Res<Map<String, Value>> {
-    if bytes.len() as u64 > SMALL_FILE {
+    parse_bounded(bytes, SMALL_FILE, SMALL_DEPTH)
+}
+
+/// Parse one metadata object of at most `limit` bytes and `max_depth` levels.
+pub fn parse_bounded(bytes: &[u8], limit: u64, max_depth: usize) -> Res<Map<String, Value>> {
+    if bytes.len() as u64 > limit {
         return Err(CardError::new(Kind::Invalid, "metadata file too large"));
     }
     if bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
@@ -136,7 +141,7 @@ pub fn parse_small(bytes: &[u8]) -> Res<Map<String, Value>> {
     }
     let value: Value = serde_json::from_slice(bytes)
         .map_err(|_| CardError::new(Kind::Invalid, "metadata file is not JSON"))?;
-    if depth(&value) > SMALL_DEPTH {
+    if depth(&value) > max_depth {
         return Err(CardError::new(
             Kind::Invalid,
             "metadata file nested too deep",
@@ -151,57 +156,58 @@ pub fn parse_small(bytes: &[u8]) -> Res<Map<String, Value>> {
     }
 }
 
-fn bad(field: &str) -> CardError {
+pub fn bad(field: &str) -> CardError {
     CardError::new(
         Kind::Invalid,
         &format!("field {field} missing or out of bounds"),
     )
 }
 
-struct Fields<'a>(&'a Map<String, Value>);
+/// Reading the fields of one metadata object, each checked against its bounds.
+pub struct Fields<'a>(pub &'a Map<String, Value>);
 
 impl Fields<'_> {
-    fn str(&self, f: &str) -> Res<&str> {
+    pub fn str(&self, f: &str) -> Res<&str> {
         self.0.get(f).and_then(Value::as_str).ok_or_else(|| bad(f))
     }
-    fn checked(&self, f: &str, ok: fn(&str) -> bool) -> Res<String> {
+    pub fn checked(&self, f: &str, ok: fn(&str) -> bool) -> Res<String> {
         let s = self.str(f)?;
         if !ok(s) {
             return Err(bad(f));
         }
         Ok(s.to_string())
     }
-    fn uuid(&self, f: &str) -> Res<String> {
+    pub fn uuid(&self, f: &str) -> Res<String> {
         self.checked(f, is_uuid)
     }
-    fn opt_uuid(&self, f: &str) -> Res<Option<String>> {
+    pub fn opt_uuid(&self, f: &str) -> Res<Option<String>> {
         match self.0.get(f) {
             Some(Value::Null) => Ok(None),
             Some(_) => self.uuid(f).map(Some),
             None => Err(bad(f)),
         }
     }
-    fn opt_sha(&self, f: &str) -> Res<Option<String>> {
+    pub fn opt_sha(&self, f: &str) -> Res<Option<String>> {
         match self.0.get(f) {
             Some(Value::Null) => Ok(None),
             Some(_) => self.checked(f, is_sha256).map(Some),
             None => Err(bad(f)),
         }
     }
-    fn time(&self, f: &str) -> Res<String> {
+    pub fn time(&self, f: &str) -> Res<String> {
         self.checked(f, is_time)
     }
-    fn text(&self, f: &str, max: usize) -> Res<String> {
+    pub fn text(&self, f: &str, max: usize) -> Res<String> {
         let s = self.str(f)?;
         if s.len() > max || s.contains('\0') {
             return Err(bad(f));
         }
         Ok(s.to_string())
     }
-    fn ns(&self, f: &str) -> Res<i64> {
+    pub fn ns(&self, f: &str) -> Res<i64> {
         parse_ns(self.str(f)?).ok_or_else(|| bad(f))
     }
-    fn bytes(&self, f: &str) -> Res<u64> {
+    pub fn bytes(&self, f: &str) -> Res<u64> {
         let n = self
             .0
             .get(f)
@@ -212,7 +218,7 @@ impl Fields<'_> {
         }
         Ok(n)
     }
-    fn int(&self, f: &str, lo: u64, hi: u64) -> Res<u64> {
+    pub fn int(&self, f: &str, lo: u64, hi: u64) -> Res<u64> {
         let n = self
             .0
             .get(f)
@@ -223,13 +229,13 @@ impl Fields<'_> {
         }
         Ok(n)
     }
-    fn exact(&self, f: &str, want: &str) -> Res<()> {
+    pub fn exact(&self, f: &str, want: &str) -> Res<()> {
         if self.str(f)? != want {
             return Err(bad(f));
         }
         Ok(())
     }
-    fn source_identity(&self, f: &str) -> Res<SourceIdentity> {
+    pub fn source_identity(&self, f: &str) -> Res<SourceIdentity> {
         let map = self
             .0
             .get(f)
@@ -562,7 +568,7 @@ impl Record {
     }
 }
 
-fn to_line(v: &Value) -> Vec<u8> {
+pub fn to_line(v: &Value) -> Vec<u8> {
     let mut bytes = serde_json::to_vec_pretty(v).unwrap_or_default();
     bytes.push(b'\n');
     bytes

@@ -95,10 +95,10 @@ pub fn card_space(vol: &Volume) -> Res<Space> {
 
 /// What a normal run does with one candidate.
 pub fn decide(cat: &dyn Catalogue, cand: &Candidate) -> Res<Decision> {
-    let Some(version) = cat.newest_version(&cand.source.source_id, &cand.path) else {
+    let Some(version) = cat.newest_version(&cand.source.source_id, &cand.path)? else {
         return Ok(Decision::Copy(None));
     };
-    let copies = cat.copies_of(&version.version_id);
+    let copies = cat.copies_of(&version.version_id)?;
     let healthy = copies.iter().any(|c| c.state.protects());
     let same_dates = version.byte_size == cand.size
         && version.mtime_ns == cand.mtime_ns
@@ -220,14 +220,15 @@ impl Run<'_> {
             result.waiting.push(cand.path.clone());
             return Flow::Go;
         }
-        let space = match (self.space)(self.vol) {
-            Ok(s) => s,
+        let counted = (self.space)(self.vol).and_then(|s| Ok((s, self.cat.version_count()?)));
+        let (space, versions) = match counted {
+            Ok(found) => found,
             Err(e) => {
                 result.stopped = Some(e);
                 return Flow::Stop;
             }
         };
-        let reserve = planner::reserve(&space, self.cat.version_count(), 2);
+        let reserve = planner::reserve(&space, versions, 2);
         match planner::fit(cand.size, &space, reserve) {
             Fit::NeedsLargerMedia => result.needs_larger_media.push(cand.path.clone()),
             Fit::NotNow => result.waiting.push(cand.path.clone()),
