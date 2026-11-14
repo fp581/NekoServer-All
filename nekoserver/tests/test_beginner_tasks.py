@@ -1,17 +1,23 @@
 """Deep checks 241-260: whole tasks a beginner does, followed only by the docs and the
 product's own messages ("I deleted a movie by mistake", "I forgot the backup password")."""
 
+import json
 import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import backup_secrets  # noqa: E402
+import outside_request  # noqa: E402
 import recovery_wizard  # noqa: E402
+from modules import notifications  # noqa: E402
+import test_outside_tests  # noqa: E402
 
 
 def doc(name):
@@ -121,6 +127,64 @@ class WhereTheDocsSayItTests(unittest.TestCase):
             self.assertIn(words, friend)
         rename = use.split('**Renaming the server.**')[1].split('\n\n')[0]
         self.assertIn('sudo bash install.sh', rename)
+
+
+class AlertsStoppedTests(unittest.TestCase):
+    """Deep check 250: the phone stopped getting alerts (the access token was taken back in
+    ntfy). The dashboard said "check its address and access token (setup can change them)",
+    but setup again kept both without a word and called the step done: the alerts kept
+    failing. Now a rerun tests them, and asks again when the alert server refuses them."""
+
+    # The faked system parts of the finishing screen's retry tests, borrowed as they are.
+    save = test_outside_tests.FinishRetryTests.save
+    retry = test_outside_tests.FinishRetryTests.retry
+
+    def setUp(self):
+        test_outside_tests.FinishRetryTests.setUp(self)
+        self.delivery = self.folder / 'delivery.json'
+        patch = mock.patch.object(notifications, 'DELIVERY', str(self.delivery))
+        patch.start()
+        self.addCleanup(patch.stop)
+        notifications.guided_setup.interactive.return_value = True
+        # Set up, tested and seen on the phone, weeks ago.
+        self.save(notifications.PRIVATE_CONFIG, {'endpoint': self.topic, 'token': self.token})
+        alerts = self.files[notifications.PRIVATE_CONFIG]
+        outside_request.mark_tested(alerts, 'accepted')
+        outside_request.mark_seen(alerts, True)
+
+    def failing(self):
+        self.delivery.write_text(json.dumps({'format': 'neko-delivery-v1', 'status': 'fail'}))
+
+    def test_delivering_alerts_ask_nothing_and_send_nothing(self):
+        self.delivery.write_text(json.dumps({'format': 'neko-delivery-v1', 'status': 'pass'}))
+        with mock.patch.object(notifications, 'alerts_form') as form:
+            state, server = self.retry(notifications, 401)
+        form.assert_not_called()
+        self.assertEqual((server.requests, state['status']), ([], 'complete'))
+
+    def test_a_refused_token_is_asked_again_and_the_new_one_tested(self):
+        self.failing()
+        _, new_topic, new_token = test_outside_tests.a_topic()
+        with (
+            mock.patch.object(notifications, 'alerts_form', return_value=(new_topic, new_token)) as form,
+            mock.patch.object(
+                notifications, 'send_test', side_effect=[{'server': 'wrong_token'}, {'server': 'accepted'}]
+            ),
+            mock.patch.object(notifications.questions, 'yes_no', return_value=True),
+        ):
+            state, _ = self.retry(notifications, 200)
+        form.assert_called_once()
+        self.assertEqual(state['status'], 'complete')
+        self.assertEqual(json.loads(self.files[notifications.PRIVATE_CONFIG].read_text())['token'], new_token)
+
+    def test_a_network_problem_is_said_and_the_step_waits(self):
+        self.failing()
+        with mock.patch.object(notifications, 'alerts_form') as form:
+            state, server = self.retry(notifications, ConnectionRefusedError)
+        form.assert_not_called()
+        self.assertEqual(len(server.requests), 1)
+        self.assertEqual(state['status'], 'needs_setup')
+        self.assertIn('network problem', state['reason'])
 
 
 if __name__ == '__main__':

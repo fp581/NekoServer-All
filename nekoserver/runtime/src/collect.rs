@@ -2515,7 +2515,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
             "notifications:delivery".into(),
             "warning",
             "Phone alerts are not being delivered".into(),
-            "The last alerts could not be sent to your ntfy topic: check its address and access token (setup can change them).",
+            "The last alerts could not be sent to your ntfy topic. Run  sudo bash install.sh  again: it sends a test message, and asks for the topic's address and access token again when the alert server refuses them.",
         );
     }
     if s["home_network"]["status"] == "moved" {
@@ -4173,6 +4173,13 @@ mod os_tests {
                 json!([])
             );
         }
+    }
+    /// Deep check 250: "setup can change them" was not true; setup now tests and asks.
+    #[test]
+    fn alerts_that_are_not_delivered_say_to_run_setup() {
+        let shown = alerts(&json!({"notifications": {"status": "fail"}}));
+        let detail = text(&shown[0]["detail"]);
+        assert!(detail.contains("sudo bash install.sh"), "{detail}");
     }
     /// Seen with the real weekly copy and `serve` (0.51.2 review): a USB copy whose only
     /// gap was the password list showed "Incomplete; see the job's report", a file only

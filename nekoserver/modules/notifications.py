@@ -20,6 +20,9 @@ from neko_common import VERSION, atomic_json, safe_path, check_units, write_unit
 DEPENDENCIES = ['dashboard']
 DESCRIPTION = 'Background ntfy alerts, grouped retries and recovery notices (Rust)'
 PRIVATE_CONFIG = '/etc/nekoserver-notifications/config.json'
+# What the alert worker last managed (notify.rs writes it): "fail" while alerts don't get
+# through, which the dashboard shows as "Phone alerts are not being delivered".
+DELIVERY = '/run/nekoserver-notifications/delivery.json'
 
 
 def options(config):
@@ -321,13 +324,13 @@ OPEN_TOPIC = (
 )
 
 
-def test_alert(context, address, token, prompt=None):
+def test_alert(context, address, token, prompt=None, result=None):
     """One test message sent to the topic just saved, and what came of it: the server's
     answer (machine-checked), who may read the topic, and whether it arrived on the
     phone (the person's own word, kept apart). None when the server took it; a
     needs_setup result with the reason when it did not, so alerts are never shown as
-    working on the strength of a saved address."""
-    result = send_test(address, token)
+    working on the strength of a saved address. `result`: a test already sent."""
+    result = result or send_test(address, token)
     said = TEST_SAID.get(result['server'], TEST_SAID['not_sent'])
     context.log('Phone alerts test: ' + said)
     outside_request.mark_tested(safe_path(PRIVATE_CONFIG), result['server'])
@@ -406,6 +409,8 @@ def run(context):
             return asked_again(context, 'the saved address was not found at the alert server')
         if outside_request.not_seen(private):
             return asked_again(context, 'the last test did not arrive on your phone')
+        if delivery_failing():
+            return not_delivered(context, address, token)
     return install(context, address, token) or tested_again(context, private, address, token)
 
 
@@ -431,6 +436,32 @@ def tested_again(context, private, address, token):
     if outside_request.untested(private):
         return test_alert(context, address, token)
     return None
+
+
+def delivery_failing(path=None):
+    """The alert worker's last tries did not get through (its record says "fail")."""
+    try:
+        saved = json.loads(Path(path or DELIVERY).read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(saved, dict) and saved.get('format') == 'neko-delivery-v1' and saved.get('status') == 'fail'
+
+
+# The alert server's answers that mean the saved address or token is no longer right.
+REFUSED = ('wrong_token', 'not_allowed', 'wrong_address', 'redirected', 'not_sent')
+
+
+def not_delivered(context, address, token):
+    """Alerts stopped reaching the phone (deep check 250: the dashboard said "setup can
+    change them", and setup kept the address and token without a word). A test now: when
+    the alert server refuses the saved address or token, both are asked again; otherwise
+    the test is the usual one, with "did it arrive?"."""
+    result = send_test(address, token)
+    said = TEST_SAID.get(result['server'], TEST_SAID['not_sent'])
+    context.log('Phone alerts: the last alerts could not be delivered. A test now: ' + said)
+    if result['server'] in REFUSED:
+        return asked_again(context, 'the alert server refused the saved address or access token')
+    return install(context, address, token) or test_alert(context, address, token, result=result)
 
 
 def asked_again(context, why):
