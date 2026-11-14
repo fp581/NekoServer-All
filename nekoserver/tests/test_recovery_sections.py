@@ -172,6 +172,42 @@ class MenuTests(Server, unittest.TestCase):
         self.assertEqual(self.out[-1], '\nStopped. Nothing was changed.')
 
 
+class HddAwayTests(Server, unittest.TestCase):
+    """Seen on a fresh Ubuntu with no drive connected: each restore said "No nightly backup
+    of app settings found on the HDD yet", "No complete monthly snapshot on the HDD yet",
+    as if no backup had ever been made, when the HDD that holds them was not connected."""
+
+    def restore(self, number):
+        """Restore choice `number` with the HDD away: whether its restore was started."""
+        started = mock.Mock()
+        key = recovery_wizard.menu(self.config)[int(number) - 1][0]
+        with (
+            mock.patch.object(recovery_wizard, 'hdd_ready', return_value=False),
+            mock.patch.dict(recovery_wizard.RESTORES, {key: started}),
+        ):
+            recovery_wizard.menu_loop(self.config, answers('1', number, '0'), self.out.append)
+        return started.called
+
+    def test_a_backup_only_the_hdd_holds_is_not_looked_for_without_it(self):
+        for number in ('4', '5', '6'):  # nightly app settings, Steam and Samba, monthly snapshot
+            with self.subTest(choice=number):
+                self.out.clear()
+                self.assertFalse(self.restore(number))
+                self.assertIn(f'The HDD is not mounted at {self.media}', self.said())
+                self.assertIn('so the backups NekoServer keeps on it cannot be seen', self.said())
+
+    def test_a_backup_the_usb_drive_may_hold_is_still_looked_for_there(self):
+        for number in ('1', '3'):  # photos, the password list
+            with self.subTest(choice=number):
+                self.out.clear()
+                self.assertTrue(self.restore(number))
+                self.assertIn(f'The HDD is not mounted at {self.media}', self.said())
+
+    def test_nextcloud_is_on_the_usb_drive_alone_and_says_nothing_of_the_hdd(self):
+        self.assertTrue(self.restore('2'))
+        self.assertNotIn('The HDD is not mounted', self.said())
+
+
 class RestoreChoiceTests(Server, unittest.TestCase):
     """R01: everything is chosen before anything is written, with the careful choice first."""
 

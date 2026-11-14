@@ -3144,6 +3144,16 @@ DRIVE_ACTIONS = {
 }
 
 
+# The restores whose backups the HDD keeps, and those of them the USB drive may hold too.
+# Without the HDD, "no backup found" would read as "no backup was ever made".
+KEPT_ON_HDD = {'photos', 'passwords', 'apps', 'host', 'monthly'}
+ALSO_ON_USB = {'photos', 'passwords'}
+HDD_AWAY = (
+    'The HDD is not mounted at {mount} (or another drive is there), so the backups NekoServer keeps '
+    'on it cannot be seen. Connect it (or restart the PC), then choose this again.'
+)
+
+
 def restore_section(config, prompt, output):
     """Sections 1 and 2: what to restore is chosen here; each restore then asks for its
     backup, date, files and folder, shows the review, and writes only once approved."""
@@ -3155,8 +3165,13 @@ def restore_section(config, prompt, output):
         'A restore brings back files, settings and databases. It does not reinstall Linux or the apps.',
     )
     pick = choose('What would you like to restore?', menu(config), prompt, output)
-    if pick is not None:
-        RESTORES[pick](config, prompt, output)
+    if pick is None:
+        return
+    if pick in KEPT_ON_HDD and not hdd_ready(config):
+        output(HDD_AWAY.format(mount=config['media_mount']))
+        if pick not in ALSO_ON_USB:
+            return  # nowhere else to look
+    RESTORES[pick](config, prompt, output)
 
 
 def drive_section(config, prompt, output):
