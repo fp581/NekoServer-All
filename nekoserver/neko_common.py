@@ -66,8 +66,25 @@ def host_timezone(config):
     if not isinstance(value, str) or not TIMEZONE_PATTERN.fullmatch(value):
         raise RuntimeError('timezone must be an IANA zone such as Europe/London')
     if ZONEINFO.is_dir() and not (ZONEINFO / value).is_file():
-        raise RuntimeError(f'timezone {value} is not installed under {ZONEINFO}')
+        raise RuntimeError(unknown_zone(value))
     return value
+
+
+def unknown_zone(value):
+    """Why a time zone name was refused, with the one most likely meant: a typo or the wrong
+    capitals ("Europe/Londn", "europe/london") were "not installed", which sent a person
+    looking for something to install."""
+    import difflib
+    import zoneinfo
+
+    known = sorted(zoneinfo.available_timezones())
+    meant = next((zone for zone in known if zone.lower() == value.lower()), None)
+    meant = meant or next(iter(difflib.get_close_matches(value, known, n=1, cutoff=0.8)), None)
+    guess = f' did you mean {meant}?' if meant else ''
+    return (
+        f'timezone {value} is not a time zone this PC knows:{guess} Write it as in the full list '
+        '(timedatectl list-timezones), such as Europe/London, or "auto" for this PC\'s own'
+    )
 
 
 # The facts setup shares with the runtime (runtime/src/shared.json, built into it): one

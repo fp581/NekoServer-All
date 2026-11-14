@@ -85,5 +85,19 @@ class RoomTests(unittest.TestCase):
         self.assertIn('100 MB is free', said)
 
 
+
+class TimeZoneTests(unittest.TestCase):
+    def test_a_misspelt_time_zone_is_said_with_the_one_meant(self):
+        """Deep check plan 99: "Europe/Londn" and "europe/london" were "not installed under
+        /usr/share/zoneinfo", which sends a person looking for something to install."""
+        for typed, meant in (('Europe/Londn', 'Europe/London'), ('europe/london', 'Europe/London')):
+            with self.subTest(typed=typed), self.assertRaises(RuntimeError) as caught:
+                neko_common.host_timezone({'timezone': typed})
+            said = str(caught.exception)
+            self.assertNotIn('not installed', said)
+            self.assertIn(f'did you mean {meant}?', said)
+            self.assertIn('timedatectl list-timezones', said)
+
+
 if __name__ == '__main__':
     unittest.main()
