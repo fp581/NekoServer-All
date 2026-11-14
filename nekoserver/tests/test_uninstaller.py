@@ -328,6 +328,29 @@ class PlanTests(unittest.TestCase):
         self.assertIn('nekoserver-steam.desktop', names)
         self.assertFalse(names & {'nekoserver-pipe.desktop', 'nekoserver-zero.desktop', 'nekoserver-elsewhere.desktop'})
 
+    def test_a_pipe_in_place_of_the_desktop_folders_list_is_not_read(self):
+        """~/.config/user-dirs.dirs is its owner's file too: a pipe there kept the plan
+        waiting for good. A link to a real list is still followed (dotfile managers)."""
+        import threading
+
+        config = self.system.root / 'home/neko/.config'
+        config.mkdir(parents=True, exist_ok=True)
+        os.mkfifo(config / 'user-dirs.dirs')
+        found = []
+        looked = threading.Thread(target=lambda: found.append(self.plan.shortcuts()), daemon=True)
+        looked.start()
+        looked.join(10)
+        if looked.is_alive():
+            with open(config / 'user-dirs.dirs', 'w'):
+                pass
+            self.fail('the plan waited on a pipe in place of user-dirs.dirs')
+        (config / 'user-dirs.dirs').unlink()
+        (config / 'dirs-kept-elsewhere').write_text('XDG_DESKTOP_DIR="$HOME/Schreibtisch"\n')
+        (config / 'user-dirs.dirs').symlink_to('dirs-kept-elsewhere')
+        self.assertEqual(
+            self.plan.xdg_desktop(self.system.root / 'home/neko'), self.system.root / 'home/neko/Schreibtisch'
+        )
+
     def test_the_server_choice_lists_only_nekoservers_own_things(self):
         group = self.plan.groups['server']
         names = {str(p.relative_to(self.system.root)) for p in group['paths']}

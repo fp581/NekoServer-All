@@ -489,6 +489,23 @@ def no_containers_why(which=shutil.which, euid=os.geteuid):
     return 'Docker is not running, or nothing was deployed'
 
 
+def start_of(path, follow):
+    """The first SHORTCUT_SIZE bytes of a plain file in someone's home, or None: a pipe
+    there would keep the uninstaller waiting, a device such as /dev/zero would fill the
+    memory. `follow`: whether a link may lead to it."""
+    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | (0 if follow else os.O_NOFOLLOW)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        return os.read(fd, SHORTCUT_SIZE) if stat.S_ISREG(os.fstat(fd).st_mode) else None
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
 class Plan:
     """Everything a run would remove, by choice, found on this PC (a test's root stands
     in for /). Only what exists is listed, so the plan shown is the truth."""
@@ -650,13 +667,13 @@ class Plan:
     @staticmethod
     def xdg_desktop(home):
         """The desktop folder named in ~/.config/user-dirs.dirs, when it names one."""
-        try:
-            for line in (home / '.config/user-dirs.dirs').read_text().splitlines():
-                if line.startswith('XDG_DESKTOP_DIR='):
-                    value = line.split('=', 1)[1].strip().strip('"')
-                    return Path(value.replace('$HOME', str(home)))
-        except OSError:
-            pass
+        # Its owner's file, which may be a link (dotfile managers make them): followed,
+        # but read only when it is a plain file, as start_of does.
+        text = start_of(home / '.config/user-dirs.dirs', follow=True) or b''
+        for line in text.decode(errors='replace').splitlines():
+            if line.startswith('XDG_DESKTOP_DIR='):
+                value = line.split('=', 1)[1].strip().strip('"')
+                return Path(value.replace('$HOME', str(home)))
         return None
 
     @staticmethod
@@ -664,18 +681,7 @@ class Plan:
         """A shortcut NekoServer wrote: a plain file (never followed through a link) that
         names it. The desktop folders are each person's own: a pipe named like a shortcut
         kept the plan waiting for good, and a link to /dev/zero filled the memory."""
-        try:
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
-        except OSError:
-            return False
-        try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
-                return False
-            return b'NekoServer' in os.read(fd, SHORTCUT_SIZE)
-        except OSError:
-            return False
-        finally:
-            os.close(fd)
+        return b'NekoServer' in (start_of(path, follow=False) or b'')
 
     def samba(self):
         """(share file, smb.conf to remove or None, accounts NekoServer created). An account
