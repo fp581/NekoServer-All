@@ -35,7 +35,9 @@ pub const ERRORS: &[(&str, u16, &str)] = &[
     ("E10", 503, "Readings not ready yet"),
     ("E11", 503, "Readings could not be read"),
     ("E20", 503, "Live readings unavailable"),
-    ("E21", 503, "Fan and light control unavailable"),
+    // Not "fan and light control" (its first job): the control service also unlocks the
+    // PIN for app restarts, updates and Ask Neko, where that title made no sense.
+    ("E21", 503, "The control service is not running"),
     ("E40", 404, "Page not found"),
     ("E41", 403, "Open the dashboard from its own address"),
     ("E42", 400, "Request not supported"),
@@ -847,7 +849,7 @@ fn ask(
     token: Option<&str>,
 ) {
     let Some(turn) = assist::Turn::take() else {
-        let busy = json!({"ok": false, "error": "E47", "message": assist::BUSY});
+        let busy = json!({"ok": false, "error": "E47", "message": assist::busy()});
         return reply(
             stream,
             status_of("E47"),
@@ -1108,6 +1110,14 @@ mod tests {
             );
         }
         assert_eq!(reason(409), "Conflict");
+    }
+    #[test]
+    fn the_control_service_away_is_not_said_as_fans_and_lights() {
+        // Seen on Ask Neko's PIN dialog with the control service stopped: "E21 · Fan and
+        // light control unavailable" while asking a question.
+        let (_, _, said) = error_entry("E21");
+        assert_eq!(said, "The control service is not running");
+        assert!(!said.to_lowercase().contains("fan"));
     }
     #[test]
     fn errors_are_short_coded_sentences() {

@@ -946,8 +946,15 @@ impl Drop for Turn {
     }
 }
 
-/// Said when a second question comes while Neko answers one.
-pub const BUSY: &str = "Neko is busy with another question; ask again once it has answered";
+/// Said when a second question comes while Neko answers one. The one under way is often
+/// the person's own, asked on a page they closed or reloaded (the only way to stop an
+/// answer): "ask again once it has answered" pointed to an answer nobody would see.
+pub fn busy() -> String {
+    format!(
+        "Neko is still answering another question; ask again in a moment (a question from a page that was closed or reloaded stops within {} seconds)",
+        LIMITS.abandon.as_secs()
+    )
+}
 /// How long an answer is kept for the page after it has ended.
 const KEEP_AFTER: Duration = Duration::from_secs(300);
 
@@ -1353,6 +1360,19 @@ pub fn suggested(answer: &str, offered: &[(String, String)]) -> Option<String> {
 mod tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[test]
+    fn busy_says_when_to_ask_again() {
+        // Seen on the dashboard: an answer stopped by reloading the page, then the next
+        // question was told to wait "once it has answered", for an answer nobody would see.
+        let said = busy();
+        assert!(!said.contains("once it has answered"), "{said}");
+        assert!(said.contains("ask again in a moment"), "{said}");
+        assert!(
+            said.contains(&format!("within {} seconds", LIMITS.abandon.as_secs())),
+            "{said}"
+        );
+    }
 
     /// The made-up secrets the tests plant. The ones shaped like a real key or token are
     /// put together here from pieces, so nothing in this file looks like one to a

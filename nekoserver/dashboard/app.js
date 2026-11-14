@@ -259,7 +259,10 @@ const ERRORS = {
   E11: ['Readings could not be read', 'Usually fixes itself within a minute. If not, run setup again.'],
   E12: ['Readings are out of date', 'The reading service stopped. Help shows the command to check it.'],
   E20: ['Live readings unavailable', 'Hardware readings come back by themselves. If not, restart the dashboard.'],
-  E21: ['Fan and light control unavailable', 'The control service is not running. Help shows the command to check it.'],
+  E21: [
+    'The control service is not running',
+    'It handles the PIN, fans and lights, app restarts and Ask Neko. Help shows the command to check it.'
+  ],
   E40: ['Page not found', 'Use the menu to go back.'],
   E41: ['Open the dashboard from its own address', 'Use the address setup gave you (this computer or Tailscale).'],
   E42: ['Request not supported', 'Reload the page.'],

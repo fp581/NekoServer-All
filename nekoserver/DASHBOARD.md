@@ -134,7 +134,7 @@ When something goes wrong, the dashboard shows a short code at the top of the pa
 | E11 | Readings could not be read | Usually fixes itself within a minute. If not, run setup again. |
 | E12 | Readings are out of date | No new reading for two collection intervals plus 30 seconds (150 s at the default 60 s): Help → *Readings are old or missing*. |
 | E20 | Live readings unavailable | They come back by themselves. If not: `sudo systemctl restart nekoserver-dashboard.service`. Until then, older live readings are dimmed and marked with their time. |
-| E21 | Fan and light control unavailable | The control service isn't running: Help → *Fans don't change*. |
+| E21 | The control service is not running | It handles the PIN, fans and lights, app restarts and Ask Neko: Help → *Fans don't change* shows the command to check it. |
 | E40 | Page not found | Use the menu to go back. |
 | E41 | Open the dashboard from its own address | Use 127.0.0.1:8787 on the server, or the Tailscale address. |
 | E42 | Request not supported | Reload the page. (For a fan or light change, the message says what was wrong.) |
