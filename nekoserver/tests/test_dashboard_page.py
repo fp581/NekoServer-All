@@ -1001,5 +1001,52 @@ class AskNekoPageTests(unittest.TestCase):
         self.assertIn('Question: why?', works['lines'])
 
 
+@unittest.skipUnless(NODE, 'node is not installed')
+class WhatShouldIDoTests(unittest.TestCase):
+    """0.51.2 user check on a phone: each alert's "What should I do?" tapped, with a
+    reading that holds every kind of alert the collector raises."""
+
+    def test_each_alert_opens_the_guide_about_it(self):
+        """A setup step, Tailscale and a shared folder opened the general guide (missing
+        drives, stopped apps), and the update night's alert opened "Check a backup"."""
+        ids = {
+            'setup:photos': 'setup',
+            'setup:notifications': 'setup',
+            'setup:media': 'setup',
+            'tailscale:login': 'remote',
+            'tailscale:off': 'remote',
+            'tailscale:expiry': 'remote',
+            'share:music': 'storage',
+            'job:updates': 'updates',
+            'job:update_check': 'updates',
+            'job:upgrade': 'updates',
+            'job:maintenance': 'updates',
+            'job:archive': 'backup',
+            'mount:media_hdd': 'storage',
+            'notifications:delivery': 'notifications',
+        }
+        answers = page(*(('guideFor', i) for i in ids))
+        self.assertEqual(dict(zip(ids, answers)), ids)
+
+    def test_an_overdue_app_check_is_one_item(self):
+        """The server's "media-stale" alert and the page's own item for the same overdue
+        check were listed both."""
+        reading = status(
+            alerts=[{'id': 'media-stale', 'level': 'warning', 'title': 'App checks are out of date', 'detail': 'x'}],
+            media={'status': 'stale', 'checks': []},
+        )
+        (issues,) = page(('collectIssues', reading))
+        self.assertEqual([i['id'] for i in issues if 'media' in i['id']], ['media-stale'])
+
+    def test_help_named_in_a_guide_is_a_help_card(self):
+        """The general guide sent people to "Dashboard readings" in Help: no card had that name."""
+        source = (ROOT / 'dashboard' / 'app.js').read_text(encoding='utf-8')
+        cards = set(re.findall(r"^  \['[a-z]+', '([^']+)',", source, re.M))
+        named = re.findall(r'follow “([^”]+)” in Help', source)
+        self.assertTrue(named)
+        for title in named:
+            self.assertIn(title, cards)
+
+
 if __name__ == '__main__':
     unittest.main()

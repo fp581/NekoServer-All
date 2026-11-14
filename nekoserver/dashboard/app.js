@@ -647,11 +647,18 @@ function serverApps(s) {
 const severity = urgent => (urgent ? 'critical' : 'warning');
 /* Alerts about a drive: its guide, and the drives panel's cat. */
 const STORAGE_ISSUE = /^(mount|space|smart|nas|array-[a-z]+):/;
-/* Which guide explains an alert, by its id. */
+/* The jobs that update (the monthly run: backup, then updates; the update night, the
+ * daily check, a NekoServer upgrade): their guide is about updates, not backups. */
+const UPDATE_JOBS = new Set(['job:maintenance', 'job:updates', 'job:update_check', 'job:upgrade']);
+/* Which guide explains an alert, by its id. A step of setup that did not finish, a
+ * shared folder that does not answer and Tailscale have guides of their own: the general
+ * one (missing drives, stopped apps) did not help with those. */
 const ALERT_GUIDES = [
-  [id => id === 'job:maintenance', 'updates'], // the monthly run: backup, then updates
+  [id => UPDATE_JOBS.has(id), 'updates'],
+  [id => id.startsWith('setup:'), 'setup'],
+  [id => id.startsWith('tailscale:'), 'remote'],
   [id => id.startsWith('integrity:'), 'integrity'],
-  [id => STORAGE_ISSUE.test(id), 'storage'],
+  [id => STORAGE_ISSUE.test(id) || id.startsWith('share:'), 'storage'],
   [id => id.startsWith('job:') || id === 'backup-key', 'backup'],
   [id => id.startsWith('startup:'), 'startup'],
   [id => id.includes('heartbeat'), 'heartbeat'],
@@ -921,9 +928,11 @@ function otherIssues(s, add) {
     );
   }
   acceptanceIssue(s.acceptance, add);
+  // The id of the server's own alert for it (collect.rs "media-stale"): one item, not
+  // the server's and the page's both, for one overdue check.
   if (s.media?.status === 'stale') {
     add(
-      'media-report',
+      'media-stale',
       'App checks are out of date',
       s.media.reason || 'The last detailed app check is overdue.',
       'apps'
@@ -4520,7 +4529,7 @@ const GUIDES = {
     steps: [
       'Check whether a backup or monthly update is running: short app downtime during those is normal.',
       'Open Server health for missing drives, full storage or stopped apps.',
-      'If readings are old, follow “Dashboard readings” in Help.'
+      'If readings are old, follow “Readings are old or missing” in Help.'
     ],
     unit: 'nekoserver-dashboard-collect.service'
   },
