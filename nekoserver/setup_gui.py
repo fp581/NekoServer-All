@@ -68,6 +68,11 @@ OTHER_ACCOUNT = refusal(
     'Only the account that runs setup can open this window',
     'Open it from that account\'s desktop on this PC (or as root).',
 )
+# A change asked for by a page other than the window's own.
+ANOTHER_PAGE = refusal(
+    'Only the setup window can change setup',
+    'Another web page tried to change your setup choices; nothing was changed. Use the setup window itself.',
+)
 COOKIE = 'neko_setup'
 # The kernel's lists of TCP connections; each line names the account that owns it.
 TCP_TABLES = (Path('/proc/net/tcp'), Path('/proc/net/tcp6'))
@@ -666,6 +671,12 @@ class Window:
                 route = self.route()
                 if route is None:
                     return self.reply(NOT_FOUND)
+                # A change comes from this window's own page only: the browser sends the
+                # window's cookie to a page on another port of this PC too (the same site
+                # for a cookie), so the cookie alone let such a page press Start (deep
+                # check 236). Browsers always send Origin with a POST.
+                if self.headers.get_all('Origin') != ['http://' + self.headers.get('Host')]:
+                    return self.reply(ANOTHER_PAGE)
                 if not self.admitted(route):
                     return self.reply(self.refusal)
                 try:

@@ -350,7 +350,14 @@ class WindowTests(unittest.TestCase):
     def cookie_browser():
         import http.cookiejar
 
-        return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        class Origin(urllib.request.BaseHandler):
+            # As a browser does: a POST from the page says the page's origin.
+            def http_request(self, request):
+                if request.get_method() == 'POST':
+                    request.add_unredirected_header('Origin', 'http://' + request.host)
+                return request
+
+        return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()), Origin())
 
     def get(self, route, token=None, browser=None):
         url = self.window.url.replace(self.window.token, token or self.window.token) + route
@@ -871,6 +878,32 @@ class WindowTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as caught:
                 self.browser.open(request, timeout=5)
             self.assertEqual(caught.exception.code, code)
+
+    def test_a_change_from_another_page_on_this_pc_is_refused(self):
+        """Deep check 236: a page on another port of this PC (the same site, so the browser
+        sends the window's cookie with it) pressed the window's buttons: a POST with the
+        cookie and another Origin was taken."""
+        import http.client
+
+        jar = next(h.cookiejar for h in self.browser.handlers if hasattr(h, 'cookiejar'))
+        cookie = next(iter(jar))
+        port = self.window.server.server_address[1]
+        own = 'http://127.0.0.1:%d' % port
+        for origin in (['http://127.0.0.1:1'], ['http://elsewhere.example'], [], [own, own]):
+            connection = http.client.HTTPConnection('127.0.0.1', port, timeout=5)
+            connection.putrequest('POST', '/t/' + self.window.token + '/api/choose', skip_host=True)
+            connection.putheader('Host', '127.0.0.1:%d' % port)
+            connection.putheader('Cookie', f'{cookie.name}={cookie.value}')
+            for value in origin:
+                connection.putheader('Origin', value)
+            connection.putheader('Content-Length', '13')
+            connection.endheaders(b'{"tv": false}')
+            with self.subTest(origin=origin):
+                answer = connection.getresponse()
+                self.assertEqual(answer.status, 403)
+                self.assertIn(b'Only the setup window can change setup', answer.read())
+            connection.close()
+        self.assertEqual(self.post('api/choose', {'tv': False}), {'ok': True})
 
     def test_without_the_cookie_only_the_page_itself_opens_and_only_for_its_account(self):
         # Another account on this PC can read the address from the browser's command
