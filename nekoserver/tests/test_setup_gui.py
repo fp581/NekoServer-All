@@ -1035,7 +1035,7 @@ class MenuWindowTests(unittest.TestCase):
         with (
             mock.patch.object(recovery_wizard.os, 'geteuid', return_value=0),
             mock.patch.object(recovery_wizard, 'stop_on_sigterm'),
-            mock.patch.object(recovery_wizard, 'settings', return_value={}),
+            mock.patch.object(recovery_wizard, 'settings', return_value={'storage': {'media_hdd': {'uuid': 'hdd'}}}),
             mock.patch.object(recovery_wizard, 'menu_loop', return_value=0) as loop,
             mock.patch.object(setup_gui, 'session', session),
         ):

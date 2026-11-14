@@ -42,6 +42,11 @@ def chown_refused(folder, uid, gid):
         probe.unlink()
 
 
+def set_up(config):
+    """`config` as the settings of a server setup has set up: they name its drives."""
+    return {**config, 'storage': {'media_hdd': {'uuid': 'the-hdd', 'fstype': 'ext4'}}}
+
+
 def has_account(uid):
     """Whether this system has an account with the number `uid`."""
     try:
@@ -1594,7 +1599,7 @@ class RecoveryWizardTests(unittest.TestCase):
         out = []
         with (
             mock.patch.object(os, 'geteuid', return_value=0),
-            mock.patch.object(recovery_wizard, 'settings', return_value=self.config),
+            mock.patch.object(recovery_wizard, 'settings', return_value=set_up(self.config)),
         ):
             self.assertEqual(recovery_wizard.run(answers('0'), out.append), 0)
         said = '\n'.join(out)
@@ -1897,7 +1902,7 @@ class RecoveryWizardTests(unittest.TestCase):
         stopped = []
         with (
             mock.patch.object(os, 'geteuid', return_value=0),
-            mock.patch.object(recovery_wizard, 'settings', return_value=self.config),
+            mock.patch.object(recovery_wizard, 'settings', return_value=set_up(self.config)),
             mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / 'usb'),
             mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
         ):
@@ -2130,12 +2135,35 @@ class RecoveryWizardTests(unittest.TestCase):
             self.assertEqual(recovery_wizard.run(answers(), lambda s: None), 2)
         with (
             mock.patch('os.geteuid', return_value=0),
-            mock.patch.object(recovery_wizard, 'settings', return_value=self.config),
+            mock.patch.object(recovery_wizard, 'settings', return_value=set_up(self.config)),
         ):
             out = []
             self.assertEqual(recovery_wizard.run(answers('0'), out.append), 0)
             # Said first, before any choice: nothing happens by choosing, and Enter never approves.
             self.assertTrue(any('Pressing Enter alone never approves anything' in line for line in out))
+
+    def test_a_fresh_download_without_settings_says_so_not_that_a_drive_is_away(self):
+        """Plan 148, run for real on a release folder from git with nothing set up: the menu
+        took the release's own config.json (no drive in it) and said of the HDD plugged in
+        "The HDD is not mounted at /mnt/nekoserver-media ... Connect it (or restart the PC)",
+        then "No photo backup found"."""
+        import wizard
+
+        release = self.root / 'nekoserver'
+        release.mkdir()
+        shutil.copy(recovery_wizard.ROOT / 'config.json', release / 'config.json')
+        out = []
+        with (
+            mock.patch('os.geteuid', return_value=0),
+            mock.patch.object(recovery_wizard, 'stop_on_sigterm'),
+            mock.patch.object(recovery_wizard, 'ROOT', release),
+            mock.patch.object(wizard, 'earlier_settings', return_value=None),
+        ):
+            self.assertEqual(recovery_wizard.run(answers('1', '1', '0', '0'), out.append), 2)
+        said = '\n'.join(out)
+        self.assertIn('No settings of a server set up on this PC were found', said)
+        self.assertIn('my-config.json', said)
+        self.assertNotIn('Connect it', said)
 
 
 class RestoreDestinationTests(unittest.TestCase):

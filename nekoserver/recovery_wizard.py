@@ -3140,12 +3140,34 @@ def stop_on_sigterm():
     signal.signal(signal.SIGHUP, stop)
 
 
+NO_SETTINGS = (
+    'No settings of a server set up on this PC were found: there is no my-config.json next to install.sh, and '
+    'no copy of it on the SSD (on a new Linux the SSD is not mounted yet). Without them this menu does not know '
+    'your drives, so it cannot find their backups. Put your saved settings file next to install.sh as '
+    'my-config.json, or take setup\'s copy from the SSD as RECOVERY.md says ("Replace the OS and reattach the '
+    'existing store", "If you did not save the settings file"), then run  sudo bash install.sh --recover  again.'
+)
+
+
+def names_drives(config):
+    """Whether the settings name any drive: the release's own config.json names none (its
+    UUIDs are empty) until setup has chosen them."""
+    storage = config.get('storage') if isinstance(config.get('storage'), dict) else {}
+    drives = [storage.get('data_ssd'), storage.get('media_hdd')]
+    return any(isinstance(drive, dict) and drive.get('uuid') for drive in drives)
+
+
 def run(prompt=input, output=print, config_path=None):
     if os.geteuid() != 0:
         output('Run it with sudo:  sudo bash install.sh --recover')
         return 2
     stop_on_sigterm()
     config = settings(config_path, output)
+    if not names_drives(config):
+        # A fresh download: the release's own settings, which name no drive. The menu
+        # then said "The HDD is not mounted ... Connect it", of a drive plugged in.
+        output(NO_SETTINGS)
+        return 2
     if prompt is not builtins.input:
         return menu_loop(config, prompt, output)  # asked by a test, or another program: no window
     import setup_gui
