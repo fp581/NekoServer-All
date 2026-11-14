@@ -1429,10 +1429,9 @@ AWAY_FOR = 60
 _ASKED = {}  # (what, path) -> (answer, when): real paths for the run, "no answer" for AWAY_FOR
 
 
-def network_mounts(table=None):
-    """The mount points of network filesystems (and automounts) on this PC, from the
-    kernel's mount table (a file in /proc, never a look at a share). None when it can't
-    be read."""
+def mount_table(table=None):
+    """(mount point, filesystem type) of every mount on this PC, from the kernel's mount
+    table (a file in /proc, never a look at a folder). None when it can't be read."""
     try:
         text = (table or MOUNTINFO).read_text(encoding='utf-8', errors='replace')
     except OSError:
@@ -1441,9 +1440,27 @@ def network_mounts(table=None):
     for line in text.splitlines():
         mine, _, theirs = line.partition(' - ')
         fields, kind = mine.split(), theirs.split()[:1]
-        if len(fields) > 4 and kind and kind[0] in NETWORK_FILESYSTEMS:
-            found.append(re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), fields[4]))
+        if len(fields) > 4 and kind:
+            found.append((re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), fields[4]), kind[0]))
     return found
+
+
+def network_mounts(table=None):
+    """The mount points of network filesystems (and automounts) on this PC, from the
+    kernel's mount table (never a look at a share). None when it can't be read."""
+    mounts = mount_table(table)
+    return None if mounts is None else [point for point, kind in mounts if kind in NETWORK_FILESYSTEMS]
+
+
+def is_mount_point(path, table=None):
+    """Something is mounted at `path`, as the kernel's mount table says. os.path.ismount
+    looks at the folder itself, and on a share that stopped answering that look waits
+    for as long as the share is away (seen in 0.51.1: the recovery menu's drive check
+    froze before its own time limit). os.path.ismount only when the table can't be read."""
+    mounts = mount_table(table)
+    if mounts is None:
+        return os.path.ismount(path)
+    return os.path.normpath(str(path)) in {point for point, _ in mounts}
 
 
 def on_a_share(path, table=None):

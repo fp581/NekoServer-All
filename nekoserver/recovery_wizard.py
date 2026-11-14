@@ -57,6 +57,7 @@ from neko_common import (
     ensure_room,
     findmnt,
     identity_matches,
+    is_mount_point,
     mounted_identity,
     read_ledger,
     record_ledger,
@@ -2758,7 +2759,7 @@ def first_up(name):
 def nothing_to_do(rows, action, output):
     """No mounted drive needs a check or repair: said for each drive, as it is. A drive
     that is not mounted is named, never counted as one that takes new files."""
-    away = [(name, folder) for name, folder, _ in rows if not os.path.ismount(folder)]
+    away = [(name, folder) for name, folder, _ in rows if not is_mount_point(folder)]
     for name, folder in away:
         output(
             f'{first_up(name)} ({folder}) is not mounted, so it cannot be checked here. Connect it, '
@@ -2767,7 +2768,7 @@ def nothing_to_do(rows, action, output):
     if not away:
         output(f'Both drives take new files and Linux counted no errors on them: nothing to {action}.')
     elif len(away) < len(rows):
-        here = next(name for name, folder, _ in rows if os.path.ismount(folder))
+        here = next(name for name, folder, _ in rows if is_mount_point(folder))
         output(f'{first_up(here)} takes new files and Linux counted no errors on it: nothing to {action}.')
 
 
@@ -2780,7 +2781,7 @@ def checked_drive(config, prompt, output, run, writes, errors, action=CHECK):
     For either, the apps are stopped and the drive is unmounted (never by force); a drive
     that is still mounted anywhere is never touched, and a shared folder never at all."""
     rows = drive_rows(config)
-    failing = [(n, f, r) for n, f, r in rows if os.path.ismount(f) and (not writes(f) or errors(f))]
+    failing = [(n, f, r) for n, f, r in rows if is_mount_point(f) and (not writes(f) or errors(f))]
     if not failing:
         nothing_to_do(rows, action, output)
         return

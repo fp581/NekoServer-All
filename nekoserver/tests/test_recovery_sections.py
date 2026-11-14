@@ -504,7 +504,7 @@ class MissingDriveCheckTests(unittest.TestCase):
 
     def check_with_mounted(self, mounted):
         said = []
-        with mock.patch.object(recovery_wizard.os.path, 'ismount', lambda folder: str(folder) in mounted):
+        with mock.patch.object(recovery_wizard, 'is_mount_point', lambda folder: str(folder) in mounted):
             recovery_wizard.checked_drive(
                 self.CONFIG,
                 mock.Mock(side_effect=AssertionError('nothing is asked')),
@@ -530,6 +530,33 @@ class MissingDriveCheckTests(unittest.TestCase):
     def test_both_mounted_and_well_is_said_as_before(self):
         said = self.check_with_mounted({'/srv/nekoserver', '/mnt/nekoserver-media'})
         self.assertIn('Both drives take new files and Linux counted no errors on them: nothing to check.', said)
+
+    def test_a_share_that_stopped_answering_is_never_looked_at_to_see_it_is_mounted(self):
+        """Seen in 0.51.1 (a test system, the program behind a mounted folder stopped):
+        os.path.ismount looks at the folder, which waits for as long as the share is
+        away, so the check froze before the test write and its 20 s limit. Whether a
+        drive is mounted is read from the kernel's mount table."""
+        with tempfile.TemporaryDirectory() as tmp:
+            table = Path(tmp) / 'mountinfo'
+            table.write_text(
+                '36 25 8:1 / /srv/nekoserver rw,relatime - ext4 /dev/sda1 rw\n'
+                '37 25 0:50 / /mnt/nekoserver-media rw,relatime - nfs4 nas:/media rw,hard\n'
+            )
+            said = []
+            frozen = AssertionError('the folder was looked at')
+            with (
+                mock.patch.object(recovery_wizard.os.path, 'ismount', side_effect=frozen),
+                mock.patch('neko_common.MOUNTINFO', table),
+            ):
+                recovery_wizard.checked_drive(
+                    self.CONFIG,
+                    mock.Mock(side_effect=AssertionError('nothing is asked')),
+                    said.append,
+                    mock.Mock(side_effect=AssertionError('nothing is run')),
+                    lambda folder: True,
+                    lambda folder: 0,
+                )
+        self.assertIn('Both drives take new files', '\n'.join(said))
 
 
 class InstallPathTests(unittest.TestCase):

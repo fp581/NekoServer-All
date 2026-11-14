@@ -780,6 +780,7 @@ class ReadOnlyCheckTests(unittest.TestCase):
         typed = iter(answers)
         with (
             mock.patch.object(self.wizard.os.path, 'ismount', return_value=True),
+            mock.patch.object(self.wizard, 'is_mount_point', return_value=True),
             mock.patch.object(
                 self.wizard, 'start_apps', side_effect=lambda run, out, config: self.calls.append(['apps'])
             ),
@@ -840,6 +841,7 @@ class ReadOnlyCheckTests(unittest.TestCase):
 
         with (
             mock.patch.object(self.wizard.os.path, 'ismount', return_value=True),
+            mock.patch.object(self.wizard, 'is_mount_point', return_value=True),
             mock.patch.object(self.wizard, 'repair_blocked', return_value=None),
         ):
             self.wizard.check_read_only(
