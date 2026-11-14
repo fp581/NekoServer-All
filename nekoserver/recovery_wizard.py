@@ -395,6 +395,22 @@ DAMAGED_AS_IS = 'damaged-as-is'
 NOT_RESTORED = 'NOT-RESTORED.txt'
 
 
+LEFT_OUT = SHARED['left_out']
+
+
+def left_out(root):
+    """The saved copies the weekly copy left off this (exFAT) USB drive, as its names can't
+    be stored there (backup.rs note_left_out): they are on the HDD, never missing here."""
+    try:
+        value = json.loads((Path(root) / LEFT_OUT['file']).read_text())
+        files = value.get('files') if value.get('format') == LEFT_OUT['format'] else None
+    except (OSError, ValueError, AttributeError):
+        return set()
+    return (
+        {key for key in files if isinstance(key, str) and valid_ledger_path(key)} if isinstance(files, list) else set()
+    )
+
+
 def retired_copies(root):
     """{path in the backup: why} for the saved copies accepted as lost in the repair menu
     (the ledger's "retired" part, written by neko_common.record_ledger)."""
@@ -430,6 +446,9 @@ class Checked:
             # A checksum list the drive lost mid-write: the files are restored unchecked.
             self.sums, self.ledger_problem = {}, str(exc)
         self.lost = retired_copies(self.root) if self.root else {}
+        # Photos the exFAT USB drive can't hold (names it can't store): safe on the HDD.
+        self.left_out = left_out(self.root) if self.root else set()
+        self.kept_off = []  # those of them a restore would have looked for
         # The restore folder, opened once (begin) and written only through that open
         # folder: its (device, inode) is checked again before every write (Destination).
         self.destination = None
@@ -530,7 +549,24 @@ class Checked:
                 else set()
             )
             missing += sorted(k for k in self.sums if k.startswith(prefix) and k not in here)
-        return missing
+        return self.not_left_out(missing)
+
+    def not_left_out(self, missing):
+        """`missing` without the photos left off this USB drive on purpose (left_out): those
+        are named apart (`kept_off`), never offered to the repair."""
+        self.kept_off = sorted({*self.kept_off, *(k for k in missing if k in self.left_out)})
+        return [k for k in missing if k not in self.left_out]
+
+    def kept_off_note(self):
+        """The review's note about the photos this USB drive can't hold, or None."""
+        kept_off = self.kept_off
+        if not kept_off:
+            return None
+        return (
+            f'{file_count(len(kept_off))} (for example {", ".join(kept_off[:3])}) {"is" if len(kept_off) == 1 else "are"} '
+            'not on this USB drive: its filesystem (exFAT) can\'t store their names. They are safe on the HDD: '
+            'restore them from the HDD\'s weekly copy.'
+        )
 
     def where_else(self):
         """What to do about files this backup can't give back."""
@@ -1137,8 +1173,9 @@ class Files:
         if checked.uncertain:
             some = ', '.join(checked.uncertain[:5])
             self.notes.append(f'Left out ({file_count(len(checked.uncertain))}, for example {some}): {UNCERTAIN_WHY}')
-        checked.missing = accepted_check(missing, checked, files, self.notes.append)
+        checked.missing = accepted_check(checked.not_left_out(missing), checked, files, self.notes.append)
         self.lost = missing_copies(checked.missing, files, checked.sums)
+        self.notes += [checked.kept_off_note()] if checked.kept_off_note() else []
         return True
 
     def everything(self, latest):
@@ -1146,6 +1183,7 @@ class Files:
         checked = self.checked
         checked.missing = checked.require_present(self.sources)
         self.lost = {key: checked.sums[key] for key in checked.missing}
+        self.notes += [checked.kept_off_note()] if checked.kept_off_note() else []
         self.latest = latest
         self.picked = latest_versions(self.sources) if latest else every_file(self.sources)
 

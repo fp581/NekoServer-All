@@ -1481,6 +1481,31 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertEqual((self.media / 'photos/archive/upload/u/missing.jpg').read_bytes(), b'gone from the HDD')
         self.assertEqual(left['archive']['missing'], [])
 
+    def test_photos_the_exfat_usb_drive_cannot_hold_are_not_missing_copies(self):
+        """Deep check plan 191: the weekly copy leaves off an exFAT USB drive the photos whose
+        names it can't store (backup.rs mirror_on), but its checksum list names them, so a
+        restore from the drive called them missing and listed them for the repair."""
+        self.write('hdd/photos/archive/library/u1/IMG_0001.JPG', b'one')
+        self.write('usb/library/u1/IMG_0001.JPG', b'one')
+        names = {'library/u1/IMG_0001.JPG': b'one', 'library/u1/img_0001.jpg': b'two', 'library/u1/colon:a.jpg': b'3'}
+        self.ledger('usb', names)
+        left = ['library/u1/colon:a.jpg', 'library/u1/img_0001.jpg']
+        self.write('usb/.neko-left-out.json', json.dumps({'format': 'neko-left-out-v1', 'files': left}).encode())
+        (self.root / 'ssd/reports').mkdir()
+        out = []
+        with (
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / 'usb'),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+        ):
+            recovery_wizard.restore_photos(self.config, answers('2', '1', '1', 'yes'), out.append)
+        said = '\n'.join(out)
+        self.assertNotIn('cannot come back from it', said)
+        self.assertNotIn('Fix damaged backup copies" (in', said)
+        self.assertIn('2 files (for example library/u1/colon:a.jpg, library/u1/img_0001.jpg) are not on this USB', said)
+        self.assertIn('They are safe on the HDD', said)
+        self.assertIn('Done: 1 file copied', said)
+        self.assertFalse((self.root / 'ssd/reports/integrity.json').exists())
+
     def test_a_missing_copy_is_listed_for_repair_even_when_you_stop_the_restore(self):
         import hashlib
 

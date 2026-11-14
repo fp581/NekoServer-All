@@ -1424,6 +1424,21 @@ fn names_on(dest: &Path) -> Result<std::collections::HashMap<String, String>> {
 fn exfat_refuses(key: &str, seen: &mut std::collections::HashMap<String, String>) -> bool {
     !fat_safe(Path::new(key)) || case_clash(key, seen).is_some()
 }
+/// The photos an exFAT USB drive can't hold, kept on it (shared.json "left_out"): its
+/// checksum list and lists of files still name them, as the HDD's do, so a restore from
+/// the drive called them missing copies and offered to repair them, though they are safe
+/// on the HDD (deep check plan 191). On any other drive there is no such list.
+fn note_left_out(dest: &Path, exfat: bool, left: &[String]) -> Result<()> {
+    let path = dest.join(common::shared("left_out", "file"));
+    if !exfat {
+        if fs::symlink_metadata(&path).is_ok() {
+            fs::remove_file(&path)?;
+        }
+        return Ok(());
+    }
+    let note = json!({"format": common::shared("left_out", "format"), "files": left});
+    common::atomic(&path, &serde_json::to_vec(&note)?, 0o600)
+}
 /// `mirror` onto a drive that is exFAT or not (`exfat`): there, files whose names it
 /// can't store are left out and listed (`Integrity::unstorable`).
 fn mirror_on(
@@ -1661,6 +1676,7 @@ fn mirror_on(
         // keeps every record it already had.
         ledger.save()?;
         ledger.publish_copy(&dest, usb_ledger.as_ref())?;
+        note_left_out(&dest, exfat, &report.unstorable)?;
         // Only now is this copy's run complete (see inventory::begin).
         if report.list_problem.is_none() {
             inventory::finish_mirror(&source, &dest)?;
@@ -7341,6 +7357,11 @@ mod tests {
             ]
         );
         assert!(!usb.join("library/u1/img_0001.jpg").exists());
+        // Listed on the drive for a restore from it (deep check plan 191).
+        let note: Value =
+            serde_json::from_slice(&fs::read(usb.join(".neko-left-out.json")).unwrap()).unwrap();
+        assert_eq!(note["format"], "neko-left-out-v1");
+        assert_eq!(note["files"], json!(report.unstorable));
         assert_eq!(report.problem("HDD archive"), None);
         assert_eq!(report.repaired, 0);
         // The weekly report counts them as names the drive cannot store.
