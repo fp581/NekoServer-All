@@ -581,20 +581,31 @@ function keyed(node, key) {
   node.dataset.focus = key;
   return node;
 }
+/* What a control is called for withFocus: its stable name (keyed), else its kind and what
+ * a screen reader says for it. */
+function focusName(n) {
+  return n.dataset?.focus || n.tagName + ':' + (n.getAttribute('aria-label') || n.textContent || '').trim();
+}
+const FOCUSABLE = 'a[href], button, input, select, textarea, [tabindex], [data-focus]';
+/* Redraw, and give keyboard focus back to the same control when it was rebuilt: the one
+ * with the same name (the first of several alike, the same one of them). Only keyed
+ * controls came back before, so a keyboard user on an app's ⋯ or an update's button was
+ * sent back to the top of the page at every refresh (deep check 156). */
 function withFocus(draw) {
-  const key = document.activeElement?.dataset?.focus;
-  draw();
-  if (!key) {
+  const was = document.activeElement;
+  if (!was || was === document.body) {
+    draw();
     return;
   }
-  let again = null;
-  for (const n of document.querySelectorAll('[data-focus]')) {
-    if (n.dataset.focus === key) {
-      again = n;
-      break;
-    }
+  const name = focusName(was);
+  const alike = () => [...document.querySelectorAll(FOCUSABLE)].filter(n => focusName(n) === name);
+  const which = alike().indexOf(was);
+  draw();
+  if (was.isConnected) {
+    return; // not rebuilt: focus is still there
   }
-  again?.focus({ preventScroll: true });
+  const again = alike();
+  (again[which] || again[0])?.focus({ preventScroll: true });
 }
 function empty(message) {
   return el('p', 'empty', message);
