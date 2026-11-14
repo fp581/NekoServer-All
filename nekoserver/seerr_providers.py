@@ -221,6 +221,13 @@ def saved_provider(seerr, app, initial, payload, connection):
     return row(PROVIDER + app, 'pass', 'Default provider created, read back and tested through Seerr')
 
 
+KEY_MADE_AGAIN = (
+    "{app}'s API key was made again after Seerr was connected to it, so Seerr still has the old one. "
+    "Copy {app}'s API key (in {app}: Settings, General), paste it in Seerr (Settings, Services, {app}) "
+    'and press Save, then run setup again'
+)
+
+
 def provider(seerr, manager, root, app, apply, verify_only=False, folder=None):
     """Seerr's request provider for Sonarr or Radarr: the one that is there, verified
     and kept, or a new one made, saved and read back. `folder`: where requests are
@@ -235,6 +242,10 @@ def provider(seerr, manager, root, app, apply, verify_only=False, folder=None):
     manager.headers['X-Api-Key'] = key
     major, base = manager_release(manager)
     connection = {'hostname': app, 'port': port, 'apiKey': key, 'useSsl': False, 'baseUrl': base}
+    routing = {k: v for k, v in connection.items() if k != 'apiKey'}
+    if len(standard) == 1 and connection_matches(standard[0], routing) and standard[0].get('apiKey') != key:
+        # Made again in the app: Seerr's requests would fail with the one it keeps.
+        raise SetupRequired(KEY_MADE_AGAIN.format(app=app.capitalize()))
     if standard and (
         len(standard) != 1
         or standard[0].get('isDefault') is not True
