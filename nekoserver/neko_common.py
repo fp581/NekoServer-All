@@ -1170,7 +1170,23 @@ def fetch(url, what, limit, timeout=30, opener=None, headers=None):
     request = urllib.request.Request(url, headers={'User-Agent': 'NekoServer-installer', **(headers or {})})
     try:
         with (opener or urllib.request.urlopen)(request, timeout=timeout) as response:
-            return response.read(limit)
+            data = response.read(limit + 1)
+            # Before, the first `limit` bytes were taken as the whole answer, and an
+            # answer cut off part-way as what there was: a compose file cut short was used.
+            promised = getattr(response, 'headers', {}).get('Content-Length')
+            if len(data) > limit:
+                raise RuntimeError(f'{what}: the answer from {url} is larger than expected; try again later')
+            if isinstance(promised, str) and promised.isdigit() and len(data) < int(promised):
+                raise http.client.IncompleteRead(data, int(promised) - len(data))
+            return data
+    except http.client.HTTPException as exc:
+        # Not an OSError: an answer cut off part-way (IncompleteRead) or a header line
+        # too long to be a web site's (LineTooLong, a proxy's page, say) came out in
+        # Python's words ("got more than 65536 bytes when reading header line").
+        raise RuntimeError(
+            f'{what}: the answer from {url} was cut off or was not a web site\'s answer ({type(exc).__name__}); '
+            'try again later'
+        ) from None
     except urllib.error.HTTPError as exc:
         if exc.code in (403, 429) and 'api.github.com' in url:
             raise RuntimeError(
