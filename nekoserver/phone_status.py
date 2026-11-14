@@ -33,7 +33,7 @@ from neko_common import atomic_json, safe_path
 PASS, FAIL, UNKNOWN = 'pass', 'fail', 'unknown'
 OBSERVED, NOT_TESTED = 'observed', 'not_tested'  # a person's observation, never a machine check
 PHONE_SYSTEMS = {'ios': 'iPhone or iPad', 'android': 'Android phone'}
-DNS_PAGE = 'https://login.tailscale.com/admin/dns'
+DNS_PAGE = gateway_tools.DNS_PAGE
 MACHINES_PAGE = 'https://login.tailscale.com/admin/machines'
 MACHINE_NAME = re.compile(r'[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+\.ts\.net')  # as gateway_tools.tailnode
 SETUP_AGAIN = 'Run  sudo bash install.sh  again'

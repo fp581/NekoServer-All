@@ -776,6 +776,15 @@ def serve_state():
 
 
 TAILNODE_NOT_READY = 'Authenticate Tailscale and enable tailnet HTTPS/MagicDNS first'
+# Where MagicDNS and HTTPS certificates are switched on for the Tailscale account.
+DNS_PAGE = 'https://login.tailscale.com/admin/dns'
+# Said when setup runs without anyone to answer (the dashboard's Run setup again, an
+# upgrade) and they are off: tailscale serve would only wait for them to be switched on.
+HTTPS_OFF = (
+    'The apps\' private addresses need MagicDNS and HTTPS certificates, and one of them is off in your '
+    f'Tailscale account. Open {DNS_PAGE} , turn on MagicDNS, scroll to "HTTPS Certificates" and choose '
+    '"Enable HTTPS", then run  sudo bash install.sh  again'
+)
 
 
 def own_device(status):

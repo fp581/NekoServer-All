@@ -168,10 +168,31 @@ class SetupStepTests(unittest.TestCase):
         with (
             mock.patch.object(gateway_tailnet.guided_setup, 'interactive', return_value=interactive),
             mock.patch.object(g, 'https_ready', return_value=True),
+            mock.patch.object(g, 'tailscale_status', return_value=STATUS),
             mock.patch.object(g, 'apply_tailnet', side_effect=apply),
             mock.patch.object(g, 'https_problem', return_value=problem) as check,
         ):
             return SECURE(self.ctx), check
+
+    def test_without_anyone_to_answer_magicdns_or_https_off_is_said_with_where_to_switch_them_on(self):
+        # Deep check 179/182 (the dashboard's Run setup again, an upgrade): with MagicDNS
+        # or HTTPS certificates off, the routes were tried anyway, and  tailscale serve
+        # only waits for HTTPS to be switched on: the step ended with the command's error.
+        magic_off = {**STATUS, 'CurrentTailnet': {**STATUS['CurrentTailnet'], 'MagicDNSEnabled': False}}
+        https_off = {**STATUS, 'CertDomains': None}
+        for name, status in (('MagicDNS off', magic_off), ('HTTPS off', https_off)):
+            with (
+                self.subTest(name),
+                mock.patch.object(gateway_tailnet.guided_setup, 'interactive', return_value=False),
+                mock.patch.object(g, 'command', return_value=g.json.dumps(status)),
+                mock.patch.object(g, 'apply_tailnet') as apply,
+            ):
+                result = SECURE(self.ctx)
+            self.assertEqual(result['status'], 'needs_setup')
+            self.assertIn('turn on MagicDNS', result['reason'])
+            self.assertIn('"Enable HTTPS"', result['reason'])
+            self.assertIn(g.DNS_PAGE, result['reason'])
+            apply.assert_not_called()
 
     def test_a_missing_certificate_ends_the_step_as_needs_setup_with_the_reason(self):
         for interactive in (True, False):
