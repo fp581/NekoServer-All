@@ -15,12 +15,14 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import first_checkup
 import neko_common  # noqa: E402
 import recovery_wizard  # noqa: E402
 import wizard  # noqa: E402
 from modules import capacity  # noqa: E402
+from roomy import roomy_drive  # noqa: E402
 
 GIB = 1024**3
 REAL_HDD_READY = recovery_wizard.hdd_ready  # the real drive check (most tests replace it)
@@ -817,6 +819,7 @@ def then_stopped(*values):
 
 class RecoveryWizardTests(unittest.TestCase):
     def setUp(self):
+        roomy_drive(self)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
@@ -2104,6 +2107,7 @@ class RestoreDestinationTests(unittest.TestCase):
     still said they were all restored and verified."""
 
     def setUp(self):
+        roomy_drive(self)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name)

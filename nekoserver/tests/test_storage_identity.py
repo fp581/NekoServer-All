@@ -17,10 +17,12 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import neko_common
 import snapshot_restore
 from modules import capacity, docker, photo_backup, storage
+from roomy import roomy_drive  # noqa: E402
 
 
 def disk(name, *children):
@@ -224,6 +226,9 @@ class BusyUsbTests(unittest.TestCase):
 
 
 class RestoreReasonTests(unittest.TestCase):
+    def setUp(self):
+        roomy_drive(self)
+
     def snapshot(self, root):
         snap = root / 'snap'
         (snap / 'payload/appdata/x').mkdir(parents=True)

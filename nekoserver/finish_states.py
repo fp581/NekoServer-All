@@ -58,7 +58,7 @@ SAME_AS = {
     'play_video': 'media_workflow',
     'play_song': 'music_playback',
     'cloud_file': 'cloud_client',
-    **{test: 'tv_session' for test in TV_TESTS},  # the TV's picture, sound, controller and Steam
+    **dict.fromkeys(TV_TESTS, 'tv_session'),  # the TV's picture, sound, controller and Steam
 }
 # Each backup's step, and its report in reports/jobs (first_checkup.JOBS).
 BACKUPS = (

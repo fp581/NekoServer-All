@@ -328,13 +328,14 @@ class SourceWizardTests(unittest.TestCase):
             for damaged in ('{"sources": [', '{"sources": "abc"}', '{"sources": ["abc"]}'):
                 target.write_text(damaged)
                 argv = ['source-wizard.py', '--config', str(settings), '--output', str(target)]
+                wizard = self.wizard()
                 with (
                     mock.patch.object(sys, 'argv', argv),
                     mock.patch('builtins.input', return_value='no'),
                     mock.patch('builtins.print'),
                     self.assertRaises(SystemExit) as stopped,
                 ):
-                    self.wizard().main()
+                    wizard.main()
                 self.assertIn('list of your media sources', str(stopped.exception.code))
                 self.assertEqual(target.read_text(), damaged)
                 import source_import

@@ -12,8 +12,10 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import snapshot_restore as sr  # noqa: E402
+from roomy import roomy_drive  # noqa: E402
 
 
 def make(snapshot, kind, files, extra_rows=()):
@@ -43,6 +45,7 @@ def make(snapshot, kind, files, extra_rows=()):
 
 class SnapshotRestoreTests(unittest.TestCase):
     def setUp(self):
+        roomy_drive(self)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)

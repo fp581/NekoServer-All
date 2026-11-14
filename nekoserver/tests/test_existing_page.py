@@ -107,7 +107,7 @@ class PageTests(unittest.TestCase):
             ):
                 existing_page.ask(ctx, typed('yes', found['path'], '1', '1'), said.append)
             self.assertEqual('existing_backup' in keys, asked)
-            self.assertEqual('/dev/sdd1' in ' '.join(said), False)
+            self.assertNotIn('/dev/sdd1', ' '.join(said))
             self.assertEqual('(nas:/tank)' in ' '.join(said), asked)
 
     def test_a_folder_that_cannot_be_used_says_why_and_is_asked_for_again(self):

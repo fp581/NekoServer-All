@@ -11,6 +11,10 @@ NAME = 'nekoserver-runtime'
 SOURCES = ('Cargo.toml', 'Cargo.lock', 'build.py', 'src/shared.json')
 
 
+# The record of the runtime's build next to its sources (build.py writes it).
+BUILD_RECORD = 'build.json'
+
+
 def expected_sources(root):
     # Every Rust source, those in folders of their own too (src/cardset/, 0.51.0).
     return {*SOURCES, *[str(p.relative_to(root)) for p in (root / 'src').rglob('*.rs')]}
@@ -32,7 +36,7 @@ def build_needed(project, run=subprocess.run):
     written), or one that does not run here (install.sh then builds it)."""
     root = Path(project) / 'runtime'
     try:
-        manifest = json.loads((root / 'build.json').read_text())
+        manifest = json.loads((root / BUILD_RECORD).read_text())
         hashes = manifest.get('source_sha256', {})
         if not (root / 'bin' / NAME).is_file() or set(hashes) != expected_sources(root):
             return True
@@ -72,9 +76,9 @@ def payload(project, config):
     if platform.system() != 'Linux' or platform.machine() != 'x86_64':
         raise RuntimeError('The bundled Rust runtime requires x86_64 Linux')
     root = safe_path(Path(project) / 'runtime')
-    if not (root / 'build.json').is_file() or not (root / 'bin' / NAME).is_file():
+    if not (root / BUILD_RECORD).is_file() or not (root / 'bin' / NAME).is_file():
         raise RuntimeError('The runtime is not built yet in ' + str(root) + ': ' + BUILD_IT)
-    manifest = json.loads(safe_path(root / 'build.json').read_text())
+    manifest = json.loads(safe_path(root / BUILD_RECORD).read_text())
     if manifest.get('version') != VERSION or manifest.get('target') not in TARGETS:
         raise RuntimeError('Native build identity does not match this release')
     binary = safe_path(root / 'bin' / NAME).read_bytes()

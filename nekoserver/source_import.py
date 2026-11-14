@@ -72,7 +72,7 @@ def source_list(path):
     ValueError in words, never a traceback, and nothing is written over it."""
     fix = f'fix the file {path} or move it away, then run setup again'
     try:
-        value = json.loads(path.read_text())
+        value = json.loads(safe_path(path).read_text())  # checked where it is read
     except ValueError:
         raise ValueError(f'The list of your media sources is damaged (it is not valid JSON); {fix}') from None
     sources = value.get('sources', []) if isinstance(value, dict) else None

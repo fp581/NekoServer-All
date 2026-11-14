@@ -10,7 +10,7 @@ import json
 import re
 import urllib.parse
 from pathlib import Path
-from neko_common import safe_path, atomic_json, checked_settings, default_settings, remember_answer
+from neko_common import safe_path, atomic_json, checked_settings, default_settings, mount_path, remember_answer
 from source_import import source_list
 
 KINDS = ('movies', 'tv', 'music')
@@ -182,7 +182,7 @@ def main():
     parser.add_argument('--list', action='store_true', help='Show existing source references (no secrets)')
     args = parser.parse_args()
     settings = json.loads(safe_path(args.config).read_text())
-    target = safe_path(args.output or str(Path(settings['data_mount']) / 'config' / 'media-sources.json'))
+    target = safe_path(args.output or str(mount_path(settings['data_mount']) / 'config' / 'media-sources.json'))
     try:
         existing = {'sources': source_list(target)} if target.exists() else {}
     except ValueError as exc:

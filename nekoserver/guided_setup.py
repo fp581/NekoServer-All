@@ -14,6 +14,10 @@ import host
 from neko_common import VERSION, find_program, safe_path
 
 
+# When a nightly job that a backup time moved runs first (the backups page's review).
+NEXT_NIGHT = 'the next night'
+
+
 def yes_no(question, prompt=None, output=None, how=' [yes/no]: '):
     """Ask until the answer is yes or no. Returns True or False, or None when the person
     pressed Ctrl+D (leave it for now). Ctrl+C stops setup (KeyboardInterrupt goes on),
@@ -1179,11 +1183,11 @@ def clock_change_misses(config, which, chosen, today=None):
 
     times = job_times({**config, BACKUP_TIMES: chosen})
     if which == 'daily':
-        jobs = [("the copy of this PC's own settings", times['host'], None, 'the next night')]
+        jobs = [("the copy of this PC's own settings", times['host'], None, NEXT_NIGHT)]
         if music_backed_up(config):
-            jobs.insert(0, ('the music copy', times['music'], None, 'the next night'))
+            jobs.insert(0, ('the music copy', times['music'], None, NEXT_NIGHT))
         if any(media_group(config, group) for group in ('movies', 'music')):
-            jobs.insert(0, ("the media apps' snapshot", times['app'], None, 'the next night'))
+            jobs.insert(0, ("the media apps' snapshot", times['app'], None, NEXT_NIGHT))
     elif which == 'weekly':
         jobs = [('the weekly USB copy', times['usb'], on_weekday(times['usb_day']), 'a week later')]
     else:
