@@ -19,6 +19,14 @@ SCHEMA = 'org.gnome.settings-daemon.plugins.power'
 POWER_KEY = 'sleep-inactive-ac-type'
 REPORT = 'reports/tv-setup.json'
 IDLE_CHECK = 'tv:idle_suspend'
+# The TV tests a person tries (picture, sound, controller, Steam) that each try of this
+# step stands for: a "yes" here is their word for those tests too, so the finishing page
+# (finish_states) does not ask them again.
+HANDOFF_TESTS = {
+    'display_audio_playback': ('picture', 'sound'),
+    'controller': ('controller',),
+    'steam_login_remote_play': ('steam',),
+}
 
 
 def command(argv, timeout=30):

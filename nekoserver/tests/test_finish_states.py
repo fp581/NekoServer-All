@@ -291,6 +291,24 @@ class CollectTests(unittest.TestCase):
         self.assertNotIn(PLANTED, json.dumps(found))
         self.assertNotIn(PLANTED, json.dumps(finish_states.summary(found)))
 
+    def test_a_yes_in_the_tv_step_counts_as_tried(self):
+        """The TV step asks the person to try Steam, the controller, picture and sound and
+        keeps their yes (tv-setup.json). The finishing page listed all four TV tests as
+        "nobody has tried this yet" right after that; a "no" said on the page still wins."""
+        checks = [{'check': 'tv:packages', 'status': 'pass'}, {'check': 'tv:controller', 'status': 'needs_setup'}]
+        checks += [
+            {'check': 'tv:' + c, 'status': 'user_confirmed'}
+            for c in ('display_audio_playback', 'steam_login_remote_play')
+        ]
+        self.write(('reports', 'tv-setup.json'), {'user': 'neko', 'checks': checks})
+        self.write(('installer', 'state', 'state.json'), {'tv': {'status': 'success'}})
+        found = finish_states.collect(self.config, PLAN, self.read)
+        tv = {row['id']: row['state'] for row in finish_states.summary(found)['tv']}
+        self.assertEqual(tv, {'tv_picture': DONE, 'tv_sound': DONE, 'tv_controller': NOT_TESTED, 'tv_steam': DONE})
+        finish_states.record_test(self.config, 'tv_sound', NOT_WORKING)
+        found = finish_states.collect(self.config, PLAN, self.read)
+        self.assertEqual({row['id']: row['state'] for row in finish_states.summary(found)['tv']}['tv_sound'], FAILED)
+
     def test_what_a_person_said_is_kept_and_read_back(self):
         kept = finish_states.record_test(self.config, 'play_video', SEEN, now=123.0)
         self.assertEqual(kept, {'said': SEEN, 'at': 123.0})

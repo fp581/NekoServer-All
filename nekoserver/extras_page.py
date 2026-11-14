@@ -192,11 +192,7 @@ TV_TESTS = {
 }
 NOT_TESTED, WORKED, DID_NOT_WORK = 'not_tested', 'worked', 'did_not_work'
 # The tests the TV step of earlier runs kept (reports/tv-setup.json) and the rows they stand for.
-EARLIER_TV_CHECKS = {
-    'tv:display_audio_playback': ('picture', 'sound'),
-    'tv:controller': ('controller',),
-    'tv:steam_login_remote_play': ('steam',),
-}
+EARLIER_TV_CHECKS = {'tv:' + handoff: tests for handoff, tests in tv.HANDOFF_TESTS.items()}
 
 
 def tv_installs(opts, vendors, has_browser):

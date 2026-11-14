@@ -54,7 +54,12 @@ APP_TESTS = (
 # A TV connected to this PC: each seen on its own, never "everything worked".
 TV_TESTS = ('tv_picture', 'tv_sound', 'tv_controller', 'tv_steam')
 # A witnessed test of the acceptance checklist that shows the same thing (acceptance.manual_tests).
-SAME_AS = {'play_video': 'media_workflow', 'play_song': 'music_playback', 'cloud_file': 'cloud_client'}
+SAME_AS = {
+    'play_video': 'media_workflow',
+    'play_song': 'music_playback',
+    'cloud_file': 'cloud_client',
+    **{test: 'tv_session' for test in TV_TESTS},  # the TV's picture, sound, controller and Steam
+}
 # Each backup's step, and its report in reports/jobs (first_checkup.JOBS).
 BACKUPS = (
     ('app_backup', 'applications'),
@@ -140,10 +145,13 @@ def address(facts, app, is_installed):
 
 def said(facts, test):
     """What a person said about a test (seen, not_working, later), or None: their own
-    word first, else the same test passed or failed in the acceptance checklist."""
+    word first, else a yes to it in the TV step, else the same test passed or failed in
+    the acceptance checklist."""
     own = facts['person'].get(test)
     if own in (SEEN, NOT_WORKING, LATER):
         return own
+    if test in facts.get('tv_confirmed', ()):
+        return SEEN  # said "yes" to it in the TV step
     return {'pass': SEEN, 'fail': NOT_WORKING}.get(facts['witnessed'].get(SAME_AS.get(test)))
 
 
@@ -456,6 +464,22 @@ def witnessed_tests(data):
     }
 
 
+def tv_confirmed(data):
+    """The TV tests (tv_picture ...) a person said worked in the TV step: the tries its
+    report keeps as confirmed, each standing for the tests modules/tv.HANDOFF_TESTS names."""
+    from modules.tv import HANDOFF_TESTS
+
+    rows = read_object(below(data, TV_REPORT)).get('checks')
+    confirmed = {
+        row.get('check')
+        for row in (rows if isinstance(rows, list) else [])
+        if isinstance(row, dict) and row.get('status') == 'user_confirmed'
+    }
+    return sorted(
+        'tv_' + test for handoff, tests in HANDOFF_TESTS.items() if 'tv:' + handoff in confirmed for test in tests
+    )
+
+
 def person_tests(data):
     """What a person said on this page about each test (record_test)."""
     saved = read_object(below(data, TESTS_FILE)).get('tests')
@@ -537,6 +561,7 @@ def collect(config, plan, read=None):
         'jobs': job_statuses(data),
         'witnessed': witnessed_tests(data),
         'person': person_tests(data),
+        'tv_confirmed': tv_confirmed(data),
     }
 
 
