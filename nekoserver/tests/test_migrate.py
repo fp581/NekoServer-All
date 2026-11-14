@@ -77,6 +77,23 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn('move needs --drive and --to', self.said('move', '--to', '1234abcd-0000'))
 
 
+class DamagedRecordTests(unittest.TestCase):
+    def test_a_folder_in_the_record_is_never_taken_as_an_option_of_mount(self):
+        """SonarCloud on PR 87 (argument injection from a file): the folder of a move cut off
+        in its switch comes from the record, and was handed to mount as it was, so a damaged
+        record saying "--all" ran  mount --all. It is now mounted by its full path after "--"."""
+        ran = []
+        saved = {'mount': '--all', 'old': {'uuid': 'aaaa-bbbb', 'fstype': 'ext4'}}
+        with (
+            mock.patch.object(migrate, 'mounted_identity', return_value=None),
+            mock.patch.object(migrate, 'run', side_effect=lambda argv, *a, **k: ran.append(argv)),
+        ):
+            migrate.drive_not_back(saved)
+        self.assertEqual(len(ran), 1)
+        self.assertEqual(ran[0][:2], ['mount', '--'])
+        self.assertTrue(ran[0][2].startswith('/'), ran[0])
+
+
 class TargetTests(unittest.TestCase):
     def test_a_drive_setup_would_refuse_is_never_offered(self):
         """The 0.46.1 audit: an encrypted drive opened by hand (not in /etc/crypttab) or a
@@ -368,6 +385,7 @@ class MoveTests(unittest.TestCase):
     def command(self, argv, *args, **kwargs):
         """A stand-in for commands: `mount <folder>` mounts what /etc/fstab's active line
         names, as Linux would; `umount` unmounts."""
+        argv = [a for a in argv if a != '--']  # "--" only ends mount's options
         self.calls.append(tuple(argv))
         if argv[0] == 'umount':
             self.mounted.pop(argv[1], None)

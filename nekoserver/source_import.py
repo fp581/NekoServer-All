@@ -71,8 +71,14 @@ def source_list(path):
     wizard writes). A file that is not such a list (damaged, or changed by hand) is
     ValueError in words, never a traceback, and nothing is written over it."""
     fix = f'fix the file {path} or move it away, then run setup again'
+    # The path comes from the command line or the settings: checked where it is read.
+    # Only a .json file is read, by its real path, never through a link.
+    real = os.path.realpath(safe_path(path))
+    if not (real.startswith(os.sep) and real.endswith('.json')) or '\x00' in real:
+        raise ValueError(f'The list of your media sources must be a .json file; {path} is not one')
     try:
-        value = json.loads(safe_path(path).read_text())  # checked where it is read
+        with open(real, encoding='utf-8') as handle:
+            value = json.loads(handle.read())
     except ValueError:
         raise ValueError(f'The list of your media sources is damaged (it is not valid JSON); {fix}') from None
     sources = value.get('sources', []) if isinstance(value, dict) else None

@@ -716,7 +716,11 @@ def drive_not_back(saved):
         return None
     expected = (old['uuid'], old.get('fstype'), old.get('subvolume') or '')
     if mounted_identity(folder) is None:
-        run(['mount', folder], 120, check=False)
+        # The folder comes from the record, a file: mounted by its full path, after "--",
+        # so a damaged record ("--all", say) can never be taken as an option of mount.
+        real = os.path.realpath(folder)
+        if real.startswith(os.sep):
+            run(['mount', '--', real], 120, check=False)
     there = mounted_identity(folder)
     if there == expected:
         return None

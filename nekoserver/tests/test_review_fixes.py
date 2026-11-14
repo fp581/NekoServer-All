@@ -347,6 +347,23 @@ class SourceWizardTests(unittest.TestCase):
                 self.assertIn('list of your media sources', error.getvalue())
 
 
+class SourceListPathTests(unittest.TestCase):
+    def test_only_a_json_file_is_read_as_the_source_list(self):
+        """SonarCloud on PR 87 (path traversal from the command line): source_import read
+        any file named with --sources. Only a .json file is read, by its real path."""
+        import source_import
+
+        with tempfile.TemporaryDirectory() as d:
+            other = Path(d) / 'passwd'
+            other.write_text('{"sources": []}')
+            with self.assertRaises(ValueError) as caught:
+                source_import.source_list(other)
+            self.assertIn('must be a .json file', str(caught.exception))
+            listed = Path(d) / 'media-sources.json'
+            listed.write_text('{"sources": [{"name": "Films"}]}')
+            self.assertEqual(source_import.source_list(listed), [{'name': 'Films'}])
+
+
 class JellyfinLibraryLoginTests(unittest.TestCase):
     """A mistyped Jellyfin password is something to do again, not a failed step."""
 
