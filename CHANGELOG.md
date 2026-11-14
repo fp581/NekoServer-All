@@ -4,6 +4,9 @@
 
 Fixes only, from a wider review of 0.51.0's card engine, setup and dashboard. Nothing changes in how NekoServer is used. Each fix is listed here as it lands.
 
+### Fixed: backups onto a drive
+- **A USB drive that does not keep what it is given is caught by the weekly photo copy, and the app snapshot checks its copy on the drive.** Each copy is read back and checked before it counts, but it was read back right after it was written, so Linux answered from its memory: a fake-capacity or failing USB drive passed the check, and a photo counted as backed up that the drive did not hold. The copy is now written out and Linux's copy of it dropped before the readback, in the weekly USB copy, the music and archive copies that use the same step, and the app and host snapshots. Shown on an ext4 drive image whose bytes were changed under the filesystem between the write and the readback: the old copy published the photo, the new one refuses it.
+
 ### Fixed: SD-card backup sets (the engine, not switched on yet)
 - **The catalogue's copy for the host backup is private.** The catalogue (which files are on which card: the paths of your files) is the server's own, readable only by root, but its copy for the host backup was left readable by every user of the server, and a new catalogue was readable by others for a moment before it was narrowed. Both files are now made private before anything is written into them.
 - **A card never gets a set inventory it cannot read back.** Each card carries a list of the whole set (which cards hold which files). Reading it, the engine refuses a list past its limits (more than 5 million versions, a million records on one card, 9,999 cards or 32 sources), but writing it checked none of them: a set that grew past one would have written a full list onto the card at every checkpoint, each one refused when read. The engine now stops before it writes such a list and says which limit was reached.

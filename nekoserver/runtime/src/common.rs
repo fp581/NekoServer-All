@@ -740,6 +740,21 @@ pub fn atomic_json(path: &Path, v: &Value) -> Result<()> {
     b.push(b'\n');
     atomic(path, &b, 0o600)
 }
+/// The SHA-256 of a copy just written, read from the drive, not from Linux's memory: the
+/// file written out and its cached pages dropped first. Read back without this, a drive
+/// that does not keep what it is given (a fake-capacity or failing USB drive) passed.
+pub fn digest_landed(path: &Path) -> Result<String> {
+    let f = file(path)?;
+    f.sync_data()?;
+    // SAFETY: a valid open descriptor; the call only advises the kernel.
+    let rc = unsafe { libc::posix_fadvise(f.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
+    if rc != 0 {
+        return Err(std::io::Error::from_raw_os_error(rc).into());
+    }
+    drop(f);
+    digest(path)
+}
+
 pub fn digest(path: &Path) -> Result<String> {
     let mut f = file(path)?;
     let mut h = Sha256::new();

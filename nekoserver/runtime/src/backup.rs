@@ -235,7 +235,7 @@ fn copy_verified_with(
             return Err(Error::new("Source changed during the copy; not published"));
         }
         // Re-open the copy from disk: what actually landed, not what was sent.
-        let landed = common::digest(&temp)?;
+        let landed = common::digest_landed(&temp)?;
         let original = common::digest(source)?;
         if !same(&before, &fs::metadata(source)?) {
             return Err(Error::new("Source changed during the copy; not published"));
@@ -7258,6 +7258,55 @@ mod tests {
         let mode = |p: &str| fs::metadata(root.join(p)).unwrap().mode() & 0o777;
         assert_eq!((mode("secrets"), mode("secrets/key")), (0o700, 0o600));
         assert_eq!((mode("shared"), mode("shared/photo.jpg")), (0o755, 0o644));
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    #[ignore = "needs root and a loop drive: run cardset-loop-tests.sh (NEKO_LOOP_USB, NEKO_LOOP_IMAGE)"]
+    fn loop_a_usb_drive_that_does_not_keep_the_bytes_is_caught() {
+        // The review of 0.51.0: the weekly USB copy read its copy back from Linux's page
+        // cache ("from disk: what actually landed"), so a drive that kept other bytes
+        // passed. Here the drive's bytes are changed under its mounted ext4 between the
+        // write and the readback: nothing may be published.
+        let usb = std::path::PathBuf::from(std::env::var("NEKO_LOOP_USB").unwrap());
+        let image = std::env::var("NEKO_LOOP_IMAGE").unwrap();
+        let root = scratch("lying-usb");
+        let src = root.join("IMG_0001.jpg");
+        write(&src, &vec![7u8; 300_000]);
+        let target = usb.join("photos/IMG_0001.jpg");
+        let partial = usb.join("photos").join(partial_name("IMG_0001.jpg"));
+        let error = copy_verified_with(&src, &target, true, 0o644, &|| {
+            let out = std::process::Command::new("filefrag")
+                .args(["-v", "-b4096"])
+                .arg(&partial)
+                .output()
+                .unwrap();
+            let text = String::from_utf8_lossy(&out.stdout).to_string();
+            let line = text
+                .lines()
+                .find(|l| l.trim_start().starts_with("0:"))
+                .unwrap_or_else(|| panic!("no extent: {text}"));
+            let block: u64 = line
+                .split(':')
+                .nth(2)
+                .unwrap()
+                .split("..")
+                .next()
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            use std::io::{Seek, SeekFrom};
+            let mut img = fs::OpenOptions::new().write(true).open(&image).unwrap();
+            img.seek(SeekFrom::Start(block * 4096)).unwrap();
+            img.write_all(b"EVIL").unwrap();
+            img.sync_all().unwrap();
+        })
+        .expect_err("a copy the drive does not hold was published");
+        assert!(
+            error.to_string().contains("Copy verification failed"),
+            "{error}"
+        );
+        assert!(!target.exists(), "nothing published");
         let _ = fs::remove_dir_all(root);
     }
     #[test]

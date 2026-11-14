@@ -121,6 +121,12 @@ card lying 400
 NEKO_LOOP_CARDS="$CARD" NEKO_LOOP_IMAGE="$BASE/lying.img" run_test loop_a_card_that_does_not_keep_the_bytes_is_caught
 result 'A33 a card that does not keep the bytes: no copy committed' $?
 
+echo '== the weekly USB copy onto a drive that does not keep the bytes written'
+card usb-lying 64
+NEKO_LOOP_USB="$CARD" NEKO_LOOP_IMAGE="$BASE/usb-lying.img" "$BIN" --ignored --exact \
+  backup::tests::loop_a_usb_drive_that_does_not_keep_the_bytes_is_caught --test-threads 1 2>&1 | tail -20
+result 'A34 the USB copy onto a drive that does not keep the bytes: nothing published' "${PIPESTATUS[0]}"
+
 echo '== the card unmounted while a file is written, then mounted again'
 export NEKO_LOOP_WORK="$BASE/work-pulled"
 card pulled 400
