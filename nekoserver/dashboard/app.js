@@ -795,7 +795,7 @@ function driveIssues(s, add) {
       add(
         'mount:' + disk.id,
         name + ' turned read-only',
-        'Linux stopped writing to it after errors; the apps that write there are stopped. Check it with  sudo bash install.sh --recover  ("Check a drive that turned read-only").',
+        'Linux stopped writing to it after errors; the apps that write there are stopped. Check it with  sudo bash install.sh --recover  ("Check or repair a drive", then "Check a drive that stopped taking new files").',
         'storage',
         'critical'
       );
@@ -4047,7 +4047,7 @@ function driveCard(disk, old, arrays) {
     card.append(
       hint(
         'It does not take writes: Linux turned it read-only after errors. The apps that write there are stopped. ' +
-          'Check it with  sudo bash install.sh --recover  ("Check a drive that turned read-only").'
+          'Check it with  sudo bash install.sh --recover  ("Check or repair a drive", then "Check a drive that stopped taking new files").'
       )
     );
   } else if (disk.waiting === true) {
@@ -4591,7 +4591,7 @@ const GUIDES = {
     intro: 'A checksum warning needs a copy that still matches. Never delete the other copies.',
     steps: [
       'Connect the USB backup drive if you have one, so both copies are checked.',
-      'Start the recovery helper below and choose “Repair damaged backup copies”.',
+      'Start the recovery helper below and choose “Check or repair a drive”, then “Fix damaged backup copies”.',
       'If no copy matches any more, the helper asks whether to keep it as it is for now or accept that this saved copy is lost (it is kept aside in neko-damaged). Until you decide, the monthly snapshot and updates wait.'
     ],
     recover: true

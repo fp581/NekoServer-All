@@ -77,10 +77,15 @@ RESTORE = 'The restore'  # how the room check names a restore in its message
 SNAPSHOT = re.compile(r'^snapshot-(\d+)-\d+$')
 MONTHLY = re.compile(r'^(\d+)-\d+$')
 
+# The menu's choices that messages name (the runtime's too): one wording, in shared.json.
+DRIVE_SECTION = SHARED['recovery_menu']['drive_section']
+CHECK_NAME = SHARED['recovery_menu']['check_drive']
+FIX_NAME = SHARED['recovery_menu']['fix_copies']
+
 # The recovery menu's two parts (its first question).
 SECTIONS = [
     ('restore', 'Restore something from a backup'),
-    ('drive', 'Check or repair a drive'),
+    ('drive', DRIVE_SECTION),
 ]
 
 # Section 1: what can be restored.
@@ -95,9 +100,9 @@ MENU = [
 
 # Section 3: a check and a repair are different actions, and so is fixing backup copies.
 DRIVE_MENU = [
-    ('check', 'Check a drive that stopped taking new files. A check only looks: it changes nothing on the drive'),
+    ('check', f'{CHECK_NAME}. A check only looks: it changes nothing on the drive'),
     ('repair', 'Repair a drive. A repair changes the drive, and damaged files can be lost'),
-    ('copies', 'Fix damaged backup copies (files on the backup drives that the checksum checks found damaged)'),
+    ('copies', f'{FIX_NAME} (files on the backup drives that the checksum checks found damaged)'),
 ]
 
 
@@ -1026,7 +1031,7 @@ COPYING = 'Copying... this can take a while for a big backup.'
 # which only root can open (the restore runs as root).
 PASSWORDS_HOME = Path('/root')
 # What the recovery menu calls the repair of backup copies (DRIVE_MENU), where a message names it.
-FIX_COPIES = '"Fix damaged backup copies" (in the recovery menu, under "Check or repair a drive")'
+FIX_COPIES = f'"{FIX_NAME}" (in the recovery menu, under "{DRIVE_SECTION}")'
 
 
 def recorded_copy(key, copy, sha, sums):
@@ -3029,7 +3034,7 @@ def repair_backups(config, prompt, output):
     }
     say(
         output,
-        '\nFix damaged backup copies',
+        '\n' + FIX_NAME,
         'The last checks found backup copies that are damaged or missing:',
         *(f'  {file_count(count)} in {place}' for place, count in counts.items() if count),
         'Each one is compared with the checksum recorded when it was backed up (its fingerprint), and',
@@ -3182,7 +3187,7 @@ def drive_section(config, prompt, output):
         'so it has a warning and an approval of its own. Neither is started by choosing it here: each',
         'first shows the exact drive and asks.',
     )
-    pick = choose('Check or repair a drive', DRIVE_MENU, prompt, output)
+    pick = choose(DRIVE_SECTION, DRIVE_MENU, prompt, output)
     if pick is not None:
         DRIVE_ACTIONS[pick](config, prompt, output)
 

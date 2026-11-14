@@ -714,13 +714,22 @@ const QUARANTINE: &str = "neko-damaged";
 /// the monthly check finds it again and the monthly snapshot and updates wait. The
 /// action comes first, before the list of files: the reason is cut at 300 characters
 /// where it is shown (the job report, the dashboard, the alerts, the journal), and the
-/// advice used to come last and was cut off.
-pub(crate) const SETTLE: &str = "To settle it, run  sudo bash install.sh --recover  and choose \"Repair damaged backup copies\"";
+/// advice used to come last and was cut off. The choice is named as the recovery menu
+/// shows it (shared.json "recovery_menu"): 0.50.0 renamed it in the menu, and this kept
+/// naming a choice that was no longer there.
+pub(crate) fn settle_advice() -> String {
+    format!(
+        "{SETTLE_START} sudo bash install.sh --recover  and choose \"{}\"",
+        common::shared("recovery_menu", "fix_copies")
+    )
+}
+/// How the repair advice begins: a saved reason that holds it is found by these words.
+pub(crate) const SETTLE_START: &str = "To settle it, run ";
 /// The rest of the advice, after the files.
 const SETTLE_MORE: &str = "The repair takes each file from a copy that still matches; when no good copy is left it offers \"accept that this saved copy is lost\" (the copy is kept in neko-damaged, never deleted). Until then the monthly check finds it again, and the monthly snapshot and updates wait";
 /// What was found, with how to settle it first.
 fn settle(found: &str) -> String {
-    format!("{SETTLE}. {found}. {SETTLE_MORE}")
+    format!("{}. {found}. {SETTLE_MORE}", settle_advice())
 }
 /// What the checksum checks of one backup tree found.
 #[derive(Debug, Default, PartialEq)]
@@ -7364,7 +7373,11 @@ mod tests {
         };
         let text = report.problem("USB Nextcloud").unwrap();
         assert!(!text.contains("other copy"), "{text}");
-        assert!(text.contains("Repair damaged backup copies"), "{text}");
+        // The choice the recovery menu really shows (0.50.0 renamed it there).
+        assert!(
+            text.contains("choose \"Fix damaged backup copies\""),
+            "{text}"
+        );
         assert!(
             text.contains("accept that this saved copy is lost"),
             "{text}"
@@ -7373,7 +7386,9 @@ mod tests {
         report.missing = vec!["alice/files/gone.txt".into()];
         let text = report.problem("USB Nextcloud").unwrap();
         assert!(
-            text.contains("are missing") && text.starts_with(SETTLE) && text.ends_with(SETTLE_MORE),
+            text.contains("are missing")
+                && text.starts_with(&settle_advice())
+                && text.ends_with(SETTLE_MORE),
             "{text}"
         );
     }
@@ -7398,13 +7413,13 @@ mod tests {
             assert!(shown.chars().count() <= 300, "{shown}");
             assert!(
                 shown.contains(
-                    "sudo bash install.sh --recover  and choose \"Repair damaged backup copies\""
+                    "sudo bash install.sh --recover  and choose \"Fix damaged backup copies\""
                 ),
                 "{shown}"
             );
         }
         // The dashboard prefixes the stage ("Failed while …: "); still well inside.
-        assert!(INTEGRITY.len() + SETTLE.len() < 160);
+        assert!(INTEGRITY.len() + settle_advice().len() < 160);
     }
     #[test]
     fn backup_bookkeeping_is_not_part_of_the_tree() {

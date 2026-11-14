@@ -1642,17 +1642,32 @@ fn full_stop(said: &str) -> String {
         said.to_string()
     }
 }
-/// How the repair advice (backup::SETTLE) begins, and the part of it to keep whole when
-/// the reason it ends was cut: what to run, and that the monthly run waits until then.
-const SETTLE_START: &str = "To settle it, run";
-const SETTLE_SHORT: &str = "To settle it, run  sudo bash install.sh --recover  and choose \"Repair damaged backup copies\". Until then the monthly snapshot and updates wait.";
+/// The recovery menu's check of a drive, as the menu names it (shared.json "recovery_menu"):
+/// 0.50.0 renamed it in the menu, and the alerts kept naming a choice no longer there.
+pub(crate) fn check_drive_choice() -> String {
+    format!(
+        "\"{}\", then \"{}\"",
+        common::shared("recovery_menu", "drive_section"),
+        common::shared("recovery_menu", "check_drive")
+    )
+}
+/// The part of the repair advice (backup::settle_advice) to keep whole when the reason it
+/// ends was cut: what to run, and that the monthly run waits until then.
+fn settle_short() -> String {
+    format!(
+        "{}. Until then the monthly snapshot and updates wait.",
+        crate::backup::settle_advice()
+    )
+}
 /// A saved reason as the page shows it: cut only at a whole sentence or word, with the
 /// repair advice kept (in short) however long the rest is.
 fn readable(said: &str) -> String {
-    match said.find(SETTLE_START) {
+    match said.find(crate::backup::SETTLE_START) {
         Some(at) => {
             let before = full_stop(&whole(said[..at].trim_end(), 300));
-            format!("{before} {SETTLE_SHORT}").trim_start().to_string()
+            format!("{before} {}", settle_short())
+                .trim_start()
+                .to_string()
         }
         None => full_stop(&whole(said, 300)),
     }
@@ -2564,7 +2579,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
                     format!("mount:{id}"),
                     "critical",
                     format!("{name} has filesystem errors"),
-                    "Linux met errors writing to it (a loose cable, the network storage box away for long, a failing drive), so some changes may be missing and the drive may have turned read-only. Check it: sudo bash install.sh --recover, and choose \"Check a drive that turned read-only\" (it checks and repairs the filesystem, with your yes).",
+                    &format!("Linux met errors writing to it (a loose cable, the network storage box away for long, a failing drive), so some changes may be missing and the drive may have turned read-only. Check it: sudo bash install.sh --recover, and choose {} (a check changes nothing; a repair is a choice of its own there, with your yes).", check_drive_choice()),
                 );
             } else if d["waiting"] == true {
                 add(
@@ -2578,10 +2593,10 @@ pub(crate) fn alerts(s: &Value) -> Value {
                     format!("mount:{id}"),
                     "critical",
                     format!("{name} turned read-only"),
-                    if d["network"] == true {
-                        "Linux stopped writing to it after errors (the connection to the network storage box was lost for a while, most likely), so the apps' changes fail. Nothing more is written; do not restart the apps yet. Check the NAS and the network, then in a terminal: sudo bash install.sh --recover, and choose \"Check a drive that turned read-only\"."
+                    &if d["network"] == true {
+                        format!("Linux stopped writing to it after errors (the connection to the network storage box was lost for a while, most likely), so the apps' changes fail. Nothing more is written; do not restart the apps yet. Check the NAS and the network, then in a terminal: sudo bash install.sh --recover, and choose {}.", check_drive_choice())
                     } else {
-                        "Linux stopped writing to it after errors, so the apps' changes fail. Check its cable and health, then in a terminal: sudo bash install.sh --recover, and choose \"Check a drive that turned read-only\"."
+                        format!("Linux stopped writing to it after errors, so the apps' changes fail. Check its cable and health, then in a terminal: sudo bash install.sh --recover, and choose {}.", check_drive_choice())
                     },
                 );
             } else if d["used_percent"].as_f64().unwrap_or(0.0) >= 90.0 {
@@ -2815,7 +2830,11 @@ pub(crate) fn alerts(s: &Value) -> Value {
                         text(&c["name"]),
                         plural(bad, "file is", "files are")
                     ),
-                    "Run  sudo bash install.sh --recover  and choose \"Repair damaged backup copies\"; it lists the files.",
+                    &format!(
+                        "Run  sudo bash install.sh --recover  and choose \"{}\", then \"{}\"; it lists the files.",
+                        common::shared("recovery_menu", "drive_section"),
+                        common::shared("recovery_menu", "fix_copies")
+                    ),
                 );
             }
         }
@@ -3876,7 +3895,8 @@ mod os_tests {
         assert_eq!(shown.len(), 1);
         assert_eq!(shown[0]["level"], "critical");
         assert!(!shown[0].to_string().contains("b.jpg"), "{}", shown[0]);
-        assert!(text(&shown[0]["detail"]).contains("Repair damaged backup copies"));
+        assert!(text(&shown[0]["detail"])
+            .contains("choose \"Check or repair a drive\", then \"Fix damaged backup copies\""));
         let _ = std::fs::remove_dir_all(data);
     }
     #[test]
@@ -4525,14 +4545,14 @@ mod user_panel_tests {
     /// and the repair advice that was cut off is kept, in short.
     #[test]
     fn long_reasons_are_cut_at_a_sentence_and_keep_the_repair_advice() {
-        let full = format!("Backup copies failed their checksum check: 1 Nextcloud file no longer matches its recorded checksum (kept as it is): rivka/files/Clients/2024/Contract-Levi.pdf. {}", crate::backup::SETTLE);
+        let full = format!("Backup copies failed their checksum check: 1 Nextcloud file no longer matches its recorded checksum (kept as it is): rivka/files/Clients/2024/Contract-Levi.pdf. {}", crate::backup::settle_advice());
         let saved = json!({"stage": "checking every copy on the USB drive by checksum",
             "reason": common::sanitize(&full)});
         // The report keeps at most 300 characters, cut at a sentence or word since 0.40.2.
         assert!(text(&saved["reason"]).chars().count() <= 300);
         let shown = failure_reason(&saved);
-        assert_eq!(shown, format!("Failed while checking every copy on the USB drive by checksum: Backup copies failed their checksum check: 1 Nextcloud file no longer matches its recorded checksum (kept as it is): rivka/files/Clients/2024/Contract-Levi.pdf. {SETTLE_SHORT}"));
-        assert!(crate::backup::SETTLE.starts_with(SETTLE_START));
+        assert_eq!(shown, format!("Failed while checking every copy on the USB drive by checksum: Backup copies failed their checksum check: 1 Nextcloud file no longer matches its recorded checksum (kept as it is): rivka/files/Clients/2024/Contract-Levi.pdf. {}", settle_short()));
+        assert!(crate::backup::settle_advice().starts_with(crate::backup::SETTLE_START));
         // Without the advice: the last whole sentence, or the last whole word and "…".
         let words = "word ".repeat(70);
         assert_eq!(whole(&words, 300).chars().last(), Some('…'));
@@ -4739,7 +4759,7 @@ mod round_two_tests {
             .iter()
             .find(|a| a["title"] == "Media HDD turned read-only")
             .unwrap();
-        assert!(text(&read_only["detail"]).contains("Check a drive that turned read-only"));
+        assert!(text(&read_only["detail"]).contains("choose \"Check or repair a drive\", then \"Check a drive that stopped taking new files\""));
         assert!(raised
             .as_array()
             .unwrap()
@@ -4773,7 +4793,7 @@ mod round_two_tests {
         );
         let alert = &shown.as_array().unwrap()[0];
         assert_eq!(alert["title"], "Media HDD has filesystem errors");
-        assert!(text(&alert["detail"]).contains("Check a drive that turned read-only"));
+        assert!(text(&alert["detail"]).contains("choose \"Check or repair a drive\", then \"Check a drive that stopped taking new files\""));
         let _ = fs::remove_dir_all(root);
     }
     /// QA after 0.40.2: "1 file", never "1 files".
