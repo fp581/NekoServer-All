@@ -2191,9 +2191,9 @@ fn space_advice(id: &str, full: bool) -> &'static str {
         ("media_hdd", true) => "Downloads, the nightly backups and the monthly snapshot stop when it is full. Delete what you no longer watch, or old downloads, or add a bigger drive.",
         ("data_ssd", true) => "The apps keep their data, the music and their images here and can stop working when it is full. Free up space there, or move to a bigger SSD.",
         (_, true) => "Backups and uploads stop when it is full. Free up space there.",
-        ("media_hdd", false) => "Over 90% used. Downloads, the nightly backups and the monthly snapshot stop once it is full: delete what you no longer watch, or old downloads, before then.",
-        ("data_ssd", false) => "Over 90% used. The apps keep their data, the music and their images here and can stop working once it is full: free up space there before then.",
-        _ => "Over 90% used. Backups and uploads stop once it is full: free up space there before then.",
+        ("media_hdd", false) => "90% or more used. Downloads, the nightly backups and the monthly snapshot stop once it is full: delete what you no longer watch, or old downloads, before then.",
+        ("data_ssd", false) => "90% or more used. The apps keep their data, the music and their images here and can stop working once it is full: free up space there before then.",
+        _ => "90% or more used. Backups and uploads stop once it is full: free up space there before then.",
     }
 }
 /// backup_secrets.py's key: without it every monthly snapshot holds the app password
@@ -5052,5 +5052,14 @@ mod round_two_tests {
         );
         assert_eq!(tv(&off, None), json!({"set_up": false}));
         let _ = fs::remove_dir_all(data);
+    }
+    /// Deep check plan 209: a drive at exactly 90.0% got the alert (>= 90) saying "Over
+    /// 90% used".
+    #[test]
+    fn a_drive_at_ninety_percent_is_not_said_to_be_over_it() {
+        for id in ["media_hdd", "data_ssd", "d3"] {
+            let said = space_advice(id, false);
+            assert!(said.starts_with("90% or more used."), "{said}");
+        }
     }
 }
