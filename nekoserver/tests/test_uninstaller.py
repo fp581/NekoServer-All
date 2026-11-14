@@ -306,6 +306,28 @@ class PlanTests(unittest.TestCase):
         self.system = FakeSystem(self.tmp.name).populate()
         self.plan = self.system.plan()
 
+    def test_a_trap_named_like_a_shortcut_on_a_desktop_is_not_read(self):
+        """Deep check 240: a person's Desktop is theirs. A pipe named like NekoServer's
+        shortcut kept the plan (the dry run too) waiting for good, and a link to /dev/zero
+        filled the memory; a link to a real shortcut elsewhere was taken as one to remove."""
+        import threading
+
+        desktop = self.system.root / 'home/neko/Desktop'
+        os.mkfifo(desktop / 'nekoserver-pipe.desktop')
+        (desktop / 'nekoserver-zero.desktop').symlink_to('/dev/zero')
+        (desktop / 'nekoserver-elsewhere.desktop').symlink_to(desktop / 'nekoserver-steam.desktop')
+        found = []
+        looked = threading.Thread(target=lambda: found.append(self.plan.shortcuts()), daemon=True)
+        looked.start()
+        looked.join(10)
+        if looked.is_alive():  # free the plan's thread: open the pipe's other end
+            with open(desktop / 'nekoserver-pipe.desktop', 'w'):
+                pass
+            self.fail('the plan waited on a pipe on the Desktop')
+        names = {p.name for p in found[0]}
+        self.assertIn('nekoserver-steam.desktop', names)
+        self.assertFalse(names & {'nekoserver-pipe.desktop', 'nekoserver-zero.desktop', 'nekoserver-elsewhere.desktop'})
+
     def test_the_server_choice_lists_only_nekoservers_own_things(self):
         group = self.plan.groups['server']
         names = {str(p.relative_to(self.system.root)) for p in group['paths']}

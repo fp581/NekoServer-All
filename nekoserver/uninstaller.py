@@ -79,6 +79,7 @@ DEFAULT_MOUNTS = {
 # A drive's mount folder from the settings is used only when it is a plain absolute
 # folder of its own; the root and the system's folders are never a drive of NekoServer's.
 ROOT_HOME = '/root'
+SHORTCUT_SIZE = 65536  # a desktop shortcut NekoServer writes is a few hundred bytes
 HOMES = '/home'
 PROTECTED = (
     '/',
@@ -660,10 +661,21 @@ class Plan:
 
     @staticmethod
     def ours(path):
+        """A shortcut NekoServer wrote: a plain file (never followed through a link) that
+        names it. The desktop folders are each person's own: a pipe named like a shortcut
+        kept the plan waiting for good, and a link to /dev/zero filled the memory."""
         try:
-            return 'NekoServer' in path.read_text(errors='replace')
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
         except OSError:
             return False
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return False
+            return b'NekoServer' in os.read(fd, SHORTCUT_SIZE)
+        except OSError:
+            return False
+        finally:
+            os.close(fd)
 
     def samba(self):
         """(share file, smb.conf to remove or None, accounts NekoServer created). An account
