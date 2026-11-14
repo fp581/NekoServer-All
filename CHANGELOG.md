@@ -37,6 +37,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **Nothing is restored onto the card itself.** `restore /mnt` (the card) copied every file onto the card, among its records; a folder on the card is now refused, also through a link.
 
 ### Fixed: backups and upgrades
+- **A NekoServer update whose download was cut off or damaged is said in plain words**, not tarfile's list or "IncompleteRead".
 - **The weekly Immich database copy never falls on a time the clocks skip**: on the Sunday the clocks go forward in the US and Europe, 02:15 does not exist, and the USB copy got the week-old database copy. It moves earlier (01:45) where that would happen.
 - **Setup says when a backup time you choose falls in the hour the clocks skip** (it would not run that night), and offers another; Enter keeps yours. The old default database copy time (02:15) moves to 01:45 where it is skipped.
 - **A failed upgrade whose way back was cut off by a power cut is put back at the next start**, instead of being closed as "passed its check" on the release that failed.
@@ -50,6 +51,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **An older password list after the backup key was made again says it is from the earlier key** and asks for that password, instead of "Wrong password" to the right new one.
 
 ### Fixed: setup and its tools
+- **An automatic update cut off earlier is said with the command that finishes it** (`sudo dpkg --configure -a`), not apt's raw line.
 - **A damaged or missing settings file is named, with what is wrong** (not JSON, with the line and column; not there; no settings in it; no such profile), in `install.sh`, `acceptance.py` and `recover.py`, instead of Python's own words or a vague line.
 - **`recover.py check --config my.json` reads my.json.** The option was read only before the command.
 - **`recover.py` in a fresh download says the runtime is not built yet, and how to build it**, instead of "…runtime/build.json does not exist. Check the path".
@@ -102,6 +104,15 @@ Every copy is read back and checked before it counts. That read came straight af
 - **DASHBOARD.md says where a forgotten PIN can be found**, and what the reset gives.
 
 ### Fixed: apps and the network
+- **Immich and Nextcloud take only a stable release** (pre-releases and drafts were accepted), and an odd answer from the release list is said plainly, not a traceback.
+- **The nftables rule setup advises is inserted, so it works** (added at the end it was never reached under Arch's rules).
+- **An IPv6-only home network is said as such**, not "plug in a network cable".
+- **Tailscale with MagicDNS or HTTPS off says what to switch on** when nobody is there to answer.
+- **A shared-folders password too long for Samba (over 254 bytes) is said plainly**, not "Mismatch - password unchanged".
+- **An API key made again by hand in Sonarr or Radarr**: Prowlarr gets the current key (its link was called verified with the old one), and Seerr says where to paste it.
+- **Films on a drive of their own are looked for there** when Jellyfin and the Arr apps are connected.
+- **Nextcloud over another install's data folder names the folder and what to do**, not "explicit recovery required".
+- **A drive's top folder with lost+found is no longer "unreadable"** when you choose your own media folder.
 - **Connecting the media apps and qBittorrent has a total time limit per request**, so an app answering a byte at a time can't keep setup waiting without end.
 - **The gateway step waits for Tailscale to be ready** when Tailscale answers oddly (still starting, signed out: `"Self": null`), instead of stopping setup with a Python error.
 - **Samba shares exactly the folders named**: a share called `global`, `homes` or `printers` (names Samba keeps for itself), two names differing only in case, and a folder ending in a space are now refused with what to change; before, the first vanished, the second merged, and the third shared another folder.
