@@ -81,17 +81,20 @@ class DamagedRecordTests(unittest.TestCase):
     def test_a_folder_in_the_record_is_never_taken_as_an_option_of_mount(self):
         """SonarCloud on PR 87 (argument injection from a file): the folder of a move cut off
         in its switch comes from the record, and was handed to mount as it was, so a damaged
-        record saying "--all" ran  mount --all. It is now mounted by its full path after "--"."""
+        record saying "--all" ran  mount --all. Such a folder reaches no command now."""
         ran = []
         saved = {'mount': '--all', 'old': {'uuid': 'aaaa-bbbb', 'fstype': 'ext4'}}
+        looked = []
         with (
-            mock.patch.object(migrate, 'mounted_identity', return_value=None),
+            mock.patch.object(migrate, 'mounted_identity', side_effect=lambda folder: looked.append(folder)),
             mock.patch.object(migrate, 'run', side_effect=lambda argv, *a, **k: ran.append(argv)),
         ):
-            migrate.drive_not_back(saved)
-        self.assertEqual(len(ran), 1)
-        self.assertEqual(ran[0][:2], ['mount', '--'])
-        self.assertTrue(ran[0][2].startswith('/'), ran[0])
+            said = migrate.drive_not_back(saved)
+            self.assertEqual((ran, looked), ([], []))  # no command saw it
+            self.assertIn('the record of the drive move is damaged', said)
+            self.assertIn('the apps were not started', said)
+            migrate.drive_not_back({**saved, 'mount': '/mnt/nekoserver-media'})
+        self.assertEqual(ran, [['mount', '--', '/mnt/nekoserver-media']])
 
 
 class TargetTests(unittest.TestCase):

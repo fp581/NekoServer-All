@@ -702,6 +702,9 @@ def copy_to_new(journal, drive, old, new, places, out):
 
 UUID = re.compile(r'[A-Za-z0-9-]{8,80}')
 SUBVOLUME = re.compile(r'(/[A-Za-z0-9@._-]+)*')
+# A drive's folder as setup writes it (/mnt/nekoserver-media, say): a full path of plain
+# names. The move's record is a file, so its folder is checked before any command sees it.
+FOLDER = re.compile(r'(/[A-Za-z0-9@._-]+)+')
 
 
 def drive_not_back(saved):
@@ -714,13 +717,15 @@ def drive_not_back(saved):
     folder, old = saved.get('mount'), saved.get('old') or {}
     if not folder or not old.get('uuid'):
         return None
+    if not FOLDER.fullmatch(folder):
+        # Never handed to a command: a damaged record ("--all", say) would be an option.
+        return (
+            f'the record of the drive move is damaged (it names {folder!r} as the drive\'s folder), so the apps '
+            'were not started. Restart the PC: /etc/fstab mounts the drive that is in place'
+        )
     expected = (old['uuid'], old.get('fstype'), old.get('subvolume') or '')
     if mounted_identity(folder) is None:
-        # The folder comes from the record, a file: mounted by its full path, after "--",
-        # so a damaged record ("--all", say) can never be taken as an option of mount.
-        real = os.path.realpath(folder)
-        if real.startswith(os.sep):
-            run(['mount', '--', real], 120, check=False)
+        run(['mount', '--', folder], 120, check=False)  # after "--": a folder, never an option
     there = mounted_identity(folder)
     if there == expected:
         return None
