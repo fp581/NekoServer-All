@@ -15,6 +15,7 @@ import stat
 import subprocess
 import tempfile
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -401,6 +402,14 @@ UNSHOWN = re.compile('[\x00-\x1f\x7f-\x9f؜‎‏‪-‮⁦-⁩]')
 def printable(text):
     """`text` as it can be printed: each such character written as its code (\\x1b)."""
     return UNSHOWN.sub(lambda m: m.group(0).encode('unicode_escape').decode('ascii'), str(text))
+
+
+def look_alike_letters(text):
+    """True when `text` mixes Latin letters with Cyrillic or Greek ones, many of which look
+    the same (Cyrillic а and Latin a): "Меdia" can't be told from "Media" on a screen.
+    A name all in one alphabet ("Медиа", "Música") is fine."""
+    scripts = {unicodedata.name(c, '').split(' ')[0] for c in text if c.isalpha()}
+    return 'LATIN' in scripts and bool(scripts & {'CYRILLIC', 'GREEK'})
 
 
 def safe_path(path):

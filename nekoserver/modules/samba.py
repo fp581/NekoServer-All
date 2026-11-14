@@ -4,7 +4,16 @@ import json, os, pwd, re, shutil, subprocess, sys
 import network_access
 from pathlib import Path
 import host
-from neko_common import safe_path, atomic_write, findmnt, immich_wanted, last_words, media_group, SYSTEMD_UNITS
+from neko_common import (
+    look_alike_letters,
+    safe_path,
+    atomic_write,
+    findmnt,
+    immich_wanted,
+    last_words,
+    media_group,
+    SYSTEMD_UNITS,
+)
 
 DEPENDENCIES = ['storage', 'system']
 DESCRIPTION = 'Set up explicit LAN or tailnet SMB shares with no guest access'
@@ -19,6 +28,13 @@ SAMBA_SECTIONS = ('global', 'homes', 'printers')
 def validate_share(name, relative):
     if not name or not name.replace('_', '').isalnum():
         raise RuntimeError('Invalid SMB share name')
+    if look_alike_letters(name):
+        # Shown with its letters' codes, so the odd ones can be found (deep check 239).
+        raise RuntimeError(
+            f'The share name "{name}" ({ascii(name)}) mixes Latin letters with Cyrillic or Greek ones that look '
+            'the same, so it could pass for another share on the network. Type it again in one alphabet under '
+            '"shares" in my-config.json'
+        )
     if name.lower() in SAMBA_SECTIONS:
         raise RuntimeError(
             f'"{name}" cannot be the name of a shared folder: Samba uses it for something else. '

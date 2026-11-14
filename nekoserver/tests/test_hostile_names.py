@@ -56,5 +56,19 @@ class DriveNameTests(unittest.TestCase):
         self.assertFalse(raw(neko_common.printable(HOSTILE)))
 
 
+class LookAlikeShareTests(unittest.TestCase):
+    def test_a_share_name_mixing_latin_and_cyrillic_is_refused_with_its_codes(self):
+        """Deep check 239: "Меdia" (Cyrillic М and е) was taken beside "Media", two shares
+        no one could tell apart on the network."""
+        from modules import samba
+
+        with self.assertRaises(RuntimeError) as said:
+            samba.validate_share('Меdia', 'Media')
+        self.assertIn("'\\u041c\\u0435dia'", str(said.exception))
+        self.assertIn('one alphabet', str(said.exception))
+        for name in ('Media', 'Música', 'Медиа', 'Photos_2024'):
+            self.assertEqual(str(samba.validate_share(name, 'Media')), 'Media', name)
+
+
 if __name__ == '__main__':
     unittest.main()
