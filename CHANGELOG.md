@@ -28,6 +28,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **Setup without internet says the package source could not be reached, and why** ("Could not connect to …"), with what to do, instead of apt's "Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?".
 - **A clock set years back stops setup at once, saying to fix the date**, instead of failing on the package lists' signatures as "package sources could not be reached".
 - **A number typed as "²" or "①" is asked again**, in setup, the recovery menu, the uninstaller and the drive picker, instead of ending in a Python traceback.
+- **The finishing page fits a narrow window**: each app's states, address and test buttons were cut off at the right edge.
 - **`migrate.py move --to <not a UUID>` says so**, instead of "move needs --drive and --to".
 - **Restoring from a card, a copy missing or replaced on the card is said as such**, as `verify` says it, instead of "No such file or directory".
 - **A restore that skipped files says how to get them too** (`--rename`), instead of ending with only "skipped 2". Seen restoring onto an exFAT stick, which cannot hold a name with `:` or tell `Same.jpg` from `same.jpg`.
@@ -41,6 +42,12 @@ Every copy is read back and checked before it counts. That read came straight af
 - **A PC whose system disk has no UUID (Ubuntu's ZFS-on-root install, say) no longer shows "OS SSD unavailable"** as an urgent alert while it runs fine. The blank UUID column was read as "no drive there".
 - **An app SSD that turned read-only, or is full, gets its own alert with what fixes it**, not "App SSD can't be written… restart the PC" (a restart fixes neither). The dashboard's own failed write had replaced the read-only alert, or stood beside the "almost full" one.
 - **A drive filling up (over 90%) says what stops when it is full and what to do before then**, as the urgent alert does, instead of "Review free space before uploads or backups".
+
+### Fixed: apps and the network
+- **The gateway step waits for Tailscale to be ready** when Tailscale answers oddly (still starting, signed out: `"Self": null`), instead of stopping setup with a Python error.
+- **Samba shares exactly the folders named**: a share called `global`, `homes` or `printers` (names Samba keeps for itself), two names differing only in case, and a folder ending in a space are now refused with what to change; before, the first vanished, the second merged, and the third shared another folder.
+- **qBittorrent's refused login says why**: a wrong saved password, or this PC blocked after too many tries (wait an hour, or restart it), instead of "API request failed; inspect local WebUI"; an odd answer is said plainly.
+- **The media apps' connector says plainly when an app answers with a web page or an odd list**, and goes on with the other apps, instead of a traceback or "Expecting value: line 1 column 1".
 
 ### Checked
 - **The card's restore tool runs on Python 3.8, as it promises**: its tests now run on a real Python 3.8 in CI (they pass), so a newer Python feature in it fails the build instead of a restore on an older PC.
