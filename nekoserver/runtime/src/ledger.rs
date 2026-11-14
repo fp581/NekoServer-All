@@ -14,6 +14,7 @@
 //!   `retired` with when and why, so the checks stop expecting a copy that is gone for
 //!   good while the record of what it held stays.
 use crate::common::{self, Error, Result};
+use serde_core::de::{Deserialize, Deserializer, IgnoredAny, MapAccess, Visitor};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -110,31 +111,28 @@ impl Ledger {
             if !fs::symlink_metadata(&path)?.is_file() {
                 return Err(Error::new("Checksum ledger is not a regular file"));
             }
-            let mut text = vec![];
-            common::file(&path)?.read_to_end(&mut text)?;
-            let value: Value = serde_json::from_slice(&text).map_err(|_| damaged(&path))?;
-            if value["format"] != FORMAT {
-                return Err(damaged(&path));
-            }
-            for (rel, row) in value["entries"].as_object().ok_or_else(|| damaged(&path))? {
-                let sha256 = row["sha256"].as_str().unwrap_or("");
-                if !valid_path(rel) || !sha256_hex(sha256) || !row["size"].is_u64() {
-                    return Err(Error::new(&format!(
-                        "Checksum ledger entry is invalid: {}",
-                        common::sanitize(rel)
-                    )));
+            let reader = std::io::BufReader::with_capacity(1 << 16, common::file(&path)?);
+            let read: Contents = serde_json::from_reader(reader).map_err(|e| {
+                if e.is_io() {
+                    Error::new(&format!(
+                        "The checksum list {} could not be read: {e}",
+                        path.display()
+                    ))
+                } else {
+                    damaged(&path)
                 }
-                entries.insert(
-                    rel.clone(),
-                    Entry {
-                        sha256: sha256.to_string(),
-                        size: row["size"].as_u64().unwrap_or(0),
-                        verified_at: row["verified_at"].as_f64().unwrap_or(0.0),
-                        how: row["how"].as_str().unwrap_or("").to_string(),
-                    },
-                );
+            })?;
+            let (Some(FORMAT), Some(rows)) = (read.format.as_deref(), read.entries) else {
+                return Err(damaged(&path));
+            };
+            if let Some(rel) = rows.invalid {
+                return Err(Error::new(&format!(
+                    "Checksum ledger entry is invalid: {}",
+                    common::sanitize(&rel)
+                )));
             }
-            retired = retired_rows(&value["retired"])?;
+            entries = rows.entries;
+            retired = retired_rows(&read.retired)?;
         }
         Ok(Ledger {
             root: root.to_path_buf(),
@@ -239,36 +237,42 @@ impl Ledger {
             .get(rel)
             .is_some_and(|row| row["sha256"] == sha256)
     }
-    fn value(&self) -> Value {
-        self.value_with(None)
-    }
-    /// The ledger's text; `kept`'s own entries win over this one's (the other copy's
-    /// records are never replaced either).
-    fn value_with(&self, kept: Option<&Ledger>) -> Value {
-        let mut all = self.entries.clone();
+    /// Write the ledger's text to `out`; `kept`'s own entries win over this one's (the
+    /// other copy's records are never replaced either). Written row by row from the
+    /// entries: a copy of them all and a JSON tree of it took 2.7 GB to add one photo to a
+    /// ledger of a million (deep check 223).
+    fn write(&self, kept: Option<&Ledger>, out: &mut dyn Write) -> Result<()> {
+        let mut all: BTreeMap<&String, &Entry> = self.entries.iter().collect();
         let mut retired = self.retired.clone();
         if let Some(kept) = kept {
             all.extend(
                 kept.entries
                     .iter()
-                    .filter(|(k, e)| !self.retired_as(k, &e.sha256))
-                    .map(|(k, e)| (k.clone(), e.clone())),
+                    .filter(|(k, e)| !self.retired_as(k, &e.sha256)),
             );
             for (k, row) in &kept.retired {
                 retired.entry(k.clone()).or_insert_with(|| row.clone());
             }
         }
-        let mut entries = Map::new();
-        for (rel, e) in &all {
-            entries.insert(
-                rel.clone(),
-                json!({"sha256": e.sha256, "size": e.size, "verified_at": e.verified_at, "how": e.how}),
-            );
+        // The keys in the order a JSON object of them is written (entries, format, retired).
+        // Each piece is made first and then written, so a full drive is said as one.
+        out.write_all(b"{\"entries\":{")?;
+        for (n, (rel, e)) in all.into_iter().enumerate() {
+            if n > 0 {
+                out.write_all(b",")?;
+            }
+            out.write_all(&serde_json::to_vec(rel)?)?;
+            out.write_all(b":")?;
+            let row = json!({"sha256": e.sha256, "size": e.size, "verified_at": e.verified_at, "how": e.how});
+            out.write_all(&serde_json::to_vec(&row)?)?;
         }
-        if retired.is_empty() {
-            return json!({"format": FORMAT, "entries": entries});
+        write!(out, "}},\"format\":\"{FORMAT}\"")?;
+        if !retired.is_empty() {
+            out.write_all(b",\"retired\":")?;
+            out.write_all(&serde_json::to_vec(&retired)?)?;
         }
-        json!({"format": FORMAT, "entries": entries, "retired": retired})
+        out.write_all(b"}")?;
+        Ok(())
     }
     /// Publish the ledger durably (call after the files it lists are published).
     pub fn save(&mut self) -> Result<()> {
@@ -278,7 +282,7 @@ impl Ledger {
         if self.unsaved == 0 && self.root.join(LEDGER).exists() {
             return Ok(());
         }
-        publish(&self.root, &serde_json::to_vec(&self.value())?)?;
+        publish(&self.root, &|out| self.write(None, out))?;
         self.unsaved = 0;
         Ok(())
     }
@@ -287,7 +291,7 @@ impl Ledger {
     pub fn publish_copy(&self, other_root: &Path, kept: Option<&Ledger>) -> Result<()> {
         common::safe(other_root)?;
         let _lock = take_lock(&other_root.join(LOCK))?;
-        publish(other_root, &serde_json::to_vec(&self.value_with(kept))?)
+        publish(other_root, &|out| self.write(kept, out))
     }
 }
 
@@ -317,6 +321,94 @@ fn retired_rows(value: &Value) -> Result<Map<String, Value>> {
     }
     Ok(rows.clone())
 }
+/// A ledger file as read, straight into its entries. Read as one JSON tree first, a
+/// ledger of a million photos (217 MB) took 1.5 GB of memory (deep check 223); each row
+/// is now looked at on its own and only the entry is kept.
+#[derive(Default)]
+struct Contents {
+    format: Option<String>,
+    entries: Option<Rows>,
+    retired: Value,
+}
+#[derive(Default)]
+struct Rows {
+    entries: BTreeMap<String, Entry>,
+    /// The first row that is not a valid entry, said once the file is known to be a ledger.
+    invalid: Option<String>,
+}
+/// The entry a ledger row stands for, None when the row is not a valid one.
+fn entry_of(rel: &str, row: &Value) -> Option<Entry> {
+    let sha256 = row["sha256"].as_str().unwrap_or("");
+    if !valid_path(rel) || !sha256_hex(sha256) || !row["size"].is_u64() {
+        return None;
+    }
+    Some(Entry {
+        sha256: sha256.to_string(),
+        size: row["size"].as_u64().unwrap_or(0),
+        verified_at: row["verified_at"].as_f64().unwrap_or(0.0),
+        how: row["how"].as_str().unwrap_or("").to_string(),
+    })
+}
+impl<'de> Deserialize<'de> for Contents {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        struct File;
+        impl<'de> Visitor<'de> for File {
+            type Value = Contents;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a checksum ledger")
+            }
+            fn visit_map<A: MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> std::result::Result<Contents, A::Error> {
+                let mut read = Contents::default();
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "format" => {
+                            read.format = map.next_value::<Value>()?.as_str().map(String::from)
+                        }
+                        "entries" => read.entries = Some(map.next_value()?),
+                        "retired" => read.retired = map.next_value()?,
+                        _ => {
+                            map.next_value::<IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(read)
+            }
+        }
+        d.deserialize_map(File)
+    }
+}
+impl<'de> Deserialize<'de> for Rows {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        struct Each;
+        impl<'de> Visitor<'de> for Each {
+            type Value = Rows;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("the ledger's entries")
+            }
+            fn visit_map<A: MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> std::result::Result<Rows, A::Error> {
+                let mut rows = Rows::default();
+                while let Some((rel, row)) = map.next_entry::<String, Value>()? {
+                    match entry_of(&rel, &row) {
+                        Some(entry) => {
+                            rows.entries.insert(rel, entry);
+                        }
+                        None => {
+                            rows.invalid.get_or_insert(rel);
+                        }
+                    }
+                }
+                Ok(rows)
+            }
+        }
+        d.deserialize_map(Each)
+    }
+}
 /// The single-writer lock. A program another thread of this job just started can hold
 /// a copy of the lock for an instant before it starts running (its copy is closed then),
 /// so a busy lock is retried briefly before it counts as another writer.
@@ -337,16 +429,18 @@ fn take_lock(path: &Path) -> Result<File> {
     }
 }
 /// `.neko-ledger.json.<uuid>.tmp` -> fsync -> rename -> fsync the folder.
-fn publish(root: &Path, bytes: &[u8]) -> Result<()> {
+fn publish(root: &Path, text: &dyn Fn(&mut dyn Write) -> Result<()>) -> Result<()> {
     let temp = root.join(format!("{LEDGER}.{}.tmp", uuid4()?));
     let result = (|| {
-        let mut f = OpenOptions::new()
+        let f = OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(&temp)?;
-        f.write_all(bytes)?;
+        let mut out = std::io::BufWriter::with_capacity(1 << 16, f);
+        text(&mut out)?;
+        let f = out.into_inner().map_err(|e| e.into_error())?;
         f.sync_all()?;
         drop(f);
         common::safe(&root.join(LEDGER))?;
@@ -531,6 +625,90 @@ mod tests {
         fs::write(root.join(LEDGER), text.replace("a.txt", "../a.txt")).unwrap();
         drop(ledger);
         assert!(Ledger::read(&root).is_err());
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(other);
+    }
+    /// Memory this thread holds from the allocator (now, most since `peak` began). Counted
+    /// per thread, so the tests running beside one don't count in it.
+    struct Counting;
+    thread_local! {
+        static HELD: std::cell::Cell<(isize, isize)> = const { std::cell::Cell::new((0, 0)) };
+    }
+    fn note(change: isize) {
+        let _ = HELD.try_with(|held| {
+            let (now, most) = held.get();
+            held.set((now + change, most.max(now + change)));
+        });
+    }
+    unsafe impl std::alloc::GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+            note(layout.size() as isize);
+            std::alloc::System.alloc(layout)
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+            note(-(layout.size() as isize));
+            std::alloc::System.dealloc(ptr, layout)
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, size: usize) -> *mut u8 {
+            note(size as isize - layout.size() as isize);
+            std::alloc::System.realloc(ptr, layout, size)
+        }
+    }
+    #[global_allocator]
+    static COUNTING: Counting = Counting;
+    /// What `work` gave back, the memory it still holds after, and the most it held.
+    fn measured<T>(work: impl FnOnce() -> T) -> (T, isize, isize) {
+        let start = HELD.with(|held| {
+            let (now, _) = held.get();
+            held.set((now, now));
+            now
+        });
+        let out = work();
+        let (now, most) = HELD.with(|held| held.get());
+        (out, now - start, most - start)
+    }
+    /// Deep check 223 (a ledger of a million photos, 217 MB): reading it took 1.5 GB, and
+    /// the archive that added one photo to it 2.7 GB, as the whole file, a JSON tree of it
+    /// and a copy of every entry were in memory at once.
+    #[test]
+    fn a_big_ledger_is_read_and_saved_without_a_copy_of_it_in_memory() {
+        let root = scratch("big");
+        let mut ledger = Ledger::open(&root).unwrap();
+        for n in 0..20_000 {
+            let rel = format!("upload/library/2026/IMG_{n:06}.jpg");
+            ledger
+                .record(&rel, &format!("{n:064x}"), 3_000_000, "copied")
+                .unwrap();
+        }
+        ledger.save().unwrap();
+        drop(ledger);
+        let file = fs::metadata(root.join(LEDGER)).unwrap().len() as isize;
+        let (mut ledger, kept, most) = measured(|| Ledger::open(&root).unwrap());
+        assert_eq!(ledger.keys().count(), 20_000);
+        assert!(
+            most - kept < file / 2,
+            "read: {most} at most, {kept} kept, file {file}"
+        );
+        ledger.record("upload/new.jpg", A, 1, "copied").unwrap();
+        let ((), _, most) = measured(|| ledger.save().unwrap());
+        assert!(most < file / 2, "save: {most} at most, file {file}");
+        let other = scratch("big-copy");
+        let ((), _, most) = measured(|| ledger.publish_copy(&other, Some(&ledger)).unwrap());
+        assert!(most < file / 2, "copy: {most} at most, file {file}");
+        // What was written reads back the same, byte for byte as before.
+        drop(ledger);
+        let again = Ledger::read(&root).unwrap();
+        assert_eq!(again.keys().count(), 20_001);
+        assert_eq!(again.get("upload/new.jpg").unwrap().sha256, A);
+        let text: Value = serde_json::from_slice(&fs::read(root.join(LEDGER)).unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&text).unwrap(),
+            fs::read(root.join(LEDGER)).unwrap()
+        );
+        assert_eq!(
+            fs::read(other.join(LEDGER)).unwrap(),
+            fs::read(root.join(LEDGER)).unwrap()
+        );
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(other);
     }

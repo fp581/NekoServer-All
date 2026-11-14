@@ -10,6 +10,8 @@ test-fixtures = []
 
 [dependencies]
 serde_json = { version = "1.0", features = ["float_roundtrip"] }
+# serde_json's own traits (already built for it): the checksum ledger is read row by row.
+serde_core = "1.0"
 sha2 = "0.10"
 libc = "0.2"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
