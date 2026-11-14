@@ -1,7 +1,7 @@
 /// Every monitored app (shared.json); notify.rs names an alert for each (checked by a test).
 pub(crate) use crate::common::APPS;
 use crate::{
-    common::{self, filesystem_read_only, num, probe, round, turned_read_only, Error, Result},
+    common::{self, num, probe, round, turned_read_only, Error, Result},
     Args, VERSION,
 };
 use regex::Regex;
@@ -4800,6 +4800,7 @@ mod user_panel_tests {
 #[cfg(test)]
 mod round_two_tests {
     use super::*;
+    use crate::common::filesystem_read_only;
     /// QA after 0.40.2: a whole sentence keeps its full stop (common::sanitize takes the
     /// last one off, and a cut after a sentence reads "sentence.…"); a reason cut mid-
     /// sentence keeps "…", and a command or file name at the end gets nothing added.
