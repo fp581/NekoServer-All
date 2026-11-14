@@ -286,17 +286,29 @@ fn mount_info(path: &Path, expected: Option<&str>, fstype: &str) -> Value {
         // missing, and every backup blocked, each time a copy kept the drive busy).
         Err(_) => common::mount_table_entry(path).unwrap_or_default(),
     };
-    let v = s.split_whitespace().collect::<Vec<_>>();
-    if v.len() < 3 {
+    mount_status(&s, expected, fstype)
+}
+/// A drive's status from findmnt's "UUID FSTYPE SOURCE" line for its folder (`found`,
+/// empty when nothing is mounted there).
+fn mount_status(found: &str, expected: Option<&str>, fstype: &str) -> Value {
+    let Some((uuid, found_fstype, source)) = mount_fields(found) else {
         return json!({"status":"missing"});
-    }
-    if expected
-        .map(|u| u != v[0] || fstype != v[1])
-        .unwrap_or(false)
-    {
+    };
+    if expected.is_some_and(|u| u != uuid || fstype != found_fstype) {
         return json!({"status":"wrong_drive"});
     }
-    json!({"status":"mounted","source":v[2].split('[').next().unwrap_or("")})
+    json!({"status":"mounted","source":source.split('[').next().unwrap_or("")})
+}
+/// findmnt's "UUID FSTYPE SOURCE" line as (uuid, fstype, source). A filesystem without a
+/// UUID (a ZFS root, an overlay or tmpfs root, a disk no udev link names) leaves the first
+/// column blank, so the line has two words: its UUID is "" then. Before 0.51.2 such a
+/// root counted as missing, and the dashboard said "OS SSD unavailable" on a working PC.
+fn mount_fields(found: &str) -> Option<(&str, &str, &str)> {
+    match found.split_whitespace().collect::<Vec<_>>()[..] {
+        [fstype, source] => Some(("", fstype, source)),
+        [uuid, fstype, source, ..] => Some((uuid, fstype, source)),
+        _ => None,
+    }
 }
 fn device(source: &str) -> Option<String> {
     let partition =
@@ -4199,6 +4211,27 @@ mod user_panel_tests {
             app_drive(&json!({}), "os", Path::new("/nonexistent-neko"), None, "")["status"],
             "missing"
         );
+    }
+    /// The disk Linux runs from has no identity to check, and some have no UUID at all
+    /// (a ZFS root, an overlay root): findmnt then leaves its UUID column blank, and the
+    /// row is still a mounted drive. A drive that must have a UUID is not the chosen one
+    /// when something without one is mounted in its place.
+    #[test]
+    fn a_root_without_a_uuid_is_mounted_not_missing() {
+        let root = |found: &str| mount_status(found, None, "")["status"].clone();
+        assert_eq!(root("     ext4   /dev/vda"), "mounted");
+        assert_eq!(root("  zfs rpool/ROOT/ubuntu"), "mounted");
+        assert_eq!(root("1234-ab ext4 /dev/sda2"), "mounted");
+        assert_eq!(root(""), "missing");
+        assert_eq!(
+            mount_status("  zfs rpool/ROOT/ubuntu", None, "")["source"],
+            "rpool/ROOT/ubuntu"
+        );
+        let chosen = |found: &str| mount_status(found, Some("u1"), "ext4")["status"].clone();
+        assert_eq!(chosen("u1 ext4 /dev/sdb1[/@]"), "mounted");
+        assert_eq!(chosen("   ext4 /dev/sdb1"), "wrong_drive");
+        assert_eq!(chosen("u2 ext4 /dev/sdb1"), "wrong_drive");
+        assert_eq!(chosen(""), "missing");
     }
     /// A drive beyond the two (0.50.0: a group's files, or its apps, on a drive of
     /// their own) has a card like the two, named by what it holds; a server with

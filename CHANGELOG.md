@@ -26,6 +26,9 @@ Every copy is read back and checked before it counts. That read came straight af
 - **A card never gets a set inventory it cannot read back.** The engine now stops, naming the limit, before writing a list larger than its reader takes.
 - **Nothing is restored onto the card itself.** `restore /mnt` (the card) copied every file onto the card, among its records; a folder on the card is now refused, also through a link.
 
+### Fixed: the dashboard
+- **A PC whose system disk has no UUID (Ubuntu's ZFS-on-root install, say) no longer shows "OS SSD unavailable"** as an urgent alert while it runs fine. The blank UUID column was read as "no drive there".
+
 ### Checked
 - **The card's restore tool runs on Python 3.8, as it promises**: its tests now run on a real Python 3.8 in CI (they pass), so a newer Python feature in it fails the build instead of a restore on an older PC.
 
