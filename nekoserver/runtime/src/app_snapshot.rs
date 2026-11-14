@@ -364,6 +364,15 @@ fn verify_staged(payload: &Path, files: &[Value]) -> Result<()> {
     }
     Ok(())
 }
+/// Said when a file changed while the nightly (or host) snapshot copied it: which file,
+/// so the program still writing it can be found, and that nothing is lost. Without the
+/// name the dashboard said only "Application file changed during snapshot".
+fn changed_while_copied(source: &Path) -> String {
+    format!(
+        "{} changed while it was copied (something was still writing it), so this snapshot was not kept; the earlier ones stay and the next run tries again",
+        source.display()
+    )
+}
 pub(crate) fn copy_file(source: &Path, target: &Path) -> Result<String> {
     let mut input = common::file(source)?;
     let before = input.metadata()?;
@@ -390,7 +399,7 @@ pub(crate) fn copy_file(source: &Path, target: &Path) -> Result<String> {
         before.mtime_nsec(),
     ) != (after.ino(), after.len(), after.mtime(), after.mtime_nsec())
     {
-        return Err(Error::new("Application file changed during snapshot"));
+        return Err(Error::new(&changed_while_copied(source)));
     }
     let hash = common::digest_landed(target)?;
     if common::digest(source)? != hash {
@@ -704,6 +713,39 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         dir(&root);
         root
+    }
+    /// Seen on loop drives (0.51.2 review, a writer left running in an app's folder): the
+    /// nightly backup failed with "Application file changed during snapshot", naming no
+    /// file and no next step.
+    #[test]
+    fn a_file_written_during_the_copy_is_named() {
+        let root = scratch("written");
+        let source = root.join("sonarr.db");
+        fs::write(&source, vec![7u8; 4 << 20]).unwrap();
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = {
+            let (done, source) = (done.clone(), source.clone());
+            std::thread::spawn(move || {
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    let mut file = fs::OpenOptions::new().append(true).open(&source).unwrap();
+                    file.write_all(b"row\n").unwrap();
+                    std::thread::sleep(std::time::Duration::from_micros(200));
+                }
+            })
+        };
+        // Each try copies while the writer appends; one that happened to see no write
+        // between its two looks is tried again.
+        let said = (0..50).find_map(|n| {
+            copy_file(&source, &root.join(format!("copy-{n}")))
+                .err()
+                .map(|e| e.to_string())
+        });
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().unwrap();
+        let said = said.expect("the writer changed the file during a copy");
+        assert!(said.contains(&source.display().to_string()), "{said}");
+        assert!(said.contains("the next run tries again"), "{said}");
+        let _ = fs::remove_dir_all(&root);
     }
     #[test]
     fn an_app_set_up_again_is_started_instead_of_blocking_backups() {
