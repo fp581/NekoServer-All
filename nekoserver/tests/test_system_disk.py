@@ -210,7 +210,7 @@ class RoomTests(unittest.TestCase):
             self.assertEqual(
                 drive_table.system_verdict('media_hdd', apps_there),
                 'it has too little room: 60 GB free, and the media HDD needs at least 70 GB there together with what '
-                'is already kept there',
+                'is already kept there. Free 10 GB more on it to use it',
             )
             self.assertEqual(drive_table.system_verdict('usb', {}), drive_table.SYSTEM_NOT_OFFLINE)
         with mock.patch.object(storage, 'system_filesystem', return_value=('root-0001', 'zfs')):

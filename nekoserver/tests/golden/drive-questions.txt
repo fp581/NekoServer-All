@@ -94,6 +94,7 @@ The backups are then on the same disk as what they copy. They still help after a
 
 ===== A PC with no drive that can be used =====
 No drive here can be the app SSD (your apps, photos and music). NekoServer never formats a drive by itself, and never takes a drive that is in use elsewhere.
-  - drive 1 (WD SN770, 477 GB NVMe SSD): it has too little room: 5 GB free, and the app SSD needs at least 20 GB there
+  - drive 1 (WD SN770, 477 GB NVMe SSD): it has too little room: 5 GB free, and the app SSD needs at least 20 GB there. Free 15 GB more on it to use it
   - drive 2 (ST1000DM010, 932 GB HDD): it has no filesystem yet. To use it, format it as ext4 yourself with the Disks app (GNOME) or KDE Partition Manager, or in a terminal with  sudo mkfs.ext4 /dev/sde  (this erases what is on it; setup never formats a drive)
+  Or connect a drive for it: one of 22 GB or more (100 GB or more is recommended), already formatted (ext4 is the safe choice).
 Then run  sudo bash install.sh  again. Nothing was changed.
