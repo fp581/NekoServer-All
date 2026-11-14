@@ -415,9 +415,17 @@ pub fn drives_in_use(cfg: &serde_json::Value) -> Vec<String> {
         .filter(|drive| extra_drive(cfg, drive))
         .map(str::to_string)
         .collect();
-    found.sort();
+    found.sort_by(|a, b| drive_order(a).cmp(&drive_order(b)));
     found.dedup();
     found
+}
+/// A drive name's place in a list: by its letters, then by the number it ends with, so
+/// "d3" comes before "d10" (setup names new drives d3, d4 ... and never gives a lost
+/// drive's name again, so d10 and up are reached; the dashboard listed d10 first).
+fn drive_order(name: &str) -> (&str, u64, &str) {
+    let letters = name.trim_end_matches(|c: char| c.is_ascii_digit());
+    let number = name[letters.len()..].parse().unwrap_or(0);
+    (letters, number, name)
 }
 /// The folder the films, the shows and their downloads are in: as setup said ("paths":
 /// "library", written only when they are off the media drive), else the media drive's.
@@ -1549,6 +1557,11 @@ mod media_answer_tests {
         let placed = json!({"storage": {"d4": {"uuid": "u4"}, "d3": {"uuid": "u3"}},
             "locations": {"photos": "d3"}, "installed": {"immich": "d4", "jellyfin": "d4", "x": "nowhere"}});
         assert_eq!(drives_in_use(&placed), ["d3", "d4"]);
+        // In the order of their numbers: d3 before d10, as the dashboard's cards show them.
+        let many = json!({"storage": {"d10": {}, "d3": {}, "d11": {}, "media2": {}, "d9": {}},
+            "locations": {"photos": "d10", "music": "d3", "cloud": "d11", "movies": "media2"},
+            "installed": {"immich": "d9"}});
+        assert_eq!(drives_in_use(&many), ["d3", "d9", "d10", "d11", "media2"]);
         // A folder on a drive nothing is placed on is refused, and so is a drive not listed.
         let mut stray = cfg.clone();
         stray["paths"]["photos"] = json!("/mnt/nekoserver-drives/d9/photos");
