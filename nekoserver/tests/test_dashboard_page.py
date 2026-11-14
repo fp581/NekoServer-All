@@ -567,6 +567,19 @@ class PhoneLayoutTests(unittest.TestCase):
         phone = css[css.index('@media (max-width: 700px)') :]
         self.assertNotIn('.chips { flex-wrap: nowrap', phone)
 
+    def test_a_greyed_out_menu_items_note_stays_readable(self):
+        # Measured in Lamplight: "App controls aren't reachable right now" under a greyed-out
+        # "Restart app" was 2.3:1, as every disabled button is half see-through. The note
+        # says what to do, so only the item's label is dimmed.
+        css = (ROOT / 'dashboard/style.css').read_text()
+
+        def rule(selector):
+            body = css[css.index('\n' + selector + ' {') :]
+            return body[: body.index('}')]
+
+        self.assertIn('opacity: 1;', rule('.menu-item:disabled'))
+        self.assertIn('opacity: 0.5;', rule('.menu-item:disabled > span'))
+
     def test_a_long_address_in_an_alerts_title_wraps_on_a_phone(self):
         # Seen at 390 px wide: "Your shared folder //nas-familyhome.local/Photos_and_Videos_
         # Backup_2019-2024 does not answer" ran off the screen and the page scrolled sideways;

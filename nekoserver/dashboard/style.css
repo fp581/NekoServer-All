@@ -1819,6 +1819,14 @@ body.tv {
   font-size: 14px;
   font-weight: 600;
 }
+/* A greyed-out item's note says why and what to do ("run setup again"): only its label is
+ * dimmed, so the note stays readable (dimmed with it, it measured 2.3:1 in Lamplight). */
+.menu-item:disabled {
+  opacity: 1;
+}
+.menu-item:disabled > span {
+  opacity: 0.5;
+}
 .menu-item:hover:not(:disabled),
 .menu-item:focus-visible {
   background: var(--raised);
