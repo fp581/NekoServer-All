@@ -37,6 +37,14 @@ impl From<std::io::Error> for Error {
     // The system's own reason ("No space left on device") is kept: without it a full or
     // failing drive read as an unexplained failure.
     fn from(e: std::io::Error) -> Self {
+        // A full drive is said in words with what to do (the job's stage says which
+        // drive): a backup drive nearly full for weeks showed only "Filesystem or process
+        // operation failed: No space left on device (os error 28)" (deep check 217).
+        if matches!(e.raw_os_error(), Some(libc::ENOSPC) | Some(libc::EDQUOT)) {
+            return Self(format!(
+                "The drive it was writing to is full ({e}): make room on it, or move to a bigger drive"
+            ));
+        }
         Self(format!("Filesystem or process operation failed: {e}"))
     }
 }
@@ -2094,9 +2102,28 @@ mod lock_tests {
     }
     #[test]
     fn a_system_error_keeps_its_reason() {
-        let error = Error::from(std::io::Error::from_raw_os_error(libc::ENOSPC)).to_string();
-        assert!(error.contains("No space left on device"), "{error}");
+        let error = Error::from(std::io::Error::from_raw_os_error(libc::EIO)).to_string();
+        assert!(error.contains("Input/output error"), "{error}");
         assert!(error.starts_with("Filesystem or process operation failed"));
+    }
+    /// Deep check 217 (the real `copy` command, five weeks against a USB stand-in with
+    /// 3 MB free): each week said only "Filesystem or process operation failed: No space
+    /// left on device (os error 28)".
+    #[test]
+    fn a_full_drive_is_said_in_words_with_what_to_do() {
+        for full in [libc::ENOSPC, libc::EDQUOT] {
+            let error = Error::from(std::io::Error::from_raw_os_error(full)).to_string();
+            assert!(
+                error.starts_with("The drive it was writing to is full ("),
+                "{error}"
+            );
+            assert!(
+                error.contains("make room on it, or move to a bigger drive"),
+                "{error}"
+            );
+        }
+        let said = Error::from(std::io::Error::from_raw_os_error(libc::ENOSPC)).to_string();
+        assert!(said.contains("No space left on device"), "{said}");
     }
     #[test]
     fn a_time_from_a_clock_that_was_ahead_is_shown_not_hidden() {
