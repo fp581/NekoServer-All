@@ -747,20 +747,28 @@ def copy_checked_into(src, folder, name, expected=None, what=None):
     what = what or name
     fd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=folder)
     stream = hashlib.sha256()
-    with os.fdopen(fd, 'w+b') as out:
-        os.fchmod(out.fileno(), 0o600)
-        while chunk := src.read(1 << 20):
-            stream.update(chunk)
-            out.write(chunk)
-        out.flush()
-        os.fsync(out.fileno())
-        # Written to the drive: dropped from memory, so the read below comes from the
-        # drive itself (from memory, damage on the drive would never be seen).
-        os.posix_fadvise(out.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
-        out.seek(0)
-        landed = hashlib.file_digest(out, 'sha256').hexdigest()
-    if landed != stream.hexdigest():
-        raise RuntimeError(f'Restoring {what} failed: the copy written to disk does not match what was read')
+    try:
+        with os.fdopen(fd, 'w+b') as out:
+            os.fchmod(out.fileno(), 0o600)
+            while chunk := src.read(1 << 20):
+                stream.update(chunk)
+                out.write(chunk)
+            out.flush()
+            os.fsync(out.fileno())
+            # Written to the drive: dropped from memory, so the read below comes from the
+            # drive itself (from memory, damage on the drive would never be seen).
+            os.posix_fadvise(out.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+            out.seek(0)
+            landed = hashlib.file_digest(out, 'sha256').hexdigest()
+        if landed != stream.hexdigest():
+            raise RuntimeError(f'Restoring {what} failed: the copy written to disk does not match what was read')
+    except (OSError, RuntimeError):
+        # A copy cut off part-way (the drive filled up, a read error) or written wrong is
+        # never left under the file's own name: a restore stopped by a full drive left a
+        # cut-off file there among the good ones, said to be "there as they are".
+        with contextlib.suppress(OSError):
+            os.unlink(name, dir_fd=folder)
+        raise
     if expected is not None and landed != expected:
         raise BackupDamaged(f'{what} is damaged on the backup (it no longer matches its recorded checksum)')
     return landed

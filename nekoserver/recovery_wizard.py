@@ -601,9 +601,19 @@ def copy_new(sources, destination, checked=None, files=None):
     files = every_file(sources) if files is None else files
     ensure_room(destination.parent, sum(p.stat().st_size for _, _, p in files), RESTORE)
     checked.begin(destination)
-    for done, (name, source, path) in enumerate(files):
+    return copy_each(
+        checked, destination, [(path, Path(name) / path.relative_to(source), None) for name, source, path in files]
+    )
+
+
+def copy_each(checked, destination, files):
+    """Copy each (saved copy, path in the restore, checksum or None) into the begun
+    restore; returns how many. A drive that fills up meanwhile is said as out_of_room,
+    whichever versions were chosen (only "every version" said it; the newest-version and
+    as-of restores, the recommended ones, said "[Errno 28] No space left on device")."""
+    for done, (path, target, expected) in enumerate(files):
         try:
-            checked.copy(path, destination / name / path.relative_to(source))
+            checked.copy(path, destination / target, expected)
         except OSError as exc:
             if exc.errno != errno.ENOSPC:
                 raise
@@ -740,8 +750,7 @@ def copy_latest(sources, destination, output=print, checked=None, chosen=None):
     chosen = latest_versions(sources) if chosen is None else chosen
     ensure_room(destination.parent, sum(p.stat().st_size for p, _, _, _ in chosen), RESTORE)
     checked.begin(destination)
-    for path, target, _, _ in chosen:
-        checked.copy(path, destination / target)
+    copy_each(checked, destination, [(path, target, None) for path, target, _, _ in chosen])
     several = [(t, when, n) for _, t, when, n in chosen if n > 1]
     if several:
         output(f'{len(several)} files had more than one version; you get the newest of each:')
@@ -951,9 +960,7 @@ def copy_listed(chosen, destination, checked):
     checksum the list recorded (when it has one)."""
     ensure_room(destination.parent, sum(p.stat().st_size for p, _, _ in chosen), RESTORE)
     checked.begin(destination)
-    for path, target, sha in chosen:
-        checked.copy(path, destination / target, sha)
-    return len(chosen)
+    return copy_each(checked, destination, chosen)
 
 
 NO_INVENTORY = (

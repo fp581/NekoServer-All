@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import first_checkup
+import neko_common  # noqa: E402
 import recovery_wizard  # noqa: E402
 import wizard  # noqa: E402
 from modules import capacity  # noqa: E402
@@ -2007,6 +2008,40 @@ class RecoveryWizardTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'filled up after 1 of 2 files') as caught:
                 recovery_wizard.copy_new([('src', self.root / 'src')], self.root / 'restored', checked)
         self.assertIn('run the restore again', str(caught.exception))
+
+    def test_a_drive_that_fills_up_is_said_the_same_for_the_newest_versions_and_leaves_no_cut_off_file(self):
+        """Seen restoring photos onto a small drive that filled up: the recommended choice
+        (only the newest version of each file) said "[Errno 28] No space left on device",
+        and the file being written when it filled stayed there, cut off, under its own name."""
+        import errno
+
+        self.write('src/a.txt', b'a' * 600)
+        self.write('src/b.txt', b'b' * 600)
+        restored = self.root / 'restored'
+        real, room = os.fdopen, [1000]
+
+        def filling(fd, *args, **kwargs):
+            """A drive with room for 1000 bytes: the second file is cut off."""
+            out = real(fd, *args, **kwargs)
+            write = out.write
+
+            def write_some(data):
+                if len(data) > room[0]:
+                    write(data[: room[0]])
+                    raise OSError(errno.ENOSPC, 'No space left on device')
+                room[0] -= len(data)
+                return write(data)
+
+            out.write = write_some
+            return out
+
+        checked = recovery_wizard.Checked(None)
+        with mock.patch.object(neko_common.os, 'fdopen', filling):
+            with self.assertRaisesRegex(RuntimeError, 'filled up after 1 of 2 files'):
+                recovery_wizard.copy_latest([('src', self.root / 'src')], restored, checked=checked)
+        left = list((restored / 'src').iterdir())
+        self.assertEqual(len(left), 1, 'only the file copied whole')
+        self.assertEqual(left[0].read_bytes(), (self.root / 'src' / left[0].name).read_bytes())
 
     def test_a_password_list_from_a_snapshot_without_a_backup_key(self):
         import tarfile
