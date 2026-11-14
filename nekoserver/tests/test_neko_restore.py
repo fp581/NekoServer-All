@@ -535,6 +535,18 @@ class ManyFilesTests(Base):
         self.assertIn('same file   DCIM/meeting 10:30.jpg -> _renamed/', said_text(self))
         self.assertEqual([p for p in self.dest.rglob('.neko-restore-*')], [])
 
+    def test_skipped_files_say_how_to_get_them_too(self):
+        """Seen restoring onto an exFAT stick: the run ended "restored 5, skipped 2" and
+        nothing said the two were still only on the card, or that --rename takes them."""
+        self.card.add(A_2001, b'card a')
+        (self.dest / '2001').mkdir()
+        (self.dest / A_2001).write_bytes(b'mine')
+        self.assertEqual(self.run_tool('restore', str(self.dest)), 1)
+        self.assertEqual(self.said[-1], tool.SKIPPED_HINT)
+        # With --rename nothing is skipped for its name, and nothing more is said.
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--rename'), 0)
+        self.assertNotIn(tool.SKIPPED_HINT, self.said)
+
     def test_a_file_already_restored_counts_as_done_without_a_progress_file(self):
         """Seen on the same stick: the same restore run again (no --progress) skipped every
         file it had restored, or with --rename made a second copy of each."""

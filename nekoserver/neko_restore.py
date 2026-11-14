@@ -63,6 +63,13 @@ RENAMED = '_renamed'
 THERE_ALREADY = '%s is there already'
 # A file already at its place with exactly the record's bytes (an earlier restore's).
 SAME_FILE = 'same file'
+# Said after a restore that skipped files without --rename: those are still only on the
+# card, and the summary's count alone does not say how to get them.
+SKIPPED_HINT = (
+    'The skipped files are still only on the card. To restore them too, run the same '
+    'command again with --rename: each then goes under _renamed/ (add --report <new file> '
+    'to see which name is which file).'
+)
 # Where Linux mounts a removable card: a card given with --card must be below one of these
 # (or be the card this tool runs from).
 CARD_ROOTS = ('/media/', '/run/media/', '/mnt/')
@@ -1290,6 +1297,8 @@ def cmd_restore(card, args, say):
     for row in report:
         counts[row['outcome']] = counts.get(row['outcome'], 0) + 1
     say(', '.join('%s %d' % kv for kv in sorted(counts.items())))
+    if counts.get('skipped') and not args.rename:
+        say(SKIPPED_HINT)
     for where_, why in unusable:
         say(UNUSABLE % (where_, why))
     fine = all(row['outcome'] in FINE for row in report)

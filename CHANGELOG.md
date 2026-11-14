@@ -20,6 +20,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **`recover.py check --config my.json` reads my.json.** The option was read only before the command.
 - **`migrate.py move --to <not a UUID>` says so**, instead of "move needs --drive and --to".
 - **Restoring from a card, a copy missing or replaced on the card is said as such**, as `verify` says it, instead of "No such file or directory".
+- **A restore that skipped files says how to get them too** (`--rename`), instead of ending with only "skipped 2". Seen restoring onto an exFAT stick, which cannot hold a name with `:` or tell `Same.jpg` from `same.jpg`.
 
 ### Fixed: SD-card backup sets (the engine, not switched on yet)
 - **The catalogue's copy for the host backup is private** (readable by root only). It was readable by every user, and a new catalogue was, for a moment.
