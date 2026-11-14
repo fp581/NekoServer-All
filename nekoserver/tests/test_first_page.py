@@ -163,6 +163,44 @@ class PageTests(Base):
         none = settings(media_apps={'photos': False, 'movies': False, 'music': False}, nextcloud={'enabled': False})
         self.assertEqual(dict(explanations.review(none))['Apps to install'], ['None: only what is always set up'])
 
+    def test_every_combination_of_switches_installs_what_the_review_says(self):
+        """Plan 95: each of the 256 combinations of the cards, the switches inside them and
+        the extras, settled as Install settles them; the review's apps are the apps the
+        steps set up (the photos step's immich_wanted, the media step's media_services,
+        Nextcloud's switch), and its extras the extras that are asked for. A settings
+        file without "deploy_immich" (taken out by hand) sets no Immich up, and the TV
+        step sets no TV up without Movies and shows: the review promised both."""
+        import itertools
+
+        switches = ['media_photos', 'media_movies', 'media_music', 'nextcloud']
+        switches += ['movies_downloads', 'music_downloads', 'tv', 'assistant']
+        for deploy in (True, None):
+            for combination in itertools.product((False, True), repeat=len(switches)):
+                config = settings()
+                if deploy is None:
+                    del config['photos']['deploy_immich']
+                for ident, on in zip(switches, combination, strict=True):
+                    explanations.set_extra(config, by_id(ident), on)
+                explanations.settle(config)
+                review = dict(explanations.review(config))
+                apps = [line.split(':')[0] for line in review['Apps to install'] if not line.startswith('None')]
+                installed = ['Immich'] if neko_common.immich_wanted(config) else []
+                installed += [neko_common.APPS[app][0] for app in neko_common.media_services(config)]
+                installed += ['Nextcloud'] if config['nextcloud']['enabled'] else []
+                self.assertEqual(apps, installed, (deploy, combination))
+                # The TV step leaves the TV out without Movies and shows (it opens Jellyfin).
+                tv = config['tv']['wanted'] and neko_common.media_group(config, 'movies')
+                extras = {by_id('tv')['title']} if tv else set()
+                extras |= {by_id('assistant')['title']} if config['assistant']['wanted'] else set()
+                self.assertEqual(extras, set(review.get('Extras', [])), combination)
+                # The review shown before Install (nothing settled yet) says the same.
+                before = settings()
+                if deploy is None:
+                    del before['photos']['deploy_immich']
+                for ident, on in zip(switches, combination, strict=True):
+                    explanations.set_extra(before, by_id(ident), on)
+                self.assertEqual(dict(explanations.review(before)).get('Extras', []), review.get('Extras', []))
+
 
 class ExistingServerTests(Base):
     exists = True
