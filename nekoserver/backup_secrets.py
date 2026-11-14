@@ -12,6 +12,7 @@ passwordless sudo rule let through unchecked, so it is no longer used).
 
 Usage:
   sudo python3 backup_secrets.py --setup            # choose the backup password (asks once)
+  sudo python3 backup_secrets.py --new-password     # forgot it: choose a new one
   sudo python3 backup_secrets.py --restore RUN --to NEW_DIR
 """
 
@@ -24,6 +25,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
 
 from neko_common import atomic_write, safe_path
 import snapshot_restore
@@ -41,6 +43,16 @@ EARLIER_KEY = (
     'This backup was made with an earlier backup key, before this server\'s key was made again '
     '(a new install, or a new backup password), so your current backup password does not open it. '
     'Enter the backup password you had when this backup was made; nothing was restored'
+)
+# Said for a password that opens neither the backup nor this server's key: what it is,
+# and what to do when it is forgotten (deep check 243: "Wrong password for this backup"
+# alone left the person typing guesses).
+WRONG_PASSWORD = (
+    'Wrong password for this backup; nothing was restored. It is the backup password you chose during setup '
+    '(not your login password, unless you chose that). Forgotten it? Then this list cannot be opened. While '
+    'the server works, each app\'s login is still shown by  account-setup.py show  (README.md, "Passwords"), '
+    'and  sudo python3 backup_secrets.py --new-password  chooses a new backup password for the backups from '
+    'now on'
 )
 NOT_WRITTEN = 'Nothing was restored: {reason}. Choose a folder on a drive you can write to, with free space.'
 
@@ -115,16 +127,17 @@ def unlocks(password, key_path):
         return False
 
 
-def setup(ask=getpass.getpass, out=print, key_dir=KEY_DIR, tries=3):
+def setup(ask=getpass.getpass, out=print, key_dir=KEY_DIR, tries=3, intro=True):
     """Interactively create the key, protected by a backup password typed twice: a typo
     can't become the password without being noticed. (sudo's own check is not used: a
     passwordless sudo rule lets any text through.)"""
     if configured(key_dir):
         out('Backup password-file key already set up.')
         return
-    out('One-time setup: monthly backups store the app password list encrypted.')
-    out('Choose a backup password for it (at least 8 characters; your login password is fine too).')
-    out('You are asked for this only now. Nightly and monthly backups run on their own and never ask.')
+    if intro:
+        out('One-time setup: monthly backups store the app password list encrypted.')
+        out('Choose a backup password for it (at least 8 characters; your login password is fine too).')
+        out('You are asked for this only now. Nightly and monthly backups run on their own and never ask.')
     out('Write it down somewhere safe: without it the password list in your backups cannot be recovered.')
     import setup_progress
 
@@ -144,6 +157,36 @@ def setup(ask=getpass.getpass, out=print, key_dir=KEY_DIR, tries=3):
     raise RuntimeError(
         'Backup key not created: no backup password was confirmed. Run  sudo python3 backup_secrets.py --setup  to try again'
     )
+
+
+def new_password(ask=getpass.getpass, out=print, key_dir=KEY_DIR, stamp=None):
+    """The backup password was forgotten: a new key, locked with a new password, for the
+    backups from now on. The old key is kept beside it, renamed, never deleted: each
+    backup carries its own copy of the key it was made with, so an old password that
+    comes back to mind still opens those. Until a new password is confirmed, the old key
+    stays in place (without one, monthly snapshots would keep the passwords unencrypted)."""
+    if not configured(key_dir):
+        return setup(ask, out, key_dir)
+    out('A new backup password, for the backups from now on.')
+    out('Backups made before keep the password they were made with: they open only with that one.')
+    out('Choose the new backup password (at least 8 characters; your login password is fine too).')
+    stamp = stamp or time.strftime('%Y%m%d-%H%M%S')
+    kept = [(key_dir / name, key_dir / f'{name}.before-{stamp}') for name in (KEY_NAME, CERT_NAME)]
+    for current, aside in kept:
+        current.rename(aside)
+    try:
+        setup(ask, out, key_dir, intro=False)
+    except BaseException as exc:
+        for current, aside in kept:
+            current.unlink(missing_ok=True)  # a half-made new key, if any
+            aside.rename(current)
+        if isinstance(exc, RuntimeError):
+            raise RuntimeError(
+                'No new backup password was confirmed, so nothing changed: the backup password is the one you '
+                'had. Run  sudo python3 backup_secrets.py --new-password  to try again'
+            ) from None
+        raise
+    out('Now run  sudo bash install.sh  once: it makes a new password list with the new backup password.')
 
 
 RESTORE_PROMPT = (
@@ -233,7 +276,7 @@ def opening_key(key, cert, password, damaged, key_dir=KEY_DIR, out=print):
     if not same and own_cert.is_file() and unlocks(password, own_key):
         # The password is right for this server's key, which was made after this backup.
         raise RuntimeError(EARLIER_KEY)
-    raise RuntimeError('Wrong password for this backup')
+    raise RuntimeError(WRONG_PASSWORD)
 
 
 def asked_restore(snapshot, destination, out=print):
@@ -309,6 +352,11 @@ def main():
         '--setup', action='store_true', help='Create the backup key, protected by a backup password you choose'
     )
     parser.add_argument(
+        '--new-password',
+        action='store_true',
+        help='Forgot the backup password: choose a new one for the backups from now on',
+    )
+    parser.add_argument(
         '--restore', type=Path, metavar='SNAPSHOT', help='Monthly snapshot directory (backups/monthly/RUN)'
     )
     parser.add_argument('--to', type=Path, metavar='NEW_DIR', help='New directory for the decrypted password files')
@@ -318,13 +366,17 @@ def main():
     try:
         if args.setup:
             setup()
+        elif args.new_password:
+            new_password()
         elif args.restore and args.to:
             done = asked_restore(args.restore, args.to)
             print(f'Password files restored to {done}')
         else:
-            parser.error('Use --setup, or --restore SNAPSHOT --to NEW_DIR')
+            parser.error('Use --setup, --new-password, or --restore SNAPSHOT --to NEW_DIR')
     except RuntimeError as exc:
         sys.exit(str(exc))
+    except (KeyboardInterrupt, EOFError):
+        sys.exit('\nStopped.')
 
 
 if __name__ == '__main__':

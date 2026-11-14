@@ -1,13 +1,16 @@
 """Deep checks 241-260: whole tasks a beginner does, followed only by the docs and the
 product's own messages ("I deleted a movie by mistake", "I forgot the backup password")."""
 
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+import backup_secrets  # noqa: E402
 import recovery_wizard  # noqa: E402
 
 
@@ -49,6 +52,53 @@ class DeletedFilmTests(unittest.TestCase):
         table = doc('RECOVERY.md').split('## Which situation are you in?')[1].split('\n## ')[0]
         row = next(line for line in table.splitlines() if 'deleted a film' in line)
         self.assertIn('not backed up', row)
+
+
+@unittest.skipUnless(shutil.which('openssl'), 'the openssl command is not installed')
+class ForgottenBackupPasswordTests(unittest.TestCase):
+    """Deep check 243: the backup password forgotten. A wrong one got "Wrong password for this
+    backup" and nothing else, no doc said what to do, and no command could choose a new one
+    (--setup says "already set up")."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.keys = Path(self.tmp.name) / 'keys'
+        self.out = []
+        backup_secrets.setup(ask=answers('first password', 'first password'), out=self.out.append, key_dir=self.keys)
+
+    def test_a_wrong_password_says_what_to_do_when_it_is_forgotten(self):
+        with self.assertRaises(RuntimeError) as caught:
+            backup_secrets.opening_key(
+                self.keys / backup_secrets.KEY_NAME, self.keys / backup_secrets.CERT_NAME, 'guess', False, self.tmp.name
+            )
+        said = str(caught.exception)
+        self.assertIn('nothing was restored', said)
+        self.assertIn('account-setup.py show', said)
+        self.assertIn('--new-password', said)
+
+    def test_a_new_backup_password_keeps_the_old_key_beside_it(self):
+        old = (self.keys / backup_secrets.KEY_NAME).read_bytes()
+        backup_secrets.new_password(answers('second password', 'second password'), self.out.append, self.keys, 'T')
+        self.assertTrue(backup_secrets.unlocks('second password', self.keys / backup_secrets.KEY_NAME))
+        self.assertEqual((self.keys / (backup_secrets.KEY_NAME + '.before-T')).read_bytes(), old)
+        self.assertTrue((self.keys / (backup_secrets.CERT_NAME + '.before-T')).is_file())
+        self.assertIn('sudo bash install.sh', self.out[-1])
+
+    def test_no_new_password_confirmed_leaves_the_old_one(self):
+        old = (self.keys / backup_secrets.KEY_NAME).read_bytes()
+        typed = answers('new password', 'typo', 'short', 'x')
+        with self.assertRaisesRegex(RuntimeError, 'nothing changed'):
+            backup_secrets.new_password(typed, self.out.append, self.keys, 'T')
+        self.assertEqual((self.keys / backup_secrets.KEY_NAME).read_bytes(), old)
+        self.assertEqual(
+            sorted(p.name for p in self.keys.iterdir()), [backup_secrets.KEY_NAME, backup_secrets.CERT_NAME]
+        )
+
+    def test_the_guide_says_what_to_do(self):
+        step = doc('GUIDED-SETUP.md').split('### 14. The backup password')[1].split('\n### ')[0]
+        self.assertIn('Forgot it?', step)
+        self.assertIn('sudo python3 backup_secrets.py --new-password', step)
 
 
 if __name__ == '__main__':

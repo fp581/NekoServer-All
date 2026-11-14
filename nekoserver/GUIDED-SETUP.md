@@ -199,6 +199,15 @@ Setup asks about each one, once. Answer `no` if you don't want it; nothing else 
 
 Monthly backups keep the list of app passwords locked with a **backup password**. Choose one (8 characters or more; your login password is fine too) and type it twice. **Write it down somewhere safe**: getting the password list back from a backup needs it. You are asked only this once.
 
+**Forgot it?** The password lists already in your backups cannot be opened without it; nobody can open them for you. While the server still works, nothing is lost: every app's login is still shown by `account-setup.py show` ([Seeing an app's password](#seeing-an-apps-password)). Choose a new backup password for the backups from now on, in a terminal in the NekoServer folder:
+
+```bash
+sudo python3 backup_secrets.py --new-password
+sudo bash install.sh
+```
+
+The first line asks for the new password twice; the second makes a new password list with it. Backups made before keep the old password: should it come back to mind, they still open with it.
+
 ### 15. The first checkup, and the finishing screen
 
 Setup checks every app, runs each backup once straight away, and checks the whole server. This takes a few minutes to an hour. Then it shows the **finishing screen**: what is done, anything that still needs you, and your app addresses.
