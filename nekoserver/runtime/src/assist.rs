@@ -1087,6 +1087,10 @@ enum Waited {
 /// One line from Ollama (as bytes: a line cut by a wake-up is kept whole), waiting at
 /// most `limit`, and giving up as soon as `keep` says the answer is not wanted any more.
 /// The connection's read time limit is short, so `keep` is asked about once a second.
+/// Read piece by piece, so the limit holds while bytes come without a line's end too:
+/// with read_until, an answer sent a byte at a time never let a read time out, and it
+/// kept "one question at a time" taken long after the page said it was stopped (seen
+/// with a stand-in assistant: every later question was "busy").
 fn next_line(
     reader: &mut BufReader<std::io::Take<TcpStream>>,
     line: &mut Vec<u8>,
@@ -1094,26 +1098,52 @@ fn next_line(
     keep: &dyn Fn() -> bool,
 ) -> std::result::Result<usize, Waited> {
     let start = Instant::now();
+    let mut asked = Instant::now();
+    let mut added = 0;
+    // After a read timed out, or about once a second while bytes keep coming.
+    let mut ask_now = false;
     loop {
-        match reader.read_until(b'\n', line) {
-            Ok(n) => return Ok(n),
+        if ask_now || asked.elapsed() >= KEEP_ASKED {
+            asked = Instant::now();
+            if !keep() {
+                return Err(Waited::NotWanted);
+            }
+        }
+        if start.elapsed() >= limit {
+            return Err(Waited::TooLong);
+        }
+        let piece = match reader.fill_buf() {
+            Ok(piece) => piece,
             Err(e)
                 if matches!(
                     e.kind(),
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                 ) =>
             {
-                if !keep() {
-                    return Err(Waited::NotWanted);
-                }
-                if start.elapsed() >= limit {
-                    return Err(Waited::TooLong);
-                }
+                ask_now = true;
+                continue;
             }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => return Err(Waited::Broken),
+        };
+        ask_now = false;
+        if piece.is_empty() {
+            return Ok(added); // the end: 0 when nothing more came
+        }
+        let (taken, ended) = match piece.iter().position(|b| *b == b'\n') {
+            Some(at) => (at + 1, true),
+            None => (piece.len(), false),
+        };
+        line.extend_from_slice(&piece[..taken]);
+        reader.consume(taken);
+        added += taken;
+        if ended {
+            return Ok(added);
         }
     }
 }
+/// How often `keep` is asked while a line is being read.
+const KEEP_ASKED: Duration = Duration::from_secs(1);
 
 /// Ask Ollama at `address` (OLLAMA, or a test's own) and hand each piece of the answer
 /// to `piece` as it comes. Returns the whole answer, or why there is none. When `keep`
@@ -2375,6 +2405,38 @@ mod tests {
         let (address, _) = fake_ollama(None);
         let why = collect(&address, &quick()).0.unwrap_err();
         assert!(why.contains("too long"), "{why}");
+    }
+
+    /// Seen asking the real service with a stand-in assistant that sent its answer a byte
+    /// at a time with no line's end: no read ever timed out, so its time limit was never
+    /// looked at and the answer held "one question at a time" until the stand-in stopped.
+    #[test]
+    fn an_answer_that_never_ends_its_line_is_stopped_in_time() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let _ = s.read(&mut [0u8; 65536]);
+            let _ = s.write_all(b"HTTP/1.0 200 OK\r\n\r\n");
+            // A byte every 50 ms for 10 s: faster than any read's time limit.
+            for _ in 0..200 {
+                if s.write_all(b"x").is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let limits = Limits {
+            first: Duration::from_secs(1),
+            next: Duration::from_secs(1),
+            total: Duration::from_secs(2),
+            abandon: Duration::from_secs(60),
+        };
+        let start = Instant::now();
+        let result = stream(&address, "m", 1, &json!([]), &limits, &|| true, &mut |_| {});
+        let took = start.elapsed();
+        assert!(result.unwrap_err().contains("too long"), "took {took:?}");
+        assert!(took < Duration::from_secs(4), "{took:?}");
     }
 
     /// The asks share one slot: these tests take it in turn.
