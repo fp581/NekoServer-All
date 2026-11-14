@@ -454,7 +454,15 @@ def part(ctx, title, steps, question, done=(), intro=(), targets=(), prompt=None
     output = output or print
     part_said(title, intro, steps, confirmed, output)
     open_targets(ctx, list(targets), output)
-    show_logins(ctx.config, [login for step in todo for login in step.get('logins', ())], prompt, output)
+    try:
+        show_logins(ctx.config, [login for step in todo for login in step.get('logins', ())], prompt, output)
+    except EOFError:
+        # Ctrl+D (or the window's Skip for now) at "Show a login now?" leaves the part
+        # for the next run, as at its own question: it escaped before, and the phone
+        # step failed ("Stopped at a question") with every step after it held up.
+        output('')
+        left_for_later(steps, confirmed, output)
+        return confirmed
     shown = [window_step(step, step['id'] in confirmed) for step in steps]
     import questions
 
@@ -472,10 +480,15 @@ def part(ctx, title, steps, question, done=(), intro=(), targets=(), prompt=None
         answer = yes_no('\n' + asked['title'], prompt, output, how='\n' + asked['how'] + ' ')
         marked = setup_progress.page_answer('done')  # the window's switches, when it answered
     confirmed |= part_confirmed(todo, answer, marked)
+    left_for_later(steps, confirmed, output)
+    return confirmed
+
+
+def left_for_later(steps, confirmed, output):
+    """Says which steps of a part are kept for the next run of setup (none: nothing said)."""
     left = [step['title'] for step in steps if step['id'] not in confirmed]
     if left:
         output('Kept for the next run of setup. Still to do: ' + '; '.join(left) + '.')
-    return confirmed
 
 
 def window_step(step, done):
