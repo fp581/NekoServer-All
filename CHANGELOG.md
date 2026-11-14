@@ -23,6 +23,9 @@ Every copy is read back and checked before it counts. That read came straight af
 - **`recover.py` with a setting of the wrong kind** (`"storage": "x"`, say) **says so without a Python traceback** around the words.
 - **The recovery menu's drive check names a drive that is not connected**, instead of "Both drives take new files and Linux counted no errors on them" (seen with neither drive connected). "The application SSD" also keeps its capital letters there.
 - **A restore says when the HDD that holds its backups is not connected**, instead of "No nightly backup… found on the HDD yet" or "No complete monthly snapshot on the HDD yet", which read as if no backup had ever been made.
+- **The monthly and music restore tools say what went wrong in plain words** (a damaged snapshot, a missing folder), instead of a traceback; a music restore onto exFAT restores every file the drive accepts and names the ones it refused.
+- **Messages name the recovery menu's choices as the menu shows them** ("Fix damaged backup copies", "Check a drive that stopped taking new files"), one wording kept in shared.json; since 0.50.0 they named choices that were no longer there.
+- **The weekly Immich database copy never falls on a time the clocks skip**: on the Sunday the clocks go forward in the US and Europe, 02:15 does not exist, and the USB copy got the week-old database copy. It moves earlier (01:45) where that would happen.
 - **`music-setup.py` with a drive not connected (or the runtime not built) says why and stops**, instead of a Python traceback.
 - **`acceptance.py` and `source_import.py` say why they stopped** (a drive not connected, the runtime not built, a setting missing), instead of "inspect configuration and local services" or "check configured mounts".
 - **Setup without internet says the package source could not be reached, and why** ("Could not connect to …"), with what to do, instead of apt's "Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?".
@@ -51,6 +54,10 @@ Every copy is read back and checked before it counts. That read came straight af
 - **The media apps' connector says plainly when an app answers with a web page or an odd list**, and goes on with the other apps, instead of a traceback or "Expecting value: line 1 column 1".
 - **Nextcloud's answers are read with PHP warnings around them**: setup waited 15 minutes for Nextcloud and failed when PHP printed a notice before or after occ's answer; accounts named only with digits ("0", "1") were not seen as accounts.
 - **The dashboard says what Tailscale needs**: a sign-in already past while Tailscale still says "Running" is "signed out" (was "phone access stops soon"); a Tailscale switched off, or waiting for your approval in its admin console, now says so and what to do (was nothing).
+- **A long address in an alert's title wraps on a phone** instead of pushing the whole page sideways.
+- **A greyed-out menu item's note is readable** (it measured 2.3:1; now only the label is dimmed).
+- **Ask Neko takes a password in quotes out whole**: `password: "correct horse battery"` kept "horse battery".
+- **Ask Neko is free for the next question when the page leaves an answer that never ends**, instead of "Neko is busy" until the assistant hung up; an assistant that hangs up at once is said as such, not as "took too long".
 
 ### Checked
 - **The card's restore tool runs on Python 3.8, as it promises**: its tests now run on a real Python 3.8 in CI (they pass), so a newer Python feature in it fails the build instead of a restore on an older PC.
