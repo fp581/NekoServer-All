@@ -42,6 +42,15 @@ def chown_refused(folder, uid, gid):
         probe.unlink()
 
 
+def has_account(uid):
+    """Whether this system has an account with the number `uid`."""
+    try:
+        pwd.getpwuid(uid)
+        return True
+    except KeyError:
+        return False
+
+
 def answers(*values):
     it = iter(values)
     return lambda question='': next(it)
@@ -1813,6 +1822,7 @@ class RecoveryWizardTests(unittest.TestCase):
             mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=None),
             mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
             mock.patch.object(recovery_wizard, 'reachable', return_value=True),
+            mock.patch.object(recovery_wizard, 'account', return_value=('4321', '/home/4321')),
         ):
             recovery_wizard.restore_photos(self.config, answers('1', '1', '1', 'yes'), out.append)
         said = '\n'.join(out)
@@ -1829,6 +1839,30 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertIn('now belong to 4321, so you can open them from your desktop', said)
         self.assertLess(said.index('belong to'), said.index('click "Upload"'))
 
+    def test_restored_files_are_not_given_to_an_account_that_is_gone(self):
+        """Plan 153: the settings' media account (4242 here) no longer on this PC, the
+        menu run without sudo (from the setup window, as root): the files were given to
+        the number 4242 and said to be "yours, to open from your desktop", which no account
+        could; the chown it offered ("4242:") is refused by chown itself."""
+        gone = next(n for n in range(4242, 60000) if not has_account(n))
+        target = self.root / 'restored-photos'
+        (target / 'upload').mkdir(parents=True)
+        (target / 'upload/a.jpg').write_bytes(b'photo')
+        before = (target / 'upload/a.jpg').stat().st_uid
+        with (
+            mock.patch.dict(os.environ, {'SUDO_UID': '', 'SUDO_GID': ''}),
+            mock.patch.object(recovery_wizard, 'give_to') as give_to,
+        ):
+            lines = recovery_wizard.handed_over(
+                {'media_mount': str(self.media), 'media': {'uid': gone, 'gid': gone}}, target
+            )
+        said = '\n'.join(lines)
+        give_to.assert_not_called()
+        self.assertEqual((target / 'upload/a.jpg').stat().st_uid, before)
+        self.assertIn(f'no account number {gone}', said)
+        self.assertIn(f'sudo chown -R YOU: "{target}"', said)
+        self.assertNotIn('open them from your desktop', said)
+
     def test_a_restored_folder_out_of_the_person_s_reach_is_said_with_how_to_move_it(self):
         target = self.root / 'private/back'
         target.mkdir(parents=True)
@@ -1836,6 +1870,7 @@ class RecoveryWizardTests(unittest.TestCase):
         with (
             mock.patch.object(recovery_wizard, 'give_to'),
             mock.patch.object(recovery_wizard, 'owner', return_value=(4321, 4322)),
+            mock.patch.object(recovery_wizard, 'account', return_value=('alice', '/home')),
         ):
             lines = recovery_wizard.handed_over({'media_mount': str(self.media)}, target)
         self.assertIn('can\'t get to where it is', lines[0])

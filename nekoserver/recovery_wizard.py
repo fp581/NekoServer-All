@@ -1616,12 +1616,24 @@ def reachable(path, uid, gid):
 
 
 def account(uid):
-    """(name, home folder) of account `uid`."""
+    """(name, home folder) of account `uid`, or None when this PC has no such account."""
     try:
         found = pwd.getpwuid(uid)
         return found.pw_name, found.pw_dir
     except KeyError:
-        return str(uid), '/home'
+        return None
+
+
+def no_such_account(uid, target):
+    """The lines for files whose account is gone (the settings' media account was removed,
+    or this PC was set up again with other accounts): they stay root's. Given to the
+    account number, they were said to be "yours" but no account could open them."""
+    return [
+        f'This PC has no account number {uid} any more (the account the settings name for your files), so the '
+        'restored files stay root\'s for now. To give them to your own account, run this with the name you log '
+        'in with (whoami shows it) in place of YOU:',
+        f'  sudo chown -R YOU: "{target}"',
+    ]
 
 
 def handed_over(config, target, checked=None):
@@ -1632,7 +1644,6 @@ def handed_over(config, target, checked=None):
     `checked`: the restore (Checked), whose open folder is walked, and only while it is
     still the folder the restore was made in."""
     uid, gid = owner(config)
-    name, home = account(uid)
     held = checked.target if checked is not None else None
     if held is not None and not held.same():
         return [
@@ -1641,6 +1652,9 @@ def handed_over(config, target, checked=None):
                 'changed), so nothing in it was handed over to your account.'
             )
         ]
+    if account(uid) is None:
+        return no_such_account(uid, target)
+    name, home = account(uid)
     try:
         give_to(target, uid, gid, held.fd if held is not None else None)
         if Path(target).parent == Path(config['media_mount']) / 'restored':
