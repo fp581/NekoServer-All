@@ -470,7 +470,7 @@ fn uuid4() -> Result<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     fn scratch(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("neko-ledger-{name}-{}", std::process::id()));
@@ -628,7 +628,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(other);
     }
-    /// Memory this thread holds from the allocator (now, most since `peak` began). Counted
+    /// Memory this thread holds from the allocator (now, most since `measured` began). Counted
     /// per thread, so the tests running beside one don't count in it.
     struct Counting;
     thread_local! {
@@ -657,7 +657,7 @@ mod tests {
     #[global_allocator]
     static COUNTING: Counting = Counting;
     /// What `work` gave back, the memory it still holds after, and the most it held.
-    fn measured<T>(work: impl FnOnce() -> T) -> (T, isize, isize) {
+    pub(crate) fn measured<T>(work: impl FnOnce() -> T) -> (T, isize, isize) {
         let start = HELD.with(|held| {
             let (now, _) = held.get();
             held.set((now, now));
