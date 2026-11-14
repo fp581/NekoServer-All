@@ -477,6 +477,10 @@ fn statvfs_usage(path: &Path) -> Option<(u64, u64, bool)> {
 /// critical alerts (seen on the rig, 0.46.2 and 0.46.3). What Linux does after write
 /// errors is turn the filesystem read-only, which shows here. The last line for the
 /// folder counts (a later mount covers an earlier one).
+/// Newer Linux (6.12 and later) no longer marks an ext4 that met errors "ro": it stays
+/// "rw" with "emergency_ro" among its options, and refuses every write (seen in 0.51.1,
+/// a test drive turned read-only part-way through the nightly app backup).
+const READ_ONLY_OPTIONS: [&str; 2] = ["ro", "emergency_ro"];
 fn filesystem_read_only(mountinfo: &str, path: &Path) -> bool {
     let wanted = path.to_string_lossy();
     mountinfo
@@ -487,7 +491,7 @@ fn filesystem_read_only(mountinfo: &str, path: &Path) -> bool {
         })
         .next_back()
         .and_then(|filesystem| filesystem.split(' ').nth(2))
-        .is_some_and(|options| options.split(',').any(|o| o == "ro"))
+        .is_some_and(|options| options.split(',').any(|o| READ_ONLY_OPTIONS.contains(&o)))
 }
 /// (space the apps can use, used), as `df` counts them: the part of the drive kept for
 /// the system (5% on ext4 unless changed) is not free for the apps, so a drive they
@@ -4696,6 +4700,9 @@ mod round_two_tests {
         // After write errors Linux turns the filesystem itself read-only.
         let failed = "36 25 8:80 / /mnt/nekoserver-media rw,relatime shared:2 - ext4 /dev/sdf ro,errors=remount-ro\n";
         assert!(filesystem_read_only(failed, hdd));
+        // Linux 6.12 and later: still "rw", with "emergency_ro" (read as in a test system).
+        let emergency = "126 85 7:7 / /mnt/nekoserver-media rw,relatime - ext4 /dev/loop7 rw,errors=remount-ro,emergency_ro\n";
+        assert!(filesystem_read_only(emergency, hdd));
         // A later mount on the same folder covers the earlier one; a folder that is not
         // a mount point, or a list that could not be read, says nothing.
         let covered = format!("{failed}90 25 8:96 / /mnt/nekoserver-media rw - ext4 /dev/sdg rw\n");
