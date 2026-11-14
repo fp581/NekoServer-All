@@ -3,6 +3,7 @@
 import contextlib
 import ctypes
 import errno
+import functools
 import hashlib
 import http.client
 import json
@@ -886,7 +887,32 @@ def read_settings(value):
         ) from None
     if not isinstance(config, dict):
         raise RuntimeError(f'{path} is not a settings file (no settings in it)')
+    template = settings_template()
+    wrong = next((k for k, v in config.items() if k in template and type(v) is not type(template[k])), None)
+    if wrong:
+        # Said here, once: before, "media": null or "data_mount": [] ended media-connect.py,
+        # onboard.py and source-wizard.py with a Python traceback (deep check 227).
+        raise RuntimeError(
+            f'{path} is damaged: "{wrong}" should be {KIND_WORDS[type(template[wrong])]}, as in the '
+            f'{SETTINGS_TEMPLATE} that came with NekoServer. Fix it, or name another with --config'
+        )
     return config
+
+
+# What each kind of value in the settings template is called in a message.
+KIND_WORDS = {dict: 'a section in { }', list: 'a list in [ ]', str: 'text in quotes', bool: 'true or false'}
+
+
+@functools.cache
+def settings_template():
+    """The top-level settings of the template (config.json beside this file) whose kind
+    every settings file keeps: a section stays a section, a folder stays text. Empty when
+    the template can't be read (reading settings does not need it)."""
+    try:
+        template = json.loads((Path(__file__).resolve().parent / SETTINGS_TEMPLATE).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in template.items() if type(v) in KIND_WORDS} if isinstance(template, dict) else {}
 
 
 # The settings a command uses when no --config is given (default_settings).
