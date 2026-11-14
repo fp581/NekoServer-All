@@ -82,6 +82,14 @@ Every copy is read back and checked before it counts. That read came straight af
 - **`notify --test` says what happened**: that the alert server took the test and to look at your phone, or that it was not sent and what to check. It printed nothing, or only "Notification delivery failed".
 
 ### Fixed: the dashboard and Ask Neko
+- **Keyboard focus stays on its control when the page refreshes** (it fell back to the top every few seconds on the apps' ⋯ buttons, Updates, "See more", "Detect fans").
+- **Nothing is covered or pushed sideways on a narrow phone at 200% zoom** (the page title was hidden under the top buttons at 320 px).
+- **The processes page with over 5,000 programs lists the busiest and counts them all**; newer busy programs were left out and the count was wrong.
+- **A heartbeat check-in made while the clock was ahead is not counted as missed** (a working heartbeat showed "stale" and could send a phone alert).
+- **A fan speed Linux can't give (outside 0–255) is not shown as a percentage** ("Now 118%").
+- **An app restart with Docker unrunnable says so plainly**, not "Permission denied (os error 13)".
+- **One of something is said in the singular** ("1 day ago", "1 output", threads, lights).
+- **A question typed before the PIN dialog stays in its box.**
 - **A damaged phone-alert record is set aside (kept, with its date) and alerts start fresh**, instead of every alert run failing with "Invalid JSON".
 - **Extra drives are listed in the order of their numbers** (d3 before d10).
 - **A PC whose system disk has no UUID (Ubuntu's ZFS-on-root install, say) no longer shows "OS SSD unavailable"** as an urgent alert while it runs fine. The blank UUID column was read as "no drive there".
