@@ -612,7 +612,15 @@ def copy_verified(card, rec, dir_fd, temp):
     """The archived file copied into `temp` (new, in the destination folder) while it is
     hashed; then the written file read back and hashed. Raises Invalid on any mismatch,
     after removing `temp`: no unverified output is left."""
-    src = card.open_payload(rec)
+    # Said as verify says it: the card's copy missing, or damaged; the system's words ("No
+    # such file or directory", "Too many levels of symbolic links") sounded like the
+    # destination's fault.
+    try:
+        src = card.open_payload(rec)
+    except FileNotFoundError:
+        raise Invalid('its copy is missing from the card') from None
+    except OSError:
+        raise Invalid('its copy on the card is damaged (not a plain file)') from None
     try:
         write_checked(src, rec, dir_fd, temp)
         back = os.open(temp, FILE_FLAGS, dir_fd=dir_fd)

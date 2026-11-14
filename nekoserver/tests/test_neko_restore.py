@@ -581,6 +581,21 @@ class ManyFilesTests(Base):
             self.assertEqual(self.run_tool('restore', str(self.dest)), 0)
         self.assertIn((0, 0, os.POSIX_FADV_DONTNEED), dropped)
 
+    def test_a_copy_missing_or_replaced_on_the_card_is_said_as_such(self):
+        """Seen on a hand-tampered card: restore said "No such file or directory (b/gone.jpg)"
+        (as if the destination were at fault) and "Too many levels of symbolic links", where
+        verify says missing and damaged."""
+        gone = self.card.add('b/gone.jpg', b'gone')
+        linked = self.card.add('f/link.jpg', b'link')
+        self.card.payload(gone).unlink()
+        self.card.payload(linked).unlink()
+        os.symlink('/etc/hostname', self.card.payload(linked))
+        self.assertEqual(self.run_tool('restore', str(self.dest)), 1)
+        said = said_text(self)
+        self.assertIn('failed      b/gone.jpg -> its copy is missing from the card', said)
+        self.assertIn('failed      f/link.jpg -> its copy on the card is damaged (not a plain file)', said)
+        self.assertNotIn('symbolic links', said)
+
     def test_a_name_restored_earlier_in_the_same_run_still_clashes_by_case(self):
         self.card.add('DCIM/IMG_1.JPG', b'upper')
         self.card.add('DCIM/img_1.jpg', b'lower')
