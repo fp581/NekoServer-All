@@ -30,7 +30,7 @@ Every copy is read back and checked before it counts. That read came straight af
 
 ### Fixed: the dashboard
 - **A PC whose system disk has no UUID (Ubuntu's ZFS-on-root install, say) no longer shows "OS SSD unavailable"** as an urgent alert while it runs fine. The blank UUID column was read as "no drive there".
-- **An app SSD that turned read-only is called that, with the repair step**, instead of "App SSD can't be written… restart the PC" (a restart does not repair it). The dashboard's own failed write had replaced the drive's alert.
+- **An app SSD that turned read-only, or is full, gets its own alert with what fixes it**, not "App SSD can't be written… restart the PC" (a restart fixes neither). The dashboard's own failed write had replaced the read-only alert, or stood beside the "almost full" one.
 
 ### Checked
 - **The card's restore tool runs on Python 3.8, as it promises**: its tests now run on a real Python 3.8 in CI (they pass), so a newer Python feature in it fails the build instead of a restore on an older PC.

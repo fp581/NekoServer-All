@@ -3062,16 +3062,19 @@ fn save_state(internal: &Path, state: &Value) -> Result<()> {
     fs::set_permissions(internal, fs::Permissions::from_mode(0o700))?;
     common::atomic_json(&internal.join("collector.json"), state)
 }
+/// The app SSD's own alerts that already say why it can't be written: turned read-only
+/// (mount:), full (space:), failing (smart:).
+const SSD_CAUSES: [&str; 3] = ["mount:data_ssd", "space:data_ssd", "smart:data_ssd"];
 /// The app SSD is mounted but can't be written: raised as its drive alert, unless the
-/// drive already has an urgent one ("turned read-only", "full"), which names the cause
-/// and how to fix it better than the failed write does.
+/// drive already has an urgent one of SSD_CAUSES, which names the cause and how to fix
+/// it better than the failed write does.
 fn unwritable(result: &mut Value, why: &str) {
     let alert = json!({"id":"mount:data_ssd","level":"critical","title":"App SSD can't be written",
         "detail":format!("The apps can't save anything on it ({}). It may be full or failing: check it, then restart the PC.", chars(why, 160))});
     if let Some(list) = result["alerts"].as_array_mut() {
         let urgent_already = list
             .iter()
-            .any(|a| a["id"] == "mount:data_ssd" && a["level"] == "critical");
+            .any(|a| SSD_CAUSES.contains(&text(&a["id"])) && a["level"] == "critical");
         if urgent_already {
             return;
         }
@@ -3083,47 +3086,50 @@ fn unwritable(result: &mut Value, why: &str) {
 #[cfg(test)]
 mod os_tests {
     use super::*;
-    /// Seen on an SSD remounted read-only: the collector's own state could not be saved,
-    /// and "App SSD can't be written ... restart the PC" replaced the drive's "turned
-    /// read-only" alert, the one that names the cause and the step that repairs it.
+    /// Seen on an SSD remounted read-only, then on one filled to the last byte: the
+    /// collector's own state could not be saved, and "App SSD can't be written ...
+    /// restart the PC" replaced the drive's "turned read-only" alert, or stood beside
+    /// its "almost full" one. The drive's own urgent alert names the cause and the fix.
     #[test]
     fn a_failed_state_write_keeps_the_ssds_own_urgent_alert() {
-        let detail_after = |storage: Value| {
-            let mut result = json!({"storage": [storage]});
+        // The titles of the SSD's alerts after the failed write.
+        let titles_after = |extra: Value| -> Vec<String> {
+            let mut ssd = json!({"id": "data_ssd", "name": "Application SSD", "status": "mounted"});
+            ssd.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let mut result = json!({"storage": [ssd]});
             result["alerts"] = alerts(&result);
-            unwritable(&mut result, "Read-only file system (os error 30)");
-            let ssd: Vec<&Value> = result["alerts"]
+            unwritable(&mut result, "Filesystem or process operation failed");
+            result["alerts"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .filter(|a| a["id"] == "mount:data_ssd")
-                .collect();
-            assert_eq!(ssd.len(), 1, "one alert for the drive");
-            (
-                text(&ssd[0]["title"]).to_string(),
-                text(&ssd[0]["level"]).to_string(),
-            )
+                .filter(|a| text(&a["id"]).ends_with(":data_ssd"))
+                .map(|a| text(&a["title"]).to_string())
+                .collect()
         };
-        let ssd = |extra: Value| {
-            let mut row = json!({"id": "data_ssd", "name": "Application SSD", "status": "mounted"});
-            row.as_object_mut()
-                .unwrap()
-                .extend(extra.as_object().unwrap().clone());
-            row
-        };
+        let cant = "App SSD can't be written";
         assert_eq!(
-            detail_after(ssd(json!({"read_only": true}))),
-            ("Application SSD turned read-only".into(), "critical".into())
+            titles_after(json!({"read_only": true})),
+            ["Application SSD turned read-only"]
+        );
+        assert_eq!(
+            titles_after(json!({"used_percent": 100.0})),
+            ["Application SSD is almost full"]
+        );
+        assert_eq!(
+            titles_after(json!({"smart": {"status": "fail", "reason": "reallocated sectors"}}))
+                .len(),
+            1,
+            "the failing drive's own alert alone"
         );
         // Nothing more specific to say: the write failure itself is the alert.
+        assert_eq!(titles_after(json!({})), [cant]);
+        // A warning (filling up) is not enough for a drive the apps can't write to.
         assert_eq!(
-            detail_after(ssd(json!({}))),
-            ("App SSD can't be written".into(), "critical".into())
-        );
-        // A warning (nearly full) is not enough for a drive the apps can't write to.
-        assert_eq!(
-            detail_after(ssd(json!({"used_percent": 91.0}))),
-            ("App SSD can't be written".into(), "critical".into())
+            titles_after(json!({"used_percent": 91.0})),
+            [cant, "Application SSD is filling up"]
         );
     }
     /// Gate run C8: the share of your films does not answer: the page names it, the
