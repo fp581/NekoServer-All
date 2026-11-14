@@ -1789,9 +1789,16 @@ fn heartbeat_late(attempt: Option<f64>, now: f64, interval: u64, uptime: Option<
         None => uptime.is_none_or(|up| up > 180.0),
     }
 }
+/// The last check-in's time as the collector counts it: one dated ahead of the clock (made
+/// while the clock was ahead, then put right) counts as now, like its last success. Left
+/// out, it read as no check-in at all, so a working heartbeat was "stale" (a phone alert)
+/// until the next one (deep check 167, the clock a day ahead then right again).
+fn heartbeat_attempt(row: &Value, now: f64) -> Value {
+    common::shown_time(&row["last_attempt"], now)
+}
 fn heartbeat(cfg: &Value, now: f64) -> Value {
     let row = common::json(Path::new("/run/nekoserver-heartbeat/status.json"), 64000);
-    let attempt = num(&row["last_attempt"], 0.0, now + 30.0);
+    let attempt = heartbeat_attempt(&row, now);
     let (code, text) = probe(
         &[
             "systemctl",
@@ -4313,6 +4320,20 @@ mod heartbeat_tests {
         assert!(heartbeat_late(None, 1000.0, 300, None));
         assert!(!heartbeat_late(Some(900.0), 1000.0, 300, Some(60.0)));
         assert!(heartbeat_late(Some(500.0), 1000.0, 300, Some(6000.0)));
+    }
+    /// Deep check 167: a check-in made while the clock was a day ahead, read once the
+    /// clock is right, is a recent one, not a missed one.
+    #[test]
+    fn a_check_in_from_a_clock_that_was_ahead_is_not_a_missed_one() {
+        let now = 1_800_000_000.0;
+        let attempt = heartbeat_attempt(&json!({"last_attempt": now + 86400.0}), now);
+        assert_eq!(attempt, json!(now));
+        assert!(!heartbeat_late(attempt.as_f64(), now, 300, Some(6000.0)));
+        assert_eq!(
+            heartbeat_attempt(&json!({"last_attempt": now - 60.0}), now),
+            json!(now - 60.0)
+        );
+        assert!(heartbeat_attempt(&json!({"last_attempt": "x"}), now).is_null());
     }
 }
 
