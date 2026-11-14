@@ -93,6 +93,19 @@ class Unusable(Exception):
     """The card or the command cannot be used at all."""
 
 
+class CardGone(Exception):
+    """The card stopped answering in the middle of a run (unplugged, or its reader failed):
+    the run stops, instead of saying every file after it is damaged or missing."""
+
+
+CARD_GONE = (
+    'The card stopped answering: it was unplugged, or its reader or the card failed. The files '
+    'restored so far are complete. Plug the card in again and run the same command: with '
+    '--progress it carries on where it stopped, and without it the files already restored count '
+    'as "same file".'
+)
+
+
 # ---- reading with bounds (the engine's format.rs, field for field) -------------------
 
 
@@ -387,6 +400,15 @@ class Card:
     def __exit__(self, *exc):
         self.close()
 
+    def still_there(self):
+        """Raise CardGone when the card no longer answers (its identity.json cannot be
+        looked at): called when a file of it cannot be read, so that an unplugged card is
+        said as such, not as one damaged or missing file after another."""
+        try:
+            os.stat('identity.json', dir_fd=self.nb, follow_symlinks=False)
+        except OSError:
+            raise CardGone(CARD_GONE) from None
+
     def _sub(self, name):
         try:
             return open_dir(name, self.nb)
@@ -410,7 +432,11 @@ class Card:
                         where = 'records/%s/%s' % (show(hh), show(name))
                         try:
                             rec = parse_record(read_limited(d, name, SMALL_FILE))
-                        except (Invalid, OSError) as e:
+                        except Invalid as e:
+                            yield None, where, str(e)
+                            continue
+                        except OSError as e:
+                            self.still_there()
                             yield None, where, str(e)
                             continue
                         problem = self._contradiction(rec, hh, name)
@@ -467,12 +493,17 @@ def check_copy(card, rec):
     try:
         fd = card.open_payload(rec)
     except FileNotFoundError:
+        card.still_there()
         return 'missing'
-    except (OSError, Invalid):
+    except OSError:
+        card.still_there()
+        return 'damaged'
+    except Invalid:
         return 'damaged'
     try:
         digest, size = hash_fd(fd, rec['byte_size'])
     except OSError:
+        card.still_there()
         return 'damaged'
     finally:
         os.close(fd)
@@ -636,12 +667,18 @@ def copy_verified(card, rec, dir_fd, temp):
     try:
         src = card.open_payload(rec)
     except FileNotFoundError:
+        card.still_there()
         raise Invalid('its copy is missing from the card') from None
     except OSError:
+        card.still_there()
         raise Invalid('its copy on the card is damaged (not a plain file)') from None
     try:
         remove_leftover(dir_fd, temp)
-        write_checked(src, rec, dir_fd, temp)
+        try:
+            write_checked(src, rec, dir_fd, temp)
+        except OSError:
+            card.still_there()  # the card's bytes stopped coming mid-file
+            raise
         back = os.open(temp, FILE_FLAGS, dir_fd=dir_fd)
         try:
             from_the_drive(back)
@@ -1357,6 +1394,9 @@ def main(argv=None, say=print):
             return commands[args.command](card, args, say)
     except Unusable as e:
         say('Cannot use this: %s' % e)
+        return 2
+    except CardGone as e:
+        say(str(e))
         return 2
     except KeyboardInterrupt:
         say('Stopped. Files restored so far are complete; a file that was being written was removed.')

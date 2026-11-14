@@ -142,6 +142,9 @@ python3 neko_restore.py --card /mnt/card info
 
 - Exit status: 0 everything was fine; 1 something was damaged, missing, skipped or not
   restored (the lines above say what); 2 the card or the command could not be used.
+- A card unplugged in the middle (or a reader that fails) stops the tool with "The card
+  stopped answering". The files restored until then are complete: plug the card in again
+  and run the same line.
 - The checksums find accidental damage. They cannot prove that nobody changed a card on
   purpose.
 - Old cards of an earlier NekoServer stay readable with this tool: the format of the cards

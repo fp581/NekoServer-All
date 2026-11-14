@@ -4,6 +4,7 @@ Python, never trusting the card, never overwriting without a named approval (V2 
 12, A27, A32 to A35). The cards here are written by hand in archive format 1; the Rust
 tests run the same tool on cards the engine wrote."""
 
+import errno
 import hashlib
 import json
 import os
@@ -636,6 +637,42 @@ class ManyFilesTests(Base):
         self.assertIn('failed      b/gone.jpg -> its copy is missing from the card', said)
         self.assertIn('failed      f/link.jpg -> its copy on the card is damaged (not a plain file)', said)
         self.assertNotIn('symbolic links', said)
+
+    def unplugged_after(self, files):
+        """Card.open_payload as it is for `files` files, then as on a card pulled out: the
+        card's folder answers nothing more (an empty folder in its place) and the read
+        fails as a FUSE card's does when its program is gone."""
+        real = tool.Card.open_payload
+        (self.tmp / 'nothing').mkdir(exist_ok=True)
+        nothing = os.open(self.tmp / 'nothing', os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, nothing)
+        opened = []
+
+        def payload(card, rec):
+            opened.append(rec['record_id'])
+            if len(opened) <= files:
+                return real(card, rec)
+            os.dup2(nothing, card.nb)
+            raise OSError(errno.ENOTCONN, 'Transport endpoint is not connected')
+
+        return mock.patch.object(tool.Card, 'open_payload', payload)
+
+    def test_a_card_unplugged_mid_run_is_said_as_such_not_as_damage(self):
+        """Plan 145, a card on exFAT (FUSE) whose program was killed after two files:
+        the old tool said "failed ... its copy on the card is damaged" for each of the four
+        others, and verify said them damaged, as if the card had gone bad."""
+        for n in range(4):
+            self.card.add('2021/f%d.jpg' % n, b'photo %d' % n)
+        with self.unplugged_after(2):
+            self.assertEqual(self.run_tool('restore', str(self.dest)), 2)
+        said = said_text(self)
+        self.assertIn('The card stopped answering', said)
+        self.assertNotIn('damaged', said)
+        self.assertEqual(sorted(os.listdir(self.dest / '2021')), ['f0.jpg', 'f1.jpg'], 'no part file left')
+        with self.unplugged_after(1):
+            self.assertEqual(self.run_tool('verify'), 2)
+        self.assertIn('The card stopped answering', said_text(self))
+        self.assertNotIn('damaged', said_text(self))
 
     def test_a_name_restored_earlier_in_the_same_run_still_clashes_by_case(self):
         self.card.add('DCIM/IMG_1.JPG', b'upper')
