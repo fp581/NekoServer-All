@@ -1012,6 +1012,9 @@ def choice_said(found, choice):
     )
 
 
+TRIES_ON_THE_MENU = 3  # answers not on the list before the menu of a found NekoServer stops setup
+
+
 def existing_installation(found, prompt=input, output=print):
     """The page: what was found, and the choices that apply, by number. Returns the
     choice ('continue', 'update', 'change', 'restore'), or None when the person stops
@@ -1029,7 +1032,7 @@ def existing_installation(found, prompt=input, output=print):
         output('       ' + under)
     first = choice_said(found, choices[0])[0]
     question = f'Type its number, or no to stop (Enter alone: 1, {first}): '
-    for _ in range(3):
+    for _ in range(TRIES_ON_THE_MENU):
         try:
             answer = prompt(question).strip().lower()
         except (EOFError, KeyboardInterrupt):
@@ -1042,6 +1045,8 @@ def existing_installation(found, prompt=input, output=print):
         if answer.isdecimal() and 1 <= int(answer) <= len(choices):
             return choices[int(answer) - 1]
         output(f'Type a number from 1 to {len(choices)}, or no.')
+    # Said, or setup ended at the third typo with only "Nothing was changed".
+    output(f'None of the {TRIES_ON_THE_MENU} answers was a number from the list, so setup stops here.')
     return None
 
 
