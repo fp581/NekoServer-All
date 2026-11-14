@@ -204,6 +204,11 @@ def call(args, timeout=180):
 
 
 NO_ANSWER = 'gave no answer within a minute'
+# What a password longer than smbpasswd reads (account_store.SAMBA_LONGEST) is told.
+TOO_LONG = (
+    'Samba did not take that password: it is too long. Samba takes at most 254 letters '
+    '(fewer with accents or emoji). Choose a shorter one'
+)
 
 
 def samba_password(user, run=subprocess.run, ask=None, output=print):
@@ -219,6 +224,9 @@ def samba_password(user, run=subprocess.run, ask=None, output=print):
     if not password:
         password = guided_setup.new_password(f'Password for the shared folders (account {user})', ask, output)
     if password is None:
+        return False
+    if len(password.encode()) > account_store.SAMBA_LONGEST:
+        output(TOO_LONG)
         return False
     try:
         done = run(

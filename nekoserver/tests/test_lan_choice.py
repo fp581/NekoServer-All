@@ -371,6 +371,25 @@ class SambaPasswordTests(unittest.TestCase):
         self.assertFalse(done)
         self.assertEqual(said, ['Samba did not take that password: smbpasswd gave no answer within a minute'])
 
+    def test_a_password_too_long_for_smbpasswd_is_said_before_it_runs(self):
+        # Deep check 172 with the real smbpasswd: 254 bytes are taken, 255 (or 128
+        # letters with accents) end in "Mismatch - password unchanged".
+        import account_store
+
+        fits = 'a' * 254
+        done, calls, _ = self.password([fits, fits])
+        self.assertTrue(done)
+        for long in ('a' * 255, 'é' * 128):
+            with self.subTest(len(long.encode())):
+                done, calls, said = self.password([long, long])
+                self.assertFalse(done)
+                self.assertEqual(calls, [])
+                self.assertIn('too long', said[-1])
+        # The accounts page refuses it at once (128 letters, but 256 bytes).
+        with self.assertRaisesRegex(ValueError, 'too long for Samba'):
+            account_store.validate_other('shared_folders', 'é' * 128)
+        account_store.validate_other('shared_folders', 'é' * 127)
+
     def test_a_password_samba_refuses_is_said_and_sets_nothing(self):
         done, calls, said = self.password(['same', 'same'], code=1)
         self.assertFalse(done)
