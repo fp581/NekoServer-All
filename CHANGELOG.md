@@ -49,6 +49,8 @@ Every copy is read back and checked before it counts. That read came straight af
 - **Samba shares exactly the folders named**: a share called `global`, `homes` or `printers` (names Samba keeps for itself), two names differing only in case, and a folder ending in a space are now refused with what to change; before, the first vanished, the second merged, and the third shared another folder.
 - **qBittorrent's refused login says why**: a wrong saved password, or this PC blocked after too many tries (wait an hour, or restart it), instead of "API request failed; inspect local WebUI"; an odd answer is said plainly.
 - **The media apps' connector says plainly when an app answers with a web page or an odd list**, and goes on with the other apps, instead of a traceback or "Expecting value: line 1 column 1".
+- **Nextcloud's answers are read with PHP warnings around them**: setup waited 15 minutes for Nextcloud and failed when PHP printed a notice before or after occ's answer; accounts named only with digits ("0", "1") were not seen as accounts.
+- **The dashboard says what Tailscale needs**: a sign-in already past while Tailscale still says "Running" is "signed out" (was "phone access stops soon"); a Tailscale switched off, or waiting for your approval in its admin console, now says so and what to do (was nothing).
 
 ### Checked
 - **The card's restore tool runs on Python 3.8, as it promises**: its tests now run on a real Python 3.8 in CI (they pass), so a newer Python feature in it fails the build instead of a restore on an older PC.
