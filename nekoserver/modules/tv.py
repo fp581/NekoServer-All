@@ -54,6 +54,21 @@ def previous_user(config):
     return name if isinstance(name, str) and re.fullmatch(r'[a-z_][a-z0-9_-]*[$]?', name) else None
 
 
+CHOOSE_TV_USER = (
+    'put the name you log in to this PC\'s desktop with under "user" in "tv" in the settings, then run setup again'
+)
+
+
+def account(name=None, uid=None):
+    """The account with this name (or number). One that does not exist is a plain
+    message saying what to set, not Python's "getpwnam(): name not found"."""
+    try:
+        return pwd.getpwnam(name) if name is not None else pwd.getpwuid(uid)
+    except KeyError:
+        shown = f'"{name}"' if name is not None else f'number {uid}'
+        raise RuntimeError(f'There is no account {shown} on this PC for the TV; {CHOOSE_TV_USER}') from None
+
+
 def desktop_user(config):
     """The person the TV, its shortcuts and the desktop shortcuts are for. "auto" is who
     ran sudo the first time; later runs keep that account (the report says who), whoever
@@ -61,15 +76,17 @@ def desktop_user(config):
     selected = config.get('tv', {}).get('user', 'auto')
     if selected == 'auto':
         sudo = previous_user(config) or os.environ.get('SUDO_USER')
-        user = (
-            pwd.getpwnam(sudo)
-            if sudo and sudo != 'root'
-            else pwd.getpwuid(int(config.get('media', {}).get('uid', 1000)))
-        )
+        if sudo and sudo != 'root':
+            user = account(sudo)
+        else:
+            uid = config.get('media', {}).get('uid', 1000)
+            if type(uid) is not int:
+                raise RuntimeError(f'The media user number in the settings is not a number; {CHOOSE_TV_USER}')
+            user = account(uid=uid)
     else:
         if not isinstance(selected, str) or not re.fullmatch(r'[a-z_][a-z0-9_-]*[$]?', selected):
-            raise RuntimeError('Invalid TV desktop user')
-        user = pwd.getpwnam(selected)
+            raise RuntimeError(f'The TV user in the settings is not an account name; {CHOOSE_TV_USER}')
+        user = account(selected)
     home = safe_path(user.pw_dir)
     if (
         user.pw_uid < 1000

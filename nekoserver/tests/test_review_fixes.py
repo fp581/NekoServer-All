@@ -683,6 +683,21 @@ class TvUserTests(unittest.TestCase):
             self.assertIsNone(tv.previous_user(config))
             self.assertIsNone(tv.previous_user({**config, 'data_mount': d + '/missing'}))
 
+    def test_an_account_that_does_not_exist_is_a_plain_message(self):
+        """A typo in tv.user, or the account the report names deleted since: what to
+        set, not Python's "getpwnam(): name not found" (a KeyError the step showed)."""
+        from modules import tv
+
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / 'reports').mkdir()
+            (Path(d) / tv.REPORT).write_text(json.dumps({'user': 'nekogone', 'checks': []}))
+            for config in ({'tv': {'user': 'nekotypo'}}, {'data_mount': d, 'tv': {'user': 'auto'}}):
+                with self.assertRaises(RuntimeError) as caught:
+                    tv.desktop_user(config)
+                self.assertIn('no account', str(caught.exception))
+                self.assertIn('"user" in "tv"', str(caught.exception))
+                self.assertNotIn('getpwnam', str(caught.exception))
+
 
 class SetupDownloadTests(unittest.TestCase):
     """A download setup needs (Immich's or Nextcloud's release, Immich's compose file)
