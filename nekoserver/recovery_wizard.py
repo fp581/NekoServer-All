@@ -2737,6 +2737,28 @@ SHARED_FOLDER = (
 )
 
 
+def first_up(name):
+    """A drive's name at the start of a sentence: "the application SSD" -> "The application
+    SSD" (str.capitalize would make it "The application ssd")."""
+    return name[:1].upper() + name[1:]
+
+
+def nothing_to_do(rows, action, output):
+    """No mounted drive needs a check or repair: said for each drive, as it is. A drive
+    that is not mounted is named, never counted as one that takes new files."""
+    away = [(name, folder) for name, folder, _ in rows if not os.path.ismount(folder)]
+    for name, folder in away:
+        output(
+            f'{first_up(name)} ({folder}) is not mounted, so it cannot be checked here. Connect it, '
+            'then run  sudo bash install.sh : it mounts the drives and says if one is not the one chosen.'
+        )
+    if not away:
+        output(f'Both drives take new files and Linux counted no errors on them: nothing to {action}.')
+    elif len(away) < len(rows):
+        here = next(name for name, folder, _ in rows if os.path.ismount(folder))
+        output(f'{first_up(here)} takes new files and Linux counted no errors on it: nothing to {action}.')
+
+
 def checked_drive(config, prompt, output, run, writes, errors, action=CHECK):
     """Section 3, for a drive Linux stopped writing to after errors (a NAS away for over
     ten minutes, a loose cable). Two separate actions, each with its own approval, asked
@@ -2745,9 +2767,10 @@ def checked_drive(config, prompt, output, run, writes, errors, action=CHECK):
     a repair (REPAIR) changes the drive (e2fsck -p) and is approved by typing its name.
     For either, the apps are stopped and the drive is unmounted (never by force); a drive
     that is still mounted anywhere is never touched, and a shared folder never at all."""
-    failing = [(n, f, r) for n, f, r in drive_rows(config) if os.path.ismount(f) and (not writes(f) or errors(f))]
+    rows = drive_rows(config)
+    failing = [(n, f, r) for n, f, r in rows if os.path.ismount(f) and (not writes(f) or errors(f))]
     if not failing:
-        output(f'Both drives take new files and Linux counted no errors on them: nothing to {action}.')
+        nothing_to_do(rows, action, output)
         return
     name, folder, record = failing[0]
     export = nfs_exports.export_of(record)
@@ -2756,7 +2779,7 @@ def checked_drive(config, prompt, output, run, writes, errors, action=CHECK):
     if export or found[1] in SHARES:
         say(
             output,
-            f'\n{name.capitalize()} ({folder}) is a folder the NAS shares ({export or found[0]}), and it does not '
+            f'\n{first_up(name)} ({folder}) is a folder the NAS shares ({export or found[0]}), and it does not '
             'take new files.',
             SHARED_FOLDER,
             'On the NAS, check that its disks are healthy, that the volume is not full or read-only,',

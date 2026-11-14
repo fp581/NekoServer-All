@@ -439,6 +439,43 @@ class AppVersionTests(Server, unittest.TestCase):
 RECOVERY_QUESTIONS = [key for key, entry in questions.Q.items() if entry['screen'] == 'Recovery']
 
 
+class MissingDriveCheckTests(unittest.TestCase):
+    """Seen on a fresh Ubuntu with neither drive connected: "Check a drive" said "Both
+    drives take new files and Linux counted no errors on them". A drive that is not
+    mounted was skipped, then counted as fine."""
+
+    CONFIG = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media', 'storage': {}}
+
+    def check_with_mounted(self, mounted):
+        said = []
+        with mock.patch.object(recovery_wizard.os.path, 'ismount', lambda folder: str(folder) in mounted):
+            recovery_wizard.checked_drive(
+                self.CONFIG,
+                mock.Mock(side_effect=AssertionError('nothing is asked')),
+                said.append,
+                mock.Mock(side_effect=AssertionError('nothing is run')),
+                lambda folder: True,  # takes new files
+                lambda folder: 0,  # no errors counted
+            )
+        return '\n'.join(said)
+
+    def test_a_drive_that_is_not_mounted_is_named_not_called_fine(self):
+        said = self.check_with_mounted({'/srv/nekoserver'})
+        self.assertNotIn('Both drives', said)
+        self.assertIn('The media drive (/mnt/nekoserver-media) is not mounted', said)
+        self.assertIn('The application SSD takes new files', said)
+
+    def test_neither_drive_mounted(self):
+        said = self.check_with_mounted(set())
+        self.assertNotIn('takes new files', said)
+        self.assertIn('The application SSD (/srv/nekoserver) is not mounted', said)
+        self.assertIn('The media drive (/mnt/nekoserver-media) is not mounted', said)
+
+    def test_both_mounted_and_well_is_said_as_before(self):
+        said = self.check_with_mounted({'/srv/nekoserver', '/mnt/nekoserver-media'})
+        self.assertIn('Both drives take new files and Linux counted no errors on them: nothing to check.', said)
+
+
 class InstallPathTests(unittest.TestCase):
     """T31: recovery and repair never appear on the normal install path. They are reached
     by `install.sh --recover` alone."""
