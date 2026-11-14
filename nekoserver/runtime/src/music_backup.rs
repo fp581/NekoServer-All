@@ -115,8 +115,7 @@ fn mounted_and_answering(path: &Path) -> bool {
         common::findmnt("TARGET", "--mountpoint", path, 10),
         Ok(Some(_))
     );
-    let shown = path.to_string_lossy();
-    mounted && common::command(&["ls", "-1", "--", &shown], 30).is_ok_and(|(code, _)| code == 0)
+    mounted && common::answers(path, 30)
 }
 /// Every source listed: (rows sorted by path, files still being added).
 fn listing(sources: &[(String, PathBuf)]) -> Result<(Vec<serde_json::Value>, Vec<String>)> {

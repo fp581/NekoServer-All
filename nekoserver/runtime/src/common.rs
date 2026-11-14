@@ -1342,6 +1342,13 @@ pub fn drive_at(path: &Path, timeout: u64) -> Result<Option<String>> {
 pub fn waits_for_first_use(found: &str) -> bool {
     found.split_whitespace().next() == Some("autofs")
 }
+/// The folder at `path` can be listed within `seconds`, by a program of its own that is
+/// stopped after that: a network share (or a drive) that stopped answering holds every
+/// look at it, so this job never looks at it itself first.
+pub fn answers(path: &Path, seconds: u64) -> bool {
+    let shown = path.to_string_lossy();
+    command(&["ls", "-1", "--", &shown], seconds).is_ok_and(|(code, _)| code == 0)
+}
 pub fn mounted(path: &Path) -> bool {
     probe(
         &["findmnt", "-n", "--mountpoint", &path.to_string_lossy()],

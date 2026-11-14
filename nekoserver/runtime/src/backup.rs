@@ -4468,6 +4468,9 @@ fn monthly_admission(state: &dyn Fn(&str) -> String, journal: &Path) -> Result<(
 /// takes and lets go of the same lock before it stops any app: a copy already at work
 /// is waited for, and any later one sees the monthly run and does not start.
 pub(crate) const USB_LOCK: &str = "/run/nekoserver-photo-backup.lock";
+/// How long the USB drive's folder may take to list before it counts as not answering
+/// (as the music backup waits for a share of the person's own music).
+const ANSWER_WAIT: u64 = 30;
 pub fn no_weekly_copy() -> Result<()> {
     no_weekly_copy_at(
         Path::new(USB_LOCK),
@@ -4561,7 +4564,9 @@ impl UsbRun {
         Ok(UsbRun {
             cfg,
             data: common::mount_path(a.get("data")?)?,
-            dest: common::mount_path(a.get("dest")?)?,
+            // Not looked at yet: a drive mounted there that stopped answering would hold
+            // this look for good (`answering` asks it first, then looks).
+            dest: common::unlooked_mount_path(a.get("dest")?)?,
             media,
             uuid,
             fstype,
@@ -4582,6 +4587,25 @@ impl UsbRun {
         self.drives()
     }
     /// What must hold before the USB drive is even looked at.
+    /// What is mounted at the drive's folder, if anything, answers a listing in time.
+    /// Seen with a frozen exFAT FUSE mount standing in for a NAS folder whose NAS went
+    /// away (0.51.2 review): the weekly copy hung before its report said it was running.
+    fn answering(&self) -> Result<()> {
+        self.answering_with(common::mount_table_entry(&self.dest).is_some(), &|path| {
+            common::answers(path, ANSWER_WAIT)
+        })
+    }
+    /// `answering`, told whether something is mounted there and how to ask it (tests).
+    fn answering_with(&self, mounted: bool, answers: &dyn Fn(&Path) -> bool) -> Result<()> {
+        if !mounted || answers(&self.dest) {
+            // Now it can be looked at: no link anywhere on the way (`mount_path`).
+            return common::safe(&self.dest).map(drop);
+        }
+        Err(Error::new(&format!(
+            "The USB backup drive at {} is mounted but does not answer (a NAS that is off or away, or a hung drive), so nothing was copied. Check the NAS, or unplug the drive and plug it back in; the copy runs again next week",
+            self.dest.display()
+        )))
+    }
     fn admissible(&self) -> Result<()> {
         self.drives()?;
         let identity = common::json(&self.cfg, 64000);
@@ -4724,13 +4748,6 @@ fn external_identity_ok(uuid: &str, fstype: &str, export: Option<&str>) -> bool 
 fn usb_copy(a: &Args, check: Check, weekly: bool) -> Result<()> {
     common::require_root()?;
     let run = UsbRun::from_args(a, check, weekly)?;
-    run.admissible()?;
-    // A weekly copy, the monthly check of the same drive and a restore from it (the
-    // recovery menu holds this lock while it reads the drive) wait for each other.
-    let _lock = common::lock_wait(
-        Path::new(USB_LOCK),
-        std::time::Duration::from_secs(8 * 3600),
-    )?;
     // The monthly check is a copy of the drive like the weekly one, so what it finds is
     // the weekly job's result too: a pass, files left out, or damage. A problem the
     // monthly run tolerates (a full drive, one that would not mount) is said in the
@@ -4740,6 +4757,18 @@ fn usb_copy(a: &Args, check: Check, weekly: bool) -> Result<()> {
     } else {
         &monthly_check_keeps
     };
+    // Before anything looks at the drive's folder: one mounted there that stopped
+    // answering holds every look, and the job hung for good without a word.
+    if let Err(e) = run.answering() {
+        return execute_keeping(Some(&run.data), "external", &run.cfg, keeps, || Err(e));
+    }
+    run.admissible()?;
+    // A weekly copy, the monthly check of the same drive and a restore from it (the
+    // recovery menu holds this lock while it reads the drive) wait for each other.
+    let _lock = common::lock_wait(
+        Path::new(USB_LOCK),
+        std::time::Duration::from_secs(8 * 3600),
+    )?;
     execute_keeping(Some(&run.data), "external", &run.cfg, keeps, || {
         // A monthly run may have started while this waited for the drive (the shared
         // lock was let go after the first check): checked again, now that it is held.
@@ -5903,6 +5932,45 @@ mod tests {
     /// The review of 0.47.0: with two LUNs of one filesystem UUID, the UUID's link names
     /// only one of them, so the weekly copy checked that one and then mounted by "UUID=" (or
     /// used one mounted by hand), which could be the copy.
+    /// Seen with a frozen exFAT FUSE mount standing in for a NAS folder whose NAS went
+    /// away (0.51.2 review): the weekly copy looked at the folder first (the overlap check)
+    /// and hung there for good, before its report said anything.
+    #[test]
+    fn a_usb_folder_that_does_not_answer_is_said_before_anything_looks_at_it() {
+        let run = UsbRun {
+            cfg: PathBuf::from("/etc/neko.json"),
+            data: PathBuf::from("/srv/nekoserver"),
+            media: PathBuf::from("/mnt/media"),
+            dest: PathBuf::from("/mnt/nekoserver-usb"),
+            uuid: "u1".into(),
+            fstype: "nfs4".into(),
+            check: Check::Quick,
+            source: Some(PathBuf::from("/mnt/media/photos/archive")),
+            cloud: None,
+            weekly: true,
+            export: Some("nas:/backup".into()),
+        };
+        let said = run
+            .answering_with(true, &|_| false)
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("/mnt/nekoserver-usb is mounted but does not answer"));
+        assert!(said.ends_with("the copy runs again next week"), "{said}");
+        assert!(common::sanitize(&said).len() < 300, "{said}");
+        assert!(run.answering_with(true, &|_| true).is_ok());
+        // Nothing mounted there: nothing to ask (mounting comes later).
+        assert!(run.answering_with(false, &|_| panic!("not asked")).is_ok());
+        // Asked before the first look at the folder (admissible's overlap check), and its
+        // failure is reported as the job's.
+        let source = include_str!("backup.rs");
+        let start = source.find("fn usb_copy(a: &Args").unwrap();
+        let body = &source[start..start + source[start..].find("\n}\n").unwrap()];
+        let asked = body.find("run.answering()").expect("asked");
+        assert!(asked < body.find("run.admissible()").unwrap());
+        assert!(body[asked..].starts_with(
+            "run.answering() {\n        return execute_keeping(Some(&run.data), \"external\""
+        ));
+    }
     #[test]
     fn the_usb_drive_checked_on_a_nas_is_the_device_mounted() {
         let source = include_str!("backup.rs");
