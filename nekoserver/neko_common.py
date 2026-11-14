@@ -1170,7 +1170,19 @@ def fetch(url, what, limit, timeout=30, opener=None, headers=None):
     request = urllib.request.Request(url, headers={'User-Agent': 'NekoServer-installer', **(headers or {})})
     try:
         with (opener or urllib.request.urlopen)(request, timeout=timeout) as response:
-            data = response.read(limit + 1)
+            # `timeout` is for the whole answer: the socket's own limit is per read, and a
+            # server sending a byte a second kept setup waiting for good.
+            deadline, data = time.monotonic() + timeout, b''
+            read = getattr(response, 'read1', response.read)
+            while len(data) <= limit:
+                if time.monotonic() > deadline:
+                    raise RuntimeError(
+                        f'{what}: {url} answered too slowly (not within {timeout} seconds); try again later'
+                    )
+                chunk = read(min(65536, limit + 1 - len(data)))
+                if not chunk:
+                    break
+                data += chunk
             # Before, the first `limit` bytes were taken as the whole answer, and an
             # answer cut off part-way as what there was: a compose file cut short was used.
             promised = getattr(response, 'headers', {}).get('Content-Length')

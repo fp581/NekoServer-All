@@ -777,19 +777,9 @@ class SetupDownloadTests(unittest.TestCase):
     def test_a_good_answer_is_returned_with_a_user_agent(self):
         seen = []
 
-        class Reply:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def read(self, limit):
-                return b'{"tag_name": "v1.2.3"}'
-
         def opener(request, timeout=0):
             seen.append(request.get_header('User-agent'))
-            return Reply()
+            return io.BytesIO(b'{"tag_name": "v1.2.3"}')  # read as a web answer is: once, then nothing
 
         self.assertEqual(
             neko_common.fetch('https://api.github.com/x', 'x', 100, opener=opener), b'{"tag_name": "v1.2.3"}'

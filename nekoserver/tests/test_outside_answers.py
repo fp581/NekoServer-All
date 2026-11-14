@@ -71,6 +71,14 @@ class OutsideAnswerTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'is larger than expected; try again later'):
             neko_common.fetch(self.base + '/big', 'Downloading Immich v1.2.3\'s compose file', 1000, 10)
 
+    def test_an_answer_that_trickles_in_stops_at_the_time_limit(self):
+        """The time limit was per read: a server sending a byte a second kept setup
+        waiting for good (seen: 40 s against a limit of 5)."""
+        started = time.monotonic()
+        with self.assertRaisesRegex(RuntimeError, r'answered too slowly \(not within 2 seconds\); try again later'):
+            neko_common.fetch(self.base + '/drip', 'Finding the current Nextcloud release', 100_000, 2)
+        self.assertLess(time.monotonic() - started, 6)
+
 
 if __name__ == '__main__':
     unittest.main()
