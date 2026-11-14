@@ -183,6 +183,35 @@ class StageTests(unittest.TestCase):
         self.assertEqual([p.name for p in self.dir.iterdir() if p.name.startswith('.neko-images-')], [])
         self.assertEqual([p.name for p in (self.dir / 'staged').iterdir() if p.name.startswith('.')], [])
 
+    def test_a_full_or_read_only_drive_is_said_in_plain_words_not_a_traceback(self):
+        """Seen through the recovery menu: a restore onto a drive that was full, read-only,
+        or too small for the reserve ended in a Python traceback, and nothing else was said."""
+        out = self.dir / 'staged'
+        for error, reason in (
+            (OSError(28, 'No space left on device'), 'No space left on device'),
+            (OSError(30, 'Read-only file system', str(out)), f'Read-only file system ({out})'),
+            (RuntimeError('not enough free space: free some space'), 'not enough free space'),
+        ):
+            with self.subTest(reason=reason):
+                said = io.StringIO()
+
+                def partly(snapshot, destination, error=error):
+                    """The stage stopping part-way, with a folder of what was unpacked."""
+                    Path(destination).mkdir(exist_ok=True)
+                    raise error
+
+                with (
+                    mock.patch.object(monthly, 'stage', partly),
+                    mock.patch.object(monthly.os, 'geteuid', return_value=0),
+                    mock.patch.object(monthly.sys, 'stderr', said),
+                ):
+                    code = monthly.main(['--snapshot', str(self.snapshot), '--stage', str(out)])
+                self.assertEqual(code, 1)
+                self.assertIn('The monthly backup was not restored: ' + reason, said.getvalue())
+                self.assertIn(f'is in {out} (incomplete', said.getvalue())
+                self.assertNotIn('Traceback', said.getvalue())
+                out.rmdir()
+
 
 class CommandLineTests(unittest.TestCase):
     """What the recovery menu shows of the tool: its own lines, never a traceback."""
