@@ -1749,6 +1749,24 @@ class SambaShareTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'may use only'):
                 samba.validate_share('Media', bad)
 
+    def test_samba_shares_exactly_the_folders_named(self):
+        # Seen with testparm: [global] swallowed the share, [Media] and [media] became one
+        # share (the last one's folder), and "films " shared the folder "films".
+        from modules import samba
+
+        def config(shares):
+            return samba.share_config({'shares': shares, 'tailnet_only': True}, Path('/mnt/m'), 'neko')
+
+        for shares, said in (
+            ({'global': 'library'}, 'Samba uses it'),
+            ({'Homes': 'library'}, 'Samba uses it'),
+            ({'Media': 'library', 'media': 'private'}, 'differ only in upper and lower case'),
+            ({'Films': 'films '}, 'ends with a space'),
+        ):
+            with self.subTest(shares=shares), self.assertRaisesRegex(RuntimeError, said):
+                config(shares)
+        self.assertIn('path = /mnt/m/My Films/HD', config({'Films': 'My Films/HD', 'Фильмы': 'library'}))
+
 
 class SnapshotErrorTests(unittest.TestCase):
     def test_a_failed_restart_never_hides_why_the_snapshot_failed(self):

@@ -10,9 +10,20 @@ DEPENDENCIES = ['storage', 'system']
 DESCRIPTION = 'Set up explicit LAN or tailnet SMB shares with no guest access'
 
 
+# Section names Samba gives a meaning of its own: [global] holds the server's settings
+# (a share named so would vanish into them), [homes] and [printers] make home folders and
+# printers. Samba compares section names without case.
+SAMBA_SECTIONS = ('global', 'homes', 'printers')
+
+
 def validate_share(name, relative):
     if not name or not name.replace('_', '').isalnum():
         raise RuntimeError('Invalid SMB share name')
+    if name.lower() in SAMBA_SECTIONS:
+        raise RuntimeError(
+            f'"{name}" cannot be the name of a shared folder: Samba uses it for something else. '
+            'Give the share another name under "shares" in my-config.json'
+        )
     p = Path(relative)
     if p.is_absolute() or '..' in p.parts or not p.parts or str(p) == '.':
         raise RuntimeError('SMB share path must be a relative safe path')
@@ -20,13 +31,34 @@ def validate_share(name, relative):
     # of its own (a command to run, say) and % starts a Samba variable.
     if not re.fullmatch(r'[A-Za-z0-9_./ -]+', str(relative)):
         raise RuntimeError(f'SMB share path {relative!r} may use only letters, digits, spaces and . _ - /')
+    # Samba drops the spaces at the end of a setting, so "films " would share the folder
+    # "films" instead of the one setup checked.
+    if str(p) != str(p).rstrip():
+        raise RuntimeError(
+            f'SMB share path {relative!r} ends with a space, which Samba would drop (sharing another folder). '
+            'Take the space out under "shares" in my-config.json'
+        )
     return p
+
+
+def same_names(shares):
+    """Share names that differ only in upper or lower case: Samba takes them for one share,
+    and only the last one's folder is shared."""
+    seen = {}
+    for name in shares:
+        seen.setdefault(name.lower(), []).append(name)
+    return [names for names in seen.values() if len(names) > 1]
 
 
 def share_config(settings, media, user):
     shares = settings.get('shares', {})
     if not shares:
         raise RuntimeError('At least one share is required')
+    for names in same_names(shares):
+        raise RuntimeError(
+            'The shares ' + ' and '.join(f'"{n}"' for n in names) + ' differ only in upper and lower case, which '
+            'Samba takes for one share. Rename one of them under "shares" in my-config.json'
+        )
     mode = settings.get('share_mode', 'tailnet')
     if mode not in ('lan', 'tailnet'):
         raise RuntimeError('Samba share_mode must be lan or tailnet')
