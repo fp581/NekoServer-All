@@ -2194,11 +2194,21 @@ fn tailscale_login(now: f64) -> Value {
     }
     login_state(&serde_json::from_str(&out).unwrap_or(Value::Null), now)
 }
+/// How many days before Tailscale's sign-in runs out the dashboard starts to warn.
+const EXPIRY_WARNING_DAYS: f64 = 14.0;
+/// Tailscale's sign-in time is already over while it still says "Running" (it can lag
+/// behind its key's expiry): the server is signed out, not "running out soon".
+fn signed_in_until_past(tailscale: &Value) -> bool {
+    tailscale["days_left"].as_f64().is_some_and(|d| d < 0.0)
+}
 fn login_state(status: &Value, now: f64) -> Value {
     let state = chars(status["BackendState"].as_str().unwrap_or("unknown"), 40);
+    // Go writes a time that was never set as its zero time, "0001-01-01T00:00:00Z": that
+    // is no expiry (key expiry switched off), not a sign-in that ran out 2000 years ago.
     let days_left = status["Self"]["KeyExpiry"]
         .as_str()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .filter(|t| t.timestamp() > 0)
         .map(|t| ((t.timestamp() as f64 - now) / 86400.0).floor());
     // A server signed in before keeps its Tailscale name and addresses when the sign-in
     // runs out; one never signed in has neither.
@@ -2463,16 +2473,30 @@ pub(crate) fn alerts(s: &Value) -> Value {
             "Phone access is not set up yet".into(),
             "This server is not signed in to Tailscale yet, so your phone can't reach the apps away from home. Run  sudo bash install.sh  again: it walks you through it (or run  sudo tailscale up  and open the link it prints).",
         );
-    } else if s["tailscale"]["state"] == "NeedsLogin" {
+    } else if s["tailscale"]["state"] == "NeedsLogin" || signed_in_until_past(&s["tailscale"]) {
         add(
             "tailscale:login".into(),
             "critical",
             "Phone access is signed out of Tailscale".into(),
             "This server's Tailscale sign-in ran out, so the app addresses on your phone stop working. Sign in again: sudo tailscale up, then in the Tailscale admin console choose Disable key expiry for this server.",
         );
+    } else if s["tailscale"]["state"] == "NeedsMachineAuth" {
+        add(
+            "tailscale:off".into(),
+            "warning",
+            "Phone access waits: approve this server in Tailscale".into(),
+            "This server signed in to Tailscale, and your Tailscale account still has to approve it before your phone can reach the apps. In the Tailscale admin console (Machines), find this server and choose Approve.",
+        );
+    } else if s["tailscale"]["state"] == "Stopped" {
+        add(
+            "tailscale:off".into(),
+            "warning",
+            "Phone access is off: Tailscale is switched off".into(),
+            "Tailscale is switched off on this server, so your phone can't reach the apps away from home. Switch it on again: sudo tailscale up",
+        );
     } else if s["tailscale"]["days_left"]
         .as_f64()
-        .is_some_and(|d| d <= 14.0)
+        .is_some_and(|d| d <= EXPIRY_WARNING_DAYS)
     {
         add(
             "tailscale:expiry".into(),
@@ -3370,6 +3394,32 @@ mod os_tests {
             alerts(&json!({"notifications":{"status":"pass"},"heartbeat":{"status":"unknown"}})),
             json!([])
         );
+    }
+    /// An expiry already past while Tailscale still says "Running" is a server signed out
+    /// (it was told "runs out soon"); Go's zero time is no expiry at all (it was told the
+    /// same, 2000 years late); a Tailscale switched off or waiting for your approval was
+    /// told nothing, though the phone can't reach the apps.
+    #[test]
+    fn a_tailscale_that_cannot_be_reached_says_what_to_do() {
+        let now = 1_792_900_000.0;
+        let shown = |status: Value| alerts(&json!({"tailscale": login_state(&status, now)}));
+        let past = shown(json!({"BackendState":"Running",
+            "Self":{"KeyExpiry":"2026-10-01T00:00:00Z","DNSName":"neko.tail1.ts.net."}}));
+        assert_eq!(
+            (past[0]["id"].as_str(), past[0]["level"].as_str()),
+            (Some("tailscale:login"), Some("critical"))
+        );
+        let zero = json!({"BackendState":"Running","Self":{"KeyExpiry":"0001-01-01T00:00:00Z"}});
+        assert_eq!(login_state(&zero, now)["days_left"], Value::Null);
+        assert_eq!(shown(zero), json!([]));
+        for (state, says) in [
+            ("Stopped", "sudo tailscale up"),
+            ("NeedsMachineAuth", "Approve"),
+        ] {
+            let off = shown(json!({"BackendState":state,"Self":{"DNSName":"neko.tail1.ts.net."}}));
+            assert_eq!(off[0]["id"], "tailscale:off", "{state}");
+            assert!(text(&off[0]["detail"]).contains(says), "{state}: {off}");
+        }
     }
     #[test]
     fn a_tailscale_sign_in_that_runs_out_is_told() {

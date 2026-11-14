@@ -24,6 +24,7 @@ fn label(id: &str) -> Option<String> {
         "media-failure" => return Some("Media connection checks failed".into()),
         "backup-key" => return Some("Monthly backups keep the app passwords unencrypted".into()),
         "tailscale:login" => return Some("Phone access is signed out of Tailscale".into()),
+        "tailscale:off" => return Some("Phone access is off: Tailscale needs you".into()),
         "tailscale:expiry" => {
             return Some("Phone access stops soon: Tailscale sign-in runs out".into())
         }
@@ -299,6 +300,7 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
     .contains(&tailscale)
     {
         unknown.insert("tailscale:login".into());
+        unknown.insert("tailscale:off".into());
         unknown.insert("tailscale:expiry".into());
     } else if tailscale == "NeedsLogin" {
         unknown.insert("tailscale:expiry".into());
@@ -1036,7 +1038,11 @@ mod review_tests {
     #[test]
     fn every_collector_alert_can_reach_the_phone() {
         let mut both = vec![];
-        for days_left in [Value::Null, json!(3.0)] {
+        for (state, days_left) in [
+            ("NeedsLogin", Value::Null),
+            ("Running", json!(3.0)),
+            ("Stopped", Value::Null),
+        ] {
             let drives: Vec<Value> = ["os", "data_ssd", "media_hdd"]
                 .iter()
                 .flat_map(|id| {
@@ -1049,7 +1055,7 @@ mod review_tests {
             let s = json!({
                 "notifications": {"status": "fail"},
                 "heartbeat": {"status": "stale"},
-                "tailscale": {"state": if days_left.is_null() { "NeedsLogin" } else { "Running" }, "days_left": days_left},
+                "tailscale": {"state": state, "days_left": days_left},
                 "startup": crate::collect::STARTUP.iter().map(|(u, n)| json!({"unit": u, "name": n, "active": "failed", "enabled": false})).collect::<Vec<_>>(),
                 "storage": drives,
                 "metrics": {"memory_percent": 99.0, "temperature": 99.0},
@@ -1065,6 +1071,7 @@ mod review_tests {
         let ids: BTreeSet<&str> = both.iter().filter_map(|a| a["id"].as_str()).collect();
         for id in [
             "tailscale:login",
+            "tailscale:off",
             "tailscale:expiry",
             "backup-key",
             "heartbeat:delivery",
