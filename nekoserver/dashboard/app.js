@@ -267,7 +267,10 @@ const ERRORS = {
     'Enter your PIN to change this',
     'Fans and lights need it on other devices; restarting or closing apps on all of them.'
   ],
-  E44: ['Wrong PIN', 'Check the PIN and try again.'],
+  E44: [
+    'Wrong PIN',
+    'Check the PIN and try again. Forgot it? DASHBOARD.md, “Your PIN”, says how to find it or choose a new one.'
+  ],
   E45: [
     'Too many tries; wait a while',
     'Five wrong PINs lock out this device for 5 minutes, then twice as long each time. Other devices count apart.'

@@ -93,7 +93,15 @@ To leave fans and lights completely alone, set `"fan_control": false` under `"da
 
 Five wrong PINs lock out that device for 5 minutes (each further five, twice as long). Other devices, and the server itself, are not locked out. The PIN box says how many tries are left, and when a device is locked out, how long it must wait and until what time (on that device's clock).
 
-**Forgot it, or want a new one?** In a terminal on the server, run these two lines. The first deletes only the old PIN (nothing else); the second is the normal setup, which then asks for a new PIN:
+**Forgot it?** If setup made it for you, or you typed it on setup's passwords page, it is kept with your app logins. In a terminal on the server (`/srv/nekoserver` is your SSD's folder):
+
+```bash
+sudo grep -A1 'Dashboard PIN' /srv/nekoserver/secrets/accounts/APP-CREDENTIALS.txt
+```
+
+The number after `Secret:` is your PIN. Nothing shown, or the PIN is refused? Then choose a new one.
+
+**Want a new one?** In a terminal on the server, run these two lines. The first deletes only the old PIN (nothing else); the second is the normal setup, which then gives you a new PIN on its passwords page: it asks you to type one, or, if setup makes your passwords for you, makes one (*Show login* on the finishing screen shows it, and so does the line above):
 
 ```bash
 sudo rm /etc/nekoserver-control/pin.json
@@ -131,7 +139,7 @@ When something goes wrong, the dashboard shows a short code at the top of the pa
 | E41 | Open the dashboard from its own address | Use 127.0.0.1:8787 on the server, or the Tailscale address. |
 | E42 | Request not supported | Reload the page. (For a fan or light change, the message says what was wrong.) |
 | E43 | Enter your PIN to change this | Phones, tablets and other computers need the PIN chosen during setup for fans and lights; restarting or closing apps needs it on every device. Press *Unlock changes* (the page asks by itself for app controls). |
-| E44 | Wrong PIN | Check the PIN and try again. The message says how many tries this device has left; after the last one, how long it must wait. |
+| E44 | Wrong PIN | Check the PIN and try again. The message says how many tries this device has left; after the last one, how long it must wait. Forgot it? "Your PIN" above says how to find it or choose a new one. |
 | E45 | Too many tries; wait a while | The message says how long, and until what time. Five wrong PINs lock out that device for 5 minutes; each further five, twice as long. Other devices and the server itself are not locked out. When the message says *other devices together* typed too many wrong PINs, phones and tablets get one more try every two hours; on the server itself you can still unlock. |
 | E46 | The change could not be saved | Nothing was changed, because it wouldn't survive a restart. The server's system drive may be full or failing. |
 | E47 | Not now: something else is using it | A backup, the monthly update or another app restart is running (or a cut-off one still has to be finished). Try again when it has. The message says which. |
