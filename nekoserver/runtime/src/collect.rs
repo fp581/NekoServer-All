@@ -1750,8 +1750,9 @@ fn partial_reason(missing: &Value) -> String {
         ));
     }
     // The USB copy of the Immich database (missing, stale or without its version note),
-    // and a source that could not be copied at all (the Nextcloud folder missing).
-    for key in ["database", "source"] {
+    // a source that could not be copied at all (the Nextcloud folder missing), and the
+    // password list (none on the HDD yet, or a damaged one).
+    for key in crate::backup::INCOMPLETE_PARTS {
         let problem = capitalised(&chars(text(&missing[key]), 300));
         if !problem.is_empty() {
             parts.push(problem);
@@ -4110,6 +4111,25 @@ mod os_tests {
         );
         assert_eq!(shown[0]["level"], "warning");
         assert!(!text(&shown[0]["detail"]).contains("bob/a:b.txt"));
+    }
+    /// Seen with the real weekly copy and `serve` (0.51.2 review): a USB copy whose only
+    /// gap was the password list showed "Incomplete; see the job's report", a file only
+    /// root can read, instead of what to do.
+    #[test]
+    fn a_usb_copy_without_the_password_list_says_so_on_the_page() {
+        let said = crate::backup::NO_PASSWORD_LIST.to_string();
+        let alone = crate::backup::incomplete(None, None, None, Some(said.clone())).unwrap();
+        assert_eq!(partial_reason(&alone), capitalised(&said));
+        let with_database = crate::backup::incomplete(
+            None,
+            Some("no Immich database copy was found".into()),
+            None,
+            Some(said),
+        )
+        .unwrap();
+        let shown = partial_reason(&with_database);
+        assert!(shown.starts_with("No Immich database copy"), "{shown}");
+        assert!(shown.contains("sudo bash install.sh"), "{shown}");
     }
     #[test]
     fn a_monthly_run_done_in_part_says_why() {

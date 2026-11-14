@@ -2451,7 +2451,7 @@ fn intact(folder: &Path, manifest: &Value) -> bool {
 const MONTHLY_SNAPSHOTS: &str = "backups/monthly";
 const PASSWORD_LISTS: &str = "backups/password-lists";
 /// Said when the HDD has no password list yet: the week's USB copy is then incomplete.
-const NO_PASSWORD_LIST: &str = "the HDD holds no password list yet, so the USB drive has no copy of the app passwords: setup makes one once the backup password is set (run  sudo bash install.sh  again)";
+pub(crate) const NO_PASSWORD_LIST: &str ="the HDD holds no password list yet, so the USB drive has no copy of the app passwords: setup makes one once the backup password is set (run  sudo bash install.sh  again)";
 /// The password list to the USB drive: the newest list in `sources` (the monthly
 /// snapshots, the lists setup made) whose files each match the manifest's checksum on the
 /// HDD, checked again once copied, into `passwords/<run>/` with the manifest; the newest
@@ -4197,9 +4197,14 @@ fn joined(problems: impl Iterator<Item = String>) -> Option<String> {
     let all: Vec<String> = problems.collect();
     (!all.is_empty()).then(|| all.join("; "))
 }
+/// The keys of an incomplete weekly USB copy's report that say a problem in words: a
+/// database copy, a source that could not be copied, the password list. The dashboard
+/// shows each one (collect::partial_reason); it once missed the password list's and said
+/// only "Incomplete; see the job's report".
+pub(crate) const INCOMPLETE_PARTS: [&str; 3] = ["database", "source", "passwords"];
 /// One "incomplete" report for the weekly USB copy: Nextcloud files left out and/or a
 /// database copy, source list or password list problem.
-fn incomplete(
+pub(crate) fn incomplete(
     files: Option<Value>,
     database: Option<String>,
     source: Option<String>,
@@ -4209,11 +4214,10 @@ fn incomplete(
         return None;
     }
     let mut out = files.unwrap_or_else(|| json!({"in_use":0,"unsupported_names":0,"files":[]}));
-    for (key, problem) in [
-        ("database", database),
-        ("source", source),
-        ("passwords", passwords),
-    ] {
+    for (key, problem) in INCOMPLETE_PARTS
+        .into_iter()
+        .zip([database, source, passwords])
+    {
         if let Some(problem) = problem {
             out[key] = json!(problem);
             out["reason"] = json!("The USB backup is incomplete");
