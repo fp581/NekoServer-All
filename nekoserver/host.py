@@ -260,11 +260,23 @@ def _cause(result):
     return _last_line(result)
 
 
+# apt's words when an earlier installation (an automatic update, say) was cut off: it
+# then installs nothing, and its own advice leaves out sudo.
+DPKG_INTERRUPTED = re.compile(r'dpkg was interrupted', re.IGNORECASE)
+INTERRUPTED_UPDATE = (
+    'an earlier installation or system update was cut off before it finished (the PC turned off during '
+    'an automatic update, say), and nothing can be installed until it is finished. Finish it with  '
+    'sudo dpkg --configure -a  , then run  sudo bash install.sh  again'
+)
+
+
 def _reason(result):
     """Why the package manager failed, for the error setup stops with: its cause (with a
     word on the clock when that is what went wrong), and for a package source that was
     never reached, what to do."""
     said, cause = _output(result), _cause(result)
+    if DPKG_INTERRUPTED.search(said):
+        return INTERRUPTED_UPDATE
     if _gave_up_fetching(result):
         return (
             f'the package source could not be reached ({cause}). Check the internet connection '

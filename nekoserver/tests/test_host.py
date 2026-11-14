@@ -2028,6 +2028,16 @@ class RetryTest(unittest.TestCase):
         mixed = subprocess.CompletedProcess([], 100, '', warned)
         self.assertEqual(host._reason(mixed), 'E: Unable to locate package nekocat')
 
+    def test_an_automatic_update_cut_off_earlier_is_said_with_the_command_that_finishes_it(self):
+        """Deep check 184, in a copy of Ubuntu 24.04 with a dpkg journal left behind (an
+        automatic update cut off): apt-get install says only the line below, whose own
+        advice leaves out sudo."""
+        said = "E: dpkg was interrupted, you must manually run 'dpkg --configure -a' to correct the problem."
+        reason = host._reason(subprocess.CompletedProcess([], 100, '', said))
+        self.assertIn('cut off before it finished', reason)
+        self.assertIn('sudo dpkg --configure -a', reason)
+        self.assertIn('sudo bash install.sh', reason)
+
     def test_what_counts_as_a_source_not_answering(self):
         for text in (
             'E: Failed to fetch http://deb.debian.org/debian/dists/trixie/InRelease  Temporary failure resolving',
