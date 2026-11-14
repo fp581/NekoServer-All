@@ -5,8 +5,9 @@ that start with the user (D13, D14, D15)."""
 import io
 import subprocess
 import sys
+import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -68,6 +69,58 @@ class RecoveryMessageTests(unittest.TestCase):
         ):
             code = recover.main(['--config', '/c.json', *argv])
         return code, err.getvalue()
+
+    def test_the_settings_file_may_be_named_after_the_command_too(self):
+        """Seen on a fresh Ubuntu 24.04: `recover.py check --config my.json` read the default
+        instead, and said to name the settings file with --config."""
+        with tempfile.TemporaryDirectory() as tmp:
+            mine = Path(tmp) / 'my.json'
+            mine.write_text('{}')
+            used = []
+
+            def noted(args, config):
+                """A recovery that does nothing; the settings file it was given is written down."""
+                used.append(args.config)
+                return {}
+
+            with mock.patch.object(recover, 'run', side_effect=noted):
+                for argv in (['check', '--config', str(mine)], ['--config', str(mine), 'check']):
+                    with self.subTest(argv=argv), redirect_stdout(io.StringIO()):
+                        self.assertEqual(recover.main(argv), 0)
+            self.assertEqual([str(u) for u in used], [str(mine.resolve())] * 2)
+
+    def test_a_damaged_settings_file_is_named_with_what_is_wrong(self):
+        """Seen on the same system: a settings file that was not JSON was "a settings or
+        record file could not be read", and the message said to fix what it named."""
+        with tempfile.TemporaryDirectory() as tmp:
+            for body, said in (
+                ('not json {', 'is not valid JSON (line 1, column 1)'),
+                ('[1, 2]', 'is not a settings file'),
+            ):
+                bad = Path(tmp) / 'my.json'
+                bad.write_text(body)
+                err = io.StringIO()
+                with mock.patch.object(recover, 'run', side_effect=AssertionError('ran')), redirect_stderr(err):
+                    self.assertEqual(recover.main(['--config', str(bad), 'check']), 2)
+                self.assertIn(str(bad.resolve()), err.getvalue())
+                self.assertIn(said, err.getvalue())
+
+    def test_a_setting_of_the_wrong_kind_is_said_without_a_traceback(self):
+        """Deep check plan 3: every setting given a wrong kind of value. recover.py printed
+        setup's clear words ("storage must be an object") inside a Python traceback."""
+        import installer
+
+        code, said = self.run_main(['check'], installer.InstallerError('storage must be an object'))
+        self.assertEqual(code, 2)
+        self.assertIn('Recovery failed: storage must be an object', said)
+        self.assertNotIn('Traceback', said)
+
+    def test_the_settings_path_is_checked_where_it_is_read(self):
+        """SonarCloud on PR 87: read_settings read any path it was handed. It checks it again
+        where it reads it (absolute, no '..', no links)."""
+        config, problem = recover.read_settings('/srv/../etc/passwd.json')
+        self.assertIsNone(config)
+        self.assertIn('can not be used', problem)
 
     def test_a_missing_folder_is_named_with_what_to_do(self):
         code, text = self.run_main(['check'], FileNotFoundError(2, 'No such file or directory', '/mnt/x/restored'))

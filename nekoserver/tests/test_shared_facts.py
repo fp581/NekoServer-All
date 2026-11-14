@@ -93,6 +93,39 @@ class RecoveryRecords(unittest.TestCase):
         self.assertEqual(str(neko_common.MAINTENANCE_JOURNAL), SHARED['recovery']['maintenance']['journal'])
 
 
+class RecoveryMenuChoices(unittest.TestCase):
+    """Seen in 0.51.2: 0.50.0 renamed two choices of the recovery menu, and the runtime's
+    messages, the dashboard's alerts and its help kept naming the old ones ("Repair
+    damaged backup copies", "Check a drive that turned read-only"), which a beginner at
+    the menu could not find (and "Repair a drive", which can lose files, is next to it)."""
+
+    # A choice named in quotes (straight, curly, or as the page's code writes them).
+    QUOTED = re.compile(r'(?:\\"|"|“)([A-Z][^"”\\{}]{6,80}?)(?:\\"|"|”)')
+
+    def test_the_menu_takes_the_choices_messages_name_from_the_shared_facts(self):
+        import recovery_wizard
+
+        names = SHARED['recovery_menu']
+        self.assertIn(('drive', names['drive_section']), recovery_wizard.SECTIONS)
+        labels = dict(recovery_wizard.DRIVE_MENU)
+        self.assertTrue(labels['check'].startswith(names['check_drive'] + '. '))
+        self.assertTrue(labels['copies'].startswith(names['fix_copies'] + ' ('))
+
+    def test_every_choice_a_message_names_is_in_the_menu(self):
+        import recovery_wizard
+
+        menu = recovery_wizard.SECTIONS + recovery_wizard.MENU + recovery_wizard.DRIVE_MENU
+        labels = {re.split(r'\. | \(', label, maxsplit=1)[0] for _, label in menu}
+        sources = {name: rust_code(text) for name, text in RUST.items()}
+        sources['app.js'] = (ROOT / 'dashboard/app.js').read_text()
+        for name, text in sources.items():
+            for number, line in enumerate(text.splitlines(), 1):
+                at = max(line.find('--recover'), line.find('recovery helper'))
+                for named in self.QUOTED.findall(line[at:]) if at >= 0 else ():
+                    with self.subTest(where=f'{name}:{number}'):
+                        self.assertIn(named, labels)
+
+
 class ShellCopies(unittest.TestCase):
     def test_install_sh_names_the_shared_lock_and_journal(self):
         """install.sh runs before Python may be there, so it writes these two paths out:

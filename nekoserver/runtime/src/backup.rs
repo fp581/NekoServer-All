@@ -235,7 +235,7 @@ fn copy_verified_with(
             return Err(Error::new("Source changed during the copy; not published"));
         }
         // Re-open the copy from disk: what actually landed, not what was sent.
-        let landed = common::digest(&temp)?;
+        let landed = common::digest_landed(&temp)?;
         let original = common::digest(source)?;
         if !same(&before, &fs::metadata(source)?) {
             return Err(Error::new("Source changed during the copy; not published"));
@@ -714,13 +714,22 @@ const QUARANTINE: &str = "neko-damaged";
 /// the monthly check finds it again and the monthly snapshot and updates wait. The
 /// action comes first, before the list of files: the reason is cut at 300 characters
 /// where it is shown (the job report, the dashboard, the alerts, the journal), and the
-/// advice used to come last and was cut off.
-pub(crate) const SETTLE: &str = "To settle it, run  sudo bash install.sh --recover  and choose \"Repair damaged backup copies\"";
+/// advice used to come last and was cut off. The choice is named as the recovery menu
+/// shows it (shared.json "recovery_menu"): 0.50.0 renamed it in the menu, and this kept
+/// naming a choice that was no longer there.
+pub(crate) fn settle_advice() -> String {
+    format!(
+        "{SETTLE_START} sudo bash install.sh --recover  and choose \"{}\"",
+        common::shared("recovery_menu", "fix_copies")
+    )
+}
+/// How the repair advice begins: a saved reason that holds it is found by these words.
+pub(crate) const SETTLE_START: &str = "To settle it, run ";
 /// The rest of the advice, after the files.
 const SETTLE_MORE: &str = "The repair takes each file from a copy that still matches; when no good copy is left it offers \"accept that this saved copy is lost\" (the copy is kept in neko-damaged, never deleted). Until then the monthly check finds it again, and the monthly snapshot and updates wait";
 /// What was found, with how to settle it first.
 fn settle(found: &str) -> String {
-    format!("{SETTLE}. {found}. {SETTLE_MORE}")
+    format!("{}. {found}. {SETTLE_MORE}", settle_advice())
 }
 /// What the checksum checks of one backup tree found.
 #[derive(Debug, Default, PartialEq)]
@@ -3288,7 +3297,7 @@ fn drive_check(c: &Value, key: &str, path: &Path, found: &str) -> Result<String>
     let wanted = c["storage"][key]["subvolume"].as_str().unwrap_or("");
     if subvolume_of(fields[2]) != wanted.trim_end_matches('/') {
         return Err(Error::new(&format!(
-            "Drive check failed: {} is mounted with another Btrfs subvolume than the settings name ({})",
+            "Drive check failed: {} is mounted with another Btrfs subvolume than the settings name ({}). Restart the PC (its /etc/fstab line mounts the right one), or run  sudo bash install.sh",
             path.display(),
             if wanted.is_empty() { "the top level" } else { wanted }
         )));
@@ -7261,6 +7270,31 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
     #[test]
+    #[ignore = "needs root and a loop drive: run cardset-loop-tests.sh (NEKO_LOOP_USB, NEKO_LOOP_IMAGE)"]
+    fn loop_a_usb_drive_that_does_not_keep_the_bytes_is_caught() {
+        // The review of 0.51.0: the weekly USB copy read its copy back from Linux's page
+        // cache ("from disk: what actually landed"), so a drive that kept other bytes
+        // passed. Here the drive's bytes are changed under its mounted ext4 between the
+        // write and the readback: nothing may be published.
+        let usb = std::path::PathBuf::from(std::env::var("NEKO_LOOP_USB").unwrap());
+        let image = std::env::var("NEKO_LOOP_IMAGE").unwrap();
+        let root = scratch("lying-usb");
+        let src = root.join("IMG_0001.jpg");
+        write(&src, &vec![7u8; 300_000]);
+        let target = usb.join("photos/IMG_0001.jpg");
+        let partial = usb.join("photos").join(partial_name("IMG_0001.jpg"));
+        let error = copy_verified_with(&src, &target, true, 0o644, &|| {
+            crate::lying_drive::change_on_disk(&image, &partial);
+        })
+        .expect_err("a copy the drive does not hold was published");
+        assert!(
+            error.to_string().contains("Copy verification failed"),
+            "{error}"
+        );
+        assert!(!target.exists(), "nothing published");
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
     fn a_partial_file_that_is_not_a_file_is_refused() {
         let root = scratch("partial");
         write(&root.join("a.mov"), b"video");
@@ -7339,7 +7373,11 @@ mod tests {
         };
         let text = report.problem("USB Nextcloud").unwrap();
         assert!(!text.contains("other copy"), "{text}");
-        assert!(text.contains("Repair damaged backup copies"), "{text}");
+        // The choice the recovery menu really shows (0.50.0 renamed it there).
+        assert!(
+            text.contains("choose \"Fix damaged backup copies\""),
+            "{text}"
+        );
         assert!(
             text.contains("accept that this saved copy is lost"),
             "{text}"
@@ -7348,7 +7386,9 @@ mod tests {
         report.missing = vec!["alice/files/gone.txt".into()];
         let text = report.problem("USB Nextcloud").unwrap();
         assert!(
-            text.contains("are missing") && text.starts_with(SETTLE) && text.ends_with(SETTLE_MORE),
+            text.contains("are missing")
+                && text.starts_with(&settle_advice())
+                && text.ends_with(SETTLE_MORE),
             "{text}"
         );
     }
@@ -7373,13 +7413,13 @@ mod tests {
             assert!(shown.chars().count() <= 300, "{shown}");
             assert!(
                 shown.contains(
-                    "sudo bash install.sh --recover  and choose \"Repair damaged backup copies\""
+                    "sudo bash install.sh --recover  and choose \"Fix damaged backup copies\""
                 ),
                 "{shown}"
             );
         }
         // The dashboard prefixes the stage ("Failed while …: "); still well inside.
-        assert!(INTEGRITY.len() + SETTLE.len() < 160);
+        assert!(INTEGRITY.len() + settle_advice().len() < 160);
     }
     #[test]
     fn backup_bookkeeping_is_not_part_of_the_tree() {
@@ -8804,6 +8844,8 @@ mod tests {
                 said.contains("another Btrfs subvolume than the settings name (/@data)"),
                 "{said}"
             );
+            // Said with what to do, as the other drive checks are (deep check plan 14).
+            assert!(said.contains("Restart the PC"), "{said}");
         }
         // Another drive, or nothing mounted: refused as before.
         assert!(drive_check(&c, "data_ssd", ssd, "bbbb btrfs /dev/sdc1[/@data]").is_err());

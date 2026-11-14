@@ -1372,6 +1372,24 @@ class CapabilitiesTest(unittest.TestCase):
                 self.assertNotIn('Clock', ' '.join(capabilities.missing(rows)))
             self.assertEqual(capabilities.value(self.rows(tmp), 'clock'), 'unknown')  # no timedatectl
 
+    def test_a_date_before_this_release_existed_stops_setup_with_how_to_fix_it(self):
+        """Deep check plan 2, on a fresh Ubuntu with the clock in 2015: the package lists'
+        signatures failed and setup said "Some package sources could not be reached",
+        then failed further on. A date this release can't have been made before is
+        certainly wrong: setup stops first, and says how to set it."""
+        import datetime as dt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            release(tmp, 'ID=arch\n')
+            for when, ok in (('2015-01-01', False), ('2026-11-14', True)):
+                now = dt.datetime.fromisoformat(when + 'T12:00:00+00:00').timestamp()
+                rows = capabilities.detect(self.fake(), root=tmp, machine='x86_64', python=(3, 13), now=now)
+                date = next(row for row in rows if row['name'] == 'date')
+                self.assertEqual((date['ok'], date['required']), (ok, True), when)
+                said = ' '.join(capabilities.missing(rows))
+                self.assertEqual('2015-01-01' in said, not ok)
+                self.assertEqual('sudo timedatectl set-ntp true' in said, not ok)
+
     def test_a_download_refused_for_a_wrong_clock_says_so(self):
         import ssl
         import urllib.error
@@ -1984,6 +2002,31 @@ class RetryTest(unittest.TestCase):
             family.install(['caddy'])
         self.assertEqual(self.slept, [host.RETRY_PAUSE, host.RETRY_PAUSE])
         self.assertEqual(pacman.failed, host.RETRIES)
+
+    def test_a_source_that_never_answers_is_said_as_such_not_with_apts_own_advice(self):
+        """Seen with no network on a fresh Ubuntu: setup ended with apt's last line, "E: Unable
+        to fetch some archives, maybe run apt-get update or try with --fix-missing?", which
+        names neither the cause nor anything that helps. The line naming the cause is said,
+        with what to do."""
+        said = (
+            'Err:1 http://archive.ubuntu.com/ubuntu noble/main amd64 gcc amd64 4:13.2.0-7ubuntu1\n'
+            '  Could not connect to 127.0.0.1:9 (127.0.0.1). - connect (111: Connection refused)\n'
+            'E: Failed to fetch http://archive.ubuntu.com/ubuntu/pool/main/g/gcc.deb  '
+            'Could not connect to 127.0.0.1:9 (127.0.0.1). - connect (111: Connection refused)\n'
+            'E: Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?'
+        )
+        reason = host._reason(subprocess.CompletedProcess([], 100, '', said))
+        self.assertNotIn('--fix-missing', reason)
+        self.assertIn('could not be reached', reason)
+        self.assertIn('Connection refused', reason)
+        self.assertIn('Check the internet connection', reason)
+        # Any other failure is said as before: its last line.
+        other = subprocess.CompletedProcess([], 100, '', 'E: Unable to locate package nekocat')
+        self.assertEqual(host._reason(other), 'E: Unable to locate package nekocat')
+        # Also when a source that has nothing to do with it failed on the way.
+        warned = 'W: Failed to fetch http://ppa.example/InRelease  Connection refused\n' + other.stderr
+        mixed = subprocess.CompletedProcess([], 100, '', warned)
+        self.assertEqual(host._reason(mixed), 'E: Unable to locate package nekocat')
 
     def test_what_counts_as_a_source_not_answering(self):
         for text in (

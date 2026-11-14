@@ -64,6 +64,12 @@
   "writers": ["docker.socket", "docker.service", "smbd.service", "smb.service", "nekoserver-gateway-lan.service"],
   "setup_lock": "/run/nekoserver-setup.lock",
   "operation_lock": "/run/nekoserver-operation.lock",
+  "recovery_menu": {
+    "_about": "Choices of the recovery menu (sudo bash install.sh --recover) that messages tell you to pick, as the menu shows them: the menu and every message take them from here.",
+    "drive_section": "Check or repair a drive",
+    "check_drive": "Check a drive that stopped taking new files",
+    "fix_copies": "Fix damaged backup copies"
+  },
   "release_tag": "v?([0-9]{1,6})\\.([0-9]{1,6})\\.([0-9]{1,6})(-?[Bb]eta)?",
   "immich_targets": {
     "_about": "Where Immich's containers see the photo library (older and newer image) and the database. Checked by the snapshot's Compose rules (maintenance.rs immich_binds_ok) and by the acceptance check of the running containers (acceptance.py containers).",

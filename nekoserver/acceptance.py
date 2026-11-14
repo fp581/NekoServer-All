@@ -45,7 +45,7 @@ def peer_port(inspect):
     for item in inspect.get('Config', {}).get('Env') or []:
         if isinstance(item, str) and item.startswith('TORRENTING_PORT='):
             value = item.split('=', 1)[1]
-            return int(value) if value.isdigit() else None
+            return int(value) if value.isdecimal() else None
     return None
 
 
@@ -120,6 +120,10 @@ def service(unit, timer=False):
         and fields.get('ActiveState') == 'active'
         and fields.get('UnitFileState') in ('enabled', 'enabled-runtime')
     )
+
+
+# The name of the first automatic check, on the report and the dashboard.
+CONFIGURATION_CHECK = 'Configuration and profile'
 
 
 def load_json(path):
@@ -458,7 +462,7 @@ def network_of(unit):
     not run or that can't be read)."""
     rc, out = health.run(['systemctl', 'show', unit, '--property=MainPID', '--value'])
     pid = out.strip()
-    if rc != 0 or not pid.isdigit() or pid == '0':
+    if rc != 0 or not pid.isdecimal() or pid == '0':
         return None
     try:
         return os.readlink(f'/proc/{pid}/ns/net')
@@ -796,24 +800,26 @@ def inspect(config, profile='full', now=None):
     }
     checks = run['automatic']
     add = lambda *x: checks.append(item(*x))
+    why = 'Configuration or selected dependency profile is invalid.'
     try:
+        if not isinstance(config, dict):
+            raise installer.InstallerError('The settings file holds no settings (it must be one JSON object, {...})')
         installer.validate_config(config)
         if profile not in config['profiles']:
+            why = f'The settings have no profile "{profile}" (they have: {", ".join(sorted(config["profiles"]))}).'
             raise ValueError()
         modules = accepted_modules(
             config, installer.ordered(installer.load_modules(ROOT / 'modules'), config['profiles'][profile])
         )
         run['config_fingerprint'] = fingerprint(config, profile)
         run['dashboard_scope'] = scope_digest(config)
-    except (OSError, RuntimeError, ValueError, TypeError, KeyError, installer.InstallerError):
-        add(
-            'configuration',
-            'Configuration and profile',
-            'fail',
-            'Configuration or selected dependency profile is invalid.',
-        )
+    except installer.InstallerError as exc:
+        add('configuration', CONFIGURATION_CHECK, 'fail', str(exc))
         return summarize(run)
-    add('configuration', 'Configuration and profile', 'pass', 'Selected profile and dependency plan are valid.')
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError):
+        add('configuration', CONFIGURATION_CHECK, 'fail', why)
+        return summarize(run)
+    add('configuration', CONFIGURATION_CHECK, 'pass', 'Selected profile and dependency plan are valid.')
     asked = []
 
     def states_now():
@@ -1300,8 +1306,15 @@ def main(argv=None):
     if os.geteuid() != 0:
         print('Run with sudo for complete local inspection.', file=sys.stderr)
         return 2
+    # The settings file read with what is wrong with it named: through load_json a broken
+    # or missing file was read as no settings, and the check said only "Configuration or
+    # selected dependency profile is invalid".
     try:
-        config = load_json(a.config)
+        config = installer.read_json(a.config)
+    except installer.InstallerError as exc:
+        print('Acceptance check stopped: ' + str(exc), file=sys.stderr)
+        return 2
+    try:
         report = inspect(config, a.profile)
         if a.manual:
             if config.get('guided_setup', {}).get('enabled', True):
@@ -1318,9 +1331,11 @@ def main(argv=None):
             'Manual passes are user-reported. This report applies only to the selected profile and current inspection.'
         )
         return 0 if report['acceptance_complete'] else 2 if report['status'] == 'failed' else 1
-    except (OSError, RuntimeError, ValueError, KeyError, TypeError, installer.InstallerError, KeyboardInterrupt):
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError, installer.InstallerError, KeyboardInterrupt) as exc:
         print(
-            'Acceptance check could not finish; inspect configuration and local services. No application state was changed.',
+            'Acceptance check could not finish: '
+            + installer.failure_reason(exc)
+            + '. No application state was changed.',
             file=sys.stderr,
         )
         return 2

@@ -229,6 +229,19 @@ UNLISTED = (
 )
 
 
+def account_names(accounts):
+    """The account names in occ user:list's answer ({name: display name}), or None when it
+    is not such a list. PHP writes an array whose keys are exactly 0, 1, 2... as a JSON
+    list, so accounts named only "0", "1"... come as a list of their display names: their
+    names are the positions then (such an answer was read as no list of accounts, and
+    their folders were never made)."""
+    if isinstance(accounts, list):
+        return [str(position) for position in range(len(accounts))]
+    if isinstance(accounts, dict):
+        return [name for name in accounts if isinstance(name, str)]
+    return None
+
+
 def listed_accounts(base, run=subprocess.run):
     """The account names Nextcloud lists (occ user:list). A command that fails, does not
     answer or answers with something other than a list of accounts is an error, never an
@@ -245,12 +258,7 @@ def listed_accounts(base, run=subprocess.run):
         raise RuntimeError(UNLISTED.format(why='it did not answer within 2 minutes')) from None
     if listed.returncode != 0:
         raise RuntimeError(UNLISTED.format(why=f'occ user:list ended with error {listed.returncode}'))
-    text = listed.stdout or ''
-    try:
-        accounts = json.loads(text[text.index('{') :])
-    except ValueError:
-        accounts = None
-    names = [name for name in accounts if isinstance(name, str)] if isinstance(accounts, dict) else None
+    names = account_names(neko_common.occ_json(listed.stdout))
     if names is None:
         raise RuntimeError(UNLISTED.format(why='its answer was not a list of accounts'))
     # Every account gets its folder: one whose name Nextcloud itself would not accept is
@@ -273,7 +281,7 @@ def scan_errors(text):
         cells = [c.strip() for c in line.strip().strip('|').split('|')]
         if 'Errors' in cells:
             header = cells
-        elif header and len(cells) == len(header) and cells[header.index('Errors')].isdigit():
+        elif header and len(cells) == len(header) and cells[header.index('Errors')].isdecimal():
             return int(cells[header.index('Errors')])
     return None
 
@@ -467,11 +475,8 @@ def status(base, run=subprocess.run):
         )
     except subprocess.TimeoutExpired:
         return None
-    text = result.stdout or ''
-    try:
-        return json.loads(text[text.index('{') :]) if result.returncode == 0 else None
-    except ValueError:
-        return None
+    found = neko_common.occ_json(result.stdout) if result.returncode == 0 else None
+    return found if isinstance(found, dict) else None
 
 
 def last_log_lines(base, run=subprocess.run):

@@ -676,6 +676,36 @@ class CopyTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 'not_mounted')
 
 
+class ImportReadbackTests(unittest.TestCase):
+    """The import's check of its copy reads the drive, not Linux's memory."""
+
+    def test_the_copy_is_read_back_from_the_drive(self):
+        """The review of 0.51.0: the import read its copy back from Linux's memory of what
+        it had just written ("the copy on disk holds the same bytes"), so a drive that did
+        not keep them passed, and the originals could then be deleted. The copy is dropped
+        from memory first, as neko_common.copy_checked_into does."""
+        with tempfile.TemporaryDirectory() as tmp:
+            src, dst = Path(tmp) / 'film.mkv', Path(tmp) / 'copy.mkv'
+            src.write_bytes(b'a film' * 1000)
+            reader = os.open(src, os.O_RDONLY)
+            writer = os.open(dst, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+            dropped, real = [], os.posix_fadvise
+
+            def noted(fd, offset, length, advice):
+                """posix_fadvise as it is, each call written down."""
+                dropped.append((fd, offset, length, advice))
+                return real(fd, offset, length, advice)
+
+            try:
+                with mock.patch.object(source_import.os, 'posix_fadvise', side_effect=noted):
+                    source_import.copy_into(reader, writer, os.fstat(reader))
+            finally:
+                os.close(reader)
+                os.close(writer)
+            self.assertIn((writer, 0, 0, os.POSIX_FADV_DONTNEED), dropped)
+            self.assertEqual(dst.read_bytes(), src.read_bytes())
+
+
 class NewFilesTests(unittest.TestCase):
     """ "Save new ones here too": the place new films, shows and music are saved."""
 

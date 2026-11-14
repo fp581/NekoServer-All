@@ -71,6 +71,9 @@ python3 NekoBackup/tools/neko-restore.py restore ~/restored
 python3 NekoBackup/tools/neko-restore.py restore ~/restored --search 2021/beach
 ```
 
+Restore onto another drive or folder, never onto the card: the tool refuses a folder
+on the card itself, since the card is your backup.
+
 Each file goes back into its own folders below `~/restored`, with its modification time.
 Before a file gets its name it is checked twice: the card's bytes while they are copied,
 and the restored file read back afterwards. A file that does not match is **not** restored

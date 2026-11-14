@@ -328,7 +328,7 @@ def started_since(units, since):
     for unit in units:
         shown = run(['systemctl', 'show', '--property=InactiveExitTimestampMonotonic', unit], 30, check=False)
         value = (getattr(shown, 'stdout', '') or '').strip().partition('=')[2]
-        if getattr(shown, 'returncode', 0) or not value.isdigit():
+        if getattr(shown, 'returncode', 0) or not value.isdecimal():
             return None
         if int(value) > since:
             started.append(unit)
@@ -656,6 +656,10 @@ def copy_to_new(journal, drive, old, new, places, out):
     copy(mountpoint, staging, final=True, out=out)
     record(journal, phase='verifying')
     out('Comparing every file on both drives by checksum (this reads both drives once more)...')
+    # Mounted again first, so the comparison reads the new drive, not Linux's memory of
+    # what was just copied onto it: a new drive that kept other bytes passed before.
+    run(['umount', str(staging)], 300)
+    mount_staging(new['uuid'], new['fstype'], staging)
     same_drives(mountpoint, old, staging, new)
     differ = differences(mountpoint, staging)
     if differ:
@@ -1016,8 +1020,11 @@ def main():
     if not shutil.which('rsync'):
         parser.error('rsync is needed: run  sudo bash install.sh  (it installs it), then try again')
     if args.action == 'move':
-        if not (args.drive and args.to and UUID.fullmatch(args.to)):
+        if not (args.drive and args.to):
             parser.error('move needs --drive and --to (the UUID list shows)')
+        if not UUID.fullmatch(args.to):
+            # Said apart: "needs --drive and --to" was all a mistyped UUID got.
+            parser.error(f'--to {args.to} is not a filesystem UUID: copy one from  sudo python3 migrate.py list')
         return move(args.config, args.drive, args.to)
     if args.action == 'back':
         return back(args.config, drive=args.drive)

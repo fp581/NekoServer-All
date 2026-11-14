@@ -1076,6 +1076,8 @@ details.more summary span {
 }
 .issue h3 {
   margin: 0 0 4px;
+  /* A title can hold an address with no spaces (a shared folder's //nas/Photos_2019-2024). */
+  overflow-wrap: anywhere;
 }
 .issue p {
   font-size: 14px;
@@ -1816,6 +1818,14 @@ body.tv {
   text-align: left;
   font-size: 14px;
   font-weight: 600;
+}
+/* A greyed-out item's note says why and what to do ("run setup again"): only its label is
+ * dimmed, so the note stays readable (dimmed with it, it measured 2.3:1 in Lamplight). */
+.menu-item:disabled {
+  opacity: 1;
+}
+.menu-item:disabled > span {
+  opacity: 0.5;
 }
 .menu-item:hover:not(:disabled),
 .menu-item:focus-visible {

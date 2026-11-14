@@ -12,7 +12,7 @@
 //!   there (Docker, the shared folders, the home gateway) are stopped, once, so nothing
 //!   carries on half-written. The dashboard says what to do. Nothing is unmounted by
 //!   force and the filesystem is never repaired here: that is the recovery menu's
-//!   "Check a drive that turned read-only", with you there.
+//!   "Check a drive that stopped taking new files", with you there.
 //! - No answer within 20 seconds: the NAS is still away and the writes wait for it.
 //!   Nothing is done (stopping the apps would wait as well); it is looked at again in a
 //!   minute.
@@ -231,8 +231,9 @@ pub fn run(a: &crate::Args) -> Result<()> {
                 .map(|((p, _, name), _)| format!("{name} ({})", p.display()))
                 .collect();
             println!(
-                "NAS watch: {} does not take writes (it turned read-only after the network storage box was away for long, most likely). Stopping the apps so nothing carries on half-written; check the drive with  sudo bash install.sh --recover  (\"Check a drive that turned read-only\")",
-                failing.join(", ")
+                "NAS watch: {} does not take writes (it turned read-only after the network storage box was away for long, most likely). Stopping the apps so nothing carries on half-written; check the drive with  sudo bash install.sh --recover  ({})",
+                failing.join(", "),
+                crate::collect::check_drive_choice()
             );
             if !stop_writers()? {
                 // Not "held": the next check (in a minute) stops them again (the 0.46.0

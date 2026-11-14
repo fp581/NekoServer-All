@@ -7,11 +7,14 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 PAGE = ROOT / 'setup-gui'
 BROWSERS = (
     'google-chrome-stable',
@@ -155,11 +158,28 @@ MEASURE = """(async () => {
 })();"""
 
 
+# After setup.js: every element of the finishing page wider than the box it is in.
+TOO_WIDE = """(async () => {
+  await new Promise(r => setTimeout(r, 2500));
+  const page = document.querySelector('.finish-page');
+  const tooWide = [...document.querySelectorAll('#finished *')]
+    .filter(e => e.parentElement && getComputedStyle(e).display !== 'inline'
+      && e.getBoundingClientRect().right > e.parentElement.getBoundingClientRect().right + 1)
+    .map(e => e.tagName + '.' + e.className);
+  const pre = document.createElement('pre');
+  pre.id = 'measured';
+  pre.textContent = JSON.stringify({ shown: !!page && !page.hidden, too_wide: tooWide });
+  document.body.append(pre);
+})();"""
+
+
 @unittest.skipUnless(browser(), 'no headless Chrome, Chromium or Edge here')
 class NothingMovesTests(unittest.TestCase):
     """The page measured in a real browser at the window's usual size and narrow."""
 
-    def measure(self, first, states, size):
+    def measure(self, first, states, size, script=None):
+        """Runs `script` (MEASURE, with `states` in it, by default) on the page and returns
+        what it put in its <pre id="measured">."""
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
             (folder / 'static').mkdir()
@@ -168,7 +188,7 @@ class NothingMovesTests(unittest.TestCase):
             shutil.copy(ROOT / 'dashboard/theme.css', folder / 'static/theme.css')
             shutil.copy(ROOT / 'dashboard/logo.svg', folder / 'static/logo.svg')
             (folder / 'static/stub.js').write_text(STUB % json.dumps(first), encoding='utf-8')
-            (folder / 'static/measure.js').write_text(MEASURE % json.dumps(states), encoding='utf-8')
+            (folder / 'static/measure.js').write_text(script or MEASURE % json.dumps(states), encoding='utf-8')
             html = (PAGE / 'index.html').read_text(encoding='utf-8')
             html = html.replace(
                 '<script src="static/theme.js"></script>',
@@ -245,6 +265,21 @@ class NothingMovesTests(unittest.TestCase):
                 # What was slid is kept for a reload of the window, where the browser allows it.
                 if measured['kept'] != 'no storage':
                     self.assertIn(['neko-part:Set up your phone:tailscale', 'yes'], measured['kept'])
+
+    def test_the_finishing_page_keeps_to_a_narrow_window(self):
+        """Deep check plan 7: in a window 390 pixels wide each app's card on the finishing
+        page grew to its widest line, and its states, its address and its test's buttons
+        were cut off at the right edge."""
+        import finish_page
+        import wizard
+        from test_finish_window import CONFIG, SUMMARY
+
+        with mock.patch.object(wizard, 'dashboard_port', return_value=8787):
+            page = finish_page.page(CONFIG, SUMMARY, pin_set=True)
+        finished = {**RUNNING, 'phase': 'finished', 'finish_page': page, 'title': 'Setup finished', 'finish': ['x']}
+        measured = self.measure(finished, [], '390,900', script=TOO_WIDE)
+        self.assertTrue(measured['shown'], 'the finishing page was not shown')
+        self.assertEqual(measured['too_wide'], [])
 
     def test_a_question_coming_and_going_moves_nothing(self):
         # 0.49.0: the "needs an answer" strip pushed the page down when a question came, and

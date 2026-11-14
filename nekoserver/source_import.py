@@ -306,6 +306,9 @@ def copy_into(reader, writer, stat):
     while chunk := os.read(reader, 1024 * 1024):
         write_all(writer, chunk)
     os.fsync(writer)
+    # Dropped from memory, so the copy is read back from the drive: read from memory, a
+    # drive that did not keep the bytes passed (as neko_common.copy_checked_into does).
+    os.posix_fadvise(writer, 0, 0, os.POSIX_FADV_DONTNEED)
     after = os.fstat(reader)
     if after.st_size != stat.st_size or after.st_mtime_ns != stat.st_mtime_ns or fd_digest(writer) != fd_digest(reader):
         raise SourceChanged('Source changed during import')
@@ -755,9 +758,19 @@ def main(argv=None):
             file=sys.stderr,
         )
         return 2
-    except (OSError, RuntimeError, ValueError, KeyError):
-        print('Source import unavailable; check configured mounts and source inventory', file=sys.stderr)
+    except (OSError, RuntimeError, ValueError, KeyError) as exc:
+        print('Source import stopped: ' + stop_reason(exc) + '. Nothing was copied.', file=sys.stderr)
         return 2
+
+
+def stop_reason(exc):
+    """Why the import could not run, in words: a missing setting named as one (str() of a
+    KeyError is the key alone), a system error with the file it was about."""
+    if isinstance(exc, KeyError):
+        return f'the setting {exc} is missing'
+    if isinstance(exc, OSError) and exc.strerror:
+        return exc.strerror + (f' ({exc.filename})' if exc.filename else '')
+    return str(exc) or type(exc).__name__
 
 
 if __name__ == '__main__':

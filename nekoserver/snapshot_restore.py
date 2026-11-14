@@ -35,7 +35,7 @@ class Kind:
     def root_ok(self, first):
         if self.roots:
             return first in self.roots
-        return first.startswith('source') and first[6:].isdigit()
+        return first.startswith('source') and first[6:].isdecimal()
 
     def kinds(self):
         return ('file', 'directory', 'symlink') if self.links else ('file', 'directory')
@@ -244,6 +244,9 @@ def copy_row(kind, snapshot, target, row):
         shutil.copyfileobj(source, output, 65536)
         output.flush()
         os.fsync(output.fileno())
+        # Dropped from memory, so the check reads what the drive holds (read from memory,
+        # a drive that did not keep the bytes passed).
+        os.posix_fadvise(output.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
         output.seek(0)
         found = hashlib.sha256()
         for block in iter(lambda: output.read(1 << 20), b''):

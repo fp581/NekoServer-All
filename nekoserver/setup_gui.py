@@ -198,7 +198,7 @@ def expected_owners(config):
     """The accounts whose browser may open the setup window: root (setup itself), the
     account that ran sudo, and the desktop user the window is opened for."""
     owners = {0, os.geteuid()}
-    if os.environ.get('SUDO_UID', '').isdigit():
+    if os.environ.get('SUDO_UID', '').isdecimal():
         owners.add(int(os.environ['SUDO_UID']))
     try:
         owners.add(pwd.getpwnam(guided_setup.desktop_command(config, ['true'])[2]).pw_uid)

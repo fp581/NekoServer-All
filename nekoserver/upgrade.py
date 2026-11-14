@@ -165,13 +165,30 @@ def kept_release(config, folder):
     return path
 
 
-def steps_done(config):
-    """The setup steps recorded as done (the record on the SSD)."""
+def step_states(config):
+    """Each setup step's recorded status (the record on the SSD): {name: status}."""
     try:
         states = json.loads((ssd(config) / 'installer/state/state.json').read_text())
     except (OSError, ValueError, KeyError, RuntimeError):
-        return set()
-    return {name for name, state in states.items() if isinstance(state, dict) and state.get('status') == DONE}
+        return {}
+    if not isinstance(states, dict):
+        return {}
+    return {name: state.get('status') for name, state in states.items() if isinstance(state, dict)}
+
+
+def steps_done(config):
+    """The setup steps recorded as done."""
+    return {name for name, status in step_states(config).items() if status == DONE}
+
+
+# What the installer records for a step that failed, and for one a cut-off run left
+# part-way (installer.py): the last setup run did not finish whole.
+UNFINISHED = ('failed', 'running')
+
+
+def steps_unfinished(config):
+    """The setup steps that failed or were cut off in the last run, sorted."""
+    return sorted(name for name, status in step_states(config).items() if status in UNFINISHED)
 
 
 def setup_profile(config, modules=None):
@@ -744,6 +761,15 @@ def settled(config, out=print, journal=JOURNAL, saved=None, check=None, by_hand=
     wanted, here = numbers(str(saved.get('to') or '')), numbers(VERSION)
     back = by_hand and here == numbers(Path(str(saved.get('previous') or '')).name)
     if not wanted or not (here >= wanted or back):
+        return False
+    if not by_hand and saved.get('phase') != 'verifying' and steps_unfinished(config):
+        # At a start, the release running this may be the failed one itself: the way back
+        # cut off (a power cut) before the older setup rewrote the resume service. A step
+        # new in it that failed is not among those checked, so the check passed and the
+        # record was closed on a release that failed. A person's setup that ended whole
+        # leaves no such step; one that did not finish is put back like the upgrade. Cut
+        # off while it was checked, setup had ended whole: a step that failed then failed
+        # before the upgrade too, and the check decides.
         return False
     before = [step for step in saved.get('before') or [] if isinstance(step, str)]
     if checked(check or (lambda: verify(config, 'v' + VERSION, before))) is not None:

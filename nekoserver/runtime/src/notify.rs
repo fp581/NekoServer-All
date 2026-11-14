@@ -24,6 +24,7 @@ fn label(id: &str) -> Option<String> {
         "media-failure" => return Some("Media connection checks failed".into()),
         "backup-key" => return Some("Monthly backups keep the app passwords unencrypted".into()),
         "tailscale:login" => return Some("Phone access is signed out of Tailscale".into()),
+        "tailscale:off" => return Some("Phone access is off: Tailscale needs you".into()),
         "tailscale:expiry" => {
             return Some("Phone access stops soon: Tailscale sign-in runs out".into())
         }
@@ -299,6 +300,7 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
     .contains(&tailscale)
     {
         unknown.insert("tailscale:login".into());
+        unknown.insert("tailscale:off".into());
         unknown.insert("tailscale:expiry".into());
     } else if tailscale == "NeedsLogin" {
         unknown.insert("tailscale:expiry".into());
@@ -491,6 +493,31 @@ fn delivery_due(next_attempt: &Value, now: f64) -> bool {
         .as_f64()
         .is_none_or(|t| t <= now || t > now + 3600.0)
 }
+/// The most the alert state file may hold (bytes).
+const STATE_LIMIT: usize = 256_000;
+/// What alerts were sent and when, from `path` (state.json). A file that is not valid JSON
+/// (cut short by a power cut, edited by hand) is set aside beside it, with the date in its
+/// name, and the alerts start fresh: before, every run failed with "Invalid JSON" for good,
+/// naming no file, and the dashboard showed the alerts only as stale.
+fn alert_state(path: &Path, now: f64) -> Result<Value> {
+    if !path.exists() {
+        return Ok(json!({}));
+    }
+    if let Ok(state) = serde_json::from_slice(&common::bytes(path, STATE_LIMIT)?) {
+        return Ok(state);
+    }
+    let stamp = chrono::DateTime::from_timestamp(now as i64, 0)
+        .map(|d| d.format("%Y%m%dT%H%M%SZ").to_string())
+        .unwrap_or_else(|| (now as i64).to_string());
+    let aside = path.with_file_name(format!("state.json.damaged-{stamp}"));
+    common::rename_noreplace(path, &aside)?;
+    eprintln!(
+        "The phone alert record {} was damaged (not valid JSON). It was moved to {} and alerts start fresh: a problem already sent may be sent once more. Nothing else to do.",
+        path.display(),
+        aside.display()
+    );
+    Ok(json!({}))
+}
 pub fn run(a: &Args) -> Result<()> {
     common::require_root()?;
     let config_path = a.path("config")?;
@@ -519,11 +546,7 @@ pub fn run(a: &Args) -> Result<()> {
     }
     let _lock = common::lock(&root.join("worker.lock"))?;
     let path = root.join("state.json");
-    let old = if path.exists() {
-        serde_json::from_slice(&common::bytes(&path, 256000)?)?
-    } else {
-        json!({})
-    };
+    let old = alert_state(&path, common::now())?;
     let destination = common::sha(format!("{}:{}", cfg["endpoint"], cfg["token"]).as_bytes());
     let old = if old["destination"] == destination {
         old
@@ -615,6 +638,27 @@ pub fn run(a: &Args) -> Result<()> {
 }
 #[cfg(test)]
 mod tests {
+    /// Seen with `nekoserver-runtime notify` on 0.51.2: a state.json cut short failed
+    /// every run with "Invalid JSON", forever, naming no file.
+    #[test]
+    fn a_damaged_alert_state_is_set_aside_with_its_date_and_alerts_start_fresh() {
+        let dir = std::env::temp_dir().join(format!("neko-notify-state-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        fs::write(&path, b"{\"format\":\"neko-notif").unwrap();
+        let now = 1_800_000_000.0; // 2027-01-15 08:00:00 UTC
+        assert_eq!(alert_state(&path, now).unwrap(), json!({}));
+        assert!(!path.exists());
+        let aside = dir.join("state.json.damaged-20270115T080000Z");
+        assert_eq!(fs::read(&aside).unwrap(), b"{\"format\":\"neko-notif");
+        // A good file is read as it is; none at all is a fresh start.
+        fs::write(&path, br#"{"attempts":2}"#).unwrap();
+        assert_eq!(alert_state(&path, now).unwrap(), json!({"attempts": 2}));
+        fs::remove_file(&path).unwrap();
+        assert_eq!(alert_state(&path, now).unwrap(), json!({}));
+        fs::remove_dir_all(&dir).unwrap();
+    }
     #[test]
     fn a_retry_time_from_a_clock_that_was_ahead_never_holds_alerts_back() {
         let now = 1_800_000_000.0;
@@ -1036,7 +1080,11 @@ mod review_tests {
     #[test]
     fn every_collector_alert_can_reach_the_phone() {
         let mut both = vec![];
-        for days_left in [Value::Null, json!(3.0)] {
+        for (state, days_left) in [
+            ("NeedsLogin", Value::Null),
+            ("Running", json!(3.0)),
+            ("Stopped", Value::Null),
+        ] {
             let drives: Vec<Value> = ["os", "data_ssd", "media_hdd"]
                 .iter()
                 .flat_map(|id| {
@@ -1049,7 +1097,7 @@ mod review_tests {
             let s = json!({
                 "notifications": {"status": "fail"},
                 "heartbeat": {"status": "stale"},
-                "tailscale": {"state": if days_left.is_null() { "NeedsLogin" } else { "Running" }, "days_left": days_left},
+                "tailscale": {"state": state, "days_left": days_left},
                 "startup": crate::collect::STARTUP.iter().map(|(u, n)| json!({"unit": u, "name": n, "active": "failed", "enabled": false})).collect::<Vec<_>>(),
                 "storage": drives,
                 "metrics": {"memory_percent": 99.0, "temperature": 99.0},
@@ -1065,6 +1113,7 @@ mod review_tests {
         let ids: BTreeSet<&str> = both.iter().filter_map(|a| a["id"].as_str()).collect();
         for id in [
             "tailscale:login",
+            "tailscale:off",
             "tailscale:expiry",
             "backup-key",
             "heartbeat:delivery",

@@ -13,7 +13,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 import account_store as store
-from neko_common import app_port, local_opener, photo_library, safe_path
+from neko_common import app_port, local_opener, occ_json, photo_library, safe_path
 
 ARR = {
     app: (version, app_port(app))
@@ -461,7 +461,7 @@ def two_factor_required_of(listed, groups):
     their members; otherwise everyone but the members of the excluded groups. False when
     the settings can't be read: a refused password is then a wrong password."""
     try:
-        system = json.loads(listed)['system']
+        system = occ_json(listed)['system']
         named, excluded = (
             system.get('twofactor_enforced_groups') or [],
             system.get('twofactor_enforced_excluded_groups') or [],
@@ -489,8 +489,8 @@ def nextcloud(client, entry, config):
     the step is not stuck for ever. Returns a note for the setup log, or None."""
     status = client.call('/status.php')
     check(status.get('installed') is True and status.get('maintenance') is False and not status.get('needsDbUpgrade'))
-    info = json.loads(nextcloud_occ(config, 'user:info', '--output=json', '--', entry['username']))
-    check(info.get('enabled') is True and 'admin' in info.get('groups', []))
+    info = occ_json(nextcloud_occ(config, 'user:info', '--output=json', '--', entry['username']))
+    check(isinstance(info, dict) and info.get('enabled') is True and 'admin' in info.get('groups', []))
     basic = base64.b64encode((entry['username'] + ':' + entry['password']).encode()).decode()
     path = '/remote.php/dav/files/' + urllib.parse.quote(entry['username'], safe='') + '/'
     try:

@@ -286,17 +286,29 @@ fn mount_info(path: &Path, expected: Option<&str>, fstype: &str) -> Value {
         // missing, and every backup blocked, each time a copy kept the drive busy).
         Err(_) => common::mount_table_entry(path).unwrap_or_default(),
     };
-    let v = s.split_whitespace().collect::<Vec<_>>();
-    if v.len() < 3 {
+    mount_status(&s, expected, fstype)
+}
+/// A drive's status from findmnt's "UUID FSTYPE SOURCE" line for its folder (`found`,
+/// empty when nothing is mounted there).
+fn mount_status(found: &str, expected: Option<&str>, fstype: &str) -> Value {
+    let Some((uuid, found_fstype, source)) = mount_fields(found) else {
         return json!({"status":"missing"});
-    }
-    if expected
-        .map(|u| u != v[0] || fstype != v[1])
-        .unwrap_or(false)
-    {
+    };
+    if expected.is_some_and(|u| u != uuid || fstype != found_fstype) {
         return json!({"status":"wrong_drive"});
     }
-    json!({"status":"mounted","source":v[2].split('[').next().unwrap_or("")})
+    json!({"status":"mounted","source":source.split('[').next().unwrap_or("")})
+}
+/// findmnt's "UUID FSTYPE SOURCE" line as (uuid, fstype, source). A filesystem without a
+/// UUID (a ZFS root, an overlay or tmpfs root, a disk no udev link names) leaves the first
+/// column blank, so the line has two words: its UUID is "" then. Before 0.51.2 such a
+/// root counted as missing, and the dashboard said "OS SSD unavailable" on a working PC.
+fn mount_fields(found: &str) -> Option<(&str, &str, &str)> {
+    match found.split_whitespace().collect::<Vec<_>>()[..] {
+        [fstype, source] => Some(("", fstype, source)),
+        [uuid, fstype, source, ..] => Some((uuid, fstype, source)),
+        _ => None,
+    }
 }
 fn device(source: &str) -> Option<String> {
     let partition =
@@ -1630,17 +1642,32 @@ fn full_stop(said: &str) -> String {
         said.to_string()
     }
 }
-/// How the repair advice (backup::SETTLE) begins, and the part of it to keep whole when
-/// the reason it ends was cut: what to run, and that the monthly run waits until then.
-const SETTLE_START: &str = "To settle it, run";
-const SETTLE_SHORT: &str = "To settle it, run  sudo bash install.sh --recover  and choose \"Repair damaged backup copies\". Until then the monthly snapshot and updates wait.";
+/// The recovery menu's check of a drive, as the menu names it (shared.json "recovery_menu"):
+/// 0.50.0 renamed it in the menu, and the alerts kept naming a choice no longer there.
+pub(crate) fn check_drive_choice() -> String {
+    format!(
+        "\"{}\", then \"{}\"",
+        common::shared("recovery_menu", "drive_section"),
+        common::shared("recovery_menu", "check_drive")
+    )
+}
+/// The part of the repair advice (backup::settle_advice) to keep whole when the reason it
+/// ends was cut: what to run, and that the monthly run waits until then.
+fn settle_short() -> String {
+    format!(
+        "{}. Until then the monthly snapshot and updates wait.",
+        crate::backup::settle_advice()
+    )
+}
 /// A saved reason as the page shows it: cut only at a whole sentence or word, with the
 /// repair advice kept (in short) however long the rest is.
 fn readable(said: &str) -> String {
-    match said.find(SETTLE_START) {
+    match said.find(crate::backup::SETTLE_START) {
         Some(at) => {
             let before = full_stop(&whole(said[..at].trim_end(), 300));
-            format!("{before} {SETTLE_SHORT}").trim_start().to_string()
+            format!("{before} {}", settle_short())
+                .trim_start()
+                .to_string()
         }
         None => full_stop(&whole(said, 300)),
     }
@@ -2158,7 +2185,9 @@ fn space_advice(id: &str, full: bool) -> &'static str {
         ("media_hdd", true) => "Downloads, the nightly backups and the monthly snapshot stop when it is full. Delete what you no longer watch, or old downloads, or add a bigger drive.",
         ("data_ssd", true) => "The apps keep their data, the music and their images here and can stop working when it is full. Free up space there, or move to a bigger SSD.",
         (_, true) => "Backups and uploads stop when it is full. Free up space there.",
-        _ => "Review free space before uploads or backups.",
+        ("media_hdd", false) => "Over 90% used. Downloads, the nightly backups and the monthly snapshot stop once it is full: delete what you no longer watch, or old downloads, before then.",
+        ("data_ssd", false) => "Over 90% used. The apps keep their data, the music and their images here and can stop working once it is full: free up space there before then.",
+        _ => "Over 90% used. Backups and uploads stop once it is full: free up space there before then.",
     }
 }
 /// backup_secrets.py's key: without it every monthly snapshot holds the app password
@@ -2180,11 +2209,21 @@ fn tailscale_login(now: f64) -> Value {
     }
     login_state(&serde_json::from_str(&out).unwrap_or(Value::Null), now)
 }
+/// How many days before Tailscale's sign-in runs out the dashboard starts to warn.
+const EXPIRY_WARNING_DAYS: f64 = 14.0;
+/// Tailscale's sign-in time is already over while it still says "Running" (it can lag
+/// behind its key's expiry): the server is signed out, not "running out soon".
+fn signed_in_until_past(tailscale: &Value) -> bool {
+    tailscale["days_left"].as_f64().is_some_and(|d| d < 0.0)
+}
 fn login_state(status: &Value, now: f64) -> Value {
     let state = chars(status["BackendState"].as_str().unwrap_or("unknown"), 40);
+    // Go writes a time that was never set as its zero time, "0001-01-01T00:00:00Z": that
+    // is no expiry (key expiry switched off), not a sign-in that ran out 2000 years ago.
     let days_left = status["Self"]["KeyExpiry"]
         .as_str()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .filter(|t| t.timestamp() > 0)
         .map(|t| ((t.timestamp() as f64 - now) / 86400.0).floor());
     // A server signed in before keeps its Tailscale name and addresses when the sign-in
     // runs out; one never signed in has neither.
@@ -2449,16 +2488,30 @@ pub(crate) fn alerts(s: &Value) -> Value {
             "Phone access is not set up yet".into(),
             "This server is not signed in to Tailscale yet, so your phone can't reach the apps away from home. Run  sudo bash install.sh  again: it walks you through it (or run  sudo tailscale up  and open the link it prints).",
         );
-    } else if s["tailscale"]["state"] == "NeedsLogin" {
+    } else if s["tailscale"]["state"] == "NeedsLogin" || signed_in_until_past(&s["tailscale"]) {
         add(
             "tailscale:login".into(),
             "critical",
             "Phone access is signed out of Tailscale".into(),
             "This server's Tailscale sign-in ran out, so the app addresses on your phone stop working. Sign in again: sudo tailscale up, then in the Tailscale admin console choose Disable key expiry for this server.",
         );
+    } else if s["tailscale"]["state"] == "NeedsMachineAuth" {
+        add(
+            "tailscale:off".into(),
+            "warning",
+            "Phone access waits: approve this server in Tailscale".into(),
+            "This server signed in to Tailscale, and your Tailscale account still has to approve it before your phone can reach the apps. In the Tailscale admin console (Machines), find this server and choose Approve.",
+        );
+    } else if s["tailscale"]["state"] == "Stopped" {
+        add(
+            "tailscale:off".into(),
+            "warning",
+            "Phone access is off: Tailscale is switched off".into(),
+            "Tailscale is switched off on this server, so your phone can't reach the apps away from home. Switch it on again: sudo tailscale up",
+        );
     } else if s["tailscale"]["days_left"]
         .as_f64()
-        .is_some_and(|d| d <= 14.0)
+        .is_some_and(|d| d <= EXPIRY_WARNING_DAYS)
     {
         add(
             "tailscale:expiry".into(),
@@ -2526,7 +2579,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
                     format!("mount:{id}"),
                     "critical",
                     format!("{name} has filesystem errors"),
-                    "Linux met errors writing to it (a loose cable, the network storage box away for long, a failing drive), so some changes may be missing and the drive may have turned read-only. Check it: sudo bash install.sh --recover, and choose \"Check a drive that turned read-only\" (it checks and repairs the filesystem, with your yes).",
+                    &format!("Linux met errors writing to it (a loose cable, the network storage box away for long, a failing drive), so some changes may be missing and the drive may have turned read-only. Check it: sudo bash install.sh --recover, and choose {} (a check changes nothing; a repair is a choice of its own there, with your yes).", check_drive_choice()),
                 );
             } else if d["waiting"] == true {
                 add(
@@ -2540,10 +2593,10 @@ pub(crate) fn alerts(s: &Value) -> Value {
                     format!("mount:{id}"),
                     "critical",
                     format!("{name} turned read-only"),
-                    if d["network"] == true {
-                        "Linux stopped writing to it after errors (the connection to the network storage box was lost for a while, most likely), so the apps' changes fail. Nothing more is written; do not restart the apps yet. Check the NAS and the network, then in a terminal: sudo bash install.sh --recover, and choose \"Check a drive that turned read-only\"."
+                    &if d["network"] == true {
+                        format!("Linux stopped writing to it after errors (the connection to the network storage box was lost for a while, most likely), so the apps' changes fail. Nothing more is written; do not restart the apps yet. Check the NAS and the network, then in a terminal: sudo bash install.sh --recover, and choose {}.", check_drive_choice())
                     } else {
-                        "Linux stopped writing to it after errors, so the apps' changes fail. Check its cable and health, then in a terminal: sudo bash install.sh --recover, and choose \"Check a drive that turned read-only\"."
+                        format!("Linux stopped writing to it after errors, so the apps' changes fail. Check its cable and health, then in a terminal: sudo bash install.sh --recover, and choose {}.", check_drive_choice())
                     },
                 );
             } else if d["used_percent"].as_f64().unwrap_or(0.0) >= 90.0 {
@@ -2777,7 +2830,11 @@ pub(crate) fn alerts(s: &Value) -> Value {
                         text(&c["name"]),
                         plural(bad, "file is", "files are")
                     ),
-                    "Run  sudo bash install.sh --recover  and choose \"Repair damaged backup copies\"; it lists the files.",
+                    &format!(
+                        "Run  sudo bash install.sh --recover  and choose \"{}\", then \"{}\"; it lists the files.",
+                        common::shared("recovery_menu", "drive_section"),
+                        common::shared("recovery_menu", "fix_copies")
+                    ),
                 );
             }
         }
@@ -3050,11 +3107,22 @@ fn save_state(internal: &Path, state: &Value) -> Result<()> {
     fs::set_permissions(internal, fs::Permissions::from_mode(0o700))?;
     common::atomic_json(&internal.join("collector.json"), state)
 }
-/// The app SSD is mounted but can't be written: raised as its drive alert.
+/// The app SSD's own alerts that already say why it can't be written: turned read-only
+/// (mount:), full (space:), failing (smart:).
+const SSD_CAUSES: [&str; 3] = ["mount:data_ssd", "space:data_ssd", "smart:data_ssd"];
+/// The app SSD is mounted but can't be written: raised as its drive alert, unless the
+/// drive already has an urgent one of SSD_CAUSES, which names the cause and how to fix
+/// it better than the failed write does.
 fn unwritable(result: &mut Value, why: &str) {
     let alert = json!({"id":"mount:data_ssd","level":"critical","title":"App SSD can't be written",
         "detail":format!("The apps can't save anything on it ({}). It may be full or failing: check it, then restart the PC.", chars(why, 160))});
     if let Some(list) = result["alerts"].as_array_mut() {
+        let urgent_already = list
+            .iter()
+            .any(|a| SSD_CAUSES.contains(&text(&a["id"])) && a["level"] == "critical");
+        if urgent_already {
+            return;
+        }
         list.retain(|a| a["id"] != "mount:data_ssd");
         list.insert(0, alert);
     }
@@ -3063,6 +3131,67 @@ fn unwritable(result: &mut Value, why: &str) {
 #[cfg(test)]
 mod os_tests {
     use super::*;
+    /// Seen with the media HDD filled to 96%: "filling up" said only "Review free space
+    /// before uploads or backups". A warning says, like the urgent one, what stops when
+    /// the drive is full and what to do before then.
+    #[test]
+    fn a_drive_filling_up_says_what_stops_and_what_to_do() {
+        for (id, stops) in [
+            ("media_hdd", "the nightly backups"),
+            ("data_ssd", "can stop working"),
+            ("d3", "Backups and uploads stop"),
+        ] {
+            let warning = space_advice(id, false);
+            assert!(warning.contains(stops), "{id}: {warning}");
+            assert!(warning.contains("before then"), "{id}: {warning}");
+        }
+    }
+    /// Seen on an SSD remounted read-only, then on one filled to the last byte: the
+    /// collector's own state could not be saved, and "App SSD can't be written ...
+    /// restart the PC" replaced the drive's "turned read-only" alert, or stood beside
+    /// its "almost full" one. The drive's own urgent alert names the cause and the fix.
+    #[test]
+    fn a_failed_state_write_keeps_the_ssds_own_urgent_alert() {
+        // The titles of the SSD's alerts after the failed write.
+        let titles_after = |extra: Value| -> Vec<String> {
+            let mut ssd = json!({"id": "data_ssd", "name": "Application SSD", "status": "mounted"});
+            ssd.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let mut result = json!({"storage": [ssd]});
+            result["alerts"] = alerts(&result);
+            unwritable(&mut result, "Filesystem or process operation failed");
+            result["alerts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|a| text(&a["id"]).ends_with(":data_ssd"))
+                .map(|a| text(&a["title"]).to_string())
+                .collect()
+        };
+        let cant = "App SSD can't be written";
+        assert_eq!(
+            titles_after(json!({"read_only": true})),
+            ["Application SSD turned read-only"]
+        );
+        assert_eq!(
+            titles_after(json!({"used_percent": 100.0})),
+            ["Application SSD is almost full"]
+        );
+        assert_eq!(
+            titles_after(json!({"smart": {"status": "fail", "reason": "reallocated sectors"}}))
+                .len(),
+            1,
+            "the failing drive's own alert alone"
+        );
+        // Nothing more specific to say: the write failure itself is the alert.
+        assert_eq!(titles_after(json!({})), [cant]);
+        // A warning (filling up) is not enough for a drive the apps can't write to.
+        assert_eq!(
+            titles_after(json!({"used_percent": 91.0})),
+            [cant, "Application SSD is filling up"]
+        );
+    }
     /// Gate run C8: the share of your films does not answer: the page names it, the
     /// folder and the apps stopped for it, and counts those as stopped on purpose.
     #[test]
@@ -3284,6 +3413,32 @@ mod os_tests {
             alerts(&json!({"notifications":{"status":"pass"},"heartbeat":{"status":"unknown"}})),
             json!([])
         );
+    }
+    /// An expiry already past while Tailscale still says "Running" is a server signed out
+    /// (it was told "runs out soon"); Go's zero time is no expiry at all (it was told the
+    /// same, 2000 years late); a Tailscale switched off or waiting for your approval was
+    /// told nothing, though the phone can't reach the apps.
+    #[test]
+    fn a_tailscale_that_cannot_be_reached_says_what_to_do() {
+        let now = 1_792_900_000.0;
+        let shown = |status: Value| alerts(&json!({"tailscale": login_state(&status, now)}));
+        let past = shown(json!({"BackendState":"Running",
+            "Self":{"KeyExpiry":"2026-10-01T00:00:00Z","DNSName":"neko.tail1.ts.net."}}));
+        assert_eq!(
+            (past[0]["id"].as_str(), past[0]["level"].as_str()),
+            (Some("tailscale:login"), Some("critical"))
+        );
+        let zero = json!({"BackendState":"Running","Self":{"KeyExpiry":"0001-01-01T00:00:00Z"}});
+        assert_eq!(login_state(&zero, now)["days_left"], Value::Null);
+        assert_eq!(shown(zero), json!([]));
+        for (state, says) in [
+            ("Stopped", "sudo tailscale up"),
+            ("NeedsMachineAuth", "Approve"),
+        ] {
+            let off = shown(json!({"BackendState":state,"Self":{"DNSName":"neko.tail1.ts.net."}}));
+            assert_eq!(off[0]["id"], "tailscale:off", "{state}");
+            assert!(text(&off[0]["detail"]).contains(says), "{state}: {off}");
+        }
     }
     #[test]
     fn a_tailscale_sign_in_that_runs_out_is_told() {
@@ -3740,7 +3895,8 @@ mod os_tests {
         assert_eq!(shown.len(), 1);
         assert_eq!(shown[0]["level"], "critical");
         assert!(!shown[0].to_string().contains("b.jpg"), "{}", shown[0]);
-        assert!(text(&shown[0]["detail"]).contains("Repair damaged backup copies"));
+        assert!(text(&shown[0]["detail"])
+            .contains("choose \"Check or repair a drive\", then \"Fix damaged backup copies\""));
         let _ = std::fs::remove_dir_all(data);
     }
     #[test]
@@ -4200,6 +4356,27 @@ mod user_panel_tests {
             "missing"
         );
     }
+    /// The disk Linux runs from has no identity to check, and some have no UUID at all
+    /// (a ZFS root, an overlay root): findmnt then leaves its UUID column blank, and the
+    /// row is still a mounted drive. A drive that must have a UUID is not the chosen one
+    /// when something without one is mounted in its place.
+    #[test]
+    fn a_root_without_a_uuid_is_mounted_not_missing() {
+        let root = |found: &str| mount_status(found, None, "")["status"].clone();
+        assert_eq!(root("     ext4   /dev/vda"), "mounted");
+        assert_eq!(root("  zfs rpool/ROOT/ubuntu"), "mounted");
+        assert_eq!(root("1234-ab ext4 /dev/sda2"), "mounted");
+        assert_eq!(root(""), "missing");
+        assert_eq!(
+            mount_status("  zfs rpool/ROOT/ubuntu", None, "")["source"],
+            "rpool/ROOT/ubuntu"
+        );
+        let chosen = |found: &str| mount_status(found, Some("u1"), "ext4")["status"].clone();
+        assert_eq!(chosen("u1 ext4 /dev/sdb1[/@]"), "mounted");
+        assert_eq!(chosen("   ext4 /dev/sdb1"), "wrong_drive");
+        assert_eq!(chosen("u2 ext4 /dev/sdb1"), "wrong_drive");
+        assert_eq!(chosen(""), "missing");
+    }
     /// A drive beyond the two (0.50.0: a group's files, or its apps, on a drive of
     /// their own) has a card like the two, named by what it holds; a server with
     /// nothing placed there has the three cards it always had.
@@ -4368,14 +4545,14 @@ mod user_panel_tests {
     /// and the repair advice that was cut off is kept, in short.
     #[test]
     fn long_reasons_are_cut_at_a_sentence_and_keep_the_repair_advice() {
-        let full = format!("Backup copies failed their checksum check: 1 Nextcloud file no longer matches its recorded checksum (kept as it is): rivka/files/Clients/2024/Contract-Levi.pdf. {}", crate::backup::SETTLE);
+        let full = format!("Backup copies failed their checksum check: 1 Nextcloud file no longer matches its recorded checksum (kept as it is): rivka/files/Clients/2024/Contract-Levi.pdf. {}", crate::backup::settle_advice());
         let saved = json!({"stage": "checking every copy on the USB drive by checksum",
             "reason": common::sanitize(&full)});
         // The report keeps at most 300 characters, cut at a sentence or word since 0.40.2.
         assert!(text(&saved["reason"]).chars().count() <= 300);
         let shown = failure_reason(&saved);
-        assert_eq!(shown, format!("Failed while checking every copy on the USB drive by checksum: Backup copies failed their checksum check: 1 Nextcloud file no longer matches its recorded checksum (kept as it is): rivka/files/Clients/2024/Contract-Levi.pdf. {SETTLE_SHORT}"));
-        assert!(crate::backup::SETTLE.starts_with(SETTLE_START));
+        assert_eq!(shown, format!("Failed while checking every copy on the USB drive by checksum: Backup copies failed their checksum check: 1 Nextcloud file no longer matches its recorded checksum (kept as it is): rivka/files/Clients/2024/Contract-Levi.pdf. {}", settle_short()));
+        assert!(crate::backup::settle_advice().starts_with(crate::backup::SETTLE_START));
         // Without the advice: the last whole sentence, or the last whole word and "…".
         let words = "word ".repeat(70);
         assert_eq!(whole(&words, 300).chars().last(), Some('…'));
@@ -4582,7 +4759,7 @@ mod round_two_tests {
             .iter()
             .find(|a| a["title"] == "Media HDD turned read-only")
             .unwrap();
-        assert!(text(&read_only["detail"]).contains("Check a drive that turned read-only"));
+        assert!(text(&read_only["detail"]).contains("choose \"Check or repair a drive\", then \"Check a drive that stopped taking new files\""));
         assert!(raised
             .as_array()
             .unwrap()
@@ -4616,7 +4793,7 @@ mod round_two_tests {
         );
         let alert = &shown.as_array().unwrap()[0];
         assert_eq!(alert["title"], "Media HDD has filesystem errors");
-        assert!(text(&alert["detail"]).contains("Check a drive that turned read-only"));
+        assert!(text(&alert["detail"]).contains("choose \"Check or repair a drive\", then \"Check a drive that stopped taking new files\""));
         let _ = fs::remove_dir_all(root);
     }
     /// QA after 0.40.2: "1 file", never "1 files".

@@ -287,7 +287,7 @@ impl Volume {
         let Some(dir) = self.existing(&self.objects, txn.hh())? else {
             return Ok(false);
         };
-        let file = match dir.open_file(txn.payload_name()) {
+        let file = match dir.open_from_card(txn.payload_name()) {
             Ok(f) => f,
             Err(e) if e.errno == Some(libc::ENOENT) => return Ok(false),
             Err(e) => return Err(e),

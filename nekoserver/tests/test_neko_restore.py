@@ -350,6 +350,16 @@ class RestoreTests(Base):
         self.assertEqual(os.stat(self.dest / A_JPG).st_mtime_ns, first, 'not copied again')
         self.assertEqual(len(progress_done(progress)), 2)
 
+    def test_a_file_being_written_when_the_restore_was_killed_is_restored_next_time(self):
+        # A restore killed (SIGKILL, a power cut) while writing a file leaves its
+        # half-written temporary file; the next run used to fail that file ("File exists").
+        rec = self.card.add(A_JPG, b'one')
+        (self.dest / ('.neko-restore-%s.part' % rec['record_id'])).write_bytes(b'o')
+        progress = self.tmp / 'progress.json'
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 0, said_text(self))
+        self.assertEqual((self.dest / A_JPG).read_bytes(), b'one')
+        self.assertEqual(sorted(os.listdir(self.dest)), [A_JPG])
+
     def test_the_report_names_every_file_and_where_it_went(self):
         self.card.add(X_A, b'a')
         report = self.tmp / 'report.json'
@@ -535,6 +545,18 @@ class ManyFilesTests(Base):
         self.assertIn('same file   DCIM/meeting 10:30.jpg -> _renamed/', said_text(self))
         self.assertEqual([p for p in self.dest.rglob('.neko-restore-*')], [])
 
+    def test_skipped_files_say_how_to_get_them_too(self):
+        """Seen restoring onto an exFAT stick: the run ended "restored 5, skipped 2" and
+        nothing said the two were still only on the card, or that --rename takes them."""
+        self.card.add(A_2001, b'card a')
+        (self.dest / '2001').mkdir()
+        (self.dest / A_2001).write_bytes(b'mine')
+        self.assertEqual(self.run_tool('restore', str(self.dest)), 1)
+        self.assertEqual(self.said[-1], tool.SKIPPED_HINT)
+        # With --rename nothing is skipped for its name, and nothing more is said.
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--rename'), 0)
+        self.assertNotIn(tool.SKIPPED_HINT, self.said)
+
     def test_a_file_already_restored_counts_as_done_without_a_progress_file(self):
         """Seen on the same stick: the same restore run again (no --progress) skipped every
         file it had restored, or with --rename made a second copy of each."""
@@ -547,6 +569,55 @@ class ManyFilesTests(Base):
         (self.dest / A_2001).write_bytes(b'card A')
         self.assertEqual(self.run_tool('restore', str(self.dest)), 1)
         self.assertIn('skipped     2001/a.jpg -> a file is there already', said_text(self))
+
+    def test_nothing_is_restored_onto_the_card_itself(self):
+        """Seen on an ext4 card image mounted read-write: `restore /mnt` (the card) and even
+        `restore /mnt/NekoBackup` restored every file onto the card, among its records."""
+        self.card.add(A_2001, b'card a')
+        before = sorted(str(p.relative_to(self.card.top)) for p in self.card.top.rglob('*'))
+        for dest in (self.card.top, self.card.nb, self.card.nb / 'records'):
+            with self.subTest(dest=dest.name):
+                self.assertEqual(self.run_tool('restore', str(dest)), 2)
+                self.assertIn('is on the card itself', said_text(self))
+        # Another name of the same folder (a link) is the card too.
+        link = self.tmp / 'link-to-card'
+        link.symlink_to(self.card.top)
+        self.assertEqual(self.run_tool('restore', str(link)), 2)
+        self.assertEqual(sorted(str(p.relative_to(self.card.top)) for p in self.card.top.rglob('*')), before)
+        self.assertEqual(self.run_tool('restore', str(self.dest)), 0)
+
+    def test_the_second_check_reads_the_drive_not_linuxs_copy(self):
+        """The review of 0.51.0: the restored file was read back from Linux's page cache, so a
+        USB stick that kept other bytes passed (shown on an ext4 image whose bytes were
+        changed under the filesystem: the old tool said "restored"). Each readback now
+        drops the file's cached pages first."""
+        self.card.add(A_2001, b'card a')
+        dropped = []
+        real = os.posix_fadvise
+
+        def watching(fd, offset, length, advice):
+            """posix_fadvise as it is, each call written down."""
+            dropped.append((offset, length, advice))
+            return real(fd, offset, length, advice)
+
+        with mock.patch.object(tool.os, 'posix_fadvise', side_effect=watching):
+            self.assertEqual(self.run_tool('restore', str(self.dest)), 0)
+        self.assertIn((0, 0, os.POSIX_FADV_DONTNEED), dropped)
+
+    def test_a_copy_missing_or_replaced_on_the_card_is_said_as_such(self):
+        """Seen on a hand-tampered card: restore said "No such file or directory (b/gone.jpg)"
+        (as if the destination were at fault) and "Too many levels of symbolic links", where
+        verify says missing and damaged."""
+        gone = self.card.add('b/gone.jpg', b'gone')
+        linked = self.card.add('f/link.jpg', b'link')
+        self.card.payload(gone).unlink()
+        self.card.payload(linked).unlink()
+        os.symlink('/etc/hostname', self.card.payload(linked))
+        self.assertEqual(self.run_tool('restore', str(self.dest)), 1)
+        said = said_text(self)
+        self.assertIn('failed      b/gone.jpg -> its copy is missing from the card', said)
+        self.assertIn('failed      f/link.jpg -> its copy on the card is damaged (not a plain file)', said)
+        self.assertNotIn('symbolic links', said)
 
     def test_a_name_restored_earlier_in_the_same_run_still_clashes_by_case(self):
         self.card.add('DCIM/IMG_1.JPG', b'upper')

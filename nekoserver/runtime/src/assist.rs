@@ -252,10 +252,20 @@ static PATTERNS: std::sync::LazyLock<Vec<(regex::Regex, &str)>> = std::sync::Laz
             // name=value, name: value and "name": "value" for names that say secret. Not
             // "Auth" or "Session" (log lines say "Auth: Auth-Success", "SessionManager:
             // Sending..."): their secret values are caught by Bearer, cookies, the
-            // random-string rule and NekoServer's own saved secrets.
+            // random-string rule and NekoServer's own saved secrets. A value in quotes is
+            // taken out up to its closing quote (or the line's end): a passphrase of several
+            // words ("password: \"correct horse battery\"") lost only its first word before.
             (
-                r#"(?i)\b([a-z0-9_.-]*(?:pass(?:word|wd|phrase)?|secret|token|api[_-]?key|private[_-]?key|access[_-]?key)[a-z0-9_.-]*)("?\s*[=:]\s*"?)[^\s",;&]+"#,
+                r#"(?i)\b([a-z0-9_.-]*(?:pass(?:word|wd|phrase)?|secret|token|api[_-]?key|private[_-]?key|access[_-]?key)[a-z0-9_.-]*)("?\s*[=:]\s*)(?:"[^"\n]*"?|'[^'\n]*'?|\x{201c}[^\x{201d}\n]*\x{201d}?|[^\s",;&]+)"#,
                 "$1$2<removed>",
+            ),
+            // A password named in another language (German, Spanish, French, Dutch,
+            // Portuguese, Hebrew with its joined "the"/"and" prefixes, Russian). After ":" or
+            // "=" any value goes; after the language's "is" only one with a digit or a symbol
+            // in it: an ordinary word there ("Mein Passwort ist falsch?") is a sentence.
+            (
+                r#"(?i)\b((?:pass|kenn)wort|contrase(?:ñ|n)a|mot de passe|wachtwoord|senha|[הוש]?סיסמ[הא]|пароль)(\s*[:=]\s*(?:"[^"\n]*"?|'[^'\n]*'?|[^\s",;&]+)|\s+(?:ist|es|est|is|é|היא|הוא|זה|это)\s+[^\s",;&]*[\p{N}\p{S}@#%*_\-][^\s",;&]*)"#,
+                "$1 <removed>",
             ),
             // E-mail addresses.
             (
@@ -1085,6 +1095,10 @@ enum Waited {
 /// One line from Ollama (as bytes: a line cut by a wake-up is kept whole), waiting at
 /// most `limit`, and giving up as soon as `keep` says the answer is not wanted any more.
 /// The connection's read time limit is short, so `keep` is asked about once a second.
+/// Read piece by piece, so the limit holds while bytes come without a line's end too:
+/// with read_until, an answer sent a byte at a time never let a read time out, and it
+/// kept "one question at a time" taken long after the page said it was stopped (seen
+/// with a stand-in assistant: every later question was "busy").
 fn next_line(
     reader: &mut BufReader<std::io::Take<TcpStream>>,
     line: &mut Vec<u8>,
@@ -1092,26 +1106,52 @@ fn next_line(
     keep: &dyn Fn() -> bool,
 ) -> std::result::Result<usize, Waited> {
     let start = Instant::now();
+    let mut asked = Instant::now();
+    let mut added = 0;
+    // After a read timed out, or about once a second while bytes keep coming.
+    let mut ask_now = false;
     loop {
-        match reader.read_until(b'\n', line) {
-            Ok(n) => return Ok(n),
+        if ask_now || asked.elapsed() >= KEEP_ASKED {
+            asked = Instant::now();
+            if !keep() {
+                return Err(Waited::NotWanted);
+            }
+        }
+        if start.elapsed() >= limit {
+            return Err(Waited::TooLong);
+        }
+        let piece = match reader.fill_buf() {
+            Ok(piece) => piece,
             Err(e)
                 if matches!(
                     e.kind(),
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                 ) =>
             {
-                if !keep() {
-                    return Err(Waited::NotWanted);
-                }
-                if start.elapsed() >= limit {
-                    return Err(Waited::TooLong);
-                }
+                ask_now = true;
+                continue;
             }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => return Err(Waited::Broken),
+        };
+        ask_now = false;
+        if piece.is_empty() {
+            return Ok(added); // the end: 0 when nothing more came
+        }
+        let (taken, ended) = match piece.iter().position(|b| *b == b'\n') {
+            Some(at) => (at + 1, true),
+            None => (piece.len(), false),
+        };
+        line.extend_from_slice(&piece[..taken]);
+        reader.consume(taken);
+        added += taken;
+        if ended {
+            return Ok(added);
         }
     }
 }
+/// How often `keep` is asked while a line is being read.
+const KEEP_ASKED: Duration = Duration::from_secs(1);
 
 /// Ask Ollama at `address` (OLLAMA, or a test's own) and hand each piece of the answer
 /// to `piece` as it comes. Returns the whole answer, or why there is none. When `keep`
@@ -1172,6 +1212,10 @@ pub fn stream(
 
 /// Said when an answer passes its time limit (Limits.total, or a pause too long).
 const TOO_LONG: &str = "the answer took too long, so it was stopped";
+/// Said when the assistant closes the connection without a word (it was restarting, or
+/// its runner ended).
+const HUNG_UP: &str =
+    "the AI assistant hung up without answering (it may be restarting); ask again in a minute";
 
 /// Why no line came, in words; `slow` is what to say when the wait was too long.
 fn why_none(why: Waited, slow: &str) -> String {
@@ -1208,7 +1252,8 @@ fn asked_ollama(
     let mut line = vec![];
     let slow_start = "the AI assistant took too long to start answering";
     match next_line(&mut reader, &mut line, limits.first, keep) {
-        Ok(0) => return Err(slow_start.into()),
+        // Hung up at once: not slow (seen with a stand-in assistant, it was said to be).
+        Ok(0) => return Err(HUNG_UP.into()),
         Ok(_) => {}
         Err(why) => return Err(why_none(why, slow_start)),
     }
@@ -1427,6 +1472,33 @@ mod tests {
 
     /// Review of the 0.50.0 fixes: the bug report said "passwords and keys removed", but
     /// a password written out in a sentence stayed in the question.
+    /// Deep check plan 39: the redaction knew only English words for a password, so
+    /// "Passwort: X" and "הסיסמה היא X" (Hebrew, "the password is X") reached the model.
+    #[test]
+    fn a_password_named_in_another_language_is_taken_out() {
+        // Made up here from pieces: not a saved login, not shaped like a key.
+        let word = ["Gelb", "-Katze-", "42"].concat();
+        for typed in [
+            format!("Passwort: {word}"),
+            format!("das Kennwort ist {word}"),
+            format!("la contraseña es {word}"),
+            format!("mot de passe = {word}"),
+            format!("het wachtwoord is {word}"),
+            format!("a senha é {word}"),
+            format!("הסיסמה היא {word}"),
+            format!("סיסמה: {word}"),
+            format!("пароль: {word}"),
+        ] {
+            let said = redact(&typed, &[]);
+            assert!(!said.contains(&word), "{typed} -> {said}");
+            assert!(said.contains("<removed>"), "{typed} -> {said}");
+        }
+        // The words alone, with nothing after them, stay.
+        assert_eq!(
+            redact("Mein Passwort ist falsch?", &[]),
+            "Mein Passwort ist falsch?"
+        );
+    }
     #[test]
     fn a_password_written_in_a_sentence_is_taken_out() {
         // Made up here from pieces: not a saved login, not shaped like a key.
@@ -1466,6 +1538,17 @@ mod tests {
                 format!("my passphrase is \"{phrase}\" and Immich refuses it"),
                 "my passphrase is <removed> and Immich refuses it".into(),
             ),
+            // The settings form with a passphrase in quotes: all of it goes, not only its
+            // first word (seen asking the real service: "<removed> pony staple" stayed).
+            (
+                format!("the admin password: \"{phrase}\" fails"),
+                "the admin password: <removed> fails".into(),
+            ),
+            (
+                format!("{{\"db_password\": \"{phrase}\", \"user\": \"neko\"}}"),
+                "{\"db_password\": <removed>, \"user\": \"neko\"}".into(),
+            ),
+            (format!("SMB_PASS='{phrase}'"), "SMB_PASS=<removed>".into()),
             (
                 format!("the password to plex is {word}"),
                 "the password to <removed>".into(),
@@ -1521,6 +1604,56 @@ mod tests {
             "{said}"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn no_text_makes_the_redaction_panic() {
+        // Whatever a person types or a log holds (Hebrew, emoji, quotes left open, the
+        // words that start a value at the very end): the redaction never panics, and the
+        // value after "password is" never stays in.
+        let parts = [
+            "password",
+            "PIN",
+            "pin",
+            "is",
+            "was",
+            "to",
+            "for",
+            " ",
+            "\n",
+            "\"",
+            "'",
+            "\u{201c}",
+            "\u{201d}",
+            "שלום",
+            "🐈",
+            "é",
+            "x",
+            "Jellyfin",
+            "=",
+            ":",
+            "passphrase",
+            "now",
+            "set",
+            "the",
+            "סיסמה",
+        ];
+        let mut seed: u64 = 0x5eed;
+        for _ in 0..20_000 {
+            let mut text = String::new();
+            for _ in 0..(seed % 12) {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                text.push_str(parts[(seed >> 33) as usize % parts.len()]);
+                if seed & 1 == 0 {
+                    text.push(' ');
+                }
+            }
+            let _ = redact(&text, &[]);
+        }
+        let said = redact("my password is קטן🐈סוד and more", &[]);
+        assert!(!said.contains("קטן🐈סוד"), "{said}");
     }
 
     #[test]
@@ -2312,6 +2445,47 @@ mod tests {
         let (address, _) = fake_ollama(None);
         let why = collect(&address, &quick()).0.unwrap_err();
         assert!(why.contains("too long"), "{why}");
+    }
+
+    /// Seen asking the real service with a stand-in assistant that sent its answer a byte
+    /// at a time with no line's end: no read ever timed out, so its time limit was never
+    /// looked at and the answer held "one question at a time" until the stand-in stopped.
+    #[test]
+    fn an_answer_that_never_ends_its_line_is_stopped_in_time() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let _ = s.read(&mut [0u8; 65536]);
+            let _ = s.write_all(b"HTTP/1.0 200 OK\r\n\r\n");
+            // A byte every 50 ms for 10 s: faster than any read's time limit.
+            for _ in 0..200 {
+                if s.write_all(b"x").is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let limits = Limits {
+            first: Duration::from_secs(1),
+            next: Duration::from_secs(1),
+            total: Duration::from_secs(2),
+            abandon: Duration::from_secs(60),
+        };
+        let start = Instant::now();
+        let result = stream(&address, "m", 1, &json!([]), &limits, &|| true, &mut |_| {});
+        let took = start.elapsed();
+        assert!(result.unwrap_err().contains("too long"), "took {took:?}");
+        assert!(took < Duration::from_secs(4), "{took:?}");
+    }
+
+    /// Seen with a stand-in assistant that closed the connection at once: Neko said it
+    /// "took too long to start answering", though it had answered nothing in no time.
+    #[test]
+    fn an_assistant_that_hangs_up_at_once_is_not_called_slow() {
+        let (address, _) = fake_ollama(Some(String::new()));
+        let why = collect(&address, &LIMITS).0.unwrap_err();
+        assert!(why.contains("hung up without answering"), "{why}");
     }
 
     /// The asks share one slot: these tests take it in turn.

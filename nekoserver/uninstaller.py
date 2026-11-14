@@ -933,7 +933,8 @@ class Plan:
         notes = []
         units = self.units()
         if units:
-            notes.append('Stop and remove ' + str(len(units)) + ' services and timers: ' + ', '.join(units))
+            what = 'service or timer' if len(units) == 1 else 'services and timers'
+            notes.append('Stop and remove ' + str(len(units)) + ' ' + what + ': ' + ', '.join(units))
         paths = self.system_paths() + self.shortcuts() + self.os_dropins() + self.setup_state()
         notes.extend(self.kept())
         if self.unfinished_packages():
@@ -1172,7 +1173,7 @@ def choose(ask=input, out=print):
 
 
 def _toggle(chosen, token, out):
-    if not token.isdigit() or not 1 <= int(token) <= len(CHOICES):
+    if not token.isdecimal() or not 1 <= int(token) <= len(CHOICES):
         out(' Not a choice: ' + token)
         return
     key = CHOICES[int(token) - 1][0]
@@ -2296,7 +2297,21 @@ def busy(locks=SETUP_LOCKS, journal=None):
     return None, held
 
 
+USAGE = '''Remove NekoServer from this PC: what you choose, after two confirmations.
+  sudo bash uninstall.sh             choose what goes, see the plan, confirm twice
+  sudo bash uninstall.sh --dry-run   see what each choice would remove; nothing changes
+Nothing is ever formatted; what you keep stays as it is.'''
+
+
 def main(argv):
+    # Only these words: anything else (a typo of --dry-run, say) once ran the real removal.
+    if any(arg in ('-h', '--help') for arg in argv):
+        print(USAGE)
+        return 0
+    unknown = [arg for arg in argv if arg != '--dry-run']
+    if unknown:
+        print(f'Unknown option {unknown[0]}. Nothing was changed.\n\n{USAGE}', file=sys.stderr)
+        return 2
     dry = '--dry-run' in argv
     if not dry and os.geteuid() != 0:
         print('Run with sudo:  sudo bash uninstall.sh   (or  --dry-run  to only look)', file=sys.stderr)

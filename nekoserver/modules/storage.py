@@ -1921,7 +1921,7 @@ def asked_install(context, what, others):
             named = next((row for row in others if str(row['number']) == window_row(answer)), None)
             if named is not None:
                 return named
-        elif answer.isdigit() and 2 <= int(answer) < 2 + len(others):
+        elif answer.isdecimal() and 2 <= int(answer) < 2 + len(others):
             return others[int(answer) - 2]
         context.log(f'Type a number from 1 to {1 + len(others)}, or press Enter.')
     return None
@@ -2770,7 +2770,7 @@ def place_asked(context, offered, input_fn, key):
     options, others = offered
     for _ in range(3):
         answer = drive_table.field(key or 'place', input_fn or input, 'Number (Enter for the recommended one): ')
-        if len(options) == 1 and answer.isdigit() and int(answer) >= 2:
+        if len(options) == 1 and answer.isdecimal() and int(answer) >= 2:
             # Numbered from 2 here: the place_answered numbers count two drives first.
             answer = str(int(answer) + 1)
         place = place_answered(answer, options, others)
@@ -2790,7 +2790,7 @@ def place_answered(answer, options, others):
         return next((row for row in others if str(row['number']) == window_row(answer)), None)
     if answer in ('', '1', '2'):
         return options[int(answer) - 1] if answer else options[0]
-    if answer.isdigit() and 3 <= int(answer) < 3 + len(others):
+    if answer.isdecimal() and 3 <= int(answer) < 3 + len(others):
         return others[int(answer) - 3]
     return None
 

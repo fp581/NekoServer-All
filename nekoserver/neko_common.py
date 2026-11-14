@@ -4,6 +4,7 @@ import contextlib
 import ctypes
 import errno
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -122,9 +123,53 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def local_opener(*handlers):
-    """An opener for the apps on this computer: no proxy, no redirects."""
-    return urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect(), *handlers)
+def local_opener(*handlers, seconds=None):
+    """An opener for the apps on this computer: no proxy, no redirects. `seconds`: the most
+    one request may take in all, its answer read whole (TimeLimit)."""
+    timed = (TimeLimit(seconds),) if seconds else ()
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect(), *timed, *handlers)
+
+
+class TimeLimit(urllib.request.HTTPHandler):
+    """Plain HTTP requests that end with TimeoutError once they have taken `seconds` in
+    all. The socket's own timeout counts per read: an app answering a byte every few
+    seconds kept every read within it, and setup waiting for good."""
+
+    def __init__(self, seconds):
+        super().__init__()
+        self.seconds = seconds
+
+    def http_open(self, req):
+        return self.do_open(lambda host, **options: _TimedConnection(host, seconds=self.seconds, **options), req)
+
+
+class _TimedConnection(http.client.HTTPConnection):
+    """A connection whose socket reads stop at its deadline (_TimedSocket)."""
+
+    def __init__(self, host, seconds, **options):
+        super().__init__(host, **options)
+        self.seconds = seconds
+
+    def connect(self):
+        deadline = time.monotonic() + self.seconds
+        super().connect()
+        plain = self.sock
+        timeout = plain.gettimeout()
+        self.sock = _TimedSocket(plain.family, plain.type, plain.proto, fileno=plain.detach())
+        self.sock.read_timeout, self.sock.deadline = timeout, deadline
+
+
+class _TimedSocket(socket.socket):
+    """A socket whose every read waits at most until `deadline` (time.monotonic), and at
+    most `read_timeout` seconds (None: no limit of its own). http.client reads the answer,
+    headers and body, through recv_into."""
+
+    def recv_into(self, buffer, nbytes=0, flags=0):
+        left = self.deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError('the answer did not come whole in time')
+        self.settimeout(left if self.read_timeout is None else min(self.read_timeout, left))
+        return super().recv_into(buffer, nbytes, flags)
 
 
 # Where NekoServer's systemd units live; every one it writes starts with this.
@@ -747,20 +792,28 @@ def copy_checked_into(src, folder, name, expected=None, what=None):
     what = what or name
     fd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=folder)
     stream = hashlib.sha256()
-    with os.fdopen(fd, 'w+b') as out:
-        os.fchmod(out.fileno(), 0o600)
-        while chunk := src.read(1 << 20):
-            stream.update(chunk)
-            out.write(chunk)
-        out.flush()
-        os.fsync(out.fileno())
-        # Written to the drive: dropped from memory, so the read below comes from the
-        # drive itself (from memory, damage on the drive would never be seen).
-        os.posix_fadvise(out.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
-        out.seek(0)
-        landed = hashlib.file_digest(out, 'sha256').hexdigest()
-    if landed != stream.hexdigest():
-        raise RuntimeError(f'Restoring {what} failed: the copy written to disk does not match what was read')
+    try:
+        with os.fdopen(fd, 'w+b') as out:
+            os.fchmod(out.fileno(), 0o600)
+            while chunk := src.read(1 << 20):
+                stream.update(chunk)
+                out.write(chunk)
+            out.flush()
+            os.fsync(out.fileno())
+            # Written to the drive: dropped from memory, so the read below comes from the
+            # drive itself (from memory, damage on the drive would never be seen).
+            os.posix_fadvise(out.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+            out.seek(0)
+            landed = hashlib.file_digest(out, 'sha256').hexdigest()
+        if landed != stream.hexdigest():
+            raise RuntimeError(f'Restoring {what} failed: the copy written to disk does not match what was read')
+    except (OSError, RuntimeError):
+        # A copy cut off part-way (the drive filled up, a read error) or written wrong is
+        # never left under the file's own name: a restore stopped by a full drive left a
+        # cut-off file there among the good ones, said to be "there as they are".
+        with contextlib.suppress(OSError):
+            os.unlink(name, dir_fd=folder)
+        raise
     if expected is not None and landed != expected:
         raise BackupDamaged(f'{what} is damaged on the backup (it no longer matches its recorded checksum)')
     return landed
@@ -964,6 +1017,25 @@ def relative_path(value):
     ):
         raise RuntimeError(f'Unsafe relative path: {value}')
     return path
+
+
+# Where a JSON answer can start in occ's output: the start of a line (after spaces).
+OCC_JSON_START = re.compile(r'^[ \t]*([{\[])', re.MULTILINE)
+
+
+def occ_json(text):
+    """The JSON answer Nextcloud's occ printed (`--output=json`), or None when there is
+    none. PHP prints its warnings and notices on the same output, before or after the
+    answer, and they carry braces of their own ("{closure}"): taking everything from the
+    first "{" read no answer at all then, and setup waited 15 minutes for one. The
+    answer is the first JSON value that starts a line; whatever follows it is left."""
+    decoder = json.JSONDecoder()
+    for start in OCC_JSON_START.finditer(text or ''):
+        try:
+            return decoder.raw_decode(text, start.start(1))[0]
+        except ValueError:
+            continue
+    return None
 
 
 def fetch(url, what, limit, timeout=30, opener=None, headers=None):
@@ -1740,6 +1812,73 @@ def day_before_if_wrapped(day, time, minutes):
     return WEEKDAYS[(WEEKDAYS.index(day) + days) % 7]
 
 
+# How far the Immich database copy moves earlier at a time, when its usual time before the
+# USB copy is skipped by a clock change (database_offset).
+CLOCK_CHANGE_STEP = 15
+
+
+def clock_change_skips(time, zone, on_day=lambda date: True, today=None):
+    """The first date of the coming year, among those `on_day` accepts (every day unless
+    given), on which `time` (HH:MM) does not exist in `zone`, or None: the night the clocks
+    go forward skips it (02:30 on the last Sunday of March in Berlin), and systemd then
+    runs a job set for it not that night but at its next time. `today`: where the year
+    starts (tests)."""
+    import datetime as dt
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    try:
+        place = ZoneInfo(zone)
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+    hours, mins = (int(part) for part in time.split(':'))
+    start = today or dt.date.today()
+    for ahead in range(366):
+        date = start + dt.timedelta(days=ahead)
+        if not on_day(date):
+            continue
+        local = dt.datetime(date.year, date.month, date.day, hours, mins)
+        there = local.replace(tzinfo=place).astimezone(dt.timezone.utc).astimezone(place)
+        if there.replace(tzinfo=None) != local:
+            return date
+    return None
+
+
+def on_weekday(day):
+    """For clock_change_skips: the dates that fall on weekday `day` ("Sun")."""
+    return lambda date: WEEKDAYS[date.weekday()] == day
+
+
+def skipped_by_clock_change(day, time, zone, today=None):
+    """Whether `time` (HH:MM) on weekday `day` does not exist on one such day of the coming
+    year in `zone` (02:15 on a Sunday in March in New York and in Berlin): systemd then
+    runs a job set for it a week later, not that day."""
+    return clock_change_skips(time, zone, on_weekday(day), today) is not None
+
+
+def earlier_past_clock_change(day, time, offset, zone, today=None):
+    """`offset` (minutes from `time` on weekday `day`), made earlier by CLOCK_CHANGE_STEP
+    until the time it lands on is not skipped by a clock change in `zone`."""
+    while offset > -24 * 60 and skipped_by_clock_change(
+        day_before_if_wrapped(day, time, offset), minutes_later(time, offset), zone, today
+    ):
+        offset -= CLOCK_CHANGE_STEP
+    return offset
+
+
+def database_offset(day, time, zone, today=None):
+    """Minutes from the USB copy (weekday `day` at `time`) to its Immich database copy: 45
+    before it, or earlier still when that time is skipped by a clock change in `zone`. The
+    copy would be skipped that week and the USB drive would get the week-old one (found on
+    0.51.2: Sunday 02:15 before the default 03:00, in New York or Berlin, is 01:45 now)."""
+    return earlier_past_clock_change(day, time, -DATABASE_BEFORE_USB, zone, today)
+
+
+# The Immich database copy's time in the settings template before 0.48.0, which nobody
+# was asked about: on those servers it is still written in the settings, as
+# photos.database_backup_time, and is skipped by the clock change like the one above.
+DATABASE_TIME_BEFORE_0_48 = '02:15'
+
+
 def backup_times(config):
     """The times setup asked for: {'daily', 'weekly_day', 'weekly', 'monthly'}, checked, or
     None when the settings file has none yet (made before 0.48.0): each job then keeps
@@ -1788,27 +1927,32 @@ def job_times(config):
         day = photos.get('backup_weekday', WEEKLY_DAY_DEFAULT) if isinstance(photos, dict) else WEEKLY_DAY_DEFAULT
         if day not in WEEKDAYS:
             raise RuntimeError('photos.backup_weekday must be one of ' + ', '.join(WEEKDAYS))
-        database = _own_time(config, 'photos', 'database_backup_time', '02:15')
+        database = _own_time(config, 'photos', 'database_backup_time', DATABASE_TIME_BEFORE_0_48)
+        weekly, weekly_day = database, day
+        if database == DATABASE_TIME_BEFORE_0_48:
+            # The old default, not a time a person chose: moved like the one derived
+            # from "backup_times" below, so the USB copy never takes a week-old one.
+            offset = earlier_past_clock_change(day, database, 0, host_timezone(config))
+            weekly, weekly_day = minutes_later(database, offset), day_before_if_wrapped(day, database, offset)
         return {
             'app': _own_time(config, 'app_backup', 'time', DAILY_DEFAULT),
             'music': _own_time(config, 'music', 'backup_time', '03:45'),
             'host': _own_time(config, 'host_backup', 'time', '05:15'),
             'photo_database': database,
-            'photo_database_weekly': database,
-            'photo_database_weekly_day': day,
+            'photo_database_weekly': weekly,
+            'photo_database_weekly_day': weekly_day,
             'usb_day': day,
             'usb': _own_time(config, 'photos', 'backup_time', WEEKLY_DEFAULT),
             'monthly': _own_time(config, 'maintenance', 'time', MONTHLY_DEFAULT),
         }
+    before_usb = database_offset(chosen['weekly_day'], chosen['weekly'], host_timezone(config))
     return {
         'app': minutes_later(chosen['daily'], NIGHTLY_OFFSETS['app']),
         'music': minutes_later(chosen['daily'], NIGHTLY_OFFSETS['music']),
         'host': minutes_later(chosen['daily'], NIGHTLY_OFFSETS['host']),
         'photo_database': minutes_later(chosen['daily'], NIGHTLY_OFFSETS['photo_database']),
-        'photo_database_weekly': minutes_later(chosen['weekly'], -DATABASE_BEFORE_USB),
-        'photo_database_weekly_day': day_before_if_wrapped(
-            chosen['weekly_day'], chosen['weekly'], -DATABASE_BEFORE_USB
-        ),
+        'photo_database_weekly': minutes_later(chosen['weekly'], before_usb),
+        'photo_database_weekly_day': day_before_if_wrapped(chosen['weekly_day'], chosen['weekly'], before_usb),
         'usb_day': chosen['weekly_day'],
         'usb': chosen['weekly'],
         'monthly': chosen['monthly'],
@@ -1985,10 +2129,17 @@ def ensure_room(folder, need, what='This restore'):
     reserve = max(5 * GIB, usage.total // 20)
     if need + reserve > usage.free:
         raise RuntimeError(
-            f'not enough free space: {what.lower()} needs {need / GIB:.1f} GB and '
-            f'{usage.free / GIB:.1f} GB is free on that drive (5 GB or 5% is kept free). '
+            f'not enough free space: {what.lower()} needs {size_said(need)}, and the drive must keep '
+            f'{size_said(reserve)} free (5 GB or 5% of it), but only {size_said(usage.free)} is free on it. '
             'Free some space or choose a folder on another drive.'
         )
+
+
+def size_said(size):
+    """A size in words: GB from 1 GB up, MB below (a small restore was "0.0 GB")."""
+    if size >= GIB:
+        return f'{size / GIB:.1f} GB'
+    return f'{max(1, round(size / 1024**2))} MB'
 
 
 def file_count(count):

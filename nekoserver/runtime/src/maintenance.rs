@@ -1161,7 +1161,10 @@ pub(crate) fn verify(snapshot: &Path) -> Result<Value> {
     }
     for key in ["data", "media", "images"] {
         let archive = snapshot.join(format!("{key}.tar"));
-        if common::digest(&archive)? != manifest["sha256"][key].as_str().unwrap_or("") {
+        // Read from the drive, not from Linux's memory: the check right after the snapshot
+        // was made read the archives tar had just written, so a damaged copy on the HDD
+        // passed and showed up only at a restore.
+        if common::digest_landed(&archive)? != manifest["sha256"][key].as_str().unwrap_or("") {
             return Err(Error::new("Snapshot archive checksum mismatch"));
         }
     }
@@ -1171,7 +1174,7 @@ pub(crate) fn verify(snapshot: &Path) -> Result<Value> {
         ("secrets_cert", SECRETS_CERT, "backup certificate"),
     ] {
         if let Some(expected) = manifest["sha256"][key].as_str() {
-            if common::digest(&snapshot.join(name))? != expected {
+            if common::digest_landed(&snapshot.join(name))? != expected {
                 return Err(Error::new(&format!("Snapshot {what} checksum mismatch")));
             }
         }
@@ -2498,41 +2501,23 @@ fn release_fetch_once(url: &str) -> Result<String> {
         70,
     )
 }
-fn immich_candidate(cfg: &Value, snapshot: &Path, work: &Path) -> Result<Option<PathBuf>> {
-    let original = Path::new(string(cfg, "data_mount")?).join("compose/immich");
-    let env = String::from_utf8(common::bytes(&original.join(".env"), 64000)?)
-        .map_err(|_| Error::new("Invalid Immich environment"))?;
-    let current = env
-        .lines()
-        .find_map(|line| line.strip_prefix("IMMICH_VERSION="))
-        .ok_or_else(|| Error::new("Pinned Immich release missing"))?;
+/// What GitHub's latest Immich release means for the one installed.
+#[derive(Debug, PartialEq)]
+enum ImmichNext {
+    /// Not newer than the one installed: nothing to do.
+    Nothing,
+    /// A newer major, not approved yet: noted for the dashboard, never installed.
+    MajorWaits(String),
+    /// A newer release to install.
+    Install(String),
+}
+/// The latest release (`release`, GitHub's answer) against the installed `current` tag,
+/// `wanted` being the approved major (maintenance.immich_major_update). Whether it is
+/// newer is asked first: GitHub's "latest" can be an older major (a fix published for
+/// it after the new major), which was noted before as a "manual major upgrade
+/// required" to that older release.
+fn immich_next(current: &str, release: &Value, wanted: &str) -> Result<ImmichNext> {
     let version = regex::Regex::new(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)$").unwrap();
-    let before = version
-        .captures(current)
-        .ok_or_else(|| Error::new("Invalid installed Immich version"))?;
-    let release: Value = serde_json::from_str(&release_fetch(
-        "https://api.github.com/repos/immich-app/immich/releases/latest",
-    )?)?;
-    let tag = string(&release, "tag_name")?;
-    let next = version
-        .captures(tag)
-        .ok_or_else(|| Error::new("Invalid stable Immich release"))?;
-    if release["prerelease"] == true || release["draft"] == true {
-        return Err(Error::new("Unstable Immich release refused"));
-    }
-    // A different major is installed only when you approved exactly this release.
-    let wanted = cfg["maintenance"]["immich_major_update"]
-        .as_str()
-        .unwrap_or("")
-        .trim();
-    let approved = immich_major_approved(wanted, tag, &next[1]);
-    if before[1] != next[1] && !approved {
-        common::atomic_json(
-            &snapshot.join("immich-major-pending.json"),
-            &json!({"status":"manual_major_upgrade_required","current":current,"available":tag}),
-        )?;
-        return Ok(None);
-    }
     let parts = |c: &regex::Captures<'_>| -> Result<Vec<u64>> {
         (1..=3)
             .map(|i| {
@@ -2541,9 +2526,51 @@ fn immich_candidate(cfg: &Value, snapshot: &Path, work: &Path) -> Result<Option<
             })
             .collect()
     };
-    if parts(&next)? <= parts(&before)? {
-        return Ok(None);
+    let before = version
+        .captures(current)
+        .ok_or_else(|| Error::new("Invalid installed Immich version"))?;
+    let tag = string(release, "tag_name")?;
+    let next = version
+        .captures(tag)
+        .ok_or_else(|| Error::new("Invalid stable Immich release"))?;
+    if release["prerelease"] == true || release["draft"] == true {
+        return Err(Error::new("Unstable Immich release refused"));
     }
+    if parts(&next)? <= parts(&before)? {
+        return Ok(ImmichNext::Nothing);
+    }
+    // A different major is installed only when you approved exactly this release.
+    if before[1] != next[1] && !immich_major_approved(wanted, tag, &next[1]) {
+        return Ok(ImmichNext::MajorWaits(tag.to_string()));
+    }
+    Ok(ImmichNext::Install(tag.to_string()))
+}
+fn immich_candidate(cfg: &Value, snapshot: &Path, work: &Path) -> Result<Option<PathBuf>> {
+    let original = Path::new(string(cfg, "data_mount")?).join("compose/immich");
+    let env = String::from_utf8(common::bytes(&original.join(".env"), 64000)?)
+        .map_err(|_| Error::new("Invalid Immich environment"))?;
+    let current = env
+        .lines()
+        .find_map(|line| line.strip_prefix("IMMICH_VERSION="))
+        .ok_or_else(|| Error::new("Pinned Immich release missing"))?;
+    let release: Value = serde_json::from_str(&release_fetch(
+        "https://api.github.com/repos/immich-app/immich/releases/latest",
+    )?)?;
+    let wanted = cfg["maintenance"]["immich_major_update"]
+        .as_str()
+        .unwrap_or("")
+        .trim();
+    let tag = match immich_next(current, &release, wanted)? {
+        ImmichNext::Nothing => return Ok(None),
+        ImmichNext::MajorWaits(tag) => {
+            common::atomic_json(
+                &snapshot.join("immich-major-pending.json"),
+                &json!({"status":"manual_major_upgrade_required","current":current,"available":tag}),
+            )?;
+            return Ok(None);
+        }
+        ImmichNext::Install(tag) => tag,
+    };
     let manifest = release_fetch(&format!(
         "https://github.com/immich-app/immich/releases/download/{tag}/docker-compose.yml"
     ))?;
@@ -6803,6 +6830,26 @@ mod tests {
         assert_eq!(reserve_for(2 * gib, 0), 0);
     }
     #[test]
+    #[ignore = "needs root and a loop drive: run cardset-loop-tests.sh (NEKO_LOOP_HDD, NEKO_LOOP_IMAGE)"]
+    fn loop_a_snapshot_the_drive_does_not_hold_fails_its_check() {
+        // The review of 0.51.0: the check after a snapshot was made read its archives from
+        // Linux's page cache, so an archive the HDD did not keep passed it. The archive's
+        // bytes are changed under the mounted ext4 here: the check must fail.
+        let root = std::path::PathBuf::from(std::env::var("NEKO_LOOP_HDD").unwrap());
+        let image = std::env::var("NEKO_LOOP_IMAGE").unwrap();
+        fs::create_dir_all(root.join("hdd/backups/monthly")).unwrap();
+        snapshot(&root, "hdd", "100-1", true);
+        let dir = root.join("hdd/backups/monthly/100-1");
+        let archive = dir.join("data.tar");
+        fs::File::open(&archive).unwrap().sync_all().unwrap();
+        assert!(verify(&dir).is_ok(), "the snapshot as made");
+        crate::lying_drive::change_on_disk(&image, &archive);
+        let e = verify(&dir)
+            .expect_err("an archive the drive does not hold passed")
+            .to_string();
+        assert!(e.contains("checksum mismatch"), "{e}");
+    }
+    #[test]
     fn a_damaged_backup_key_copy_fails_the_snapshot_check() {
         let root = scratch("key");
         let dir = root.join("hdd/backups/monthly/100-1");
@@ -7180,6 +7227,39 @@ mod tests {
     #[test]
     fn nextcloud_major_notice_waits_for_early_fixes() {
         assert!(immich_major_approved("v3", "v3.0.2", "3"));
+    }
+    /// GitHub's "latest" as the API answers it: an older major's fix published after the
+    /// new major. It was noted as a "manual major upgrade required" to that older release.
+    #[test]
+    fn an_older_major_marked_latest_is_no_upgrade_notice() {
+        let latest = |tag: &str| {
+            json!({"tag_name": tag, "name": tag, "draft": false, "prerelease": false,
+                "published_at": "2026-11-02T10:00:00Z",
+                "html_url": format!("https://github.com/immich-app/immich/releases/tag/{tag}")})
+        };
+        assert_eq!(
+            immich_next("v3.0.2", &latest("v2.7.6"), "").unwrap(),
+            ImmichNext::Nothing
+        );
+        assert_eq!(
+            immich_next("v3.0.2", &latest("v3.0.2"), "").unwrap(),
+            ImmichNext::Nothing
+        );
+        assert_eq!(
+            immich_next("v3.0.2", &latest("v3.1.0"), "").unwrap(),
+            ImmichNext::Install("v3.1.0".into())
+        );
+        assert_eq!(
+            immich_next("v2.7.6", &latest("v3.0.2"), "").unwrap(),
+            ImmichNext::MajorWaits("v3.0.2".into())
+        );
+        assert_eq!(
+            immich_next("v2.7.6", &latest("v3.0.2"), "v3").unwrap(),
+            ImmichNext::Install("v3.0.2".into())
+        );
+        let mut beta = latest("v3.1.0");
+        beta["prerelease"] = json!(true);
+        assert!(immich_next("v3.0.2", &beta, "").is_err());
         assert!(immich_major_approved("v3.0.2", "v3.0.2", "3"));
         assert!(!immich_major_approved("v3.0.1", "v3.0.2", "3"));
         assert!(!immich_major_approved("v2", "v3.0.2", "3"));

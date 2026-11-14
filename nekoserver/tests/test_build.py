@@ -219,6 +219,19 @@ class BuildNeededTests(unittest.TestCase):
             )
         )
 
+    def test_a_runtime_not_built_yet_is_said_so_with_how_to_build_it(self):
+        """Seen running recover.py check in a fresh download on a new Ubuntu: "a file or
+        folder it needs does not exist: …/runtime/build.json. Check the path." Nothing was
+        wrong with a path; the runtime had not been built yet."""
+        import native_runtime
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.project(tmp)
+            with self.assertRaises(RuntimeError) as caught:
+                native_runtime.payload(tmp, {})
+        self.assertIn('not built yet', str(caught.exception))
+        self.assertIn('python3 runtime/build.py', str(caught.exception))
+
     def test_a_module_in_a_folder_of_its_own_is_one_of_the_sources(self):
         # 0.51.0: the card engine is in src/cardset/. A change there is a change of the
         # runtime's sources too, so a build without it in its record is built again.

@@ -775,11 +775,29 @@ def serve_state():
     return canonical(json.loads(command(['tailscale', 'serve', 'status', '--json'])))
 
 
+TAILNODE_NOT_READY = 'Authenticate Tailscale and enable tailnet HTTPS/MagicDNS first'
+
+
+def own_device(status):
+    """The "Self" part of `tailscale status --json`, or {} when it is missing or not an
+    object: Tailscale writes "Self": null while it is still starting or signed out."""
+    own = status.get('Self') if isinstance(status, dict) else None
+    return own if isinstance(own, dict) else {}
+
+
 def tailnode():
-    v = json.loads(command(['tailscale', 'status', '--json']))
-    name = v.get('Self', {}).get('DNSName', '').rstrip('.')
-    if v.get('BackendState') != 'Running' or not re.fullmatch(r'[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+\.ts\.net', name):
-        raise RuntimeError('Authenticate Tailscale and enable tailnet HTTPS/MagicDNS first')
+    """This server's Tailscale name. An answer that is not what a signed-in Tailscale
+    writes (not signed in, still starting, no MagicDNS name, not JSON) is the same
+    RuntimeError, never a Python error: callers catch RuntimeError to wait and try again."""
+    try:
+        v = json.loads(command(['tailscale', 'status', '--json']))
+    except ValueError:
+        raise RuntimeError(TAILNODE_NOT_READY) from None
+    name = own_device(v).get('DNSName')
+    name = name.rstrip('.') if isinstance(name, str) else ''
+    running = isinstance(v, dict) and v.get('BackendState') == 'Running'
+    if not running or not re.fullmatch(r'[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+\.ts\.net', name):
+        raise RuntimeError(TAILNODE_NOT_READY)
     return name
 
 
@@ -840,7 +858,8 @@ def tailscale_status():
 
 def tailscale_address(status):
     """This PC's Tailscale address (IPv4 first), or None."""
-    found = [ip for ip in (status.get('Self') or {}).get('TailscaleIPs') or [] if isinstance(ip, str)]
+    listed = own_device(status).get('TailscaleIPs')
+    found = [ip for ip in listed if isinstance(ip, str)] if isinstance(listed, list) else []
     return next((ip for ip in found if '.' in ip), found[0] if found else None)
 
 
@@ -1193,7 +1212,7 @@ def listed(value):
         return [], 0
     if isinstance(value, list):
         return list(value), len(value)
-    if isinstance(value, dict) and all(str(k).isdigit() for k in value):
+    if isinstance(value, dict) and all(str(k).isdecimal() for k in value):
         return list(value.values()), max((int(k) for k in value), default=-1) + 1
     return None, 0
 

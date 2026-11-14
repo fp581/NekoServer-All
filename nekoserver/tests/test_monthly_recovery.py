@@ -183,6 +183,78 @@ class StageTests(unittest.TestCase):
         self.assertEqual([p.name for p in self.dir.iterdir() if p.name.startswith('.neko-images-')], [])
         self.assertEqual([p.name for p in (self.dir / 'staged').iterdir() if p.name.startswith('.')], [])
 
+    def test_a_full_or_read_only_drive_is_said_in_plain_words_not_a_traceback(self):
+        """Seen through the recovery menu: a restore onto a drive that was full, read-only,
+        or too small for the reserve ended in a Python traceback, and nothing else was said."""
+        out = self.dir / 'staged'
+        for error, reason in (
+            (OSError(28, 'No space left on device'), 'No space left on device'),
+            (OSError(30, 'Read-only file system', str(out)), f'Read-only file system ({out})'),
+            (RuntimeError('not enough free space: free some space'), 'not enough free space'),
+        ):
+            with self.subTest(reason=reason):
+                said = io.StringIO()
+
+                def partly(snapshot, destination, error=error):
+                    """The stage stopping part-way, with a folder of what was unpacked."""
+                    Path(destination).mkdir(exist_ok=True)
+                    raise error
+
+                with (
+                    mock.patch.object(monthly, 'stage', partly),
+                    mock.patch.object(monthly.os, 'geteuid', return_value=0),
+                    mock.patch.object(monthly.sys, 'stderr', said),
+                ):
+                    code = monthly.main(['--snapshot', str(self.snapshot), '--stage', str(out)])
+                self.assertEqual(code, 1)
+                self.assertIn('The monthly backup was not restored: ' + reason, said.getvalue())
+                self.assertIn(f'is in {out} (incomplete', said.getvalue())
+                self.assertNotIn('Traceback', said.getvalue())
+                out.rmdir()
+
+
+class CommandLineTests(unittest.TestCase):
+    """What the recovery menu shows of the tool: its own lines, never a traceback."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        self.snapshot = self.dir / '1700000000000000-1'
+        self.snapshot.mkdir()
+        sums = {}
+        for name in ('data', 'media', 'images'):
+            archive(self.snapshot / (name + '.tar'), {name + '.txt': name.encode()})
+            sums[name] = hashlib.sha256((self.snapshot / (name + '.tar')).read_bytes()).hexdigest()
+        manifest = {'format': 'neko-maintenance-v1', 'sha256': sums}
+        (self.snapshot / 'manifest.json').write_text(json.dumps(manifest))
+
+    def run_tool(self, *argv):
+        err = io.StringIO()
+        with mock.patch.object(monthly.os, 'geteuid', return_value=0), mock.patch.object(monthly.sys, 'stderr', err):
+            code = monthly.main(['--snapshot', str(self.snapshot), *argv])
+        return code, err.getvalue()
+
+    def test_a_damaged_snapshot_is_said_in_plain_words_and_nothing_is_unpacked(self):
+        """Seen on the loop drives of 0.51.2: a byte changed in data.tar on the HDD ended
+        the recovery menu's restore in a Python traceback ("Snapshot checksum mismatch:
+        data"), and the menu said nothing after it."""
+        data = self.snapshot / 'data.tar'
+        body = bytearray(data.read_bytes())
+        body[600] ^= 0xFF
+        data.write_bytes(bytes(body))
+        code, said = self.run_tool('--stage', str(self.dir / 'staged'))
+        self.assertEqual(code, 1)
+        self.assertIn('The monthly snapshot 1700000000000000-1 is damaged: its file data.tar', said)
+        self.assertIn('Choose another monthly snapshot', said)
+        self.assertNotIn('Traceback', said)
+        self.assertFalse((self.dir / 'staged').exists())
+
+    def test_a_missing_folder_above_the_stage_is_said_without_a_traceback(self):
+        code, said = self.run_tool('--stage', str(self.dir / 'nowhere' / 'staged'))
+        self.assertEqual(code, 1)
+        self.assertIn('folder above the recovery directory does not exist', said)
+
 
 if __name__ == '__main__':
     unittest.main()

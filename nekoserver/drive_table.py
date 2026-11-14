@@ -758,7 +758,7 @@ def none_usable(table, key, config):
 
 def numbered(table, answer):
     """The row with the number typed, or None."""
-    return table[int(answer) - 1] if answer.isdigit() and 1 <= int(answer) <= len(table) else None
+    return table[int(answer) - 1] if answer.isdecimal() and 1 <= int(answer) <= len(table) else None
 
 
 STORAGE_PAGE = 'storage'  # the page every drive question of the drives step is on (modules/storage.py)

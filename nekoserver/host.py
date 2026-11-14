@@ -240,11 +240,37 @@ def _up_to(seconds):
     return '(up to ' + str(seconds // 60) + ' minutes)...'
 
 
+def _last_line(result):
+    return ((result.stderr or result.stdout or '').strip().splitlines()[-1:] or ['no details'])[0]
+
+
+def _gave_up_fetching(result):
+    """The package manager stopped because downloads failed (said by its last line)."""
+    last = _last_line(result)
+    return bool(TRANSIENT.search(last) or GAVE_UP_FETCHING.search(last))
+
+
+def _cause(result):
+    """The line that says what went wrong: for downloads that failed, the one naming why
+    (apt's own last line then, "Unable to fetch some archives, maybe … --fix-missing?",
+    names nothing); otherwise the last line the package manager printed."""
+    if _gave_up_fetching(result):
+        lines = _output(result).splitlines()
+        return next((line.strip() for line in lines if TRANSIENT.search(line)), _last_line(result))[-300:]
+    return _last_line(result)
+
+
 def _reason(result):
-    """The last line a package manager printed, for error messages (with a word on the
-    clock when that is what went wrong)."""
-    last = ((result.stderr or result.stdout or '').strip().splitlines()[-1:] or ['no details'])[0]
-    return last + clock_hint(_output(result))
+    """Why the package manager failed, for the error setup stops with: its cause (with a
+    word on the clock when that is what went wrong), and for a package source that was
+    never reached, what to do."""
+    said, cause = _output(result), _cause(result)
+    if _gave_up_fetching(result):
+        return (
+            f'the package source could not be reached ({cause}). Check the internet connection '
+            '(and the proxy, if this network uses one), then run  sudo bash install.sh  again' + clock_hint(said)
+        )
+    return cause + clock_hint(said)
 
 
 # A package source that did not answer: a mirror hiccup, a download cut off, the network
@@ -258,6 +284,8 @@ TRANSIENT = re.compile(
     re.IGNORECASE,
 )
 RETRIES = 3  # attempts in all
+# apt's last line when the downloads failed: it says only that, and advice that does not help.
+GAVE_UP_FETCHING = re.compile(r'unable to fetch some archives', re.IGNORECASE)
 RETRY_PAUSE = 20  # seconds between them
 
 
@@ -463,7 +491,7 @@ class Family:
                 return result
             self.say(
                 'The package source did not answer ('
-                + _reason(result)
+                + _cause(result)
                 + '); trying again in '
                 + str(RETRY_PAUSE)
                 + ' seconds ('
@@ -1758,7 +1786,7 @@ class Rhel(Fedora):
         if set(_words(release, 'ID')) & set(cls.ids):
             return True
         major = (release.get('VERSION_ID') or '').split('.')[0]
-        return not ('fedora' in _words(release, 'ID_LIKE') and major.isdigit() and int(major) >= 30)
+        return not ('fedora' in _words(release, 'ID_LIKE') and major.isdecimal() and int(major) >= 30)
 
     def __init__(self, run=run_command, release=None, fetch=_fetch):
         super().__init__(run, release, fetch)

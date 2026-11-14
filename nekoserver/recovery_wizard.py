@@ -77,10 +77,15 @@ RESTORE = 'The restore'  # how the room check names a restore in its message
 SNAPSHOT = re.compile(r'^snapshot-(\d+)-\d+$')
 MONTHLY = re.compile(r'^(\d+)-\d+$')
 
+# The menu's choices that messages name (the runtime's too): one wording, in shared.json.
+DRIVE_SECTION = SHARED['recovery_menu']['drive_section']
+CHECK_NAME = SHARED['recovery_menu']['check_drive']
+FIX_NAME = SHARED['recovery_menu']['fix_copies']
+
 # The recovery menu's two parts (its first question).
 SECTIONS = [
     ('restore', 'Restore something from a backup'),
-    ('drive', 'Check or repair a drive'),
+    ('drive', DRIVE_SECTION),
 ]
 
 # Section 1: what can be restored.
@@ -95,9 +100,9 @@ MENU = [
 
 # Section 3: a check and a repair are different actions, and so is fixing backup copies.
 DRIVE_MENU = [
-    ('check', 'Check a drive that stopped taking new files. A check only looks: it changes nothing on the drive'),
+    ('check', f'{CHECK_NAME}. A check only looks: it changes nothing on the drive'),
     ('repair', 'Repair a drive. A repair changes the drive, and damaged files can be lost'),
-    ('copies', 'Fix damaged backup copies (files on the backup drives that the checksum checks found damaged)'),
+    ('copies', f'{FIX_NAME} (files on the backup drives that the checksum checks found damaged)'),
 ]
 
 
@@ -189,7 +194,7 @@ def choose(title, options, prompt=input, output=print, leave='Back'):
             return options[best - 1][0]
         if answer == '0':
             return None
-        if answer.isdigit() and 1 <= int(answer) <= len(options):
+        if answer.isdecimal() and 1 <= int(answer) <= len(options):
             return options[int(answer) - 1][0]
         output('Please type one of the numbers shown.')
 
@@ -596,9 +601,19 @@ def copy_new(sources, destination, checked=None, files=None):
     files = every_file(sources) if files is None else files
     ensure_room(destination.parent, sum(p.stat().st_size for _, _, p in files), RESTORE)
     checked.begin(destination)
-    for done, (name, source, path) in enumerate(files):
+    return copy_each(
+        checked, destination, [(path, Path(name) / path.relative_to(source), None) for name, source, path in files]
+    )
+
+
+def copy_each(checked, destination, files):
+    """Copy each (saved copy, path in the restore, checksum or None) into the begun
+    restore; returns how many. A drive that fills up meanwhile is said as out_of_room,
+    whichever versions were chosen (only "every version" said it; the newest-version and
+    as-of restores, the recommended ones, said "[Errno 28] No space left on device")."""
+    for done, (path, target, expected) in enumerate(files):
         try:
-            checked.copy(path, destination / name / path.relative_to(source))
+            checked.copy(path, destination / target, expected)
         except OSError as exc:
             if exc.errno != errno.ENOSPC:
                 raise
@@ -735,8 +750,7 @@ def copy_latest(sources, destination, output=print, checked=None, chosen=None):
     chosen = latest_versions(sources) if chosen is None else chosen
     ensure_room(destination.parent, sum(p.stat().st_size for p, _, _, _ in chosen), RESTORE)
     checked.begin(destination)
-    for path, target, _, _ in chosen:
-        checked.copy(path, destination / target)
+    copy_each(checked, destination, [(path, target, None) for path, target, _, _ in chosen])
     several = [(t, when, n) for _, t, when, n in chosen if n > 1]
     if several:
         output(f'{len(several)} files had more than one version; you get the newest of each:')
@@ -946,9 +960,7 @@ def copy_listed(chosen, destination, checked):
     checksum the list recorded (when it has one)."""
     ensure_room(destination.parent, sum(p.stat().st_size for p, _, _ in chosen), RESTORE)
     checked.begin(destination)
-    for path, target, sha in chosen:
-        checked.copy(path, destination / target, sha)
-    return len(chosen)
+    return copy_each(checked, destination, chosen)
 
 
 NO_INVENTORY = (
@@ -1026,7 +1038,7 @@ COPYING = 'Copying... this can take a while for a big backup.'
 # which only root can open (the restore runs as root).
 PASSWORDS_HOME = Path('/root')
 # What the recovery menu calls the repair of backup copies (DRIVE_MENU), where a message names it.
-FIX_COPIES = '"Fix damaged backup copies" (in the recovery menu, under "Check or repair a drive")'
+FIX_COPIES = f'"{FIX_NAME}" (in the recovery menu, under "{DRIVE_SECTION}")'
 
 
 def recorded_copy(key, copy, sha, sums):
@@ -1566,7 +1578,7 @@ def owner(config):
     """Whose restored photos and files these are: the account that ran sudo, else the
     account the settings name for media (media.uid and media.gid)."""
     uid, gid = os.environ.get('SUDO_UID', ''), os.environ.get('SUDO_GID', '')
-    if uid.isdigit() and gid.isdigit() and int(uid) != 0:
+    if uid.isdecimal() and gid.isdecimal() and int(uid) != 0:
         return int(uid), int(gid)
     media = config.get('media', {})
     return int(media.get('uid', 1000)), int(media.get('gid', 1000))
@@ -2737,6 +2749,28 @@ SHARED_FOLDER = (
 )
 
 
+def first_up(name):
+    """A drive's name at the start of a sentence: "the application SSD" -> "The application
+    SSD" (str.capitalize would make it "The application ssd")."""
+    return name[:1].upper() + name[1:]
+
+
+def nothing_to_do(rows, action, output):
+    """No mounted drive needs a check or repair: said for each drive, as it is. A drive
+    that is not mounted is named, never counted as one that takes new files."""
+    away = [(name, folder) for name, folder, _ in rows if not os.path.ismount(folder)]
+    for name, folder in away:
+        output(
+            f'{first_up(name)} ({folder}) is not mounted, so it cannot be checked here. Connect it, '
+            'then run  sudo bash install.sh : it mounts the drives and says if one is not the one chosen.'
+        )
+    if not away:
+        output(f'Both drives take new files and Linux counted no errors on them: nothing to {action}.')
+    elif len(away) < len(rows):
+        here = next(name for name, folder, _ in rows if os.path.ismount(folder))
+        output(f'{first_up(here)} takes new files and Linux counted no errors on it: nothing to {action}.')
+
+
 def checked_drive(config, prompt, output, run, writes, errors, action=CHECK):
     """Section 3, for a drive Linux stopped writing to after errors (a NAS away for over
     ten minutes, a loose cable). Two separate actions, each with its own approval, asked
@@ -2745,9 +2779,10 @@ def checked_drive(config, prompt, output, run, writes, errors, action=CHECK):
     a repair (REPAIR) changes the drive (e2fsck -p) and is approved by typing its name.
     For either, the apps are stopped and the drive is unmounted (never by force); a drive
     that is still mounted anywhere is never touched, and a shared folder never at all."""
-    failing = [(n, f, r) for n, f, r in drive_rows(config) if os.path.ismount(f) and (not writes(f) or errors(f))]
+    rows = drive_rows(config)
+    failing = [(n, f, r) for n, f, r in rows if os.path.ismount(f) and (not writes(f) or errors(f))]
     if not failing:
-        output(f'Both drives take new files and Linux counted no errors on them: nothing to {action}.')
+        nothing_to_do(rows, action, output)
         return
     name, folder, record = failing[0]
     export = nfs_exports.export_of(record)
@@ -2756,7 +2791,7 @@ def checked_drive(config, prompt, output, run, writes, errors, action=CHECK):
     if export or found[1] in SHARES:
         say(
             output,
-            f'\n{name.capitalize()} ({folder}) is a folder the NAS shares ({export or found[0]}), and it does not '
+            f'\n{first_up(name)} ({folder}) is a folder the NAS shares ({export or found[0]}), and it does not '
             'take new files.',
             SHARED_FOLDER,
             'On the NAS, check that its disks are healthy, that the volume is not full or read-only,',
@@ -3006,7 +3041,7 @@ def repair_backups(config, prompt, output):
     }
     say(
         output,
-        '\nFix damaged backup copies',
+        '\n' + FIX_NAME,
         'The last checks found backup copies that are damaged or missing:',
         *(f'  {file_count(count)} in {place}' for place, count in counts.items() if count),
         'Each one is compared with the checksum recorded when it was backed up (its fingerprint), and',
@@ -3121,6 +3156,16 @@ DRIVE_ACTIONS = {
 }
 
 
+# The restores whose backups the HDD keeps, and those of them the USB drive may hold too.
+# Without the HDD, "no backup found" would read as "no backup was ever made".
+KEPT_ON_HDD = {'photos', 'passwords', 'apps', 'host', 'monthly'}
+ALSO_ON_USB = {'photos', 'passwords'}
+HDD_AWAY = (
+    'The HDD is not mounted at {mount} (or another drive is there), so the backups NekoServer keeps '
+    'on it cannot be seen. Connect it (or restart the PC), then choose this again.'
+)
+
+
 def restore_section(config, prompt, output):
     """Sections 1 and 2: what to restore is chosen here; each restore then asks for its
     backup, date, files and folder, shows the review, and writes only once approved."""
@@ -3132,8 +3177,13 @@ def restore_section(config, prompt, output):
         'A restore brings back files, settings and databases. It does not reinstall Linux or the apps.',
     )
     pick = choose('What would you like to restore?', menu(config), prompt, output)
-    if pick is not None:
-        RESTORES[pick](config, prompt, output)
+    if pick is None:
+        return
+    if pick in KEPT_ON_HDD and not hdd_ready(config):
+        output(HDD_AWAY.format(mount=config['media_mount']))
+        if pick not in ALSO_ON_USB:
+            return  # nowhere else to look
+    RESTORES[pick](config, prompt, output)
 
 
 def drive_section(config, prompt, output):
@@ -3144,9 +3194,27 @@ def drive_section(config, prompt, output):
         'so it has a warning and an approval of its own. Neither is started by choosing it here: each',
         'first shows the exact drive and asks.',
     )
-    pick = choose('Check or repair a drive', DRIVE_MENU, prompt, output)
+    pick = choose(DRIVE_SECTION, DRIVE_MENU, prompt, output)
     if pick is not None:
         DRIVE_ACTIONS[pick](config, prompt, output)
+
+
+# What to do about the system errors a restore or a check meets most (after their words).
+SYSTEM_ERROR_ADVICE = {
+    errno.EROFS: f'The drive takes no new files: choose a folder on another drive, or check it with "{CHECK_NAME}".',
+    errno.ENOSPC: 'The drive is full. Free some space there, or choose a folder on another drive.',
+}
+
+
+def went_wrong(exc):
+    """Why something in the menu did not go through, in words: a system error as its own
+    description with the file it was about and, where there is one, what to do (Python's
+    "[Errno 30] Read-only file system: '/mnt/usb'" said neither plainly)."""
+    if isinstance(exc, OSError) and exc.strerror:
+        where = f' ({exc.filename})' if exc.filename else ''
+        advice = SYSTEM_ERROR_ADVICE.get(exc.errno)
+        return exc.strerror + where + ('. ' + advice if advice else '')
+    return str(exc)
 
 
 def menu_loop(config, prompt, output):
@@ -3169,7 +3237,7 @@ def menu_loop(config, prompt, output):
             try:
                 sections[pick](config, prompt, output)
             except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
-                output(f'That did not go through: {exc}')
+                output('That did not go through: ' + went_wrong(exc))
     except (EOFError, KeyboardInterrupt):
         # Restores and repairs finished before this stay as they are.
         output(

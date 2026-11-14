@@ -354,7 +354,7 @@ fn verify_staged(payload: &Path, files: &[Value]) -> Result<()> {
         let path = payload.join(row["path"].as_str().unwrap_or(""));
         let size = fs::symlink_metadata(&path)?.len();
         if Some(size) != row["size"].as_u64()
-            || common::digest(&path)? != row["sha256"].as_str().unwrap_or("")
+            || common::digest_landed(&path)? != row["sha256"].as_str().unwrap_or("")
         {
             return Err(Error::new(&format!(
                 "Staged application snapshot does not match its manifest ({}); not published",
@@ -392,7 +392,7 @@ pub(crate) fn copy_file(source: &Path, target: &Path) -> Result<String> {
     {
         return Err(Error::new("Application file changed during snapshot"));
     }
-    let hash = common::digest(target)?;
+    let hash = common::digest_landed(target)?;
     if common::digest(source)? != hash {
         return Err(Error::new("Application file verification failed"));
     }

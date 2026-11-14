@@ -158,6 +158,26 @@ class MenuTests(Server, unittest.TestCase):
         self.assertEqual(self.menu('', '0'), 0)
         self.assertIn('Please type one of the numbers shown.', self.said())
 
+    def test_a_system_error_is_said_in_words_with_what_to_do(self):
+        """Deep check plan 34: a restore onto a read-only drive said "That did not go through:
+        [Errno 30] Read-only file system: '/mnt/usb/restore'"."""
+        import errno
+
+        cases = (
+            (errno.EROFS, 'Read-only file system', recovery_wizard.CHECK_NAME),
+            (errno.ENOSPC, 'No space left on device', 'Free some space'),
+        )
+        for number, words, advice in cases:
+            with self.subTest(words=words):
+                self.out.clear()
+                failing = mock.Mock(side_effect=OSError(number, words, '/mnt/usb/restore'))
+                with mock.patch.dict(recovery_wizard.RESTORES, {'photos': failing}):
+                    self.menu('1', '1', '0')
+                said = self.said()
+                self.assertIn(f'That did not go through: {words} (/mnt/usb/restore)', said)
+                self.assertIn(advice, said)
+                self.assertNotIn('[Errno', said)
+
     def test_stopping_after_something_ran_says_the_apps_may_be_stopped(self):
         """The specification: never "nothing was changed" once something may have been."""
 
@@ -170,6 +190,42 @@ class MenuTests(Server, unittest.TestCase):
         self.out.clear()
         self.assertEqual(recovery_wizard.menu_loop(self.config, stopped, self.out.append), 1)
         self.assertEqual(self.out[-1], '\nStopped. Nothing was changed.')
+
+
+class HddAwayTests(Server, unittest.TestCase):
+    """Seen on a fresh Ubuntu with no drive connected: each restore said "No nightly backup
+    of app settings found on the HDD yet", "No complete monthly snapshot on the HDD yet",
+    as if no backup had ever been made, when the HDD that holds them was not connected."""
+
+    def restore(self, number):
+        """Restore choice `number` with the HDD away: whether its restore was started."""
+        started = mock.Mock()
+        key = recovery_wizard.menu(self.config)[int(number) - 1][0]
+        with (
+            mock.patch.object(recovery_wizard, 'hdd_ready', return_value=False),
+            mock.patch.dict(recovery_wizard.RESTORES, {key: started}),
+        ):
+            recovery_wizard.menu_loop(self.config, answers('1', number, '0'), self.out.append)
+        return started.called
+
+    def test_a_backup_only_the_hdd_holds_is_not_looked_for_without_it(self):
+        for number in ('4', '5', '6'):  # nightly app settings, Steam and Samba, monthly snapshot
+            with self.subTest(choice=number):
+                self.out.clear()
+                self.assertFalse(self.restore(number))
+                self.assertIn(f'The HDD is not mounted at {self.media}', self.said())
+                self.assertIn('so the backups NekoServer keeps on it cannot be seen', self.said())
+
+    def test_a_backup_the_usb_drive_may_hold_is_still_looked_for_there(self):
+        for number in ('1', '3'):  # photos, the password list
+            with self.subTest(choice=number):
+                self.out.clear()
+                self.assertTrue(self.restore(number))
+                self.assertIn(f'The HDD is not mounted at {self.media}', self.said())
+
+    def test_nextcloud_is_on_the_usb_drive_alone_and_says_nothing_of_the_hdd(self):
+        self.assertTrue(self.restore('2'))
+        self.assertNotIn('The HDD is not mounted', self.said())
 
 
 class RestoreChoiceTests(Server, unittest.TestCase):
@@ -437,6 +493,43 @@ class AppVersionTests(Server, unittest.TestCase):
 
 
 RECOVERY_QUESTIONS = [key for key, entry in questions.Q.items() if entry['screen'] == 'Recovery']
+
+
+class MissingDriveCheckTests(unittest.TestCase):
+    """Seen on a fresh Ubuntu with neither drive connected: "Check a drive" said "Both
+    drives take new files and Linux counted no errors on them". A drive that is not
+    mounted was skipped, then counted as fine."""
+
+    CONFIG = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media', 'storage': {}}
+
+    def check_with_mounted(self, mounted):
+        said = []
+        with mock.patch.object(recovery_wizard.os.path, 'ismount', lambda folder: str(folder) in mounted):
+            recovery_wizard.checked_drive(
+                self.CONFIG,
+                mock.Mock(side_effect=AssertionError('nothing is asked')),
+                said.append,
+                mock.Mock(side_effect=AssertionError('nothing is run')),
+                lambda folder: True,  # takes new files
+                lambda folder: 0,  # no errors counted
+            )
+        return '\n'.join(said)
+
+    def test_a_drive_that_is_not_mounted_is_named_not_called_fine(self):
+        said = self.check_with_mounted({'/srv/nekoserver'})
+        self.assertNotIn('Both drives', said)
+        self.assertIn('The media drive (/mnt/nekoserver-media) is not mounted', said)
+        self.assertIn('The application SSD takes new files', said)
+
+    def test_neither_drive_mounted(self):
+        said = self.check_with_mounted(set())
+        self.assertNotIn('takes new files', said)
+        self.assertIn('The application SSD (/srv/nekoserver) is not mounted', said)
+        self.assertIn('The media drive (/mnt/nekoserver-media) is not mounted', said)
+
+    def test_both_mounted_and_well_is_said_as_before(self):
+        said = self.check_with_mounted({'/srv/nekoserver', '/mnt/nekoserver-media'})
+        self.assertIn('Both drives take new files and Linux counted no errors on them: nothing to check.', said)
 
 
 class InstallPathTests(unittest.TestCase):

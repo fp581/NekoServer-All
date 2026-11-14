@@ -60,6 +60,23 @@ class SnapshotRestoreTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'checksum'):
             sr.verify(sr.APPS, snap)
 
+    def test_each_restored_file_is_checked_as_the_drive_holds_it(self):
+        """The review of 0.51.0: each restored file was hashed from Linux's memory of what
+        was just written, so a drive that did not keep the bytes passed. Its cached pages
+        are dropped before the check."""
+        snap = self.root / 'snap'
+        make(snap, sr.APPS, {'appdata/sonarr/config.xml': b'<x/>'})
+        dropped, real = [], sr.os.posix_fadvise
+
+        def noted(fd, offset, length, advice):
+            """posix_fadvise as it is, each call's advice written down."""
+            dropped.append((offset, length, advice))
+            return real(fd, offset, length, advice)
+
+        with mock.patch.object(sr.os, 'posix_fadvise', side_effect=noted):
+            sr.restore(sr.APPS, snap, self.root / 'new')
+        self.assertIn((0, 0, sr.os.POSIX_FADV_DONTNEED), dropped)
+
     def test_host_snapshot_keeps_links_as_text_and_rejects_foreign_roots(self):
         snap = self.root / 'snap'
         link = {

@@ -747,6 +747,42 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(0), self.journal), 2)
         self.assertEqual(self.ran[-1][0], 'v0.1.0')
 
+    def test_a_failed_upgrade_whose_way_back_was_cut_off_is_put_back_at_the_next_start(self):
+        """The upgrade's setup failed on a step new in its release, and the way back was cut
+        off (a power cut) before the older setup rewrote the resume service, so the next
+        start ran the resume from the new release's copy. The check looks only at the steps
+        done before the upgrade: it passed, and the record was closed on the release that
+        failed ("passed its check"). Now the release the server had is put back."""
+        older = self.data / 'installer/releases/v0.1.0'
+        older.mkdir()
+        (older / 'install.sh').write_text('#!/bin/bash\n')
+        upgrade.record('failed', self.journal, to='v' + VERSION, previous=str(older), before=['storage'])
+        upgrade.record('going_back', self.journal, problem='FAILED shows: the new step could not start')
+        self.state({'storage': 'success', 'photos': 'success', 'new_step': 'failed'})
+        self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(0), self.journal), 1)
+        self.assertEqual(self.ran[-1][0], 'v0.1.0')
+        self.assertFalse(any('passed its check. App updates' in line for line in self.said), self.said)
+        self.assertIn('The upgrade to v' + VERSION + ' did not pass: FAILED shows', self.said[-1])
+        # Cut off part-way through a step (left "running"): the same.
+        upgrade.record('installing', self.journal, to='v' + VERSION, previous=str(older), before=['storage'])
+        self.state({'storage': 'success', 'new_step': 'running'})
+        self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(0), self.journal), 1)
+        self.assertEqual(self.ran[-1][0], 'v0.1.0')
+        # Cut off while it was checked, after its setup had ended: a step that was failing
+        # before the upgrade (an optional one waiting for the person) puts nothing back.
+        upgrade.record('verifying', self.journal, to='v' + VERSION, previous=str(older), before=['storage'])
+        self.state({'storage': 'success', 'tv': 'failed'})
+        ran = len(self.ran)
+        self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(), self.journal), 0)
+        self.assertEqual(len(self.ran), ran, 'nothing was put back')
+        # A person's own setup run that just ended closes it all the same (settle_after_setup).
+        upgrade.record('going_back', self.journal, to='v' + VERSION, previous=str(older), before=['storage'])
+        self.state({'storage': 'success', 'new_step': 'failed'})
+        with mock.patch.object(upgrade, 'keep_report'):
+            self.assertTrue(
+                upgrade.settle_after_setup(json.loads(self.settings.read_text()), self.said.append, self.journal)
+            )
+
     def hidden_by_a_cut_off_way_back(self, linked):
         """What a way back to an older release leaves when it is cut off while the older
         setup is still in its preamble: this release's runtime copy under its hidden name,

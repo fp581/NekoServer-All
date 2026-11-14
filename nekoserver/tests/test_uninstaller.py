@@ -1,7 +1,9 @@
 """The uninstaller (uninstall.sh, uninstaller.py): what it finds, what it asks, what it
 removes, and what it never touches."""
 
+import contextlib
 import fcntl
+import io
 import json
 import os
 import sys
@@ -211,6 +213,40 @@ class FakeSystem:
             return RealPlan(settings, self.root, run=self.run, group_exists=group_exists, identity=self.identity)
 
 
+class OptionTests(unittest.TestCase):
+    """Seen on a fresh Ubuntu 24.04: `uninstaller.py --help` (and `uninstall.sh --help`)
+    started the real removal menu. Only --dry-run was read; any other word, a typo such as
+    --dryrun included, ran the real thing."""
+
+    def run_main(self, argv):
+        """(exit code, what was said) for these words; never the removal itself."""
+        out = io.StringIO()
+        with (
+            mock.patch.object(uninstaller, 'removal', side_effect=AssertionError('removal started')) as removal,
+            mock.patch.object(uninstaller, 'busy', side_effect=AssertionError('locks taken')),
+            mock.patch.object(uninstaller.os, 'geteuid', return_value=0),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(out),
+        ):
+            code = uninstaller.main(argv)
+        removal.assert_not_called()
+        return code, out.getvalue()
+
+    def test_help_says_what_it_does_and_changes_nothing(self):
+        for flag in ('--help', '-h'):
+            code, said = self.run_main([flag])
+            self.assertEqual(code, 0, said)
+            self.assertIn('--dry-run', said)
+            self.assertIn('two confirmations', said)
+
+    def test_an_unknown_option_is_refused_before_anything(self):
+        for typo in ('--dryrun', '--dry_run', '-n', '--yes'):
+            code, said = self.run_main([typo])
+            self.assertEqual(code, 2, said)
+            self.assertIn(typo, said)
+            self.assertIn('Nothing was changed', said)
+
+
 class FakeSubvolume:
     """os as it answers for a Btrfs subvolume named `name`: its folder and everything in
     it on a device number of its own, the folder's inode 256. Its mount is the one of the
@@ -305,6 +341,10 @@ class PlanTests(unittest.TestCase):
         )
         notes = '\n'.join(group['notes'])
         self.assertIn('4 services and timers', notes)
+        # Seen in a dry run on a fresh Ubuntu: "Stop and remove 1 services and timers".
+        with mock.patch.object(type(self.plan), 'units', lambda plan: ['nekoserver-dashboard.service']):
+            one = '\n'.join(self.plan._server_group()['notes'])
+        self.assertIn('Stop and remove 1 service or timer: nekoserver-dashboard.service', one)
         self.assertIn('with the account neko it created', notes)
         self.assertIn('smb.conf (only the include NekoServer wrote) goes too', notes)
         self.assertIn("the package's example smb.conf, set aside by setup, comes back", notes)

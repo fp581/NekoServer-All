@@ -7,8 +7,19 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 from neko_common import safe_path, ensure_room
+from snapshot_restore import failure_reason
+
+
+def damaged(snapshot, key, name):
+    """The error for a file of the snapshot that no longer matches the checksum its
+    manifest recorded under `key`: what is damaged, and what to do."""
+    return RuntimeError(
+        f'The monthly snapshot {snapshot.name} is damaged: its file {name} no longer matches the checksum '
+        f'recorded when it was made ({key}). Nothing was unpacked or changed. Choose another monthly snapshot.'
+    )
 
 
 def verify(snapshot):
@@ -21,7 +32,7 @@ def verify(snapshot):
         with path.open('rb') as source:
             digest = hashlib.file_digest(source, 'sha256').hexdigest()
         if digest != manifest.get('sha256', {}).get(name):
-            raise RuntimeError('Snapshot checksum mismatch: ' + name)
+            raise damaged(snapshot, name, path.name)
     # The encrypted password archive, and (since 0.28.7) the key copy and certificate
     # that open it.
     for key, name in (
@@ -33,7 +44,7 @@ def verify(snapshot):
         if expected is not None:
             with safe_path(snapshot / name).open('rb') as source:
                 if hashlib.file_digest(source, 'sha256').hexdigest() != expected:
-                    raise RuntimeError('Snapshot checksum mismatch: ' + key)
+                    raise damaged(snapshot, key, name)
     return manifest
 
 
@@ -210,7 +221,7 @@ def load_images(snapshot, manifest):
         os.rmdir(work)
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--snapshot', required=True, type=Path)
     parser.add_argument('--stage', type=Path)
@@ -225,22 +236,52 @@ def main():
         metavar='NEW_DIR',
         help='Decrypt the app password files into a new directory (asks for the backup password that protected this backup)',
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if os.geteuid() != 0:
         parser.error('Root is required to preserve private database ownership')
-    manifest = verify(args.snapshot)
-    if args.stage:
-        stage(args.snapshot, args.stage)
-    if args.secrets:
-        import getpass
-        import backup_secrets
+    staged_before = args.stage is not None and os.path.lexists(args.stage)
+    try:
+        manifest = verify(args.snapshot)
+        if args.stage:
+            stage(args.snapshot, args.stage)
+        if args.secrets:
+            import getpass
+            import backup_secrets
 
-        done = backup_secrets.restore(args.snapshot, args.secrets, getpass.getpass(backup_secrets.RESTORE_PROMPT))
-        print(f'App password files restored to {done}')
-    if args.load_images:
-        load_images(args.snapshot, manifest)
+            done = backup_secrets.restore(args.snapshot, args.secrets, getpass.getpass(backup_secrets.RESTORE_PROMPT))
+            print(f'App password files restored to {done}')
+        if args.load_images:
+            load_images(args.snapshot, manifest)
+    except TOOL_ERRORS as exc:
+        # Said in plain words, never as a traceback: the recovery menu shows this tool's
+        # own output and adds nothing (seen on the loop drives of 0.51.2 with a damaged
+        # snapshot).
+        print('The monthly backup was not restored: ' + reason(exc), file=sys.stderr)
+        if args.stage and not staged_before and os.path.lexists(args.stage):
+            print(
+                f'What was unpacked before it stopped is in {args.stage} (incomplete, never marked checked): '
+                'delete it, then stage again into a new folder.',
+                file=sys.stderr,
+            )
+        return 1
     print('Monthly backup verified; live data and applications were not replaced.')
+    return 0
+
+
+# What verifying, unpacking, decrypting or loading a monthly snapshot can raise.
+TOOL_ERRORS = (OSError, RuntimeError, ValueError, KeyError, TypeError, subprocess.SubprocessError)
+
+
+def reason(exc):
+    """Why the tool stopped, in a line the person can act on."""
+    if isinstance(exc, subprocess.CalledProcessError):
+        program = Path(str(exc.cmd[0])).name if exc.cmd else 'a program'
+        return (
+            f'{program} stopped with code {exc.returncode} while working on the snapshot (a read error on the '
+            'backup drive, or no room left where it goes). Nothing live was changed.'
+        )
+    return failure_reason(exc)
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

@@ -1,6 +1,8 @@
 """music-recovery.py: a music backup inventory checked, and restored into a new folder."""
 
+import errno
 import hashlib
+import io
 import importlib.util
 import json
 import os
@@ -95,6 +97,57 @@ class RestoreTests(unittest.TestCase):
         with mock.patch.object(music.os, 'fdopen', tamper):
             with self.assertRaisesRegex(RuntimeError, 'Restored music checksum mismatch'):
                 music.restore(self.backup, self.snapshot, out)
+
+    def refusing_colons(self, errno_number):
+        """os.open as an exFAT drive answers it: a name with ':' is refused."""
+        real = os.open
+
+        def refuse(path, *args, **kwargs):
+            if ':' in str(path):
+                raise OSError(errno_number, os.strerror(errno_number), str(path))
+            return real(path, *args, **kwargs)
+
+        return mock.patch.object(music.os, 'open', refuse)
+
+    def test_names_the_drive_refuses_are_named_and_the_rest_is_restored(self):
+        """Seen on an exFAT loop drive in 0.51.2: 'a:b.mp3' stopped the restore half-way
+        with a Python traceback, leaving some files restored and nothing saying which."""
+        payload = b'colon song'
+        checksum = hashlib.sha256(payload).hexdigest()
+        (self.backup / 'objects' / checksum[:2]).mkdir(exist_ok=True)
+        (self.backup / 'objects' / checksum[:2] / checksum).write_bytes(payload)
+        value = json.loads(self.snapshot.read_text())
+        value['files'].insert(0, {'path': 'Album/a:b.mp3', 'sha256': checksum, 'size': len(payload)})
+        self.snapshot.write_text(json.dumps(value))
+        out = self.dir / 'restored'
+        for number in (errno.EINVAL, errno.ENOENT):  # Linux's exFAT driver; FUSE
+            with self.subTest(errno=number), self.refusing_colons(number):
+                shutil.rmtree(out, ignore_errors=True)
+                with self.assertRaisesRegex(RuntimeError, r'1 of 4 music files were not restored.*Album/a:b\.mp3'):
+                    music.restore(self.backup, self.snapshot, out)
+                for name, body in self.files.items():
+                    self.assertEqual((out / name).read_bytes(), body)
+        # From the command line: plain words, never a traceback.
+        shutil.rmtree(out)
+        err = io.StringIO()
+        with self.refusing_colons(errno.EINVAL), mock.patch.object(music.sys, 'stderr', err):
+            code = music.main(
+                ['--backup', str(self.backup), '--snapshot', str(self.snapshot), '--destination', str(out)]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn('restore into a new folder on a Linux drive (ext4)', err.getvalue())
+
+    def test_a_full_drive_still_stops_the_restore(self):
+        real = os.open
+
+        def full(path, *args, **kwargs):
+            if str(path).endswith('.flac'):
+                raise OSError(errno.ENOSPC, 'No space left on device', str(path))
+            return real(path, *args, **kwargs)
+
+        with mock.patch.object(music.os, 'open', full):
+            with self.assertRaisesRegex(OSError, 'No space left'):
+                music.restore(self.backup, self.snapshot, self.dir / 'restored')
 
 
 if __name__ == '__main__':
