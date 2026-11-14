@@ -1178,6 +1178,10 @@ class Files:
 
     def copy(self, target, output):
         """The copying itself, after the approval. Returns how many files came back whole."""
+        with part_way(target, output):
+            return self.copy_all(target, output)
+
+    def copy_all(self, target, output):
         checked = self.checked
         if self.date is not None:
             output(f'Restoring the {file_count(len(self.picked))} you had at the backup of {self.date}. {COPYING}')
@@ -1459,6 +1463,25 @@ class Usb:
 def tool(name, *args):
     """Run one of NekoServer's restore tools; True on success."""
     return subprocess.run([sys.executable, str(ROOT / name), *args], check=False).returncode == 0
+
+
+PART_WAY = (
+    '\nThe restore was stopped part-way: {target} holds only some of it (incomplete). Delete that folder '
+    '(sudo rm -r "{target}") and run the restore again; it goes into a new folder. Nothing else was changed.'
+)
+
+
+@contextlib.contextmanager
+def part_way(target, output):
+    """Around a restore's writing: stopped there (Ctrl+C, a closed terminal), the folder it
+    was writing is named as incomplete. The menu said only "what was already restored
+    stays as it is", and a folder with some of the files read as a finished restore."""
+    try:
+        yield
+    except KeyboardInterrupt:
+        if os.path.lexists(target):
+            output(PART_WAY.format(target=target))
+        raise
 
 
 def restore_photos(config, prompt, output):
@@ -1871,27 +1894,30 @@ def restore_password_list(config, runs, prompt, output):
             output(problem + ' Nothing was restored. Use another monthly snapshot.')
             return
         target.mkdir(mode=0o700)
-        result = subprocess.run(
-            [
-                'tar',
-                '--extract',
-                '--file',
-                str(run / 'data.tar'),
-                '--directory',
-                str(target),
-                '--no-same-owner',
-                'secrets/accounts',
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        with part_way(target, output):
+            result = subprocess.run(
+                [
+                    'tar',
+                    '--extract',
+                    '--file',
+                    str(run / 'data.tar'),
+                    '--directory',
+                    str(target),
+                    '--no-same-owner',
+                    'secrets/accounts',
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
         if result.returncode:
             output('Could not take the password list out of that snapshot: ' + (result.stderr.strip() or 'tar failed'))
             return
         say(output, f'\nDone. Open it with:  sudo cat {target}/secrets/accounts/APP-CREDENTIALS.txt')
         return
-    if tool('backup_secrets.py', '--restore', str(run), '--to', str(target)):
+    with part_way(target, output):
+        unsealed = tool('backup_secrets.py', '--restore', str(run), '--to', str(target))
+    if unsealed:
         say(
             output,
             f'\nDone. Open it with:  sudo cat {target}/secrets/accounts/APP-CREDENTIALS.txt',
@@ -1937,7 +1963,9 @@ def restore_nightly(config, kind, prompt, output):
         return
     make_home(config, target)
     # With their owners and permissions, so a file copied back works for its app.
-    if tool(script, 'restore', '--snapshot', str(run), '--destination', str(target), '--preserve-owners'):
+    with part_way(target, output):
+        done = tool(script, 'restore', '--snapshot', str(run), '--destination', str(target), '--preserve-owners')
+    if done:
         say(
             output,
             f'\nDone: restored into {target} (checksums verified), with each file\'s owner and permissions.',
@@ -1995,7 +2023,9 @@ def restore_monthly(config, prompt, output):
         return
     make_home(config, target)
     args = ['--snapshot', str(run), '--stage', str(target)] + (['--load-images'] if images else [])
-    if tool('monthly-recovery.py', *args):
+    with part_way(target, output):
+        done = tool('monthly-recovery.py', *args)
+    if done:
         try:
             sealed = json.loads((Path(run) / MANIFEST).read_text()).get('password_files') != 'unencrypted_in_data_tar'
         except (OSError, ValueError, AttributeError):

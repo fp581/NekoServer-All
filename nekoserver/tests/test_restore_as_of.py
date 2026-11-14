@@ -166,6 +166,41 @@ class RestoreAsOfTests(Restoring):
         self.assertEqual(got, {'keep.txt': b'edited', 'new-name.txt': b'renamed'})
         self.assertNotIn('has no list', out)
 
+    def test_a_restore_stopped_while_copying_names_its_folder_as_incomplete(self):
+        """Plan 152: Ctrl+C after the first of two files, through the menu itself. The
+        folder kept one file and the menu said only "what was already restored or repaired
+        stays as it is", so it read as a finished restore."""
+        real = recovery_wizard.copy_checked_into
+        copied = []
+
+        def then_stopped(*args):
+            if copied:
+                raise KeyboardInterrupt
+            copied.append(args)
+            return real(*args)
+
+        out = []
+        with (
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / 'usb'),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+            mock.patch.object(recovery_wizard, 'copy_checked_into', then_stopped),
+        ):
+            code = recovery_wizard.menu_loop(self.config, answers('1', '2', '1', '1', '1', 'yes'), out.append)
+        self.assertEqual(code, 1)
+        folder = next((self.media / 'restored').iterdir())
+        self.assertEqual([p.name for p in (folder / 'files').iterdir()], ['keep.txt'])
+        said = '\n'.join(out)
+        self.assertIn(f'The restore was stopped part-way: {folder} holds only some of it (incomplete)', said)
+        self.assertIn(f'sudo rm -r "{folder}"', said)
+        # A nightly restore's tool stopped the same way (its folder made, not finished).
+        target = self.media / 'restored/apps-stopped'
+        out = []
+        with self.assertRaises(KeyboardInterrupt):
+            with recovery_wizard.part_way(target, out.append):
+                target.mkdir()
+                raise KeyboardInterrupt
+        self.assertIn(str(target), out[0])
+
     def test_as_of_a_chosen_date(self):
         got, _ = self.restore('1', '2', '1', '1', 'yes')
         self.assertEqual(got, {'keep.txt': b'first', 'gone.txt': b'gone', 'old-name.txt': b'renamed'})
