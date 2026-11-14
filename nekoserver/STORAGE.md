@@ -25,14 +25,16 @@ Navidrome, Lidarr and the qBittorrent music category use the drive chosen for mu
 
 ## Where each app keeps your files
 
-Setup asks once, after the drives are chosen, where three things go: **Immich's photos and videos**, **the music library** (with its downloads: Lidarr moves finished downloads into the library, which only works on one drive) and **Nextcloud's files**. For each, you choose the SSD (faster) or the media drive (more room). The better one for this server is offered first, and Enter takes it:
+Setup asks once, after the drives are chosen, where four things go: **Immich's photos and videos**, **the films and shows** (with their downloads), **the music library** (with its downloads: Lidarr moves finished downloads into the library, which only works on one drive) and **Nextcloud's files**. For each, you choose the SSD (faster), the media drive (more room) or another drive connected to this PC, of their own. The better one for this server is offered first, and Enter takes it:
 - Photos and music go on the SSD when it is big enough to hold them for years (500 GB or more for photos, 400 GB for music). Otherwise they go on the media drive.
 - **Photos on the media drive:** the weekly photo archive copy (`photos/archive`) is always on the media drive, so it is then on the same drive as the photos. It keeps older versions, but losing that drive (or the NAS it is on) loses both: the weekly USB backup is then your only copy on another drive. Setup says so, and asks for the USB drive.
-- Nextcloud's files: the media drive is offered first, because they keep growing and don't need the speed. You can still choose the SSD.
+- Films and shows, and Nextcloud's files: the media drive is offered first, because they keep growing and don't need the speed. You can still choose the SSD.
 
-The apps' settings and databases always stay on the SSD, and movies and shows on the media drive. Every backup, restore, check and update follows your choice. The weekly copies, the photo archive, the repair menu, the monthly snapshot and the update's checks all read where the files are from your settings (`"locations"` in `my-config.json`).
+The apps' settings and databases stay on the SSD (or on the drive setup offered for a group's apps, GUIDED-SETUP.md). Every backup, restore, check and update follows your choice. The weekly copies, the photo archive, the repair menu, the monthly snapshot and the update's checks all read where the files are from your settings (`"locations"` in `my-config.json`).
 
 A place that already holds files stays where it is: servers set up before 0.46.0 keep photos and music on the SSD. Changing `"locations"` by hand while the files are still on the other drive stops setup, because the app would start with an empty folder. Moving them is a job of its own: stop the apps, copy the folder with `rsync -aHAX`, then change the setting.
+
+**Adding a drive later** (a second HDD because the films no longer fit, say). On a server that is set up, setup does not ask again where the films, the photos, the music or Nextcloud's files go: they stay where they are. NekoServer does not spread one kind of files over two drives, so a second drive beside the first gives Jellyfin no room. Put a bigger drive in place of the full one instead: connect it, make its filesystem, and `migrate.py` copies everything onto it and switches over, leaving the old drive as it was ([Moving to a bigger drive](#moving-to-a-bigger-drive), below).
 
 ## Drives on a network storage box (NAS)
 

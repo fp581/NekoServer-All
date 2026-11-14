@@ -247,5 +247,22 @@ class NoDesktopTests(unittest.TestCase):
         self.assertIn('ssh -L 40123:127.0.0.1:40123', doc('README.md'))
 
 
+class SecondDriveTests(unittest.TestCase):
+    """Deep check 241: "I want to add a second HDD for movies". STORAGE.md said setup asks
+    where three things go (it asks four, the films too) and that films always stay on the
+    media drive, and nothing said what to do once the server is set up."""
+
+    def test_storage_md_says_what_setup_asks_and_what_to_do_later(self):
+        import importlib
+
+        storage = importlib.import_module('modules.storage')
+        part = doc('STORAGE.md').split('## Where each app keeps your files')[1].split('\n## ')[0]
+        self.assertIn(f'where {["one", "two", "three", "four"][len(storage.WHERE) - 1]} things go', part)
+        self.assertIn('the films and shows', part)
+        later = part.split('**Adding a drive later**')[1]
+        self.assertIn('migrate.py', later)
+        self.assertIn('#moving-to-a-bigger-drive', later)
+
+
 if __name__ == '__main__':
     unittest.main()
