@@ -2,14 +2,22 @@
 """Verify a music backup inventory, optionally restoring to a new directory."""
 
 import argparse
+import errno
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import sys
 
 from neko_common import safe_path
+from snapshot_restore import failure_reason
+
+# What a drive answers when it cannot hold a file's name: exFAT and FAT refuse " * : < > ?
+# \ | (EINVAL from Linux's own driver, ENOENT through FUSE), and some names are too long
+# or not valid there. A full or failing drive answers otherwise and still stops the restore.
+NAME_REFUSED = {errno.EINVAL, errno.ENOENT, errno.EILSEQ, errno.ENAMETOOLONG}
 
 
 def restore(root, snapshot, destination=None):
@@ -53,9 +61,15 @@ def restore(root, snapshot, destination=None):
         # the two folders while the count said all were restored (the review of 0.47.9;
         # monthly-recovery.py stages a snapshot the same way).
         folder = os.open(dest, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        refused = []
         try:
             for source, rel, checksum in verified:
-                write_copy(folder, source, rel, checksum)
+                try:
+                    write_copy(folder, source, rel, checksum)
+                except OSError as exc:
+                    if exc.errno not in NAME_REFUSED:
+                        raise
+                    refused.append(str(rel))
             here = os.stat(dest, follow_symlinks=False)
             made = os.fstat(folder)
             if (here.st_dev, here.st_ino) != (made.st_dev, made.st_ino):
@@ -65,7 +79,21 @@ def restore(root, snapshot, destination=None):
                 )
         finally:
             os.close(folder)
+        if refused:
+            raise RuntimeError(names_refused(refused, len(verified), dest))
     return len(verified)
+
+
+def names_refused(refused, total, dest):
+    """What a restore says when the drive it went to refused some file names: which files
+    are missing, that the rest is there, and how to get them all."""
+    shown = ', '.join(refused[:10]) + (f' and {len(refused) - 10} more' if len(refused) > 10 else '')
+    return (
+        f'{len(refused)} of {total} music files were not restored, because the drive of {dest} cannot hold '
+        f'their names (exFAT and FAT drives refuse " * : < > ? \\ | in a name): {shown}. '
+        f'The other {total - len(refused)} files are restored there. To get every file, restore into a new '
+        'folder on a Linux drive (ext4), such as the HDD.'
+    )
 
 
 def write_copy(folder, source, rel, checksum):
@@ -87,18 +115,32 @@ def write_copy(folder, source, rel, checksum):
             raise RuntimeError('Restored music checksum mismatch')
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--backup', required=True)
     parser.add_argument('--snapshot', required=True)
     parser.add_argument('--destination')
-    args = parser.parse_args()
-    count = restore(args.backup, args.snapshot, args.destination)
+    args = parser.parse_args(argv)
+    existed = args.destination is not None and os.path.lexists(args.destination)
+    try:
+        count = restore(args.backup, args.snapshot, args.destination)
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError) as exc:
+        # Said in plain words, never as a traceback (seen on the loop drives of 0.51.2: a
+        # missing folder above the destination, and a name an exFAT drive refused).
+        print('The music backup was not fully restored: ' + failure_reason(exc), file=sys.stderr)
+        if args.destination and not existed and os.path.lexists(args.destination):
+            print(
+                f'What was restored is kept in {args.destination}: look at it or delete it, then restore again '
+                'into a new folder.',
+                file=sys.stderr,
+            )
+        return 1
     print(
         f'{count} music files verified; '
         + ('restored to the new directory' if args.destination else 'no live files changed')
     )
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
