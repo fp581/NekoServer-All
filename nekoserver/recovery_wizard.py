@@ -64,7 +64,7 @@ from neko_common import (
     settings_path,
     sha256_file,
     valid_ledger_path,
-    usb_mount_options,
+    usb_mount_command,
     private_mount_options,
     latest_note,
     saved_names,
@@ -1435,10 +1435,9 @@ class Usb:
             device = os.path.realpath(link)
             self.same_nas_disk(device)  # before it is mounted: the very device mounted next
             self.mount.mkdir(parents=True, exist_ok=True)
-            options = usb_mount_options(self.fstype, self.writable)
             if (
                 subprocess.run(
-                    ['mount', '-o', options, device, str(self.mount)],
+                    usb_mount_command(self.fstype, self.writable, device, self.mount),
                     capture_output=True,
                     timeout=60,
                     check=False,

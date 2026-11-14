@@ -2107,6 +2107,19 @@ class ClockAndUsbPrivacyTests(unittest.TestCase):
         self.assertFalse(neko_common.private_mount_options('rw,uid=1000,gid=1000,fmask=0177,dmask=0077', 'exfat'))
         self.assertTrue(neko_common.private_mount_options('rw,relatime', 'ext4'))
 
+    def test_an_exfat_drive_is_mounted_with_linuxs_own_driver(self):
+        """Deep check plan 207: with Arch's fuse-exfat installed, "mount" used its FUSE
+        helper, whose mount options never show who may read the drive, so it was refused
+        as readable by everyone, every time."""
+        command = neko_common.usb_mount_command('exfat', False, '/dev/sdc1', Path('/mnt/usb'))
+        self.assertEqual(command[:4], ['mount', '-i', '-t', 'exfat'])
+        self.assertEqual(command[-2:], ['/dev/sdc1', '/mnt/usb'])
+        self.assertIn('fmask=0177', command[5])
+        self.assertEqual(
+            neko_common.usb_mount_command('ext4', True, 'UUID=u', '/mnt/usb'),
+            ['mount', '-o', 'rw,nosuid,nodev,noexec', 'UUID=u', '/mnt/usb'],
+        )
+
     def test_the_restore_helper_refuses_a_readable_exfat_mount(self):
         import recovery_wizard
 

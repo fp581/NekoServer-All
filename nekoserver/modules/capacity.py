@@ -13,7 +13,7 @@ import time
 
 import guided_setup
 import questions
-from neko_common import cloud_files, photo_library, regular_files, sha256_file, usb_mount_options, version_parts
+from neko_common import cloud_files, photo_library, regular_files, sha256_file, usb_mount_command, version_parts
 
 DEPENDENCIES = ['storage']
 DESCRIPTION = 'Check there is enough space on the drives before installing'
@@ -266,7 +266,7 @@ def measure_usb(uuid, pairs, fstype):
             return measure(Path(targets[0].strip()), pairs)
         with tempfile.TemporaryDirectory(prefix='neko-usb-') as folder:
             opened = subprocess.run(
-                ['mount', '-o', usb_mount_options(fstype), 'UUID=' + uuid, folder],
+                usb_mount_command(fstype, False, 'UUID=' + uuid, folder),
                 capture_output=True,
                 timeout=60,
                 check=False,

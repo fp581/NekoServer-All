@@ -436,6 +436,13 @@ def reading_max_age(snapshot):
 PRIVATE_EXFAT = 'uid=0,gid=0,fmask=0177,dmask=0077'
 
 
+def usb_mount_command(fstype, writable, device, folder):
+    """The mount command for the USB backup drive: private, and for exFAT with Linux's own
+    driver (shared.json "exfat_mount"; through FUSE who may read it can't be checked)."""
+    driver = SHARED['exfat_mount']['arguments'] if fstype == 'exfat' else []
+    return ['mount', *driver, '-o', usb_mount_options(fstype, writable), device, str(folder)]
+
+
 def usb_mount_options(fstype, writable=False):
     options = ('rw' if writable else 'ro') + ',nosuid,nodev,noexec'
     return options + ',' + PRIVATE_EXFAT if fstype == 'exfat' else options

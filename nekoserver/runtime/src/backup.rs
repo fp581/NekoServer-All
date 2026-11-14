@@ -2772,6 +2772,15 @@ fn own_disk(device: &Path, data: &Path, media: &Path) -> Result<()> {
 /// options alone decide who can read the files. The backup holds private copies
 /// (Nextcloud files, database dumps), so an exFAT drive is mounted for root only.
 const PRIVATE_EXFAT: &str = "uid=0,gid=0,fmask=0177,dmask=0077";
+/// How the mount program is told to use Linux's own exFAT driver (shared.json).
+fn exfat_mount_arguments() -> Vec<&'static str> {
+    common::SHARED["exfat_mount"]["arguments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect()
+}
 fn usb_mount_options(fstype: &str) -> String {
     if fstype == "exfat" {
         format!("rw,nosuid,nodev,noexec,{PRIVATE_EXFAT}")
@@ -2807,6 +2816,13 @@ fn private_options(options: &str, fstype: &str) -> bool {
         && hidden("dmask")
 }
 fn require_private_mount(dest: &Path, fstype: &str) -> Result<()> {
+    let found = common::findmnt("FSTYPE", "--mountpoint", dest, 10)?.unwrap_or_default();
+    if fstype == "exfat" && found.trim() == "fuseblk" {
+        return Err(Error::new(&format!(
+            "The USB drive is mounted through FUSE (the exfat-fuse program), so who may read it can't be checked. {}",
+            fuse_advice(dest)
+        )));
+    }
     let options = common::findmnt("OPTIONS", "--mountpoint", dest, 10)?.unwrap_or_default();
     if !private_options(&options, fstype) {
         return Err(Error::new(
@@ -3296,10 +3312,31 @@ fn drive_called(key: &str) -> String {
         name => format!("drive {name}"),
     }
 }
-fn identity_mismatch(key: &str, path: &Path, uuid: &str, fstype: &str, found: &str) -> String {
+/// `other`: the drive of the settings (its key) whose filesystem was found instead.
+fn identity_mismatch(
+    key: &str,
+    path: &Path,
+    (uuid, fstype): (&str, &str),
+    found: &str,
+    other: Option<&str>,
+) -> String {
     let drive = drive_called(key);
+    let seen: Vec<&str> = found.split_whitespace().collect();
     let found = match found.trim() {
         "" => "nothing is mounted there".to_string(),
+        // Another drive of these settings, out of its place (the SSD mounted at the HDD's
+        // folder): "If the drive was replaced, run install.sh" sent the person to set up a
+        // drive that was never replaced (deep check plan 194).
+        shown if other.is_some() => format!(
+            "found the {} there ({shown}). Restart the PC (its /etc/fstab mounts each drive in its own place), or unmount it with  sudo umount {}",
+            drive_called(other.unwrap_or_default()),
+            path.display()
+        ),
+        // The right exFAT drive, mounted through FUSE (Arch's fuse-exfat): who may read it
+        // can't be told there (deep check plan 207).
+        _ if fstype == "exfat" && seen.first() == Some(&uuid) && seen.get(1) == Some(&"fuseblk") => {
+            format!("found it mounted through FUSE (exfat-fuse), so who may read it can't be checked. {}", fuse_advice(path))
+        }
         // A folder the NAS shares (NFS) that is not mounted: only systemd's automount
         // holds its place, and mounts it at the next use once the NAS answers.
         waiting if common::waits_for_first_use(waiting) => {
@@ -3345,16 +3382,23 @@ pub fn check_drives(a: &crate::Args) -> Result<()> {
         let shared = seen
             .iter()
             .find(|(other, id)| *id == uuid && !may_share(&cfg, other, key));
-        if shared.is_some() {
-            return Err(Error::new(
-                "The SSD and the HDD must be two different filesystems",
-            ));
+        if let Some((other, _)) = shared {
+            return Err(Error::new(&one_filesystem(other, key, &uuid)));
         }
         seen.push((key, uuid));
     }
     crate::startup::copies_of(&cfg, &keys)?;
     println!("ok");
     Ok(())
+}
+/// Two drives of the settings found to be one filesystem, named: it was "The SSD and the
+/// HDD must be two different filesystems" for any two, the USB drive too (deep check plan 195).
+fn one_filesystem(a: &str, b: &str, uuid: &str) -> String {
+    format!(
+        "The {} and the {} are one filesystem (UUID {uuid}): each must be a drive of its own. Run  sudo bash install.sh  to choose them again",
+        drive_called(a),
+        drive_called(b)
+    )
 }
 /// Two drives of the settings may be one filesystem: the apps' and the media's, when
 /// the settings keep each as a folder of it on purpose (common::roles_share_one_filesystem:
@@ -3427,8 +3471,13 @@ fn drive_check(c: &Value, key: &str, path: &Path, found: &str) -> Result<String>
     }
     let fields = found.split_whitespace().collect::<Vec<_>>();
     if fields.len() < 3 || fields[..2] != [uuid, fstype] {
+        let other = fields.first().and_then(|seen| drive_with_uuid(c, seen));
         return Err(Error::new(&identity_mismatch(
-            key, path, uuid, fstype, found,
+            key,
+            path,
+            (uuid, fstype),
+            found,
+            other.as_deref().filter(|other| *other != key),
         )));
     }
     // A Btrfs drive used with a subvolume must be mounted with that one: the same
@@ -3439,6 +3488,25 @@ fn drive_check(c: &Value, key: &str, path: &Path, found: &str) -> Result<String>
         return Err(Error::new(&other_part(path, fstype, found_part, wanted)));
     }
     Ok(uuid.to_string())
+}
+/// The drive of the settings `c` (its key: data_ssd, media_hdd, usb or a drive of its
+/// own) whose filesystem has UUID `uuid`, if any.
+fn drive_with_uuid(c: &Value, uuid: &str) -> Option<String> {
+    let storage = c["storage"].as_object()?;
+    storage
+        .iter()
+        .find(|(_, record)| record["uuid"].as_str() == Some(uuid))
+        .map(|(key, _)| key.clone())
+        .or_else(|| {
+            (c["photos"]["external_backup_uuid"].as_str() == Some(uuid)).then(|| "usb".into())
+        })
+}
+/// What to do about an exFAT backup drive mounted through FUSE.
+fn fuse_advice(dest: &Path) -> String {
+    format!(
+        "Unmount it with  sudo umount {}: the backup then mounts it itself, privately, with Linux's own driver",
+        dest.display()
+    )
 }
 /// What Btrfs shows (findmnt's source "/dev/sdb1[/@media//deleted]") for a subvolume
 /// that was deleted while it stayed mounted.
@@ -4825,16 +4893,14 @@ impl UsbRun {
             .map_err(|_| Error::new(USB_MISSING))?;
         let device = device.to_string_lossy().to_string();
         self.same_nas_disk(&device)?;
-        success(
-            &[
-                "mount",
-                "-o",
-                &usb_mount_options(&self.fstype),
-                &device,
-                &self.dest.to_string_lossy(),
-            ],
-            30,
-        )
+        let options = usb_mount_options(&self.fstype);
+        let dest = self.dest.to_string_lossy();
+        let mut argv = vec!["mount"];
+        if self.fstype == "exfat" {
+            argv.extend(exfat_mount_arguments());
+        }
+        argv.extend(["-o", &options, &device, &dest]);
+        success(&argv, 30)
     }
 }
 /// The backup drive named on the job's command line can be one: a filesystem UUID with
@@ -5421,9 +5487,9 @@ mod tests {
         let wrong = identity_mismatch(
             "data_ssd",
             data,
-            "aaaa-1111",
-            "ext4",
+            ("aaaa-1111", "ext4"),
             "bbbb-2222 ext4 /dev/sdc1\n",
+            None,
         );
         assert_eq!(
             wrong,
@@ -5432,15 +5498,60 @@ mod tests {
              so every service learns the new one"
         );
         let media = Path::new("/mnt/nekoserver-media");
-        assert!(identity_mismatch("media_hdd", media, "cccc", "xfs", "")
-            .ends_with("should be the HDD (UUID cccc, xfs); nothing is mounted there"));
+        assert!(
+            identity_mismatch("media_hdd", media, ("cccc", "xfs"), "", None)
+                .ends_with("should be the HDD (UUID cccc, xfs); nothing is mounted there")
+        );
         // Not every other drive is the HDD: the USB backup and a drive of its own.
         let extra = Path::new("/mnt/nekoserver-drives/d3");
-        assert!(identity_mismatch("d3", extra, "dddd", "ext4", "")
+        assert!(identity_mismatch("d3", extra, ("dddd", "ext4"), "", None)
             .ends_with("should be the drive d3 (UUID dddd, ext4); nothing is mounted there"));
         let usb = Path::new("/mnt/nekoserver-photos");
-        assert!(identity_mismatch("usb", usb, "eeee", "ext4", "")
+        assert!(identity_mismatch("usb", usb, ("eeee", "ext4"), "", None)
             .contains("should be the USB backup drive (UUID eeee"));
+    }
+    /// Deep check plans 194, 195 and 207, seen on loop drives: the SSD mounted at the HDD's
+    /// folder was told "If the drive was replaced, run install.sh"; the USB drive given the
+    /// HDD's filesystem was told "The SSD and the HDD must be two different filesystems";
+    /// the exFAT USB drive mounted through FUSE (fuseblk) was told to run install.sh too.
+    #[test]
+    fn a_drive_out_of_its_place_or_mounted_through_fuse_is_said_so() {
+        let cfg = json!({"storage": {
+            "data_ssd": {"uuid": "aaaa-1111", "fstype": "ext4"},
+            "media_hdd": {"uuid": "bbbb-2222", "fstype": "xfs"}},
+            "photos": {"external_backup_uuid": "CCCC-3333"}});
+        let media = Path::new("/mnt/nekoserver-media");
+        let said = drive_check(&cfg, "media_hdd", media, "aaaa-1111 ext4 /dev/sdb1")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            said.contains("found the SSD there (aaaa-1111 ext4 /dev/sdb1)"),
+            "{said}"
+        );
+        assert!(said.contains("sudo umount /mnt/nekoserver-media"), "{said}");
+        assert!(!said.contains("replaced"), "{said}");
+        assert_eq!(drive_with_uuid(&cfg, "CCCC-3333").as_deref(), Some("usb"));
+        assert_eq!(drive_with_uuid(&cfg, "dddd"), None);
+        // The USB drive's filesystem through FUSE.
+        let usb = json!({"storage": {"usb": {"uuid": "CCCC-3333", "fstype": "exfat"}}});
+        let at = Path::new("/mnt/nekoserver-photos");
+        let said = drive_check(&usb, "usb", at, "CCCC-3333 fuseblk /dev/loop2")
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("mounted through FUSE"), "{said}");
+        assert!(
+            said.contains("sudo umount /mnt/nekoserver-photos"),
+            "{said}"
+        );
+        assert!(!said.contains("install.sh"), "{said}");
+        // Two drives that are one filesystem are named.
+        let said = one_filesystem("media_hdd", "usb", "bbbb-2222");
+        assert!(
+            said.starts_with("The HDD and the USB backup drive are one filesystem"),
+            "{said}"
+        );
+        // The weekly copy mounts an exFAT drive with Linux's own driver, never a FUSE helper.
+        assert_eq!(exfat_mount_arguments(), ["-i", "-t", "exfat"]);
     }
     #[test]
     fn a_read_only_usb_mount_is_told_apart() {
@@ -6113,7 +6224,8 @@ mod tests {
         let mount = body("    fn mount(&self) -> Result<()> {");
         assert!(!mount.contains("UUID={}"), "{mount}");
         assert!(
-            mount.find("self.same_nas_disk(&device)").unwrap() < mount.find("\"mount\",").unwrap()
+            mount.find("self.same_nas_disk(&device)").unwrap()
+                < mount.find("vec![\"mount\"]").unwrap()
         );
         let ready = body("    fn usb_ready(&self) -> Result<bool> {");
         let mounted = ready

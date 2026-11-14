@@ -62,6 +62,10 @@
     ]
   },
   "writers": ["docker.socket", "docker.service", "smbd.service", "smb.service", "nekoserver-gateway-lan.service"],
+  "exfat_mount": {
+    "_about": "How an exFAT backup drive is mounted: with Linux's own exFAT driver (-i: no mount.exfat helper). Arch's fuse-exfat installs one, and through FUSE the drive's options no longer show who may read it, so every backup refused it as readable by everyone (deep check plan 207). The runtime (backup.rs) and setup (neko_common) take it from here.",
+    "arguments": ["-i", "-t", "exfat"]
+  },
   "setup_lock": "/run/nekoserver-setup.lock",
   "operation_lock": "/run/nekoserver-operation.lock",
   "recovery_menu": {
