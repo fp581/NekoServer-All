@@ -259,6 +259,14 @@ static PATTERNS: std::sync::LazyLock<Vec<(regex::Regex, &str)>> = std::sync::Laz
                 r#"(?i)\b([a-z0-9_.-]*(?:pass(?:word|wd|phrase)?|secret|token|api[_-]?key|private[_-]?key|access[_-]?key)[a-z0-9_.-]*)("?\s*[=:]\s*)(?:"[^"\n]*"?|'[^'\n]*'?|\x{201c}[^\x{201d}\n]*\x{201d}?|[^\s",;&]+)"#,
                 "$1$2<removed>",
             ),
+            // A password named in another language (German, Spanish, French, Dutch,
+            // Portuguese, Hebrew with its joined "the"/"and" prefixes, Russian). After ":" or
+            // "=" any value goes; after the language's "is" only one with a digit or a symbol
+            // in it: an ordinary word there ("Mein Passwort ist falsch?") is a sentence.
+            (
+                r#"(?i)\b((?:pass|kenn)wort|contrase(?:ñ|n)a|mot de passe|wachtwoord|senha|[הוש]?סיסמ[הא]|пароль)(\s*[:=]\s*(?:"[^"\n]*"?|'[^'\n]*'?|[^\s",;&]+)|\s+(?:ist|es|est|is|é|היא|הוא|זה|это)\s+[^\s",;&]*[\p{N}\p{S}@#%*_\-][^\s",;&]*)"#,
+                "$1 <removed>",
+            ),
             // E-mail addresses.
             (
                 r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
@@ -1464,6 +1472,33 @@ mod tests {
 
     /// Review of the 0.50.0 fixes: the bug report said "passwords and keys removed", but
     /// a password written out in a sentence stayed in the question.
+    /// Deep check plan 39: the redaction knew only English words for a password, so
+    /// "Passwort: X" and "הסיסמה היא X" (Hebrew, "the password is X") reached the model.
+    #[test]
+    fn a_password_named_in_another_language_is_taken_out() {
+        // Made up here from pieces: not a saved login, not shaped like a key.
+        let word = ["Gelb", "-Katze-", "42"].concat();
+        for typed in [
+            format!("Passwort: {word}"),
+            format!("das Kennwort ist {word}"),
+            format!("la contraseña es {word}"),
+            format!("mot de passe = {word}"),
+            format!("het wachtwoord is {word}"),
+            format!("a senha é {word}"),
+            format!("הסיסמה היא {word}"),
+            format!("סיסמה: {word}"),
+            format!("пароль: {word}"),
+        ] {
+            let said = redact(&typed, &[]);
+            assert!(!said.contains(&word), "{typed} -> {said}");
+            assert!(said.contains("<removed>"), "{typed} -> {said}");
+        }
+        // The words alone, with nothing after them, stay.
+        assert_eq!(
+            redact("Mein Passwort ist falsch?", &[]),
+            "Mein Passwort ist falsch?"
+        );
+    }
     #[test]
     fn a_password_written_in_a_sentence_is_taken_out() {
         // Made up here from pieces: not a saved login, not shaped like a key.

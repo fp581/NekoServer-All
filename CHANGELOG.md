@@ -62,6 +62,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **A long address in an alert's title wraps on a phone** instead of pushing the whole page sideways.
 - **A greyed-out menu item's note is readable** (it measured 2.3:1; now only the label is dimmed).
 - **Ask Neko takes a password in quotes out whole**: `password: "correct horse battery"` kept "horse battery".
+- **Ask Neko takes out a password named in another language** (Passwort, contraseña, mot de passe, wachtwoord, senha, סיסמה, пароль), not only in English.
 - **Ask Neko is free for the next question when the page leaves an answer that never ends**, instead of "Neko is busy" until the assistant hung up; an assistant that hangs up at once is said as such, not as "took too long".
 
 ### Checked
