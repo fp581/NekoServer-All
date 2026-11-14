@@ -16,6 +16,7 @@ Fixes only, from a wider review of 0.51.0's card engine, setup and dashboard. No
 ### Fixed: what setup and its tools say about a settings file
 - **A settings file that is damaged or not there is named, with what is wrong.** `install.sh --config <file>` said only Python's own words ("Expecting value: line 1 column 1 (char 0)", "[Errno 2] No such file or directory"); `acceptance.py` said "Configuration or selected dependency profile is invalid" for a damaged file, a missing one and an unknown profile alike; `recover.py` said "a settings or record file could not be read" and to fix "what it names", naming nothing. Each now names the file and says what is wrong (not JSON, with the line and column; not there; no settings in it; no such profile, with the ones there are).
 - **`recover.py check --config my.json` reads my.json.** The settings file was only read when named before the command; after it, the option was not read, and the message said to name the file with `--config`. It is read in either place now.
+- **`migrate.py move --to <something that is not a UUID>` says so.** It said "move needs --drive and --to" though both were given; now it names what was typed and where to copy a UUID from (`migrate.py list`).
 - Found by trying each tool with broken settings files on a fresh Ubuntu 24.04.
 
 ### Fixed: SD-card backup sets (the engine, not switched on yet)

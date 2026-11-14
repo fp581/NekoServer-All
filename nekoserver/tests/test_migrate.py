@@ -2,6 +2,8 @@
 The old drive is only ever read; a copy that does not match, file for file by checksum,
 stops the move with the apps back on the old drive."""
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -41,6 +43,37 @@ CONFIG = {
         'media_hdd': {'uuid': 'hdd-0001', 'fstype': 'ext4'},
     },
 }
+
+
+class CommandLineTests(unittest.TestCase):
+    """Seen on a fresh Ubuntu 24.04: `migrate.py move --drive media_hdd --to ../../etc` said
+    "move needs --drive and --to", though both were given."""
+
+    def said(self, *argv):
+        err = io.StringIO()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        settings = Path(tmp.name) / 'my-config.json'
+        settings.write_text('{}')
+        with (
+            mock.patch.object(migrate.sys, 'argv', ['migrate.py', *argv, '--config', str(settings)]),
+            mock.patch.object(migrate.os, 'geteuid', return_value=0),
+            mock.patch.object(migrate.shutil, 'which', return_value='/usr/bin/rsync'),
+            mock.patch.object(migrate, 'move', side_effect=AssertionError('moved')),
+            contextlib.redirect_stderr(err),
+            self.assertRaises(SystemExit) as caught,
+        ):
+            migrate.main()
+        self.assertEqual(caught.exception.code, 2)
+        return err.getvalue()
+
+    def test_a_to_that_is_no_uuid_is_named(self):
+        said = self.said('move', '--drive', 'media_hdd', '--to', '../../etc')
+        self.assertIn('--to ../../etc is not a filesystem UUID', said)
+        self.assertIn('migrate.py list', said)
+
+    def test_a_missing_option_is_still_said_as_missing(self):
+        self.assertIn('move needs --drive and --to', self.said('move', '--to', '1234abcd-0000'))
 
 
 class TargetTests(unittest.TestCase):

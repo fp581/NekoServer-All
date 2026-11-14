@@ -1020,8 +1020,11 @@ def main():
     if not shutil.which('rsync'):
         parser.error('rsync is needed: run  sudo bash install.sh  (it installs it), then try again')
     if args.action == 'move':
-        if not (args.drive and args.to and UUID.fullmatch(args.to)):
+        if not (args.drive and args.to):
             parser.error('move needs --drive and --to (the UUID list shows)')
+        if not UUID.fullmatch(args.to):
+            # Said apart: "needs --drive and --to" was all a mistyped UUID got.
+            parser.error(f'--to {args.to} is not a filesystem UUID: copy one from  sudo python3 migrate.py list')
         return move(args.config, args.drive, args.to)
     if args.action == 'back':
         return back(args.config, drive=args.drive)
