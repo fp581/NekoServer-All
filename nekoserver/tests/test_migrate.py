@@ -293,6 +293,18 @@ class CopyTests(unittest.TestCase):
         migrate.copy(self.old, self.new, final=True, out=lambda _: None)
         self.assertFalse((self.new / 'stale').exists())
 
+    def test_a_copy_started_again_puts_right_a_file_the_comparison_found_different(self):
+        """Seen in 0.51.1 (a real move): a file on the new drive with other bytes but the
+        same size and time was found by the comparison, but never copied again by the
+        next attempt (rsync's quick check passes it), so every attempt stopped on it."""
+        migrate.copy(self.old, self.new, out=lambda _: None)
+        stamp = os.stat(self.new / 'secret')
+        (self.new / 'secret').write_text('y')
+        os.utime(self.new / 'secret', ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        migrate.copy(self.old, self.new, out=lambda _: None, again=True)
+        migrate.copy(self.old, self.new, final=True, out=lambda _: None)
+        self.assertEqual(migrate.differences(self.old, self.new), [])
+
 
 class MoveTests(unittest.TestCase):
     def setUp(self):
@@ -309,7 +321,7 @@ class MoveTests(unittest.TestCase):
         self.settings.write_text(json.dumps(CONFIG))
         self.staging = self.dir / 'staging'
         self.staging.mkdir()
-        self.calls, self.said = [], []
+        self.calls, self.said, self.again = [], [], []
         # What findmnt says is mounted where (the tests change it to unplug a drive).
         self.mounted = {
             '/mnt/nekoserver-media': ('hdd-0001', 'ext4', ''),
@@ -329,7 +341,7 @@ class MoveTests(unittest.TestCase):
             ('nothing_at_work', lambda **kwargs: self.busy),
             ('targets', lambda config, drive: ([('newbig-0001', 'ext4', 8000 * GB, '/dev/sdc1')], [])),
             ('mount_staging', self.mount_new),
-            ('copy', lambda source, target, final=False, out=print: self.calls.append(('copy', final))),
+            ('copy', self.copied),
             ('stop_writers', self.stop),
             ('start_again', self.start),
             ('run', self.command),
@@ -341,6 +353,11 @@ class MoveTests(unittest.TestCase):
         ismount = mock.patch.object(migrate.os.path, 'ismount', return_value=False)
         ismount.start()
         self.addCleanup(ismount.stop)
+
+    def copied(self, source, target, final=False, out=print, again=False):
+        """A stand-in for one pass of the copy; whether it checked an earlier copy is noted."""
+        self.calls.append(('copy', final))
+        self.again.append(again)
 
     def mount_new(self, uuid, fstype, staging):
         """A stand-in for mounting the new drive at the staging folder."""
@@ -806,6 +823,8 @@ class MoveTests(unittest.TestCase):
             self.assertEqual(self.move(), 0, self.said)
         self.assertIn('UUID=newbig-0001', self.fstab.read_text())
         self.assertFalse(migrate.copy_note(self.journal).exists())  # done: the note goes
+        # Its first pass checks the earlier copy by checksum (see CopyTests).
+        self.assertEqual(self.again, [True, False])
 
     def test_a_copy_made_by_a_move_is_noted_for_a_retry(self):
         def fails(*args, **kwargs):

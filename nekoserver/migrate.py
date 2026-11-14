@@ -283,11 +283,20 @@ def mount_staging(uuid, fstype, staging=STAGING):
     return staging
 
 
-def copy(source, target, final=False, out=print):
+def copy(source, target, final=False, out=print, again=False):
     """One pass of the copy; the last one (`final`, with the apps stopped) also removes
-    from the new drive what was deleted on the old one meanwhile."""
-    argv = [*RSYNC, *(['--delete'] if final else []), f'{source}/', f'{target}/']
-    out('Copying ' + ('what changed (the apps are stopped)' if final else 'everything (the apps keep running)') + '...')
+    from the new drive what was deleted on the old one meanwhile. `again`: the new drive
+    holds an earlier attempt's copy, whose files are compared by checksum, not by size
+    and time: a file the comparison found different (a bad cable, say) keeps its size and
+    time, so it was never copied again and every later attempt stopped on it (seen in
+    0.51.1)."""
+    argv = [*RSYNC, *(['--delete'] if final else []), *(['--checksum'] if again else []), f'{source}/', f'{target}/']
+    if final:
+        out('Copying what changed (the apps are stopped)...')
+    elif again:
+        out('Copying everything again, checking what an earlier attempt copied (the apps keep running)...')
+    else:
+        out('Copying everything (the apps keep running)...')
     done = run(argv, check=False, capture=False)
     # 24: files vanished while copying (the apps were running): the last pass gets them.
     if done.returncode not in ((0,) if final else (0, 24)):
@@ -665,7 +674,8 @@ def copy_to_new(journal, drive, old, new, places, out):
     name). Raises when the move must stop."""
     mountpoint, staging, name = places
     mount_staging(new['uuid'], new['fstype'], staging)
-    if not empty(staging) and not our_copy(journal, drive, old.get('uuid'), new['uuid']):
+    again = not empty(staging)
+    if again and not our_copy(journal, drive, old.get('uuid'), new['uuid']):
         raise RuntimeError(f'{name} is not empty; NekoServer only moves to an empty filesystem')
     # A move started again goes on with the copy this one makes (its last pass removes
     # what is no longer on the old drive, and every file is compared after it).
@@ -673,7 +683,7 @@ def copy_to_new(journal, drive, old, new, places, out):
     atomic_json(copy_note(journal), {'drive': drive, 'old': old.get('uuid'), 'new': new['uuid']})
     record(journal, phase='copying')
     same_drives(mountpoint, old, staging, new)
-    copy(mountpoint, staging, out=out)
+    copy(mountpoint, staging, out=out, again=again)
     stop_writers(journal)
     same_drives(mountpoint, old, staging, new)
     copy(mountpoint, staging, final=True, out=out)
