@@ -1076,6 +1076,8 @@ details.more summary span {
 }
 .issue h3 {
   margin: 0 0 4px;
+  /* A title can hold an address with no spaces (a shared folder's //nas/Photos_2019-2024). */
+  overflow-wrap: anywhere;
 }
 .issue p {
   font-size: 14px;
