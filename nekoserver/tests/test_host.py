@@ -1309,7 +1309,11 @@ class CapabilitiesTest(unittest.TestCase):
     def test_each_firewall_gets_its_own_command(self):
         self.assertIn('sudo ufw allow', capabilities.firewall_hint(['ufw']))
         nft = capabilities.firewall_hint(['nftables'])
-        self.assertIn('sudo nft add rule inet filter input', nft)
+        # Inserted, not added: added after the reject line that ends Arch's ruleset, it let
+        # nothing through (deep check 178, in a network namespace with that ruleset).
+        self.assertIn('sudo nft insert rule inet filter input', nft)
+        self.assertNotIn('nft add rule', nft)
+        self.assertIn('above its reject line', nft)
         self.assertNotIn('ufw', nft)
         self.assertIn('/etc/nftables.conf', nft)
         self.assertIn('from a phone on your home Wi-Fi', nft)

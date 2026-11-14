@@ -52,11 +52,13 @@ def firewall_hint(firewalls):
             '(your network instead of 192.168.1.0/24)'
         )
     else:
-        # nftables on its own (Arch's nftables.service, say): a rule in its own ruleset.
+        # nftables on its own (Arch's nftables.service, say): a rule in its own ruleset,
+        # inserted first: Arch's ruleset ends with a reject, and a rule added after it
+        # let nothing through (tried in a network namespace).
         example = (
-            'sudo nft add rule inet filter input ip saddr 192.168.1.0/24 tcp dport { 445, 8442-8447, 8450-8499 } accept  '
-            '(your network instead of 192.168.1.0/24, and the same rule in /etc/nftables.conf so it stays '
-            'after a restart)'
+            'sudo nft insert rule inet filter input ip saddr 192.168.1.0/24 tcp dport { 445, 8442-8447, 8450-8499 } '
+            'accept  (your network instead of 192.168.1.0/24; to keep it after a restart, put the same rule in '
+            '/etc/nftables.conf too, in the input chain above its reject line)'
         )
     return (
         ', '.join(firewalls) + ' is on: allow your home network to reach shared folders (port 445) and the home '
