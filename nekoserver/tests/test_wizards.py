@@ -142,7 +142,10 @@ class WizardFlowTests(unittest.TestCase):
         code = wizard.run(execute, self.root / 'state', prompt=answers('no'), output=out.append, root=self.root)
         self.assertEqual(code, 0)
         execute.assert_not_called()
-        self.assertTrue(any('No apps were set up' in line for line in out))
+        said = next(line for line in out if 'No apps were set up' in line)
+        # Only Arch updates the whole system before setup (said on Ubuntu, where it never ran).
+        self.assertNotIn('The system update and', said)
+        self.assertIn('on Arch the whole system was updated first', said)
 
     def test_yes_runs_the_full_install_with_the_settings_file(self):
         execute = mock.Mock(return_value=0)

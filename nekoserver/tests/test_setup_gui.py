@@ -370,6 +370,18 @@ class WindowTests(unittest.TestCase):
     def state(self):
         return json.loads(self.get('api/state')[2])
 
+    def test_a_stop_at_the_storage_page_is_shown_in_the_window_too(self):
+        # Seen on a PC with one disk and too little room on it: the terminal said why and
+        # what to do, the window only "Setup has ended".
+        problem = 'No drive here can be the app SSD (your apps). Then run  sudo bash install.sh  again.'
+        with mock.patch('modules.storage.choose_ahead', side_effect=RuntimeError(problem)):
+            self.assertIsNone(wizard.choose_storage(self.settings, lambda line: None))
+        state = self.state()
+        self.assertEqual((state['phase'], state['stopped'], state['complete']), ('finished', True, False))
+        self.assertEqual(state['title'], setup_gui.STOPPED_TITLE)
+        self.assertEqual(state['finish'][0], problem)
+        self.assertTrue(self.window.delivered.is_set())  # what run() waits for before the window goes
+
     def test_the_page_its_files_and_the_token(self):
         status, kind, body = self.get('')
         self.assertEqual((status, kind), (200, 'text/html; charset=utf-8'))

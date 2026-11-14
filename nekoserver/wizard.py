@@ -232,6 +232,7 @@ def setup_window(path, output):
     return window
 
 
+WINDOW_FETCHES_END = 5  # seconds an open setup window may take to fetch how setup ended
 STARTED = object()  # the window's Install button was pressed while the terminal waited for a line
 CONTINUED = object()  # its Continue button, on the first page
 BACK = object()  # its Back button, on the review
@@ -476,6 +477,15 @@ def choose_storage(path, output):
             return storage.choose_ahead(read_json(path) or {}, output)
     except RuntimeError as problem:
         output(f'\nSetup stopped: {problem}')
+        # The setup window says it too (it showed only "Setup has ended", the reason and
+        # what to buy or do being in the terminal alone): its stopped page, as before setup.
+        setup_progress.event(
+            'finished',
+            title=setup_gui.STOPPED_TITLE,
+            lines=setup_gui.stop_lines(str(problem)),
+            complete=False,
+            stopped=True,
+        )
         return None
     except (EOFError, KeyboardInterrupt):
         output('')
@@ -1275,12 +1285,17 @@ def run(execute, default_state, prompt=input, output=print, root=ROOT, config=No
             exit_code = run_steps(execute, path, default_state, straight, (prompt, output, window))
         else:
             output(
-                'No apps were set up. (The system update and the packages NekoServer needs are '
-                'already installed; that is all.) Run  sudo bash install.sh  when you are ready.'
+                # Only Arch updates the whole system first (install.sh); the others only install packages.
+                'No apps were set up. Only the packages NekoServer needs were installed (on Arch the whole '
+                'system was updated first). Run  sudo bash install.sh  when you are ready.'
             )
             exit_code = 0
     finally:
         if window is not None:
+            if setup_progress.last('finished'):
+                # A page that says how setup ended (it stopped at the storage page, say)
+                # is fetched before the window's server goes; an open window asks every second.
+                window.delivered.wait(WINDOW_FETCHES_END)
             window.stop()
         setup_progress.disable()
     return exit_code
