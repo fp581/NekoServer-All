@@ -3611,7 +3611,8 @@ function renderProcesses() {
   setBadge(
     'process-count',
     state.processError ? 'warning' : 'neutral',
-    state.processError || (state.processes ? rows.length + ' running' : 'Waiting')
+    // All running, also past the 5000 listed (the server counts every one).
+    state.processError || (state.processes ? (numeric(p.count) ? p.count : rows.length) + ' running' : 'Waiting')
   );
   const page = shown.slice(state.processPage * 50, (state.processPage + 1) * 50);
   put('process-rows', page.length ? page.map(processRow) : [noProcessesRow()]);
@@ -3622,7 +3623,7 @@ function renderProcesses() {
     '100% processor = one full core, so busy programs can go above 100%. ' +
     MENU_HOW +
     ' a program to restart its app or close a desktop app.' +
-    (p.truncated ? ' Only the first 5000 are listed.' : '');
+    (p.truncated ? ' Only the 5000 busiest are listed.' : '');
 }
 
 /* ---------- app controls ----------
