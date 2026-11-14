@@ -31,6 +31,9 @@ fn label(id: &str) -> Option<String> {
         "heartbeat:delivery" => {
             return Some("Outage alerts: the outside monitor is not reached".into())
         }
+        "home-network" => {
+            return Some("Home addresses stopped: this server's address at home changed".into())
+        }
         "notifications:delivery" => {
             return Some("Phone alerts could not be delivered for a while".into())
         }
@@ -317,6 +320,10 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
     }
     if s["media"]["status"] != "current" {
         unknown.insert("media-failure".into());
+    }
+    // The home-network address: back only once the connections could be listed.
+    if s["home_network"]["status"] == "unknown" {
+        unknown.insert("home-network".into());
     }
     if !s["metrics"]["memory_percent"].is_number() {
         unknown.insert("memory-pressure".into());
@@ -649,6 +656,20 @@ pub fn run(a: &Args) -> Result<()> {
 }
 #[cfg(test)]
 mod tests {
+    /// Deep check 249: a home-network address that changed reaches the phone too, and is
+    /// not called recovered while the connections can't be listed.
+    #[test]
+    fn a_changed_home_address_is_sent_and_recovers_only_when_seen() {
+        assert!(label("home-network").is_some());
+        let mut s = json!({"format":"neko-dashboard-v1","generated_at":2000.0,
+            "alerts":[],"applications":[],"storage":[],"backups":[],"media":{"status":"current"},
+            "home_network":{"status":"unknown"}});
+        let (_, unknown, _) = observations(&s, 2000.);
+        assert!(unknown.contains("home-network"));
+        s["home_network"] = json!({"status": "ok"});
+        let (_, unknown, _) = observations(&s, 2000.);
+        assert!(!unknown.contains("home-network"));
+    }
     /// 0.51.2 user check (a typo in the topic name, then the documented test command
     /// against a local ntfy stand-in): a test the server took printed nothing, one it did
     /// not take only "Notification delivery failed".

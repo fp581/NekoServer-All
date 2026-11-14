@@ -204,7 +204,7 @@ These addresses are **private**: they work only on devices signed in to your Tai
 
 **On other devices at home** you can also use your server's home address.
 
-> **First, in your router, reserve that address for the server** (the setting is usually called "DHCP reservation" or "static lease"). Otherwise it can change after a restart and the home addresses stop working; if that happens, run `sudo bash install.sh` again and choose the home network again.
+> **First, in your router, reserve that address for the server** (the setting is usually called "DHCP reservation" or "static lease"). Otherwise it can change after a restart (or with a new router) and the home addresses and shared folders stop working; the dashboard then says *Home addresses stopped*. Run `sudo bash install.sh` again: it finds the new address by itself and moves them to it.
 
 The home address is, for example, `https://192.168.1.20:8442` for the app menu (ports 8443–8447 for the apps, as above; when another program on the server already uses one of these ports, setup takes a free one from 8450–8499 instead and says so, and the app menu links each app with its right port). The end of setup shows the app menu address. Browsers warn about the certificate the first time, because your server made its own; [GATEWAY.md](GATEWAY.md) explains how to trust it. The Tailscale addresses have normal certificates and never warn.
 

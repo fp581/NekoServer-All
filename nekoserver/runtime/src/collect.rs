@@ -2518,6 +2518,17 @@ pub(crate) fn alerts(s: &Value) -> Value {
             "The last alerts could not be sent to your ntfy topic: check its address and access token (setup can change them).",
         );
     }
+    if s["home_network"]["status"] == "moved" {
+        add(
+            "home-network".into(),
+            "warning",
+            "Home addresses stopped: this server's address at home changed".into(),
+            &format!(
+                "This server no longer has the address {} on your home network (a new router, or the router gave it another one), so the apps' home addresses and the shared folders don't answer. Run  sudo bash install.sh  again: it finds the new address and moves them to it. Then reserve that address for this server in your router (\"DHCP reservation\"), so it stays. The Tailscale addresses keep working.",
+                text(&s["home_network"]["address"])
+            ),
+        );
+    }
     if ["fail", "stale"].contains(&text(&s["heartbeat"]["status"])) {
         add(
             "heartbeat:delivery".into(),
@@ -2957,6 +2968,30 @@ fn notification_status(now: f64) -> Value {
     }
     json!({"status":status,"timer":timer,"last_success":common::shown_time(&saved["last_success"],now),"last_attempt":num(&saved["last_attempt"],0.0,now+30.0),"pending":num(&saved["pending"],0.0,100.0)})
 }
+/// Whether this PC still has the home-network address that the apps' home addresses and
+/// the shared folders use ("lan_ip" under "gateway"). With a new router, or one that gave
+/// the PC another address, both stop answering while every service still runs, so nothing
+/// else on the page said so (deep check 249).
+fn home_network(cfg: &Value) -> Value {
+    let address = text(&cfg["gateway"]["lan_ip"]);
+    if address.is_empty() || address == "auto" {
+        return json!({"status": "none"});
+    }
+    let (code, out) = probe(&["ip", "-j", "address", "show", "up"], 8);
+    let rows = (code == 0)
+        .then(|| serde_json::from_str::<Value>(&out).ok())
+        .flatten();
+    json!({"status": home_network_status(cfg, rows.as_ref()), "address": chars(address, 40)})
+}
+/// "ok", "moved" (the address is on none of the connections) or "unknown" (the
+/// connections could not be listed, or the settings name no usable address).
+fn home_network_status(cfg: &Value, rows: Option<&Value>) -> &'static str {
+    match rows.map(|rows| crate::startup::lan(cfg, rows)) {
+        Some(Ok(())) => "ok",
+        Some(Err(e)) if e.to_string() == crate::startup::LAN_GONE => "moved",
+        _ => "unknown",
+    }
+}
 /// The drive the backups wait for, when one is missing.
 fn away_drive(data_ok: bool, media_ok: bool) -> Option<&'static str> {
     if !data_ok {
@@ -3122,6 +3157,7 @@ pub fn run(a: &Args) -> Result<()> {
     result["backup_place"] = backup_place(&cfg);
     result["shared_folders"] = shared_folders(data, ok);
     result["tailscale"] = tailscale_login(now);
+    result["home_network"] = home_network(&cfg);
     result["network_storage"] = network_storage(&cfg, Path::new("/sys/class/iscsi_session"));
     result["arrays"] = arrays;
     mark_held(&mut result);
@@ -4107,6 +4143,36 @@ mod os_tests {
         );
         assert_eq!(shown[0]["level"], "warning");
         assert!(!text(&shown[0]["detail"]).contains("bob/a:b.txt"));
+    }
+    /// Deep check 249 ("I changed my router"): the PC got another address at home, the
+    /// home gateway and the shared folders stopped answering, and the page was all green.
+    #[test]
+    fn a_home_network_address_the_pc_no_longer_has_is_said() {
+        let cfg = json!({"gateway": {"lan_ip": "192.168.1.20", "lan_cidr": "192.168.1.0/24"}});
+        let on = |ip: &str| {
+            json!([{"ifname": "enp3s0", "addr_info": [
+                {"family": "inet", "scope": "global", "local": ip, "prefixlen": 24}
+            ]}])
+        };
+        assert_eq!(home_network_status(&cfg, Some(&on("192.168.1.20"))), "ok");
+        assert_eq!(
+            home_network_status(&cfg, Some(&on("192.168.0.57"))),
+            "moved"
+        );
+        assert_eq!(home_network_status(&cfg, None), "unknown");
+        assert_eq!(home_network(&json!({})), json!({"status": "none"}));
+        let shown =
+            alerts(&json!({"home_network": {"status": "moved", "address": "192.168.1.20"}}));
+        assert_eq!(shown[0]["id"], "home-network");
+        let detail = text(&shown[0]["detail"]);
+        assert!(detail.contains("192.168.1.20"), "{detail}");
+        assert!(detail.contains("sudo bash install.sh"), "{detail}");
+        for fine in ["ok", "unknown", "none"] {
+            assert_eq!(
+                alerts(&json!({"home_network": {"status": fine}})),
+                json!([])
+            );
+        }
     }
     /// Seen with the real weekly copy and `serve` (0.51.2 review): a USB copy whose only
     /// gap was the password list showed "Incomplete; see the job's report", a file only
