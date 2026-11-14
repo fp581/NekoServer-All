@@ -2750,7 +2750,7 @@ class NextcloudReinstalledLinuxTests(unittest.TestCase):
         cases = (
             ('ended with error 1', answering(code=1)),
             ('not a list of accounts', answering(out='PHP Fatal error: database is locked')),
-            ('not a list of accounts', answering(out='["alice"]')),
+            ('not a list of accounts', answering(out='"alice"')),
             ('did not answer within 2 minutes', timing_out),
         )
         for why, run in cases:
@@ -2762,6 +2762,42 @@ class NextcloudReinstalledLinuxTests(unittest.TestCase):
                     nextcloud.account_folders_given_back(['compose'], Path('/nonexistent'), said.append, run=run)
                 scanned.assert_not_called()
                 self.assertEqual(said, [])
+
+    def test_occ_answers_with_php_warnings_around_them_are_read(self):
+        """PHP prints its warnings on occ's output, before the JSON answer (with a
+        "{closure}" of their own) or after it: status() read no answer then, and setup
+        waited 15 minutes for Nextcloud to finish installing, then failed."""
+        from modules import nextcloud
+
+        warning = (
+            'PHP Deprecated:  Creation of dynamic property in {closure}() in '
+            '/var/www/html/lib/private/AppFramework/Utility/SimpleContainer.php on line 108\n'
+        )
+        answer = '{"installed":true,"version":"31.0.4.1","maintenance":false}'
+        for out in (
+            warning + answer + '\n',
+            answer + '\nPHP Warning:  Undefined array key "x" in /var/www/html/config/config.php on line 5\n',
+            warning + '  ' + answer + '\n' + warning,
+        ):
+            with self.subTest(out=out[:30]):
+                run = lambda argv, **kw: mock.Mock(returncode=0, stdout=out)  # noqa: E731
+                self.assertEqual(nextcloud.status(['compose'], run), json.loads(answer))
+        self.assertIsNone(nextcloud.status(['compose'], lambda argv, **kw: mock.Mock(returncode=0, stdout=warning)))
+
+    def test_accounts_named_only_with_digits_are_listed(self):
+        """occ user:list answers {name: display name}; PHP writes one whose names are
+        exactly "0", "1"... as a JSON list of the display names, which was read as no list
+        of accounts, so their folders were never made."""
+        from modules import nextcloud
+
+        for out, names in (
+            ('["Mary Smith","Bob"]\n', ['0', '1']),
+            ('{"1":"One","2":"Two"}\n', ['1', '2']),
+            ('PHP Notice:  in {closure}()\n{"alice":"Alice","0":"Zero"}\nPHP Warning:  x\n', ['alice', '0']),
+        ):
+            with self.subTest(out=out):
+                run = lambda argv, **kw: mock.Mock(returncode=0, stdout=out)  # noqa: E731
+                self.assertEqual(nextcloud.listed_accounts(['compose'], run), names)
 
     def test_the_refusal_names_what_differs(self):
         from modules import nextcloud

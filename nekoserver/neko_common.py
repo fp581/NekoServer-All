@@ -966,6 +966,25 @@ def relative_path(value):
     return path
 
 
+# Where a JSON answer can start in occ's output: the start of a line (after spaces).
+OCC_JSON_START = re.compile(r'^[ \t]*([{\[])', re.MULTILINE)
+
+
+def occ_json(text):
+    """The JSON answer Nextcloud's occ printed (`--output=json`), or None when there is
+    none. PHP prints its warnings and notices on the same output, before or after the
+    answer, and they carry braces of their own ("{closure}"): taking everything from the
+    first "{" read no answer at all then, and setup waited 15 minutes for one. The
+    answer is the first JSON value that starts a line; whatever follows it is left."""
+    decoder = json.JSONDecoder()
+    for start in OCC_JSON_START.finditer(text or ''):
+        try:
+            return decoder.raw_decode(text, start.start(1))[0]
+        except ValueError:
+            continue
+    return None
+
+
 def fetch(url, what, limit, timeout=30, opener=None, headers=None):
     """A download setup needs (an app's release list or compose file), or a plain reason
     it failed: no internet, a page that is gone, GitHub's request limit."""
