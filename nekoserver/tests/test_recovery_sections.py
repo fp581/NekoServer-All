@@ -28,6 +28,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+import backup_secrets  # noqa: E402
 import installer  # noqa: E402
 import questions  # noqa: E402
 import recovery_wizard  # noqa: E402
@@ -376,10 +377,14 @@ class ReviewTests(Server, unittest.TestCase):
         }
         for name, restore in restores.items():
             for approval in ('no', 'yes'):
-                with self.subTest(restore=name, approval=approval), mock.patch.object(recovery_wizard, 'tool') as tool:
+                with (
+                    self.subTest(restore=name, approval=approval),
+                    mock.patch.object(recovery_wizard, 'tool') as tool,
+                    mock.patch.object(backup_secrets, 'asked_restore') as unsealed,  # the password list's, in process
+                ):
                     self.out.clear()
                     restore(self.watching('1', '1', '', approval))
-                    self.assertEqual(tool.called, approval == 'yes')
+                    self.assertEqual(tool.called or unsealed.called, approval == 'yes')
                     self.assertFalse(any(self.changed_at))
                     said = self.said()
                     self.assertIn('  Overwritten:  nothing.', said)

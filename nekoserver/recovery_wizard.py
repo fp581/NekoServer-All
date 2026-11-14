@@ -1915,15 +1915,18 @@ def restore_password_list(config, runs, prompt, output):
             return
         say(output, f'\nDone. Open it with:  sudo cat {target}/secrets/accounts/APP-CREDENTIALS.txt')
         return
+    import backup_secrets
+
+    # Asked here, not by backup_secrets.py run as a program of its own: its password
+    # question went to the terminal only, and the setup window waited with no question.
     with part_way(target, output):
-        unsealed = tool('backup_secrets.py', '--restore', str(run), '--to', str(target))
-    if unsealed:
-        say(
-            output,
-            f'\nDone. Open it with:  sudo cat {target}/secrets/accounts/APP-CREDENTIALS.txt',
-            f'The apps\' own password files are there too: {target}/compose/<app>/.env and',
-            f'{target}/appdata/nextcloud/html/config/config.php (for rebuilding from a monthly snapshot).',
-        )
+        backup_secrets.asked_restore(run, target, out=output)
+    say(
+        output,
+        f'\nDone. Open it with:  sudo cat {target}/secrets/accounts/APP-CREDENTIALS.txt',
+        f'The apps\' own password files are there too: {target}/compose/<app>/.env and',
+        f'{target}/appdata/nextcloud/html/config/config.php (for rebuilding from a monthly snapshot).',
+    )
 
 
 def restore_nightly(config, kind, prompt, output):

@@ -236,6 +236,18 @@ def opening_key(key, cert, password, damaged, key_dir=KEY_DIR, out=print):
     raise RuntimeError('Wrong password for this backup')
 
 
+def asked_restore(snapshot, destination, out=print):
+    """restore, with the backup password asked through getpass (in the setup window too
+    while it watches the prompts: the recovery menu calls this, not a program of its own,
+    whose question only the terminal saw)."""
+    try:
+        return restore(snapshot, destination, getpass.getpass(RESTORE_PROMPT), out=out)
+    except OSError as exc:
+        # A folder on a read-only or full drive ended in a traceback (seen through the
+        # recovery menu); said as one plain line, with what to do.
+        raise RuntimeError(NOT_WRITTEN.format(reason=snapshot_restore.failure_reason(exc))) from None
+
+
 def restore(snapshot, destination, password, key_dir=KEY_DIR, out=print):
     """Decrypt a snapshot's password folder into a new private directory."""
     archive, key, cert, damaged = snapshot_files(snapshot)
@@ -307,12 +319,7 @@ def main():
         if args.setup:
             setup()
         elif args.restore and args.to:
-            try:
-                done = restore(args.restore, args.to, getpass.getpass(RESTORE_PROMPT))
-            except OSError as exc:
-                # A folder on a read-only or full drive ended in a traceback (seen through
-                # the recovery menu); said as one plain line, with what to do.
-                raise RuntimeError(NOT_WRITTEN.format(reason=snapshot_restore.failure_reason(exc))) from None
+            done = asked_restore(args.restore, args.to)
             print(f'Password files restored to {done}')
         else:
             parser.error('Use --setup, or --restore SNAPSHOT --to NEW_DIR')

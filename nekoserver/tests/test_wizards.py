@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import backup_secrets  # noqa: E402
 import first_checkup
 import neko_common  # noqa: E402
 import recovery_wizard  # noqa: E402
@@ -1934,14 +1935,43 @@ class RecoveryWizardTests(unittest.TestCase):
         with (
             mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb),
             mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
-            mock.patch.object(recovery_wizard, 'tool', side_effect=lambda *a: restored.append(a) or True),
+            mock.patch.object(backup_secrets, 'asked_restore', side_effect=lambda *a, **k: restored.append(a)),
             mock.patch.object(recovery_wizard, 'new_folder', return_value=self.root / 'out'),
         ):
             out = []
             recovery_wizard.restore_passwords(self.config, answers('1', 'yes'), out.append)
         said = '\n'.join(out)
         self.assertIn('(copy on the USB drive)', said)
-        self.assertEqual(restored[0][:3], ('backup_secrets.py', '--restore', str(usb / 'passwords/100-1')))
+        self.assertEqual(restored[0], (usb / 'passwords/100-1', self.root / 'out'))
+
+    def test_a_sealed_password_lists_password_is_asked_where_the_window_sees_it(self):
+        """Plan 147: the menu run with the setup window opened backup_secrets.py as a program
+        of its own, whose getpass went to the terminal only: the window, where the person
+        had answered every question so far, waited with none. It is asked in the menu's
+        own process now, through getpass.getpass (which the window watches)."""
+        self.write('hdd/backups/monthly/1700000000000000-4/manifest.json', b'{"format":"neko-maintenance-v1"}')
+        self.write('hdd/backups/monthly/1700000000000000-4/secrets.tar.cms', b'sealed')
+        target = self.root / 'passwords'
+        asked, opened = [], []
+
+        def unsealed(snapshot, destination, password, key_dir=None, out=print):
+            opened.append(password)
+            (destination / 'secrets/accounts').mkdir(parents=True)
+            return destination
+
+        with (
+            mock.patch.object(recovery_wizard, 'hdd_ready', return_value=True),
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=None),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+            mock.patch.object(recovery_wizard.subprocess, 'run', side_effect=AssertionError('a program of its own')),
+            mock.patch('getpass.getpass', side_effect=lambda prompt='': asked.append(prompt) or 'the password'),
+            mock.patch.object(backup_secrets, 'restore', unsealed),
+        ):
+            out = []
+            recovery_wizard.restore_passwords(self.config, answers('1', '2', str(target), '1', 'yes'), out.append)
+        self.assertEqual(asked, [backup_secrets.RESTORE_PROMPT])
+        self.assertEqual(opened, ['the password'])
+        self.assertIn('Done. Open it with', '\n'.join(out))
 
     def test_the_lists_setup_makes_on_the_hdd_are_offered_newest_first(self):
         """The 0.46.1 audit: the menu looked only at the monthly snapshots, so setup's newer
@@ -1964,11 +1994,11 @@ class RecoveryWizardTests(unittest.TestCase):
         with (
             mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / 'usb'),
             mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
-            mock.patch.object(recovery_wizard, 'tool', side_effect=lambda *a: restored.append(a) or True),
+            mock.patch.object(backup_secrets, 'asked_restore', side_effect=lambda *a, **k: restored.append(a)),
             mock.patch.object(recovery_wizard, 'new_folder', return_value=self.root / 'out'),
         ):
             recovery_wizard.restore_passwords(self.config, answers('1', 'yes'), [].append)
-        self.assertEqual(restored[0][2], str(self.root / 'usb/passwords/1750000000000000-0'))
+        self.assertEqual(restored[0][0], self.root / 'usb/passwords/1750000000000000-0')
 
     def test_a_busy_usb_drive_never_hides_the_hdds_lists(self):
         """The audit of 0.46.2: the weekly copy holding the USB drive stopped the restore of a
@@ -1982,12 +2012,12 @@ class RecoveryWizardTests(unittest.TestCase):
                 '__enter__',
                 side_effect=RuntimeError('the weekly backup is using the USB drive right now'),
             ),
-            mock.patch.object(recovery_wizard, 'tool', side_effect=lambda *a: restored.append(a) or True),
+            mock.patch.object(backup_secrets, 'asked_restore', side_effect=lambda *a, **k: restored.append(a)),
             mock.patch.object(recovery_wizard, 'new_folder', return_value=self.root / 'out'),
         ):
             recovery_wizard.restore_passwords(self.config, answers('1', 'yes'), out.append)
         self.assertIn('The USB drive is not looked at', out[0])
-        self.assertEqual(restored[0][2], str(self.media / 'backups/monthly/1700000000000000-4'))
+        self.assertEqual(restored[0][0], self.media / 'backups/monthly/1700000000000000-4')
 
     def test_a_mount_check_that_does_not_answer_is_said_in_words(self):
         usb = recovery_wizard.Usb({**self.config, 'photos': {'external_backup_uuid': 'usb-11111'}})
