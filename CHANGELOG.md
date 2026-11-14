@@ -12,15 +12,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **Importing a library you already had**, and **restoring an app snapshot**.
 - **The SD-card engine** (not switched on yet) and **the card restore tool**'s second check.
 
-### Fixed: the uninstaller
-- **`uninstall.sh --help` shows what it does, and a mistyped option changes nothing.** Only `--dry-run` was read: `--help`, or a typo such as `--dryrun`, opened the real removal menu (which still asked twice before removing anything).
-- **One service reads "1 service or timer"**, not "1 services and timers".
-
-### Fixed: clearer messages
-- **A damaged or missing settings file is named, with what is wrong** (not JSON, with the line and column; not there; no settings in it; no such profile), in `install.sh`, `acceptance.py` and `recover.py`, instead of Python's own words or a vague line.
-- **`recover.py check --config my.json` reads my.json.** The option was read only before the command.
-- **`recover.py` in a fresh download says the runtime is not built yet, and how to build it**, instead of "…runtime/build.json does not exist. Check the path".
-- **`recover.py` with a setting of the wrong kind** (`"storage": "x"`, say) **says so without a Python traceback** around the words.
+### Fixed: getting files back (the recovery menu, restore tools, backup cards)
 - **The recovery menu's drive check names a drive that is not connected**, instead of "Both drives take new files and Linux counted no errors on them" (seen with neither drive connected). "The application SSD" also keeps its capital letters there.
 - **A restore says when the HDD that holds its backups is not connected**, instead of "No nightly backup… found on the HDD yet" or "No complete monthly snapshot on the HDD yet", which read as if no backup had ever been made.
 - **The monthly and music restore tools say what went wrong in plain words** (a damaged snapshot, a missing folder), instead of a traceback; a music restore onto exFAT restores every file the drive accepts and names the ones it refused.
@@ -29,47 +21,59 @@ Every copy is read back and checked before it counts. That read came straight af
 - **The recovery menu says a read-only or full drive in words, with what to do**, instead of Python's "[Errno 30] Read-only file system: '/mnt/…'".
 - **A monthly restore or the password list onto a full, read-only or too small drive is said in plain words**, naming any folder left incomplete, instead of a traceback.
 - **Messages name the recovery menu's choices as the menu shows them** ("Fix damaged backup copies", "Check a drive that stopped taking new files"), one wording kept in shared.json; since 0.50.0 they named choices that were no longer there.
+- **Restoring from a card, a copy missing or replaced on the card is said as such**, as `verify` says it, instead of "No such file or directory".
+- **A card restore killed while it wrote a file finishes that file on the next run** (it failed it with "File exists", and a third run was needed).
+- **A restore that skipped files says how to get them too** (`--rename`), instead of ending with only "skipped 2". Seen restoring onto an exFAT stick, which cannot hold a name with `:` or tell `Same.jpg` from `same.jpg`.
+- **Nothing is restored onto the card itself.** `restore /mnt` (the card) copied every file onto the card, among its records; a folder on the card is now refused, also through a link.
+
+### Fixed: backups and upgrades
 - **The weekly Immich database copy never falls on a time the clocks skip**: on the Sunday the clocks go forward in the US and Europe, 02:15 does not exist, and the USB copy got the week-old database copy. It moves earlier (01:45) where that would happen.
 - **Setup says when a backup time you choose falls in the hour the clocks skip** (it would not run that night), and offers another; Enter keeps yours. The old default database copy time (02:15) moves to 01:45 where it is skipped.
 - **A failed upgrade whose way back was cut off by a power cut is put back at the next start**, instead of being closed as "passed its check" on the release that failed.
-- **A damaged phone-alert record is set aside (kept, with its date) and alerts start fresh**, instead of every alert run failing with "Invalid JSON".
 - **No "manual major upgrade" notice for an older Immich release marked "latest"**.
-- **Connecting the media apps and qBittorrent has a total time limit per request**, so an app answering a byte at a time can't keep setup waiting without end.
-- **Extra drives are listed in the order of their numbers** (d3 before d10).
+
+### Fixed: setup and its tools
+- **A damaged or missing settings file is named, with what is wrong** (not JSON, with the line and column; not there; no settings in it; no such profile), in `install.sh`, `acceptance.py` and `recover.py`, instead of Python's own words or a vague line.
+- **`recover.py check --config my.json` reads my.json.** The option was read only before the command.
+- **`recover.py` in a fresh download says the runtime is not built yet, and how to build it**, instead of "…runtime/build.json does not exist. Check the path".
+- **`recover.py` with a setting of the wrong kind** (`"storage": "x"`, say) **says so without a Python traceback** around the words.
 - **`music-setup.py` with a drive not connected (or the runtime not built) says why and stops**, instead of a Python traceback.
 - **`acceptance.py` and `source_import.py` say why they stopped** (a drive not connected, the runtime not built, a setting missing), instead of "inspect configuration and local services" or "check configured mounts".
 - **Setup without internet says the package source could not be reached, and why** ("Could not connect to …"), with what to do, instead of apt's "Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?".
 - **A clock set years back stops setup at once, saying to fix the date**, instead of failing on the package lists' signatures as "package sources could not be reached".
 - **A Btrfs drive mounted with the wrong subvolume is refused with what to do** (restart the PC, or run setup), not only named.
-- **A number typed as "²" or "①" is asked again**, in setup, the recovery menu, the uninstaller and the drive picker, instead of ending in a Python traceback.
 - **The finishing page fits a narrow window**: each app's states, address and test buttons were cut off at the right edge.
 - **`migrate.py move --to <not a UUID>` says so**, instead of "move needs --drive and --to".
-- **Restoring from a card, a copy missing or replaced on the card is said as such**, as `verify` says it, instead of "No such file or directory".
-- **A card restore killed while it wrote a file finishes that file on the next run** (it failed it with "File exists", and a third run was needed).
-- **A restore that skipped files says how to get them too** (`--rename`), instead of ending with only "skipped 2". Seen restoring onto an exFAT stick, which cannot hold a name with `:` or tell `Same.jpg` from `same.jpg`.
+- **A number typed as "²" or "①" is asked again**, in setup, the recovery menu, the uninstaller and the drive picker, instead of ending in a Python traceback.
 
-### Fixed: SD-card backup sets (the engine, not switched on yet)
-- **The catalogue's copy for the host backup is private** (readable by root only). It was readable by every user, and a new catalogue was, for a moment.
-- **A card never gets a set inventory it cannot read back.** The engine now stops, naming the limit, before writing a list larger than its reader takes.
-- **Nothing is restored onto the card itself.** `restore /mnt` (the card) copied every file onto the card, among its records; a folder on the card is now refused, also through a link.
-
-### Fixed: the dashboard
+### Fixed: the dashboard and Ask Neko
+- **A damaged phone-alert record is set aside (kept, with its date) and alerts start fresh**, instead of every alert run failing with "Invalid JSON".
+- **Extra drives are listed in the order of their numbers** (d3 before d10).
 - **A PC whose system disk has no UUID (Ubuntu's ZFS-on-root install, say) no longer shows "OS SSD unavailable"** as an urgent alert while it runs fine. The blank UUID column was read as "no drive there".
 - **An app SSD that turned read-only, or is full, gets its own alert with what fixes it**, not "App SSD can't be written… restart the PC" (a restart fixes neither). The dashboard's own failed write had replaced the read-only alert, or stood beside the "almost full" one.
 - **A drive filling up (over 90%) says what stops when it is full and what to do before then**, as the urgent alert does, instead of "Review free space before uploads or backups".
-
-### Fixed: apps and the network
-- **The gateway step waits for Tailscale to be ready** when Tailscale answers oddly (still starting, signed out: `"Self": null`), instead of stopping setup with a Python error.
-- **Samba shares exactly the folders named**: a share called `global`, `homes` or `printers` (names Samba keeps for itself), two names differing only in case, and a folder ending in a space are now refused with what to change; before, the first vanished, the second merged, and the third shared another folder.
-- **qBittorrent's refused login says why**: a wrong saved password, or this PC blocked after too many tries (wait an hour, or restart it), instead of "API request failed; inspect local WebUI"; an odd answer is said plainly.
-- **The media apps' connector says plainly when an app answers with a web page or an odd list**, and goes on with the other apps, instead of a traceback or "Expecting value: line 1 column 1".
-- **Nextcloud's answers are read with PHP warnings around them**: setup waited 15 minutes for Nextcloud and failed when PHP printed a notice before or after occ's answer; accounts named only with digits ("0", "1") were not seen as accounts.
 - **The dashboard says what Tailscale needs**: a sign-in already past while Tailscale still says "Running" is "signed out" (was "phone access stops soon"); a Tailscale switched off, or waiting for your approval in its admin console, now says so and what to do (was nothing).
 - **A long address in an alert's title wraps on a phone** instead of pushing the whole page sideways.
 - **A greyed-out menu item's note is readable** (it measured 2.3:1; now only the label is dimmed).
 - **Ask Neko takes a password in quotes out whole**: `password: "correct horse battery"` kept "horse battery".
 - **Ask Neko takes out a password named in another language** (Passwort, contraseña, mot de passe, wachtwoord, senha, סיסמה, пароль), not only in English.
 - **Ask Neko is free for the next question when the page leaves an answer that never ends**, instead of "Neko is busy" until the assistant hung up; an assistant that hangs up at once is said as such, not as "took too long".
+
+### Fixed: apps and the network
+- **Connecting the media apps and qBittorrent has a total time limit per request**, so an app answering a byte at a time can't keep setup waiting without end.
+- **The gateway step waits for Tailscale to be ready** when Tailscale answers oddly (still starting, signed out: `"Self": null`), instead of stopping setup with a Python error.
+- **Samba shares exactly the folders named**: a share called `global`, `homes` or `printers` (names Samba keeps for itself), two names differing only in case, and a folder ending in a space are now refused with what to change; before, the first vanished, the second merged, and the third shared another folder.
+- **qBittorrent's refused login says why**: a wrong saved password, or this PC blocked after too many tries (wait an hour, or restart it), instead of "API request failed; inspect local WebUI"; an odd answer is said plainly.
+- **The media apps' connector says plainly when an app answers with a web page or an odd list**, and goes on with the other apps, instead of a traceback or "Expecting value: line 1 column 1".
+- **Nextcloud's answers are read with PHP warnings around them**: setup waited 15 minutes for Nextcloud and failed when PHP printed a notice before or after occ's answer; accounts named only with digits ("0", "1") were not seen as accounts.
+
+### Fixed: the uninstaller
+- **`uninstall.sh --help` shows what it does, and a mistyped option changes nothing.** Only `--dry-run` was read: `--help`, or a typo such as `--dryrun`, opened the real removal menu (which still asked twice before removing anything).
+- **One service reads "1 service or timer"**, not "1 services and timers".
+
+### Fixed: SD-card backup sets (the engine, not switched on yet)
+- **The catalogue's copy for the host backup is private** (readable by root only). It was readable by every user, and a new catalogue was, for a moment.
+- **A card never gets a set inventory it cannot read back.** The engine now stops, naming the limit, before writing a list larger than its reader takes.
 
 ### Checked
 - **The card's restore tool runs on Python 3.8, as it promises**: its tests now run on a real Python 3.8 in CI (they pass), so a newer Python feature in it fails the build instead of a restore on an older PC.
