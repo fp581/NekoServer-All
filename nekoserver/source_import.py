@@ -306,6 +306,9 @@ def copy_into(reader, writer, stat):
     while chunk := os.read(reader, 1024 * 1024):
         write_all(writer, chunk)
     os.fsync(writer)
+    # Dropped from memory, so the copy is read back from the drive: read from memory, a
+    # drive that did not keep the bytes passed (as neko_common.copy_checked_into does).
+    os.posix_fadvise(writer, 0, 0, os.POSIX_FADV_DONTNEED)
     after = os.fstat(reader)
     if after.st_size != stat.st_size or after.st_mtime_ns != stat.st_mtime_ns or fd_digest(writer) != fd_digest(reader):
         raise SourceChanged('Source changed during import')
