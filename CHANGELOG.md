@@ -27,6 +27,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **`acceptance.py` and `source_import.py` say why they stopped** (a drive not connected, the runtime not built, a setting missing), instead of "inspect configuration and local services" or "check configured mounts".
 - **Setup without internet says the package source could not be reached, and why** ("Could not connect to …"), with what to do, instead of apt's "Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?".
 - **A clock set years back stops setup at once, saying to fix the date**, instead of failing on the package lists' signatures as "package sources could not be reached".
+- **A Btrfs drive mounted with the wrong subvolume is refused with what to do** (restart the PC, or run setup), not only named.
 - **A number typed as "²" or "①" is asked again**, in setup, the recovery menu, the uninstaller and the drive picker, instead of ending in a Python traceback.
 - **The finishing page fits a narrow window**: each app's states, address and test buttons were cut off at the right edge.
 - **`migrate.py move --to <not a UUID>` says so**, instead of "move needs --drive and --to".

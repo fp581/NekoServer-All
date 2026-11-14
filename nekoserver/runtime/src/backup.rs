@@ -3288,7 +3288,7 @@ fn drive_check(c: &Value, key: &str, path: &Path, found: &str) -> Result<String>
     let wanted = c["storage"][key]["subvolume"].as_str().unwrap_or("");
     if subvolume_of(fields[2]) != wanted.trim_end_matches('/') {
         return Err(Error::new(&format!(
-            "Drive check failed: {} is mounted with another Btrfs subvolume than the settings name ({})",
+            "Drive check failed: {} is mounted with another Btrfs subvolume than the settings name ({}). Restart the PC (its /etc/fstab line mounts the right one), or run  sudo bash install.sh",
             path.display(),
             if wanted.is_empty() { "the top level" } else { wanted }
         )));
@@ -8829,6 +8829,8 @@ mod tests {
                 said.contains("another Btrfs subvolume than the settings name (/@data)"),
                 "{said}"
             );
+            // Said with what to do, as the other drive checks are (deep check plan 14).
+            assert!(said.contains("Restart the PC"), "{said}");
         }
         // Another drive, or nothing mounted: refused as before.
         assert!(drive_check(&c, "data_ssd", ssd, "bbbb btrfs /dev/sdc1[/@data]").is_err());
