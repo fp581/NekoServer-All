@@ -214,6 +214,32 @@ class CheckTests(unittest.TestCase):
         (self.pc.top / 'to-etc').symlink_to('/etc')
         self.assertEqual(self.refusal(folder=self.pc.top / 'to-etc').code, 'unsafe')
 
+    def test_a_drive_top_with_its_lost_and_found_folder_is_readable(self):
+        # Deep check 187, for real: a music drive's top holds root's lost+found (mode 700),
+        # listed before "music"; the whole folder was refused as "read Permission denied".
+        with tempfile.TemporaryDirectory() as d:
+            top = Path(d)
+            (top / 'lost+found').mkdir(mode=0o700)
+            (top / 'music/abba').mkdir(parents=True)
+            (top / 'music/abba/1.mp3').write_bytes(b'ID3')
+            (top / 'zz-loop').symlink_to(top)  # a link back up is never followed
+            if os.geteuid() == 0:
+                os.chown(top / 'lost+found', 0, 0)
+                user = (65534, 65534)  # the apps' account stands in: root may enter any folder
+                for folder in (top, top / 'music', top / 'music/abba'):
+                    os.chmod(folder, 0o755)
+            else:
+                (top / 'lost+found').chmod(0o000)
+                user = (os.getuid(), os.getgid())
+            self.assertEqual(existing_media.as_app(*user, top), '')
+            # A folder the apps cannot open at all is still said.
+            (top / 'music').chmod(0o000 if os.geteuid() else 0o700)
+            (top / 'zz-loop').unlink()
+            said = existing_media.as_app(*user, top / 'music')
+            for folder in (top / 'music', top / 'lost+found'):
+                folder.chmod(0o755)  # so the folder can be removed
+            self.assertEqual(said, 'read Permission denied')
+
     @unittest.skipUnless(os.geteuid() == 0, 'switching to the apps\' account needs root')
     def test_the_apps_account_really_tries_and_leaves_the_folder_as_it_was(self):
         for folder in (self.pc.top, self.pc.nas):

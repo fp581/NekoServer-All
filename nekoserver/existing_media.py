@@ -214,7 +214,12 @@ def first_file(top, depth):
         if entry.is_file(follow_symlinks=False):
             return entry.path
         if depth and entry.is_dir(follow_symlinks=False):
-            found = first_file(entry.path, depth - 1)
+            try:
+                found = first_file(entry.path, depth - 1)
+            except PermissionError:
+                # One folder closed to the apps (lost+found at a drive's top) is not the
+                # whole folder: the next one is tried.
+                continue
             if found:
                 return found
     return None
