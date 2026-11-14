@@ -46,6 +46,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **A clock set years back stops setup at once, saying to fix the date**, instead of failing on the package lists' signatures as "package sources could not be reached".
 - **A misspelt time zone is said with the one meant** ("Europe/Londn: did you mean Europe/London?"), instead of "not installed under /usr/share/zoneinfo".
 - **A Btrfs drive mounted with the wrong subvolume is refused with what to do** (restart the PC, or run setup), not only named.
+- **The wrong folder of an ext4 or XFS drive mounted in its place is called that**, not "another Btrfs subvolume"; a Btrfs subvolume deleted while mounted is said as deleted, with how to get the files back, instead of "restart the PC".
 - **The finishing page fits a narrow window**: each app's states, address and test buttons were cut off at the right edge.
 - **`migrate.py move --to <not a UUID>` says so**, instead of "move needs --drive and --to".
 - **A drive move cut off right after the old drive was unmounted mounts it again before the apps start**: `resume` started them on the empty folder on the system disk and said "the apps run as before". An fstab line the switch can't rewrite now stops the move before anything changes; a retry checks the earlier copy by checksum (a file found different was skipped and failed every time); a cut-off "back" says which drive is mounted.
@@ -56,6 +57,11 @@ Every copy is read back and checked before it counts. That read came straight af
 - **Importing a library you already had**: a damaged source list is said and kept (it crashed, or was rewritten as a list of letters); a full library drive and a share only noted say why, not "Source inaccessible, unmounted, overlapping"; a folder on a drive of this PC is no longer called a network share.
 - **The phone page keeps its HTTPS check** between openings, instead of checking every connection again every second time.
 - **A number typed as "²" or "①" is asked again**, in setup, the recovery menu, the uninstaller and the drive picker, instead of ending in a Python traceback.
+- **A setup stopped for want of a drive says what to free or buy** (how many GB more, or a drive of what size), and the setup window shows the reason too, not only "Setup has ended".
+- **On a PC with one drive, every backup says it is on the same drive as what it copies.**
+- **Typos are asked again, not taken as an answer**: "no" to "Back this up too?" (media you already have) backed it up, and "yse" to "Does your NAS ask for a password?" was no. Three typos at the "NekoServer was found" menu now say why setup stops.
+- **"No apps were set up" no longer claims a system update** where only packages were installed (only Arch updates the whole system first).
+- **RECOVERY.md**: what to restore is chosen by its name (the menu's numbers differ per server), and a broken SSD or HDD needs no edit of `my-config.json`.
 - **Phone alerts: a test you did not see arrive asks for the address again** at the next setup run (a typo in the hidden address still reaches the alert server), and the step stays "needs you" until a test arrives.
 - **`notify --test` says what happened**: that the alert server took the test and to look at your phone, or that it was not sent and what to check. It printed nothing, or only "Notification delivery failed".
 
@@ -66,6 +72,8 @@ Every copy is read back and checked before it counts. That read came straight af
 - **A drive Linux turned read-only after errors is shown so on newer kernels** (6.12 and later keep it "rw" with emergency_ro).
 - **A RAID array that does not run (broken, or not started at boot) is a lost drive with an alert**, not a quiet warning.
 - **A NAS that stopped answering is "waiting for the network storage box"**, and the NAS check and the readings no longer hang on it.
+- **A drive that is connected but not the one chosen (reformatted, replaced, or another part of it mounted) is told to run setup**, not to "Reconnect it".
+- **An XFS drive Linux shut down after errors shows as read-only**, with the read-only alert and its steps, instead of healthy while every job failed with "Input/output error".
 - **An app SSD that turned read-only, or is full, gets its own alert with what fixes it**, not "App SSD can't be written… restart the PC" (a restart fixes neither). The dashboard's own failed write had replaced the read-only alert, or stood beside the "almost full" one.
 - **A drive filling up (over 90%) says what stops when it is full and what to do before then**, as the urgent alert does, instead of "Review free space before uploads or backups".
 - **The dashboard says what Tailscale needs**: a sign-in already past while Tailscale still says "Running" is "signed out" (was "phone access stops soon"); a Tailscale switched off, or waiting for your approval in its admin console, now says so and what to do (was nothing).
@@ -73,6 +81,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **A greyed-out menu item's note is readable** (it measured 2.3:1; now only the label is dimmed).
 - **Ask Neko takes a password in quotes out whole**: `password: "correct horse battery"` kept "horse battery".
 - **Ask Neko takes out a password named in another language** (Passwort, contraseña, mot de passe, wachtwoord, senha, סיסמה, пароль), not only in English.
+- **Ask Neko says plainly when it is busy** with an answer left by a reloaded page, and when its service is stopped (it said "Fan and light control unavailable").
 - **Ask Neko is free for the next question when the page leaves an answer that never ends**, instead of "Neko is busy" until the assistant hung up; an assistant that hangs up at once is said as such, not as "took too long".
 - **"What should I do?" on an alert opens the guide about it**, and the alerts' advice names pages the dashboard has, in words a beginner can follow.
 - **DASHBOARD.md says where a forgotten PIN can be found**, and what the reset gives.
