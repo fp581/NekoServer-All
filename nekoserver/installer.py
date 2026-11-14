@@ -35,6 +35,7 @@ from neko_common import (
     default_settings,
     NO_SETTINGS,
     BUNDLE_MANIFEST,
+    MEDIA_APPS,
 )
 
 # The installer's own log lines (a step's status), as against a step's own words.
@@ -383,15 +384,30 @@ def validate_config(config):
     managed = media / 'photos' / 'immich-library'
     if archive == managed or archive in managed.parents or managed in archive.parents:
         raise InstallerError('Photo archive must be separate from the Immich upload tree')
-    selected = config.get('media', {}).get('services', [])
-    allowed = {'jellyfin', 'navidrome', 'sonarr', 'radarr', 'lidarr', 'prowlarr', 'seerr', 'qbittorrent'}
-    if (
-        not isinstance(selected, list)
-        or not selected
-        or len(selected) != len(set(selected))
-        or not set(selected) <= allowed
-    ):
-        raise InstallerError('media.services must contain unique known services')
+    problem = services_problem(config.get('media', {}).get('services'))
+    if problem:
+        raise InstallerError(
+            f'"services" under "media" in the settings file {problem}. It lists the media apps by name: '
+            + ', '.join(MEDIA_APPS)
+            + '. Fix that line, or copy it from config.json in this folder'
+        )
+
+
+def services_problem(selected):
+    """What is wrong with the media apps a settings file lists (`media.services`), in
+    words, or None. Named, so that a name mistyped by hand is found (plan 96: setup only
+    said "must contain unique known services")."""
+    if selected is None:
+        return 'is missing'
+    if not isinstance(selected, list) or not selected:
+        return 'must be a list of at least one app, like ["jellyfin"]'
+    unknown = [name for name in selected if name not in MEDIA_APPS]
+    if unknown:
+        return 'names an app NekoServer does not have: ' + ', '.join(str(name) for name in unknown)
+    twice = sorted({name for name in selected if selected.count(name) > 1})
+    if twice:
+        return 'names an app twice: ' + ', '.join(twice)
+    return None
 
 
 def template_steps(config):

@@ -2,6 +2,7 @@
 the log kept from before the SSD was mounted; the boot-time drive lines."""
 
 import argparse
+import copy
 import json
 import sys
 import tempfile
@@ -183,6 +184,23 @@ class InstallerFlowTests(unittest.TestCase):
         del config['media_mount']
         with self.assertRaisesRegex(installer.InstallerError, '"media_mount" .where the media HDD is mounted.'):
             installer.validate_config(config)
+
+    def test_a_media_app_mistyped_by_hand_is_named(self):
+        # Plan 96: only "media.services must contain unique known services" was said.
+        config = json.loads(self.config.read_text())
+        for services, said in (
+            (['jellyfin', 'jelyfin'], 'names an app NekoServer does not have: jelyfin'),
+            (['sonarr', 'sonarr'], 'names an app twice: sonarr'),
+            (None, '"services" under "media" in the settings file is missing'),
+            ([], 'must be a list of at least one app'),
+        ):
+            config['media']['services'] = services
+            if services is None:
+                del config['media']['services']
+            with self.assertRaises(installer.InstallerError) as caught:
+                installer.validate_config(copy.deepcopy(config))
+            self.assertIn(said, str(caught.exception))
+            self.assertIn('jellyfin, seerr, navidrome', str(caught.exception))
 
     def test_the_first_log_moves_to_the_ssd_once(self):
         STEP_OK = 'DEPENDENCIES = []\ndef run(ctx):\n    ctx.log("hello from the step")\n'
