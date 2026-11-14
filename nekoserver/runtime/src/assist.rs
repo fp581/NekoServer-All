@@ -252,9 +252,11 @@ static PATTERNS: std::sync::LazyLock<Vec<(regex::Regex, &str)>> = std::sync::Laz
             // name=value, name: value and "name": "value" for names that say secret. Not
             // "Auth" or "Session" (log lines say "Auth: Auth-Success", "SessionManager:
             // Sending..."): their secret values are caught by Bearer, cookies, the
-            // random-string rule and NekoServer's own saved secrets.
+            // random-string rule and NekoServer's own saved secrets. A value in quotes is
+            // taken out up to its closing quote (or the line's end): a passphrase of several
+            // words ("password: \"correct horse battery\"") lost only its first word before.
             (
-                r#"(?i)\b([a-z0-9_.-]*(?:pass(?:word|wd|phrase)?|secret|token|api[_-]?key|private[_-]?key|access[_-]?key)[a-z0-9_.-]*)("?\s*[=:]\s*"?)[^\s",;&]+"#,
+                r#"(?i)\b([a-z0-9_.-]*(?:pass(?:word|wd|phrase)?|secret|token|api[_-]?key|private[_-]?key|access[_-]?key)[a-z0-9_.-]*)("?\s*[=:]\s*)(?:"[^"\n]*"?|'[^'\n]*'?|\x{201c}[^\x{201d}\n]*\x{201d}?|[^\s",;&]+)"#,
                 "$1$2<removed>",
             ),
             // E-mail addresses.
@@ -1466,6 +1468,17 @@ mod tests {
                 format!("my passphrase is \"{phrase}\" and Immich refuses it"),
                 "my passphrase is <removed> and Immich refuses it".into(),
             ),
+            // The settings form with a passphrase in quotes: all of it goes, not only its
+            // first word (seen asking the real service: "<removed> pony staple" stayed).
+            (
+                format!("the admin password: \"{phrase}\" fails"),
+                "the admin password: <removed> fails".into(),
+            ),
+            (
+                format!("{{\"db_password\": \"{phrase}\", \"user\": \"neko\"}}"),
+                "{\"db_password\": <removed>, \"user\": \"neko\"}".into(),
+            ),
+            (format!("SMB_PASS='{phrase}'"), "SMB_PASS=<removed>".into()),
             (
                 format!("the password to plex is {word}"),
                 "the password to <removed>".into(),
