@@ -467,7 +467,20 @@ fn statvfs_usage(path: &Path) -> Option<(u64, u64, bool)> {
     let stat = unsafe { stat.assume_init() };
     let (total, used) = space(stat.f_blocks, stat.f_bfree, stat.f_bavail, stat.f_frsize)?;
     let mounts = fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
-    Some((total, used, filesystem_read_only(&mounts, path)))
+    let look = fs::symlink_metadata(path);
+    Some((total, used, turned_read_only(&mounts, path, &look)))
+}
+/// The filesystem at `path` takes no writes: marked read-only (filesystem_read_only), or
+/// shut down by Linux after errors. XFS does not turn read-only: it shuts down, keeps
+/// "rw" in the mount table, still answers statvfs, and fails everything else with an
+/// input/output error, even a look at its top folder (`look`, which reads nothing from
+/// the drive: that folder is always held in memory). Seen in 0.51.2 with an XFS HDD shut
+/// down: every job failed with "Input/output error" while the dashboard showed it healthy.
+fn turned_read_only(mountinfo: &str, path: &Path, look: &std::io::Result<fs::Metadata>) -> bool {
+    let shut_down = look
+        .as_ref()
+        .is_err_and(|e| e.raw_os_error() == Some(libc::EIO));
+    shut_down || filesystem_read_only(mountinfo, path)
 }
 /// Whether the filesystem mounted at `path` is itself read-only, from a mountinfo list:
 /// the filesystem's own options (after the " - ", its type and its source), never the
@@ -4879,6 +4892,25 @@ mod round_two_tests {
         // "ro" only as a whole option.
         let named = "36 25 8:80 / /mnt/x rw - ext4 /dev/sdf rw,rootcontext=robot\n";
         assert!(!filesystem_read_only(named, Path::new("/mnt/x")));
+    }
+    /// Seen in 0.51.2: an XFS HDD that Linux shut down after errors (xfs_io shutdown on a
+    /// loop drive) stays "rw" in the mount table and answers statvfs, but a look at its
+    /// top folder fails with EIO. The dashboard showed it healthy while every job failed.
+    #[test]
+    fn an_xfs_drive_shut_down_after_errors_counts_as_read_only() {
+        let xfs =
+            "170 98 7:8 / /mnt/nekoserver-media rw,relatime - xfs /dev/loop8 rw,inode64,noquota\n";
+        let hdd = Path::new("/mnt/nekoserver-media");
+        let shut_down = Err(std::io::Error::from_raw_os_error(libc::EIO));
+        assert!(turned_read_only(xfs, hdd, &shut_down));
+        // A drive that answers is read-only only by its mount table.
+        let fine = fs::symlink_metadata("/");
+        assert!(!turned_read_only(xfs, hdd, &fine));
+        let marked = xfs.replace("rw,inode64", "ro,inode64");
+        assert!(turned_read_only(&marked, hdd, &fine));
+        // Another failure of the look (a folder taken away) is not a shut-down drive.
+        let gone = Err(std::io::Error::from_raw_os_error(libc::ENOENT));
+        assert!(!turned_read_only(xfs, hdd, &gone));
     }
     /// 0.46.0: drives on a network storage box. The NAS connection is shown from Linux's
     /// iSCSI sessions; a drive that turned read-only or waits for the NAS gets an alert;
