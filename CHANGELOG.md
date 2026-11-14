@@ -45,6 +45,11 @@ Every copy is read back and checked before it counts. That read came straight af
 - **A Btrfs drive mounted with the wrong subvolume is refused with what to do** (restart the PC, or run setup), not only named.
 - **The finishing page fits a narrow window**: each app's states, address and test buttons were cut off at the right edge.
 - **`migrate.py move --to <not a UUID>` says so**, instead of "move needs --drive and --to".
+- **The TV step names a TV account that doesn't exist and what to set**, instead of "getpwnam(): name not found".
+- **Onboarding checks and connects only the apps whose group is on**: on a music-only server it waited for Jellyfin, Seerr, Sonarr and Radarr and never finished.
+- **The finishing page counts the TV tries you said yes to in the TV step**, instead of "nobody has tried this yet".
+- **Importing a library you already had**: a damaged source list is said and kept (it crashed, or was rewritten as a list of letters); a full library drive and a share only noted say why, not "Source inaccessible, unmounted, overlapping"; a folder on a drive of this PC is no longer called a network share.
+- **The phone page keeps its HTTPS check** between openings, instead of checking every connection again every second time.
 - **A number typed as "²" or "①" is asked again**, in setup, the recovery menu, the uninstaller and the drive picker, instead of ending in a Python traceback.
 
 ### Fixed: the dashboard and Ask Neko
