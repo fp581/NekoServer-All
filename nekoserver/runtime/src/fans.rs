@@ -711,8 +711,11 @@ pub fn detect<F: FnMut(&Controller, u64) -> bool>(
 
 pub fn inventory_json(inv: &Inventory) -> Value {
     let one = |c: &Channel, value: Value| json!({"id": c.id, "label": c.label, "chip": c.chip, "value": value});
+    // A speed outside 0–255 is no speed (seen with a stand-in chip answering 300: the Fans
+    // page said "Now 118%"); the live readings leave it out the same way.
+    let speed = |o: &Channel| number(&o.path("")).filter(|v| (0.0..=255.0).contains(v));
     json!({
-        "outputs": inv.outputs.iter().map(|o| one(o, json!(number(&o.path("")).map(|v| (v * 100.0 / 255.0).round())))).collect::<Vec<_>>(),
+        "outputs": inv.outputs.iter().map(|o| one(o, json!(speed(o).map(|v| (v * 100.0 / 255.0).round())))).collect::<Vec<_>>(),
         "fans": inv.fans.iter().map(|f| one(f, json!(number(&f.path("_input"))))).collect::<Vec<_>>(),
         "temps": inv.temps.iter().map(|t| one(t, json!(number(&t.path("_input")).map(|v| (v / 100.0).round() / 10.0)))).collect::<Vec<_>>(),
     })
@@ -787,6 +790,21 @@ pub mod tests {
             name: String::new(),
             fans: vec![],
         }
+    }
+
+    /// Deep check 160 (a stand-in chip answering 300, then -5): the Fans page said
+    /// "Now 118%" for an output whose speed is not one Linux can have.
+    #[test]
+    fn an_output_speed_outside_what_linux_gives_is_not_shown() {
+        let b = Board::new("odd-speed");
+        let inv = discover(&b.hwmon());
+        b.set("pwm1", "300");
+        b.set("pwm2", "-5");
+        let shown = inventory_json(&inv);
+        assert_eq!(shown["outputs"][0]["value"], Value::Null, "{shown}");
+        assert_eq!(shown["outputs"][1]["value"], Value::Null, "{shown}");
+        b.set("pwm1", "255");
+        assert_eq!(inventory_json(&inv)["outputs"][0]["value"], json!(100.0));
     }
 
     #[test]
