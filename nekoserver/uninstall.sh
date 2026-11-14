@@ -5,7 +5,7 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 dry=false
-for arg in "$@"; do [[ "$arg" == --dry-run ]] && dry=true; done
+for arg in "$@"; do [[ "$arg" == --dry-run || "$arg" == -h || "$arg" == --help ]] && dry=true; done
 if ! $dry && [[ $EUID -ne 0 ]]; then
   echo 'Run with sudo:  sudo bash uninstall.sh   (or  bash uninstall.sh --dry-run  to only look)' >&2
   exit 1

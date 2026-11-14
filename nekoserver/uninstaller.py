@@ -2296,7 +2296,21 @@ def busy(locks=SETUP_LOCKS, journal=None):
     return None, held
 
 
+USAGE = '''Remove NekoServer from this PC: what you choose, after two confirmations.
+  sudo bash uninstall.sh             choose what goes, see the plan, confirm twice
+  sudo bash uninstall.sh --dry-run   see what each choice would remove; nothing changes
+Nothing is ever formatted; what you keep stays as it is.'''
+
+
 def main(argv):
+    # Only these words: anything else (a typo of --dry-run, say) once ran the real removal.
+    if any(arg in ('-h', '--help') for arg in argv):
+        print(USAGE)
+        return 0
+    unknown = [arg for arg in argv if arg != '--dry-run']
+    if unknown:
+        print(f'Unknown option {unknown[0]}. Nothing was changed.\n\n{USAGE}', file=sys.stderr)
+        return 2
     dry = '--dry-run' in argv
     if not dry and os.geteuid() != 0:
         print('Run with sudo:  sudo bash uninstall.sh   (or  --dry-run  to only look)', file=sys.stderr)
