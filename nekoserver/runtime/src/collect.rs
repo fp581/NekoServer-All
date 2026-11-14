@@ -1483,7 +1483,7 @@ fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
         } else if let Some(why) = stopped {
             Some(why)
         } else if status == "fail" {
-            Some(failure_reason(&saved))
+            Some(with_full_usb_advice(key, failure_reason(&saved)))
         } else if undone {
             Some(undone_reason(&saved))
         } else if status == "partial" {
@@ -1704,6 +1704,17 @@ fn failure_reason(saved: &Value) -> String {
         (false, true) => format!("Failed while {stage}"),
         (true, false) => format!("Failed: {reason}"),
         (false, false) => format!("Failed while {stage}: {reason}"),
+    }
+}
+/// Said after a USB copy that stopped because the drive is full. Making room by deleting
+/// copies on it does not help (the next run copies them again, and a Nextcloud file whose
+/// only copy it was is then lost): a bigger drive does (deep check 242).
+pub(crate) const USB_FULL: &str = "The USB drive is full. Don't delete anything on it to make room: the next copy puts it back, and the USB drive holds the only copy of older Nextcloud files. Use a bigger USB drive instead (STORAGE.md, \"Another USB drive\"), and keep this one as an older copy.";
+fn with_full_usb_advice(key: &str, said: String) -> String {
+    if key == "external" && said.contains("No space left on device") {
+        format!("{said} {USB_FULL}")
+    } else {
+        said
     }
 }
 /// "3 files were not copied (2 in use, 1 with a name the USB drive cannot store; …)".
@@ -4251,6 +4262,24 @@ mod os_tests {
         assert!(text(&shown[0]["detail"]).contains("Plug the charger in"));
         assert_eq!(battery(&dir.join("none")), json!({"discharging": false}));
         fs::remove_dir_all(&dir).unwrap();
+    }
+    /// Deep check 242 ("My USB drive is full"): the page said only "No space left on
+    /// device", and the guide's "free space" invited deleting copies on the backup.
+    #[test]
+    fn a_full_usb_drive_says_to_use_a_bigger_one() {
+        let full = failure_reason(
+            &json!({"stage": "copying photos and videos to the USB drive",
+            "reason": "cp exited with 1 (No space left on device)"}),
+        );
+        let said = with_full_usb_advice("external", full.clone());
+        assert!(said.starts_with(&full), "{said}");
+        assert!(said.ends_with(USB_FULL), "{said}");
+        // Another job, or another reason, is left as it was.
+        assert_eq!(with_full_usb_advice("applications", full.clone()), full);
+        assert_eq!(
+            with_full_usb_advice("external", "Failed: External drive missing".into()),
+            "Failed: External drive missing"
+        );
     }
     /// Deep check 250: "setup can change them" was not true; setup now tests and asks.
     #[test]
