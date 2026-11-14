@@ -49,6 +49,7 @@ import re
 import stat
 import sys
 import time
+import unicodedata
 
 ROOT_NAME = 'NekoBackup'
 SMALL_FILE = 16384
@@ -510,6 +511,13 @@ def check_copy(card, rec):
     return 'ok' if (digest, size) == (rec['checksum'], rec['byte_size']) else 'damaged'
 
 
+def holds_text(path, text):
+    """Whether `path` holds `text`, as plain text (no pattern), with accented letters
+    compared as letters: "é" typed on Linux is one character, the same "é" in a name from
+    a Mac or a phone is two (e and an accent), and the search found nothing."""
+    return unicodedata.normalize('NFC', text) in unicodedata.normalize('NFC', path)
+
+
 def selected(card, search=None, record_ids=None):
     """The valid records chosen, and the unusable record files (always reported)."""
     chosen, unusable = [], []
@@ -518,7 +526,7 @@ def selected(card, search=None, record_ids=None):
             unusable.append((where, why))
         elif record_ids and rec['record_id'] not in record_ids:
             continue
-        elif search and search not in rec['original_relative_path']:
+        elif search and not holds_text(rec['original_relative_path'], search):
             continue
         else:
             chosen.append(rec)
@@ -1253,7 +1261,7 @@ def version_said(raw, text, labels):
         check_relative_path(path)
     except Invalid:
         return None
-    if text not in path:
+    if not holds_text(path, text):
         return None
     copies = line.get('copies') if isinstance(line.get('copies'), list) else []
     held = ', '.join(

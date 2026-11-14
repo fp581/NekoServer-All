@@ -735,6 +735,24 @@ class WhereTests(Base):
         self.assertIn('2003/beach.jpg (5 bytes): Example set - 002 (in_use): committed', said_text(self))
         self.assertIn('a card written later may know more', said_text(self))
 
+    def test_a_search_finds_accented_names_however_they_are_written(self):
+        """Plan 146: a name from a Mac or a phone writes "ü" as u and an accent (two
+        characters); "München" typed on Linux is one. list, restore and where found nothing.
+        Characters a pattern would use are plain text."""
+        mac_name = 'Urlaub/München [1].jpg'
+        self.card.add(mac_name, b'photo')
+        self.snapshot([{'path': mac_name, 'byte_size': 5, 'copies': [{'volume_id': VOLUME, 'state': 'committed'}]}])
+        for typed in ('München', 'München', '[1]'):
+            with self.subTest(typed=typed):
+                self.assertEqual(self.run_tool('list', SEARCH, typed), 0)
+                self.assertIn('1 file(s)', said_text(self))
+                self.assertEqual(self.run_tool('where', typed), 0)
+                self.assertIn('(5 bytes)', said_text(self))
+        self.assertEqual(self.run_tool('list', SEARCH, '.*'), 0)
+        self.assertIn('0 file(s)', said_text(self))
+        self.assertEqual(self.run_tool('restore', str(self.dest), SEARCH, 'München'), 0)
+        self.assertEqual((self.dest / mac_name).read_bytes(), b'photo', 'restored under its own name')
+
     def test_a_tampered_inventory_is_refused(self):
         sid = self.snapshot([{'path': 'x.jpg', 'copies': []}])
         (self.card.nb / 'inventory' / (sid + VERSIONS)).write_bytes(b'{"path": "y.jpg"}\n')
