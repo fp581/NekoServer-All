@@ -148,7 +148,7 @@ def nextcloud_on(config):
 def nextcloud_set_up(config):
     """Nextcloud was installed on this server (its Compose file is on the SSD), whether it
     is switched on now or not."""
-    return (Path(config['data_mount']) / 'compose/nextcloud/compose.yaml').is_file()
+    return bool(config.get('data_mount')) and (Path(config['data_mount']) / 'compose/nextcloud/compose.yaml').is_file()
 
 
 def has_entries(folder):

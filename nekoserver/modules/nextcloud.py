@@ -573,7 +573,11 @@ def stop_installed(ctx, run_command=None, hold=None, journal=None):
             *compose_image_override(manifest),
         ]
         (run_command or command)(base + ['stop'])
-    ctx.log(TURNED_OFF.format(folder=cloud_files(ctx.config)))
+    try:
+        folder = cloud_files(ctx.config)
+    except (KeyError, RuntimeError):
+        folder = 'their folder on the drive chosen for them'  # settings without the drives: said in words
+    ctx.log(TURNED_OFF.format(folder=folder))
 
 
 # What switching Nextcloud off keeps and what stops (deep check 246: the person was told

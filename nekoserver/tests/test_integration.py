@@ -1010,7 +1010,7 @@ class NextcloudOffTests(unittest.TestCase):
             self.assertEqual(calls[0][-1], 'stop')
             self.assertIn('neko-nextcloud', calls[0])
             self.assertNotIn('down', calls[0])  # containers stopped, never removed with their data
-            self.assertTrue(any('files and database are kept' in m for m in ctx.logs))
+            self.assertTrue(any('Kept: your files' in m for m in ctx.logs))
 
     def test_it_is_stopped_only_under_the_maintenance_lock(self):
         from contextlib import contextmanager
