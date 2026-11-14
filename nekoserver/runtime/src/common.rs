@@ -1161,6 +1161,21 @@ pub fn sanitize(text: &str) -> String {
         _ => short,
     }
 }
+/// A file's name for a message: a line break or other control character in it written
+/// as "\\n" and the like. sanitize keeps a reason's last line, so a name with a line
+/// break cut the message there, and it named another file (deep check plan 204).
+pub fn printable(text: &str) -> String {
+    text.chars()
+        .flat_map(|c| {
+            let escaped: Vec<char> = if c.is_control() {
+                c.escape_default().collect()
+            } else {
+                vec![c]
+            };
+            escaped
+        })
+        .collect()
+}
 /// `text` in at most `max` characters: when longer, cut after its last whole sentence
 /// that fits (if that keeps most of it; it then ends with that sentence, no "…" after
 /// its full stop), else after its last whole word with "…", never in the middle of a

@@ -339,7 +339,7 @@ fn unchanged_since_listing(
             .iter()
             .zip(&again)
             .find(|(a, b)| strip(&[(*a).clone()])[0] != **b)
-            .map(|(a, _)| a["path"].as_str().unwrap_or("").to_string())
+            .map(|(a, _)| common::printable(a["path"].as_str().unwrap_or("")))
             .unwrap_or_else(|| "a file was added or removed".into());
         return Err(Error::new(&format!(
             "Application files changed while the snapshot was made ({changed}); it was not published and is retried next night"
@@ -358,7 +358,7 @@ fn verify_staged(payload: &Path, files: &[Value]) -> Result<()> {
         {
             return Err(Error::new(&format!(
                 "Staged application snapshot does not match its manifest ({}); not published",
-                row["path"].as_str().unwrap_or("")
+                common::printable(row["path"].as_str().unwrap_or(""))
             )));
         }
     }
@@ -370,7 +370,7 @@ fn verify_staged(payload: &Path, files: &[Value]) -> Result<()> {
 fn changed_while_copied(source: &Path) -> String {
     format!(
         "{} changed while it was copied (something was still writing it), so this snapshot was not kept; the earlier ones stay and the next run tries again",
-        source.display()
+        common::printable(&source.display().to_string())
     )
 }
 pub(crate) fn copy_file(source: &Path, target: &Path) -> Result<String> {
@@ -745,6 +745,13 @@ mod tests {
         let said = said.expect("the writer changed the file during a copy");
         assert!(said.contains(&source.display().to_string()), "{said}");
         assert!(said.contains("the next run tries again"), "{said}");
+        // Deep check plan 204: a name with a line break is kept whole in the reason.
+        let odd = changed_while_copied(Path::new("/srv/nekoserver/appdata/x/two\nlines.db"));
+        let reason = common::sanitize(&odd);
+        assert!(
+            reason.starts_with("/srv/nekoserver/appdata/x/two\\nlines.db changed"),
+            "{reason}"
+        );
         let _ = fs::remove_dir_all(&root);
     }
     #[test]

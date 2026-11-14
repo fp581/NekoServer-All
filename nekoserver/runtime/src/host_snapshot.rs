@@ -320,7 +320,8 @@ fn changed_paths(before: &[Value], after: &[Value], selected: &[Source]) -> Vec<
         .collect();
     changed.sort();
     changed.dedup();
-    changed
+    // Said in the run's reason: a name with a line break kept whole (common::printable).
+    changed.iter().map(|path| common::printable(path)).collect()
 }
 fn inventory(selected: &[Source]) -> Result<Inventory> {
     let mut files = vec![];
