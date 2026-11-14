@@ -18,7 +18,7 @@ import shutil
 import subprocess
 
 import setup_progress
-from neko_common import extra_drives, typed
+from neko_common import extra_drives, printable, typed
 
 # The roles a drive can have, by what setup calls them; what goes on each is
 # neko_common.drive_holds, for the apps this server has.
@@ -148,8 +148,10 @@ def entry(dev, disk, **more):
         'size': dev.get('size'),
         'size_note': '',
         'type': kind_of(disk),
-        'model': str(dev.get('model') or disk.get('model') or '').strip(),
-        'label': dev.get('label') or '',
+        # The two names a drive brings with it, printed as they are on the terminal: a
+        # label with ESC in it cleared the screen or retitled the window (deep check 228).
+        'model': printable(str(dev.get('model') or disk.get('model') or '').strip()),
+        'label': printable(dev.get('label') or ''),
         'fstype': dev.get('fstype') or '',
         'uuid': dev.get('uuid') or '',
         'mountpoint': dev.get('mountpoint') or next(iter(sorted(mount_points(dev))), None),
