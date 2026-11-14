@@ -90,6 +90,10 @@ APP_BROWSERS = (
 )
 WINDOW = ('1180', '480')  # the small window's size; it is placed low on the screen
 LARGEST_BODY = 40_000  # a page of fields, each up to setup_progress.LONGEST_ANSWER
+# Seconds a connection may stay silent while its request comes in. Without a limit, a
+# connection that sent half a request held a thread of setup's own process for good,
+# and enough of them (another account on this PC can open them) left none to start.
+REQUEST_WAIT = 10
 
 
 # The window's buttons before setup starts, and the page each is on.
@@ -614,6 +618,7 @@ class Window:
 
         class Handler(BaseHTTPRequestHandler):
             server_version = 'NekoServerSetup/' + window.version
+            timeout = REQUEST_WAIT
             sys_version = ''
 
             def log_message(self, *args):  # nothing on the terminal, nothing in a log

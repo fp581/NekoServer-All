@@ -879,6 +879,25 @@ class WindowTests(unittest.TestCase):
                 self.browser.open(request, timeout=5)
             self.assertEqual(caught.exception.code, code)
 
+    def test_a_connection_that_stops_halfway_is_closed_and_others_are_served(self):
+        """Deep check 238: a connection that sent half a request held a thread of setup's
+        own process for good (seen: 300 of them, all still there after 20 s)."""
+        import socket
+
+        with mock.patch.object(setup_gui, 'REQUEST_WAIT', 1):
+            fresh = setup_gui.Window(self.settings, self.config, wizard.STEPS, self.config['profiles']['full'])
+        self.addCleanup(fresh.stop)
+        port = fresh.server.server_address[1]
+        slow = [socket.create_connection(('127.0.0.1', port), timeout=10) for _ in range(20)]
+        for each in slow:
+            self.addCleanup(each.close)
+            each.sendall(b'GET /t/' + fresh.token.encode() + b'/ HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nX-a: ' % port)
+        browser = self.cookie_browser()
+        with browser.open(fresh.url, timeout=5) as response:
+            self.assertEqual(response.status, 200)  # served meanwhile
+        for each in slow:
+            self.assertEqual(each.recv(100), b'')  # closed by the window within its wait
+
     def test_a_change_from_another_page_on_this_pc_is_refused(self):
         """Deep check 236: a page on another port of this PC (the same site, so the browser
         sends the window's cookie with it) pressed the window's buttons: a POST with the
