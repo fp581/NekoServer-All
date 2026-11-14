@@ -351,6 +351,27 @@ class PlanTests(unittest.TestCase):
             self.plan.xdg_desktop(self.system.root / 'home/neko'), self.system.root / 'home/neko/Schreibtisch'
         )
 
+    def test_a_desktop_leading_out_of_the_home_loses_nothing(self):
+        """Deep check 240, in a chroot copy: ~/Desktop made a link to /opt/elsewhere (and
+        another account's user-dirs.dirs naming it) had root delete the
+        nekoserver-*.desktop file there. A Desktop inside the home, through a link, is
+        still looked in."""
+        root = self.system.root
+        outside = root / 'opt/elsewhere'
+        outside.mkdir(parents=True)
+        (outside / 'nekoserver-a.desktop').write_text('[Desktop Entry]\nComment=NekoServer\n')
+        (root / 'home/alice').mkdir(parents=True)
+        (root / 'home/alice/Desktop').symlink_to(outside)
+        (root / 'home/bob/.config').mkdir(parents=True)
+        (root / 'home/bob/.config/user-dirs.dirs').write_text(f'XDG_DESKTOP_DIR="{outside}"\n')
+        (root / 'home/carol/Synced/Desktop').mkdir(parents=True)
+        (root / 'home/carol/Synced/Desktop/nekoserver-b.desktop').write_text('Comment=NekoServer\n')
+        (root / 'home/carol/Desktop').symlink_to('Synced/Desktop')
+        names = {str(p.relative_to(root)) for p in self.plan.shortcuts()}
+        self.assertFalse([name for name in names if 'nekoserver-a.desktop' in name], names)
+        self.assertIn('home/carol/Desktop/nekoserver-b.desktop', names)
+        self.assertIn('home/neko/Desktop/nekoserver-steam.desktop', names)
+
     def test_the_server_choice_lists_only_nekoservers_own_things(self):
         group = self.plan.groups['server']
         names = {str(p.relative_to(self.system.root)) for p in group['paths']}

@@ -489,6 +489,14 @@ def no_containers_why(which=shutil.which, euid=os.geteuid):
     return 'Docker is not running, or nothing was deployed'
 
 
+def inside_home(folder, home):
+    """The folder is in the home, once links are followed. Each person makes their own
+    Desktop (a link) and names their own in user-dirs.dirs: one leading out of the home
+    had root delete a nekoserver-*.desktop file in /opt (seen in a chroot copy)."""
+    real, top = os.path.realpath(folder), os.path.realpath(home)
+    return real == top or real.startswith(top.rstrip('/') + '/')
+
+
 def start_of(path, follow):
     """The first SHORTCUT_SIZE bytes of a plain file in someone's home, or None: a pipe
     there would keep the uninstaller waiting, a device such as /dev/zero would fill the
@@ -614,7 +622,7 @@ class Plan:
         for home in homes:
             for folder in (home / '.local/share/applications', home / 'Desktop', self.xdg_desktop(home)):
                 try:
-                    if folder is not None and self.folder_here(folder):
+                    if folder is not None and self.folder_here(folder) and inside_home(folder, home):
                         found.extend(p for p in folder.glob('nekoserver-*.desktop') if self.ours(p))
                 except OSError:  # not readable by this account (a dry run without sudo)
                     self.could_not_look(folder)
