@@ -2870,6 +2870,7 @@ fn execute_keeping<F: FnOnce() -> Result<Outcome>>(
     let Some(data) = data else {
         return operation().map(|_| ());
     };
+    drives_take_writes(cfg)?;
     common::safe(data)?;
     guard_data(cfg, data)?;
     if !common::mounted(data) {
@@ -3000,8 +3001,8 @@ pub fn open_job(a: &crate::Args, limit: usize) -> Result<Job> {
     common::require_root()?;
     let cfgpath = a.path("config")?;
     let cfg = common::json(&cfgpath, limit);
-    let data = common::mount_path(cfg["data_mount"].as_str().unwrap_or(""))?;
-    let media = common::mount_path(cfg["media_mount"].as_str().unwrap_or(""))?;
+    let data = drive_mount(&cfg, "data_ssd", "data_mount")?;
+    let media = drive_mount(&cfg, "media_hdd", "media_mount")?;
     guard(&cfgpath, &data, &media)?;
     Ok(Job {
         cfgpath,
@@ -3009,6 +3010,64 @@ pub fn open_job(a: &crate::Args, limit: usize) -> Result<Job> {
         data,
         media,
     })
+}
+/// Where the settings say the drive `key` is mounted (`mount_key`). A drive Linux shut
+/// down after errors is said so: the look at its folder failed with only "Input/output
+/// error (os error 5)", for every job and Docker's start guard (deep check plan 208).
+fn drive_mount(cfg: &Value, key: &str, mount_key: &str) -> Result<PathBuf> {
+    let folder = cfg[mount_key].as_str().unwrap_or("");
+    common::mount_path(folder).map_err(|e| {
+        no_writes(key, Path::new(folder), true)
+            .map(|why| Error::new(&why))
+            .unwrap_or(e)
+    })
+}
+/// Why the drive `key` mounted at `path` takes no new files, in words for the person, or
+/// None. `shut_down_only`: only a drive Linux shut down (nothing on it can be read either),
+/// for the checks that must still reach a read-only drive (the recovery menu checks it).
+fn no_writes(key: &str, path: &Path, shut_down_only: bool) -> Option<String> {
+    let shut_down = common::shut_down(&fs::symlink_metadata(path));
+    let read_only = !shut_down_only
+        && common::filesystem_read_only(
+            &fs::read_to_string("/proc/self/mountinfo").unwrap_or_default(),
+            path,
+        );
+    no_writes_said(key, path, shut_down, read_only)
+}
+fn no_writes_said(key: &str, path: &Path, shut_down: bool, read_only: bool) -> Option<String> {
+    let what = if shut_down {
+        "stopped answering: Linux shut it down after errors, so nothing on it can be read or written until the PC restarts"
+    } else if read_only {
+        "takes no new files: Linux turned it read-only after write errors (a loose cable, a failing drive)"
+    } else {
+        return None;
+    };
+    Some(format!(
+        "The {} ({}) {what}. Check it: sudo bash install.sh --recover, and choose {}",
+        drive_called(key),
+        path.display(),
+        crate::collect::check_drive_choice()
+    ))
+}
+/// Before a job writes anything: every drive it may write takes new files (the SSD, the
+/// HDD and each drive something is placed on). A drive Linux turned read-only made the
+/// job fail part-way with only "Read-only file system (os error 30)" (deep check plan 192).
+fn drives_take_writes(cfgpath: &Path) -> Result<()> {
+    let cfg = common::json(cfgpath, 64000);
+    let mut drives = vec![];
+    for (key, mount_key) in [("data_ssd", "data_mount"), ("media_hdd", "media_mount")] {
+        drives.push((key.to_string(), drive_mount(&cfg, key, mount_key)?));
+    }
+    for name in common::drives_in_use(&cfg) {
+        drives.push((name.clone(), placed_folder(&cfg, &name)?));
+    }
+    match drives
+        .iter()
+        .find_map(|(key, path)| no_writes(key, path, false))
+    {
+        Some(why) => Err(Error::new(&why)),
+        None => Ok(()),
+    }
 }
 /// A job interrupted while running is recorded as failed.
 /// A cut-off snapshot left something to finish: its resume journal, or a report still
@@ -3186,9 +3245,18 @@ fn no_unfinished_update_at(journal: &Path) -> Result<()> {
 /// a job that is still waiting for setup after the 3 hours is postponed, not failed.
 pub fn coordinate(cfgpath: &Path, data: &Path, media: &Path) -> Result<fs::File> {
     guard(cfgpath, data, media)?;
+    ssd_takes_writes(data)?;
     let held = recovery_lock(data)?;
     guard(cfgpath, data, media)?;
     Ok(held)
+}
+/// The jobs' lock is a file on the SSD: on an SSD turned read-only it can't be made, and
+/// every job waited 3 hours "for another NekoServer job" (deep check plan 192).
+fn ssd_takes_writes(data: &Path) -> Result<()> {
+    match no_writes("data_ssd", data, false) {
+        Some(why) => Err(Error::new(&why)),
+        None => Ok(()),
+    }
 }
 fn recovery_lock(data: &Path) -> Result<fs::File> {
     let wait = std::time::Duration::from_secs(3 * 3600);
@@ -3199,6 +3267,7 @@ fn recovery_lock(data: &Path) -> Result<fs::File> {
 /// reason a weekly run failed part-way) must not keep Immich stopped until next week.
 fn coordinate_data(cfgpath: &Path, data: &Path) -> Result<fs::File> {
     guard_data(cfgpath, data)?;
+    ssd_takes_writes(data)?;
     let held = recovery_lock(data)?;
     guard_data(cfgpath, data)?;
     Ok(held)
@@ -3266,7 +3335,7 @@ pub fn check_drives(a: &crate::Args) -> Result<()> {
         };
         let path = match common::drive_folder(&cfg, key).filter(|_| mount.is_empty()) {
             Some(extra) => extra,
-            None => common::mount_path(cfg[mount].as_str().unwrap_or(""))?,
+            None => drive_mount(&cfg, key, mount)?,
         };
         let uuid = if *key == "usb" {
             checked_drive(&usb_spec(&cfg), "usb", &path)?
@@ -3306,6 +3375,9 @@ fn usb_spec(cfg: &Value) -> Value {
 /// The drive the settings (`c`) name under `key` is the one mounted at `path`: its UUID,
 /// filesystem type and Btrfs subvolume. Returns its UUID.
 pub(crate) fn checked_drive(c: &Value, key: &str, path: &Path) -> Result<String> {
+    if let Some(why) = no_writes(key, path, true) {
+        return Err(Error::new(&why));
+    }
     let found = match common::drive_at(path, 10) {
         Ok(found) => found.unwrap_or_default(),
         // findmnt killed after its 10 s on a drive a copy keeps busy (it reads the
@@ -9317,5 +9389,42 @@ mod tests {
             at("if weekly {") < at("&gave_way") && at("&gave_way") < at("&monthly_check_keeps")
         );
         assert!(at("&monthly_check_keeps") < at("execute_keeping("));
+    }
+    /// Deep check plans 192 and 208, seen with the nightly music backup on loop drives: an
+    /// ext4 HDD remounted read-only failed it with only "Read-only file system (os error
+    /// 30)", and an XFS HDD Linux shut down failed it, check-drives and Docker's start
+    /// guard with only "Input/output error (os error 5)".
+    #[test]
+    fn a_drive_that_takes_no_writes_is_said_so_before_a_job_writes() {
+        let hdd = Path::new("/mnt/nekoserver-media");
+        let shut = no_writes_said("media_hdd", hdd, true, false).unwrap();
+        assert!(
+            shut.starts_with("The HDD (/mnt/nekoserver-media) stopped answering"),
+            "{shut}"
+        );
+        for said in [
+            shut,
+            no_writes_said("data_ssd", Path::new("/srv/nekoserver"), false, true).unwrap(),
+        ] {
+            assert!(said.contains("sudo bash install.sh --recover"), "{said}");
+            assert!(said.contains(common::shared("recovery_menu", "check_drive")));
+        }
+        let ro = no_writes_said("d3", Path::new("/mnt/nekoserver-drives/d3"), false, true).unwrap();
+        assert!(ro.starts_with("The drive d3 (/mnt/nekoserver-drives/d3) takes no new files"));
+        assert_eq!(no_writes_said("media_hdd", hdd, false, false), None);
+        assert_eq!(no_writes("media_hdd", &std::env::temp_dir(), false), None);
+        // Before a job writes its report, and in the drive check every job, setup and
+        // Docker's start guard make (that one only for a drive shut down: the recovery
+        // menu must still reach a read-only drive to check it).
+        let source = include_str!("backup.rs");
+        let body = &source[source.find("fn execute_keeping<").unwrap()..];
+        assert!(
+            body.find("drives_take_writes(cfg)?").unwrap() < body.find("running_row(").unwrap()
+        );
+        let checked = &source[source.find("pub(crate) fn checked_drive(").unwrap()..];
+        assert!(
+            checked.find("no_writes(key, path, true)").unwrap()
+                < checked.find("drive_at(").unwrap()
+        );
     }
 }

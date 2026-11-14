@@ -646,6 +646,49 @@ pub fn clear_leftovers(root: &Path, partial: bool) -> Result<Vec<String>> {
     }
     Ok(removed)
 }
+/// The filesystem at `path` takes no writes: marked read-only (filesystem_read_only), or
+/// shut down by Linux after errors. XFS does not turn read-only: it shuts down, keeps
+/// "rw" in the mount table, still answers statvfs, and fails everything else with an
+/// input/output error, even a look at its top folder (`look`, which reads nothing from
+/// the drive: that folder is always held in memory). Seen in 0.51.2 with an XFS HDD shut
+/// down: every job failed with "Input/output error" while the dashboard showed it healthy.
+pub(crate) fn turned_read_only(
+    mountinfo: &str,
+    path: &Path,
+    look: &std::io::Result<fs::Metadata>,
+) -> bool {
+    shut_down(look) || filesystem_read_only(mountinfo, path)
+}
+/// Whether the filesystem mounted at `path` is itself read-only, from a mountinfo list:
+/// the filesystem's own options (after the " - ", its type and its source), never the
+/// mount's (the sixth field). This collector runs with ProtectSystem=strict, so in its
+/// own view every drive is a read-only mount, and statvfs (ST_RDONLY) says so too: every
+/// server with a drive of its own showed "turned read-only" for the SSD and the HDD, as
+/// critical alerts (seen on the rig, 0.46.2 and 0.46.3). What Linux does after write
+/// errors is turn the filesystem read-only, which shows here. The last line for the
+/// folder counts (a later mount covers an earlier one).
+/// Newer Linux (6.12 and later) no longer marks an ext4 that met errors "ro": it stays
+/// "rw" with "emergency_ro" among its options, and refuses every write (seen in 0.51.1,
+/// a test drive turned read-only part-way through the nightly app backup).
+const READ_ONLY_OPTIONS: [&str; 2] = ["ro", "emergency_ro"];
+pub(crate) fn filesystem_read_only(mountinfo: &str, path: &Path) -> bool {
+    let wanted = path.to_string_lossy();
+    mountinfo
+        .lines()
+        .filter_map(|line| {
+            let (mount, filesystem) = line.split_once(" - ")?;
+            (mount.split(' ').nth(4)? == wanted).then_some(filesystem)
+        })
+        .next_back()
+        .and_then(|filesystem| filesystem.split(' ').nth(2))
+        .is_some_and(|options| options.split(',').any(|o| READ_ONLY_OPTIONS.contains(&o)))
+}
+/// The filesystem mounted at `path` was shut down by Linux after errors (`look`, a look
+/// at its top folder, failed with an input/output error): see turned_read_only.
+pub(crate) fn shut_down(look: &std::io::Result<fs::Metadata>) -> bool {
+    look.as_ref()
+        .is_err_and(|e| e.raw_os_error() == Some(libc::EIO))
+}
 /// Bytes free for this program on the filesystem holding `path`.
 pub fn free_bytes(path: &Path) -> Result<u128> {
     let c = CString::new(path.as_os_str().as_bytes()).map_err(|_| Error::new("Invalid path"))?;
@@ -897,9 +940,15 @@ pub fn lock(path: &Path) -> Result<File> {
     if !f.metadata()?.is_file()
         || unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0
     {
-        return Err(Error::new("Job already running or unsafe lock"));
+        return Err(Error::new(LOCK_BUSY));
     }
     Ok(f)
+}
+/// What `lock` says when another job holds the lock. Any other failure (the drive turned
+/// read-only, say) is no other job, and waiting hours for it helped nothing.
+const LOCK_BUSY: &str = "Job already running or unsafe lock";
+fn busy(e: &Error) -> bool {
+    e.to_string() == LOCK_BUSY
 }
 /// Shared recovery lock for scheduled jobs: wait for a job that is already running
 /// (polling every 5 s, up to `max`) instead of failing. Scheduled backups and the
@@ -910,6 +959,7 @@ pub fn lock_wait(path: &Path, max: Duration) -> Result<File> {
     loop {
         match lock(path) {
             Ok(f) => return Ok(f),
+            Err(e) if !busy(&e) => return Err(e),
             Err(e) => {
                 if start.elapsed() >= max {
                     return Err(Error::new(&format!(
@@ -964,6 +1014,7 @@ fn shared_lock_wait_with(
     loop {
         match lock(path) {
             Ok(f) => return Ok(f),
+            Err(e) if !busy(&e) => return Err(e),
             Err(e) => {
                 let setup = held_by(path, setup_lock);
                 let limit = if setup { while_setup.min(max) } else { max };
@@ -2238,5 +2289,27 @@ mod lock_tests {
         let short = Duration::from_millis(50);
         let waited = shared_lock_wait_with(&shared, &setup, Duration::from_secs(60), short);
         assert!(postponed(&waited.unwrap_err()));
+    }
+    /// Deep check plan 192: on an SSD turned read-only the jobs' lock file can't be made,
+    /// and the nightly music backup waited 3 hours "for another NekoServer job to finish
+    /// (Read-only file system)". Only a lock another job holds is waited for.
+    #[test]
+    fn a_lock_that_cannot_be_made_is_not_waited_for() {
+        let root = std::env::temp_dir().join(format!("neko-lock-made-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("file"), b"").unwrap();
+        let path = root.join("file/recovery.lock"); // its folder can't be made: ENOTDIR
+        let start = Instant::now();
+        let long = Duration::from_secs(60);
+        for result in [
+            lock_wait(&path, long),
+            shared_lock_wait_with(&path, &root.join("setup.lock"), long, long),
+        ] {
+            let said = result.unwrap_err().to_string();
+            assert!(!said.contains("Another NekoServer job"), "{said}");
+        }
+        assert!(start.elapsed() < Duration::from_secs(5));
+        let _ = fs::remove_dir_all(&root);
     }
 }

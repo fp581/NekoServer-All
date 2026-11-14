@@ -1,7 +1,7 @@
 /// Every monitored app (shared.json); notify.rs names an alert for each (checked by a test).
 pub(crate) use crate::common::APPS;
 use crate::{
-    common::{self, num, probe, round, Error, Result},
+    common::{self, filesystem_read_only, num, probe, round, turned_read_only, Error, Result},
     Args, VERSION,
 };
 use regex::Regex;
@@ -469,42 +469,6 @@ fn statvfs_usage(path: &Path) -> Option<(u64, u64, bool)> {
     let mounts = fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
     let look = fs::symlink_metadata(path);
     Some((total, used, turned_read_only(&mounts, path, &look)))
-}
-/// The filesystem at `path` takes no writes: marked read-only (filesystem_read_only), or
-/// shut down by Linux after errors. XFS does not turn read-only: it shuts down, keeps
-/// "rw" in the mount table, still answers statvfs, and fails everything else with an
-/// input/output error, even a look at its top folder (`look`, which reads nothing from
-/// the drive: that folder is always held in memory). Seen in 0.51.2 with an XFS HDD shut
-/// down: every job failed with "Input/output error" while the dashboard showed it healthy.
-fn turned_read_only(mountinfo: &str, path: &Path, look: &std::io::Result<fs::Metadata>) -> bool {
-    let shut_down = look
-        .as_ref()
-        .is_err_and(|e| e.raw_os_error() == Some(libc::EIO));
-    shut_down || filesystem_read_only(mountinfo, path)
-}
-/// Whether the filesystem mounted at `path` is itself read-only, from a mountinfo list:
-/// the filesystem's own options (after the " - ", its type and its source), never the
-/// mount's (the sixth field). This collector runs with ProtectSystem=strict, so in its
-/// own view every drive is a read-only mount, and statvfs (ST_RDONLY) says so too: every
-/// server with a drive of its own showed "turned read-only" for the SSD and the HDD, as
-/// critical alerts (seen on the rig, 0.46.2 and 0.46.3). What Linux does after write
-/// errors is turn the filesystem read-only, which shows here. The last line for the
-/// folder counts (a later mount covers an earlier one).
-/// Newer Linux (6.12 and later) no longer marks an ext4 that met errors "ro": it stays
-/// "rw" with "emergency_ro" among its options, and refuses every write (seen in 0.51.1,
-/// a test drive turned read-only part-way through the nightly app backup).
-const READ_ONLY_OPTIONS: [&str; 2] = ["ro", "emergency_ro"];
-fn filesystem_read_only(mountinfo: &str, path: &Path) -> bool {
-    let wanted = path.to_string_lossy();
-    mountinfo
-        .lines()
-        .filter_map(|line| {
-            let (mount, filesystem) = line.split_once(" - ")?;
-            (mount.split(' ').nth(4)? == wanted).then_some(filesystem)
-        })
-        .next_back()
-        .and_then(|filesystem| filesystem.split(' ').nth(2))
-        .is_some_and(|options| options.split(',').any(|o| READ_ONLY_OPTIONS.contains(&o)))
 }
 /// (space the apps can use, used), as `df` counts them: the part of the drive kept for
 /// the system (5% on ext4 unless changed) is not free for the apps, so a drive they
