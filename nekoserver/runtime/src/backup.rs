@@ -758,6 +758,9 @@ pub struct Integrity {
     /// The list of the files you had at this run could not be written: the run is
     /// incomplete ("as of the last backup" would miss its files), not a success.
     pub list_problem: Option<String>,
+    /// Left out of a copy onto an exFAT drive: a name exFAT refuses, or one that differs
+    /// from another only in upper/lower case (see `exfat_refuses`).
+    pub unstorable: Vec<String>,
 }
 impl Integrity {
     /// Text for a failed job when a copy is damaged, with how to settle it; None when
@@ -1399,6 +1402,37 @@ pub fn copy_tree(source: &Path, dest: &Path, apply: bool, check: Check) -> Resul
 /// archive's checksum ledger (a first big archive run can take hours).
 const LEDGER_WAIT: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
 pub fn mirror(source: &Path, dest: &Path, apply: bool, check: Check) -> Result<(u64, Integrity)> {
+    mirror_on(source, dest, apply, check, false)
+}
+/// The names already on `dest` (an exFAT drive), so a new name that differs from one of
+/// them only in case is left out too (`case_clash`, `remember_kept`).
+fn names_on(dest: &Path) -> Result<std::collections::HashMap<String, String>> {
+    let mut seen = std::collections::HashMap::new();
+    walk(dest, &mut |path| {
+        if let Some(rest) = path.strip_prefix(dest).ok().and_then(Path::to_str) {
+            remember_kept(rest, &mut seen);
+        }
+        Ok(())
+    })?;
+    Ok(seen)
+}
+/// exFAT can't store `key` beside the names in `seen`: a name it refuses (`fat_safe`) or
+/// one that differs from another only in case. Without this check the weekly photo copy
+/// to an exFAT drive stopped at the first such name, and two photos named alike
+/// (`IMG_1.JPG`, `img_1.jpg`) shared one file there: the second was never copied, or
+/// each week one was "repaired" over the other.
+fn exfat_refuses(key: &str, seen: &mut std::collections::HashMap<String, String>) -> bool {
+    !fat_safe(Path::new(key)) || case_clash(key, seen).is_some()
+}
+/// `mirror` onto a drive that is exFAT or not (`exfat`): there, files whose names it
+/// can't store are left out and listed (`Integrity::unstorable`).
+fn mirror_on(
+    source: &Path,
+    dest: &Path,
+    apply: bool,
+    check: Check,
+    exfat: bool,
+) -> Result<(u64, Integrity)> {
     let (source, dest) = separate(source, dest)?;
     let mut ledger = if apply {
         Ledger::open_waiting(&source, LEDGER_WAIT)?
@@ -1495,7 +1529,16 @@ pub fn mirror(source: &Path, dest: &Path, apply: bool, check: Check) -> Result<(
         Ok(())
     })?;
     let mut copied = 0;
+    let mut seen = if exfat && dest.is_dir() {
+        names_on(&dest)?
+    } else {
+        Default::default()
+    };
     for (key, path) in &files {
+        if exfat && exfat_refuses(key, &mut seen) {
+            report.unstorable.push(key.clone());
+            continue;
+        }
         let target = dest.join(key);
         if conflicting.contains(key) {
             let apart = match usb_ledger.as_mut() {
@@ -1624,6 +1667,13 @@ pub fn mirror(source: &Path, dest: &Path, apply: bool, check: Check) -> Result<(
         }
     }
     report.print("Backup");
+    if !report.unstorable.is_empty() {
+        println!(
+            "Backup: {} files not copied because the USB drive (exFAT) cannot store their names (a character exFAT refuses, or the same name as another file but for upper/lower case); they stay safe on the HDD, and a USB drive formatted as ext4 takes them all: {}",
+            report.unstorable.len(),
+            report.unstorable.iter().take(20).cloned().collect::<Vec<_>>().join(", ")
+        );
+    }
     println!(
         "Backup: {copied} new verified files{}",
         if apply { "" } else { " identified (dry run)" }
@@ -4202,6 +4252,32 @@ fn joined(problems: impl Iterator<Item = String>) -> Option<String> {
 /// shows each one (collect::partial_reason); it once missed the password list's and said
 /// only "Incomplete; see the job's report".
 pub(crate) const INCOMPLETE_PARTS: [&str; 3] = ["database", "source", "passwords"];
+/// The files part of an incomplete report when no file was left out.
+fn none_left_out() -> Value {
+    json!({"in_use":0,"unsupported_names":0,"files":[]})
+}
+/// What the weekly copy left out (`files`: the Nextcloud files', as CloudCopy::missing
+/// says them) with the photos the exFAT drive could not store added, counted as names
+/// the USB drive cannot store (the dashboard says how many; the report lists up to 50).
+fn with_unstorable_photos(files: Option<Value>, unstorable: &[String]) -> Option<Value> {
+    if unstorable.is_empty() {
+        return files;
+    }
+    let cloud = files.is_some();
+    let mut out = files.unwrap_or_else(none_left_out);
+    let count = out["unsupported_names"].as_u64().unwrap_or(0) + unstorable.len() as u64;
+    out["unsupported_names"] = json!(count);
+    if let Some(list) = out["files"].as_array_mut() {
+        let room = 50usize.saturating_sub(list.len());
+        list.extend(unstorable.iter().take(room).map(|key| json!(key)));
+    }
+    out["reason"] = json!(if cloud {
+        "Photos and Nextcloud files not copied to the USB drive this week"
+    } else {
+        "Photos not copied to the USB drive this week"
+    });
+    Some(out)
+}
 /// One "incomplete" report for the weekly USB copy: Nextcloud files left out and/or a
 /// database copy, source list or password list problem.
 pub(crate) fn incomplete(
@@ -4213,7 +4289,7 @@ pub(crate) fn incomplete(
     if files.is_none() && database.is_none() && source.is_none() && passwords.is_none() {
         return None;
     }
-    let mut out = files.unwrap_or_else(|| json!({"in_use":0,"unsupported_names":0,"files":[]}));
+    let mut out = files.unwrap_or_else(none_left_out);
     for (key, problem) in INCOMPLETE_PARTS
         .into_iter()
         .zip([database, source, passwords])
@@ -4716,7 +4792,7 @@ fn copy_to_usb(run: &UsbRun) -> Result<Option<Value>> {
     let mut photos = None;
     if let Some(source) = &run.source {
         common::stage("copying photos and videos to the USB drive");
-        photos = Some(mirror(source, dest, true, run.check)?.1);
+        photos = Some(mirror_on(source, dest, true, run.check, run.fstype == "exfat")?.1);
         run.still()?;
     }
     let mut database_problem: Option<String> = None;
@@ -4769,6 +4845,10 @@ fn copy_to_usb(run: &UsbRun) -> Result<Option<Value>> {
             settle(&damage.join(". "))
         )));
     }
+    let unstorable = photos
+        .as_ref()
+        .map(|p| p.unstorable.clone())
+        .unwrap_or_default();
     // A list of files that could not be written makes the backup incomplete too.
     let source_problem = joined(
         [
@@ -4782,7 +4862,7 @@ fn copy_to_usb(run: &UsbRun) -> Result<Option<Value>> {
         .flatten(),
     );
     Ok(incomplete(
-        cloud_copy.and_then(|c| c.missing()),
+        with_unstorable_photos(cloud_copy.and_then(|c| c.missing()), &unstorable),
         database_problem,
         source_problem,
         passwords_problem,
@@ -6903,6 +6983,52 @@ mod tests {
         fs::remove_file(cloud.join("bob/files/todo.txt")).unwrap();
         copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
         assert!(usb.join("nextcloud/bob/files/todo.txt").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+    /// Seen with the real weekly copy onto an exFAT loop drive (0.51.2 review): a photo
+    /// named `colon:a.jpg` stopped the whole copy ("No such file or directory"), and of
+    /// `IMG_0001.JPG` and `img_0001.jpg` one was never copied (same size: reported as
+    /// fine) or each week "repaired" the other into neko-damaged/.
+    #[test]
+    fn photos_exfat_cannot_name_are_left_out_and_listed() {
+        let root = scratch("exfat-photos");
+        let (src, hdd, usb) = (root.join("src"), root.join("hdd"), root.join("usb"));
+        for (n, name) in ["IMG_0001.JPG", "img_0001.jpg", "colon:a.jpg", "café.jpg"]
+            .iter()
+            .enumerate()
+        {
+            write(&src.join(n.to_string()), name.as_bytes());
+            keep(
+                &src.join(n.to_string()),
+                &hdd,
+                &format!("library/u1/{name}"),
+            );
+        }
+        // On the drive from an earlier week, under another case than the HDD's file now.
+        write(&src.join("old"), b"old");
+        keep(&src.join("old"), &hdd, "library/u1/Old.jpg");
+        write(&usb.join("library/u1/old.jpg"), b"old");
+        let (copied, report) = mirror_on(&hdd, &usb, true, Check::Quick, true).unwrap();
+        assert_eq!(copied, 2);
+        assert_eq!(
+            report.unstorable,
+            [
+                "library/u1/Old.jpg",
+                "library/u1/colon:a.jpg",
+                "library/u1/img_0001.jpg"
+            ]
+        );
+        assert!(!usb.join("library/u1/img_0001.jpg").exists());
+        assert_eq!(report.problem("HDD archive"), None);
+        assert_eq!(report.repaired, 0);
+        // The weekly report counts them as names the drive cannot store.
+        let left = with_unstorable_photos(None, &report.unstorable).unwrap();
+        assert_eq!(left["unsupported_names"], 3);
+        assert_eq!(left["files"][2], "library/u1/img_0001.jpg");
+        // Not exFAT: every name is copied, as before.
+        let ext4 = root.join("ext4");
+        let (copied, report) = mirror(&hdd, &ext4, true, Check::Quick).unwrap();
+        assert_eq!((copied, report.unstorable.len()), (5, 0));
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
