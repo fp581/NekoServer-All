@@ -128,7 +128,7 @@ def own_port(unit):
     for line in (unit or '').split('\n'):
         words = line.split()
         if line.startswith(EXEC_START) and 'serve' in words and '--port' in words[:-1]:
-            return int(words[words.index('--port') + 1]) if words[words.index('--port') + 1].isdigit() else None
+            return int(words[words.index('--port') + 1]) if words[words.index('--port') + 1].isdecimal() else None
     return None
 
 
@@ -137,7 +137,7 @@ def socket_port(unit):
     for line in (unit or '').split('\n'):
         if line.startswith('ListenStream=127.0.0.1:'):
             value = line.rpartition(':')[2].strip()
-            return int(value) if value.isdigit() else None
+            return int(value) if value.isdecimal() else None
     return None
 
 
@@ -799,7 +799,7 @@ def main_pid(unit):
         check=False,
     )
     value = (result.stdout or '').strip()
-    return int(value) if result.returncode == 0 and value.isdigit() and value != '0' else None
+    return int(value) if result.returncode == 0 and value.isdecimal() and value != '0' else None
 
 
 def openrgb_private(wait=10, sleep=time.sleep):

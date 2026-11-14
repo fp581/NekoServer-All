@@ -189,7 +189,7 @@ def choose(title, options, prompt=input, output=print, leave='Back'):
             return options[best - 1][0]
         if answer == '0':
             return None
-        if answer.isdigit() and 1 <= int(answer) <= len(options):
+        if answer.isdecimal() and 1 <= int(answer) <= len(options):
             return options[int(answer) - 1][0]
         output('Please type one of the numbers shown.')
 
@@ -1566,7 +1566,7 @@ def owner(config):
     """Whose restored photos and files these are: the account that ran sudo, else the
     account the settings name for media (media.uid and media.gid)."""
     uid, gid = os.environ.get('SUDO_UID', ''), os.environ.get('SUDO_GID', '')
-    if uid.isdigit() and gid.isdigit() and int(uid) != 0:
+    if uid.isdecimal() and gid.isdecimal() and int(uid) != 0:
         return int(uid), int(gid)
     media = config.get('media', {})
     return int(media.get('uid', 1000)), int(media.get('gid', 1000))

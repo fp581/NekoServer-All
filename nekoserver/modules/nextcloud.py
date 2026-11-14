@@ -273,7 +273,7 @@ def scan_errors(text):
         cells = [c.strip() for c in line.strip().strip('|').split('|')]
         if 'Errors' in cells:
             header = cells
-        elif header and len(cells) == len(header) and cells[header.index('Errors')].isdigit():
+        elif header and len(cells) == len(header) and cells[header.index('Errors')].isdecimal():
             return int(cells[header.index('Errors')])
     return None
 

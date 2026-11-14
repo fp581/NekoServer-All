@@ -45,7 +45,7 @@ def peer_port(inspect):
     for item in inspect.get('Config', {}).get('Env') or []:
         if isinstance(item, str) and item.startswith('TORRENTING_PORT='):
             value = item.split('=', 1)[1]
-            return int(value) if value.isdigit() else None
+            return int(value) if value.isdecimal() else None
     return None
 
 
@@ -462,7 +462,7 @@ def network_of(unit):
     not run or that can't be read)."""
     rc, out = health.run(['systemctl', 'show', unit, '--property=MainPID', '--value'])
     pid = out.strip()
-    if rc != 0 or not pid.isdigit() or pid == '0':
+    if rc != 0 or not pid.isdecimal() or pid == '0':
         return None
     try:
         return os.readlink(f'/proc/{pid}/ns/net')

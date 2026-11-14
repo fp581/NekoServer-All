@@ -139,10 +139,10 @@ def newer_kernel(running, installed):
         version, _, rest = name.partition('-')
         version = version.partition('+')[0]
         numbers = version.split('.')
-        if not all(n.isdigit() for n in numbers):
+        if not all(n.isdecimal() for n in numbers):
             return None
         build, _, kind = rest.partition('-')
-        if not build.isdigit():
+        if not build.isdecimal():
             build, kind = '0', rest
         return (*map(int, numbers), int(build)), kind
 

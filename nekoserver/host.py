@@ -1786,7 +1786,7 @@ class Rhel(Fedora):
         if set(_words(release, 'ID')) & set(cls.ids):
             return True
         major = (release.get('VERSION_ID') or '').split('.')[0]
-        return not ('fedora' in _words(release, 'ID_LIKE') and major.isdigit() and int(major) >= 30)
+        return not ('fedora' in _words(release, 'ID_LIKE') and major.isdecimal() and int(major) >= 30)
 
     def __init__(self, run=run_command, release=None, fetch=_fetch):
         super().__init__(run, release, fetch)

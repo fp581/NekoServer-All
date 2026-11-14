@@ -169,7 +169,7 @@ KEEP_BUNDLES = 2  # release bundles (installer/releases/vX) kept on the SSD: thi
 def release_number(name):
     """(0, 28, 10) from "v0.28.11"; None for any other folder name."""
     parts = name[1:].split('.') if name.startswith('v') else []
-    return tuple(int(p) for p in parts) if parts and all(p.isdigit() for p in parts) else None
+    return tuple(int(p) for p in parts) if parts and all(p.isdecimal() for p in parts) else None
 
 
 def in_use(folder, units=SYSTEMD_UNITS):

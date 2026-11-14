@@ -35,7 +35,7 @@ class Kind:
     def root_ok(self, first):
         if self.roots:
             return first in self.roots
-        return first.startswith('source') and first[6:].isdigit()
+        return first.startswith('source') and first[6:].isdecimal()
 
     def kinds(self):
         return ('file', 'directory', 'symlink') if self.links else ('file', 'directory')

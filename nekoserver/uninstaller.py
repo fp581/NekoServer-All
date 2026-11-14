@@ -1173,7 +1173,7 @@ def choose(ask=input, out=print):
 
 
 def _toggle(chosen, token, out):
-    if not token.isdigit() or not 1 <= int(token) <= len(CHOICES):
+    if not token.isdecimal() or not 1 <= int(token) <= len(CHOICES):
         out(' Not a choice: ' + token)
         return
     key = CHOICES[int(token) - 1][0]

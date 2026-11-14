@@ -328,7 +328,7 @@ def started_since(units, since):
     for unit in units:
         shown = run(['systemctl', 'show', '--property=InactiveExitTimestampMonotonic', unit], 30, check=False)
         value = (getattr(shown, 'stdout', '') or '').strip().partition('=')[2]
-        if getattr(shown, 'returncode', 0) or not value.isdigit():
+        if getattr(shown, 'returncode', 0) or not value.isdecimal():
             return None
         if int(value) > since:
             started.append(unit)

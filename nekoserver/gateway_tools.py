@@ -1193,7 +1193,7 @@ def listed(value):
         return [], 0
     if isinstance(value, list):
         return list(value), len(value)
-    if isinstance(value, dict) and all(str(k).isdigit() for k in value):
+    if isinstance(value, dict) and all(str(k).isdecimal() for k in value):
         return list(value.values()), max((int(k) for k in value), default=-1) + 1
     return None, 0
 

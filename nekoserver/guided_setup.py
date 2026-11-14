@@ -345,7 +345,7 @@ def show_logins(config, apps, prompt=None, output=None, screen=None, wait=None, 
             answer = prompt('Show a login now? Type its number (Enter alone: go on): ').strip()
             if not answer:
                 return
-            if not (answer.isdigit() and 1 <= int(answer) <= len(logins)):
+            if not (answer.isdecimal() and 1 <= int(answer) <= len(logins)):
                 output(f'Type a number from 1 to {len(logins)}, or press Enter alone to go on.')
                 continue
             login = logins[int(answer) - 1]
@@ -1017,7 +1017,7 @@ def ask_backup_counts(counts, prompt, output):
             + (f'for {offered}' if offered else 'leaves them as they are')
             + '): ',
             offered,
-            lambda answer, least=least, most=most: answer.isdigit() and least <= int(answer) <= most,
+            lambda answer, least=least, most=most: answer.isdecimal() and least <= int(answer) <= most,
             f'Type a whole number from {least} to {most}.',
             prompt,
             output,
