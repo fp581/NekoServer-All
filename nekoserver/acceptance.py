@@ -796,22 +796,24 @@ def inspect(config, profile='full', now=None):
     }
     checks = run['automatic']
     add = lambda *x: checks.append(item(*x))
+    why = 'Configuration or selected dependency profile is invalid.'
     try:
+        if not isinstance(config, dict):
+            raise installer.InstallerError('The settings file holds no settings (it must be one JSON object, {...})')
         installer.validate_config(config)
         if profile not in config['profiles']:
+            why = f'The settings have no profile "{profile}" (they have: {", ".join(sorted(config["profiles"]))}).'
             raise ValueError()
         modules = accepted_modules(
             config, installer.ordered(installer.load_modules(ROOT / 'modules'), config['profiles'][profile])
         )
         run['config_fingerprint'] = fingerprint(config, profile)
         run['dashboard_scope'] = scope_digest(config)
-    except (OSError, RuntimeError, ValueError, TypeError, KeyError, installer.InstallerError):
-        add(
-            'configuration',
-            'Configuration and profile',
-            'fail',
-            'Configuration or selected dependency profile is invalid.',
-        )
+    except installer.InstallerError as exc:
+        add('configuration', 'Configuration and profile', 'fail', str(exc))
+        return summarize(run)
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError):
+        add('configuration', 'Configuration and profile', 'fail', why)
         return summarize(run)
     add('configuration', 'Configuration and profile', 'pass', 'Selected profile and dependency plan are valid.')
     asked = []
@@ -1300,8 +1302,15 @@ def main(argv=None):
     if os.geteuid() != 0:
         print('Run with sudo for complete local inspection.', file=sys.stderr)
         return 2
+    # The settings file read with what is wrong with it named: through load_json a broken
+    # or missing file was read as no settings, and the check said only "Configuration or
+    # selected dependency profile is invalid".
     try:
-        config = load_json(a.config)
+        config = installer.read_json(a.config)
+    except installer.InstallerError as exc:
+        print('Acceptance check stopped: ' + str(exc), file=sys.stderr)
+        return 2
+    try:
         report = inspect(config, a.profile)
         if a.manual:
             if config.get('guided_setup', {}).get('enabled', True):

@@ -113,8 +113,22 @@ def read_json(path):
         checked = settings_path(path)
     except RuntimeError as exc:
         raise InstallerError(str(exc)) from None
-    with checked.open(encoding='utf-8') as f:
-        return json.load(f)
+    # Named, with what is wrong: Python's own words ("Expecting value: line 1 column 1",
+    # "[Errno 2] No such file or directory") were all setup said before.
+    try:
+        with checked.open(encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        raise InstallerError(
+            f'{checked} is not there. Name your settings file with --config, or run  sudo bash install.sh  '
+            'without it (the guided setup makes my-config.json)'
+        ) from None
+    except (UnicodeError, ValueError) as exc:
+        where = f' (line {exc.lineno}, column {exc.colno})' if isinstance(exc, json.JSONDecodeError) else ''
+        raise InstallerError(
+            f'{checked} is not valid JSON{where}: it is damaged, or not a settings file. Fix it, or name '
+            'another with --config'
+        ) from None
 
 
 def load_modules(directory):
@@ -216,7 +230,7 @@ def require_settings(config):
     """The settings every installation needs are there, or which one is missing and how
     to get it back."""
     if not isinstance(config, dict):
-        raise InstallerError('Configuration must be an object')
+        raise InstallerError('The settings file holds no settings (it must be one JSON object, {...})')
     missing = next((key for key in REQUIRED if not isinstance(config.get(key), str) or not config[key]), None)
     if missing:
         raise InstallerError(

@@ -279,6 +279,26 @@ SPECS = [('data_ssd', 'aaa', 'ext4', '/srv/nekoserver', None), ('media_hdd', 'bb
 OLD = 'UUID=aaa /srv/nekoserver ext4 defaults,nofail,x-systemd.device-timeout=15s 0 2\n'
 
 
+class SettingsFileTests(unittest.TestCase):
+    """Seen on a fresh Ubuntu 24.04: `install.sh --check --config <file>` said only
+    "ERROR: Expecting value: line 1 column 1 (char 0)" for a file that was not JSON, and
+    "[Errno 2] No such file or directory" for one that was not there."""
+
+    def test_an_unreadable_settings_file_is_named_with_what_is_wrong(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad, missing = Path(tmp) / 'bad.json', Path(tmp) / 'missing.json'
+            bad.write_text('not json {')
+            for path, said in ((bad, 'is not valid JSON (line 1, column 1)'), (missing, 'is not there')):
+                with self.assertRaises(installer.InstallerError) as caught:
+                    installer.read_json(path)
+                self.assertIn(str(path.resolve()), str(caught.exception))
+                self.assertIn(said, str(caught.exception))
+                self.assertIn('--config', str(caught.exception))
+            with self.assertRaises(installer.InstallerError) as caught:
+                installer.require_settings([1, 2])
+            self.assertIn('holds no settings', str(caught.exception))
+
+
 class FstabTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

@@ -13,6 +13,9 @@ def main(argv=None):
     sub = p.add_subparsers(dest='action', required=True)
     for name in ('check', 'checkpoint', 'reattach', 'snapshot', 'restore-test', 'resume', 'install-docker'):
         cmd = sub.add_parser(name)
+        # Also after the command ("check --config my.json"), the order people type it in:
+        # there it was not read, and the default's error said to name a file with --config.
+        cmd.add_argument('--config', type=checked_settings, default=argparse.SUPPRESS)
         if name not in ('check', 'resume'):
             cmd.add_argument('--apply', action='store_true')
         if name in ('check', 'reattach'):
@@ -26,8 +29,12 @@ def main(argv=None):
             cmd.add_argument('--workspace', required=True, type=Path)
             cmd.add_argument('--port', type=int, default=2284)
     a = p.parse_args(argv)
+    config, problem = read_settings(a.config)
+    if problem:
+        print('Recovery stopped: ' + problem, file=sys.stderr)
+        print(AFTER_FAILURE, file=sys.stderr)
+        return 2
     try:
-        config = json.loads(Path(a.config).read_text())
         result = run(a, config)
         print(json.dumps(result, indent=2))
         return 1 if result.get('status') == 'needs_setup' else 0
@@ -44,6 +51,24 @@ def main(argv=None):
         print('Recovery failed: ' + failure_text(exc), file=sys.stderr)
         print(AFTER_FAILURE, file=sys.stderr)
         return 2
+
+
+def read_settings(path):
+    """(the settings, None), or (None, what is wrong with the file, named): before, a file
+    that was not JSON was "a settings or record file", and the message said to fix "what
+    it names" without naming it."""
+    try:
+        config = json.loads(Path(path).read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        return None, f'the settings file {path} is not there.'
+    except OSError as exc:
+        return None, f'the settings file {path} could not be read ({exc.strerror}).'
+    except (UnicodeError, ValueError) as exc:
+        where = f' (line {exc.lineno}, column {exc.colno})' if isinstance(exc, json.JSONDecodeError) else ''
+        return None, f'the settings file {path} is not valid JSON{where}: it is damaged, or not a settings file.'
+    if not isinstance(config, dict):
+        return None, f'the settings file {path} is not a settings file (no settings in it).'
+    return config, None
 
 
 AFTER_FAILURE = (
