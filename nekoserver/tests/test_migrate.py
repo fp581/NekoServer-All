@@ -665,6 +665,69 @@ class MoveTests(unittest.TestCase):
             self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 0)
         self.assertIn('UUID=newbig-0001', self.fstab.read_text())
 
+    def test_a_move_cut_off_just_after_unmounting_the_old_drive_mounts_it_before_the_apps_start(self):
+        """Seen in 0.51.1 (a real move in a test system, killed in its switch): the old
+        drive was unmounted, something ran again, and resume started the apps with the
+        drive's folder an empty one on the system disk, saying they "run as before"."""
+        cut_off = {
+            'drive': 'media_hdd',
+            'mount': '/mnt/nekoserver-media',
+            'old': {'uuid': 'hdd-0001', 'fstype': 'ext4'},
+            'new': {'uuid': 'newbig-0001', 'fstype': 'ext4'},
+            'stopped': ['docker.service'],
+        }
+        ran_again = mock.patch.object(migrate, 'active', return_value=['docker.service'])
+        migrate.record(self.journal, phase='switching', **cut_off)
+        del self.mounted['/mnt/nekoserver-media']
+        with ran_again:
+            self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 1)
+        self.assertEqual(self.mounted['/mnt/nekoserver-media'], ('hdd-0001', 'ext4', ''))
+        self.assertLess(
+            self.calls.index(('mount', '/mnt/nekoserver-media')), self.calls.index(('start', ('docker.service',)))
+        )
+        self.assertIn('The media HDD is the old drive, unchanged', self.said[-1])
+        # The old drive can't be mounted (unplugged meanwhile): the apps are not started,
+        # and the record stays for resume.
+        self.calls.clear()
+        migrate.record(self.journal, phase='switching', **cut_off)
+        del self.mounted['/mnt/nekoserver-media']
+        self.fstab.write_text('UUID=os-0001 / ext4 defaults 0 1\n')
+        with ran_again:
+            self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 2)
+        self.assertFalse([c for c in self.calls if c[0] == 'start'])
+        self.assertIn('so the apps were not started', self.said[-1])
+        self.assertEqual(migrate.read(self.journal)['phase'], 'restart_failed')
+
+    def test_going_back_cut_off_says_the_drive_is_still_the_one_moved_to(self):
+        """`back` cut off before its switch said "the drive is the old drive", which was
+        the wrong one: nothing changed, so it is still the drive it was moved to."""
+        migrate.record(
+            self.journal,
+            phase='stopped',
+            direction='back',
+            drive='media_hdd',
+            mount='/mnt/nekoserver-media',
+            old={'uuid': 'hdd-0001', 'fstype': 'ext4'},
+            new={'uuid': 'oldhdd-0001', 'fstype': 'ext4'},
+            stopped=['docker.service'],
+        )
+        self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 1)
+        self.assertIn('Going back stopped', self.said[-1])
+        self.assertIn('The media HDD is still the drive it was moved to, unchanged', self.said[-1])
+
+    def test_an_fstab_line_the_switch_could_not_rewrite_stops_the_move_before_anything_changes(self):
+        """Seen in 0.51.1: with the drive's line written as /dev/disk/by-uuid/..., the
+        move copied, stopped the apps and unmounted the old drive before the switch
+        refused the line, and resume refused it again: the server stayed down."""
+        self.fstab.write_text(
+            'UUID=os-0001 / ext4 defaults 0 1\n/dev/disk/by-uuid/hdd-0001 /mnt/nekoserver-media ext4 defaults 0 2\n'
+        )
+        with mock.patch.object(migrate, 'differences', return_value=[]):
+            self.assertEqual(self.move(), 2)
+        self.assertEqual(self.calls, [])
+        self.assertIn('exactly one line that mounts /mnt/nekoserver-media, starting with UUID=hdd-0001', self.said[-1])
+        self.assertFalse(self.journal.exists())
+
     def test_apps_that_ran_and_were_stopped_again_still_mean_starting_over(self):
         """0.45.8: after a restart the apps ran on the old drive, then were stopped (for a
         recovery, say); nothing ran when resume looked, so it switched to the new drive's

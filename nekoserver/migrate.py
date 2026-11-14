@@ -483,6 +483,25 @@ def names_drive(line, uuid):
     return line.split()[0].replace('"', '') == f'UUID={uuid}'
 
 
+def fstab_problem(mountpoint, uuid, fstab=FSTAB):
+    """Why the switch could not rewrite /etc/fstab for the drive `uuid` at `mountpoint`
+    (it needs exactly one line mounting that folder, naming the drive as UUID=...), or
+    None. Checked before anything is done: found only at the switch, the old drive was
+    already unmounted and the apps stopped, and resume stopped at the same place (seen
+    in 0.51.1 with a /dev/disk/by-uuid/ line)."""
+    try:
+        lines = fstab.read_text().splitlines()
+    except OSError as exc:
+        return f'{fstab} can not be read ({exc.strerror}); nothing was changed'
+    found = mount_lines(lines, mountpoint)
+    if len(found) == 1 and names_drive(lines[found[0]], uuid):
+        return None
+    return (
+        f'{fstab} must have exactly one line that mounts {mountpoint}, starting with UUID={uuid}, for the move to '
+        f'switch it; nothing was changed. Make it so (sudo bash install.sh says what to change), then try again'
+    )
+
+
 def switch_fstab(mountpoint, old_uuid, new_uuid, fstype, fstab=FSTAB, now=None, subvolume=None):
     """The line that mounts `mountpoint` names the new drive; the fstab as it was is
     kept beside it (fstab.neko-before-move-<time>)."""
@@ -611,6 +630,10 @@ def move_held(settings, drive, new_uuid, out, journal, staging, fstab):
         return 2
     if mounted[2]:
         old['subvolume'] = mounted[2]
+    problem = fstab_problem(mountpoint, old['uuid'], fstab)
+    if problem:
+        out(problem)
+        return 2
     found, left_out = targets(config, drive)
     target = next((t for t in found if t[0] == new_uuid), None)
     if target is None:
@@ -671,28 +694,61 @@ UUID = re.compile(r'[A-Za-z0-9-]{8,80}')
 SUBVOLUME = re.compile(r'(/[A-Za-z0-9@._-]+)*')
 
 
+def drive_not_back(saved):
+    """Why the drive in place before the move (the record's "old") is not mounted at its
+    folder again, after mounting it from /etc/fstab (which still names it) when nothing
+    is: a move cut off in its switch, just after it unmounted that drive, left the folder
+    an empty one on the system disk, and the apps started on it wrote there (seen in
+    0.51.1: resume said "the apps run as before" with the drive unmounted). None when it
+    is in place, or the record names no folder (nothing to check)."""
+    folder, old = saved.get('mount'), saved.get('old') or {}
+    if not folder or not old.get('uuid'):
+        return None
+    expected = (old['uuid'], old.get('fstype'), old.get('subvolume') or '')
+    if mounted_identity(folder) is None:
+        run(['mount', folder], 120, check=False)
+    there = mounted_identity(folder)
+    if there == expected:
+        return None
+    shown = f'the drive {there[0]}' if there else 'no drive'
+    return (
+        f'{folder} has {shown} mounted, not the drive it had before ({old["uuid"]}), so the apps were not started '
+        '(they would write to the wrong place). Connect that drive and mount it (sudo mount ' + folder + '), then  '
+        'sudo python3 migrate.py resume'
+    )
+
+
 def stopped_safely(exc, label, journal, staging, out=print):
-    """The move stopped before its switch: the new drive is unmounted and what the move
-    stopped (as its record says: also when stopping failed part-way) is started again.
-    The record goes only once all of it runs again; otherwise it stays, with what is left.
-    Only the move's own new drive is unmounted: a folder that was in use already (the move
-    refused it) keeps what someone else mounted there (the review of 0.47.2)."""
+    """The move stopped before its switch: the new drive is unmounted, the drive in place
+    before is mounted again if the switch had unmounted it, and what the move stopped (as
+    its record says: also when stopping failed part-way) is started again. The record goes
+    only once all of it runs again; otherwise it stays, with what is left. Only the move's
+    own new drive is unmounted: a folder that was in use already (the move refused it)
+    keeps what someone else mounted there (the review of 0.47.2)."""
     saved = read(journal) or {}
     ours = (saved.get('new') or {}).get('uuid')
     there = mounted_identity(staging)
     if ours and there and there[0] == ours:
         run(['umount', str(staging)], 120, check=False)
+    going_back = saved.get('direction') == 'back'
+    unchanged = f'The {label} is still the drive it was moved to' if going_back else f'The {label} is the old drive'
+    stop = 'Going back stopped' if going_back else 'The move stopped'
+    missing = drive_not_back(saved)
+    if missing:
+        record(journal, phase='restart_failed')
+        out(f'{stop}: {exc}. But {missing}')
+        return 2
     failed = start_again(saved.get('stopped'), out)
     if failed:
         record(journal, phase='restart_failed', stopped=failed)
         out(
-            f'The move stopped: {exc}. The {label} is the old drive, unchanged, but these did not start again: '
+            f'{stop}: {exc}. {unchanged}, unchanged, but these did not start again: '
             + ', '.join(failed)
             + '. Start them (sudo systemctl start <name>), then  sudo python3 migrate.py resume'
         )
         return 2
     journal.unlink(missing_ok=True)
-    out(f'The move stopped: {exc}. The {label} is the old drive, unchanged; the apps run as before.')
+    out(f'{stop}: {exc}. {unchanged}, unchanged; the apps run as before.')
     return 1
 
 
@@ -856,7 +912,7 @@ def connected_uuids(folder='/dev/disk/by-uuid'):
         return set()
 
 
-def back_problem(config, path, drive, previous, current):
+def back_problem(config, path, drive, previous, current, fstab=FSTAB):
     """Why `back` can't take `drive` back now, or None: another job at work, the settings'
     records not valid, run from the drive it moves, the old drive not connected."""
     mount_key, label = DRIVES[drive]
@@ -873,7 +929,7 @@ def back_problem(config, path, drive, previous, current):
         return FROM_THE_DOWNLOAD.format(label=label)
     if previous['uuid'] not in connected_uuids():
         return f'The old {label} ({previous["uuid"]}) is not connected'
-    return None
+    return fstab_problem(mount_path(config[mount_key]), current['uuid'], fstab)
 
 
 def back_held(settings, out, journal, staging, fstab, wanted=None):
@@ -885,7 +941,7 @@ def back_held(settings, out, journal, staging, fstab, wanted=None):
     mount_key, label = DRIVES[drive]
     previous = config['storage'][drive]['previous_drive']
     current = {k: v for k, v in config['storage'][drive].items() if k != 'previous_drive'}
-    problem = back_problem(config, path, drive, previous, current)
+    problem = back_problem(config, path, drive, previous, current, fstab)
     if problem:
         out(problem)
         return 2
@@ -950,6 +1006,8 @@ def resume_held(settings, out, journal, staging, fstab):
             return 2
         return 0
     phase = saved.get('phase')
+    drive = saved.get('drive')
+    label = DRIVES[drive][1] if isinstance(drive, str) and drive in DRIVES else 'drive'
     if phase == 'switching' and ran_again_on_old(saved, fstab):
         # Not switched yet, and what the move stopped runs again (a restart started it on
         # the old drive): what was written since is not on the new drive, so switching to
@@ -963,7 +1021,7 @@ def resume_held(settings, out, journal, staging, fstab):
         return stopped_safely(
             'the apps ran again on the old drive before it switched (a restart, say), or that cannot be ruled '
             f"out, so the new drive's copy may not be up to date. {again}",
-            'drive',
+            label,
             journal,
             staging,
             out,
@@ -981,7 +1039,7 @@ def resume_held(settings, out, journal, staging, fstab):
         path, config = load_settings(settings)
         checked_move(saved, config, saved['drive'])
         return started_and_checked(config, saved['drive'], journal, out)
-    return stopped_safely('it was cut off before it switched (a restart, say)', 'drive', journal, staging, out)
+    return stopped_safely('it was cut off before it switched (a restart, say)', label, journal, staging, out)
 
 
 def list_targets(settings, out=print):
