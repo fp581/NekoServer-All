@@ -2208,6 +2208,7 @@ class ConnectorRerunTests(unittest.TestCase):
         answers = {
             ('prowlarr', '/applications/schema'): [],
             ('prowlarr', '/applications'): existing,
+            ('prowlarr', '/applications/test'): {},
             ('sonarr', '/system/status'): {},
         }
         with (
@@ -2219,6 +2220,55 @@ class ConnectorRerunTests(unittest.TestCase):
         ):
             self.assertIsNone(connect.configure_applications(Path('/x'), True, apps=('sonarr',)))
         self.assertIn('existing connection fields verified', str(shown.call_args_list))
+
+    def test_a_link_whose_app_key_was_made_again_gets_the_current_key(self):
+        # Deep check 188: Sonarr's API key made again by hand (Settings, General). The
+        # link's addresses still matched, so it was "verified" while Prowlarr could no
+        # longer sign in to Sonarr: no indexer reached it.
+        connect = load_connector()
+        found = {
+            'id': 3,
+            'name': 'neko-sonarr',
+            'syncLevel': 'addOnly',
+            'fields': [
+                {'name': 'prowlarrUrl', 'value': 'http://prowlarr:9696'},
+                {'name': 'baseUrl', 'value': 'http://sonarr:8989'},
+                {'name': 'apiKey', 'value': '********'},
+            ],
+        }
+        sent = []
+        refused = {'/applications/test'}  # Prowlarr's test with the old key it stores
+
+        def request(app, key, endpoint, method='GET', payload=None, **more):
+            sent.append((method, endpoint, payload))
+            if endpoint in refused:
+                raise RuntimeError(f'prowlarr {endpoint}: HTTP 400')
+            answers = {'/applications/schema': [], '/applications': [found], '/system/status': {}}
+            return answers.get(endpoint, {})
+
+        def configure():
+            with (
+                mock.patch.object(connect, 'app_key', side_effect=lambda app, root: 'k-' + app),
+                mock.patch.object(connect, 'request', side_effect=request),
+                mock.patch('builtins.print') as shown,
+            ):
+                connect.configure_applications(Path('/x'), True, apps=('sonarr',))
+            return str(shown.call_args_list)
+
+        said = configure()
+        saved = [payload for method, endpoint, payload in sent if method == 'PUT']
+        self.assertEqual(len(saved), 1)
+        self.assertIn({'name': 'apiKey', 'value': 'k-sonarr'}, saved[0]['fields'])
+        self.assertIn('the current one is saved in it', said)
+        # Prowlarr refusing the current key too is said, and setup reports the link.
+        refused.add('/applications/3')
+        with mock.patch('builtins.print') as shown, self.assertRaisesRegex(RuntimeError, 'sonarr'):
+            with (
+                mock.patch.object(connect, 'app_key', side_effect=lambda app, root: 'k-' + app),
+                mock.patch.object(connect, 'request', side_effect=request),
+            ):
+                connect.configure_applications(Path('/x'), True, apps=('sonarr',))
+        self.assertIn('enter it in Prowlarr (Settings, Apps)', str(shown.call_args_list))
 
     def test_a_link_to_another_address_is_still_reported(self):
         connect = load_connector()

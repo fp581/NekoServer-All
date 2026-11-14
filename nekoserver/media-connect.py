@@ -516,7 +516,10 @@ def configure_applications(root, apply, apps=('sonarr', 'radarr', 'lidarr')):
             # routing fields can be compared; the key was checked when the link was made.
             routing = {k: v for k, v in expected.items() if k != 'apiKey'}
             if fields_match(found, routing) and found.get('syncLevel') in ('addOnly', 'fullSync'):
-                print(f'{app}: existing connection fields verified')
+                if signs_in(app, pro_key, found, app_api_key, apply):
+                    print(f'{app}: existing connection fields verified')
+                else:
+                    failures.append(app)
             else:
                 print(f'{app}: existing connection differs; review in Prowlarr')
                 failures.append(app)
@@ -550,6 +553,31 @@ def configure_applications(root, apply, apps=('sonarr', 'radarr', 'lidarr')):
 
     if failures:
         raise RuntimeError('Prowlarr application connections incomplete: ' + ', '.join(failures))
+
+
+def signs_in(app, pro_key, found, key, apply):
+    """The link Prowlarr keeps to `app` still signs in to it (Prowlarr tests it with the
+    key it stores). An API key made again in the app (Settings, General) leaves Prowlarr
+    with the old one: it is given the current one. False when a person needs to look."""
+    try:
+        request('prowlarr', pro_key, APPLICATIONS + '/test', 'POST', found)
+        return True
+    except RuntimeError:
+        pass
+    entry = copy.deepcopy(found)
+    if type(entry.get('id')) is not int or not field_set(entry.get('fields', []), 'apiKey', key):
+        print(f"{app}: Prowlarr cannot sign in to {app}; enter {app}'s API key in Prowlarr (Settings, Apps)")
+        return False
+    if not apply:
+        print(f'{app}: Prowlarr has an old API key for {app}; setup would save the current one in it')
+        return True
+    try:
+        request('prowlarr', pro_key, f'{APPLICATIONS}/{entry["id"]}', 'PUT', entry)
+    except RuntimeError as exc:
+        print(f"{app}: could not save {app}'s API key in Prowlarr ({exc}); enter it in Prowlarr (Settings, Apps)")
+        return False
+    print(f'{app}: Prowlarr had an old API key for {app} (made again in {app}); the current one is saved in it')
+    return True
 
 
 CLIENT = 'Neko-qBittorrent'  # the name of the download client setup makes in each Arr app
