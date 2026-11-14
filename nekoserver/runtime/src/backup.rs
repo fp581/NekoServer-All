@@ -3116,6 +3116,16 @@ pub struct Stage {
     pub dir: PathBuf,
     pub payload: PathBuf,
 }
+/// A snapshot that failed is removed as the run ends: it is as big as a whole snapshot,
+/// and it stayed on the drive until the next night's run (deep check plan 203). A
+/// published one was renamed away; one cut off by a power cut is cleared by the next run.
+impl Drop for Stage {
+    fn drop(&mut self) {
+        if fs::symlink_metadata(&self.dir).is_ok_and(|m| m.is_dir()) {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+}
 /// Called with the job's lock held: what an earlier run that failed or was cut off left
 /// half-made (each as big as a whole snapshot) is removed first, or a full drive would
 /// stay full and every later run fail too.
@@ -8153,6 +8163,33 @@ mod tests {
     }
     /// The wizard specification's T20: older backups are removed only once a new one is
     /// finished and published, and the last usable one never goes.
+    #[test]
+    fn a_snapshot_that_failed_leaves_nothing_behind() {
+        let root = scratch("failed-stage");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let stage = stage_snapshot(&root).unwrap();
+        fs::write(stage.payload.join("big.db"), vec![0u8; 4096]).unwrap();
+        let half_made = stage.dir.clone();
+        let failed = publish_snapshot(
+            &root,
+            &stage,
+            &[],
+            || Err(Error::new("no")),
+            &json!({}),
+            1,
+            None,
+        );
+        assert!(failed.is_err());
+        drop(stage); // the run ends
+        assert!(!half_made.exists());
+        // A published one stays.
+        let stage = stage_snapshot(&root).unwrap();
+        publish_snapshot(&root, &stage, &[], || Ok(()), &json!({}), 1, None).unwrap();
+        let name = stage.name.clone();
+        drop(stage);
+        assert!(root.join(&name).join("manifest.json").is_file());
+        fs::remove_dir_all(&root).unwrap();
+    }
     #[test]
     fn older_snapshots_go_only_after_a_new_one_is_published_and_never_the_last_one() {
         let root = scratch("prune-after");
