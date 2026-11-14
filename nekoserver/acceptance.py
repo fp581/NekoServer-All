@@ -1331,9 +1331,11 @@ def main(argv=None):
             'Manual passes are user-reported. This report applies only to the selected profile and current inspection.'
         )
         return 0 if report['acceptance_complete'] else 2 if report['status'] == 'failed' else 1
-    except (OSError, RuntimeError, ValueError, KeyError, TypeError, installer.InstallerError, KeyboardInterrupt):
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError, installer.InstallerError, KeyboardInterrupt) as exc:
         print(
-            'Acceptance check could not finish; inspect configuration and local services. No application state was changed.',
+            'Acceptance check could not finish: '
+            + installer.failure_reason(exc)
+            + '. No application state was changed.',
             file=sys.stderr,
         )
         return 2

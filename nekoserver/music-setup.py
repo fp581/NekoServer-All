@@ -22,7 +22,11 @@ def main(argv=None):
     if os.geteuid() != 0:
         parser.error('Run as root to protect the monitor token')
     config = json.loads(args.config.read_text())
-    verify_storage(config)
+    try:
+        verify_storage(config)
+    except RuntimeError as exc:  # a drive not connected, or the runtime not built yet
+        print(f'Music setup stopped: {exc}. Nothing was changed.', file=sys.stderr)
+        return 2
     if 'navidrome' not in media_services(config):
         parser.error('Select navidrome in media.services first (and the Music group: "music" under "media_apps")')
     if args.configure:

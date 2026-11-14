@@ -758,9 +758,19 @@ def main(argv=None):
             file=sys.stderr,
         )
         return 2
-    except (OSError, RuntimeError, ValueError, KeyError):
-        print('Source import unavailable; check configured mounts and source inventory', file=sys.stderr)
+    except (OSError, RuntimeError, ValueError, KeyError) as exc:
+        print('Source import stopped: ' + stop_reason(exc) + '. Nothing was copied.', file=sys.stderr)
         return 2
+
+
+def stop_reason(exc):
+    """Why the import could not run, in words: a missing setting named as one (str() of a
+    KeyError is the key alone), a system error with the file it was about."""
+    if isinstance(exc, KeyError):
+        return f'the setting {exc} is missing'
+    if isinstance(exc, OSError) and exc.strerror:
+        return exc.strerror + (f' ({exc.filename})' if exc.filename else '')
+    return str(exc) or type(exc).__name__
 
 
 if __name__ == '__main__':
