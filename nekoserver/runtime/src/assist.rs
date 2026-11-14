@@ -1524,6 +1524,56 @@ mod tests {
     }
 
     #[test]
+    fn no_text_makes_the_redaction_panic() {
+        // Whatever a person types or a log holds (Hebrew, emoji, quotes left open, the
+        // words that start a value at the very end): the redaction never panics, and the
+        // value after "password is" never stays in.
+        let parts = [
+            "password",
+            "PIN",
+            "pin",
+            "is",
+            "was",
+            "to",
+            "for",
+            " ",
+            "\n",
+            "\"",
+            "'",
+            "\u{201c}",
+            "\u{201d}",
+            "שלום",
+            "🐈",
+            "é",
+            "x",
+            "Jellyfin",
+            "=",
+            ":",
+            "passphrase",
+            "now",
+            "set",
+            "the",
+            "סיסמה",
+        ];
+        let mut seed: u64 = 0x5eed;
+        for _ in 0..20_000 {
+            let mut text = String::new();
+            for _ in 0..(seed % 12) {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                text.push_str(parts[(seed >> 33) as usize % parts.len()]);
+                if seed & 1 == 0 {
+                    text.push(' ');
+                }
+            }
+            let _ = redact(&text, &[]);
+        }
+        let said = redact("my password is קטן🐈סוד and more", &[]);
+        assert!(!said.contains("קטן🐈סוד"), "{said}");
+    }
+
+    #[test]
     fn a_secret_that_holds_another_is_taken_out_whole() {
         // The review of 0.51.0: the shorter was replaced first and the longer's rest stayed.
         let known = ["Moss-Lark".to_string(), "Moss-Lark-Fern-Oak".to_string()];
