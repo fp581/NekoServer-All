@@ -2170,7 +2170,9 @@ fn space_advice(id: &str, full: bool) -> &'static str {
         ("media_hdd", true) => "Downloads, the nightly backups and the monthly snapshot stop when it is full. Delete what you no longer watch, or old downloads, or add a bigger drive.",
         ("data_ssd", true) => "The apps keep their data, the music and their images here and can stop working when it is full. Free up space there, or move to a bigger SSD.",
         (_, true) => "Backups and uploads stop when it is full. Free up space there.",
-        _ => "Review free space before uploads or backups.",
+        ("media_hdd", false) => "Over 90% used. Downloads, the nightly backups and the monthly snapshot stop once it is full: delete what you no longer watch, or old downloads, before then.",
+        ("data_ssd", false) => "Over 90% used. The apps keep their data, the music and their images here and can stop working once it is full: free up space there before then.",
+        _ => "Over 90% used. Backups and uploads stop once it is full: free up space there before then.",
     }
 }
 /// backup_secrets.py's key: without it every monthly snapshot holds the app password
@@ -3086,6 +3088,21 @@ fn unwritable(result: &mut Value, why: &str) {
 #[cfg(test)]
 mod os_tests {
     use super::*;
+    /// Seen with the media HDD filled to 96%: "filling up" said only "Review free space
+    /// before uploads or backups". A warning says, like the urgent one, what stops when
+    /// the drive is full and what to do before then.
+    #[test]
+    fn a_drive_filling_up_says_what_stops_and_what_to_do() {
+        for (id, stops) in [
+            ("media_hdd", "the nightly backups"),
+            ("data_ssd", "can stop working"),
+            ("d3", "Backups and uploads stop"),
+        ] {
+            let warning = space_advice(id, false);
+            assert!(warning.contains(stops), "{id}: {warning}");
+            assert!(warning.contains("before then"), "{id}: {warning}");
+        }
+    }
     /// Seen on an SSD remounted read-only, then on one filled to the last byte: the
     /// collector's own state could not be saved, and "App SSD can't be written ...
     /// restart the PC" replaced the drive's "turned read-only" alert, or stood beside
