@@ -124,3 +124,16 @@ class DashboardInBrowserTests(unittest.TestCase):
         for (route, label, _), answer in zip(checks, answers):
             with self.subTest(route=route, label=label):
                 self.assertEqual(answer, {'before': label, 'after': label})
+
+    def test_a_phone_at_200_percent_zoom_needs_no_sideways_scrolling(self):
+        # Deep check 170: a 390 px phone at 200% zoom is 195 CSS pixels wide. The cards'
+        # badges ("Won't start after a restart", "Not checked yet") stuck out of their
+        # cards, and the page scrolled sideways (Server health 281 px, Backups 246 px).
+        routes = ['home', 'apps', 'backups', 'hardware', 'sensors', 'cooling', 'processes', 'health', 'updates']
+        routes += ['attention', 'help']
+        for width in (390, 320, 195):
+            answers = self.browse(*[('pageWidth', {'route': r, 'width': width}) for r in routes])
+            for route, (scroll, window, overlap) in zip(routes, answers):
+                with self.subTest(route=route, width=width):
+                    self.assertLessEqual(scroll, window)
+                    self.assertFalse(overlap, "the title of the page is under its buttons")

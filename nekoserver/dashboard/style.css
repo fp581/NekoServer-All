@@ -230,6 +230,8 @@ main {
 }
 .topbar {
   display: flex;
+  /* The buttons go under a title they would cover (Processes at 320 px wide). */
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -2289,6 +2291,41 @@ body.tv {
   .glance,
   .summary-strip {
     grid-template-columns: 1fr;
+  }
+}
+/* A phone at 200% zoom (about 195 px): a page's cat goes above its title and a card's
+ * badge under the card's title, so no words are pushed out sideways (deep check 170: the
+ * page scrolled sideways, up to 281 px wide). */
+@media (max-width: 300px) {
+  .section-head.with-cat,
+  .section-head.with-cat[data-cat='processes'],
+  .section-head.with-cat:is([data-cat='apps'], [data-cat='help']) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .section-head.with-cat > .cat-box.panel-cat,
+  .section-head.with-cat[data-cat='processes'] > .cat-box.panel-cat,
+  .section-head.with-cat:is([data-cat='apps'], [data-cat='help']) > .cat-box.panel-cat {
+    grid-column: 1;
+    grid-row: 1;
+    justify-self: start;
+  }
+  .section-head.with-cat > div,
+  .section-head.with-cat:is([data-cat='apps'], [data-cat='help']) > div {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .section-head.with-cat > :is(a, button, .badge),
+  .section-head.with-cat:is([data-cat='apps'], [data-cat='help']) > :is(a, button, .badge) {
+    grid-row: 3;
+  }
+  .card-heading,
+  .row {
+    flex-wrap: wrap;
+  }
+  .badge,
+  .row > .badge {
+    flex-shrink: 1;
+    white-space: normal;
   }
 }
 @media (prefers-reduced-motion: no-preference) {

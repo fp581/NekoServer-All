@@ -32,10 +32,22 @@ const CHECKS = {
     await page.evaluate(kind => load(kind), reload);
     return { before, after: await page.evaluate(name) };
   },
-  /* How wide the page is at `width`: [its scroll width, the window's]. */
+  /* How wide the page is at `width`: [its scroll width, the window's, whether the page's
+     title and the buttons beside it overlap]. */
   async pageWidth(browser, { route, width }) {
     const page = await open(browser, route, width);
-    return page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+    return page.evaluate(() => {
+      const words = document.createRange(); // the title's words, not its box
+      words.selectNodeContents(document.getElementById('page-title'));
+      const title = words.getBoundingClientRect();
+      const actions = document.querySelector('.top-actions').getBoundingClientRect();
+      const overlap = // by more than a pixel (rounding)
+        title.right > actions.left + 1 &&
+        title.left + 1 < actions.right &&
+        title.bottom > actions.top + 1 &&
+        title.top + 1 < actions.bottom;
+      return [document.documentElement.scrollWidth, document.documentElement.clientWidth, overlap];
+    });
   }
 };
 
