@@ -48,9 +48,9 @@ const CALLS = new Set([
 ]);
 /* Calls answered from another function's result, with more of it; the last four run a
    piece of Ask Neko on a page that keeps what is put on it (ASK_PAGE below). */
-const DETAILED = new Set(['issueDetails', 'askFlow', 'approveFlow', 'bugBoxCopy', 'cutOffEntry']);
-/* What those four need of the page script besides the functions above. */
-const ASK_PAGE = ['ASK', 'state', 'askNeko', 'approveRepair', 'askProgress', 'askEntry', 'bugBox'];
+const DETAILED = new Set(['issueDetails', 'askFlow', 'approveFlow', 'bugBoxCopy', 'cutOffEntry', 'askSignedOut']);
+/* What those need of the page script besides the functions above. */
+const ASK_PAGE = ['ASK', 'state', 'askNeko', 'approveRepair', 'askProgress', 'askEntry', 'bugBox', 'sendQuestion'];
 const calls = JSON.parse(process.argv[2]);
 
 /* Anything the page touches: every property is another stand-in, every call returns one. */
@@ -225,6 +225,15 @@ function keptPage() {
       },
       select() {
         node.selected = true;
+      },
+      showModal() {
+        node.open = true; // the PIN dialog
+      },
+      setAttribute(name, value) {
+        node[name] = value;
+      },
+      focus() {
+        /* nothing to move */
       }
     };
     return node;
@@ -356,7 +365,19 @@ SPECIAL.cutOffEntry = async argument => {
   return { sent, repair: entry.repair ?? null, shown: shown(app.askEntry(entry)), report: app.bugReport(entry) };
 };
 
-/* One call after the other: the four above each bring their own page and server. */
+// A question typed and sent (Ask pressed) on a device not signed in: what is left in the
+// question box, whether the PIN dialog opened, and what was sent. argument: the question.
+SPECIAL.askSignedOut = async argument => {
+  const byId = keptPage();
+  app.state.control = { access: { signed_in: false, pin_set: true } };
+  const sent = server(() => ({ ok: false, error: 'E45', message: 'Too many wrong PINs' }));
+  byId('ask-input').value = argument;
+  app.sendQuestion();
+  await Promise.resolve();
+  return { box: byId('ask-input').value, dialog: byId('dialog').open === true, sent };
+};
+
+/* One call after the other: the ones above each bring their own page and server. */
 function called([name, argument]) {
   if (!CALLS.has(name) && !DETAILED.has(name)) throw new Error('Not a function the harness offers: ' + name);
   return (SPECIAL[name] ?? app[name])(argument);

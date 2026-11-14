@@ -1932,10 +1932,25 @@ function askUnlock(
   }
   unlockDialog(then, 'ASK NEKO', why);
 }
+/* Ask pressed: the question in the box, about the attention item chosen (if any). */
+function sendQuestion() {
+  const question = $('ask-input').value.trim();
+  if (!question || ASK.busy) {
+    return;
+  }
+  const item = ASK.item;
+  ASK.item = null;
+  void askNeko(question, item);
+}
 async function askNeko(question, item) {
   if (!signedIn()) {
     askUnlock(() => askNeko(question, item));
     return;
+  }
+  // Emptied only now that it is sent: emptied at once, a question typed while the PIN
+  // was locked out (wrong PINs) was lost when the PIN dialog was closed (deep check 165).
+  if ($('ask-input').value.trim() === question) {
+    $('ask-input').value = '';
   }
   const entry = { question, answer: '' };
   ASK.log.push(entry);
@@ -5294,14 +5309,7 @@ $('theme-toggle').addEventListener('click', toggleTheme);
 $('more').addEventListener('click', moreMenu);
 $('ask-form').addEventListener('submit', e => {
   e.preventDefault();
-  const question = $('ask-input').value.trim();
-  if (!question || ASK.busy) {
-    return;
-  }
-  $('ask-input').value = '';
-  const item = ASK.item;
-  ASK.item = null;
-  void askNeko(question, item);
+  sendQuestion();
 });
 $('export').addEventListener('click', diagnostics);
 $('close-dialog').addEventListener('click', () => $('dialog').close());

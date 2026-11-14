@@ -940,6 +940,15 @@ class AskNekoPageTests(unittest.TestCase):
     # (dashboard_harness.mjs: askFlow, approveFlow, cutOffEntry, bugBoxCopy), instead of
     # looking for the lines in app.js.
 
+    def test_a_question_waiting_for_the_pin_stays_in_its_box(self):
+        # Deep check 165 (five wrong PINs, then Ask): the PIN dialog opened and the question
+        # box was already empty, so a question typed during the lockout was lost.
+        [flow] = page(('askSignedOut', 'Why did the weekly backup fail?'))
+        self.assertEqual(flow, {'box': 'Why did the weekly backup fail?', 'dialog': True, 'sent': []})
+        # Once it is sent (signed in), the box is emptied as before.
+        [asked] = page(('askFlow', {'typed': 'Why?', 'kept': 'Why?', 'answer': 'Because.'}))
+        self.assertEqual(asked['sent'][0], ['/api/control/ask', {'question': 'Why?'}])
+
     def test_the_page_keeps_and_shows_the_servers_copy_of_the_question(self):
         """Review of 0.49.0: a password typed into the question went into the bug report
         as typed. The page keeps the server's copy of the question (secrets removed)."""
