@@ -85,7 +85,6 @@ class RoomTests(unittest.TestCase):
         self.assertIn('100 MB is free', said)
 
 
-
 class TimeZoneTests(unittest.TestCase):
     def test_a_misspelt_time_zone_is_said_with_the_one_meant(self):
         """Deep check plan 99: "Europe/Londn" and "europe/london" were "not installed under
