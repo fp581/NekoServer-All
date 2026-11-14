@@ -3492,6 +3492,38 @@ const DUMP_SCRIPT: &str = "if command -v timeout >/dev/null 2>&1; then exec time
 pub fn database(compose: &Path, env: &Path, dest: &Path, apply: bool) -> Result<Option<PathBuf>> {
     database_of("immich", compose, env, dest, apply)
 }
+/// The last line a program wrote to `stream` (read on a thread of its own, so a full pipe
+/// never holds the program up).
+fn last_line_of(mut stream: impl Read + Send + 'static) -> thread::JoinHandle<String> {
+    thread::spawn(move || {
+        let mut text = Vec::new();
+        let _ = stream.read_to_end(&mut text);
+        let text = String::from_utf8_lossy(&text);
+        let last = text.lines().map(str::trim).rfind(|l| !l.is_empty());
+        last.unwrap_or("").to_string()
+    })
+}
+/// How much of what Docker or pg_dump said goes into the failed copy's message.
+const DUMP_WHY_ROOM: usize = 80;
+/// Said when `app`'s database copy failed, with what Docker or pg_dump said (`why`). It
+/// said only "Database dump failed or too small", also for an Immich that was stopped
+/// (Docker: service "database" is not running), which needs only to be started.
+fn dump_failed(app: &str, why: &str) -> String {
+    // Short enough that the advice after it survives the reports' 300-character cut.
+    let why: String = why.chars().take(DUMP_WHY_ROOM).collect();
+    let said = if why.is_empty() {
+        String::new()
+    } else {
+        format!(" ({why})")
+    };
+    let name = [&IMMICH_DUMPS, &NEXTCLOUD_DUMPS]
+        .iter()
+        .find(|kind| kind.app == app)
+        .map_or(app, |kind| kind.label);
+    format!(
+        "Database dump failed or too small{said}. The {name} database copy needs {name} running: if it is stopped, restart the PC or run  sudo bash install.sh  again, and the copy is made at the next run"
+    )
+}
 /// A logical copy (pg_dump) of `app`'s database, from the `database` service of its
 /// Compose project neko-<app>, as `<dest>/<app>-<UTC stamp>.sql`.
 fn database_of(
@@ -3542,7 +3574,7 @@ fn database_of(
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::from(output.try_clone()?))
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
         unsafe {
             cmd.pre_exec(|| {
                 if libc::setsid() < 0 {
@@ -3553,6 +3585,7 @@ fn database_of(
         }
         let mut child = cmd.spawn()?;
         let pid = child.id() as i32;
+        let errors = child.stderr.take().map(last_line_of);
         let start = Instant::now();
         let status = loop {
             if let Some(status) = child.try_wait()? {
@@ -3572,7 +3605,8 @@ fn database_of(
         }
         output.sync_all()?;
         if !status.success() || output.metadata()?.len() < 100 {
-            return Err(Error::new("Database dump failed or too small"));
+            let why = errors.and_then(|e| e.join().ok()).unwrap_or_default();
+            return Err(Error::new(&dump_failed(app, &why)));
         }
         // A disk that fills up mid-dump can leave a cut-off file even when every
         // program reports success. pg_dump ends a finished dump with this line.
@@ -5935,6 +5969,32 @@ mod tests {
     /// Seen with a frozen exFAT FUSE mount standing in for a NAS folder whose NAS went
     /// away (0.51.2 review): the weekly copy looked at the folder first (the overlap check)
     /// and hung there for good, before its report said anything.
+    /// Seen with the real Immich database job and a stand-in Docker (0.51.2 review): with
+    /// Immich stopped, the copy failed with "Database dump failed or too small" alone.
+    #[test]
+    fn a_failed_database_copy_says_what_docker_said_and_what_to_do() {
+        let mut child = Command::new("sh")
+            .args([
+                "-c",
+                "echo progress >&2; echo 'service \"database\" is not running' >&2; exit 1",
+            ])
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let errors = last_line_of(child.stderr.take().unwrap());
+        assert!(!child.wait().unwrap().success());
+        let said = dump_failed("immich", &errors.join().unwrap());
+        assert!(
+            said.starts_with(
+                "Database dump failed or too small (service \"database\" is not running). The Immich database copy needs Immich running"
+            ),
+            "{said}"
+        );
+        // However long what Docker said, the advice survives the reports' cut.
+        let long = dump_failed("nextcloud", &"x".repeat(500));
+        assert!(common::sanitize(&long).ends_with("the copy is made at the next run"));
+        assert!(dump_failed("immich", "").starts_with("Database dump failed or too small. The"));
+    }
     #[test]
     fn a_usb_folder_that_does_not_answer_is_said_before_anything_looks_at_it() {
         let run = UsbRun {
