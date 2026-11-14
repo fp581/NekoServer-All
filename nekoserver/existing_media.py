@@ -976,12 +976,7 @@ NO_ROOM = (
 NO_REPORT = 'The copy left no report; look at the library and run setup again'
 
 
-def size_words(count):
-    """A number of bytes as people say it: "1.5 GB"."""
-    for unit, size in (('TB', 1000**4), ('GB', 1000**3), ('MB', 1000**2), ('kB', 1000)):
-        if count >= size:
-            return f'{count / size:.1f} {unit}'
-    return f'{count} bytes'
+size_words = source_import.size_words  # sizes said the same way as the import says them
 
 
 def sources_file(config):

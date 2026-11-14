@@ -44,6 +44,19 @@ class NotMountedYet(SourceGone):
     not connect when the import opened it (the NAS off or asleep, say)."""
 
 
+def size_words(count):
+    """A number of bytes as people say it: "1.5 GB"."""
+    for unit, size in (('TB', 1000**4), ('GB', 1000**3), ('MB', 1000**2), ('kB', 1000)):
+        if count >= size:
+            return f'{count / size:.1f} {unit}'
+    return f'{count} bytes'
+
+
+class Said(RuntimeError):
+    """Why a source was not copied, in words for the person and with no folder of theirs
+    in it: the report keeps them as they are (other errors get one general reason)."""
+
+
 class SourceChanged(RuntimeError):
     """A file changed while it was copied (still being written, say); names the file."""
 
@@ -80,7 +93,10 @@ def source_folder(source):
     if source.get('type') == 'remote':
         value = source.get('mounted_path')
         if not value:
-            raise RuntimeError('Remote source needs an already mounted local folder')
+            raise Said(
+                'This network share is only noted: it has no folder on this PC yet. Mount it here, then add it '
+                'again in the source wizard with the folder it is mounted on'
+            )
         path = safe_path(value)
         kind = share_type(path)
         if kind == 'autofs':
@@ -415,7 +431,7 @@ def import_target(folder, media, category):
     managed = target.resolve()
     here = folder.resolve()
     if here == managed or managed in here.parents or here in managed.parents:
-        raise RuntimeError('Source and destination overlap')
+        raise Said('This folder is inside the NekoServer library (or holds it), so it cannot be copied into it')
     return target
 
 
@@ -531,8 +547,12 @@ def copy_source(source, media, apply=False, uid=None, gid=None, guard=None):
     conflicts = []
     entries = planned_copies(folder, target, apply, conflicts)
     required = sum(stat.st_size for _, _, stat in entries)
-    if required > shutil.disk_usage(media).free:
-        raise RuntimeError('Not enough free space on target library filesystem')
+    free = shutil.disk_usage(media).free
+    if required > free:
+        raise Said(
+            f'Nothing was copied: it needs {size_words(required)} and the library drive has {size_words(free)} free. '
+            'Free some room or take this folder out of the source list'
+        )
     skipped = copy_entries(entries, folder, uid, gid, guard) if apply else []
     copied = len(entries) - len(skipped) if apply else 0
     result = {
@@ -672,6 +692,8 @@ def import_one(source, root, apply, owner, guard, finished, again=False):
             'reason': 'A file changed while it was being copied (another program may still be '
             'writing it): ' + str(exc) + '. The files before it were copied; run setup again when it is finished',
         }
+    except Said as exc:
+        return {'status': 'needs_setup', 'reason': str(exc)}
     except IncompleteSource as exc:
         # Only paths inside the source are reported, never the source's own location.
         return {

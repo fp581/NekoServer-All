@@ -1963,6 +1963,24 @@ class ImportLayoutTests(unittest.TestCase):
             never = {'type': 'local', 'path': str(self.media / 'nowhere'), 'category': 'movies'}
             self.assertEqual(source_import.run(config, [never], apply=True), 1)
 
+    def test_a_full_drive_and_a_share_only_noted_say_why(self):
+        """Both were "Source inaccessible, unmounted, overlapping, changed, unsafe or
+        conflicting": a library drive without room for the source, and a network share
+        the wizard noted without a folder it is mounted on ("blank to defer")."""
+        import source_import
+
+        def reason(source):
+            return source_import.import_one(source, self.media, False, (None, None), None, {})['reason']
+
+        tiny = mock.Mock(free=4)
+        with mock.patch.object(source_import.shutil, 'disk_usage', return_value=tiny):
+            full = reason(self.entry)
+        self.assertIn('the library drive has 4 bytes free', full)
+        noted = reason({'type': 'remote', 'uri': 'nfs://nas/films', 'category': 'movies'})
+        self.assertIn('has no folder on this PC yet', noted)
+        for said in (full, noted):
+            self.assertNotIn(str(self.source), said)
+
 
 class ClockAndUsbPrivacyTests(unittest.TestCase):
     def test_exfat_backup_drives_are_mounted_for_root_only(self):
