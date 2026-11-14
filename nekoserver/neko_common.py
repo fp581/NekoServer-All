@@ -1850,6 +1850,16 @@ def valid_time(text):
     return isinstance(text, str) and TIME_OF_DAY.fullmatch(text) is not None
 
 
+def typed_time(text):
+    """A time of day as typed at a question, "2:30" or "02:30", as "HH:MM" (the form the
+    settings keep and everything reads); None when it is no time of day. "2:30" was refused
+    as no time (deep check plan 201)."""
+    if not isinstance(text, str):
+        return None
+    padded = '0' + text if re.fullmatch(r'\d:\d\d', text, re.ASCII) else text
+    return padded if valid_time(padded) else None
+
+
 def minutes_later(time, minutes):
     """ "HH:MM" shifted by `minutes` (negative for earlier), going round midnight."""
     hours, mins = (int(part) for part in time.split(':'))

@@ -291,7 +291,7 @@ class SetupQuestionTests(unittest.TestCase):
             asked.append(question)
             return {
                 1: '25:00',
-                2: '7:00',
+                2: '7:0',
                 3: '23:30',
                 4: 'monday',
                 5: 'sat',
@@ -319,6 +319,24 @@ class SetupQuestionTests(unittest.TestCase):
         self.assertFalse(
             any('yes or no' in q for q in asked), 'text questions: the setup window shows a field for them'
         )
+
+    def test_a_time_typed_without_its_first_zero_is_taken(self):
+        """Deep check plan 201: "2:30" was refused ("Type a time of day as HH:MM"); it is
+        kept as 02:30, the form the timers and every check read."""
+        ctx = Ctx(self.config())
+        printed = self.ask(ctx, '4:05', 'sat', '9:30', '1:45')
+        self.assertEqual(
+            ctx.config['backup_times'], {'daily': '04:05', 'weekly_day': 'Sat', 'weekly': '09:30', 'monthly': '01:45'}
+        )
+        self.assertFalse(any('Type a time of day' in line for line in printed))
+        for wrong in ('7:0', '24:00', '١:30', '1:5', ':30', '123:00'):
+            self.assertIsNone(neko_common.typed_time(wrong), wrong)
+        # Still at night: the monthly check's hour is read from the time as kept.
+        neko_common.optional_answers_file(self.dir.name).unlink()
+        ctx = Ctx(self.config())
+        printed = self.ask(ctx, '', '', '', '7:15', '3:00')
+        self.assertEqual(ctx.config['backup_times']['monthly'], '03:00')
+        self.assertIn('Type a time of day as HH:MM before 06:00, for example 02:30.', printed)
 
     def window_prompt(self, first, fields=None, skip=False):
         """A terminal prompt whose first question the setup window answers, with the rest

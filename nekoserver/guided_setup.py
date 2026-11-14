@@ -1148,7 +1148,7 @@ WEEKLY_HINT = 'Type a time of day as HH:MM, for example 03:00.'
 
 def ask_weekly(now, prompt, output):
     """The weekly USB copy's day and time."""
-    from neko_common import WEEKDAYS, valid_time
+    from neko_common import WEEKDAYS
 
     days = ', '.join(WEEKDAYS)
     weekday = ask_on_page(
@@ -1165,12 +1165,24 @@ def ask_weekly(now, prompt, output):
         'weekly',
         f'At what time on that day? (HH:MM, Enter for {now["usb"]}): ',
         now['usb'],
-        valid_time,
+        a_time,
         WEEKLY_HINT,
         prompt,
         output,
+        typed_time,
     )
     return weekday, weekly
+
+
+def a_time(answer):
+    """A time of day as typed ("2:30" too: it is kept as 02:30)."""
+    return typed_time(answer) is not None
+
+
+def typed_time(answer):
+    from neko_common import typed_time
+
+    return typed_time(answer)
 
 
 def clock_change_misses(config, which, chosen, today=None):
@@ -1244,14 +1256,21 @@ def ask_past_clock_change(ctx, which, chosen, valid, hint, prompt, output):
     better = time_past_clock_change(ctx.config, which, chosen, valid)
     offer = f'Type another time (for example {better})' if better else 'Type another time'
     return ask_on_page(
-        which, f'{offer}, or press Enter to keep {chosen[which]}: ', chosen[which], valid, hint, prompt, output
+        which,
+        f'{offer}, or press Enter to keep {chosen[which]}: ',
+        chosen[which],
+        valid,
+        hint,
+        prompt,
+        output,
+        typed_time,
     )
 
 
 def ask_backup_times(ctx, now, night_end, prompt, output):
     """The questions in the terminal (the window answers through ask_on_page); the chosen
     "backup_times" settings. The weekly copy's are asked only on a server that has it."""
-    from neko_common import host_timezone, valid_time
+    from neko_common import host_timezone
 
     output('\n=== When the backups run ===')
     output(
@@ -1264,17 +1283,18 @@ def ask_backup_times(ctx, now, night_end, prompt, output):
         'daily',
         f'When should the daily backups run? (HH:MM, Enter for {now["app"]}): ',
         now['app'],
-        valid_time,
+        a_time,
         daily_hint,
         prompt,
         output,
+        typed_time,
     )
     chosen = {'daily': daily, 'weekly_day': now['usb_day'], 'weekly': now['usb'], 'monthly': now['monthly']}
-    chosen['daily'] = ask_past_clock_change(ctx, 'daily', chosen, valid_time, daily_hint, prompt, output)
+    chosen['daily'] = ask_past_clock_change(ctx, 'daily', chosen, a_time, daily_hint, prompt, output)
     if weekly_copy(ctx.config):
         output('Every week: the USB copy of ' + weekly_words(ctx.config) + '.')
         chosen['weekly_day'], chosen['weekly'] = ask_weekly(now, prompt, output)
-        chosen['weekly'] = ask_past_clock_change(ctx, 'weekly', chosen, valid_time, WEEKLY_HINT, prompt, output)
+        chosen['weekly'] = ask_past_clock_change(ctx, 'weekly', chosen, a_time, WEEKLY_HINT, prompt, output)
     # else no weekly copy on this server: its day and time stay as they are, unasked.
     output(
         'Every month, on the 1st: the check of every backup copy, a snapshot of every app and a restore '
@@ -1282,7 +1302,7 @@ def ask_backup_times(ctx, now, night_end, prompt, output):
     )
     offered = monthly_offered(now['monthly'], night_end)
     why = '' if offered == now['monthly'] else f'; {now["monthly"]} is not before {night_end:02d}:00'
-    at_night = lambda answer: valid_time(answer) and int(answer[:2]) < night_end  # noqa: E731
+    at_night = lambda answer: a_time(answer) and int(typed_time(answer)[:2]) < night_end  # noqa: E731
     monthly_hint = f'Type a time of day as HH:MM before {night_end:02d}:00, for example 02:30.'
     chosen['monthly'] = ask_on_page(
         'monthly',
@@ -1292,6 +1312,7 @@ def ask_backup_times(ctx, now, night_end, prompt, output):
         monthly_hint,
         prompt,
         output,
+        typed_time,
     )
     chosen['monthly'] = ask_past_clock_change(ctx, 'monthly', chosen, at_night, monthly_hint, prompt, output)
     return chosen
