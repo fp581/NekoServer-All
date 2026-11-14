@@ -229,5 +229,23 @@ class NextcloudOffTests(unittest.TestCase):
         self.assertIn('first page', said)
 
 
+class NoDesktopTests(unittest.TestCase):
+    """Deep check 259: Ubuntu Server set up over SSH. Setup said "open it in a browser on
+    this PC", which has no browser. Tried with a stand-in for sshd's forwarding (a
+    forwarder running as the account that ran sudo): the window lets that account in, so
+    an SSH tunnel works, and another account is still refused."""
+
+    def test_no_window_says_the_terminal_is_enough_and_how_to_tunnel(self):
+        import wizard
+
+        said = wizard.no_window_said('http://127.0.0.1:40123/t/AbC/', 'alex')
+        self.assertIn('nothing is missing', said)
+        self.assertIn('ssh -L 40123:127.0.0.1:40123 alex@', said)
+        self.assertIn('http://127.0.0.1:40123/t/AbC/', said)
+
+    def test_the_readme_says_so(self):
+        self.assertIn('ssh -L 40123:127.0.0.1:40123', doc('README.md'))
+
+
 if __name__ == '__main__':
     unittest.main()

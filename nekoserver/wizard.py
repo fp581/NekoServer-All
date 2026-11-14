@@ -228,8 +228,23 @@ def setup_window(path, output):
             '\nClosed it by mistake? Open  ' + window.url + '  again in a browser on this PC, from this account.'
         )
     else:
-        output('\nTo follow along in a window, open  ' + window.url + '  in a browser on this PC.')
+        output(no_window_said(window.url))
     return window
+
+
+def no_window_said(url, user=None):
+    """No window could be opened here (a server without a desktop, set up over SSH, say):
+    the terminal is enough, and another computer can show the window through an SSH
+    tunnel, which reaches it as this PC itself and as the account that ran sudo (deep
+    check 259: "open it in a browser on this PC" on a PC that has no browser)."""
+    port = url.split(':')[2].split('/')[0]
+    user = user or os.environ.get('SUDO_USER') or 'you'
+    return (
+        '\nNo window could be opened on this PC. Every question is asked here in the terminal; nothing is '
+        'missing. To answer in a browser on another computer instead, connect from it with  '
+        f'ssh -L {port}:127.0.0.1:{port} {user}@<this server\'s address>  and open  {url}  there '
+        '(or open it in a browser on this PC, if it has one).'
+    )
 
 
 WINDOW_FETCHES_END = 5  # seconds an open setup window may take to fetch how setup ended
