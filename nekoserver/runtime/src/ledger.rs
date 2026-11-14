@@ -112,15 +112,11 @@ impl Ledger {
             }
             let mut text = vec![];
             common::file(&path)?.read_to_end(&mut text)?;
-            let value: Value = serde_json::from_slice(&text)
-                .map_err(|_| Error::new("Checksum ledger is unreadable"))?;
+            let value: Value = serde_json::from_slice(&text).map_err(|_| damaged(&path))?;
             if value["format"] != FORMAT {
-                return Err(Error::new("Unknown checksum ledger format"));
+                return Err(damaged(&path));
             }
-            for (rel, row) in value["entries"]
-                .as_object()
-                .ok_or_else(|| Error::new("Checksum ledger has no entries"))?
-            {
+            for (rel, row) in value["entries"].as_object().ok_or_else(|| damaged(&path))? {
                 let sha256 = row["sha256"].as_str().unwrap_or("");
                 if !valid_path(rel) || !sha256_hex(sha256) || !row["size"].is_u64() {
                     return Err(Error::new(&format!(
@@ -295,6 +291,16 @@ impl Ledger {
     }
 }
 
+/// A ledger that can't be read (cut short, overwritten): which file, and what to do. The
+/// archive and the weekly copy failed every run with "Checksum ledger is unreadable",
+/// naming neither (0.51.2 review, a truncated HDD archive ledger). Set aside, it is
+/// started anew: the weekly copy takes back what the USB drive's copy of it recorded.
+fn damaged(path: &Path) -> Error {
+    let shown = path.display();
+    Error::new(&format!(
+        "The checksum list {shown} is damaged and can't be read. Move it aside with  sudo mv {shown} {shown}.unreadable  and the next backup starts a new one"
+    ))
+}
 /// The `retired` part of a ledger: {path: {sha256, retired_at, why, ...}}. Like the
 /// entries, a row with an unsafe path or no SHA-256 means the ledger is not trusted.
 fn retired_rows(value: &Value) -> Result<Map<String, Value>> {
@@ -380,6 +386,33 @@ mod tests {
     }
     const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    /// Seen with the real weekly copy (0.51.2 review): a cut-short HDD archive ledger
+    /// failed it, and every archive run, with "Checksum ledger is unreadable".
+    #[test]
+    fn a_damaged_ledger_is_named_with_what_to_do() {
+        let root = scratch("damaged");
+        let mut ledger = Ledger::open(&root).unwrap();
+        ledger.record("upload/a.jpg", A, 4, "copied").unwrap();
+        ledger.save().unwrap();
+        let path = root.join(LEDGER);
+        let whole = fs::read(&path).unwrap();
+        for bad in [
+            &whole[..whole.len() / 2],
+            br#"{"format":"other"}"#.as_slice(),
+        ] {
+            fs::write(&path, bad).unwrap();
+            let said = Ledger::read(&root).err().unwrap().to_string();
+            let shown = path.display().to_string();
+            assert!(
+                said.contains(&format!("sudo mv {shown} {shown}.unreadable ")),
+                "{said}"
+            );
+        }
+        // Done as it says, the tree has no ledger, and a new one is started.
+        fs::rename(&path, root.join(format!("{LEDGER}.unreadable"))).unwrap();
+        assert_eq!(Ledger::read(&root).unwrap().keys().count(), 0);
+        let _ = fs::remove_dir_all(&root);
+    }
     #[test]
     fn a_recorded_checksum_is_never_replaced() {
         let root = scratch("immutable");
