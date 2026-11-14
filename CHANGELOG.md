@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.51.2 — (in progress)
+## v0.51.2 — (in progress; the release number is 0.51.2)
 
 Fixes only, from a wider review of 0.51.0 and from trying the tools on a fresh Ubuntu 24.04. Nothing changes in how NekoServer is used.
 
@@ -23,6 +23,8 @@ Every copy is read back and checked before it counts. That read came straight af
 - **Messages name the recovery menu's choices as the menu shows them** ("Fix damaged backup copies", "Check a drive that stopped taking new files"), one wording kept in shared.json; since 0.50.0 they named choices that were no longer there.
 - **Restoring from a card, a copy missing or replaced on the card is said as such**, as `verify` says it, instead of "No such file or directory".
 - **A card restore killed while it wrote a file finishes that file on the next run** (it failed it with "File exists", and a third run was needed).
+- **A card restore stopped while it wrote its progress file can go on**: the next run added its lines after the cut-off one, and the run after that refused the whole file.
+- **The recovery menu's drive check no longer freezes on a network share that stopped answering.**
 - **A restore that skipped files says how to get them too** (`--rename`), instead of ending with only "skipped 2". Seen restoring onto an exFAT stick, which cannot hold a name with `:` or tell `Same.jpg` from `same.jpg`.
 - **Nothing is restored onto the card itself.** `restore /mnt` (the card) copied every file onto the card, among its records; a folder on the card is now refused, also through a link.
 
@@ -45,6 +47,8 @@ Every copy is read back and checked before it counts. That read came straight af
 - **A Btrfs drive mounted with the wrong subvolume is refused with what to do** (restart the PC, or run setup), not only named.
 - **The finishing page fits a narrow window**: each app's states, address and test buttons were cut off at the right edge.
 - **`migrate.py move --to <not a UUID>` says so**, instead of "move needs --drive and --to".
+- **A drive move cut off right after the old drive was unmounted mounts it again before the apps start**: `resume` started them on the empty folder on the system disk and said "the apps run as before". An fstab line the switch can't rewrite now stops the move before anything changes; a retry checks the earlier copy by checksum (a file found different was skipped and failed every time); a cut-off "back" says which drive is mounted.
+- **The drive checks name the drive they checked** (an extra drive or the USB drive was "the HDD").
 - **The TV step names a TV account that doesn't exist and what to set**, instead of "getpwnam(): name not found".
 - **Onboarding checks and connects only the apps whose group is on**: on a music-only server it waited for Jellyfin, Seerr, Sonarr and Radarr and never finished.
 - **The finishing page counts the TV tries you said yes to in the TV step**, instead of "nobody has tried this yet".
@@ -56,6 +60,9 @@ Every copy is read back and checked before it counts. That read came straight af
 - **A damaged phone-alert record is set aside (kept, with its date) and alerts start fresh**, instead of every alert run failing with "Invalid JSON".
 - **Extra drives are listed in the order of their numbers** (d3 before d10).
 - **A PC whose system disk has no UUID (Ubuntu's ZFS-on-root install, say) no longer shows "OS SSD unavailable"** as an urgent alert while it runs fine. The blank UUID column was read as "no drive there".
+- **A drive Linux turned read-only after errors is shown so on newer kernels** (6.12 and later keep it "rw" with emergency_ro).
+- **A RAID array that does not run (broken, or not started at boot) is a lost drive with an alert**, not a quiet warning.
+- **A NAS that stopped answering is "waiting for the network storage box"**, and the NAS check and the readings no longer hang on it.
 - **An app SSD that turned read-only, or is full, gets its own alert with what fixes it**, not "App SSD can't be written… restart the PC" (a restart fixes neither). The dashboard's own failed write had replaced the read-only alert, or stood beside the "almost full" one.
 - **A drive filling up (over 90%) says what stops when it is full and what to do before then**, as the urgent alert does, instead of "Review free space before uploads or backups".
 - **The dashboard says what Tailscale needs**: a sign-in already past while Tailscale still says "Running" is "signed out" (was "phone access stops soon"); a Tailscale switched off, or waiting for your approval in its admin console, now says so and what to do (was nothing).
