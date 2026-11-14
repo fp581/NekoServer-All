@@ -26,6 +26,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **The monthly and music restore tools say what went wrong in plain words** (a damaged snapshot, a missing folder), instead of a traceback; a music restore onto exFAT restores every file the drive accepts and names the ones it refused.
 - **A drive that fills up during a restore leaves no cut-off file**, and says so plainly for every choice (a half-written photo stayed under its own name, said to be "there as it is").
 - **A restore refused for lack of room names the space the drive must keep free**, instead of "needs 0.0 GB and 0.1 GB is free".
+- **The recovery menu says a read-only or full drive in words, with what to do**, instead of Python's "[Errno 30] Read-only file system: '/mnt/…'".
 - **A monthly restore or the password list onto a full, read-only or too small drive is said in plain words**, naming any folder left incomplete, instead of a traceback.
 - **Messages name the recovery menu's choices as the menu shows them** ("Fix damaged backup copies", "Check a drive that stopped taking new files"), one wording kept in shared.json; since 0.50.0 they named choices that were no longer there.
 - **The weekly Immich database copy never falls on a time the clocks skip**: on the Sunday the clocks go forward in the US and Europe, 02:15 does not exist, and the USB copy got the week-old database copy. It moves earlier (01:45) where that would happen.

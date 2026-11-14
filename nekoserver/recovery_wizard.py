@@ -3199,6 +3199,24 @@ def drive_section(config, prompt, output):
         DRIVE_ACTIONS[pick](config, prompt, output)
 
 
+# What to do about the system errors a restore or a check meets most (after their words).
+SYSTEM_ERROR_ADVICE = {
+    errno.EROFS: f'The drive takes no new files: choose a folder on another drive, or check it with "{CHECK_NAME}".',
+    errno.ENOSPC: 'The drive is full. Free some space there, or choose a folder on another drive.',
+}
+
+
+def went_wrong(exc):
+    """Why something in the menu did not go through, in words: a system error as its own
+    description with the file it was about and, where there is one, what to do (Python's
+    "[Errno 30] Read-only file system: '/mnt/usb'" said neither plainly)."""
+    if isinstance(exc, OSError) and exc.strerror:
+        where = f' ({exc.filename})' if exc.filename else ''
+        advice = SYSTEM_ERROR_ADVICE.get(exc.errno)
+        return exc.strerror + where + ('. ' + advice if advice else '')
+    return str(exc)
+
+
 def menu_loop(config, prompt, output):
     """The recovery menu itself: one restore, check or repair after another, until Quit."""
     say(
@@ -3219,7 +3237,7 @@ def menu_loop(config, prompt, output):
             try:
                 sections[pick](config, prompt, output)
             except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
-                output(f'That did not go through: {exc}')
+                output('That did not go through: ' + went_wrong(exc))
     except (EOFError, KeyboardInterrupt):
         # Restores and repairs finished before this stay as they are.
         output(

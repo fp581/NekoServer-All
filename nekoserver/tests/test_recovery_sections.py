@@ -158,6 +158,26 @@ class MenuTests(Server, unittest.TestCase):
         self.assertEqual(self.menu('', '0'), 0)
         self.assertIn('Please type one of the numbers shown.', self.said())
 
+    def test_a_system_error_is_said_in_words_with_what_to_do(self):
+        """Deep check plan 34: a restore onto a read-only drive said "That did not go through:
+        [Errno 30] Read-only file system: '/mnt/usb/restore'"."""
+        import errno
+
+        cases = (
+            (errno.EROFS, 'Read-only file system', recovery_wizard.CHECK_NAME),
+            (errno.ENOSPC, 'No space left on device', 'Free some space'),
+        )
+        for number, words, advice in cases:
+            with self.subTest(words=words):
+                self.out.clear()
+                failing = mock.Mock(side_effect=OSError(number, words, '/mnt/usb/restore'))
+                with mock.patch.dict(recovery_wizard.RESTORES, {'photos': failing}):
+                    self.menu('1', '1', '0')
+                said = self.said()
+                self.assertIn(f'That did not go through: {words} (/mnt/usb/restore)', said)
+                self.assertIn(advice, said)
+                self.assertNotIn('[Errno', said)
+
     def test_stopping_after_something_ran_says_the_apps_may_be_stopped(self):
         """The specification: never "nothing was changed" once something may have been."""
 
