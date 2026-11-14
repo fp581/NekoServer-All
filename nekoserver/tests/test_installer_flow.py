@@ -201,6 +201,23 @@ class InstallerFlowTests(unittest.TestCase):
         self.assertEqual(log.count('START storage'), 2, log)
         self.assertFalse((default / 'install.log').exists())
 
+    def test_the_setup_log_starts_anew_past_its_size_and_keeps_the_one_before(self):
+        """Deep check 212: install.log took every run's lines for good (each upgrade and
+        "Run setup again" adds a run), with no size limit."""
+        STEP_OK = 'DEPENDENCIES = []\ndef run(ctx):\n    ctx.log("hello from the step")\n'
+        (self.root / 'modules' / 'storage.py').write_text(STEP_OK)
+        self.state.mkdir(mode=0o700)
+        log = self.state / 'install.log'
+        log.write_text('[old run] line\n' * 200_000)  # 3 MB: years of runs
+        with mock.patch('config_checks.validate'), mock.patch('builtins.print'):
+            installer._execute(self.args(module='storage'), self.root)
+            self.assertLess(log.stat().st_size, 10_000)
+            self.assertIn('START storage', log.read_text())
+            self.assertTrue((self.state / 'install.log.1').read_text().startswith('[old run] line'))
+            # A small log is added to, as before.
+            installer._execute(self.args(module='storage'), self.root)
+        self.assertEqual(log.read_text().count('START storage'), 2)
+
     def test_backup_counts_at_an_earlier_default_are_never_lowered_without_asking(self):
         # v0.30.0 keeps 7 nightly backups and 4 weekly database copies (3 monthly, as
         # before). An earlier settings file holds 14 and 8, which may be someone's choice:

@@ -202,9 +202,24 @@ def stopped_by_hand(states, name, state_path, log):
     log(f'STOPPED {name}: Ctrl+C')
 
 
+# Every setup run adds to its log (each upgrade and "Run setup again" too), so it grew for
+# good. Past this size it becomes <log>.1 (replacing the one before): the last runs stay.
+LOG_LIMIT = 2 * 1024 * 1024
+
+
+def roll_log(log_path, limit=LOG_LIMIT):
+    """Start a new log when `log_path` has grown past `limit`; the old one is kept as .1."""
+    try:
+        if log_path.stat().st_size > limit:
+            os.replace(log_path, safe_path(log_path.with_name(log_path.name + '.1')))
+    except FileNotFoundError:
+        pass
+
+
 def move_log(old_log, log_path):
     """The log kept before the SSD was mounted goes on to the SSD's log: moved, not
     copied, or a later run would copy the same lines again."""
+    roll_log(log_path)
     if old_log != log_path and old_log.exists():
         with safe_path(log_path).open('a') as stream:
             os.fchmod(stream.fileno(), 0o600)
@@ -530,6 +545,7 @@ def _execute(args, root=ROOT):
     if not args.apply:
         state_path = safe_path(state_dir / 'inspection-state.json')
     log_path = safe_path(state_dir / ('install.log' if args.apply else 'inspection.log'))
+    roll_log(log_path)
     states = dict(previous) if args.apply else {}
     complete_status = 'success' if args.apply else 'inspected'
     failures = []  # the steps not done: failed, waiting for you, or held up by one of those
