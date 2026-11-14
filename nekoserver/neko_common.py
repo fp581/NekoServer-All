@@ -4,6 +4,7 @@ import contextlib
 import ctypes
 import errno
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -122,9 +123,53 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def local_opener(*handlers):
-    """An opener for the apps on this computer: no proxy, no redirects."""
-    return urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect(), *handlers)
+def local_opener(*handlers, seconds=None):
+    """An opener for the apps on this computer: no proxy, no redirects. `seconds`: the most
+    one request may take in all, its answer read whole (TimeLimit)."""
+    timed = (TimeLimit(seconds),) if seconds else ()
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect(), *timed, *handlers)
+
+
+class TimeLimit(urllib.request.HTTPHandler):
+    """Plain HTTP requests that end with TimeoutError once they have taken `seconds` in
+    all. The socket's own timeout counts per read: an app answering a byte every few
+    seconds kept every read within it, and setup waiting for good."""
+
+    def __init__(self, seconds):
+        super().__init__()
+        self.seconds = seconds
+
+    def http_open(self, req):
+        return self.do_open(lambda host, **options: _TimedConnection(host, seconds=self.seconds, **options), req)
+
+
+class _TimedConnection(http.client.HTTPConnection):
+    """A connection whose socket reads stop at its deadline (_TimedSocket)."""
+
+    def __init__(self, host, seconds, **options):
+        super().__init__(host, **options)
+        self.seconds = seconds
+
+    def connect(self):
+        deadline = time.monotonic() + self.seconds
+        super().connect()
+        plain = self.sock
+        timeout = plain.gettimeout()
+        self.sock = _TimedSocket(plain.family, plain.type, plain.proto, fileno=plain.detach())
+        self.sock.read_timeout, self.sock.deadline = timeout, deadline
+
+
+class _TimedSocket(socket.socket):
+    """A socket whose every read waits at most until `deadline` (time.monotonic), and at
+    most `read_timeout` seconds (None: no limit of its own). http.client reads the answer,
+    headers and body, through recv_into."""
+
+    def recv_into(self, buffer, nbytes=0, flags=0):
+        left = self.deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError('the answer did not come whole in time')
+        self.settimeout(left if self.read_timeout is None else min(self.read_timeout, left))
+        return super().recv_into(buffer, nbytes, flags)
 
 
 # Where NekoServer's systemd units live; every one it writes starts with this.

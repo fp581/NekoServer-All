@@ -32,7 +32,10 @@ import questions
 import account_store
 import setup_progress
 
-OPENER = local_opener()
+# The most one request to an app may take, its answer read whole: Prowlarr's catalogue,
+# the biggest, comes in a few seconds; an app answering a byte at a time never ends.
+REQUEST_TIME_LIMIT = 120
+OPENER = local_opener(seconds=REQUEST_TIME_LIMIT)
 
 PORTS = app_ports(('prowlarr', 'sonarr', 'radarr', 'lidarr'))
 API_VERSIONS = {'prowlarr': 'v1', 'sonarr': 'v3', 'radarr': 'v3', 'lidarr': 'v1'}
@@ -99,6 +102,11 @@ def request(app, key, endpoint, method='GET', payload=None, timeout=12):
         raise RuntimeError(f'{app} {endpoint}: HTTP {code}') from None
     except urllib.error.URLError:
         raise RuntimeError(f'{app} {endpoint}: unavailable on localhost') from None
+    except TimeoutError:
+        raise RuntimeError(
+            f'{app} {endpoint}: no whole answer within {REQUEST_TIME_LIMIT} seconds. Check that {app} runs '
+            f'(sudo docker ps shows it "healthy"), then run setup again'
+        ) from None
 
 
 ODD_ANSWER = (

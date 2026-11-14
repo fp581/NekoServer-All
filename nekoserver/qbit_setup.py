@@ -10,6 +10,9 @@ from neko_common import app_port, local_opener
 
 
 QBITTORRENT_PORT = app_port('qbittorrent')
+# The most one request may take, its answer read whole (an answer dripping a byte at a
+# time kept every read within the socket's timeout, and setup waiting for good).
+REQUEST_TIME_LIMIT = 60
 # The qBittorrent download-client field that holds the category, per app: each app
 # names it after its own media (there is no field called "category"). Shared by the
 # connector (media-connect.py); the media check (runtime media.rs) judges by the same fields.
@@ -44,7 +47,7 @@ class Client:
     def __init__(self, port=QBITTORRENT_PORT):
         self.base = f'http://127.0.0.1:{port}'
         self.jar = http.cookiejar.CookieJar()
-        self.opener = local_opener(urllib.request.HTTPCookieProcessor(self.jar))
+        self.opener = local_opener(urllib.request.HTTPCookieProcessor(self.jar), seconds=REQUEST_TIME_LIMIT)
 
     def call(self, endpoint, form=None, json_result=False):
         if not endpoint.startswith('/') or '://' in endpoint:
