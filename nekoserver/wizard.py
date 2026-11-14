@@ -990,9 +990,18 @@ def choice_said(found, choice):
     job = found.get('job') or {}
     if choice == 'continue' and job.get('kind') in JOBS_CUT_OFF:
         return 'Finish what was cut off', 'Nothing else can be changed until this is finished.'
+    if choice == 'continue' and not goes_straight_on(found, choice):
+        # The usual way (run): the first page, the drives and the review come first, then
+        # every step again. "Goes on at Tailscale" read as if it went straight there
+        # (deep check plan 198).
+        where = f' (it stopped at "{title(job["step"])}")' if job.get('step') else ''
+        return (
+            'Continue unfinished setup',
+            'Shows your saved answers again first, then runs setup once more' + where + '. What is already '
+            'done stays done.',
+        )
     if choice == 'continue':
-        where = f' Goes on at "{title(job["step"])}".' if job.get('step') else ''
-        return 'Continue unfinished setup', 'What is already done stays done.' + where
+        return 'Continue unfinished setup', 'Goes on with what was left; what is already done stays done.'
     if choice == 'update':
         return (
             'Review this NekoServer update',

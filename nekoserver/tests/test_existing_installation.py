@@ -61,6 +61,13 @@ class WordsTests(unittest.TestCase):
             wizard.found_said(setup), ['Setup was started here and stopped before it finished. It stopped at: Docker.']
         )
         self.assertEqual(wizard.choice_said(setup, 'continue')[0], 'Continue unfinished setup')
+        # Deep check plan 198: it said 'Goes on at "Docker"', and then showed the first page,
+        # the drives and the review again (a cut-off run goes the usual way).
+        self.assertFalse(wizard.goes_straight_on(setup, 'continue'))
+        line = wizard.choice_said(setup, 'continue')[1]
+        self.assertIn('Shows your saved answers again first', line)
+        self.assertIn('(it stopped at "Docker")', line)
+        self.assertNotIn('Goes on at', line)
         update = found('unfinished', ['continue'], job={'kind': 'upgrade', 'step': None, 'left': []})
         self.assertIn('An update of NekoServer was cut off part-way.', wizard.found_said(update)[0])
         self.assertEqual(wizard.choice_said(update, 'continue')[0], 'Finish what was cut off')
