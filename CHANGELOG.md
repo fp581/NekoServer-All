@@ -34,6 +34,12 @@ Every copy is read back and checked before it counts. That read came straight af
 - **A failed upgrade whose way back was cut off by a power cut is put back at the next start**, instead of being closed as "passed its check" on the release that failed.
 - **No "manual major upgrade" notice for an older Immich release marked "latest"**.
 - **A missing USB drive for the weekly copy says how to choose a new one** (remove `external_backup_uuid`, then run setup), instead of only "External drive missing".
+- **Photos an exFAT USB drive can't name are left out and listed**, not lost: a name with `:` stopped the whole weekly copy, and `IMG_1.JPG` beside `img_1.jpg` shared one file there (the second never copied, or each week one "repaired" over the other). They stay on the HDD; the report counts them.
+- **A USB or NAS backup folder that stopped answering is said after 30 seconds**, instead of the weekly copy (and the monthly drive check) waiting for good with no report.
+- **A failed database copy says what Docker said** and that the app must be running (it was only "Database dump failed or too small", also for a stopped Immich).
+- **A file changed while the nightly app backup copied it is named**, with "the next run tries again".
+- **A damaged checksum ledger is named, with how to start a new one**, instead of "Checksum ledger is unreadable" at every run.
+- **An older password list after the backup key was made again says it is from the earlier key** and asks for that password, instead of "Wrong password" to the right new one.
 
 ### Fixed: setup and its tools
 - **A damaged or missing settings file is named, with what is wrong** (not JSON, with the line and column; not there; no settings in it; no such profile), in `install.sh`, `acceptance.py` and `recover.py`, instead of Python's own words or a vague line.
@@ -76,6 +82,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **An XFS drive Linux shut down after errors shows as read-only**, with the read-only alert and its steps, instead of healthy while every job failed with "Input/output error".
 - **An app SSD that turned read-only, or is full, gets its own alert with what fixes it**, not "App SSD can't be written… restart the PC" (a restart fixes neither). The dashboard's own failed write had replaced the read-only alert, or stood beside the "almost full" one.
 - **A drive filling up (over 90%) says what stops when it is full and what to do before then**, as the urgent alert does, instead of "Review free space before uploads or backups".
+- **A USB copy that lacks the password list says so on the dashboard**, not only "Incomplete; see the job's report".
 - **The dashboard says what Tailscale needs**: a sign-in already past while Tailscale still says "Running" is "signed out" (was "phone access stops soon"); a Tailscale switched off, or waiting for your approval in its admin console, now says so and what to do (was nothing).
 - **A long address in an alert's title wraps on a phone** instead of pushing the whole page sideways.
 - **A greyed-out menu item's note is readable** (it measured 2.3:1; now only the label is dimmed).
