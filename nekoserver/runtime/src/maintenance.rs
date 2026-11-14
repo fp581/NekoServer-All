@@ -1161,7 +1161,10 @@ pub(crate) fn verify(snapshot: &Path) -> Result<Value> {
     }
     for key in ["data", "media", "images"] {
         let archive = snapshot.join(format!("{key}.tar"));
-        if common::digest(&archive)? != manifest["sha256"][key].as_str().unwrap_or("") {
+        // Read from the drive, not from Linux's memory: the check right after the snapshot
+        // was made read the archives tar had just written, so a damaged copy on the HDD
+        // passed and showed up only at a restore.
+        if common::digest_landed(&archive)? != manifest["sha256"][key].as_str().unwrap_or("") {
             return Err(Error::new("Snapshot archive checksum mismatch"));
         }
     }
@@ -1171,7 +1174,7 @@ pub(crate) fn verify(snapshot: &Path) -> Result<Value> {
         ("secrets_cert", SECRETS_CERT, "backup certificate"),
     ] {
         if let Some(expected) = manifest["sha256"][key].as_str() {
-            if common::digest(&snapshot.join(name))? != expected {
+            if common::digest_landed(&snapshot.join(name))? != expected {
                 return Err(Error::new(&format!("Snapshot {what} checksum mismatch")));
             }
         }
@@ -6801,6 +6804,50 @@ mod tests {
         // A big drive keeps the whole setting.
         assert_eq!(reserve_for(20 * gib, 500 * gib), 20 * gib);
         assert_eq!(reserve_for(2 * gib, 0), 0);
+    }
+    #[test]
+    #[ignore = "needs root and a loop drive: run cardset-loop-tests.sh (NEKO_LOOP_HDD, NEKO_LOOP_IMAGE)"]
+    fn loop_a_snapshot_the_drive_does_not_hold_fails_its_check() {
+        // The review of 0.51.0: the check after a snapshot was made read its archives from
+        // Linux's page cache, so an archive the HDD did not keep passed it. The archive's
+        // bytes are changed under the mounted ext4 here: the check must fail.
+        let root = std::path::PathBuf::from(std::env::var("NEKO_LOOP_HDD").unwrap());
+        let image = std::env::var("NEKO_LOOP_IMAGE").unwrap();
+        fs::create_dir_all(root.join("hdd/backups/monthly")).unwrap();
+        snapshot(&root, "hdd", "100-1", true);
+        let dir = root.join("hdd/backups/monthly/100-1");
+        let archive = dir.join("data.tar");
+        fs::File::open(&archive).unwrap().sync_all().unwrap();
+        assert!(verify(&dir).is_ok(), "the snapshot as made");
+        let out = std::process::Command::new("filefrag")
+            .args(["-v", "-b4096"])
+            .arg(&archive)
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        let line = text
+            .lines()
+            .find(|l| l.trim_start().starts_with("0:"))
+            .unwrap_or_else(|| panic!("no extent: {text}"));
+        let block: u64 = line
+            .split(':')
+            .nth(2)
+            .unwrap()
+            .split("..")
+            .next()
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        use std::io::{Seek, SeekFrom, Write};
+        let mut img = fs::OpenOptions::new().write(true).open(&image).unwrap();
+        img.seek(SeekFrom::Start(block * 4096)).unwrap();
+        img.write_all(b"EVIL").unwrap();
+        img.sync_all().unwrap();
+        let e = verify(&dir)
+            .expect_err("an archive the drive does not hold passed")
+            .to_string();
+        assert!(e.contains("checksum mismatch"), "{e}");
     }
     #[test]
     fn a_damaged_backup_key_copy_fails_the_snapshot_check() {
