@@ -2697,7 +2697,7 @@ fn disks_of(device: &str) -> Option<std::collections::BTreeSet<String>> {
         common::command(&["lsblk", "-s", "-n", "-r", "-o", "NAME,TYPE", device], 10).ok()?;
     (code == 0).then(|| parse_disks(&out))
 }
-fn parse_disks(lsblk: &str) -> std::collections::BTreeSet<String> {
+pub(crate) fn parse_disks(lsblk: &str) -> std::collections::BTreeSet<String> {
     lsblk
         .lines()
         .filter_map(|line| {

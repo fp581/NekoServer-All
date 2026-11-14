@@ -313,6 +313,9 @@ fn mount_fields(found: &str) -> Option<(&str, &str, &str)> {
 fn device(source: &str) -> Option<String> {
     let partition =
         Regex::new(r"^/dev/(sd[a-z]+[0-9]*|nvme[0-9]+n[0-9]+(?:p[0-9]+)?|vd[a-z]+[0-9]*)$").ok()?;
+    if mapped(source) {
+        return disk_under(&probe(&["lsblk", "-s", "-n", "-r", "-o", "NAME,TYPE", source], 8).1);
+    }
     if !partition.is_match(source) {
         return None;
     }
@@ -328,6 +331,28 @@ fn device(source: &str) -> Option<String> {
         .is_match(&value)
         .then_some(value)
 }
+/// A device-mapper device: an encrypted (LUKS) or LVM volume.
+fn mapped(source: &str) -> bool {
+    Regex::new(r"^/dev/(mapper/[A-Za-z0-9_.+-]+|dm-[0-9]+)$")
+        .is_ok_and(|plain| plain.is_match(source))
+}
+/// The one disk under an encrypted or LVM volume, from lsblk's list of what it lies on
+/// (-s: the volume, then its partition, then its disk). It said "Physical disk mapping
+/// unavailable" for good, and no SMART check was made (deep check plan 193). A volume
+/// over several disks has no one disk: None.
+fn disk_under(lsblk: &str) -> Option<String> {
+    let disks = crate::backup::parse_disks(lsblk);
+    let [disk] = disks.iter().collect::<Vec<_>>()[..] else {
+        return None;
+    };
+    let disk = format!("/dev/{disk}");
+    Regex::new(r"^/dev/(sd[a-z]+|nvme[0-9]+n[0-9]+|vd[a-z]+)$")
+        .ok()?
+        .is_match(&disk)
+        .then_some(disk)
+}
+/// Why a drive's health can't be read, when no one disk is found under it.
+const NO_ONE_DISK: &str = "Its health (SMART) is not read: no one disk was found under it (a volume over several disks, or a device this PC does not name as a disk)";
 fn smart_summary(v: &Value, code: i32) -> Value {
     let mut r = json!({"status":"unknown","temperature":null,"wear_percent":null,"reason":"SMART unavailable or drive sleeping; no wake requested"});
     if let Some(pass) = v["smart_status"]["passed"].as_bool() {
@@ -381,7 +406,7 @@ fn smart_summary(v: &Value, code: i32) -> Value {
 }
 fn smart(source: &str, identity: &str, cache: &mut Value, now: f64, interval: f64) -> Value {
     let Some(dev) = device(source) else {
-        return json!({"status":"unknown","reason":"Physical disk mapping unavailable","checked_at":null});
+        return json!({"status":"unknown","reason":NO_ONE_DISK,"checked_at":null});
     };
     let key = format!("{identity}|{dev}");
     let old = &cache[&key];
@@ -5052,6 +5077,30 @@ mod round_two_tests {
         );
         assert_eq!(tv(&off, None), json!({"set_up": false}));
         let _ = fs::remove_dir_all(data);
+    }
+    /// Deep check plan 193: a HDD under LVM or LUKS said "Physical disk mapping
+    /// unavailable" for good, with no SMART check, though its one disk is known.
+    #[test]
+    fn the_disk_under_an_encrypted_or_lvm_volume_is_found() {
+        // lsblk -s -n -r -o NAME,TYPE /dev/mapper/media (LVM on LUKS on a partition).
+        let one = "vg-media lvm\nluks-1234 crypt\nsdb1 part\nsdb disk\n";
+        assert_eq!(disk_under(one).as_deref(), Some("/dev/sdb"));
+        // The same disk listed twice (two partitions of it under one volume) is one.
+        let twice = "vg-media lvm\nsdb1 part\nsdb disk\nsdb2 part\nsdb disk\n";
+        assert_eq!(disk_under(twice).as_deref(), Some("/dev/sdb"));
+        assert_eq!(
+            disk_under("vg-media lvm\nsdb1 part\nsdb disk\nsdc1 part\nsdc disk\n"),
+            None
+        );
+        assert_eq!(disk_under(""), None);
+        assert_eq!(disk_under("loop0 disk\n"), None);
+        for source in ["/dev/mapper/vg-media", "/dev/mapper/luks-1234", "/dev/dm-3"] {
+            assert!(mapped(source), "{source}");
+        }
+        for source in ["/dev/sdb1", "/dev/mapper/../sda", "/dev/mapper/a b"] {
+            assert!(!mapped(source), "{source}");
+        }
+        assert!(!NO_ONE_DISK.contains("mapping"));
     }
     /// Deep check plan 209: a drive at exactly 90.0% got the alert (>= 90) saying "Over
     /// 90% used".
