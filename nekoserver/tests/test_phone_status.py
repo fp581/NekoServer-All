@@ -345,6 +345,10 @@ class KeptRowsTests(Base):
         https = again['rows'][1]
         self.assertEqual((https['status'], https['kept'], https['checked_at']), ('pass', True, 1000.0))
         self.assertEqual(again['unresolved'], [])
+        # Opened once more: the kept HTTPS row was not dropped from the file the time before.
+        third = self.run_check(again=False, now=2500.0)
+        self.assertEqual(self.probed, [])
+        self.assertEqual((third['rows'][1]['kept'], third['rows'][1]['checked_at']), (True, 1000.0))
         # The visible retest checks everything again.
         self.run_check(again=True, now=3000.0)
         self.assertEqual(len(self.probed), 2)
