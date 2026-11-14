@@ -23,6 +23,8 @@ from neko_common import (
     atomic_json,
     atomic_write,
     check_units,
+    chosen_timezone,
+    host_timezone,
     mount_path,
     safe_path,
     write_units,
@@ -586,6 +588,9 @@ def collector_settings(cfg, smart, interval=60):
     assistant = cfg.get('assistant', {})
     clean['assistant'] = {'wanted': assistant.get('wanted') is True if isinstance(assistant, dict) else False}
     clean['acceptance_scope'] = scope_digest(cfg)
+    # The zone the schedules were written in, and whether it is this PC's own ("auto"): the
+    # page says so when this PC's zone was changed since (deep check 216).
+    clean['timezone'] = {'zone': host_timezone(cfg), 'follows_this_pc': chosen_timezone(cfg) is None}
     # The profiles an acceptance run may name (config.json), for the collector to check.
     clean['acceptance_profiles'] = sorted(
         name for name in cfg.get('profiles', {}) if re.fullmatch(r'[a-z_]{1,40}', name)

@@ -43,6 +43,19 @@ def local_timezone(localtime='/etc/localtime', etc_timezone=ETC_TIMEZONE, zonein
     return name if name and TIMEZONE_PATTERN.fullmatch(name) and (Path(zoneinfo) / name).is_file() else None
 
 
+def chosen_timezone(config):
+    """The zone the settings name (``timezone``, or the legacy ``media.timezone`` and
+    ``maintenance.timezone``), None when they leave it to this PC (``"auto"``, or none)."""
+    value = config.get('timezone')
+    if value == 'auto':
+        return None
+    for section in ('media', 'maintenance'):
+        if value is None:
+            group = config.get(section, {})
+            value = group.get('timezone') if isinstance(group, dict) else None
+    return value
+
+
 def host_timezone(config):
     """IANA zone used for container TZ and systemd timer schedules.
 
@@ -50,14 +63,7 @@ def host_timezone(config):
     ``maintenance.timezone`` keys, then the host's /etc/localtime, then UTC.
     ``"auto"`` (the default in a new config) means "use this PC's timezone".
     """
-    value = config.get('timezone')
-    automatic = value == 'auto'
-    if automatic:
-        value = None
-    for section in ('media', 'maintenance'):
-        if value is None and not automatic:
-            group = config.get(section, {})
-            value = group.get('timezone') if isinstance(group, dict) else None
+    value = chosen_timezone(config)
     if value is None:
         value = local_timezone()
     if value is None:

@@ -71,6 +71,10 @@
     "wanted": false
   },
   "acceptance_scope": "30720cb71cf38bd7e20f7af4e5c64e91cbb4db9f2d34a3a650558e97ec724d01",
+  "timezone": {
+    "zone": "UTC",
+    "follows_this_pc": false
+  },
   "acceptance_profiles": [
     "accounts",
     "app_backup",

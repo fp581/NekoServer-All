@@ -2478,6 +2478,38 @@ fn backup_place(cfg: &Value) -> Value {
 }
 /// Said for as long as the backups are on the drive they copy and no copy goes anywhere
 /// else (the placement design's standing item; setup said it once, before choosing it).
+/// This PC's time zone changed since setup wrote the schedules in its zone (the settings'
+/// "timezone": "auto"): (the zone they still run in, this PC's now). Their night is then
+/// the old zone's: the backups and the monthly update could stop the apps in the day,
+/// and nothing said why (deep check 216). None while they agree, or can't be told.
+fn zone_moved(cfg: &Value, localtime: &Path, etc_timezone: &Path) -> Option<(String, String)> {
+    let saved = &cfg["timezone"];
+    let zone = saved["zone"]
+        .as_str()
+        .filter(|_| saved["follows_this_pc"] == true)?;
+    let now = this_pc_zone(localtime, etc_timezone)?;
+    // Two names of one zone ("UTC", "Etc/UTC") have the same rules file: not a change.
+    let rules = |name: &str| fs::read(Path::new("/usr/share/zoneinfo").join(name)).ok();
+    let same = now == zone || rules(&now).is_some_and(|r| Some(r) == rules(zone));
+    (!same).then(|| (zone.to_string(), now))
+}
+/// This PC's time zone, read as setup reads it (neko_common.local_timezone): the
+/// /etc/localtime link, else /etc/timezone.
+fn this_pc_zone(localtime: &Path, etc_timezone: &Path) -> Option<String> {
+    let linked = fs::read_link(localtime).ok().and_then(|link| {
+        let link = link.to_string_lossy().into_owned();
+        link.split_once("zoneinfo/")
+            .map(|(_, name)| name.to_string())
+    });
+    let name =
+        linked.or_else(|| Some(fs::read_to_string(etc_timezone).ok()?.trim().to_string()))?;
+    let plain = !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/_+-".contains(&b));
+    plain.then_some(name)
+}
 const SAME_DRIVE: &str = "One drive holds the apps, your files and their backups. The backups protect you from a mistake (a file deleted or changed), not from losing that drive. Add a second drive for the backups, or a USB drive for the weekly copy, and run setup again.";
 /// What a drive's "unavailable" alert says, by its status. `stopped`: the apps it
 /// stopped, named first so the page shows them before "Show more" ("" for none).
@@ -2502,6 +2534,17 @@ pub(crate) fn alerts(s: &Value) -> Value {
     };
     for (id, title, detail) in share_alerts(s) {
         add(id, "critical", title, &detail);
+    }
+    if let (Some(zone), Some(now)) = (
+        s["time_zone"]["schedules"].as_str(),
+        s["time_zone"]["this_pc"].as_str(),
+    ) {
+        add(
+            "timezone:changed".into(),
+            "warning",
+            "This PC's time zone changed since setup".into(),
+            &format!("This PC now uses {now} time, but the backups and app updates still run at night on {zone} time, as setup set them, so they may now run, and stop the apps, in your day. Run  sudo bash install.sh  again: it moves them to {now} time."),
+        );
     }
     if s["backup_place"]["same_drive"] == true && s["backup_place"]["offline"] != true {
         add(
@@ -3201,6 +3244,10 @@ pub fn run(a: &Args) -> Result<()> {
     result["integrity"] = integrity(data, ok, away, text(&cfg["photos"]["external_backup_uuid"]));
     result["backup_key"] = json!(backup_key_ready());
     result["backup_place"] = backup_place(&cfg);
+    let (localtime, etc_timezone) = (Path::new("/etc/localtime"), Path::new("/etc/timezone"));
+    if let Some((zone, now)) = zone_moved(&cfg, localtime, etc_timezone) {
+        result["time_zone"] = json!({"schedules": zone, "this_pc": now});
+    }
     result["shared_folders"] = shared_folders(data, ok);
     result["tailscale"] = tailscale_login(now);
     result["home_network"] = home_network(&cfg);
@@ -3265,6 +3312,59 @@ fn unwritable(result: &mut Value, why: &str) {
 #[cfg(test)]
 mod os_tests {
     use super::*;
+    /// Deep check 216: the time zone changed with timedatectl after setup. The schedules
+    /// keep the zone setup wrote in them, so the nights moved into the day, said nowhere.
+    #[test]
+    fn a_time_zone_changed_since_setup_is_said_with_what_to_do() {
+        let dir = std::env::temp_dir().join(format!("neko-zone-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (link, file) = (dir.join("localtime"), dir.join("timezone"));
+        std::os::unix::fs::symlink("/usr/share/zoneinfo/Asia/Tokyo", &link).unwrap();
+        let saved =
+            |zone: &str, own: bool| json!({"timezone": {"zone": zone, "follows_this_pc": own}});
+        let moved = zone_moved(&saved("Europe/London", true), &link, &file);
+        assert_eq!(moved, Some(("Europe/London".into(), "Asia/Tokyo".into())));
+        // The same zone, one chosen in the settings, or settings from before: nothing.
+        assert_eq!(zone_moved(&saved("Asia/Tokyo", true), &link, &file), None);
+        if Path::new("/usr/share/zoneinfo/UTC").is_file() {
+            // Another name of the same zone: setup's fallback "UTC", the PC's "Etc/UTC".
+            let utc = dir.join("utc");
+            std::os::unix::fs::symlink("/usr/share/zoneinfo/Etc/UTC", &utc).unwrap();
+            assert_eq!(zone_moved(&saved("UTC", true), &utc, &file), None);
+        }
+        assert_eq!(
+            zone_moved(&saved("Europe/London", false), &link, &file),
+            None
+        );
+        assert_eq!(zone_moved(&json!({}), &link, &file), None);
+        // /etc/localtime copied, not linked: /etc/timezone says it.
+        fs::remove_file(&link).unwrap();
+        fs::write(&file, "America/New_York\n").unwrap();
+        let moved = zone_moved(&saved("Europe/London", true), &link, &file);
+        assert_eq!(
+            moved,
+            Some(("Europe/London".into(), "America/New_York".into()))
+        );
+        let said =
+            alerts(&json!({"time_zone": {"schedules": "Europe/London", "this_pc": "Asia/Tokyo"}}));
+        let alert = said
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["id"] == "timezone:changed")
+            .unwrap();
+        let detail = alert["detail"].as_str().unwrap();
+        assert!(detail.contains("now uses Asia/Tokyo time"), "{detail}");
+        assert!(detail.contains("on Europe/London time"), "{detail}");
+        assert!(detail.contains("sudo bash install.sh"), "{detail}");
+        assert!(alerts(&json!({}))
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|a| a["id"] != "timezone:changed"));
+        let _ = fs::remove_dir_all(&dir);
+    }
     /// Seen with the media HDD filled to 96%: "filling up" said only "Review free space
     /// before uploads or backups". A warning says, like the urgent one, what stops when
     /// the drive is full and what to do before then.

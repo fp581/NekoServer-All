@@ -246,7 +246,7 @@ Everything works without editing anything. If you want to change something, edit
 
 | Setting | What it does | Default |
 | --- | --- | --- |
-| `"timezone"` | Timezone for the night-time backups and updates, e.g. `"Europe/London"` | `"auto"`: the PC's own timezone |
+| `"timezone"` | Timezone for the night-time backups and updates, e.g. `"Europe/London"` | `"auto"`: the PC's own timezone, as it was when setup last ran (change it later and the dashboard says so: run setup again) |
 | `"user"` under `"tv"` | Which account is the TV user (below) | `"auto"`: you |
 | `"torrent_port"` under `"media"` | Lets other peers connect to qBittorrent for faster downloads. Set a port such as `51413`, then forward it on your router. | off |
 | `"keep_snapshots"` and `"database_keep"` | How many backups to keep (nightly: 1 to 7, chosen on setup's backups page; a count from before 0.50.0 stays until you choose) | 3 nightly, 4 weekly database copies, 3 monthly |
