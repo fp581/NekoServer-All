@@ -24,6 +24,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **A restore says when the HDD that holds its backups is not connected**, instead of "No nightly backup… found on the HDD yet" or "No complete monthly snapshot on the HDD yet", which read as if no backup had ever been made.
 - **`music-setup.py` with a drive not connected (or the runtime not built) says why and stops**, instead of a Python traceback.
 - **`acceptance.py` and `source_import.py` say why they stopped** (a drive not connected, the runtime not built, a setting missing), instead of "inspect configuration and local services" or "check configured mounts".
+- **Setup without internet says the package source could not be reached, and why** ("Could not connect to …"), with what to do, instead of apt's "Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?".
 - **`migrate.py move --to <not a UUID>` says so**, instead of "move needs --drive and --to".
 - **Restoring from a card, a copy missing or replaced on the card is said as such**, as `verify` says it, instead of "No such file or directory".
 - **A restore that skipped files says how to get them too** (`--rename`), instead of ending with only "skipped 2". Seen restoring onto an exFAT stick, which cannot hold a name with `:` or tell `Same.jpg` from `same.jpg`.

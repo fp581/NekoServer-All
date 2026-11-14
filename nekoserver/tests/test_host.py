@@ -1985,6 +1985,31 @@ class RetryTest(unittest.TestCase):
         self.assertEqual(self.slept, [host.RETRY_PAUSE, host.RETRY_PAUSE])
         self.assertEqual(pacman.failed, host.RETRIES)
 
+    def test_a_source_that_never_answers_is_said_as_such_not_with_apts_own_advice(self):
+        """Seen with no network on a fresh Ubuntu: setup ended with apt's last line, "E: Unable
+        to fetch some archives, maybe run apt-get update or try with --fix-missing?", which
+        names neither the cause nor anything that helps. The line naming the cause is said,
+        with what to do."""
+        said = (
+            'Err:1 http://archive.ubuntu.com/ubuntu noble/main amd64 gcc amd64 4:13.2.0-7ubuntu1\n'
+            '  Could not connect to 127.0.0.1:9 (127.0.0.1). - connect (111: Connection refused)\n'
+            'E: Failed to fetch http://archive.ubuntu.com/ubuntu/pool/main/g/gcc.deb  '
+            'Could not connect to 127.0.0.1:9 (127.0.0.1). - connect (111: Connection refused)\n'
+            'E: Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?'
+        )
+        reason = host._reason(subprocess.CompletedProcess([], 100, '', said))
+        self.assertNotIn('--fix-missing', reason)
+        self.assertIn('could not be reached', reason)
+        self.assertIn('Connection refused', reason)
+        self.assertIn('Check the internet connection', reason)
+        # Any other failure is said as before: its last line.
+        other = subprocess.CompletedProcess([], 100, '', 'E: Unable to locate package nekocat')
+        self.assertEqual(host._reason(other), 'E: Unable to locate package nekocat')
+        # Also when a source that has nothing to do with it failed on the way.
+        warned = 'W: Failed to fetch http://ppa.example/InRelease  Connection refused\n' + other.stderr
+        mixed = subprocess.CompletedProcess([], 100, '', warned)
+        self.assertEqual(host._reason(mixed), 'E: Unable to locate package nekocat')
+
     def test_what_counts_as_a_source_not_answering(self):
         for text in (
             'E: Failed to fetch http://deb.debian.org/debian/dists/trixie/InRelease  Temporary failure resolving',
