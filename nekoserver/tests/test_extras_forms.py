@@ -103,10 +103,11 @@ class AlertTestTests(unittest.TestCase):
         self.assertEqual(asked.call_args.args[0], 'alert_arrived')
         self.assertIn('Phone alerts test: The alert server accepted the test message.', logs)
         self.assertIn('Phone alerts test: you saw it arrive on your phone', logs)
-        # Not seen: said as not seen, with what to look at; the server's yes still stands.
+        # Not seen: said, with what to look at, and the step waits for the person (the
+        # server takes a topic name with a typo in it just the same: 0.51.2 user check).
         result, logs, _ = self.outcome('accepted', seen=False)
-        self.assertIsNone(result)
-        self.assertTrue(any('not seen on a phone yet' in line for line in logs))
+        self.assertEqual(result, {'status': 'needs_setup', 'reason': notifications.NOT_ARRIVED})
+        self.assertIn('Phone alerts test: ' + notifications.NOT_ARRIVED, logs)
         self.assertFalse(any('you saw it arrive' in line for line in logs))
 
     def test_a_topic_anyone_can_read_is_said_plainly(self):

@@ -306,6 +306,15 @@ TEST_SAID = {
     'untrusted': "The alert server's security certificate could not be checked, so nothing was sent.",
     'not_sent': 'No test was sent: the address is not one NekoServer can send to.',
 }
+# Said when the person did not see the test arrive. The alert server takes a message for a
+# topic name with a typo in it just the same, and the address is hidden while it is typed,
+# so the next run asks for it again (run: outside_request.not_seen).
+NOT_ARRIVED = (
+    'The test message did not arrive on your phone, so alerts may be going to another address than the one '
+    'your phone follows (a typo in the address can\'t be seen, as it is hidden while you type). Check the '
+    'address in the ntfy app on your phone, and that the phone lets ntfy show notifications. Then run setup '
+    'again: it asks for the address again and sends a new test.'
+)
 OPEN_TOPIC = (
     'Anyone who knows this address can read your alerts without signing in. A long random name makes it hard to '
     'guess; it is not a lock.'
@@ -331,12 +340,11 @@ def test_alert(context, address, token, prompt=None):
         context.log('Phone alerts: ' + OPEN_TOPIC)
     if guided_setup.interactive(context):
         seen = questions.yes_no('alert_arrived', prompt, said=said)
-        context.log(
-            'Phone alerts test: you saw it arrive on your phone'
-            if outside_request.observed(seen) == 'observed'
-            else 'Phone alerts test: not seen on a phone yet. Check that the ntfy app follows the same address, '
-            'and that the phone lets it show notifications'
-        )
+        outside_request.mark_seen(safe_path(PRIVATE_CONFIG), seen)
+        if outside_request.observed(seen) != outside_request.OBSERVED:
+            context.log('Phone alerts test: ' + NOT_ARRIVED)
+            return {'status': 'needs_setup', 'reason': NOT_ARRIVED}
+        context.log('Phone alerts test: you saw it arrive on your phone')
     return None
 
 
@@ -393,8 +401,11 @@ def run(context):
     address, token = chosen
     if not address:
         return typed_in(context)
-    if outside_request.wrong_address(private) and guided_setup.interactive(context):
-        return asked_again(context)
+    if guided_setup.interactive(context):
+        if outside_request.wrong_address(private):
+            return asked_again(context, 'the saved address was not found at the alert server')
+        if outside_request.not_seen(private):
+            return asked_again(context, 'the last test did not arrive on your phone')
     return install(context, address, token) or tested_again(context, private, address, token)
 
 
@@ -422,9 +433,10 @@ def tested_again(context, private, address, token):
     return None
 
 
-def asked_again(context):
-    """The alert server had no topic at the saved address: the form again, then a test."""
-    context.log('Phone alerts: the saved address was not found at the alert server, so it is asked again.')
+def asked_again(context, why):
+    """The alert server had no topic at the saved address, or the person did not see the
+    test arrive: the form again, then a test."""
+    context.log(f'Phone alerts: {why}, so the address is asked again.')
     address, token = alerts_form(context)
     if not address:
         return set_up_later()
