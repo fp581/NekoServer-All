@@ -20,6 +20,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **A damaged or missing settings file is named, with what is wrong** (not JSON, with the line and column; not there; no settings in it; no such profile), in `install.sh`, `acceptance.py` and `recover.py`, instead of Python's own words or a vague line.
 - **`recover.py check --config my.json` reads my.json.** The option was read only before the command.
 - **`recover.py` in a fresh download says the runtime is not built yet, and how to build it**, instead of "…runtime/build.json does not exist. Check the path".
+- **`recover.py` with a setting of the wrong kind** (`"storage": "x"`, say) **says so without a Python traceback** around the words.
 - **The recovery menu's drive check names a drive that is not connected**, instead of "Both drives take new files and Linux counted no errors on them" (seen with neither drive connected). "The application SSD" also keeps its capital letters there.
 - **A restore says when the HDD that holds its backups is not connected**, instead of "No nightly backup… found on the HDD yet" or "No complete monthly snapshot on the HDD yet", which read as if no backup had ever been made.
 - **`music-setup.py` with a drive not connected (or the runtime not built) says why and stops**, instead of a Python traceback.

@@ -105,6 +105,16 @@ class RecoveryMessageTests(unittest.TestCase):
                 self.assertIn(str(bad.resolve()), err.getvalue())
                 self.assertIn(said, err.getvalue())
 
+    def test_a_setting_of_the_wrong_kind_is_said_without_a_traceback(self):
+        """Deep check plan 3: every setting given a wrong kind of value. recover.py printed
+        setup's clear words ("storage must be an object") inside a Python traceback."""
+        import installer
+
+        code, said = self.run_main(['check'], installer.InstallerError('storage must be an object'))
+        self.assertEqual(code, 2)
+        self.assertIn('Recovery failed: storage must be an object', said)
+        self.assertNotIn('Traceback', said)
+
     def test_the_settings_path_is_checked_where_it_is_read(self):
         """SonarCloud on PR 87: read_settings read any path it was handed. It checks it again
         where it reads it (absolute, no '..', no links)."""
