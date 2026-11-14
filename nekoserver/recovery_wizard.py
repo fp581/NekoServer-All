@@ -2965,43 +2965,81 @@ def unmounted(folder, run):
         )
 
 
+FSCK_HOURS = 6  # the longest a check or repair is waited for
+
+# A check or repair given up after FSCK_HOURS, said with what is left as it is.
+FSCK_TIMED_OUT = (
+    'the {program} did not finish within {hours} hours, so it was stopped. {state} The apps stay stopped; '
+    'run  sudo bash install.sh  to connect the drive again and start them. A drive this slow is often failing: '
+    'copy what you can\'t lose from it first.'
+)
+
+
+def fsck(argv, program, state, run):
+    """e2fsck run on the unmounted drive, its output kept. Its input is closed: its words
+    are not shown while it runs, so a question it asked (an unusual e2fsck, a drive
+    mounted meanwhile) waited unseen for an answer typed at the terminal, for hours. Given
+    up after FSCK_HOURS, said in words (it was Python's "Command [...] timed out")."""
+    try:
+        return run(
+            argv, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=FSCK_HOURS * 3600, check=False
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(FSCK_TIMED_OUT.format(program=program, hours=FSCK_HOURS, state=state)) from None
+
+
 def looked_at(device, output, run):
     """The unmounted ext4 drive only looked at (e2fsck -n opens it read-only and answers
     "no" to every fix): True when it found damage, False when it found none."""
     output('Checking, without changing anything (on a large drive this takes a few minutes)...')
-    fsck = run(['e2fsck', '-f', '-n', device], capture_output=True, text=True, timeout=6 * 3600, check=False)
-    output((fsck.stdout or '').strip()[-1500:])
+    fsck_run = fsck(['e2fsck', '-f', '-n', device], 'check', 'Nothing on the drive was changed.', run)
+    output((fsck_run.stdout or '').strip()[-1500:])
     # 0: no damage. 4: damage found and, as asked, left as it is. Anything else (8 and up:
     # the check itself could not run; a negative code: it was stopped) is not an answer.
-    if fsck.returncode not in (0, 4):
+    if fsck_run.returncode not in (0, 4):
         raise RuntimeError(
-            f'the check could not be done (the checking program, e2fsck, stopped with code {fsck.returncode}). '
+            f'the check could not be done (the checking program, e2fsck, stopped with code {fsck_run.returncode}). '
             'Nothing on the drive was changed. The apps stay stopped; run  sudo bash install.sh  to connect the '
             'drive again and start them.'
         )
-    return fsck.returncode == 4
+    return fsck_run.returncode == 4
 
 
 def repaired(device, output, run):
     """The unmounted ext4 drive repaired (e2fsck -p: the fixes it makes without asking).
     Returns False (no damage is left) once it finished."""
     output('Repairing (on a large drive this takes a few minutes)...')
-    fsck = run(['e2fsck', '-f', '-p', device], capture_output=True, text=True, timeout=6 * 3600, check=False)
-    output((fsck.stdout or '').strip()[-1500:])
+    state = 'The drive may be repaired in part only, and it stays disconnected.'
+    fsck_run = fsck(['e2fsck', '-f', '-p', device], 'repair', state, run)
+    output((fsck_run.stdout or '').strip()[-1500:])
     # 0: clean, 1: repaired, 2: repaired, restart advised. Anything else, also a negative
     # code (e2fsck killed part-way, the review of 0.46.1), is not a finished repair.
-    if fsck.returncode not in (0, 1, 2):
+    code = fsck_run.returncode
+    if code not in (0, 1, 2):
+        raise RuntimeError(repair_failed(code, device))
+    return False
+
+
+def repair_failed(code, device):
+    """What a repair that did not finish means, by e2fsck's exit code: 4 is damage it
+    leaves for a person to approve; 8 and up is e2fsck unable to work on the drive at all
+    (a damaged start of the filesystem, a device that does not answer). Both were said as
+    "found problems it does not fix without asking"."""
+    after = 'Then run  sudo bash install.sh  to connect the drive again and start the apps.'
+    if code < 0 or 4 <= code < 8:
         what = (
             'was stopped before it finished'
-            if fsck.returncode < 0
-            else f'found problems it does not fix without asking (exit {fsck.returncode})'
+            if code < 0
+            else f'found problems it does not fix without asking (exit {code})'
         )
-        raise RuntimeError(
-            f'the repair program (e2fsck) {what}. The drive is not repaired, and it stays disconnected with the apps '
-            f'stopped. Run  sudo e2fsck -f {device}  yourself: it asks before each change. Then run  sudo bash '
-            'install.sh  to connect the drive again and start the apps.'
+        then = f'Run  sudo e2fsck -f {device}  yourself: it asks before each change.'
+    else:
+        what = f'could not work on the drive at all (exit {code}; its words are above)'
+        then = (
+            'The drive may be failing or not answering, or the start of its filing system is damaged. Copy what you '
+            'can from it if it still mounts, and ask for help with the words above (SUPPORT.md).'
         )
-    return False
+    return f'the repair program (e2fsck) {what}. The drive is not repaired, and it stays disconnected with the apps stopped. {then} {after}'
 
 
 def mounted_again(folder, run, writes):
