@@ -1204,6 +1204,10 @@ pub fn stream(
 
 /// Said when an answer passes its time limit (Limits.total, or a pause too long).
 const TOO_LONG: &str = "the answer took too long, so it was stopped";
+/// Said when the assistant closes the connection without a word (it was restarting, or
+/// its runner ended).
+const HUNG_UP: &str =
+    "the AI assistant hung up without answering (it may be restarting); ask again in a minute";
 
 /// Why no line came, in words; `slow` is what to say when the wait was too long.
 fn why_none(why: Waited, slow: &str) -> String {
@@ -1240,7 +1244,8 @@ fn asked_ollama(
     let mut line = vec![];
     let slow_start = "the AI assistant took too long to start answering";
     match next_line(&mut reader, &mut line, limits.first, keep) {
-        Ok(0) => return Err(slow_start.into()),
+        // Hung up at once: not slow (seen with a stand-in assistant, it was said to be).
+        Ok(0) => return Err(HUNG_UP.into()),
         Ok(_) => {}
         Err(why) => return Err(why_none(why, slow_start)),
     }
@@ -2437,6 +2442,15 @@ mod tests {
         let took = start.elapsed();
         assert!(result.unwrap_err().contains("too long"), "took {took:?}");
         assert!(took < Duration::from_secs(4), "{took:?}");
+    }
+
+    /// Seen with a stand-in assistant that closed the connection at once: Neko said it
+    /// "took too long to start answering", though it had answered nothing in no time.
+    #[test]
+    fn an_assistant_that_hangs_up_at_once_is_not_called_slow() {
+        let (address, _) = fake_ollama(Some(String::new()));
+        let why = collect(&address, &LIMITS).0.unwrap_err();
+        assert!(why.contains("hung up without answering"), "{why}");
     }
 
     /// The asks share one slot: these tests take it in turn.
