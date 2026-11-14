@@ -534,6 +534,19 @@ def chap_kept(iqn, portal, roots=NODE_ROOTS):
     return 'node.session.auth.authmethod = CHAP' in text and 'node.session.auth.password = ' in text
 
 
+def login_needed(iqn, input_fn, out_fn):
+    """ "Does your NAS ask for a user name and password for this disk?": yes, or no (Enter
+    alone, as the question says). Any other answer is asked again: a typo ("yse") was
+    taken as no."""
+    while True:
+        answer = asked_plainly('nas_login_needed', input_fn, iqn=iqn).lower()
+        if answer in ('y', 'yes'):
+            return True
+        if answer in ('', 'n', 'no'):
+            return False
+        out_fn('Please type yes or no.')
+
+
 def asked_chap(iqn, portal, input_fn, out_fn, secret_fn, again=False):
     """A CHAP login for the target, when the NAS asks for one: True when one was saved.
     `again`: why it is asked once more ('missing', or 'refused' by the NAS)."""
@@ -541,10 +554,8 @@ def asked_chap(iqn, portal, input_fn, out_fn, secret_fn, again=False):
         out_fn(f'The NAS refused the login to {iqn}.')
     if again == 'missing':
         out_fn(f'The CHAP login of {iqn} is missing from its iSCSI settings; give it again.')
-    else:
-        answer = asked_plainly('nas_login_needed', input_fn, iqn=iqn).lower()
-        if answer not in ('y', 'yes'):
-            return False
+    elif not login_needed(iqn, input_fn, out_fn):
+        return False
     for _ in range(3):
         user = asked_plainly('nas_login_user', input_fn)
         try:

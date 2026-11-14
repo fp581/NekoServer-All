@@ -190,6 +190,22 @@ class ConnectionTests(unittest.TestCase):
         nas.known_at(IQN, PORTAL, lambda argv, **k: calls.append(argv) or done())
         self.assertEqual(len(calls), 1)  # already there
 
+    def test_a_typo_to_does_the_nas_ask_for_a_login_is_asked_again_not_taken_as_no(self):
+        answers = iter(['yse', 'y e s', 'YES', 'neko'])
+        said = []
+        with (
+            mock.patch.object(nas, 'set_chap') as saved,
+            mock.patch.object(nas.questions, 'shown', return_value=contextlib.nullcontext()),
+        ):
+            got = nas.asked_chap(IQN, PORTAL, lambda q: next(answers), said.append, lambda q: 'a-long-secret-1')
+        self.assertTrue(got)
+        self.assertEqual(said.count('Please type yes or no.'), 2)
+        saved.assert_called_once()
+        # Enter alone, and no, are no (the question says so).
+        for answer in ('', 'no', ' N '):
+            with mock.patch.object(nas.questions, 'shown', return_value=contextlib.nullcontext()):
+                self.assertFalse(nas.asked_chap(IQN, PORTAL, lambda q: answer, said.append, None))
+
     def test_a_chap_password_is_written_in_the_targets_settings_never_on_a_command_line(self):
         with tempfile.TemporaryDirectory() as d:
             folder = Path(d) / IQN / '192.168.1.20,3260,1'
