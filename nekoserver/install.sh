@@ -302,6 +302,15 @@ if "$apply"; then
     echo "A drive move is not finished (/etc/nekoserver-backups/migrate.json). Finish it with  sudo python3 migrate.py resume  (it runs setup itself)." >&2
     exit 1
   fi
+  # The same for a NekoServer upgrade at work or cut off (runtime/src/shared.json
+  # recovery.upgrade): it runs setup itself, with NEKOSERVER_KEEP_SYSTEM. A setup started
+  # by hand meanwhile would take the setup lock from the upgrade's own run (so it could
+  # neither set up the new release nor put the old one back) and set this folder's
+  # release up over a server half upgraded. The service waits for an upgrade at work.
+  if ! "$recover" && [[ -e /etc/nekoserver-backups/upgrade.json && -z "${NEKOSERVER_KEEP_SYSTEM:-}" ]]; then
+    echo 'A NekoServer upgrade is at work or was cut off (/etc/nekoserver-backups/upgrade.json). Let it finish: run  sudo systemctl start nekoserver-upgrade-resume.service  (it waits for an upgrade at work, then finishes or puts back a cut-off one), then run  sudo bash install.sh  again.' >&2
+    exit 1
+  fi
   if ! "$recover" && [[ -e /etc/nekoserver-backups/maintenance-resume.json ]]; then
     # An unfinished monthly update is finished first (by the release that started it,
     # or by this one with --finish-update); stop before the system update or any

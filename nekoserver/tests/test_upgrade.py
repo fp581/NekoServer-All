@@ -1003,5 +1003,40 @@ class UpgradeReportTests(unittest.TestCase):
         self.assertFalse((self.dir / 'gone').exists())
 
 
+class SetupByHandDuringAnUpgrade(unittest.TestCase):
+    """install.sh run by hand while an upgrade is at work or cut off stops before it
+    touches anything (plan 94: it went on to the system update and took the setup lock
+    the upgrade's own run then could not get, so neither the new release nor the way
+    back could be set up). The upgrade's own runs pass NEKOSERVER_KEEP_SYSTEM."""
+
+    SHARED = json.loads((ROOT / 'runtime/src/shared.json').read_text())['recovery']['upgrade']
+
+    def guard(self):
+        """install.sh's check of the upgrade record, as it stands in the script."""
+        lines = (ROOT / 'install.sh').read_text().splitlines()
+        start = next(i for i, line in enumerate(lines) if 'upgrade.json' in line and line.lstrip().startswith('if '))
+        end = next(i for i in range(start, len(lines)) if lines[i].strip() == 'fi')
+        return '\n'.join(lines[start : end + 1])
+
+    def run_guard(self, journal, **env):
+        guard = self.guard().replace(self.SHARED['journal'], str(journal))
+        script = 'recover=false\n' + guard + '\necho went-on\n'
+        return subprocess.run(
+            ['bash', '-c', script], capture_output=True, text=True, env={'PATH': '/usr/bin:/bin', **env}, check=False
+        )
+
+    def test_a_setup_by_hand_stops_and_names_the_service(self):
+        with tempfile.TemporaryDirectory() as folder:
+            journal = Path(folder) / 'upgrade.json'
+            self.assertIn('went-on', self.run_guard(journal).stdout)
+            journal.write_text('{"format": "neko-upgrade-v1", "phase": "downloading"}')
+            stopped = self.run_guard(journal)
+            self.assertEqual(stopped.returncode, 1)
+            self.assertNotIn('went-on', stopped.stdout)
+            self.assertIn('sudo systemctl start ' + self.SHARED['service'], stopped.stderr)
+            # The upgrade's own setup (and its way back) goes on.
+            self.assertIn('went-on', self.run_guard(journal, NEKOSERVER_KEEP_SYSTEM='1').stdout)
+
+
 if __name__ == '__main__':
     unittest.main()
