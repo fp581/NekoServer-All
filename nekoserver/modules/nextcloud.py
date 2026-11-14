@@ -573,10 +573,17 @@ def stop_installed(ctx, run_command=None, hold=None, journal=None):
             *compose_image_override(manifest),
         ]
         (run_command or command)(base + ['stop'])
-    ctx.log(
-        'Nextcloud: turned off. Its containers are stopped; your files and database are kept. '
-        'Set "enabled": true under "nextcloud" and run  sudo bash install.sh  to start it again.'
-    )
+    ctx.log(TURNED_OFF.format(folder=cloud_files(ctx.config)))
+
+
+# What switching Nextcloud off keeps and what stops (deep check 246: the person was told
+# neither where the files are now nor that the weekly USB copy stops taking them).
+TURNED_OFF = (
+    'Nextcloud: turned off. Its containers are stopped. Kept: your files (in {folder}), its database, '
+    'and the copies already on the USB drive (the recovery menu still restores them). The weekly USB copy no '
+    'longer copies Nextcloud files. To start it again as it was, switch Personal files back on on setup\'s '
+    'first page and run  sudo bash install.sh.'
+)
 
 
 # A folder a new Nextcloud would use holds something already (another install's files or

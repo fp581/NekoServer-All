@@ -113,8 +113,8 @@ def menu(config):
     media apps too?" answered no), the two items that only hold their backups (Immich's
     photo archive, the nightly app snapshots) are offered only while such a backup is
     there to restore: a server that had the apps keeps everything it had, its backups
-    too. Nextcloud switched off is not offered (as modules/nextcloud.py runs it: on
-    unless "enabled" is false)."""
+    too. Nextcloud switched off is offered only when it was set up before (as
+    modules/nextcloud.py runs it: on unless "enabled" is false)."""
     media = Path(config['media_mount'])
     # Whether the apps an item restores are part of this server (the groups of 0.50.0).
     on = {
@@ -130,6 +130,10 @@ def menu(config):
     def offered(key):
         if on.get(key, True):
             return True
+        if key == 'cloud':
+            # Switched off after it was set up: its copies on the USB drive stay, and so
+            # does the way to get them back (deep check 246).
+            return nextcloud_set_up(config)
         return key in held and has_entries(held[key])
 
     return [(key, words) for key, words in MENU if offered(key)]
@@ -139,6 +143,12 @@ def nextcloud_on(config):
     """Nextcloud is part of this server: on unless its "enabled" is false."""
     section = config.get('nextcloud')
     return not (isinstance(section, dict) and section.get('enabled') is False)
+
+
+def nextcloud_set_up(config):
+    """Nextcloud was installed on this server (its Compose file is on the SSD), whether it
+    is switched on now or not."""
+    return (Path(config['data_mount']) / 'compose/nextcloud/compose.yaml').is_file()
 
 
 def has_entries(folder):

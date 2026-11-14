@@ -187,5 +187,47 @@ class AlertsStoppedTests(unittest.TestCase):
         self.assertIn('network problem', state['reason'])
 
 
+class NextcloudOffTests(unittest.TestCase):
+    """Deep check 246: "Turn off Nextcloud, I don't use it". Setup said "your files and
+    database are kept" but not where, nor that the weekly USB copy stops taking them, and
+    the recovery menu then dropped "Nextcloud files": the copies on the USB drive could no
+    longer be restored without switching Nextcloud on again."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.config = {
+            'data_mount': str(self.root / 'ssd'),
+            'media_mount': str(self.root / 'hdd'),
+            'nextcloud': {'enabled': False},
+        }
+
+    def set_up_before(self):
+        manifest = self.root / 'ssd/compose/nextcloud/compose.yaml'
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text('services: {}')
+
+    def offered(self):
+        return [key for key, _ in recovery_wizard.menu(self.config)]
+
+    def test_a_nextcloud_switched_off_after_it_was_set_up_can_still_be_restored(self):
+        self.assertNotIn('cloud', self.offered())  # never set up: nothing to restore
+        self.set_up_before()
+        self.assertIn('cloud', self.offered())
+
+    def test_turning_it_off_says_what_is_kept_and_what_stops(self):
+        from modules import nextcloud
+
+        self.set_up_before()
+        logs = []
+        ctx = mock.Mock(config=self.config, apply=True, log=logs.append)
+        nextcloud.stop_installed(ctx, run_command=mock.Mock(), hold=mock.MagicMock(), journal=self.root / 'none')
+        said = logs[-1]
+        self.assertIn(str(self.root / 'hdd/cloud/files'), said)
+        self.assertIn('USB', said)
+        self.assertIn('first page', said)
+
+
 if __name__ == '__main__':
     unittest.main()
