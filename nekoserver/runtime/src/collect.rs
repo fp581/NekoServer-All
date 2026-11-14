@@ -2518,6 +2518,18 @@ pub(crate) fn alerts(s: &Value) -> Value {
             "The last alerts could not be sent to your ntfy topic. Run  sudo bash install.sh  again: it sends a test message, and asks for the topic's address and access token again when the alert server refuses them.",
         );
     }
+    if s["battery"]["discharging"] == true {
+        let left = s["battery"]["percent"]
+            .as_f64()
+            .map(|p| format!(" ({p:.0}% left)"))
+            .unwrap_or_default();
+        add(
+            "battery".into(),
+            "warning",
+            format!("The server is running on its battery{left}"),
+            "Its charger is unplugged, or the power is off. When the battery runs out, the PC goes off at once, in the middle of whatever it is doing (a backup, say). Plug the charger in; for a power cut, shut the PC down before the battery runs out:  sudo poweroff",
+        );
+    }
     if s["home_network"]["status"] == "moved" {
         add(
             "home-network".into(),
@@ -2968,6 +2980,29 @@ fn notification_status(now: f64) -> Value {
     }
     json!({"status":status,"timer":timer,"last_success":common::shown_time(&saved["last_success"],now),"last_attempt":num(&saved["last_attempt"],0.0,now+30.0),"pending":num(&saved["pending"],0.0,100.0)})
 }
+/// A laptop running on its battery (the charger unplugged, or a power cut): when it runs
+/// out the PC goes off at once, in the middle of a backup if it comes to that, and nothing
+/// said so (deep check 260). Batteries of a mouse or a keyboard (scope "Device") don't count.
+fn battery(root: &Path) -> Value {
+    let mut found = json!({"discharging": false});
+    for entry in fs::read_dir(root).into_iter().flatten().flatten().take(32) {
+        let path = entry.path();
+        let read = |name: &str| {
+            fs::read_to_string(path.join(name))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default()
+        };
+        if read("type") == "Battery" && read("scope") != "Device" && read("status") == "Discharging"
+        {
+            let percent = read("capacity")
+                .parse::<f64>()
+                .ok()
+                .filter(|v| (0.0..=100.0).contains(v));
+            found = json!({"discharging": true, "percent": percent});
+        }
+    }
+    found
+}
 /// Whether this PC still has the home-network address that the apps' home addresses and
 /// the shared folders use ("lan_ip" under "gateway"). With a new router, or one that gave
 /// the PC another address, both stop answering while every service still runs, so nothing
@@ -3158,6 +3193,7 @@ pub fn run(a: &Args) -> Result<()> {
     result["shared_folders"] = shared_folders(data, ok);
     result["tailscale"] = tailscale_login(now);
     result["home_network"] = home_network(&cfg);
+    result["battery"] = battery(Path::new("/sys/class/power_supply"));
     result["network_storage"] = network_storage(&cfg, Path::new("/sys/class/iscsi_session"));
     result["arrays"] = arrays;
     mark_held(&mut result);
@@ -4173,6 +4209,48 @@ mod os_tests {
                 json!([])
             );
         }
+    }
+    /// Deep check 260 (a laptop as the server): unplugged, it ran on its battery until
+    /// it went off, and nothing said so.
+    #[test]
+    fn a_laptop_on_its_battery_is_said() {
+        let dir = std::env::temp_dir().join(format!("neko-battery-{}", std::process::id()));
+        let supply = |name: &str, fields: &[(&str, &str)]| {
+            let folder = dir.join(name);
+            fs::create_dir_all(&folder).unwrap();
+            for (field, value) in fields {
+                fs::write(folder.join(field), format!("{value}\n")).unwrap();
+            }
+        };
+        supply("AC", &[("type", "Mains"), ("online", "1")]);
+        supply(
+            "BAT0",
+            &[
+                ("type", "Battery"),
+                ("status", "Charging"),
+                ("capacity", "80"),
+            ],
+        );
+        supply(
+            "hid-mouse",
+            &[
+                ("type", "Battery"),
+                ("scope", "Device"),
+                ("status", "Discharging"),
+            ],
+        );
+        assert_eq!(battery(&dir), json!({"discharging": false}));
+        supply("BAT0", &[("status", "Discharging"), ("capacity", "41")]);
+        let found = battery(&dir);
+        assert_eq!(found, json!({"discharging": true, "percent": 41.0}));
+        let shown = alerts(&json!({ "battery": found }));
+        assert_eq!(
+            shown[0]["title"],
+            "The server is running on its battery (41% left)"
+        );
+        assert!(text(&shown[0]["detail"]).contains("Plug the charger in"));
+        assert_eq!(battery(&dir.join("none")), json!({"discharging": false}));
+        fs::remove_dir_all(&dir).unwrap();
     }
     /// Deep check 250: "setup can change them" was not true; setup now tests and asks.
     #[test]

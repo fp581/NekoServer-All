@@ -19,6 +19,8 @@ systemd-analyze cat-config systemd/sleep.conf
 systemd-analyze cat-config systemd/logind.conf
 ```
 
+**On a laptop.** Closing the lid does not put the server to sleep: the same file tells logind to ignore the lid (`HandleLidSwitch=ignore`, on the charger and on battery too; it counts from the next restart, and sleep is blocked at once anyway). The screen may still go dark, which is fine. Keep the charger plugged in: on its battery the dashboard and the phone alerts say *The server is running on its battery*, and when the battery runs out the PC goes off at once, in the middle of whatever it is doing. During a power cut, shut it down yourself before then (`sudo poweroff`). Many laptops have a setting in their BIOS/UEFI to switch on by themselves when the power comes back. A laptop's own disk is the disk Linux runs from, so the SSD and HDD are usually USB drives (STORAGE.md).
+
 This policy covers standard OS sleep paths. Physical shutdown, loss of electricity, kernel failure and privileged direct hardware control remain outside an OS sleep setting. BIOS/UEFI restore-after-power-loss and a UPS are separate hardware setup choices.
 
 ## HDD standby

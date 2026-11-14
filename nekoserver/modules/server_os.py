@@ -113,7 +113,10 @@ def files(config, journald=JOURNALD):
     return {
         '/etc/systemd/sleep.conf.d/90-nekoserver.conf': MARKER
         + '[Sleep]\nAllowSuspend=no\nAllowHibernation=no\nAllowHybridSleep=no\nAllowSuspendThenHibernate=no\n',
-        '/etc/systemd/logind.conf.d/90-nekoserver.conf': MARKER + '[Login]\nIdleAction=ignore\n',
+        # A laptop as the server keeps running with its lid closed (deep check 260).
+        '/etc/systemd/logind.conf.d/90-nekoserver.conf': MARKER
+        + '[Login]\nIdleAction=ignore\nHandleLidSwitch=ignore\nHandleLidSwitchExternalPower=ignore\n'
+        'HandleLidSwitchDocked=ignore\n',
         JOURNAL_DROPIN: MARKER + '[Journal]\n' + ''.join(key + '=' + value + '\n' for key, value in wanted.items()),
     }
 

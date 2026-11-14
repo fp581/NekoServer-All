@@ -31,6 +31,7 @@ fn label(id: &str) -> Option<String> {
         "heartbeat:delivery" => {
             return Some("Outage alerts: the outside monitor is not reached".into())
         }
+        "battery" => return Some("The server is running on its battery".into()),
         "home-network" => {
             return Some("Home addresses stopped: this server's address at home changed".into())
         }
@@ -661,6 +662,7 @@ mod tests {
     #[test]
     fn a_changed_home_address_is_sent_and_recovers_only_when_seen() {
         assert!(label("home-network").is_some());
+        assert!(label("battery").is_some());
         let mut s = json!({"format":"neko-dashboard-v1","generated_at":2000.0,
             "alerts":[],"applications":[],"storage":[],"backups":[],"media":{"status":"current"},
             "home_network":{"status":"unknown"}});
