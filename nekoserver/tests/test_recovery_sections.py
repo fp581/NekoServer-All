@@ -185,11 +185,40 @@ class MenuTests(Server, unittest.TestCase):
         def stopped(*_):
             raise KeyboardInterrupt
 
-        with mock.patch.dict(recovery_wizard.DRIVE_ACTIONS, {'check': stopped}):
-            self.assertEqual(self.menu('2', '1'), 1)
+        def approved_then_stopped(config, prompt, output):
+            recovery_wizard.ask('Check it now?', prompt, output)
+            raise KeyboardInterrupt
+
+        with mock.patch.dict(recovery_wizard.DRIVE_ACTIONS, {'check': approved_then_stopped}):
+            self.assertEqual(self.menu('2', '1', 'yes'), 1)
         self.assertIn('the apps may still be stopped: run  sudo bash install.sh', self.out[-1])
         self.out.clear()
         self.assertEqual(recovery_wizard.menu_loop(self.config, stopped, self.out.append), 1)
+        self.assertEqual(self.out[-1], '\nStopped. Nothing was changed.')
+
+    def test_stopping_after_only_looking_around_says_nothing_was_changed(self):
+        """Deep check plan 200: Ctrl+D after opening a section and going back said "what was
+        already restored or repaired stays as it is", though nothing was done."""
+
+        def typed_then_ctrl_d(*typed):
+            given = iter(typed)
+
+            def prompt(question=''):
+                answer = next(given, None)
+                if answer is None:
+                    raise EOFError
+                return answer
+
+            return prompt
+
+        menu = recovery_wizard.menu_loop
+        self.assertEqual(menu(self.config, typed_then_ctrl_d('1', '0', '2', '0'), self.out.append), 1)
+        self.assertEqual(self.out[-1], '\nStopped. Nothing was changed.')
+        # A question answered no changes nothing either.
+        self.out.clear()
+        asks = {'check': lambda c, p, o: recovery_wizard.ask('Check it now?', p, o)}
+        with mock.patch.dict(recovery_wizard.DRIVE_ACTIONS, asks):
+            self.assertEqual(menu(self.config, typed_then_ctrl_d('2', '1', 'no'), self.out.append), 1)
         self.assertEqual(self.out[-1], '\nStopped. Nothing was changed.')
 
 

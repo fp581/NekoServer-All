@@ -1908,7 +1908,9 @@ class RecoveryWizardTests(unittest.TestCase):
             mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
         ):
             recovery_wizard.run(then_stopped('2', '1', 'yes', '1'), stopped.append)
-        self.assertIn('Stopped. Nothing more was changed; what was already restored', stopped[-1])
+        # Only looked around (both drives away, then a menu left by Ctrl+D): nothing was
+        # restored or repaired, so it is not said to stay (deep check plan 200).
+        self.assertEqual(stopped[-1], '\nStopped. Nothing was changed.')
 
     def test_a_restore_made_again_at_once_gets_a_folder_of_its_own(self):
         # UP-13: the suggested folder was named to the minute, so a second restore within

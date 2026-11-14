@@ -161,12 +161,23 @@ def say(output, *lines):
         output(line)
 
 
+# How many questions were answered yes in this run of the menu: only after one can
+# anything have been restored, repaired or stopped (menu_loop says so when stopped).
+APPROVALS = [0]
+
+
+def approved(answer):
+    if answer:
+        APPROVALS[0] += 1
+    return answer
+
+
 def ask(question, prompt=input, output=print):
     """yes -> True, no -> False; Ctrl+D or Ctrl+C stops the recovery menu."""
     answer = guided_setup.yes_no(question, prompt, output)
     if answer is None:
         raise EOFError
-    return answer
+    return approved(answer)
 
 
 def asked(key, prompt=input, output=print, **values):
@@ -176,7 +187,7 @@ def asked(key, prompt=input, output=print, **values):
     answer = questions.yes_no(key, prompt, output, **values)
     if answer is None:
         raise EOFError
-    return answer
+    return approved(answer)
 
 
 def choose(title, options, prompt=input, output=print, leave='Back'):
@@ -3334,14 +3345,16 @@ def menu_loop(config, prompt, output):
         'and asked. Pressing Enter alone never approves anything.',
     )
     sections = {'restore': restore_section, 'drive': drive_section}
-    started = False
+    # Something may have changed only once a question was answered yes: after only
+    # looking around, "what was already restored or repaired stays" named work never
+    # done (deep check plan 200).
+    before = APPROVALS[0]
     try:
         while True:
             pick = choose('What do you need to do?', SECTIONS, prompt, output, leave='Quit')
             if pick is None:
                 output('Done.')
                 return 0
-            started = True
             try:
                 sections[pick](config, prompt, output)
             except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
@@ -3354,7 +3367,7 @@ def menu_loop(config, prompt, output):
                 'Nothing more was changed; what was already restored or repaired stays as it is. If a drive '
                 'check or repair was under way, the apps may still be stopped: run  sudo bash install.sh  to '
                 'connect the drives and start them.'
-                if started
+                if APPROVALS[0] > before
                 else 'Nothing was changed.'
             )
         )
