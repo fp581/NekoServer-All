@@ -223,7 +223,7 @@ def main(argv=None):
         import existing_page
 
         library_results = media_libraries.configure(
-            root, media, a.apply, apps, more=existing_page.libraries(config, a.apply)
+            root, films, a.apply, apps, more=existing_page.libraries(config, a.apply)
         )
         # Navidrome's library for the person's own music folder, used where it is.
         library_results += existing_page.music_libraries(config, a.apply)
@@ -263,7 +263,10 @@ def main(argv=None):
     cmd = ['--config', str(Path(a.config).resolve()), '--data-root', str(root)]
     managers = {'sonarr', 'radarr', 'lidarr'} & set(apps)
     if managers:
-        cmd += ['--root-folders', '--media-root', str(media)]
+        cmd.append('--root-folders')
+        if a.media_root:
+            # Otherwise the connector finds each library on the drive it is placed on.
+            cmd += ['--media-root', str(media)]
     if managers and 'prowlarr' in apps:
         cmd.append('--applications')
     if managers and 'qbittorrent' in apps:

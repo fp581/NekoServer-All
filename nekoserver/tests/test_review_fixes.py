@@ -1440,6 +1440,43 @@ class OnboardingCompletionTests(unittest.TestCase):
                 saved = json.loads((root / 'reports/onboarding.json').read_text())
                 self.assertNotIn('connector', json.dumps(saved))
 
+    def test_films_on_a_drive_of_their_own_are_looked_for_there(self):
+        """Deep check 174: films and shows placed on another drive. Jellyfin's libraries,
+        and Sonarr's and Radarr's root folders, were looked for on the media drive, where
+        their folders do not exist: "Expected HDD library folder is missing"."""
+        import onboard
+
+        with tempfile.TemporaryDirectory() as d:
+            root, media = Path(d) / 'ssd', Path(d) / 'hdd'
+            root.mkdir()
+            media.mkdir()
+            config = Path(d) / 'config.json'
+            settings = {
+                'data_mount': str(root),
+                'media_mount': str(media),
+                'media': {'services': list(onboard.APPS)},
+                'storage': {'films': {'uuid': '0f0f'}},
+                'locations': {'movies': 'films'},
+            }
+            config.write_text(json.dumps(settings))
+            with (
+                mock.patch.object(onboard, 'mount_ok', return_value=True),
+                mock.patch.object(onboard, 'report', return_value=[]),
+                mock.patch.object(onboard, 'run_program', return_value=0) as call,
+                mock.patch.object(onboard.media_readiness, 'check', return_value=[]),
+                mock.patch.object(onboard.media_libraries, 'configure', return_value=[]) as libraries,
+                mock.patch('existing_page.libraries'),
+                mock.patch('existing_page.music_libraries', return_value=[]),
+                mock.patch('builtins.print'),
+            ):
+                onboard.main(['--config', str(config), '--configure', '--libraries', '--apply'])
+            films = onboard.files_root(settings, 'movies')
+            self.assertNotEqual(films, media)
+            self.assertEqual(libraries.call_args.args[1], films)
+            connector = next(c.args[1] for c in call.call_args_list if c.args[0].name == 'media-connect.py')
+            self.assertIn('--root-folders', connector)
+            self.assertNotIn('--media-root', connector)  # it finds each drive itself
+
     def test_apps_whose_group_is_off_are_not_checked_or_connected(self):
         """A music-only server (Movies and shows off) keeps the full media.services list;
         Jellyfin, Seerr, Sonarr and Radarr are stopped there. Onboarding checked them all
