@@ -22,6 +22,7 @@ from neko_common import (
     LOCATIONS,
     MEDIA_APPS,
     app_ports,
+    app_wanted,
     atomic_json,
     checked_settings,
     default_settings,
@@ -160,9 +161,12 @@ def main(argv=None):
     if a.indexers and not a.configure:
         p.error('--indexers requires --configure')
     config = json.loads(Path(a.config).read_text())
-    apps = tuple(config.get('media', {}).get('services', APPS))
-    if not set(apps) <= set(APPS):
+    listed = tuple(config.get('media', {}).get('services', APPS))
+    if not set(listed) <= set(APPS):
         p.error('Unknown media service in config')
+    # The apps set up: one whose group is switched off (Movies and shows on a music-only
+    # server, say) is stopped by the media step, so it is never checked or connected here.
+    apps = tuple(app for app in listed if app_wanted(config, app))
     if not 0 <= a.wait <= 600:
         p.error('--wait must be 0..600')
     root = safe_path(a.data_root or config['data_mount'])

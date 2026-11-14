@@ -17,6 +17,7 @@ from pathlib import Path
 from neko_common import (
     LOCATIONS,
     app_ports,
+    app_wanted,
     files_root,
     safe_path,
     local_opener,
@@ -953,7 +954,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     config = json.loads(Path(args.config).read_text())
     selected = config.get('media', {}).get('services', list(PORTS) + ['qbittorrent'])
-    apps = tuple(x for x in ('sonarr', 'radarr', 'lidarr') if x in selected)
+    # Connected: the managers that are set up. One whose group is switched off (Movies and
+    # shows, say) is stopped by the media step, so there is nothing to connect it to.
+    apps = tuple(x for x in ('sonarr', 'radarr', 'lidarr') if x in selected and app_wanted(config, x))
     root = Path(args.data_root or config['data_mount'])
     if not root.is_dir() or root.is_symlink() or not os.path.ismount(root):
         parser.error('Data SSD must be mounted at --data-root')

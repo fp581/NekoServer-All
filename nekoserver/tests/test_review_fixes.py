@@ -1422,6 +1422,49 @@ class OnboardingCompletionTests(unittest.TestCase):
                 saved = json.loads((root / 'reports/onboarding.json').read_text())
                 self.assertNotIn('connector', json.dumps(saved))
 
+    def test_apps_whose_group_is_off_are_not_checked_or_connected(self):
+        """A music-only server (Movies and shows off) keeps the full media.services list;
+        Jellyfin, Seerr, Sonarr and Radarr are stopped there. Onboarding checked them all
+        the same ("appdata:jellyfin" left to do, the step never finished) and asked the
+        connector to set up Sonarr's and Radarr's folders."""
+        import importlib.util
+
+        import onboard
+
+        with tempfile.TemporaryDirectory() as d:
+            root, media = Path(d) / 'ssd', Path(d) / 'hdd'
+            root.mkdir()
+            media.mkdir()
+            config = Path(d) / 'config.json'
+            settings = {
+                'data_mount': str(root),
+                'media_mount': str(media),
+                'media': {'services': list(onboard.APPS)},
+                'media_apps': {'photos': False, 'movies': False, 'music': True},
+            }
+            config.write_text(json.dumps(settings))
+            with (
+                mock.patch.object(onboard, 'mount_ok', return_value=True),
+                mock.patch.object(onboard, 'report', return_value=[]) as checked,
+                mock.patch.object(onboard, 'run_program', return_value=0) as call,
+                mock.patch.object(onboard.media_readiness, 'check', return_value=[]),
+                mock.patch('builtins.print'),
+            ):
+                onboard.main(['--config', str(config), '--configure', '--apply'])
+            self.assertEqual(checked.call_args.args[3], ('navidrome', 'lidarr', 'prowlarr', 'qbittorrent'))
+            connector = ROOT / 'media-connect.py'
+            spec = importlib.util.spec_from_file_location('media_connect_groups', connector)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            with (
+                mock.patch.object(module.os.path, 'ismount', return_value=True),
+                mock.patch.object(module, 'chosen_actions', return_value=[]) as chosen,
+                mock.patch('builtins.print'),
+                self.assertRaises(SystemExit),
+            ):
+                module.main(['--config', str(config), '--root-folders'])
+            self.assertEqual(chosen.call_args.args[3], ('lidarr',))
+
     def test_a_confirmed_playback_is_recorded_and_a_skipped_one_is_only_noted(self):
         import wizard
         from modules import onboarding
