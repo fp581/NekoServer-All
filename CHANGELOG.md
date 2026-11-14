@@ -26,6 +26,9 @@ Every copy is read back and checked before it counts. That read came straight af
 - **A card never gets a set inventory it cannot read back.** The engine now stops, naming the limit, before writing a list larger than its reader takes.
 - **Nothing is restored onto the card itself.** `restore /mnt` (the card) copied every file onto the card, among its records; a folder on the card is now refused, also through a link.
 
+### Checked
+- **The card's restore tool runs on Python 3.8, as it promises**: its tests now run on a real Python 3.8 in CI (they pass), so a newer Python feature in it fails the build instead of a restore on an older PC.
+
 ## v0.51.1 — 2026-11-13
 
 Fixes only, found by a code review of 0.51.0 and by trying the restore tool on real card images: mostly in the tool that gets files back from a backup card. Nothing changes in how NekoServer is used.
