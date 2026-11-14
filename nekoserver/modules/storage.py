@@ -2327,7 +2327,7 @@ def raid_note(target, sys_block=None):
         return None
     return (
         f'{target}: the RAID array {name} has lost a drive ({lost}), so your data there has one copy fewer. '
-        "Replace the failed drive and let the array rebuild; the dashboard's Drives page shows the state."
+        "Replace the failed drive and let the array rebuild; the dashboard's Server health → Drives shows the state."
     )
 
 

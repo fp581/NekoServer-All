@@ -181,7 +181,7 @@ fn pool_lacks_a_drive(shown: &str) -> bool {
 /// fewer until the missing drive is replaced (RECOVERY.md shows how).
 fn degraded_notice(path: &str) -> String {
     format!(
-        "Drive return: a drive of the Btrfs pool for {path} is missing, so the pool was mounted on the drives left (degraded). Your data there has one copy fewer until the drive is replaced; the dashboard's Drives page shows the pool, and RECOVERY.md how to replace the drive"
+        "Drive return: a drive of the Btrfs pool for {path} is missing, so the pool was mounted on the drives left (degraded). Your data there has one copy fewer until the drive is replaced; the dashboard's Server health → Drives shows the pool, and RECOVERY.md how to replace the drive"
     )
 }
 

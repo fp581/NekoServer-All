@@ -2708,7 +2708,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
                     format!("array-rebuild:{id}"),
                     "warning",
                     format!("{shown} is rebuilding{done}"),
-                    "Keep the computer on and every drive connected until it finishes; the Drives page shows the progress.",
+                    "Keep the computer on and every drive connected until it finishes; Server health → Drives shows the progress.",
                 );
             }
             "failing" => add(
@@ -2737,7 +2737,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
             "memory-pressure".into(),
             if used >= 97.0 { "critical" } else { "warning" },
             "Available RAM is low".into(),
-            "Inspect application memory usage and swap; cached memory alone is normal.",
+            "Almost all of the memory is in use, so apps slow down or are stopped. Processes shows what uses the most; restart that app on Your apps, or restart the PC. If it keeps happening, the PC needs more memory or fewer apps.",
         );
     }
     if let Some(level) = cpu_heat(s) {
@@ -2745,7 +2745,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
             "temperature".into(),
             level,
             "CPU temperature is high".into(),
-            "Check cooling and current workload.",
+            "Check that the fans turn and the air vents are not blocked or dusty (Fans & lights shows the fans). A long video conversion also warms it up for a while.",
         );
     }
     if nas_held(s) {
@@ -2880,7 +2880,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
             "media-stale".into(),
             "warning",
             "Media checks are stale".into(),
-            "Reapply media_monitor or inspect its scheduled job.",
+            "The app checks have not run for a while, so the dashboard can't say whether the apps work. Server health → Checks & monitoring says why. If it stays so, run  sudo bash install.sh  again in the NekoServer folder: it sets the checks up again.",
         );
     }
     if s["media"]["counts"]["fail"].as_u64().unwrap_or(0) > 0 {
@@ -2888,7 +2888,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
             "media-failure".into(),
             "warning",
             "Media connection check failed".into(),
-            "Open the media checks below and inspect the relevant service.",
+            "An app failed its check. Server health → Checks & monitoring names it: open that app, and if it doesn't work, restart it on Your apps (on a phone, tap ⋯ on it).",
         );
     }
     json!(out)
@@ -3456,6 +3456,53 @@ mod os_tests {
                 alerts(&json!({"setup": setup_unfinished(&none)})),
                 json!([])
             );
+        }
+    }
+    /// 0.51.2 user check: the advice of the memory, heat, app check and rebuild alerts
+    /// said "Reapply media_monitor", "the media checks below" (they are on another page)
+    /// and "the Drives page" (the dashboard has none): advice a beginner can't follow.
+    /// Each page named is one of the dashboard's menu, each "→" part one of its headings.
+    #[test]
+    fn alert_advice_names_only_what_the_dashboard_has() {
+        let page = include_str!("../../dashboard/index.html").replace("&amp;", "&");
+        let now = 1_800_000_000.0;
+        let shown = alerts(&json!({
+            "generated_at": now,
+            "metrics": {"memory_percent": 98.0, "temperature": 106.0},
+            "media": {"status": "stale", "counts": {"fail": 1}},
+            "arrays": [{"id": "md-md0", "name": "RAID md0", "status": "rebuilding", "reason": "r"}],
+        }));
+        let details: Vec<&str> = shown
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["detail"].as_str().unwrap())
+            .collect();
+        assert_eq!(details.len(), 6, "{details:?}");
+        for detail in details {
+            for jargon in [
+                "media_monitor",
+                "below",
+                "Drives page",
+                "Inspect",
+                "workload",
+            ] {
+                assert!(!detail.contains(jargon), "{detail}");
+            }
+            for menu in ["Server health", "Your apps", "Processes", "Fans & lights"] {
+                if detail.contains(menu) {
+                    assert!(page.contains(&format!("nav-text\">{menu}<")), "{menu}");
+                }
+            }
+            let headings: Vec<&str> = page
+                .split("<h2>")
+                .skip(1)
+                .filter_map(|rest| rest.split_once("</h2>").map(|(h, _)| h))
+                .collect();
+            for (at, arrow) in detail.match_indices("→ ") {
+                let after = &detail[at + arrow.len()..];
+                assert!(headings.iter().any(|h| after.starts_with(h)), "{after}");
+            }
         }
     }
     #[test]

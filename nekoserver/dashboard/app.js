@@ -757,7 +757,7 @@ function arrayShown(a) {
 function arrayIssues(s, add) {
   for (const a of list(s.arrays)) {
     const shown = arrayShown(a),
-      reason = text(a.reason, 'Review the Drives page.');
+      reason = text(a.reason, 'Look at Server health → Drives.');
     if (a.status === 'degraded' || a.status === 'rebuilding') {
       add(
         'array-lost:' + a.id,

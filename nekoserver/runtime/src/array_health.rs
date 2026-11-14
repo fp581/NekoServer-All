@@ -2,7 +2,7 @@
 //! drive of an array is in place, a rebuild and its progress, and the error counters
 //! that show a drive going bad before it fails (corrected read errors on a RAID member,
 //! the read/write/corruption counters of a Btrfs device). Read from `/sys/block/<md>/md`
-//! and `btrfs device stats`; shown on the dashboard's Drives page and raised as alerts
+//! and `btrfs device stats`; shown on the dashboard's Server health → Drives and raised as alerts
 //! (collect.rs), so a dying mirror is seen before the second drive goes too.
 use serde_json::{json, Value};
 use std::fs;
