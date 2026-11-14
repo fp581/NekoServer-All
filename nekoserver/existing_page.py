@@ -123,6 +123,13 @@ def with_new_files(config, kind, words, found, asking):
     return [existing_media.entry_for(kind, found), *another_place(config, kind, words, asking)]
 
 
+def on_network_share(found):
+    """The folder is on a NAS's shared folder (NFS or SMB), not on a drive of this PC.
+    Only then is the share named back ("nas:/tank"; a drive's "/dev/sdb1" says nothing
+    to a person) and the music backup question asked, which is about a share (G7)."""
+    return found.get('fstype') in existing_media.NETWORK and bool(found.get('share'))
+
+
 def one_kind(config, kind, words, asking):
     """One kind's answers, put into the settings: its folder, how it is used, and where
     new ones are saved."""
@@ -130,7 +137,7 @@ def one_kind(config, kind, words, asking):
     found = folder_found(config, kind, words, asking)
     if found is None:
         return
-    where = f" ({found['share']})" if found.get('share') and found['share'] != found['path'] else ''
+    where = f" ({found['share']})" if on_network_share(found) and found['share'] != found['path'] else ''
     if typed('existing_use', prompt, what=words) == '2':
         wanted = {'holds': kind, 'path': found['path']}
         config[COPIES] = [*[c for c in config.get(COPIES) or [] if c != wanted], wanted]
@@ -140,7 +147,7 @@ def one_kind(config, kind, words, asking):
     entries = [existing_media.entry_for(kind, found)]
     if downloads(config, kind) and questions.yes_no('existing_new_files', prompt, output, what=words):
         entries = with_new_files(config, kind, words, found, asking)
-    if kind == 'music' and found.get('share'):
+    if kind == 'music' and on_network_share(found):
         # On a network share (G7, the user's decision): asked once whether the music
         # backup copies it too; yes unless "No". Films and shows have no NekoServer backup
         # job, so they are not asked about and stay listed as not backed up.

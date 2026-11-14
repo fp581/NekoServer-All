@@ -87,6 +87,29 @@ class PageTests(unittest.TestCase):
             ],
         )  # fmt: skip
 
+    def test_a_music_folder_on_a_drive_of_this_pc_is_not_called_a_share(self):
+        """A local drive's "share" is its device: the page said "Your music: /mnt/big/music
+        (/dev/sdd1)" and asked "Your music on the network share can be copied each night"
+        about a folder on a drive of this PC. A NAS's share is still named and asked about."""
+        local = {**FOUND, 'path': '/mnt/big/music', 'mount': '/mnt/big', 'share': '/dev/sdd1', 'fstype': 'ext4'}
+        for found, asked in ((local, False), ({**FOUND, 'path': '/mnt/tank/music'}, True)):
+            ctx = context(media_apps={'movies': False, 'music': True, 'music_downloads': False})
+            said, keys = [], []
+            real_typed = existing_page.typed
+
+            def noting(key, prompt, **values):
+                keys.append(key)
+                return real_typed(key, prompt, **values)
+
+            with (
+                mock.patch.object(existing_media, 'check', return_value=dict(found)),
+                mock.patch.object(existing_page, 'typed', side_effect=noting),
+            ):
+                existing_page.ask(ctx, typed('yes', found['path'], '1', '1'), said.append)
+            self.assertEqual('existing_backup' in keys, asked)
+            self.assertEqual('/dev/sdd1' in ' '.join(said), False)
+            self.assertEqual('(nas:/tank)' in ' '.join(said), asked)
+
     def test_a_folder_that_cannot_be_used_says_why_and_is_asked_for_again(self):
         refused = existing_media.Refused('not_a_folder', path='/mnt/tank/films')
         said = []
