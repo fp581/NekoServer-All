@@ -1,6 +1,8 @@
 """The shared nightly-snapshot verify/restore used by app-recovery.py and host-recovery.py."""
 
+import contextlib
 import hashlib
+import io
 import json
 import os
 import subprocess
@@ -262,6 +264,26 @@ class SnapshotRestoreTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, f'sudo mkdir -p "{parent}"'):
             sr.restore(sr.APPS, snap, parent / 'restored')
         self.assertFalse(parent.exists())
+
+    def test_a_restore_stopped_with_ctrl_c_says_so_and_what_is_left(self):
+        """Plan 152, app-recovery.py stopped with SIGINT while copying a 40 MB file: a
+        Python traceback ending in KeyboardInterrupt, and nothing said about the half
+        restored folder it left."""
+        snap = self.root / 'snap'
+        make(snap, sr.APPS, {'appdata/a/one.bin': b'1', 'appdata/b/two.bin': b'2'})
+        real, copied = sr.copy_row, []
+
+        def then_stopped(*args):
+            if copied:
+                raise KeyboardInterrupt
+            copied.append(real(*args))
+
+        err = io.StringIO()
+        with mock.patch.object(sr, 'copy_row', then_stopped), contextlib.redirect_stderr(err):
+            code = sr.main(sr.APPS, '', ['restore', '--snapshot', str(snap), '--destination', str(self.root / 'new')])
+        self.assertEqual(code, 1)
+        self.assertIn('Reason: stopped with Ctrl+C', err.getvalue())
+        self.assertIn(f'kept in {self.root / "new"} (incomplete)', err.getvalue())
 
     def test_command_line_tools_still_work(self):
         snap = self.root / 'snap'

@@ -315,7 +315,8 @@ def main(kind, description, argv=None):
         else:
             restore(kind, args.snapshot, args.destination, args.preserve_owners)
             print(kind.restored_message)
-    except (OSError, RuntimeError, ValueError, KeyError, TypeError) as exc:
+    # Ctrl+C too: said like any other stop (it was a Python traceback), with what is left.
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError, KeyboardInterrupt) as exc:
         print(kind.failed_message + ' Reason: ' + failure_reason(exc), file=sys.stderr)
         if args.command == 'restore' and not existed and Path(args.destination).exists():
             print(
@@ -335,6 +336,8 @@ def failure_reason(exc):
     never hold file contents or passwords."""
     if isinstance(exc, RuntimeError):
         return str(exc)
+    if isinstance(exc, KeyboardInterrupt):
+        return 'stopped with Ctrl+C'
     if isinstance(exc, OSError):
         where = f' ({exc.filename})' if exc.filename else ''
         return (exc.strerror or type(exc).__name__) + where
