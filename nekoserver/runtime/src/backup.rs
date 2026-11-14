@@ -3160,8 +3160,20 @@ pub(crate) fn subvolume_of(source: &str) -> &str {
 /// What the drive check expected at `path` and what findmnt found there ("UUID FSTYPE
 /// SOURCE", empty when nothing is mounted), so a wrong or missing drive is named. Worded
 /// for every caller: the backups, Docker's start check and drive-return share it.
+/// What the drive under `key` in the settings is called in a message: every drive that
+/// was not the SSD was called "the HDD", also the USB backup drive and a drive of its own
+/// for a group's files or apps (seen in 0.51.1: "/mnt/nekoserver-drives/d3 should be the
+/// HDD"). An extra drive is named as the dashboard names it ("Drive d3").
+fn drive_called(key: &str) -> String {
+    match key {
+        "data_ssd" => "SSD".to_string(),
+        "media_hdd" => "HDD".to_string(),
+        "usb" => "USB backup drive".to_string(),
+        name => format!("drive {name}"),
+    }
+}
 fn identity_mismatch(key: &str, path: &Path, uuid: &str, fstype: &str, found: &str) -> String {
-    let drive = if key == "data_ssd" { "SSD" } else { "HDD" };
+    let drive = drive_called(key);
     let found = match found.trim() {
         "" => "nothing is mounted there".to_string(),
         // A folder the NAS shares (NFS) that is not mounted: only systemd's automount
@@ -5141,6 +5153,13 @@ mod tests {
         let media = Path::new("/mnt/nekoserver-media");
         assert!(identity_mismatch("media_hdd", media, "cccc", "xfs", "")
             .ends_with("should be the HDD (UUID cccc, xfs); nothing is mounted there"));
+        // Not every other drive is the HDD: the USB backup and a drive of its own.
+        let extra = Path::new("/mnt/nekoserver-drives/d3");
+        assert!(identity_mismatch("d3", extra, "dddd", "ext4", "")
+            .ends_with("should be the drive d3 (UUID dddd, ext4); nothing is mounted there"));
+        let usb = Path::new("/mnt/nekoserver-photos");
+        assert!(identity_mismatch("usb", usb, "eeee", "ext4", "")
+            .contains("should be the USB backup drive (UUID eeee"));
     }
     #[test]
     fn a_read_only_usb_mount_is_told_apart() {
