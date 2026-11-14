@@ -1237,6 +1237,22 @@ class InterruptedSetupTests(unittest.TestCase):
             nextcloud.run(self.Ctx(cfg))
         return calls, writes
 
+    def test_nextcloud_over_another_installs_data_says_which_folder_and_what_to_do(self):
+        # Deep check 186: the HDD's cloud/files (or the SSD's database) from another
+        # install. Setup said only "Existing Nextcloud data preserved; explicit recovery required".
+        for leftover in ('hdd/cloud/files/alice/files/photo.jpg', 'ssd/appdata/nextcloud/postgres/PG_VERSION'):
+            with self.subTest(leftover), tempfile.TemporaryDirectory() as d:
+                data = Path(d)
+                (data / leftover).parent.mkdir(parents=True)
+                (data / leftover).write_text('kept')
+                with self.assertRaises(RuntimeError) as stopped:
+                    self.nextcloud(data)
+                folder = str(data / '/'.join(leftover.split('/')[: 3 if leftover.startswith('hdd') else 4]))
+                self.assertIn(f'{folder} already holds files', str(stopped.exception))
+                self.assertIn(f'sudo mv {folder} {folder}.before', str(stopped.exception))
+                self.assertEqual((data / leftover).read_text(), 'kept')
+                self.assertFalse((data / 'ssd/compose/nextcloud/compose.yaml').exists())
+
     def test_nextcloud_finishes_after_stopping_while_writing_its_settings(self):
         for stop_at in ('managed.json', 'compose.yaml'):
             with self.subTest(stop_at), tempfile.TemporaryDirectory() as d:

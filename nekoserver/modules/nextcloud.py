@@ -577,6 +577,16 @@ def stop_installed(ctx, run_command=None, hold=None, journal=None):
     )
 
 
+# A folder a new Nextcloud would use holds something already (another install's files or
+# database): it is never written over nor made Nextcloud's without you.
+EARLIER_DATA = (
+    'Nextcloud is not set up yet, but {folder} already holds files (from another or an earlier Nextcloud, '
+    'say). Setup never writes over them. To start a new, empty Nextcloud, move that folder away (sudo mv '
+    '{folder} {folder}.before), run setup again, and copy your files into Nextcloud afterwards. To bring '
+    'back an earlier NekoServer Nextcloud instead, restore it from its backup (RECOVERY.md)'
+)
+
+
 def run(ctx):
     opts = options(ctx.config)
     if not opts.get('enabled', True):
@@ -616,7 +626,7 @@ def run(ctx):
             for existing in (data / HTML, data / POSTGRES, cloud_files(config)):
                 safe_path(existing)
                 if existing.exists() and any(existing.iterdir()):
-                    raise RuntimeError('Existing Nextcloud data preserved; explicit recovery required')
+                    raise RuntimeError(EARLIER_DATA.format(folder=existing))
             image = resolve_image(image)
             payload = json.dumps(model(config, image), indent=2) + '\n'
             for target, mode in (
