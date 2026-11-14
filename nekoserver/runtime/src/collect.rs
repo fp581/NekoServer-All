@@ -2458,6 +2458,22 @@ fn backup_place(cfg: &Value) -> Value {
 /// Said for as long as the backups are on the drive they copy and no copy goes anywhere
 /// else (the placement design's standing item; setup said it once, before choosing it).
 const SAME_DRIVE: &str = "One drive holds the apps, your files and their backups. The backups protect you from a mistake (a file deleted or changed), not from losing that drive. Add a second drive for the backups, or a USB drive for the weekly copy, and run setup again.";
+/// What a drive's "unavailable" alert says, by its status. `stopped`: the apps it
+/// stopped, named first so the page shows them before "Show more" ("" for none).
+/// A drive whose status is "wrong_drive" is connected and mounted, but is not the one
+/// setup chose: a reformat gives a drive a new identity, a replaced drive has another,
+/// or another part of the drive is mounted there. "Reconnect it" could not help there;
+/// running setup (after a reformat or replacement on purpose) does (seen in 0.51.2 with a
+/// reformatted HDD: the dashboard said to reconnect a drive that was connected).
+fn unavailable_detail(status: &str, stopped: &str) -> String {
+    const WRONG_DRIVE_STEPS: &str = "If you reformatted or replaced this drive on purpose, run  sudo bash install.sh  so NekoServer learns the new one. Otherwise connect the drive chosen at setup and restart the PC.";
+    match (status == "wrong_drive", stopped.is_empty()) {
+        (true, true) => format!("Another drive is mounted in its place, or this one was reformatted or replaced, so the apps on it are stopped and nothing is written there. {WRONG_DRIVE_STEPS}"),
+        (true, false) => format!("Not the drive chosen at setup (another drive, or this one reformatted or replaced). Stopped so nothing is written there: {stopped}. {WRONG_DRIVE_STEPS}"),
+        (false, true) => "The drive is not connected, or is not the one chosen at setup; the apps on it are stopped so nothing is written in its place. Reconnect it: once it is back, the apps start again by themselves within a minute. If they do not, restart the PC.".to_string(),
+        (false, false) => format!("Not connected, or not the drive chosen at setup. Stopped until it is back, so nothing is written in its place: {stopped}. Reconnect it: the apps then start again by themselves within a minute. If they do not, restart the PC."),
+    }
+}
 pub(crate) fn alerts(s: &Value) -> Value {
     let mut out = vec![];
     let mut add = |id: String, level: &str, title: String, detail: &str| {
@@ -2583,12 +2599,13 @@ pub(crate) fn alerts(s: &Value) -> Value {
             let id = text(&d["id"]);
             let name = text(&d["name"]);
             if d["status"] != "mounted" {
-                let mut detail = "The drive is not connected, or is not the one chosen at setup; the apps on it are stopped so nothing is written in its place. Reconnect it: once it is back, the apps start again by themselves within a minute. If they do not, restart the PC.".to_string();
-                if id != "os" && !named && !held.is_empty() {
-                    // Said first, so the page shows it before "Show more".
+                let stopped = if id != "os" && !named && !held.is_empty() {
                     named = true;
-                    detail = format!("Not connected, or not the drive chosen at setup. Stopped until it is back, so nothing is written in its place: {}. Reconnect it: the apps then start again by themselves within a minute. If they do not, restart the PC.", held.join(", "));
-                }
+                    held.join(", ")
+                } else {
+                    String::new()
+                };
+                let detail = unavailable_detail(text(&d["status"]), &stopped);
                 add(
                     format!("mount:{id}"),
                     "critical",
@@ -4412,6 +4429,36 @@ mod user_panel_tests {
             .collect();
         assert!(ids.contains(&"app:jellyfin".to_string()), "{ids:?}");
         assert!(ids.contains(&"backup:archive".to_string()), "{ids:?}");
+    }
+    /// Seen in 0.51.2 (a loop drive reformatted, so its UUID changed): the drive was
+    /// connected and mounted, yet its alert said "Reconnect it". A drive that is not the
+    /// one chosen is told the step that helps: setup, after a reformat or replacement on
+    /// purpose, else the right drive back.
+    #[test]
+    fn a_reformatted_or_replaced_drive_is_told_to_run_setup_not_to_reconnect() {
+        let storage = |status: &str| {
+            json!([{"id": "os", "name": "OS SSD", "status": "mounted"},
+                   {"id": "media_hdd", "name": "Media HDD", "status": status}])
+        };
+        let detail = |s: &Value| text(&alerts(s)[0]["detail"]).to_string();
+        let wrong = detail(&json!({"storage": storage("wrong_drive")}));
+        assert!(wrong.contains("reformatted or replaced"), "{wrong}");
+        assert!(wrong.contains("sudo bash install.sh"), "{wrong}");
+        assert!(!wrong.contains("Reconnect"), "{wrong}");
+        // With apps it stopped, those are still named first.
+        let apps = json!([{"id": "jellyfin", "name": "Jellyfin", "state": "exited"}]);
+        let held = detail(&json!({"storage": storage("wrong_drive"), "applications": apps}));
+        assert!(
+            held.contains("Stopped so nothing is written there: Jellyfin."),
+            "{held}"
+        );
+        assert!(
+            held.contains("sudo bash install.sh") && !held.contains("Reconnect"),
+            "{held}"
+        );
+        // A drive that is away is still told to reconnect it.
+        let away = detail(&json!({"storage": storage("missing")}));
+        assert!(away.contains("Reconnect it"), "{away}");
     }
     #[test]
     fn a_new_usb_drive_inherits_no_checksum_result_from_the_old_one() {
