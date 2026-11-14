@@ -3322,6 +3322,15 @@ HDD_AWAY = (
 )
 
 
+# Films, shows and music have no backup (README.md, "Backups"). Said where the list is,
+# so someone who deleted a film is not left looking for a line that is never there.
+NO_MEDIA_BACKUP = (
+    'Films, shows and music are not backed up, so they are not in this list. A film or show',
+    'deleted by mistake: search for it again in Radarr or Sonarr (if you use them), or copy it',
+    'again from where you got it. Jellyfin\'s own settings (what you watched) are under "App settings".',
+)
+
+
 def restore_section(config, prompt, output):
     """Sections 1 and 2: what to restore is chosen here; each restore then asks for its
     backup, date, files and folder, shows the review, and writes only once approved."""
@@ -3332,6 +3341,8 @@ def restore_section(config, prompt, output):
         'it once. Nothing is written before that.',
         'A restore brings back files, settings and databases. It does not reinstall Linux or the apps.',
     )
+    if media_group(config, 'movies') or media_group(config, 'music'):
+        say(output, *NO_MEDIA_BACKUP)
     pick = choose('What would you like to restore?', menu(config), prompt, output)
     if pick is None:
         return
