@@ -1759,6 +1759,49 @@ def day_before_if_wrapped(day, time, minutes):
     return WEEKDAYS[(WEEKDAYS.index(day) + days) % 7]
 
 
+# How far the Immich database copy moves earlier at a time, when its usual time before the
+# USB copy is skipped by a clock change (database_offset).
+CLOCK_CHANGE_STEP = 15
+
+
+def skipped_by_clock_change(day, time, zone, today=None):
+    """Whether `time` (HH:MM) on weekday `day` does not exist on one such day of the coming
+    year in `zone`: the night the clocks go forward skips it (02:15 on a Sunday in March in
+    New York and in Berlin), and systemd then runs a job set for it a week later, not that
+    day. `today`: where the year starts (tests)."""
+    import datetime as dt
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    try:
+        place = ZoneInfo(zone)
+    except (ZoneInfoNotFoundError, ValueError):
+        return False
+    hours, mins = (int(part) for part in time.split(':'))
+    start = today or dt.date.today()
+    for ahead in range(366):
+        date = start + dt.timedelta(days=ahead)
+        if WEEKDAYS[date.weekday()] != day:
+            continue
+        local = dt.datetime(date.year, date.month, date.day, hours, mins)
+        there = local.replace(tzinfo=place).astimezone(dt.timezone.utc).astimezone(place)
+        if there.replace(tzinfo=None) != local:
+            return True
+    return False
+
+
+def database_offset(day, time, zone, today=None):
+    """Minutes from the USB copy (weekday `day` at `time`) to its Immich database copy: 45
+    before it, or earlier still when that time is skipped by a clock change in `zone`. The
+    copy would be skipped that week and the USB drive would get the week-old one (found on
+    0.51.2: Sunday 02:15 before the default 03:00, in New York or Berlin, is 01:45 now)."""
+    offset = -DATABASE_BEFORE_USB
+    while offset > -24 * 60 and skipped_by_clock_change(
+        day_before_if_wrapped(day, time, offset), minutes_later(time, offset), zone, today
+    ):
+        offset -= CLOCK_CHANGE_STEP
+    return offset
+
+
 def backup_times(config):
     """The times setup asked for: {'daily', 'weekly_day', 'weekly', 'monthly'}, checked, or
     None when the settings file has none yet (made before 0.48.0): each job then keeps
@@ -1819,15 +1862,14 @@ def job_times(config):
             'usb': _own_time(config, 'photos', 'backup_time', WEEKLY_DEFAULT),
             'monthly': _own_time(config, 'maintenance', 'time', MONTHLY_DEFAULT),
         }
+    before_usb = database_offset(chosen['weekly_day'], chosen['weekly'], host_timezone(config))
     return {
         'app': minutes_later(chosen['daily'], NIGHTLY_OFFSETS['app']),
         'music': minutes_later(chosen['daily'], NIGHTLY_OFFSETS['music']),
         'host': minutes_later(chosen['daily'], NIGHTLY_OFFSETS['host']),
         'photo_database': minutes_later(chosen['daily'], NIGHTLY_OFFSETS['photo_database']),
-        'photo_database_weekly': minutes_later(chosen['weekly'], -DATABASE_BEFORE_USB),
-        'photo_database_weekly_day': day_before_if_wrapped(
-            chosen['weekly_day'], chosen['weekly'], -DATABASE_BEFORE_USB
-        ),
+        'photo_database_weekly': minutes_later(chosen['weekly'], before_usb),
+        'photo_database_weekly_day': day_before_if_wrapped(chosen['weekly_day'], chosen['weekly'], before_usb),
         'usb_day': chosen['weekly_day'],
         'usb': chosen['weekly'],
         'monthly': chosen['monthly'],

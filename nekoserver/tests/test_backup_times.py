@@ -57,7 +57,9 @@ class JobTimesTests(unittest.TestCase):
         self.assertEqual(
             shipped['backup_times'], {'daily': '04:15', 'weekly_day': 'Sun', 'weekly': '03:00', 'monthly': '02:30'}
         )
-        times = job_times(shipped)
+        # This PC's zone ("auto") in a zone without a clock change: the move of the Immich
+        # database copy around one is tested on its own (test_a_database_copy_...).
+        times = job_times({**shipped, 'timezone': 'UTC'})
         self.assertEqual(times['app'], '04:15')
         self.assertEqual(times['music'], '03:45')
         self.assertEqual(times['host'], '05:15')
@@ -93,6 +95,31 @@ class JobTimesTests(unittest.TestCase):
         self.assertEqual(times['monthly'], '01:00')
         self.assertEqual(minutes_later('00:00', -1), '23:59')
         self.assertEqual(minutes_later('23:59', 1), '00:00')
+
+    def test_a_database_copy_the_clock_change_would_skip_goes_earlier(self):
+        """Seen with systemd-analyze on 0.51.2: the weekly Immich database copy, Sunday 02:15
+        before the default 03:00 USB copy, does not exist on the Sunday the clocks go
+        forward in New York and Berlin (02:00 jumps to 03:00). systemd then ran it a week
+        later, and that week's USB copy took the week-old database copy."""
+        import datetime
+
+        march = datetime.date(2027, 3, 1)
+        for zone in ('America/New_York', 'Europe/Berlin'):
+            with self.subTest(zone=zone):
+                times = job_times({**settings(), 'timezone': zone})
+                self.assertEqual((times['photo_database_weekly_day'], times['photo_database_weekly']), ('Sun', '01:45'))
+                self.assertTrue(neko_common.skipped_by_clock_change('Sun', '02:15', zone, march))
+                self.assertFalse(neko_common.skipped_by_clock_change('Sun', '01:45', zone, march))
+                self.assertEqual(neko_common.database_offset('Sun', '03:00', zone, march), -75)
+        # Where the clocks go forward at another hour, or not at all, it stays 45 minutes before.
+        for zone in ('Europe/London', 'UTC', 'Asia/Tokyo'):
+            with self.subTest(zone=zone):
+                self.assertEqual(neko_common.database_offset('Sun', '03:00', zone, march), -45)
+        # Jerusalem moves its clocks on a Friday: a Sunday copy is never skipped there.
+        self.assertTrue(neko_common.skipped_by_clock_change('Fri', '02:15', 'Asia/Jerusalem', march))
+        self.assertFalse(neko_common.skipped_by_clock_change('Sun', '02:15', 'Asia/Jerusalem', march))
+        # The day before, when the earlier time goes back past midnight.
+        self.assertEqual(neko_common.day_before_if_wrapped('Sun', '00:30', -75), 'Sat')
 
     def test_settings_from_before_keep_each_jobs_own_time(self):
         """A settings file made before 0.48.0 has no backup_times: each job's own setting
