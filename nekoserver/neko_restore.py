@@ -743,7 +743,10 @@ class Progress:
                 raise Unusable('the progress file %s is not usable: %s' % (path, e.strerror)) from None
             if len(data) > PROGRESS_LIMIT:
                 raise Unusable('the progress file %s is too large' % path)
-            if self._read(data):
+            # A file whose last line was cut off (a stop or a power cut while it was
+            # written) is written again without it: lines added after it would have joined
+            # it, and the file was then refused on the next run.
+            if self._read(data) and data.endswith(b'\n'):
                 self._open('a')
                 return
         self._open('w')

@@ -514,6 +514,24 @@ class ManyFilesTests(Base):
         self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 2)
         self.assertIn('not usable', said_text(self))
 
+    def test_a_restore_that_goes_on_after_a_cut_off_line_leaves_a_usable_progress_file(self):
+        """A stop or a power cut while a line was written, then a run that restores more
+        files: its lines were added to the cut-off one, which then sat in the middle of the
+        file, so the run after that refused the file ("has a line that is not usable")."""
+        self.card.add(A_JPG, b'one')
+        self.card.add('b.jpg', b'two')
+        self.card.add('c.jpg', b'three')
+        progress = self.tmp / 'progress.json'
+        self.assertEqual(self.run_tool('restore', str(self.dest), SEARCH, A_JPG, '--progress', str(progress)), 0)
+        with open(progress, 'a') as f:
+            f.write('{"version_id": "cut off')
+        self.assertEqual(self.run_tool('restore', str(self.dest), SEARCH, 'b.jpg', '--progress', str(progress)), 0)
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 0)
+        said = said_text(self)
+        self.assertIn('done before a.jpg', said)
+        self.assertIn('done before b.jpg', said)
+        self.assertEqual(len(progress_done(progress)), 3)
+
     def test_a_name_an_exfat_stick_cannot_hold_is_skipped_or_renamed(self):
         """Seen restoring onto exFAT (through FUSE): a name with ":" or "?" failed with "No
         such file or directory", --rename or not. exFAT through FUSE says ENOENT to such a
