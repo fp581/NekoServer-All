@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import acceptance  # noqa: E402
+import neko_common  # noqa: E402
 import source_import  # noqa: E402
 
 REFUSED = 'The HDD is not mounted at /mnt/nekoserver-media'
@@ -67,6 +68,21 @@ class StopReasonTests(unittest.TestCase):
             code, said = said_on_stderr(lambda: source_import.main(['--config', str(self.settings)]))
         self.assertEqual(code, 2)
         self.assertIn("the setting 'data_mount' is missing", said)
+
+
+class RoomTests(unittest.TestCase):
+    def test_a_small_restore_refused_for_the_reserve_says_so(self):
+        """A restore of a few photos onto a nearly full drive said "the restore needs 0.0 GB
+        and 0.1 GB is free": the 5 GB the drive must keep free is what refuses it."""
+        gib, mib = neko_common.GIB, 1024**2
+        with mock.patch('shutil.disk_usage', return_value=mock.Mock(total=100 * gib, free=100 * mib)):
+            with self.assertRaises(RuntimeError) as caught:
+                neko_common.ensure_room('/x', 3 * mib)
+        said = str(caught.exception)
+        self.assertNotIn('0.0 GB', said)
+        self.assertIn('needs 3 MB', said)
+        self.assertIn('must keep 5.0 GB free', said)
+        self.assertIn('100 MB is free', said)
 
 
 if __name__ == '__main__':

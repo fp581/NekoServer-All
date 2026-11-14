@@ -2054,10 +2054,17 @@ def ensure_room(folder, need, what='This restore'):
     reserve = max(5 * GIB, usage.total // 20)
     if need + reserve > usage.free:
         raise RuntimeError(
-            f'not enough free space: {what.lower()} needs {need / GIB:.1f} GB and '
-            f'{usage.free / GIB:.1f} GB is free on that drive (5 GB or 5% is kept free). '
+            f'not enough free space: {what.lower()} needs {size_said(need)}, and the drive must keep '
+            f'{size_said(reserve)} free (5 GB or 5% of it), but only {size_said(usage.free)} is free on it. '
             'Free some space or choose a folder on another drive.'
         )
+
+
+def size_said(size):
+    """A size in words: GB from 1 GB up, MB below (a small restore was "0.0 GB")."""
+    if size >= GIB:
+        return f'{size / GIB:.1f} GB'
+    return f'{max(1, round(size / 1024**2))} MB'
 
 
 def file_count(count):
