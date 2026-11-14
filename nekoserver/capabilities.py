@@ -9,12 +9,14 @@ Everything else (AppArmor, firewall, desktop) is reported so a beginner can see 
 was found.
 """
 
+import datetime as dt
 import json
 import platform
 import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import host
@@ -78,6 +80,10 @@ def memory_gib(root='/'):
 
 # An "8 GB" PC reports a little less (the kernel and the graphics keep some).
 ENOUGH_MEMORY_GIB = 7
+# No clock that is right reads earlier than this: this release did not exist yet. (It never
+# needs moving: it only has to be before any release.) A clock further back makes every
+# download fail on signatures or certificates, with errors that do not name the clock.
+EARLIEST_RIGHT_DATE = '2026-01-01'
 
 
 def memory_note(gib):
@@ -162,7 +168,7 @@ def docker_rows(docker, compose, installed):
     ]
 
 
-def detect(run=subprocess.run, root='/', machine=None, python=None, which=shutil.which):
+def detect(run=subprocess.run, root='/', machine=None, python=None, which=shutil.which, now=None):
     """One row per finding: name, label, what was found, whether it is fine, and whether
     setup must stop without it."""
     machine = machine or platform.machine()
@@ -177,6 +183,7 @@ def detect(run=subprocess.run, root='/', machine=None, python=None, which=shutil
     target = _output(run, ['systemctl', 'get-default']) if systemd else ''
     memory = memory_gib(root)
     synchronised = clock(run, which)
+    today = dt.datetime.fromtimestamp(time.time() if now is None else now, dt.timezone.utc).date().isoformat()
     return [
         row('architecture', 'x86-64 processor', machine, machine == 'x86_64', True),
         row('python', 'Python 3.11 or newer', '.'.join(map(str, python)), tuple(python) >= MIN_PYTHON, True),
@@ -218,6 +225,18 @@ def detect(run=subprocess.run, root='/', machine=None, python=None, which=shutil
             'Memory (8 GB or more recommended)',
             memory_note(memory),
             not memory or memory >= ENOUGH_MEMORY_GIB,
+        ),
+        row(
+            'date',
+            "This PC's date",
+            today,
+            today >= EARLIEST_RIGHT_DATE,
+            True,
+            problem=(
+                f"this PC's clock says {today}, which is wrong (this release did not exist then), so every "
+                'download would fail. Let the network set it:  sudo timedatectl set-ntp true  (or set it by hand: '
+                "sudo timedatectl set-time 'YYYY-MM-DD HH:MM'), then run  sudo bash install.sh  again."
+            ),
         ),
         row(
             'clock',

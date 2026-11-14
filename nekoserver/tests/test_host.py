@@ -1372,6 +1372,24 @@ class CapabilitiesTest(unittest.TestCase):
                 self.assertNotIn('Clock', ' '.join(capabilities.missing(rows)))
             self.assertEqual(capabilities.value(self.rows(tmp), 'clock'), 'unknown')  # no timedatectl
 
+    def test_a_date_before_this_release_existed_stops_setup_with_how_to_fix_it(self):
+        """Deep check plan 2, on a fresh Ubuntu with the clock in 2015: the package lists'
+        signatures failed and setup said "Some package sources could not be reached",
+        then failed further on. A date this release can't have been made before is
+        certainly wrong: setup stops first, and says how to set it."""
+        import datetime as dt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            release(tmp, 'ID=arch\n')
+            for when, ok in (('2015-01-01', False), ('2026-11-14', True)):
+                now = dt.datetime.fromisoformat(when + 'T12:00:00+00:00').timestamp()
+                rows = capabilities.detect(self.fake(), root=tmp, machine='x86_64', python=(3, 13), now=now)
+                date = next(row for row in rows if row['name'] == 'date')
+                self.assertEqual((date['ok'], date['required']), (ok, True), when)
+                said = ' '.join(capabilities.missing(rows))
+                self.assertEqual('2015-01-01' in said, not ok)
+                self.assertEqual('sudo timedatectl set-ntp true' in said, not ok)
+
     def test_a_download_refused_for_a_wrong_clock_says_so(self):
         import ssl
         import urllib.error
