@@ -4027,6 +4027,20 @@ mod os_tests {
         assert_eq!(updates(&cfg, false), json!([]));
         let _ = fs::remove_dir_all(root);
     }
+    /// The weekly copy's missing USB drive, said whole on the dashboard: what to do if
+    /// the drive was replaced is its last sentence.
+    #[test]
+    fn a_missing_usb_drive_is_shown_whole() {
+        let saved =
+            json!({"stage": "checking the USB drive", "reason": crate::backup::USB_MISSING});
+        assert_eq!(
+            failure_reason(&saved),
+            format!(
+                "Failed while checking the USB drive: {}.",
+                crate::backup::USB_MISSING
+            )
+        );
+    }
     #[test]
     fn failed_job_says_why_and_where() {
         assert_eq!(

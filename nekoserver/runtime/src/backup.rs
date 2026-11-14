@@ -1284,6 +1284,11 @@ fn archive_birth(source: &Path) -> Option<f64> {
 /// by `histories_apart`): never taken back into the HDD archive's ledger, which would
 /// then expect the file on the HDD.
 const USB_ONLY: &str = "usb";
+/// The weekly copy's USB drive (found by its UUID) is not there. It said only "External
+/// drive missing" (0.51.2 user check: a failed USB drive replaced by a new one), so the
+/// person whose new drive was plugged in was not told how to choose it (STORAGE.md,
+/// "Another USB drive"). Its first words stay: known_fixes.py matches them.
+pub(crate) const USB_MISSING: &str = "External drive missing: the USB backup drive chosen at setup is not plugged in. Plug it in. Replaced it with a new one? Remove \"external_backup_uuid\" under \"photos\" in my-config.json, then run  sudo bash install.sh  to choose it";
 /// Whether the USB ledger records a dated version of `key` (`name.neko-<stamp>.ext` in
 /// the same folder) with this checksum.
 fn holds_version(theirs: &Ledger, key: &str, sha256: &str) -> bool {
@@ -4531,7 +4536,7 @@ impl UsbRun {
     fn own_disk_of_the_saved_type(&self) -> Result<()> {
         let device = Path::new("/dev/disk/by-uuid").join(&self.uuid);
         if !device.exists() {
-            return Err(Error::new("External drive missing"));
+            return Err(Error::new(USB_MISSING));
         }
         own_disk(&device, &self.data, &self.media)?;
         let (code, s) = common::command(
@@ -4573,7 +4578,7 @@ impl UsbRun {
             return self.mount_shared_folder(export);
         }
         let device = fs::canonicalize(Path::new("/dev/disk/by-uuid").join(&self.uuid))
-            .map_err(|_| Error::new("External drive missing"))?;
+            .map_err(|_| Error::new(USB_MISSING))?;
         let device = device.to_string_lossy().to_string();
         self.same_nas_disk(&device)?;
         success(
@@ -4812,6 +4817,29 @@ fn cloud_to_usb(run: &UsbRun, cloud: &Path) -> Result<CloudPart> {
 }
 #[cfg(test)]
 mod tests {
+    /// 0.51.2 user check: the USB drive failed and a new one is plugged in. The weekly
+    /// copy, which looks for the old drive's UUID, said only "External drive missing".
+    #[test]
+    fn a_missing_usb_drive_says_how_to_choose_a_new_one() {
+        let run = UsbRun {
+            cfg: PathBuf::from("/nonexistent/storage.json"),
+            data: PathBuf::from("/srv/nekoserver"),
+            media: PathBuf::from("/mnt/nekoserver-media"),
+            dest: PathBuf::from("/mnt/nekoserver-photos"),
+            uuid: "0000dead-0000-4000-8000-00000000beef".into(),
+            fstype: "ext4".into(),
+            check: Check::Quick,
+            source: None,
+            cloud: None,
+            weekly: true,
+            export: None,
+        };
+        let said = run.own_disk_of_the_saved_type().unwrap_err().to_string();
+        assert_eq!(said, USB_MISSING);
+        assert!(said.starts_with("External drive missing")); // known_fixes.py
+        assert!(said.contains("Replaced it with a new one? Remove \"external_backup_uuid\""));
+        assert!(said.contains("sudo bash install.sh"));
+    }
     #[test]
     fn the_subvolume_is_checked_the_same_with_or_without_findmnt() {
         // The review of 0.47.10: when findmnt timed out, the kernel's table gave the source
