@@ -4731,6 +4731,19 @@ const GUIDES = {
     ],
     unit: 'nekoserver-openrgb.service'
   },
+  /* Deep check 256 ("The PC got slow"): Help had no guide for it, and Processes alone
+   * does not say what is normal. */
+  slow: {
+    title: 'The server is slow',
+    intro: 'Usually one app is busy for a while, and that is normal. Processes shows which one.',
+    steps: [
+      'Open Processes and sort by processor, then by memory: the top lines are what keeps the server busy.',
+      'Normal for a while: Immich looking at new photos (its machine learning), Jellyfin converting a video for a device, and the backups and the monthly check at night (Backups shows a job that runs). Let it finish.',
+      'Memory nearly full on Hardware? With less than 8 GB, apps slow down or are stopped when they need more: close desktop apps you don’t use, or add memory.',
+      'One app at the top for hours, with nothing to do? On Processes or Your apps, right-click it (on a phone, tap ⋯) and choose Restart app. Its database keeps running.',
+      'With the assistant set up, Ask Neko what a reading means.'
+    ]
+  },
   sensors: {
     title: 'Why a sensor is missing',
     intro: 'The dashboard finds every sensor Linux reports, automatically.',
@@ -4851,7 +4864,8 @@ const HELP_CARDS = [
   ['fans', 'Fans don’t change', 'Find your fans and check fan control.'],
   ['lights', 'Lights don’t change', 'Check OpenRGB and the i2c driver.'],
   ['acceptance', 'Check it really works', 'Playback, backups and a test restore.'],
-  ['updates', 'About updates', 'Weekly app updates, the monthly check, big versions.']
+  ['updates', 'About updates', 'Weekly app updates, the monthly check, big versions.'],
+  ['slow', 'The server is slow', 'What keeps it busy, and what is normal.']
 ];
 function helpCard([id, title, description]) {
   const card = el('article', 'card');

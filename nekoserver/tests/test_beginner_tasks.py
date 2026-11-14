@@ -264,5 +264,18 @@ class SecondDriveTests(unittest.TestCase):
         self.assertIn('#moving-to-a-bigger-drive', later)
 
 
+class SlowServerTests(unittest.TestCase):
+    """Deep check 256: "The PC got slow". Help had guides for readings, apps, fans and
+    more, but none for this, and the Processes page alone does not say what is normal."""
+
+    def test_help_has_a_guide_for_a_slow_server(self):
+        page = (ROOT / 'dashboard/app.js').read_text()
+        cards = page.split('const HELP_CARDS = [')[1].split('];')[0]
+        self.assertIn("['slow', 'The server is slow'", cards)
+        guide = page.split('  slow: {')[1].split('\n  },')[0]
+        for words in ('Processes', 'Immich', 'Jellyfin', 'Restart app', '8 GB'):
+            self.assertIn(words, guide)
+
+
 if __name__ == '__main__':
     unittest.main()
