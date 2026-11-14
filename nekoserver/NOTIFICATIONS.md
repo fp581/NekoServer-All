@@ -36,7 +36,7 @@ systemctl status nekoserver-notifications.timer
 sudo journalctl -u nekoserver-notifications.service --no-pager
 ```
 
-The explicit test sends a labelled test message and records whether the provider accepted it. Check receipt on the subscribed phone with the dashboard closed. Provider acceptance is not proof of notification display, delivery latency or phone permissions. Test the actual phone/network/provider combination, including any ntfy requirements for iOS/self-hosted push.
+The explicit test sends a labelled test message and records whether the provider accepted it; it says in the terminal what happened and what to check. Check receipt on the subscribed phone with the dashboard closed. An alert server takes a message for a topic name with a typo in it just the same (ntfy.sh makes any topic it is sent to), so "accepted" does not prove the address is the one your phone follows. During setup, answering that the test did not arrive leaves the step waiting, and the next `sudo bash install.sh` asks for the address again. **To change the address later:** put the right one in `notifications.endpoint` in `my-config.json`, then run `sudo bash install.sh --module notifications --apply` in a terminal and answer yes. Provider acceptance is not proof of notification display, delivery latency or phone permissions. Test the actual phone/network/provider combination, including any ntfy requirements for iOS/self-hosted push.
 
 ## Alerts and grouping
 

@@ -518,6 +518,17 @@ fn alert_state(path: &Path, now: f64) -> Result<Value> {
     );
     Ok(json!({}))
 }
+/// What `notify --test` says in the terminal. It said nothing when the test was taken,
+/// and only "Notification delivery failed" when it was not (0.51.2 user check): the
+/// person could not tell what happened, nor that a test the server took is not yet one
+/// that arrived (an alert server takes a topic name with a typo in it just the same).
+const TEST_TAKEN: &str = "The alert server accepted the test message. Look at your phone: a message from NekoServer saying \"NekoServer test\" should be there. If it is not, check that the ntfy app follows exactly the same address, and that the phone lets ntfy show notifications (NOTIFICATIONS.md says how to change the address).";
+const TEST_NOT_TAKEN: &str = "The test message was not sent: the alert server turned it down or could not be reached. Check that this server is connected to the internet, and the alert address and access token (NOTIFICATIONS.md says how to change them)";
+/// The test's outcome as the words to print, or the error that says what to check.
+fn test_said(sent: Result<()>) -> Result<&'static str> {
+    sent.map(|()| TEST_TAKEN)
+        .map_err(|_| Error::new(TEST_NOT_TAKEN))
+}
 pub fn run(a: &Args) -> Result<()> {
     common::require_root()?;
     let config_path = a.path("config")?;
@@ -571,7 +582,7 @@ pub fn run(a: &Args) -> Result<()> {
         }
         common::atomic_json(&path, &state)?;
         report(&runtime, &state, now, 0)?;
-        return result;
+        return test_said(result).map(|said| println!("{said}"));
     }
     let snapshot = common::json(&a.path("snapshot")?, 2_000_000);
     let now = common::now();
@@ -638,6 +649,27 @@ pub fn run(a: &Args) -> Result<()> {
 }
 #[cfg(test)]
 mod tests {
+    /// 0.51.2 user check (a typo in the topic name, then the documented test command
+    /// against a local ntfy stand-in): a test the server took printed nothing, one it did
+    /// not take only "Notification delivery failed".
+    #[test]
+    fn the_test_command_says_what_happened_and_what_to_check() {
+        let taken = test_said(Ok(())).unwrap();
+        assert!(taken.contains("accepted the test message"));
+        assert!(taken.contains("Look at your phone"));
+        assert!(taken.contains("follows exactly the same address"));
+        let refused = test_said(Err(Error::new("Notification delivery failed")))
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("connected to the internet"), "{refused}");
+        assert!(
+            refused.contains("alert address and access token"),
+            "{refused}"
+        );
+        for said in [taken, refused.as_str()] {
+            assert!(said.contains("NOTIFICATIONS.md says how to change"));
+        }
+    }
     /// Seen with `nekoserver-runtime notify` on 0.51.2: a state.json cut short failed
     /// every run with "Invalid JSON", forever, naming no file.
     #[test]
