@@ -30,6 +30,12 @@ Every copy is read back and checked before it counts. That read came straight af
 - **A monthly restore or the password list onto a full, read-only or too small drive is said in plain words**, naming any folder left incomplete, instead of a traceback.
 - **Messages name the recovery menu's choices as the menu shows them** ("Fix damaged backup copies", "Check a drive that stopped taking new files"), one wording kept in shared.json; since 0.50.0 they named choices that were no longer there.
 - **The weekly Immich database copy never falls on a time the clocks skip**: on the Sunday the clocks go forward in the US and Europe, 02:15 does not exist, and the USB copy got the week-old database copy. It moves earlier (01:45) where that would happen.
+- **Setup says when a backup time you choose falls in the hour the clocks skip** (it would not run that night), and offers another; Enter keeps yours. The old default database copy time (02:15) moves to 01:45 where it is skipped.
+- **A failed upgrade whose way back was cut off by a power cut is put back at the next start**, instead of being closed as "passed its check" on the release that failed.
+- **A damaged phone-alert record is set aside (kept, with its date) and alerts start fresh**, instead of every alert run failing with "Invalid JSON".
+- **No "manual major upgrade" notice for an older Immich release marked "latest"**.
+- **Connecting the media apps and qBittorrent has a total time limit per request**, so an app answering a byte at a time can't keep setup waiting without end.
+- **Extra drives are listed in the order of their numbers** (d3 before d10).
 - **`music-setup.py` with a drive not connected (or the runtime not built) says why and stops**, instead of a Python traceback.
 - **`acceptance.py` and `source_import.py` say why they stopped** (a drive not connected, the runtime not built, a setting missing), instead of "inspect configuration and local services" or "check configured mounts".
 - **Setup without internet says the package source could not be reached, and why** ("Could not connect to …"), with what to do, instead of apt's "Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?".

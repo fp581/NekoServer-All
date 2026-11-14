@@ -768,6 +768,13 @@ class UpgradeTests(unittest.TestCase):
         self.state({'storage': 'success', 'new_step': 'running'})
         self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(0), self.journal), 1)
         self.assertEqual(self.ran[-1][0], 'v0.1.0')
+        # Cut off while it was checked, after its setup had ended: a step that was failing
+        # before the upgrade (an optional one waiting for the person) puts nothing back.
+        upgrade.record('verifying', self.journal, to='v' + VERSION, previous=str(older), before=['storage'])
+        self.state({'storage': 'success', 'tv': 'failed'})
+        ran = len(self.ran)
+        self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(), self.journal), 0)
+        self.assertEqual(len(self.ran), ran, 'nothing was put back')
         # A person's own setup run that just ended closes it all the same (settle_after_setup).
         upgrade.record('going_back', self.journal, to='v' + VERSION, previous=str(older), before=['storage'])
         self.state({'storage': 'success', 'new_step': 'failed'})
