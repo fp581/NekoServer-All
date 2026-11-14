@@ -219,8 +219,22 @@ class DataOnAnyDriveTests(unittest.TestCase):
         # A name that could leave the drives' folder is never one, even when listed.
         config = self.placed()
         config['storage']['../x'] = {'uuid': 'u' * 12, 'fstype': 'ext4'}
-        with self.assertRaisesRegex(RuntimeError, 'is not a drive under "storage"'):
+        with self.assertRaisesRegex(RuntimeError, 'not a name a drive can have'):
             neko_common.drive_folder(config, '../x')
+
+    def test_a_drive_with_a_name_no_drive_can_have_is_said_so(self):
+        """Deep check plan 196: storage."d-1" was a drive in use for setup (the runtime
+        ignores such a name), and then drive_folder said it "is not a drive under storage"."""
+        import config_checks
+
+        config = self.placed(music='d-1')
+        config['storage']['d-1'] = {'uuid': 'u' * 12, 'fstype': 'ext4'}
+        self.assertEqual(neko_common.drives_in_use(config), [])
+        for check in (lambda: neko_common.files_root(config, 'music'), lambda: config_checks.validate(config, [])):
+            with self.assertRaisesRegex(RuntimeError, 'not a name a drive can have') as said:
+                check()
+            self.assertIn('locations.music', str(said.exception))
+            self.assertNotIn('is not a drive under', str(said.exception))
 
     def test_setup_mounts_only_the_drives_something_is_placed_on(self):
         from modules import storage

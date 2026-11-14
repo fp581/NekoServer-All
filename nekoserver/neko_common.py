@@ -916,11 +916,29 @@ def extra_drives(config):
     storage = config.get('storage')
     if not isinstance(storage, dict):
         return {}
+    # Only a name a drive can have counts, as for the runtime (common::extra_drive): a
+    # "d-1" was a drive here, so drives_in_use listed it and drive_folder then said it
+    # "is not a drive under storage" (deep check plan 196).
     return {
         name: record
         for name, record in storage.items()
-        if name not in OLD_STORAGE_KEYS and name not in DRIVE_KEYS and isinstance(record, dict)
+        if name not in OLD_STORAGE_KEYS
+        and name not in DRIVE_KEYS
+        and isinstance(record, dict)
+        and DRIVE_NAME.fullmatch(name)
     }
+
+
+def not_a_drive(config, drive):
+    """Why `drive` is no drive of these settings, in words."""
+    storage = config.get('storage')
+    if isinstance(storage, dict) and isinstance(storage.get(drive), dict):
+        return (
+            f'"{drive}" under "storage" in my-config.json is not a name a drive can have: setup names them '
+            'd3, d4 and so on (a small letter, then small letters or digits, 16 at most). Run  sudo bash '
+            'install.sh  to choose that drive again'
+        )
+    return f'"{drive}" is not a drive under "storage" in my-config.json'
 
 
 def drive_folder(config, drive):
@@ -928,8 +946,8 @@ def drive_folder(config, drive):
     "media", /mnt/nekoserver-drives/<name> for another one under "storage"."""
     if drive in DRIVE_KEYS:
         return mount_path(config[DRIVE_KEYS[drive]])
-    if drive not in extra_drives(config) or not DRIVE_NAME.fullmatch(str(drive)):
-        raise RuntimeError(f'"{drive}" is not a drive under "storage" in my-config.json')
+    if drive not in extra_drives(config):
+        raise RuntimeError(not_a_drive(config, drive))
     return EXTRA_MOUNTS / drive
 
 
@@ -959,6 +977,8 @@ def location(config, what):
     default, _ = LOCATIONS[what]
     chosen = (config.get('locations') or {}).get(what, default)
     if chosen not in DRIVE_KEYS and chosen not in extra_drives(config):
+        if isinstance(chosen, str) and isinstance((config.get('storage') or {}).get(chosen), dict):
+            raise RuntimeError(f'locations.{what}: ' + not_a_drive(config, chosen))
         raise RuntimeError(f'locations.{what} must be "ssd", "media" or a drive under "storage"')
     return chosen
 
