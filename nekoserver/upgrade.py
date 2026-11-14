@@ -31,6 +31,7 @@ import subprocess
 import sys
 import tarfile
 import time
+import zlib
 from pathlib import Path
 
 from neko_common import (
@@ -74,6 +75,11 @@ UNITS = Path('/etc/systemd/system')
 # Where each release's files are kept on the SSD (modules/recovery.py).
 RELEASES = 'installer/releases'
 LIMIT = 200 * 1024 * 1024  # the release archive is a few MB
+# Said for a download cut off part-way, or an archive that is not whole.
+CUT_OFF = (
+    'The download of {tag} was cut off or is damaged (it is not a whole release); nothing was changed. '
+    'Check that this PC is connected to the internet, then start the upgrade again'
+)
 
 
 def numbers(text):
@@ -126,7 +132,10 @@ def download(tag, work, get=fetch):
     see the top of this file): returns its nekoserver folder."""
     ensure_directory(work, 0o700)
     archive = safe_path(work / (tag + ARCHIVE_SUFFIX))
-    payload = get(ARCHIVE.format(tag=tag), 'NekoServer ' + tag, LIMIT + 1, timeout=300)
+    try:
+        payload = get(ARCHIVE.format(tag=tag), 'NekoServer ' + tag, LIMIT + 1, timeout=300)
+    except http.client.HTTPException:  # the connection closed part-way
+        raise RuntimeError(CUT_OFF.format(tag=tag)) from None
     if len(payload) > LIMIT:
         raise RuntimeError(f'The download of {tag} is larger than any NekoServer release; nothing was changed')
     atomic_write(archive, payload, 0o600)
@@ -136,9 +145,15 @@ def download(tag, work, get=fetch):
 
         shutil.rmtree(target)
     ensure_directory(target, 0o700)
-    with tarfile.open(archive) as bundle:
-        # The 'data' filter refuses links out of the folder, devices and absolute paths.
-        bundle.extractall(target, filter='data')
+    try:
+        with tarfile.open(archive) as bundle:
+            # The 'data' filter refuses links out of the folder, devices and absolute paths.
+            bundle.extractall(target, filter='data')
+    except tarfile.FilterError:
+        raise RuntimeError(f'The download of {tag} is not a NekoServer release; nothing was changed') from None
+    except (tarfile.TarError, EOFError, zlib.error):
+        # A short or damaged archive: tarfile's own words list every format it tried.
+        raise RuntimeError(CUT_OFF.format(tag=tag)) from None
     tops = [p for p in target.iterdir() if p.is_dir()]
     if len(tops) != 1 or not (tops[0] / 'nekoserver/install.sh').is_file():
         raise RuntimeError(f'The download of {tag} is not a NekoServer release; nothing was changed')

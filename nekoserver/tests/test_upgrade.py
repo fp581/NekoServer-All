@@ -597,6 +597,30 @@ class UpgradeTests(unittest.TestCase):
             bundle.addfile(info)
         self.assertEqual(self.upgrade(self.setup(), payload=bad.getvalue()), 1)
 
+    def test_a_cut_off_or_damaged_download_is_said_in_plain_words(self):
+        # Deep check 181/183, a stand-in server closing the connection half-way: the
+        # dashboard showed tarfile's "file could not be opened successfully: - method gz:
+        # ReadError(...)" list, or "IncompleteRead(21699 bytes read)".
+        import http.client
+
+        whole = release(NEWER)
+
+        def closed(*args, **kwargs):
+            raise http.client.IncompleteRead(whole[:100])
+
+        for name, get in (
+            ('half', lambda *a, **k: whole[: len(whole) // 2]),
+            ('html', lambda *a, **k: b'<html>Not here</html>'),
+            ('empty', lambda *a, **k: b''),
+            ('closed', closed),
+        ):
+            with self.subTest(name):
+                with self.assertRaises(RuntimeError) as said:
+                    upgrade.download(NEWER, self.dir / 'work', get)
+                self.assertIn('was cut off or is damaged', str(said.exception))
+                self.assertNotIn('ReadError', str(said.exception))
+                self.assertNotIn('\n', str(said.exception))
+
     def test_nothing_starts_while_something_else_is_at_work_or_for_an_older_release(self):
         self.journal.parent.mkdir(parents=True)
         self.journal.write_text('{}')
