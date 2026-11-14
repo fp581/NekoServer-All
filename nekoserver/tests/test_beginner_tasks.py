@@ -101,5 +101,27 @@ class ForgottenBackupPasswordTests(unittest.TestCase):
         self.assertIn('sudo python3 backup_secrets.py --new-password', step)
 
 
+class WhereTheDocsSayItTests(unittest.TestCase):
+    """Tasks the docs had no word for: a new PC (244: RECOVERY.md spoke only of replacing
+    Linux on the same PC), a friend watching your films (245) and a new name for the server
+    (257: its name is in every app address)."""
+
+    def situations(self):
+        return doc('RECOVERY.md').split('## Which situation are you in?')[1].split('\n## ')[0]
+
+    def test_moving_to_a_new_pc_has_its_row(self):
+        row = next(line for line in self.situations().splitlines() if 'new PC' in line)
+        self.assertIn('#replace-the-os-and-reattach-the-existing-store', row)
+        self.assertIn('Tailscale', row)
+
+    def test_a_friend_and_a_new_name_are_in_the_readme(self):
+        use = doc('README.md').split('## Using your server')[1].split('\n## ')[0]
+        friend = use.split('**A friend should see your films.**')[1].split('\n\n')[0]
+        for words in ('Users', 'administrator', 'Share', ':8443'):
+            self.assertIn(words, friend)
+        rename = use.split('**Renaming the server.**')[1].split('\n\n')[0]
+        self.assertIn('sudo bash install.sh', rename)
+
+
 if __name__ == '__main__':
     unittest.main()
