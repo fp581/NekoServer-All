@@ -16,6 +16,30 @@ QBITTORRENT_PORT = app_port('qbittorrent')
 CATEGORY_FIELDS = {'sonarr': 'tvCategory', 'radarr': 'movieCategory', 'lidarr': 'musicCategory'}
 
 
+REQUEST_FAILED = 'qBittorrent API request failed; inspect local WebUI'
+# qBittorrent's answers to a login it refuses: 401 (or "Fails.") for a wrong username or
+# password, 403 once it has blocked this PC after too many wrong ones (for an hour by
+# default, its "ban duration").
+WRONG_LOGIN = (
+    'qBittorrent did not accept the saved username and password. Run  sudo bash install.sh  again: '
+    'its accounts step checks the login and says what to change'
+)
+BLOCKED = (
+    'qBittorrent refuses logins from this PC for now, after too many wrong passwords. Wait an hour '
+    '(or restart qBittorrent: sudo docker restart neko-qbittorrent-qbittorrent-1), then run setup again'
+)
+LOGIN_REFUSED = {401: WRONG_LOGIN, 403: BLOCKED}
+ODD_ANSWER = 'qBittorrent gave an answer setup does not understand ({}); check that qBittorrent runs and is up to date'
+
+
+class RequestFailed(RuntimeError):
+    """A request qBittorrent did not answer, or answered with an HTTP error (`code`)."""
+
+    def __init__(self, code=None):
+        super().__init__(REQUEST_FAILED)
+        self.code = code
+
+
 class Client:
     def __init__(self, port=QBITTORRENT_PORT):
         self.base = f'http://127.0.0.1:{port}'
@@ -35,19 +59,31 @@ class Client:
             with self.opener.open(req, timeout=10) as response:
                 payload = response.read(3_000_000).decode()
         except (OSError, urllib.error.URLError) as exc:
+            code = None
             if isinstance(exc, urllib.error.HTTPError):
+                code = exc.code
                 exc.close()
-            raise RuntimeError('qBittorrent API request failed; inspect local WebUI') from None
-        return json.loads(payload) if json_result else payload.strip()
+            raise RequestFailed(code) from None
+        if not json_result:
+            return payload.strip()
+        try:
+            return json.loads(payload)
+        except ValueError:
+            raise RuntimeError(ODD_ANSWER.format(endpoint)) from None
 
     def login(self, username, password):
-        reply = self.call('/auth/login', {'username': username, 'password': password})
+        try:
+            reply = self.call('/auth/login', {'username': username, 'password': password})
+        except RequestFailed as exc:
+            if exc.code in LOGIN_REFUSED:
+                raise RuntimeError(LOGIN_REFUSED[exc.code]) from None
+            raise
         # qBittorrent 4 answers a good login with "Ok." and a cookie named SID,
         # qBittorrent 5 with an empty reply and QBT_SID_<port>; the cookie is the proof.
         if reply.strip() not in ('Ok.', '') or not any(
             c.name == 'SID' or c.name.startswith('QBT_SID') for c in self.jar
         ):
-            raise RuntimeError('qBittorrent authentication failed')
+            raise RuntimeError(WRONG_LOGIN)
 
     def close(self):
         try:
@@ -55,6 +91,15 @@ class Client:
         except RuntimeError:
             pass
         self.jar.clear()
+
+
+def answer_object(client, endpoint, of_objects=False):
+    """The JSON object qBittorrent answers `endpoint` with (each value an object too, when
+    `of_objects`: the categories). Anything else is said plainly, never as a Python error."""
+    value = client.call(endpoint, json_result=True)
+    if not isinstance(value, dict) or of_objects and not all(isinstance(v, dict) for v in value.values()):
+        raise RuntimeError(ODD_ANSWER.format(endpoint))
+    return value
 
 
 def category_ok(category, path, desired='/data/downloads'):
@@ -109,8 +154,8 @@ def configure(username, password, apply=False, categories=('tv', 'movies', 'musi
     client = client or Client()
     try:
         client.login(username, password)
-        preferences = client.call('/app/preferences', json_result=True)
-        existing = client.call('/torrents/categories', json_result=True)
+        preferences = answer_object(client, '/app/preferences')
+        existing = answer_object(client, '/torrents/categories', of_objects=True)
         desired = '/data/downloads'
         current = str(preferences.get('save_path', '')).rstrip('/')
         changes = {}
@@ -166,8 +211,8 @@ def configure(username, password, apply=False, categories=('tv', 'movies', 'musi
                     )
             for category, path in fix.items():
                 client.call('/torrents/editCategory', {'category': category, 'savePath': path})
-            verified = client.call('/app/preferences', json_result=True)
-            actual = client.call('/torrents/categories', json_result=True)
+            verified = answer_object(client, '/app/preferences')
+            actual = answer_object(client, '/torrents/categories', of_objects=True)
             if not retained(verified, actual, changes, categories, desired):
                 raise RuntimeError('qBittorrent did not retain expected download configuration')
     finally:
