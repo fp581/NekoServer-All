@@ -88,7 +88,10 @@ def request(app, key, endpoint, method='GET', payload=None, timeout=12):
             content = response.read(RESPONSE_LIMIT + 1)
             if len(content) > RESPONSE_LIMIT:
                 raise RuntimeError(f'{app} {endpoint}: the answer is larger than {RESPONSE_LIMIT // 1_000_000} MB')
-            return json.loads(content) if content.strip() else {}
+            try:
+                return json.loads(content) if content.strip() else {}
+            except ValueError:
+                raise RuntimeError(ODD_ANSWER.format(app=app, endpoint=endpoint)) from None
     except urllib.error.HTTPError as exc:
         # Do not print response bodies: providers might echo secrets.
         code = exc.code
@@ -96,6 +99,21 @@ def request(app, key, endpoint, method='GET', payload=None, timeout=12):
         raise RuntimeError(f'{app} {endpoint}: HTTP {code}') from None
     except urllib.error.URLError:
         raise RuntimeError(f'{app} {endpoint}: unavailable on localhost') from None
+
+
+ODD_ANSWER = (
+    '{app} {endpoint}: the app answered with something that is not what its API gives (a web page, or another '
+    'program on its port?); check that {app} runs and is up to date'
+)
+
+
+def listed(app, key, endpoint):
+    """A list the app keeps (its download clients, its root folders...): a JSON list of
+    objects. Anything else is said plainly, never as a Python error that stops setup."""
+    items = request(app, key, endpoint)
+    if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+        raise RuntimeError(ODD_ANSWER.format(app=app, endpoint=endpoint))
+    return items
 
 
 def field_set(fields, name, value):
@@ -339,7 +357,7 @@ def finished_in_prowlarr(entry, key, config):
     def present():
         return any(
             row.get('name') == entry.get('name') and row.get('implementation') == entry.get('implementation')
-            for row in request('prowlarr', key, INDEXERS)
+            for row in listed('prowlarr', key, INDEXERS)
         )
 
     return guided_setup.checkpoint(
@@ -433,9 +451,9 @@ def configure_indexers(root, apply, config=None):
     form and can be skipped; one Prowlarr refuses is said with its reason and can be
     tried again, and the rest still go in."""
     key = app_key('prowlarr', root)
-    schemas = request('prowlarr', key, '/indexer/schema')
-    existing = request('prowlarr', key, INDEXERS)
-    profiles = request('prowlarr', key, '/appprofile')
+    schemas = listed('prowlarr', key, '/indexer/schema')
+    existing = listed('prowlarr', key, INDEXERS)
+    profiles = listed('prowlarr', key, '/appprofile')
     print(f'Prowlarr catalog: {len(schemas)} definitions; {len(existing)} configured indexers')
     added, rejected = [], []
     if existing:
@@ -472,8 +490,8 @@ def fields_match(entry, expected):
 def configure_applications(root, apply, apps=('sonarr', 'radarr', 'lidarr')):
     failures = []
     pro_key = app_key('prowlarr', root)
-    schemas = request('prowlarr', pro_key, APPLICATIONS + '/schema')
-    existing = request('prowlarr', pro_key, APPLICATIONS)
+    schemas = listed('prowlarr', pro_key, APPLICATIONS + '/schema')
+    existing = listed('prowlarr', pro_key, APPLICATIONS)
     for app in apps:
         try:
             app_api_key = app_key(app, root)
@@ -589,7 +607,7 @@ def pass_on_login(root, apps, client_factory=None):
     for app in apps:
         try:
             key = app_key(app, root)
-            found = next((x for x in request(app, key, DOWNLOAD_CLIENTS) if x.get('name') == CLIENT), None)
+            found = next((x for x in listed(app, key, DOWNLOAD_CLIENTS) if x.get('name') == CLIENT), None)
             if found is None:
                 print(f'{app}: no download client made by setup yet; the next setup run makes it')
                 continue
@@ -626,7 +644,7 @@ def stale_applications(root, selected, apply):
     if 'prowlarr' not in selected or not gone:
         return
     key = app_key('prowlarr', root)
-    for entry in request('prowlarr', key, APPLICATIONS):
+    for entry in listed('prowlarr', key, APPLICATIONS):
         app = next((a for a in gone if str(entry.get('name', '')).lower() == f'neko-{a}'), None)
         if app is None:
             continue
@@ -661,7 +679,7 @@ def stale_download_clients(root, selected, apply):
 
 
 def stale_client(app, key, apply):
-    for entry in request(app, key, DOWNLOAD_CLIENTS):
+    for entry in listed(app, key, DOWNLOAD_CLIENTS):
         if entry.get('name') != CLIENT:
             continue
         if type(entry.get('id')) is not int or not fields_match(entry, {'host': 'qbittorrent', 'port': 8080}):
@@ -724,7 +742,7 @@ def configure_download_clients(root, apply, apps=('sonarr', 'radarr', 'lidarr'),
         category_field = CATEGORY_FIELDS[app]
         try:
             key = app_key(app, root)
-            existing = request(app, key, DOWNLOAD_CLIENTS)
+            existing = listed(app, key, DOWNLOAD_CLIENTS)
             expected = {
                 'host': 'qbittorrent',
                 'port': 8080,
@@ -737,7 +755,7 @@ def configure_download_clients(root, apply, apps=('sonarr', 'radarr', 'lidarr'),
                 if not existing_client(app, key, found, expected, verify_qbit):
                     failures.append(app)
                 continue
-            candidates = request(app, key, DOWNLOAD_CLIENTS + '/schema')
+            candidates = listed(app, key, DOWNLOAD_CLIENTS + '/schema')
             schema = next((s for s in candidates if str(s.get('implementation', '')).lower() == 'qbittorrent'), None)
             if not schema:
                 print(f'{app}: no qBittorrent provider schema')
@@ -807,7 +825,7 @@ def lidarr_profiles(app, key):
         ('/qualityprofile', 'defaultQualityProfileId'),
         ('/metadataprofile', 'defaultMetadataProfileId'),
     ]:
-        options = request(app, key, endpoint)
+        options = listed(app, key, endpoint)
         if not options:
             raise RuntimeError('Lidarr has no configured profiles')
         profile = standard_profile(options)
@@ -820,7 +838,7 @@ def kept(app, key, path):
     """The app lists the root folder, and can reach it."""
     return any(
         r.get('path', '').rstrip('/') == path and r.get('accessible') is not False
-        for r in request(app, key, ROOT_FOLDERS)
+        for r in listed(app, key, ROOT_FOLDERS)
     )
 
 
@@ -843,7 +861,7 @@ def root_folder(app, root, media, apply, music=None, config=None, ready=existing
 
 def one_root_folder(app, key, path, name, apply):
     """The root folder `path` in one app: left alone when it is there, else added."""
-    found = next((r for r in request(app, key, ROOT_FOLDERS) if r.get('path', '').rstrip('/') == path), None)
+    found = next((r for r in listed(app, key, ROOT_FOLDERS) if r.get('path', '').rstrip('/') == path), None)
     if found:
         if found.get('accessible') is False:
             raise RuntimeError('Existing root folder is inaccessible')
