@@ -1385,6 +1385,22 @@ class NextcloudImageTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 nextcloud.image_for_release(bad)
 
+    def test_an_answer_that_is_no_release_is_said_plainly(self):
+        # Deep check 175's stand-in answers for Nextcloud's lookup too: a list or null was
+        # a Python traceback, a web page "Expecting value: line 1 column 1 (char 0)".
+        from modules import nextcloud
+
+        for body in (b'[{"tag_name": "v32.0.3"}]', b'null', b'<html>sign in</html>', b''):
+            with (
+                self.subTest(body=body),
+                mock.patch.object(nextcloud, 'fetch', return_value=body),
+                self.assertRaises(RuntimeError) as said,
+            ):
+                nextcloud.resolve_image('auto')
+            self.assertEqual(
+                str(said.exception), 'GitHub did not answer with a stable Nextcloud release; run setup again later'
+            )
+
 
 class ModuleDependencyTests(unittest.TestCase):
     def test_monthly_updates_do_not_need_the_usb_drive(self):

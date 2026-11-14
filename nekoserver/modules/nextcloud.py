@@ -64,14 +64,16 @@ def options(config):
 def resolve_image(value):
     if value != 'auto':
         return value
-    release = json.loads(
-        fetch(
-            'https://api.github.com/repos/nextcloud/server/releases/latest',
-            'Finding the current Nextcloud release',
-            200000,
-        )
+    answer = fetch(
+        'https://api.github.com/repos/nextcloud/server/releases/latest',
+        'Finding the current Nextcloud release',
+        200000,
     )
-    return image_for_release(release)
+    try:
+        release = json.loads(answer)
+    except ValueError:
+        release = None  # a web page in its place (a proxy's, say), or a cut-off answer
+    return image_for_release(release if isinstance(release, dict) else {})
 
 
 def image_for_release(release):
@@ -80,7 +82,7 @@ def image_for_release(release):
     Docker image can lag the GitHub release by days, which would fail the install."""
     match = re.fullmatch(r'v(\d+)\.(\d+)\.(\d+)', release.get('tag_name', ''))
     if not match or release.get('prerelease') or release.get('draft'):
-        raise RuntimeError('Stable Nextcloud release could not be resolved')
+        raise RuntimeError('GitHub did not answer with a stable Nextcloud release; run setup again later')
     major, minor, patch = (int(x) for x in match.groups())
     if minor == 0 and patch < 2:
         major -= 1
