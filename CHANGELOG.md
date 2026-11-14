@@ -33,6 +33,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **Setup says when a backup time you choose falls in the hour the clocks skip** (it would not run that night), and offers another; Enter keeps yours. The old default database copy time (02:15) moves to 01:45 where it is skipped.
 - **A failed upgrade whose way back was cut off by a power cut is put back at the next start**, instead of being closed as "passed its check" on the release that failed.
 - **No "manual major upgrade" notice for an older Immich release marked "latest"**.
+- **A missing USB drive for the weekly copy says how to choose a new one** (remove `external_backup_uuid`, then run setup), instead of only "External drive missing".
 
 ### Fixed: setup and its tools
 - **A damaged or missing settings file is named, with what is wrong** (not JSON, with the line and column; not there; no settings in it; no such profile), in `install.sh`, `acceptance.py` and `recover.py`, instead of Python's own words or a vague line.
@@ -55,6 +56,8 @@ Every copy is read back and checked before it counts. That read came straight af
 - **Importing a library you already had**: a damaged source list is said and kept (it crashed, or was rewritten as a list of letters); a full library drive and a share only noted say why, not "Source inaccessible, unmounted, overlapping"; a folder on a drive of this PC is no longer called a network share.
 - **The phone page keeps its HTTPS check** between openings, instead of checking every connection again every second time.
 - **A number typed as "²" or "①" is asked again**, in setup, the recovery menu, the uninstaller and the drive picker, instead of ending in a Python traceback.
+- **Phone alerts: a test you did not see arrive asks for the address again** at the next setup run (a typo in the hidden address still reaches the alert server), and the step stays "needs you" until a test arrives.
+- **`notify --test` says what happened**: that the alert server took the test and to look at your phone, or that it was not sent and what to check. It printed nothing, or only "Notification delivery failed".
 
 ### Fixed: the dashboard and Ask Neko
 - **A damaged phone-alert record is set aside (kept, with its date) and alerts start fresh**, instead of every alert run failing with "Invalid JSON".
@@ -71,6 +74,8 @@ Every copy is read back and checked before it counts. That read came straight af
 - **Ask Neko takes a password in quotes out whole**: `password: "correct horse battery"` kept "horse battery".
 - **Ask Neko takes out a password named in another language** (Passwort, contraseña, mot de passe, wachtwoord, senha, סיסמה, пароль), not only in English.
 - **Ask Neko is free for the next question when the page leaves an answer that never ends**, instead of "Neko is busy" until the assistant hung up; an assistant that hangs up at once is said as such, not as "took too long".
+- **"What should I do?" on an alert opens the guide about it**, and the alerts' advice names pages the dashboard has, in words a beginner can follow.
+- **DASHBOARD.md says where a forgotten PIN can be found**, and what the reset gives.
 
 ### Fixed: apps and the network
 - **Connecting the media apps and qBittorrent has a total time limit per request**, so an app answering a byte at a time can't keep setup waiting without end.
@@ -83,6 +88,7 @@ Every copy is read back and checked before it counts. That read came straight af
 ### Fixed: the uninstaller
 - **`uninstall.sh --help` shows what it does, and a mistyped option changes nothing.** Only `--dry-run` was read: `--help`, or a typo such as `--dryrun`, opened the real removal menu (which still asked twice before removing anything).
 - **One service reads "1 service or timer"**, not "1 services and timers".
+- **Keeping your photos (or Nextcloud files) while removing the apps' data is said before the yes**: the app's database goes, so a new installation starts it empty and does not show them.
 
 ### Fixed: SD-card backup sets (the engine, not switched on yet)
 - **The catalogue's copy for the host backup is private** (readable by root only). It was readable by every user, and a new catalogue was, for a moment.
