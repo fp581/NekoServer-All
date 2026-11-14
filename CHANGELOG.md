@@ -13,6 +13,14 @@ Every copy is read back and checked before it counts. That read came straight af
 - **The SD-card engine** (not switched on yet) and **the card restore tool**'s second check.
 
 ### Fixed: getting files back (the recovery menu, restore tools, backup cards)
+- **A backup card unplugged mid-restore is said as such** ("The card stopped answering", the files so far are complete, how to carry on), instead of every remaining file called damaged.
+- **Card searches find accented names written the Mac or phone way** (`list --search`, `restore --search`, `where`).
+- **Restored files are not given to an account that no longer exists**: they stay root's, with a `chown` line that works.
+- **The recovery menu without a settings file says so**, instead of "The HDD is not mounted" about a drive that was plugged in.
+- **A restore stopped with Ctrl+C names its folder as incomplete** and says to delete it and restore again; `app-recovery.py` and `host-recovery.py` say it in words, not a traceback.
+- **A drive check or repair whose e2fsck fails, hangs or asks a question says so plainly**; e2fsck no longer waits for an answer nobody sees.
+- **`recover.py reattach` with another server's settings says what differs** and to use the settings kept on the SSD.
+- **A sealed password list's password is asked in the setup window too**, not only in the terminal while the window waited.
 - **The recovery menu's drive check names a drive that is not connected**, instead of "Both drives take new files and Linux counted no errors on them" (seen with neither drive connected). "The application SSD" also keeps its capital letters there.
 - **A restore says when the HDD that holds its backups is not connected**, instead of "No nightly backup… found on the HDD yet" or "No complete monthly snapshot on the HDD yet", which read as if no backup had ever been made.
 - **The monthly and music restore tools say what went wrong in plain words** (a damaged snapshot, a missing folder), instead of a traceback; a music restore onto exFAT restores every file the drive accepts and names the ones it refused.
