@@ -132,7 +132,7 @@ function ago(at) {
   if (d < 86400) {
     return Math.floor(d / 3600) + ' h ago';
   }
-  return Math.floor(d / 86400) + ' days ago';
+  return plural(Math.floor(d / 86400), 'day') + ' ago'; // not "1 days ago"
 }
 function duration(s) {
   if (!numeric(s) || s < 0) {
@@ -2325,7 +2325,7 @@ function renderBackups() {
 /* ---------- hardware ---------- */
 function processorCard(cpu) {
   const clock = numeric(cpu.clock_mhz) ? (cpu.clock_mhz / 1000).toFixed(1) + ' GHz' : '';
-  const threads = numeric(cpu.logical_cpus) ? cpu.logical_cpus + ' threads' : '';
+  const threads = numeric(cpu.logical_cpus) ? plural(cpu.logical_cpus, 'thread') : '';
   return stat(
     'Processor',
     pct(cpu.percent),
@@ -3286,7 +3286,7 @@ function outputsBadge(c) {
     return ['neutral', 'Switched off'];
   }
   const outputs = list(c.fans?.inventory?.outputs);
-  return outputs.length ? ['neutral', outputs.length + ' outputs'] : ['unknown', 'None found'];
+  return outputs.length ? ['neutral', plural(outputs.length, 'output')] : ['unknown', 'None found'];
 }
 function renderOutputs(c) {
   const outputs = list(c.fans?.inventory?.outputs);
@@ -3408,7 +3408,7 @@ function lightCard(d) {
   const own = hint('This effect makes its own colours, so colour and brightness don’t apply to it.');
   root.append(
     head,
-    el('p', 'hint', joined([text(d.kind), d.leds ? d.leds + ' lights' : '', text(d.location)])),
+    el('p', 'hint', joined([text(d.kind), d.leds ? plural(d.leds, 'light') : '', text(d.location)])),
     colorWrap,
     brightness,
     effect,

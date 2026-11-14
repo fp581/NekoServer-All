@@ -42,7 +42,9 @@ const CALLS = new Set([
   'shownAnswer',
   'bugReport',
   'copied',
-  'askIntro'
+  'askIntro',
+  'ago',
+  'outputsBadge'
 ]);
 /* Calls answered from another function's result, with more of it; the last four run a
    piece of Ask Neko on a page that keeps what is put on it (ASK_PAGE below). */
@@ -157,6 +159,11 @@ const SPECIAL = {
   catFile: argument => app.catFile(argument.mood, argument.small),
   appSpec: argument => app.appSpec(argument.id, argument.app),
   pinRefusal: argument => app.pinRefusal(argument.answer, argument.now),
+  // The Fans page's count, with its readings answered (this stand-in page reached none).
+  outputsBadge: argument => {
+    app.state.controlError = null;
+    return app.outputsBadge(argument);
+  },
   waitingWhen: argument => argument.waiting.map(w => app.waitingWhen(w, argument.waiting, argument.now)),
   releaseNotes: argument => app.releaseNotes(argument.app, argument.version),
   // The apps Home offers (this stand-in page is the server's own, 127.0.0.1).

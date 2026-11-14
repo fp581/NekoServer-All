@@ -61,6 +61,23 @@ class DashboardPageTests(unittest.TestCase):
         )
         self.assertIn('an update, an upgrade) need your PIN', (ROOT / 'dashboard/app.js').read_text())
 
+    def test_one_of_something_is_said_in_the_singular(self):
+        # Deep checks 158 and 168: readings a day old said "Showing readings from 1 days
+        # ago", and a board with one fan output "1 outputs".
+        now = time.time()
+        one = {'fans': {'inventory': {'outputs': [{'id': 'a'}]}}}
+        two = {'fans': {'inventory': {'outputs': [{'id': 'a'}, {'id': 'b'}]}}}
+        said = page(
+            ('ago', now - 86400 - 600),
+            ('ago', now - 3 * 86400),
+            ('outputsBadge', one),
+            ('outputsBadge', two),
+        )
+        self.assertEqual(said, ['1 day ago', '3 days ago', ['neutral', '1 output'], ['neutral', '2 outputs']])
+        source = (ROOT / 'dashboard/app.js').read_text()
+        for counted in ("' threads'", "' lights'"):
+            self.assertNotIn(counted, source)  # counted with plural() too
+
     def test_lists_of_words_are_shown_not_dropped(self):
         # Found in the lab (0.45.4): the restart's reason read "not known: ." and an
         # update that restarts Docker never said so. `list` keeps objects (rows) only,
