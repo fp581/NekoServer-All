@@ -19,6 +19,7 @@ Every copy is read back and checked before it counts. That read came straight af
 ### Fixed: clearer messages
 - **A damaged or missing settings file is named, with what is wrong** (not JSON, with the line and column; not there; no settings in it; no such profile), in `install.sh`, `acceptance.py` and `recover.py`, instead of Python's own words or a vague line.
 - **`recover.py check --config my.json` reads my.json.** The option was read only before the command.
+- **`recover.py` in a fresh download says the runtime is not built yet, and how to build it**, instead of "…runtime/build.json does not exist. Check the path".
 - **`migrate.py move --to <not a UUID>` says so**, instead of "move needs --drive and --to".
 - **Restoring from a card, a copy missing or replaced on the card is said as such**, as `verify` says it, instead of "No such file or directory".
 - **A restore that skipped files says how to get them too** (`--rename`), instead of ending with only "skipped 2". Seen restoring onto an exFAT stick, which cannot hold a name with `:` or tell `Same.jpg` from `same.jpg`.
