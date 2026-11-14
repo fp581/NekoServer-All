@@ -294,7 +294,7 @@ class MoveTests(unittest.TestCase):
             ('mount_path', lambda p: Path(p)),
             ('nothing_at_work', lambda **kwargs: self.busy),
             ('targets', lambda config, drive: ([('newbig-0001', 'ext4', 8000 * GB, '/dev/sdc1')], [])),
-            ('mount_staging', lambda uuid, fstype, staging: staging),
+            ('mount_staging', self.mount_new),
             ('copy', lambda source, target, final=False, out=print: self.calls.append(('copy', final))),
             ('stop_writers', self.stop),
             ('start_again', self.start),
@@ -307,6 +307,12 @@ class MoveTests(unittest.TestCase):
         ismount = mock.patch.object(migrate.os.path, 'ismount', return_value=False)
         ismount.start()
         self.addCleanup(ismount.stop)
+
+    def mount_new(self, uuid, fstype, staging):
+        """A stand-in for mounting the new drive at the staging folder."""
+        self.calls.append(('mount_staging', str(staging)))
+        self.mounted[str(staging)] = (uuid, fstype, '')
+        return staging
 
     def command(self, argv, *args, **kwargs):
         """A stand-in for commands: `mount <folder>` mounts what /etc/fstab's active line
@@ -337,13 +343,27 @@ class MoveTests(unittest.TestCase):
             self.settings, 'media_hdd', 'newbig-0001', self.said.append, self.journal, self.staging, self.fstab
         )
 
+    def test_the_comparison_reads_the_new_drive_mounted_again(self):
+        """The review of 0.51.0: the comparison after the last copy read the new drive's
+        files from Linux's memory of what was just copied, so a new drive that kept other
+        bytes passed. It is unmounted and mounted again first."""
+        compared = []
+        with mock.patch.object(migrate, 'differences', side_effect=lambda a, b: compared.append(len(self.calls)) or []):
+            self.assertEqual(self.move(), 0)
+        before = self.calls[: compared[0]]
+        last_copy = before.index(('copy', True))
+        again = before[last_copy:]
+        self.assertIn(('umount', str(self.staging)), again)
+        self.assertLess(again.index(('umount', str(self.staging))), again.index(('mount_staging', str(self.staging))))
+
     def test_a_good_copy_switches_to_the_new_drive_and_keeps_the_old_one(self):
         with mock.patch.object(migrate, 'differences', return_value=[]):
             self.assertEqual(self.move(), 0)
-        kinds = [c[0] for c in self.calls]
+        calls = [c for c in self.calls if c[0] != 'mount_staging']
+        kinds = [c[0] for c in calls]
         self.assertEqual(kinds.index('copy'), 0)  # the first pass while the apps run
-        self.assertLess(kinds.index('stop'), self.calls.index(('copy', True)))
-        self.assertLess(self.calls.index(('copy', True)), kinds.index('setup'))
+        self.assertLess(kinds.index('stop'), calls.index(('copy', True)))
+        self.assertLess(calls.index(('copy', True)), kinds.index('setup'))
         fstab = self.fstab.read_text()
         self.assertIn('UUID=newbig-0001 /mnt/nekoserver-media ext4 defaults,nofail', fstab)
         self.assertNotIn('UUID=hdd-0001', fstab)

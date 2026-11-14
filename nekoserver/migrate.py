@@ -656,6 +656,10 @@ def copy_to_new(journal, drive, old, new, places, out):
     copy(mountpoint, staging, final=True, out=out)
     record(journal, phase='verifying')
     out('Comparing every file on both drives by checksum (this reads both drives once more)...')
+    # Mounted again first, so the comparison reads the new drive, not Linux's memory of
+    # what was just copied onto it: a new drive that kept other bytes passed before.
+    run(['umount', str(staging)], 300)
+    mount_staging(new['uuid'], new['fstype'], staging)
     same_drives(mountpoint, old, staging, new)
     differ = differences(mountpoint, staging)
     if differ:
