@@ -616,6 +616,16 @@ def from_the_drive(fd):
         pass  # a system without it: the check reads what Linux has, as before
 
 
+def remove_leftover(dir_fd, temp):
+    """Remove `temp` when an earlier restore left it: one stopped hard (killed, a power
+    cut) while writing this file cannot remove it, and the next run then failed the file
+    with "File exists". The name is this tool's own and never holds a verified file."""
+    try:
+        os.unlink(temp, dir_fd=dir_fd)
+    except FileNotFoundError:
+        pass
+
+
 def copy_verified(card, rec, dir_fd, temp):
     """The archived file copied into `temp` (new, in the destination folder) while it is
     hashed; then the written file read back and hashed. Raises Invalid on any mismatch,
@@ -630,6 +640,7 @@ def copy_verified(card, rec, dir_fd, temp):
     except OSError:
         raise Invalid('its copy on the card is damaged (not a plain file)') from None
     try:
+        remove_leftover(dir_fd, temp)
         write_checked(src, rec, dir_fd, temp)
         back = os.open(temp, FILE_FLAGS, dir_fd=dir_fd)
         try:

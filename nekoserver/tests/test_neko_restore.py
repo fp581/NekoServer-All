@@ -350,6 +350,16 @@ class RestoreTests(Base):
         self.assertEqual(os.stat(self.dest / A_JPG).st_mtime_ns, first, 'not copied again')
         self.assertEqual(len(progress_done(progress)), 2)
 
+    def test_a_file_being_written_when_the_restore_was_killed_is_restored_next_time(self):
+        # A restore killed (SIGKILL, a power cut) while writing a file leaves its
+        # half-written temporary file; the next run used to fail that file ("File exists").
+        rec = self.card.add(A_JPG, b'one')
+        (self.dest / ('.neko-restore-%s.part' % rec['record_id'])).write_bytes(b'o')
+        progress = self.tmp / 'progress.json'
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 0, said_text(self))
+        self.assertEqual((self.dest / A_JPG).read_bytes(), b'one')
+        self.assertEqual(sorted(os.listdir(self.dest)), [A_JPG])
+
     def test_the_report_names_every_file_and_where_it_went(self):
         self.card.add(X_A, b'a')
         report = self.tmp / 'report.json'
