@@ -121,6 +121,22 @@ class JobTimesTests(unittest.TestCase):
         # The day before, when the earlier time goes back past midnight.
         self.assertEqual(neko_common.day_before_if_wrapped('Sun', '00:30', -75), 'Sat')
 
+    def test_the_old_default_database_time_moves_past_the_clock_change_a_chosen_one_stays(self):
+        """A server set up before 0.48.0 still has the template's 02:15 for the Immich
+        database copy in its settings: in New York and Berlin it was skipped on the Sunday
+        the clocks go forward, and that week's USB copy took the week-old database copy.
+        Nobody chose it, so it goes earlier like the copy setup works out; any other time
+        written there stays as it is."""
+        old = {'photos': {'backup_schedule': 'weekly', 'database_backup_time': '02:15'}}
+        for zone in ('America/New_York', 'Europe/Berlin'):
+            with self.subTest(zone=zone):
+                times = job_times({**old, 'timezone': zone})
+                self.assertEqual((times['photo_database_weekly_day'], times['photo_database_weekly']), ('Sun', '01:45'))
+                own = {'timezone': zone, 'photos': {'database_backup_time': '02:20'}}
+                self.assertEqual(job_times(own)['photo_database_weekly'], '02:20')
+        self.assertEqual(job_times({**old, 'timezone': 'UTC'})['photo_database_weekly'], '02:15')
+        self.assertEqual(job_times({'timezone': 'Europe/Berlin'})['photo_database_weekly'], '01:45')
+
     def test_settings_from_before_keep_each_jobs_own_time(self):
         """A settings file made before 0.48.0 has no backup_times: each job's own setting
         (or its old default) stands, so an upgrade changes no schedule."""
@@ -494,6 +510,51 @@ class SetupQuestionTests(unittest.TestCase):
             },
             maintenance={'time': '01:30'},
         )
+
+    def test_a_time_the_clock_change_skips_is_said_and_another_offered(self):
+        """systemd-analyze calendar '*-*-* 02:30:00 Europe/Berlin' has no run on the last
+        Sunday of March: that night has no 02:30. Setup says so where the time is chosen
+        and offers one the clocks never skip; Enter keeps the person's own choice."""
+        ctx = Ctx(self.config(timezone='Europe/Berlin'))
+        printed = self.ask(ctx, '02:30', '', '', '02:45', '', '')
+        self.assertEqual(
+            ctx.config['backup_times'], {'daily': '02:30', 'weekly_day': 'Sun', 'weekly': '02:45', 'monthly': '02:30'}
+        )
+        said = [line for line in printed if 'the clocks go forward on Sun' in line]
+        self.assertEqual(len(said), 2, printed)
+        self.assertIn("(Europe/Berlin)", said[0])
+        self.assertIn('that night has no 02:30', said[0])
+        self.assertIn('This happens every year.', said[0])
+        self.assertIn('that night has no 02:45: the weekly USB copy would be skipped that night', said[1])
+        # Typed again at the offer, the new time is the one kept.
+        asked = []
+
+        def prompt(question=''):
+            asked.append(question)
+            return {1: '02:30', 2: '03:30'}.get(len(asked), '')
+
+        ctx = Ctx(self.config(timezone='Europe/Berlin'))
+        guided_setup.choose_backup_times(ctx, prompt=prompt, output=lambda *_: None)
+        self.assertEqual(asked[1], 'Type another time (for example 03:30), or press Enter to keep 02:30: ')
+        self.assertEqual(ctx.config['backup_times']['daily'], '03:30')
+        # Sent whole by the setup window: asked once more, like a field it sent wrong.
+        ctx = Ctx(self.config(timezone='Europe/Berlin'))
+        page = {'weekly_day': 'Sat', 'weekly': '21:00', 'monthly': '01:00'}
+        prompts = iter([self.window_prompt('02:30', page)])
+        again = []
+        printed = []
+
+        def prompt(question=''):
+            return next(prompts, lambda question: again.append(question) or '')(question)
+
+        guided_setup.choose_backup_times(ctx, prompt=prompt, output=printed.append)
+        self.assertEqual(again[0], 'Type another time (for example 03:30), or press Enter to keep 02:30: ')
+        self.assertEqual(ctx.config['backup_times'], {'daily': '02:30', **page})
+        # London moves its clocks an hour earlier: 02:30 is there, 01:30 is not.
+        ctx = Ctx(self.config(timezone='Europe/London'))
+        printed = self.ask(ctx, '02:30', '', '', '')
+        self.assertFalse(any('clocks go forward' in line for line in printed))
+        self.assertEqual(ctx.config['backup_times']['daily'], '02:30')
 
     def test_enter_everywhere_on_a_server_set_up_before_keeps_its_own_times(self):
         # Saved as backup_times, the times shown would still have moved the music copy to

@@ -1139,6 +1139,9 @@ def weekly_words(config):
     return what + (", with Immich's database copy 45 minutes before it" if photos else '')
 
 
+WEEKLY_HINT = 'Type a time of day as HH:MM, for example 03:00.'
+
+
 def ask_weekly(now, prompt, output):
     """The weekly USB copy's day and time."""
     from neko_common import WEEKDAYS, valid_time
@@ -1159,11 +1162,86 @@ def ask_weekly(now, prompt, output):
         f'At what time on that day? (HH:MM, Enter for {now["usb"]}): ',
         now['usb'],
         valid_time,
-        'Type a time of day as HH:MM, for example 03:00.',
+        WEEKLY_HINT,
         prompt,
         output,
     )
     return weekday, weekly
+
+
+def clock_change_misses(config, which, chosen, today=None):
+    """The jobs that question `which` ('daily', 'weekly' or 'monthly') times, at the
+    `chosen` "backup_times", that a night the clocks go forward skips on this PC's clock:
+    [(what, 'HH:MM', the first such date, when it runs next)]. systemd does not run a job
+    whose time does not exist that night; it waits for its next time."""
+    from neko_common import BACKUP_TIMES, clock_change_skips, host_timezone, job_times, media_group, music_backed_up
+    from neko_common import on_weekday
+
+    times = job_times({**config, BACKUP_TIMES: chosen})
+    if which == 'daily':
+        jobs = [("the copy of this PC's own settings", times['host'], None, 'the next night')]
+        if music_backed_up(config):
+            jobs.insert(0, ('the music copy', times['music'], None, 'the next night'))
+        if any(media_group(config, group) for group in ('movies', 'music')):
+            jobs.insert(0, ("the media apps' snapshot", times['app'], None, 'the next night'))
+    elif which == 'weekly':
+        jobs = [('the weekly USB copy', times['usb'], on_weekday(times['usb_day']), 'a week later')]
+    else:
+        update_day = on_weekday(config.get('maintenance', {}).get('update_day', 'Wed'))
+        jobs = [
+            ('the monthly check', times['monthly'], lambda date: date.day == 1, 'a month later'),
+            (
+                'the weekly app updates',
+                times['monthly'],
+                lambda date: date.day > 1 and update_day(date),
+                'a week later',
+            ),
+        ]
+    zone = host_timezone(config)
+    misses = []
+    for what, time, days, next_run in jobs:
+        date = clock_change_skips(time, zone, days or (lambda date: True), today)
+        if date is not None:
+            misses.append((what, time, date, next_run))
+    return misses
+
+
+def time_past_clock_change(config, which, chosen, valid):
+    """The time nearest to question `which`'s answer (later first, in quarter hours) that
+    `valid` accepts and no clock change skips, to suggest; None when there is none."""
+    from neko_common import minutes_later
+
+    for quarters in range(1, 4 * 24):
+        for minutes in (15 * quarters, -15 * quarters):
+            time = minutes_later(chosen[which], minutes)
+            if valid(time) and not clock_change_misses(config, which, {**chosen, which: time}):
+                return time
+    return None
+
+
+def ask_past_clock_change(ctx, which, chosen, valid, hint, prompt, output):
+    """Question `which`'s answer, asked once more when a night the clocks go forward on
+    this PC's clock skips one of the jobs it times (02:30 in Berlin on the last Sunday of
+    March): said in plain words with another time to choose. Enter keeps the answer: it
+    is the person's choice, never changed without them."""
+    from neko_common import host_timezone
+
+    misses = clock_change_misses(ctx.config, which, chosen)
+    if not misses:
+        return chosen[which]
+    what, time, date, next_run = misses[0]
+    others = [miss[0] for miss in misses[1:]]
+    if others:
+        what += ' (and ' + ', '.join(others) + ')'
+    output(
+        f"On this PC's clock ({host_timezone(ctx.config)}) the clocks go forward on {date:%a %d %b %Y}, and that "
+        f'night has no {time}: {what} would be skipped that night and run again {next_run}. This happens every year.'
+    )
+    better = time_past_clock_change(ctx.config, which, chosen, valid)
+    offer = f'Type another time (for example {better})' if better else 'Type another time'
+    return ask_on_page(
+        which, f'{offer}, or press Enter to keep {chosen[which]}: ', chosen[which], valid, hint, prompt, output
+    )
 
 
 def ask_backup_times(ctx, now, night_end, prompt, output):
@@ -1177,34 +1255,39 @@ def ask_backup_times(ctx, now, night_end, prompt, output):
         'Choose hours when nobody uses the server: the apps pause for a moment while they are copied.'
     )
     output('Every night: ' + daily_words(ctx.config) + '.')
+    daily_hint = 'Type a time of day as HH:MM, for example 04:15.'
     daily = ask_on_page(
         'daily',
         f'When should the daily backups run? (HH:MM, Enter for {now["app"]}): ',
         now['app'],
         valid_time,
-        'Type a time of day as HH:MM, for example 04:15.',
+        daily_hint,
         prompt,
         output,
     )
+    chosen = {'daily': daily, 'weekly_day': now['usb_day'], 'weekly': now['usb'], 'monthly': now['monthly']}
+    chosen['daily'] = ask_past_clock_change(ctx, 'daily', chosen, valid_time, daily_hint, prompt, output)
     if weekly_copy(ctx.config):
         output('Every week: the USB copy of ' + weekly_words(ctx.config) + '.')
-        weekday, weekly = ask_weekly(now, prompt, output)
-    else:
-        # No weekly copy on this server: its day and time stay as they are, unasked.
-        weekday, weekly = now['usb_day'], now['usb']
+        chosen['weekly_day'], chosen['weekly'] = ask_weekly(now, prompt, output)
+        chosen['weekly'] = ask_past_clock_change(ctx, 'weekly', chosen, valid_time, WEEKLY_HINT, prompt, output)
+    # else no weekly copy on this server: its day and time stay as they are, unasked.
     output(
         'Every month, on the 1st: the check of every backup copy, a snapshot of every app and a restore '
         f'test; the weekly app updates start at this time too. It must start at night, before {night_end:02d}:00.'
     )
     offered = monthly_offered(now['monthly'], night_end)
     why = '' if offered == now['monthly'] else f'; {now["monthly"]} is not before {night_end:02d}:00'
-    monthly = ask_on_page(
+    at_night = lambda answer: valid_time(answer) and int(answer[:2]) < night_end  # noqa: E731
+    monthly_hint = f'Type a time of day as HH:MM before {night_end:02d}:00, for example 02:30.'
+    chosen['monthly'] = ask_on_page(
         'monthly',
         f'At what time should the monthly check start? (HH:MM before {night_end:02d}:00, Enter for {offered}{why}): ',
         offered,
-        lambda answer: valid_time(answer) and int(answer[:2]) < night_end,
-        f'Type a time of day as HH:MM before {night_end:02d}:00, for example 02:30.',
+        at_night,
+        monthly_hint,
         prompt,
         output,
     )
-    return {'daily': daily, 'weekly_day': weekday, 'weekly': weekly, 'monthly': monthly}
+    chosen['monthly'] = ask_past_clock_change(ctx, 'monthly', chosen, at_night, monthly_hint, prompt, output)
+    return chosen

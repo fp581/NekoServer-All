@@ -1772,29 +1772,52 @@ def day_before_if_wrapped(day, time, minutes):
 CLOCK_CHANGE_STEP = 15
 
 
-def skipped_by_clock_change(day, time, zone, today=None):
-    """Whether `time` (HH:MM) on weekday `day` does not exist on one such day of the coming
-    year in `zone`: the night the clocks go forward skips it (02:15 on a Sunday in March in
-    New York and in Berlin), and systemd then runs a job set for it a week later, not that
-    day. `today`: where the year starts (tests)."""
+def clock_change_skips(time, zone, on_day=lambda date: True, today=None):
+    """The first date of the coming year, among those `on_day` accepts (every day unless
+    given), on which `time` (HH:MM) does not exist in `zone`, or None: the night the clocks
+    go forward skips it (02:30 on the last Sunday of March in Berlin), and systemd then
+    runs a job set for it not that night but at its next time. `today`: where the year
+    starts (tests)."""
     import datetime as dt
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
     try:
         place = ZoneInfo(zone)
     except (ZoneInfoNotFoundError, ValueError):
-        return False
+        return None
     hours, mins = (int(part) for part in time.split(':'))
     start = today or dt.date.today()
     for ahead in range(366):
         date = start + dt.timedelta(days=ahead)
-        if WEEKDAYS[date.weekday()] != day:
+        if not on_day(date):
             continue
         local = dt.datetime(date.year, date.month, date.day, hours, mins)
         there = local.replace(tzinfo=place).astimezone(dt.timezone.utc).astimezone(place)
         if there.replace(tzinfo=None) != local:
-            return True
-    return False
+            return date
+    return None
+
+
+def on_weekday(day):
+    """For clock_change_skips: the dates that fall on weekday `day` ("Sun")."""
+    return lambda date: WEEKDAYS[date.weekday()] == day
+
+
+def skipped_by_clock_change(day, time, zone, today=None):
+    """Whether `time` (HH:MM) on weekday `day` does not exist on one such day of the coming
+    year in `zone` (02:15 on a Sunday in March in New York and in Berlin): systemd then
+    runs a job set for it a week later, not that day."""
+    return clock_change_skips(time, zone, on_weekday(day), today) is not None
+
+
+def earlier_past_clock_change(day, time, offset, zone, today=None):
+    """`offset` (minutes from `time` on weekday `day`), made earlier by CLOCK_CHANGE_STEP
+    until the time it lands on is not skipped by a clock change in `zone`."""
+    while offset > -24 * 60 and skipped_by_clock_change(
+        day_before_if_wrapped(day, time, offset), minutes_later(time, offset), zone, today
+    ):
+        offset -= CLOCK_CHANGE_STEP
+    return offset
 
 
 def database_offset(day, time, zone, today=None):
@@ -1802,12 +1825,13 @@ def database_offset(day, time, zone, today=None):
     before it, or earlier still when that time is skipped by a clock change in `zone`. The
     copy would be skipped that week and the USB drive would get the week-old one (found on
     0.51.2: Sunday 02:15 before the default 03:00, in New York or Berlin, is 01:45 now)."""
-    offset = -DATABASE_BEFORE_USB
-    while offset > -24 * 60 and skipped_by_clock_change(
-        day_before_if_wrapped(day, time, offset), minutes_later(time, offset), zone, today
-    ):
-        offset -= CLOCK_CHANGE_STEP
-    return offset
+    return earlier_past_clock_change(day, time, -DATABASE_BEFORE_USB, zone, today)
+
+
+# The Immich database copy's time in the settings template before 0.48.0, which nobody
+# was asked about: on those servers it is still written in the settings, as
+# photos.database_backup_time, and is skipped by the clock change like the one above.
+DATABASE_TIME_BEFORE_0_48 = '02:15'
 
 
 def backup_times(config):
@@ -1858,14 +1882,20 @@ def job_times(config):
         day = photos.get('backup_weekday', WEEKLY_DAY_DEFAULT) if isinstance(photos, dict) else WEEKLY_DAY_DEFAULT
         if day not in WEEKDAYS:
             raise RuntimeError('photos.backup_weekday must be one of ' + ', '.join(WEEKDAYS))
-        database = _own_time(config, 'photos', 'database_backup_time', '02:15')
+        database = _own_time(config, 'photos', 'database_backup_time', DATABASE_TIME_BEFORE_0_48)
+        weekly, weekly_day = database, day
+        if database == DATABASE_TIME_BEFORE_0_48:
+            # The old default, not a time a person chose: moved like the one derived
+            # from "backup_times" below, so the USB copy never takes a week-old one.
+            offset = earlier_past_clock_change(day, database, 0, host_timezone(config))
+            weekly, weekly_day = minutes_later(database, offset), day_before_if_wrapped(day, database, offset)
         return {
             'app': _own_time(config, 'app_backup', 'time', DAILY_DEFAULT),
             'music': _own_time(config, 'music', 'backup_time', '03:45'),
             'host': _own_time(config, 'host_backup', 'time', '05:15'),
             'photo_database': database,
-            'photo_database_weekly': database,
-            'photo_database_weekly_day': day,
+            'photo_database_weekly': weekly,
+            'photo_database_weekly_day': weekly_day,
             'usb_day': day,
             'usb': _own_time(config, 'photos', 'backup_time', WEEKLY_DEFAULT),
             'monthly': _own_time(config, 'maintenance', 'time', MONTHLY_DEFAULT),
