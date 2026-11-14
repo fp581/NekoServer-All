@@ -71,6 +71,12 @@ const FINE: [&str; 5] = [
     "read-auto",
 ];
 
+/// What an array reports when it does not run at all, so its data can't be reached:
+/// "broken" (a RAID0 or linear array that lost a drive; it has no "degraded" count and
+/// marks no drive faulty) and "inactive" (an array that did not start, most often a
+/// drive missing when the computer started). Both were a "warning" without any alert.
+const NOT_RUNNING: [&str; 2] = ["broken", "inactive"];
+
 /// One mdadm array under /sys/block, as the dashboard shows it.
 fn md_array(block: &Path, name: &str) -> Value {
     let md = block.join(name).join("md");
@@ -102,7 +108,12 @@ fn md_array(block: &Path, name: &str) -> Value {
     } else {
         format!("the array marked {} as failed", failed.join(", "))
     };
-    let (status, reason) = if missing > 0 || !failed.is_empty() {
+    let (status, reason) = if NOT_RUNNING.contains(&state.as_str()) {
+        (
+            "degraded",
+            format!("The array does not run ({state}), so its data can't be reached: a drive of it is missing or failed. Reconnect the drive, then restart the computer"),
+        )
+    } else if missing > 0 || !failed.is_empty() {
         if rebuilding {
             ("rebuilding", format!("A drive is being brought back in ({named}); until it finishes, your data there has one copy fewer"))
         } else {
@@ -336,6 +347,25 @@ pub(crate) mod tests {
             (a["status"].as_str(), a["progress"].as_f64()),
             (Some("rebuilding"), Some(25.0))
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// As Linux shows them (md.c): a RAID0 that lost a drive is "broken" with no
+    /// "degraded" count and no drive marked faulty; a RAID1 that did not start at boot
+    /// (a drive missing) is "inactive". Both were a "warning", which raises no alert.
+    #[test]
+    fn an_array_that_does_not_run_is_a_lost_drive_not_a_warning() {
+        let root = scratch("stopped");
+        for (state, level) in [("broken", "raid0"), ("inactive", "raid1")] {
+            fake_md(&root, &[("array_state", state), ("level", level)]);
+            let _ = fs::remove_file(root.join("md0/md/degraded"));
+            let a = &md_arrays(&root)[0];
+            assert_eq!(a["status"], "degraded", "{state}");
+            assert!(
+                a["reason"].as_str().unwrap().contains("can't be reached"),
+                "{state}"
+            );
+        }
         fs::remove_dir_all(root).unwrap();
     }
 
