@@ -253,6 +253,26 @@ class BackupSecretsTests(unittest.TestCase):
             backup_secrets.restore(snap, out, 'correct horse')
         self.assertFalse((self.root / 'out').exists())
 
+    def test_a_folder_on_a_read_only_drive_is_said_in_plain_words_not_a_traceback(self):
+        """Seen through the recovery menu: the password list restored into a folder on a
+        read-only drive ended in a Python traceback."""
+        out = self.root / 'out'
+        read_only = OSError(30, 'Read-only file system', str(out))
+        argv = ['backup_secrets.py', '--restore', str(self.root / 'snap'), '--to', str(out)]
+        with (
+            mock.patch.object(sys, 'argv', argv),
+            mock.patch.object(backup_secrets.os, 'geteuid', return_value=0),
+            mock.patch.object(backup_secrets.getpass, 'getpass', return_value='correct horse'),
+            mock.patch.object(backup_secrets, 'restore', side_effect=read_only),
+            self.assertRaises(SystemExit) as stopped,
+        ):
+            backup_secrets.main()
+        self.assertEqual(
+            stopped.exception.code,
+            f'Nothing was restored: Read-only file system ({out}). Choose a folder on a drive you can write '
+            'to, with free space.',
+        )
+
     def test_password_never_on_command_line(self):
         seen = []
         real = subprocess.run

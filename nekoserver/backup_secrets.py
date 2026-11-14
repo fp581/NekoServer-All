@@ -26,6 +26,7 @@ import subprocess
 import sys
 
 from neko_common import atomic_write, safe_path
+import snapshot_restore
 
 KEY_DIR = Path('/etc/nekoserver-backups')
 KEY_NAME = 'secrets-key.p8'
@@ -33,6 +34,7 @@ CERT_NAME = 'secrets-recipient.pem'
 ARCHIVE_NAME = 'secrets.tar.cms'
 SUBJECT = '/CN=NekoServer backup secrets'
 MIN_LENGTH = 8
+NOT_WRITTEN = 'Nothing was restored: {reason}. Choose a folder on a drive you can write to, with free space.'
 
 
 def openssl(args, data=b'', password=None, timeout=120):
@@ -294,7 +296,12 @@ def main():
         if args.setup:
             setup()
         elif args.restore and args.to:
-            done = restore(args.restore, args.to, getpass.getpass(RESTORE_PROMPT))
+            try:
+                done = restore(args.restore, args.to, getpass.getpass(RESTORE_PROMPT))
+            except OSError as exc:
+                # A folder on a read-only or full drive ended in a traceback (seen through
+                # the recovery menu); said as one plain line, with what to do.
+                raise RuntimeError(NOT_WRITTEN.format(reason=snapshot_restore.failure_reason(exc))) from None
             print(f'Password files restored to {done}')
         else:
             parser.error('Use --setup, or --restore SNAPSHOT --to NEW_DIR')
