@@ -24,6 +24,8 @@ Every copy is read back and checked before it counts. That read came straight af
 - **The recovery menu's drive check names a drive that is not connected**, instead of "Both drives take new files and Linux counted no errors on them" (seen with neither drive connected). "The application SSD" also keeps its capital letters there.
 - **A restore says when the HDD that holds its backups is not connected**, instead of "No nightly backup… found on the HDD yet" or "No complete monthly snapshot on the HDD yet", which read as if no backup had ever been made.
 - **The monthly and music restore tools say what went wrong in plain words** (a damaged snapshot, a missing folder), instead of a traceback; a music restore onto exFAT restores every file the drive accepts and names the ones it refused.
+- **A drive that fills up during a restore leaves no cut-off file**, and says so plainly for every choice (a half-written photo stayed under its own name, said to be "there as it is").
+- **A monthly restore or the password list onto a full, read-only or too small drive is said in plain words**, naming any folder left incomplete, instead of a traceback.
 - **Messages name the recovery menu's choices as the menu shows them** ("Fix damaged backup copies", "Check a drive that stopped taking new files"), one wording kept in shared.json; since 0.50.0 they named choices that were no longer there.
 - **The weekly Immich database copy never falls on a time the clocks skip**: on the Sunday the clocks go forward in the US and Europe, 02:15 does not exist, and the USB copy got the week-old database copy. It moves earlier (01:45) where that would happen.
 - **`music-setup.py` with a drive not connected (or the runtime not built) says why and stops**, instead of a Python traceback.
@@ -35,6 +37,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **The finishing page fits a narrow window**: each app's states, address and test buttons were cut off at the right edge.
 - **`migrate.py move --to <not a UUID>` says so**, instead of "move needs --drive and --to".
 - **Restoring from a card, a copy missing or replaced on the card is said as such**, as `verify` says it, instead of "No such file or directory".
+- **A card restore killed while it wrote a file finishes that file on the next run** (it failed it with "File exists", and a third run was needed).
 - **A restore that skipped files says how to get them too** (`--rename`), instead of ending with only "skipped 2". Seen restoring onto an exFAT stick, which cannot hold a name with `:` or tell `Same.jpg` from `same.jpg`.
 
 ### Fixed: SD-card backup sets (the engine, not switched on yet)
