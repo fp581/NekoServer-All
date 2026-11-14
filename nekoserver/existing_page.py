@@ -76,6 +76,22 @@ def typed(key, prompt, **values):
         return ''
 
 
+FIRST, SECOND = '1', '2'
+
+
+def picked(key, asking, **values):
+    """The number chosen on a question of two choices: FIRST for Enter alone or Ctrl+D (the
+    question says Enter takes the first), FIRST or SECOND as typed, and anything else asked
+    again. A word or a number not offered was taken as the first choice ("no" to "Back this
+    up too?" backed it up)."""
+    prompt, output = asking
+    while True:
+        answer = typed(key, prompt, **values) or FIRST
+        if answer in (FIRST, SECOND):
+            return answer
+        output('Type 1 or 2.')
+
+
 def folder_found(config, kind, words, asking, key='existing_folder', new_files=False, tries=3):
     """A folder that passed the check for this kind (what existing_media.check returned),
     or None when there is none: Enter alone, the window's Skip, or `tries` folders that
@@ -99,7 +115,7 @@ def another_place(config, kind, words, asking):
     library, or the entry of another folder of theirs, checked for writing."""
     _, output = asking
     place = None
-    if typed('existing_new_place', asking[0], what=words) == '2':
+    if picked('existing_new_place', asking, what=words) == SECOND:
         place = folder_found(config, kind, words, asking, key='existing_new_folder', new_files=True)
     if place and place['new_files']['ok']:
         output(place['new_files']['note'])
@@ -138,7 +154,7 @@ def one_kind(config, kind, words, asking):
     if found is None:
         return
     where = f" ({found['share']})" if on_network_share(found) and found['share'] != found['path'] else ''
-    if typed('existing_use', prompt, what=words) == '2':
+    if picked('existing_use', asking, what=words) == SECOND:
         wanted = {'holds': kind, 'path': found['path']}
         config[COPIES] = [*[c for c in config.get(COPIES) or [] if c != wanted], wanted]
         output(f"Your {words}: {found['path']}{where}. {COPIED_LATER}")
@@ -151,7 +167,7 @@ def one_kind(config, kind, words, asking):
         # On a network share (G7, the user's decision): asked once whether the music
         # backup copies it too; yes unless "No". Films and shows have no NekoServer backup
         # job, so they are not asked about and stay listed as not backed up.
-        backed_up = typed('existing_backup', prompt, what=words) != '2'
+        backed_up = picked('existing_backup', asking, what=words) == FIRST
         entries = [{**entry, 'backup': backed_up} for entry in entries]
         output(
             f'Your {words}: '
