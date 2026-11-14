@@ -597,6 +597,17 @@ def write_checked(src, rec, dir_fd, temp):
         raise Invalid('the archived file does not match its record (damaged on the card)')
 
 
+def from_the_drive(fd):
+    """The next reads of `fd` come from the drive, not from Linux's copy in memory: the
+    file written out, then its cached pages dropped. Read back without this, a USB stick
+    that does not keep what it is given (a fake-capacity one) passed the second check."""
+    os.fsync(fd)
+    try:
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+    except (AttributeError, OSError):
+        pass  # a system without it: the check reads what Linux has, as before
+
+
 def copy_verified(card, rec, dir_fd, temp):
     """The archived file copied into `temp` (new, in the destination folder) while it is
     hashed; then the written file read back and hashed. Raises Invalid on any mismatch,
@@ -606,6 +617,7 @@ def copy_verified(card, rec, dir_fd, temp):
         write_checked(src, rec, dir_fd, temp)
         back = os.open(temp, FILE_FLAGS, dir_fd=dir_fd)
         try:
+            from_the_drive(back)
             if hash_fd(back, rec['byte_size']) != (rec['checksum'], rec['byte_size']):
                 raise Invalid('the restored file does not read back as written')
         finally:

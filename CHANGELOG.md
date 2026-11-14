@@ -11,6 +11,7 @@ Fixes only, from a wider review of 0.51.0's card engine, setup and dashboard. No
 
 ### Fixed: getting files back from a backup card
 - **Nothing is restored onto the card itself.** Restoring into the card (`restore /mnt` from a card mounted at `/mnt`, or even into its `NekoBackup` folder among the card's own records) copied every file onto the card: the backup, maybe the last copy of those files, filled up with a second copy. The tool now refuses a folder on the card, also when it is named through a link, and says to restore onto another drive. Tried on an ext4 card image mounted read-write.
+- **A USB stick that does not keep what it is given is caught.** The tool checks each restored file twice, the second time by reading it back from where it was restored. That read came from Linux's memory, not the stick, so a fake-capacity or failing stick passed and the file was reported `restored`. The second check now writes the file out and drops Linux's copy first. Shown on an ext4 image whose bytes were changed under the filesystem after each file: the old tool said `restored`, the new one says the file does not read back as written.
 
 ## v0.51.1 — 2026-11-13
 

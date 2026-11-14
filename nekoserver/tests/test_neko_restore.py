@@ -564,6 +564,23 @@ class ManyFilesTests(Base):
         self.assertEqual(sorted(str(p.relative_to(self.card.top)) for p in self.card.top.rglob('*')), before)
         self.assertEqual(self.run_tool('restore', str(self.dest)), 0)
 
+    def test_the_second_check_reads_the_drive_not_linuxs_copy(self):
+        """The review of 0.51.0: the restored file was read back from Linux's page cache, so a
+        USB stick that kept other bytes passed (shown on an ext4 image whose bytes were
+        changed under the filesystem: the old tool said "restored"). Each readback now
+        drops the file's cached pages first."""
+        self.card.add(A_2001, b'card a')
+        dropped = []
+        real = os.posix_fadvise
+
+        def watching(fd, offset, length, advice):
+            dropped.append((offset, length, advice))
+            return real(fd, offset, length, advice)
+
+        with mock.patch.object(tool.os, 'posix_fadvise', side_effect=watching):
+            self.assertEqual(self.run_tool('restore', str(self.dest)), 0)
+        self.assertIn((0, 0, os.POSIX_FADV_DONTNEED), dropped)
+
     def test_a_name_restored_earlier_in_the_same_run_still_clashes_by_case(self):
         self.card.add('DCIM/IMG_1.JPG', b'upper')
         self.card.add('DCIM/img_1.jpg', b'lower')
