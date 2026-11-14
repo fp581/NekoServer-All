@@ -123,7 +123,7 @@ def read_json(path):
             f'{checked} is not there. Name your settings file with --config, or run  sudo bash install.sh  '
             'without it (the guided setup makes my-config.json)'
         ) from None
-    except (UnicodeError, ValueError) as exc:
+    except ValueError as exc:  # UnicodeError too
         where = f' (line {exc.lineno}, column {exc.colno})' if isinstance(exc, json.JSONDecodeError) else ''
         raise InstallerError(
             f'{checked} is not valid JSON{where}: it is damaged, or not a settings file. Fix it, or name '

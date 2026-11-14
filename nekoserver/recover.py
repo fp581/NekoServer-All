@@ -4,7 +4,7 @@
 import argparse, json, sys, subprocess
 from pathlib import Path
 import recovery_tools as recovery
-from neko_common import checked_settings, default_settings
+from neko_common import checked_settings, default_settings, settings_path
 
 
 def main(argv=None):
@@ -58,12 +58,15 @@ def read_settings(path):
     that was not JSON was "a settings or record file", and the message said to fix "what
     it names" without naming it."""
     try:
-        config = json.loads(Path(path).read_text(encoding='utf-8'))
+        checked = settings_path(path)  # absolute, no '..', no links: checked where it is read
+        config = json.loads(checked.read_text(encoding='utf-8'))
+    except RuntimeError as exc:
+        return None, f'the settings file {path} can not be used: {exc}.'
     except FileNotFoundError:
         return None, f'the settings file {path} is not there.'
     except OSError as exc:
         return None, f'the settings file {path} could not be read ({exc.strerror}).'
-    except (UnicodeError, ValueError) as exc:
+    except ValueError as exc:  # UnicodeError too
         where = f' (line {exc.lineno}, column {exc.colno})' if isinstance(exc, json.JSONDecodeError) else ''
         return None, f'the settings file {path} is not valid JSON{where}: it is damaged, or not a settings file.'
     if not isinstance(config, dict):

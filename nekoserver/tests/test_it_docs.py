@@ -99,6 +99,13 @@ class RecoveryMessageTests(unittest.TestCase):
                 self.assertIn(str(bad.resolve()), err.getvalue())
                 self.assertIn(said, err.getvalue())
 
+    def test_the_settings_path_is_checked_where_it_is_read(self):
+        """SonarCloud on PR 87: read_settings read any path it was handed. It checks it again
+        where it reads it (absolute, no '..', no links)."""
+        config, problem = recover.read_settings('/srv/../etc/passwd.json')
+        self.assertIsNone(config)
+        self.assertIn('can not be used', problem)
+
     def test_a_missing_folder_is_named_with_what_to_do(self):
         code, text = self.run_main(['check'], FileNotFoundError(2, 'No such file or directory', '/mnt/x/restored'))
         self.assertEqual(code, 2)

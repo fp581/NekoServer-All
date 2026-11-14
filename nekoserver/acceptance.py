@@ -122,6 +122,10 @@ def service(unit, timer=False):
     )
 
 
+# The name of the first automatic check, on the report and the dashboard.
+CONFIGURATION_CHECK = 'Configuration and profile'
+
+
 def load_json(path):
     return health.read_json(path)
 
@@ -810,12 +814,12 @@ def inspect(config, profile='full', now=None):
         run['config_fingerprint'] = fingerprint(config, profile)
         run['dashboard_scope'] = scope_digest(config)
     except installer.InstallerError as exc:
-        add('configuration', 'Configuration and profile', 'fail', str(exc))
+        add('configuration', CONFIGURATION_CHECK, 'fail', str(exc))
         return summarize(run)
     except (OSError, RuntimeError, ValueError, TypeError, KeyError):
-        add('configuration', 'Configuration and profile', 'fail', why)
+        add('configuration', CONFIGURATION_CHECK, 'fail', why)
         return summarize(run)
-    add('configuration', 'Configuration and profile', 'pass', 'Selected profile and dependency plan are valid.')
+    add('configuration', CONFIGURATION_CHECK, 'pass', 'Selected profile and dependency plan are valid.')
     asked = []
 
     def states_now():
