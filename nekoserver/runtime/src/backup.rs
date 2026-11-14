@@ -3312,14 +3312,48 @@ fn drive_check(c: &Value, key: &str, path: &Path, found: &str) -> Result<String>
     // A Btrfs drive used with a subvolume must be mounted with that one: the same
     // filesystem mounted with another holds a different tree.
     let wanted = c["storage"][key]["subvolume"].as_str().unwrap_or("");
-    if subvolume_of(fields[2]) != wanted.trim_end_matches('/') {
-        return Err(Error::new(&format!(
-            "Drive check failed: {} is mounted with another Btrfs subvolume than the settings name ({}). Restart the PC (its /etc/fstab line mounts the right one), or run  sudo bash install.sh",
-            path.display(),
-            if wanted.is_empty() { "the top level" } else { wanted }
-        )));
+    let found_part = subvolume_of(fields[2]);
+    if found_part != wanted.trim_end_matches('/') {
+        return Err(Error::new(&other_part(path, fstype, found_part, wanted)));
     }
     Ok(uuid.to_string())
+}
+/// What Btrfs shows (findmnt's source "/dev/sdb1[/@media//deleted]") for a subvolume
+/// that was deleted while it stayed mounted.
+const DELETED_SUBVOLUME: &str = "//deleted";
+/// Why the right drive mounted at `path` is refused: another part of it than the settings
+/// name (`wanted`; `found` is the part mounted, "" for the top level). On Btrfs a part is
+/// a subvolume; on any other filesystem a folder of the drive (a bind mount, or a role
+/// kept in a folder of one drive, which the settings name the same way). Seen in 0.51.2:
+/// a folder of an ext4 HDD bind-mounted in its place was called "another Btrfs
+/// subvolume", and a deleted subvolume was told to restart the PC, as if nothing was lost.
+fn other_part(path: &Path, fstype: &str, found: &str, wanted: &str) -> String {
+    const RESTART: &str =
+        "Restart the PC (its /etc/fstab line mounts the right one), or run  sudo bash install.sh";
+    let top_or = |part: &str| {
+        if part.is_empty() {
+            "the top level".to_string()
+        } else {
+            part.to_string()
+        }
+    };
+    let shown = path.display();
+    if fstype != "btrfs" {
+        return format!(
+            "Drive check failed: {shown} is mounted from another folder of the drive ({}) than the settings name ({}). {RESTART}",
+            top_or(found),
+            top_or(wanted)
+        );
+    }
+    if let Some(deleted) = found.strip_suffix(DELETED_SUBVOLUME) {
+        return format!(
+            "Drive check failed: the Btrfs subvolume mounted at {shown} ({deleted}) was deleted, with the files in it, so nothing is read from it or written to it. Bring your files back from a backup (sudo bash install.sh --recover), or run  sudo bash install.sh  to set this drive up again"
+        );
+    }
+    format!(
+        "Drive check failed: {shown} is mounted with another Btrfs subvolume than the settings name ({}). {RESTART}",
+        top_or(wanted)
+    )
 }
 pub fn guard(cfgpath: &Path, data: &Path, media: &Path) -> Result<()> {
     let c = common::json(cfgpath, 64000);
@@ -8867,8 +8901,45 @@ mod tests {
         let other = if subvolume.is_empty() { "/@data" } else { "" };
         fs::write(&cfg, settings(other)).unwrap();
         let wrong = guard_data(&cfg, &ssd).unwrap_err().to_string();
-        assert!(wrong.contains("another Btrfs subvolume"), "{wrong}");
+        // Named as the drive's filesystem has it (other_part).
+        let part = if fstype == "btrfs" {
+            "another Btrfs subvolume"
+        } else {
+            "another folder of the drive"
+        };
+        assert!(wrong.contains(part), "{wrong}");
         let _ = fs::remove_dir_all(root);
+    }
+    /// Seen in 0.51.2 on loop drives: a folder of an ext4 HDD bind-mounted at the HDD's
+    /// folder was refused as "another Btrfs subvolume", and a Btrfs subvolume deleted
+    /// while mounted ("[/@media//deleted]") was told to restart the PC.
+    #[test]
+    fn the_wrong_part_of_a_drive_is_named_as_that_filesystem_has_it() {
+        let hdd = Path::new("/mnt/nekoserver-media");
+        let refused = |fstype: &str, subvolume: &str, found: &str| {
+            let c = json!({"storage": {"media_hdd": {"uuid": "aaaa", "fstype": fstype, "subvolume": subvolume}}});
+            drive_check(&c, "media_hdd", hdd, found)
+                .unwrap_err()
+                .to_string()
+        };
+        let folder = refused("ext4", "", "aaaa ext4 /dev/sdb1[/media]");
+        assert!(!folder.contains("Btrfs"), "{folder}");
+        assert!(
+            folder.contains(
+                "another folder of the drive (/media) than the settings name (the top level)"
+            ),
+            "{folder}"
+        );
+        assert!(folder.contains("Restart the PC"), "{folder}");
+        let deleted = refused("btrfs", "/@media", "aaaa btrfs /dev/sdb1[/@media//deleted]");
+        assert!(deleted.contains("(/@media) was deleted"), "{deleted}");
+        assert!(!deleted.contains("Restart the PC"), "{deleted}");
+        // Another Btrfs subvolume is still said as before.
+        let other = refused("btrfs", "/@media", "aaaa btrfs /dev/sdb1[/@home]");
+        assert!(
+            other.contains("another Btrfs subvolume than the settings name (/@media)"),
+            "{other}"
+        );
     }
     /// NP-1: the SSD-only check (Immich's resume, the job reports) checks the Btrfs
     /// subvolume as the full check does: the drive's top level, or another subvolume,
