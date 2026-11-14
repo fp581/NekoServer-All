@@ -2006,17 +2006,24 @@ def free_on(row):
 
 
 PLACE_SAID = {'ssd': 'on the drive of NekoServer and your apps', 'media': 'on the drive of the backups'}
+ONE_PLACE_SAID = 'on the one drive of this server, with the apps and the backups'
 
 
 def place_line(config, what, words, place):
     """Where one kind of files is kept, as the review says it."""
     import drive_table
 
-    if isinstance(place, str):
+    one = isinstance(place, str) and one_place(config)
+    if one:
+        # "The SSD" and "the media drive" are one drive here: the page offered it as the
+        # drive with the apps, and the review called it "the drive of the backups" (deep
+        # check plan 199). Their backup is on it too, whichever folder they are in.
+        said = ONE_PLACE_SAID
+    elif isinstance(place, str):
         said = PLACE_SAID[place]
     else:
         said = 'on ' + drive_table.brief(place) + ', a drive of their own'
-    if place == 'media' and what in backed_up_beside(config):
+    if (place == 'media' or one) and what in backed_up_beside(config):
         said += '. ' + SAME_DRIVE_AS_BACKUP
     return f'{words[0].upper()}{words[1:]}: {said}'
 
