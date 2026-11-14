@@ -53,6 +53,21 @@ class SourceChanged(RuntimeError):
 NETWORK_TYPES = ('cifs', 'smb3', 'nfs', 'nfs4')
 
 
+def source_list(path):
+    """The sources in the source list file (config/media-sources.json, which the source
+    wizard writes). A file that is not such a list (damaged, or changed by hand) is
+    ValueError in words, never a traceback, and nothing is written over it."""
+    fix = f'fix the file {path} or move it away, then run setup again'
+    try:
+        value = json.loads(path.read_text())
+    except ValueError:
+        raise ValueError(f'The list of your media sources is damaged (it is not valid JSON); {fix}') from None
+    sources = value.get('sources', []) if isinstance(value, dict) else None
+    if not isinstance(sources, list) or not all(isinstance(source, dict) for source in sources):
+        raise ValueError(f'The list of your media sources is not in the form setup writes; {fix}')
+    return sources
+
+
 def source_key(source):
     """A source's identity in the record of finished imports (never its path itself)."""
     where = source.get('mounted_path') if source.get('type') == 'remote' else source.get('path')
@@ -730,7 +745,7 @@ def main(argv=None):
         if args.media_root:
             config['media_mount'] = args.media_root
         inventory = safe_path(args.sources or str(Path(config['data_mount']) / 'config' / 'media-sources.json'))
-        sources = json.loads(inventory.read_text()).get('sources', [])
+        sources = source_list(inventory)
         if args.selected_only:
             sources = [s for s in sources if s.get('copy_to_library') is True]
         if args.apply:

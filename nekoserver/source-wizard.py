@@ -11,6 +11,7 @@ import re
 import urllib.parse
 from pathlib import Path
 from neko_common import safe_path, atomic_json, checked_settings, default_settings, remember_answer
+from source_import import source_list
 
 KINDS = ('movies', 'tv', 'music')
 # What the folder to give holds, per category: its folders are copied into the library as
@@ -182,11 +183,14 @@ def main():
     args = parser.parse_args()
     settings = json.loads(safe_path(args.config).read_text())
     target = safe_path(args.output or str(Path(settings['data_mount']) / 'config' / 'media-sources.json'))
-    existing = json.loads(target.read_text()) if target.exists() else {}
+    try:
+        existing = {'sources': source_list(target)} if target.exists() else {}
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
     if args.list:
         print(json.dumps(existing, indent=2))
         return
-    before = len(existing.get('sources', [])) if isinstance(existing, dict) else 0
+    before = len(existing.get('sources', []))
     config = collect(existing)
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.is_symlink():

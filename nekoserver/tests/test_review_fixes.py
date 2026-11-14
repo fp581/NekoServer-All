@@ -1,6 +1,7 @@
 """Regression tests for the compose-path, Seerr UID and timezone fixes."""
 
 import hashlib
+import io
 import http.cookiejar
 import json
 import subprocess
@@ -315,6 +316,34 @@ class SourceWizardTests(unittest.TestCase):
         with mock.patch('builtins.print'):
             sources = self.wizard().collect({}, lambda _: next(replies))['sources']
         self.assertEqual([s['name'] for s in sources], ['Songs'])
+
+    def test_a_damaged_source_list_is_said_and_kept(self):
+        """A damaged media-sources.json was a JSONDecodeError traceback in the wizard (and
+        one whose "sources" was not a list was turned into a list of letters, or an
+        AttributeError in the import). Both now say what to do and write nothing."""
+        with tempfile.TemporaryDirectory() as d:
+            settings = Path(d) / 'settings.json'
+            settings.write_text(json.dumps({**json.loads((ROOT / 'config.json').read_text()), 'data_mount': d}))
+            target = Path(d) / 'media-sources.json'
+            for damaged in ('{"sources": [', '{"sources": "abc"}', '{"sources": ["abc"]}'):
+                target.write_text(damaged)
+                argv = ['source-wizard.py', '--config', str(settings), '--output', str(target)]
+                with (
+                    mock.patch.object(sys, 'argv', argv),
+                    mock.patch('builtins.input', return_value='no'),
+                    mock.patch('builtins.print'),
+                    self.assertRaises(SystemExit) as stopped,
+                ):
+                    self.wizard().main()
+                self.assertIn('list of your media sources', str(stopped.exception.code))
+                self.assertEqual(target.read_text(), damaged)
+                import source_import
+
+                error = io.StringIO()
+                with mock.patch('sys.stderr', error):
+                    code = source_import.main(['--config', str(settings), '--sources', str(target), '--selected-only'])
+                self.assertEqual(code, 2)
+                self.assertIn('list of your media sources', error.getvalue())
 
 
 class JellyfinLibraryLoginTests(unittest.TestCase):
