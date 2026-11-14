@@ -24,7 +24,7 @@ import re
 from pathlib import Path
 
 import placement
-from modules import app_backup, host_backup, photo_backup
+from modules import app_backup, host_backup, photo_backup, storage
 from neko_common import job_times, media_group, media_services, music_backed_up
 
 DEFAULT, LEAST, MOST = app_backup.KEEP_DEFAULT, app_backup.KEEP_LEAST, app_backup.KEEP_MOST
@@ -172,8 +172,13 @@ def weekly(times, day='usb_day', time='usb'):
 
 def same_drive(config, row, choice, drive):
     """Whether what a backup protects is on the very drive the backup goes to (by the
-    drives' names in the placement table): such a backup is no help when that drive fails."""
-    return row in placement.rows(config) and placement.drive_of(config, row, choice) == drive
+    drives' names in the placement table): such a backup is no help when that drive fails.
+    With one drive for both the app SSD and the media HDD (a drive of its own, or the disk
+    Linux runs from), "ssd" and "media" are that one drive: the page said nothing there."""
+    if row not in placement.rows(config):
+        return False
+    where = placement.drive_of(config, row, choice)
+    return where == drive or ({where, drive} <= {placement.SSD, placement.MEDIA} and storage.one_place(config))
 
 
 def table(config, held=None):
