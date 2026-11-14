@@ -15,6 +15,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from neko_common import (
+    read_settings,
     LOCATIONS,
     app_ports,
     app_wanted,
@@ -980,7 +981,11 @@ def main(argv=None):
         help='Take away the connections setup made to apps no longer in media.services',
     )
     args = parser.parse_args(argv)
-    config = json.loads(Path(args.config).read_text())
+    try:
+        config = read_settings(args.config)
+    except RuntimeError as exc:
+        print(f'Nothing was connected: {exc}', file=sys.stderr)
+        return 2
     selected = config.get('media', {}).get('services', list(PORTS) + ['qbittorrent'])
     # Connected: the managers that are set up. One whose group is switched off (Movies and
     # shows, say) is stopped by the media step, so there is nothing to connect it to.

@@ -5,7 +5,6 @@ Runs locally, never exports secrets, and distinguishes configuration from valida
 """
 
 import argparse
-import json
 import os
 import sys
 import time
@@ -19,6 +18,7 @@ import media_readiness
 import seerr_providers
 from setup_progress import run_program
 from neko_common import (
+    read_settings,
     LOCATIONS,
     MEDIA_APPS,
     app_ports,
@@ -160,7 +160,7 @@ def main(argv=None):
         p.error('--report-only cannot configure libraries or request providers')
     if a.indexers and not a.configure:
         p.error('--indexers requires --configure')
-    config = json.loads(Path(a.config).read_text())
+    config = read_settings(a.config)
     listed = tuple(config.get('media', {}).get('services', APPS))
     if not set(listed) <= set(APPS):
         p.error('Unknown media service in config')

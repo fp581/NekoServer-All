@@ -37,6 +37,7 @@ import time
 from pathlib import Path
 
 from neko_common import (
+    read_settings,
     MAINTENANCE_JOURNAL,
     VERSION,
     OPERATION_LOCK,
@@ -99,8 +100,7 @@ def record(journal=JOURNAL, **fields):
 
 
 def load_settings(settings):
-    path = settings_path(settings)
-    return path, json.loads(path.read_text())
+    return settings_path(settings), read_settings(settings)
 
 
 def lsblk():
@@ -1094,6 +1094,11 @@ def main():
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error('Run it with sudo')
+    try:
+        read_settings(args.config)  # a damaged file is said in words, before anything is done
+    except RuntimeError as exc:
+        print(f'Nothing was moved: {exc}', file=sys.stderr)
+        return 2
     if not shutil.which('rsync'):
         parser.error('rsync is needed: run  sudo bash install.sh  (it installs it), then try again')
     if args.action == 'move':

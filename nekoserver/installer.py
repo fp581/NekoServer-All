@@ -30,6 +30,7 @@ from neko_common import (
     safe_path,
     ensure_directory,
     settings_path,
+    read_settings,
     pending_maintenance,
     default_settings,
     NO_SETTINGS,
@@ -108,27 +109,13 @@ def merged(before, after, now):
 
 
 def read_json(path):
-    """A settings or state file (.json): absolute, no '..', no symlinks along the way."""
+    """A settings or state file (.json): absolute, no '..', no symlinks along the way.
+    Named, with what is wrong: Python's own words ("Expecting value: line 1 column 1",
+    "[Errno 2] No such file or directory") were all setup said before."""
     try:
-        checked = settings_path(path)
+        return read_settings(path)
     except RuntimeError as exc:
         raise InstallerError(str(exc)) from None
-    # Named, with what is wrong: Python's own words ("Expecting value: line 1 column 1",
-    # "[Errno 2] No such file or directory") were all setup said before.
-    try:
-        with checked.open(encoding='utf-8') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        raise InstallerError(
-            f'{checked} is not there. Name your settings file with --config, or run  sudo bash install.sh  '
-            'without it (the guided setup makes my-config.json)'
-        ) from None
-    except ValueError as exc:  # UnicodeError too
-        where = f' (line {exc.lineno}, column {exc.colno})' if isinstance(exc, json.JSONDecodeError) else ''
-        raise InstallerError(
-            f'{checked} is not valid JSON{where}: it is damaged, or not a settings file. Fix it, or name '
-            'another with --config'
-        ) from None
 
 
 def load_modules(directory):

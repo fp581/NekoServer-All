@@ -35,6 +35,7 @@ import zlib
 from pathlib import Path
 
 from neko_common import (
+    read_settings,
     ASSISTANT,
     RECOVERY,
     SETUP_LOCK,
@@ -899,7 +900,11 @@ def main():
         parser.error('Run it with sudo')
     if args.action == 'run' and not (args.tag and TAG.fullmatch(args.tag)):
         parser.error('run needs --tag with a release, such as v0.47.2Beta')
-    config = json.loads(settings_path(args.config).read_text())
+    try:
+        config = read_settings(args.config)
+    except RuntimeError as exc:
+        print(f'Nothing was upgraded: {exc}', file=sys.stderr)
+        return 2
     if args.action == 'resume':
         return service_code(reported(config, RESUME_UNIT, lambda out: resume(args.config, out)))
     recovery = ssd(config) / 'installer/recovery.lock'

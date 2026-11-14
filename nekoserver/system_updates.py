@@ -9,7 +9,6 @@ yourself; see MONTHLY-MAINTENANCE.md, "System updates").
 The answer is written to backups/updates/system.json on the SSD for the dashboard."""
 
 import argparse
-import json
 import os
 import re
 import subprocess
@@ -19,12 +18,12 @@ from pathlib import Path
 
 import host
 from neko_common import (
+    read_settings,
     atomic_json,
     checked_settings,
     default_settings,
     ensure_directory,
     mount_path,
-    settings_path,
     verify_storage,
 )
 
@@ -192,7 +191,7 @@ def status(run=call, release=None, now=None, **restart):
 
 
 def check(settings):
-    config = json.loads(settings_path(settings).read_text())
+    config = read_settings(settings)
     # The SSD must be the one the settings name, mounted: with it missing, its folder is
     # a plain one on the system disk, and the answer would be written there.
     verify_storage(config, keys=('data_ssd',))

@@ -861,6 +861,34 @@ def settings_path(value):
     return safe_path(path)
 
 
+def read_settings(value):
+    """The settings file (--config) as a dict, read through settings_path. Whatever is
+    wrong with it is a RuntimeError naming the file in plain words: before, commands
+    such as music-setup.py and migrate.py ended with a Python traceback on a cut-off file."""
+    try:
+        path = settings_path(value)
+    except RuntimeError as exc:
+        raise RuntimeError(f'{value} can not be used as the settings file: {exc}') from None
+    try:
+        config = json.loads(path.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        raise RuntimeError(
+            f'{path} is not there. Name your settings file with --config, or run  '
+            'sudo bash install.sh  without it (the guided setup makes my-config.json)'
+        ) from None
+    except OSError as exc:
+        raise RuntimeError(f'{path} could not be read ({exc.strerror})') from None
+    except ValueError as exc:  # UnicodeError too
+        where = f' (line {exc.lineno}, column {exc.colno})' if isinstance(exc, json.JSONDecodeError) else ''
+        raise RuntimeError(
+            f'{path} is not valid JSON{where}: it is damaged, or not a settings file. '
+            'Fix it, or name another with --config'
+        ) from None
+    if not isinstance(config, dict):
+        raise RuntimeError(f'{path} is not a settings file (no settings in it)')
+    return config
+
+
 # The settings a command uses when no --config is given (default_settings).
 MY_SETTINGS = 'my-config.json'  # made by the wizard; git does not track it
 SETTINGS_TEMPLATE = 'config.json'  # the template in the release folder (no drives in it)
