@@ -158,7 +158,23 @@ pub fn safe(path: &Path) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 pub fn mount_path(s: &str) -> Result<PathBuf> {
-    let p = safe(Path::new(s))?;
+    safe(Path::new(s))?;
+    unlooked_mount_path(s)
+}
+/// `mount_path` without a look at the folder itself, only at the folders above it: on a
+/// share that stopped answering (a NAS away), a look at its folder waits for as long as
+/// the NAS is away, so the NAS check froze before its own 20-second test write (seen in
+/// 0.51.1). For a folder whose mount is then checked in the mount table (a link can't be
+/// a mount point there).
+pub fn unlooked_mount_path(s: &str) -> Result<PathBuf> {
+    let path = Path::new(s);
+    if let Some(above) = path.parent() {
+        safe(above)?;
+    }
+    let p = path.to_path_buf();
+    if p.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(Error::new("Parent traversal refused"));
+    }
     if !p.is_absolute()
         || ["/", "/mnt", "/srv", "/home", "/var", "/tmp"].contains(&s)
         || !s

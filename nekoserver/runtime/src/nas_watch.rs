@@ -95,7 +95,9 @@ pub(crate) fn health(top: &Path, uuid: &str) -> Health {
         };
     }
     let owned = top.to_path_buf();
-    let handle = std::thread::spawn(move || write_test(&owned).is_ok());
+    // The folder itself is first looked at here, within the wait (nas_drives does not).
+    let handle =
+        std::thread::spawn(move || common::safe(&owned).is_ok() && write_test(&owned).is_ok());
     match common::joined(handle, PROBE_WAIT) {
         Some(true) => Health::Writes,
         Some(false) => Health::Fails,
@@ -151,7 +153,7 @@ pub(crate) fn nas_drives(cfg: &Value) -> Result<Vec<(PathBuf, String, &'static s
             return Err(Error::new("Drive identity missing from the settings"));
         }
         found.push((
-            common::mount_path(cfg[folder].as_str().unwrap_or(""))?,
+            common::unlooked_mount_path(cfg[folder].as_str().unwrap_or(""))?,
             uuid.to_string(),
             name,
         ));
@@ -201,7 +203,8 @@ pub fn run(a: &crate::Args) -> Result<()> {
     }
     let mut seen = serde_json::Map::new();
     for ((path, _, _), h) in drives.iter().zip(&states) {
-        let key = if *path == common::mount_path(cfg["data_mount"].as_str().unwrap_or(""))? {
+        let key = if *path == common::unlooked_mount_path(cfg["data_mount"].as_str().unwrap_or(""))?
+        {
             "data_ssd"
         } else {
             "media_hdd"
@@ -454,6 +457,32 @@ fn save(record: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Seen in 0.51.1 (a share whose server stopped answering, in a test system): the
+    /// check looked at the drive's folder while listing the drives, before its timed test
+    /// write, and that look waited for as long as the share was away: no "waits" was
+    /// ever said. The folders above are still checked for links; the folder itself is
+    /// looked at only inside the timed test (a link there fails it).
+    #[test]
+    fn listing_the_drives_never_looks_at_a_drive_folder() {
+        let root = std::env::temp_dir().join(format!("neko-nas-list-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("real")).unwrap();
+        // A link stands for a folder that can't be looked at: a look at it is refused.
+        std::os::unix::fs::symlink(root.join("real"), root.join("media")).unwrap();
+        let media = root.join("media");
+        let cfg = json!({"data_mount": "/srv/nekoserver", "media_mount": media,
+            "storage": {"media_hdd": {"uuid": "abcd-1234", "network": {"transport": "iscsi"}}}});
+        let drives = nas_drives(&cfg).unwrap();
+        assert_eq!(
+            drives,
+            [(media.clone(), "abcd-1234".to_string(), "the media drive")]
+        );
+        assert!(common::mount_path(media.to_str().unwrap()).is_err());
+        // A link above the folder is still refused.
+        let below = root.join("media/inner");
+        assert!(common::unlooked_mount_path(below.to_str().unwrap()).is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
     /// The review of 0.47.0: the start guard refuses while held, so the hold is lifted (and
     /// saved) before the apps are started, and put back when Docker did not start.
     #[test]

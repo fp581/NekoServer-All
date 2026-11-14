@@ -515,14 +515,26 @@ fn on_nas(cfg: &Value, key: &str) -> bool {
 /// older than three minutes says nothing. Linux still shows an aborted ext4 as mounted
 /// "rw" (statvfs says so too, seen in the lab): only a write tells.
 fn nas_drive(r: &mut Value, key: &str, now: f64) {
+    let seen = common::json(Path::new(*crate::nas_watch::STATE), 64000);
+    nas_drive_as_seen(r, &seen, nas_verdict(&seen, key, now, nas_check_busy));
+}
+/// `nas_drive` with the NAS check's record (`seen`) and its verdict for this drive. A
+/// drive mounted where it should be whose space got no answer (UNANSWERED) is, on a NAS,
+/// what a NAS that stopped answering looks like (a shared folder's space is asked of the
+/// NAS itself): with the check's "waits" it is the drive waiting, not a drive gone. It was
+/// "unavailable", said as not connected with its apps stopped (seen in 0.51.1).
+fn nas_drive_as_seen(r: &mut Value, seen: &Value, verdict: Option<&str>) {
     r["network"] = json!(true);
-    if r["status"] != "mounted" {
+    let unanswered = r["status"] == UNANSWERED;
+    if r["status"] != "mounted" && !unanswered {
         return;
     }
-    let seen = common::json(Path::new(*crate::nas_watch::STATE), 64000);
-    match nas_verdict(&seen, key, now, nas_check_busy) {
+    match verdict {
         Some("fails") => r["read_only"] = json!(true),
-        Some("waits") => r["waiting"] = json!(true),
+        Some("waits") => {
+            r["waiting"] = json!(true);
+            r["status"] = json!("mounted");
+        }
         _ => {}
     }
     if seen["held"] == true {
@@ -603,6 +615,8 @@ fn network_storage(cfg: &Value, sessions: &Path) -> Value {
         .collect();
     json!({"portal": chars(text(&cfg["network_storage"]["portal"]), 80), "targets": targets})
 }
+/// The status of a drive mounted where it should be whose space got no answer in time.
+const UNANSWERED: &str = "unavailable";
 /// A mounted drive's row filled in: its size and use, read-only, filesystem errors and
 /// health. `drive`: (id, folder, device, filesystem type, expected UUID).
 fn mounted_details(
@@ -622,7 +636,7 @@ fn mounted_details(
                 r["read_only"] = json!(true);
             }
         }
-        _ => r["status"] = json!("unavailable"),
+        _ => r["status"] = json!(UNANSWERED),
     }
     // Errors Linux met on the filesystem (a cable, a NAS away for long): it may have
     // turned read-only, or may still hold half-written changes.
@@ -685,14 +699,14 @@ fn storage_rows(cfg: &Value) -> Result<Vec<DriveCard>> {
         (
             "data_ssd".to_string(),
             "Application SSD".to_string(),
-            common::mount_path(text(&cfg["data_mount"]))?,
+            common::unlooked_mount_path(text(&cfg["data_mount"]))?,
             Some(saved("data_ssd", "uuid")),
             saved("data_ssd", "fstype"),
         ),
         (
             "media_hdd".to_string(),
             "Media HDD".to_string(),
-            common::mount_path(text(&cfg["media_mount"]))?,
+            common::unlooked_mount_path(text(&cfg["media_mount"]))?,
             Some(saved("media_hdd", "uuid")),
             saved("media_hdd", "fstype"),
         ),
@@ -725,14 +739,17 @@ fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, Vec<Value
             mounted_details(&mut r, cfg, cache, now, (key, &path, source, fs, expected));
             mounted.push(json!({"id":key,"name":name,"source":source,"mount":path,"fstype":fs,"uuid":expected.unwrap_or("")}));
         }
+        // Only a drive that answered is read any further: a NAS drive waiting for its NAS
+        // holds every read.
+        let answered = r["status"] == "mounted";
         if on_nas(cfg, key) {
             nas_drive(&mut r, key, now);
         }
         if key == "data_ssd" {
-            data_ok = r["status"] == "mounted";
+            data_ok = answered;
         }
         if key == "media_hdd" {
-            media_ok = r["status"] == "mounted";
+            media_ok = answered;
         }
         disks.push(r)
     }
@@ -2963,8 +2980,11 @@ pub fn run(a: &Args) -> Result<()> {
         &a.value("output", "/run/nekoserver-dashboard/status.json"),
     ))?;
     let internal = common::safe(&a.path("state")?)?;
+    // Checked without a look at the folders themselves: a drive on a NAS that stopped
+    // answering holds every look at its folder, and the whole page stopped with it (seen
+    // in 0.51.1). Each drive's own reading below has a time limit.
     for key in ["data_mount", "media_mount", "external_backup_mount"] {
-        common::mount_path(text(&cfg[key]))?;
+        common::unlooked_mount_path(text(&cfg[key]))?;
     }
     if internal != Path::new(text(&cfg["data_mount"])).join("dashboard-state") {
         return Err(Error::new("Collector state must use application SSD"));
@@ -3316,6 +3336,42 @@ mod os_tests {
             Some("waits")
         );
         assert_eq!(nas_verdict(&seen, "media_hdd", 1600.0, || false), None);
+    }
+    /// Seen in 0.51.1 (a share whose server stopped answering, in a test system): the
+    /// drive's space got no answer, so it was "unavailable" and said as not connected
+    /// with its apps stopped, while the NAS check said it waits (and stopped nothing).
+    #[test]
+    fn a_nas_drive_that_does_not_answer_is_waiting_not_gone() {
+        let row = |status: &str| {
+            drive_row(
+                "media_hdd",
+                "Media HDD",
+                Path::new("/mnt/nekoserver-media"),
+                &json!(status),
+            )
+        };
+        let seen = json!({"drives": {"media_hdd": "waits"}});
+        let mut r = row(UNANSWERED);
+        nas_drive_as_seen(&mut r, &seen, Some("waits"));
+        assert_eq!(
+            (r["status"].as_str(), r["waiting"].as_bool()),
+            (Some("mounted"), Some(true))
+        );
+        let raised = alerts(&json!({"storage": [r]}));
+        let titles: Vec<&str> = raised
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| text(&a["title"]))
+            .collect();
+        assert_eq!(titles, ["Media HDD is waiting for the network storage box"]);
+        // Not mounted, or no word from the NAS check: as before.
+        for (status, verdict) in [("missing", Some("waits")), (UNANSWERED, None)] {
+            let mut r = row(status);
+            nas_drive_as_seen(&mut r, &seen, verdict);
+            assert_eq!(r["status"], status);
+            assert!(r["waiting"].is_null());
+        }
     }
     #[test]
     fn only_the_apps_the_gateway_publishes_get_a_phone_link() {
