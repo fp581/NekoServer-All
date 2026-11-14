@@ -77,7 +77,13 @@ class RecoveryMessageTests(unittest.TestCase):
             mine = Path(tmp) / 'my.json'
             mine.write_text('{}')
             used = []
-            with mock.patch.object(recover, 'run', side_effect=lambda a, config: used.append(a.config) or {}):
+
+            def noted(args, config):
+                """A recovery that does nothing; the settings file it was given is written down."""
+                used.append(args.config)
+                return {}
+
+            with mock.patch.object(recover, 'run', side_effect=noted):
                 for argv in (['check', '--config', str(mine)], ['--config', str(mine), 'check']):
                     with self.subTest(argv=argv), redirect_stdout(io.StringIO()):
                         self.assertEqual(recover.main(argv), 0)

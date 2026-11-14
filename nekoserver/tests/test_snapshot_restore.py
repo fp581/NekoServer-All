@@ -67,7 +67,13 @@ class SnapshotRestoreTests(unittest.TestCase):
         snap = self.root / 'snap'
         make(snap, sr.APPS, {'appdata/sonarr/config.xml': b'<x/>'})
         dropped, real = [], sr.os.posix_fadvise
-        with mock.patch.object(sr.os, 'posix_fadvise', side_effect=lambda fd, *a: dropped.append(a) or real(fd, *a)):
+
+        def noted(fd, offset, length, advice):
+            """posix_fadvise as it is, each call's advice written down."""
+            dropped.append((offset, length, advice))
+            return real(fd, offset, length, advice)
+
+        with mock.patch.object(sr.os, 'posix_fadvise', side_effect=noted):
             sr.restore(sr.APPS, snap, self.root / 'new')
         self.assertIn((0, 0, sr.os.POSIX_FADV_DONTNEED), dropped)
 

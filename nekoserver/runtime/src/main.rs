@@ -14,6 +14,8 @@ mod host_snapshot;
 mod inventory;
 mod ledger;
 mod live;
+#[cfg(test)]
+mod lying_drive;
 mod maintenance;
 mod media;
 mod music_backup;

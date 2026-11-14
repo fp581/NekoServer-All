@@ -24,6 +24,8 @@ GB = 1000**3
 
 
 class ModelNamesTests(unittest.TestCase):
+    """Setup's names for the assistant's models match the models there are."""
+
     def test_every_model_has_its_plain_name(self):
         """The review of 0.51.0: the names were paired with assistant.MODELS by zip(), so a
         model added to that list without a name here was silently never offered."""

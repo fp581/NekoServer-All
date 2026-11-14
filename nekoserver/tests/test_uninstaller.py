@@ -219,6 +219,7 @@ class OptionTests(unittest.TestCase):
     --dryrun included, ran the real thing."""
 
     def run_main(self, argv):
+        """(exit code, what was said) for these words; never the removal itself."""
         out = io.StringIO()
         with (
             mock.patch.object(uninstaller, 'removal', side_effect=AssertionError('removal started')) as removal,

@@ -574,6 +574,7 @@ class ManyFilesTests(Base):
         real = os.posix_fadvise
 
         def watching(fd, offset, length, advice):
+            """posix_fadvise as it is, each call written down."""
             dropped.append((offset, length, advice))
             return real(fd, offset, length, advice)
 

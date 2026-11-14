@@ -50,6 +50,7 @@ class CommandLineTests(unittest.TestCase):
     "move needs --drive and --to", though both were given."""
 
     def said(self, *argv):
+        """What migrate.py says to these words on its command line (it must refuse them)."""
         err = io.StringIO()
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -381,7 +382,13 @@ class MoveTests(unittest.TestCase):
         files from Linux's memory of what was just copied, so a new drive that kept other
         bytes passed. It is unmounted and mounted again first."""
         compared = []
-        with mock.patch.object(migrate, 'differences', side_effect=lambda a, b: compared.append(len(self.calls)) or []):
+
+        def no_differences(old, new):
+            """The comparison finds nothing; when it ran is written down."""
+            compared.append(len(self.calls))
+            return []
+
+        with mock.patch.object(migrate, 'differences', side_effect=no_differences):
             self.assertEqual(self.move(), 0)
         before = self.calls[: compared[0]]
         last_copy = before.index(('copy', True))

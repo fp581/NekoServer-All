@@ -6819,31 +6819,7 @@ mod tests {
         let archive = dir.join("data.tar");
         fs::File::open(&archive).unwrap().sync_all().unwrap();
         assert!(verify(&dir).is_ok(), "the snapshot as made");
-        let out = std::process::Command::new("filefrag")
-            .args(["-v", "-b4096"])
-            .arg(&archive)
-            .output()
-            .unwrap();
-        let text = String::from_utf8_lossy(&out.stdout).to_string();
-        let line = text
-            .lines()
-            .find(|l| l.trim_start().starts_with("0:"))
-            .unwrap_or_else(|| panic!("no extent: {text}"));
-        let block: u64 = line
-            .split(':')
-            .nth(2)
-            .unwrap()
-            .split("..")
-            .next()
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-        use std::io::{Seek, SeekFrom, Write};
-        let mut img = fs::OpenOptions::new().write(true).open(&image).unwrap();
-        img.seek(SeekFrom::Start(block * 4096)).unwrap();
-        img.write_all(b"EVIL").unwrap();
-        img.sync_all().unwrap();
+        crate::lying_drive::change_on_disk(&image, &archive);
         let e = verify(&dir)
             .expect_err("an archive the drive does not hold passed")
             .to_string();

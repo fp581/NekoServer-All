@@ -40,6 +40,7 @@ Exit status: 0 all well, 1 something was damaged, missing, skipped or not restor
 """
 
 import argparse
+import dataclasses
 import errno
 import hashlib
 import json
@@ -964,37 +965,48 @@ def holds(dest_fd, path, checksum):
         os.close(fd)
 
 
-def older(card, rec, dest_fd, opts, newer_where):
+@dataclasses.dataclass(frozen=True)
+class Choices:
+    """What the person chose for one restore, handed to each file's steps together."""
+
+    rename: bool  # --rename: a file whose place is taken goes under _renamed/
+    overwrite: frozenset  # --overwrite: the paths the person named to be replaced
+    progress: object  # the Progress file (--progress), or None
+    listing: Listing  # the names in each destination folder, listed once
+
+
+def older(card, rec, dest_fd, choices, newer_where):
     """A version older than the one restored under the file's name: kept under _renamed/
     with --rename, else named and left on the card."""
-    rename, _overwrite, _progress, listing = opts
-    if rename:
-        return renamed_copy(card, rec, dest_fd, '.neko-restore-%s.part' % rec['record_id'], listing)
+    if choices.rename:
+        return renamed_copy(card, rec, dest_fd, '.neko-restore-%s.part' % rec['record_id'], choices.listing)
     return 'older', 'a newer version is restored as %s' % newer_where
 
 
-def one_version(card, rec, dest_fd, opts, chosen):
+def one_version(card, rec, dest_fd, choices, chosen):
     """One record of a file, after the newer versions of it were handled. `chosen` is the
-    (record, where) restored for that file in this run, if any."""
-    rename, overwrite, progress, listing = opts
+    (record, where) restored for that file in this run, or None."""
+    progress = choices.progress
     if progress is not None and progress.has(dest_fd, rec):
         return 'done before', progress.done[rec['version_id']]['path']
     if chosen is not None:
-        if chosen[0]['version_id'] == rec['version_id']:
-            return 'same version', chosen[1]
-        return older(card, rec, dest_fd, opts, chosen[1])
+        chosen_rec, chosen_where = chosen
+        if chosen_rec['version_id'] == rec['version_id']:
+            return 'same version', chosen_where
+        return older(card, rec, dest_fd, choices, chosen_where)
+    # A version of this file an earlier run restored under its name (from another card).
     earlier = progress.at_original(rec) if progress is not None else None
-    allowed = overwrite
+    replacing_ours = False
     if earlier is not None and entry_age(earlier[1]) is not None:
-        entry = earlier[1]
-        if entry_age(entry) > age(rec):
-            return older(card, rec, dest_fd, opts, entry['path'])
+        earlier_version, earlier_entry = earlier
+        if entry_age(earlier_entry) > age(rec):
+            return older(card, rec, dest_fd, choices, earlier_entry['path'])
         # An older version this restore put there itself, unchanged since: replaced.
-        if holds(dest_fd, entry['path'], entry.get('sha256')):
-            allowed = overwrite | {rec['original_relative_path']}
-    outcome, where = restore_one(card, rec, dest_fd, rename, allowed, listing)
-    if outcome == 'restored' and allowed is not overwrite:
-        progress.supersede(earlier[0], rec)
+        replacing_ours = holds(dest_fd, earlier_entry['path'], earlier_entry.get('sha256'))
+    overwrite = choices.overwrite | {rec['original_relative_path']} if replacing_ours else choices.overwrite
+    outcome, where = restore_one(card, rec, dest_fd, choices.rename, overwrite, choices.listing)
+    if outcome == 'restored' and replacing_ours:
+        progress.supersede(earlier_version, rec)
     return outcome, where
 
 
@@ -1037,12 +1049,12 @@ def restore(card, records, destination, rename=False, overwrite=(), progress=Non
             'is kept as it is' % show(destination)
         )
     report = []
-    opts = (rename, set(overwrite), progress, Listing())
+    choices = Choices(rename, frozenset(overwrite), progress, Listing())
     try:
         for recs in by_file(records):
             chosen = None
             for rec in recs:
-                outcome, where = one_version(card, rec, dest_fd, opts, chosen)
+                outcome, where = one_version(card, rec, dest_fd, choices, chosen)
                 if outcome in ('restored', 'renamed', SAME_FILE) and progress is not None:
                     progress.add(rec, where)
                 if chosen is None and outcome in KEPT:

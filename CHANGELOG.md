@@ -2,32 +2,29 @@
 
 ## v0.51.2 — (in progress)
 
-Fixes only, from a wider review of 0.51.0's card engine, setup and dashboard. Nothing changes in how NekoServer is used. Each fix is listed here as it lands.
+Fixes only, from a wider review of 0.51.0 and from trying the tools on a fresh Ubuntu 24.04. Nothing changes in how NekoServer is used.
 
-### Fixed: backups onto a drive
-- **A USB drive that does not keep what it is given is caught by the weekly photo copy, and the app snapshot checks its copy on the drive.** Each copy is read back and checked before it counts, but it was read back right after it was written, so Linux answered from its memory: a fake-capacity or failing USB drive passed the check, and a photo counted as backed up that the drive did not hold. The copy is now written out and Linux's copy of it dropped before the readback, in the weekly USB copy, the music and archive copies that use the same step, and the app and host snapshots. Shown on an ext4 drive image whose bytes were changed under the filesystem between the write and the readback: the old copy published the photo, the new one refuses it.
-- **Moving to a new drive compares what the new drive holds.** After the last copy, `migrate.py` compares every file on both drives by checksum, but read the new drive's files from Linux's memory of what it had just copied: a new drive that kept other bytes passed. The new drive is now unmounted and mounted again before the comparison, so the files are read from it. (The old drive is never changed by a move, so `migrate.py back` always worked; now a bad new drive is caught before the switch.) Covered by tests with stand-in drives; not yet run on a real move.
-- **The monthly snapshot's check reads the snapshot from the HDD.** Right after the snapshot before an update is made, its archives are checked against their checksums, but they were read from Linux's memory of what `tar` had just written: an archive the HDD did not keep passed, and showed up only when you tried to go back to it. The check now reads them from the drive. Shown on an ext4 image whose bytes were changed under the filesystem: the old check passed the snapshot, the new one fails it.
-- **Importing a library you already had, and restoring an app snapshot, check the copy on the drive.** Both read each copy back to check it, from Linux's memory of what they had just written, so a drive that did not keep the bytes passed (after an import you may delete the originals). Both now drop that memory first, as setup's own checked copy already did. Covered by tests that fail on the old code.
+### Fixed: copies are checked on the drive, not in memory
+Every copy is read back and checked before it counts. That read came straight after the write, so Linux answered from its memory, not from the drive: a fake-capacity or failing drive passed, and a file counted as backed up that the drive did not hold. Each check below now reads the drive itself. Shown on drive images whose bytes were changed under the filesystem: the old checks passed, the new ones fail.
+- **The weekly USB photo copy**, and the music, archive, app and host copies that share its copy step.
+- **The monthly snapshot's own check**, run right after the snapshot before an update.
+- **Moving to a new drive:** the final comparison now reads the new drive (unmounted and mounted again first). The old drive was never changed, so `migrate.py back` always worked. Tested with stand-in drives only.
+- **Importing a library you already had**, and **restoring an app snapshot**.
+- **The SD-card engine** (not switched on yet) and **the card restore tool**'s second check.
 
 ### Fixed: the uninstaller
-- **`uninstall.sh --help` shows what it does, and a mistyped option changes nothing.** The uninstaller read only `--dry-run` and ignored every other word: `--help` started the real removal menu (with NekoServer and the apps' containers ticked), and so did a typo of `--dry-run` such as `--dryrun`. `-h`/`--help` now print what it does, and any other option is refused before anything happens. (The removal itself still asks twice before it changes anything.) Found by running the tools on a fresh Ubuntu 24.04.
+- **`uninstall.sh --help` shows what it does, and a mistyped option changes nothing.** Only `--dry-run` was read: `--help`, or a typo such as `--dryrun`, opened the real removal menu (which still asked twice before removing anything).
 
-### Fixed: what setup and its tools say about a settings file
-- **A settings file that is damaged or not there is named, with what is wrong.** `install.sh --config <file>` said only Python's own words ("Expecting value: line 1 column 1 (char 0)", "[Errno 2] No such file or directory"); `acceptance.py` said "Configuration or selected dependency profile is invalid" for a damaged file, a missing one and an unknown profile alike; `recover.py` said "a settings or record file could not be read" and to fix "what it names", naming nothing. Each now names the file and says what is wrong (not JSON, with the line and column; not there; no settings in it; no such profile, with the ones there are).
-- **`recover.py check --config my.json` reads my.json.** The settings file was only read when named before the command; after it, the option was not read, and the message said to name the file with `--config`. It is read in either place now.
-- **`migrate.py move --to <something that is not a UUID>` says so.** It said "move needs --drive and --to" though both were given; now it names what was typed and where to copy a UUID from (`migrate.py list`).
-- Found by trying each tool with broken settings files on a fresh Ubuntu 24.04.
+### Fixed: clearer messages
+- **A damaged or missing settings file is named, with what is wrong** (not JSON, with the line and column; not there; no settings in it; no such profile), in `install.sh`, `acceptance.py` and `recover.py`, instead of Python's own words or a vague line.
+- **`recover.py check --config my.json` reads my.json.** The option was read only before the command.
+- **`migrate.py move --to <not a UUID>` says so**, instead of "move needs --drive and --to".
+- **Restoring from a card, a copy missing or replaced on the card is said as such**, as `verify` says it, instead of "No such file or directory".
 
 ### Fixed: SD-card backup sets (the engine, not switched on yet)
-- **The catalogue's copy for the host backup is private.** The catalogue (which files are on which card: the paths of your files) is the server's own, readable only by root, but its copy for the host backup was left readable by every user of the server, and a new catalogue was readable by others for a moment before it was narrowed. Both files are now made private before anything is written into them.
-- **A card never gets a set inventory it cannot read back.** Each card carries a list of the whole set (which cards hold which files). Reading it, the engine refuses a list past its limits (more than 5 million versions, a million records on one card, 9,999 cards or 32 sources), but writing it checked none of them: a set that grew past one would have written a full list onto the card at every checkpoint, each one refused when read. The engine now stops before it writes such a list and says which limit was reached.
-- **A card that does not keep what it is given is caught.** Before a copy counts, the engine reads it back from the card and checks every byte. But it read it back right after writing, so Linux answered from its memory, not from the card: a fake-capacity card (one that says 512 GB and holds 32, writing over older files) or a failing one passed the check, and the file counted as backed up. Each readback now writes the file out and drops Linux's copy of it first, so the bytes come from the card. Shown on an ext4 card image whose bytes were changed under the filesystem: the old engine committed the copy, the new one does not.
-
-### Fixed: getting files back from a backup card
-- **Nothing is restored onto the card itself.** Restoring into the card (`restore /mnt` from a card mounted at `/mnt`, or even into its `NekoBackup` folder among the card's own records) copied every file onto the card: the backup, maybe the last copy of those files, filled up with a second copy. The tool now refuses a folder on the card, also when it is named through a link, and says to restore onto another drive. Tried on an ext4 card image mounted read-write.
-- **A copy missing or replaced on the card is said as such when restoring.** `restore` said "No such file or directory" (as if the destination were at fault) and "Too many levels of symbolic links"; it now says, as `verify` does, that the copy is missing from the card or damaged on it. Found on a card tampered with by hand on a fresh Ubuntu 24.04; the tool restored nothing outside the destination and followed no link.
-- **A USB stick that does not keep what it is given is caught.** The tool checks each restored file twice, the second time by reading it back from where it was restored. That read came from Linux's memory, not the stick, so a fake-capacity or failing stick passed and the file was reported `restored`. The second check now writes the file out and drops Linux's copy first. Shown on an ext4 image whose bytes were changed under the filesystem after each file: the old tool said `restored`, the new one says the file does not read back as written.
+- **The catalogue's copy for the host backup is private** (readable by root only). It was readable by every user, and a new catalogue was, for a moment.
+- **A card never gets a set inventory it cannot read back.** The engine now stops, naming the limit, before writing a list larger than its reader takes.
+- **Nothing is restored onto the card itself.** `restore /mnt` (the card) copied every file onto the card, among its records; a folder on the card is now refused, also through a link.
 
 ## v0.51.1 — 2026-11-13
 

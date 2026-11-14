@@ -677,6 +677,8 @@ class CopyTests(unittest.TestCase):
 
 
 class ImportReadbackTests(unittest.TestCase):
+    """The import's check of its copy reads the drive, not Linux's memory."""
+
     def test_the_copy_is_read_back_from_the_drive(self):
         """The review of 0.51.0: the import read its copy back from Linux's memory of what
         it had just written ("the copy on disk holds the same bytes"), so a drive that did
@@ -688,12 +690,14 @@ class ImportReadbackTests(unittest.TestCase):
             reader = os.open(src, os.O_RDONLY)
             writer = os.open(dst, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
             dropped, real = [], os.posix_fadvise
+
+            def noted(fd, offset, length, advice):
+                """posix_fadvise as it is, each call written down."""
+                dropped.append((fd, offset, length, advice))
+                return real(fd, offset, length, advice)
+
             try:
-                with mock.patch.object(
-                    source_import.os,
-                    'posix_fadvise',
-                    side_effect=lambda fd, *a: dropped.append((fd, *a)) or real(fd, *a),
-                ):
+                with mock.patch.object(source_import.os, 'posix_fadvise', side_effect=noted):
                     source_import.copy_into(reader, writer, os.fstat(reader))
             finally:
                 os.close(reader)
