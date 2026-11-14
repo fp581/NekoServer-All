@@ -166,6 +166,16 @@ CHOICES = (
     ),
 )
 PERSONAL = {'photos': 'photos', 'media': 'movies and music', 'cloud': 'Nextcloud files', 'backups': 'backups'}
+# The checklist's number of the apps' data.
+DATA_NUMBER = next(number for number, (key, *_) in enumerate(CHOICES, 1) if key == 'data')
+# The files kept by choice whose app knows them only through its database, which is in
+# the apps' data on the SSD: (choice, what they are, the app).
+FILES_WITH_A_DATABASE = (('photos', 'photos and videos', 'Immich'), ('cloud', 'Nextcloud files', 'Nextcloud'))
+KEPT_WITHOUT_DATABASE = (
+    'Your {what} stay ({places}), but {app}\'s database goes with the apps\' data. Installed again, {app} '
+    'starts empty and does not show them; the files stay where they are. To have them in {app} again, '
+    'keep the apps\' data too (switch {number} off).'
+)
 # What NekoServer itself keeps at the top of each drive, by choice. Only these are ever
 # removed: anything else on a drive (a folder of your own) is listed as staying.
 SSD_DATA = (
@@ -1125,9 +1135,24 @@ class Plan:
             lines.append('   - ' + share + ' at ' + mount + ' (your own shared folder: kept, with its /etc/fstab line)')
         return lines
 
+    def kept_without_database(self, chosen):
+        """What the person keeps whose app's database goes with the apps' data: kept as
+        files, which a new installation's empty app does not show (0.51.2 user check:
+        photos kept, the apps' data removed, setup again started Immich empty beside
+        them, and nothing said so at either end)."""
+        if 'data' not in chosen:
+            return []
+        return [
+            KEPT_WITHOUT_DATABASE.format(
+                what=what, app=app, number=DATA_NUMBER, places=', '.join(str(p) for p in self.groups[key]['paths'])
+            )
+            for key, what, app in FILES_WITH_A_DATABASE
+            if key not in chosen and self.groups.get(key, {}).get('paths')
+        ]
+
     def describe(self, chosen):
         """The plan, in full, for the person to read before confirming."""
-        lines = ['!! ' + w for w in self.warnings]
+        lines = ['!! ' + w for w in self.warnings + self.kept_without_database(chosen)]
         lines.extend(self.places())
         others = self.others()
         if others:

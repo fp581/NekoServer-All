@@ -484,6 +484,22 @@ class PlanTests(unittest.TestCase):
             'remove NekoServer and delete my photos, movies and music, backups',
         )
 
+    def test_photos_kept_without_their_database_are_said_before_the_yes(self):
+        """0.51.2 user check (in a chroot copy): photos kept, the apps' data removed. Immich's
+        database goes with the apps' data, so setup again starts Immich empty beside the
+        kept photos; nothing said so."""
+        photos = str(self.system.root / 'srv/nekoserver/photos')
+        text = self.plan.describe({'server', 'apps', 'data'})
+        warned = [line for line in text.splitlines() if line.startswith('!! Your photos and videos stay')]
+        self.assertEqual(len(warned), 1, text)
+        self.assertIn(photos, warned[0])
+        self.assertIn("Immich's database goes with the apps' data", warned[0])
+        self.assertIn('keep the apps\' data too (switch 3 off)', warned[0])
+        self.assertEqual(uninstaller.CHOICES[uninstaller.DATA_NUMBER - 1][0], 'data')
+        # The apps' data kept, or the photos removed too: nothing to say.
+        for chosen in ({'server', 'apps'}, {'server', 'data', 'photos'}):
+            self.assertNotIn('Your photos and videos stay', self.plan.describe(chosen))
+
     def test_without_sudo_a_size_it_cannot_count_is_said_not_understated(self):
         """IT-07: as the user, du counts only the private installer folder itself (4.0K)."""
         installer = self.system.root / 'srv/nekoserver/installer'
