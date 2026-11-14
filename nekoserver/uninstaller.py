@@ -933,7 +933,8 @@ class Plan:
         notes = []
         units = self.units()
         if units:
-            notes.append('Stop and remove ' + str(len(units)) + ' services and timers: ' + ', '.join(units))
+            what = 'service or timer' if len(units) == 1 else 'services and timers'
+            notes.append('Stop and remove ' + str(len(units)) + ' ' + what + ': ' + ', '.join(units))
         paths = self.system_paths() + self.shortcuts() + self.os_dropins() + self.setup_state()
         notes.extend(self.kept())
         if self.unfinished_packages():

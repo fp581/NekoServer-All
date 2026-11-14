@@ -341,6 +341,10 @@ class PlanTests(unittest.TestCase):
         )
         notes = '\n'.join(group['notes'])
         self.assertIn('4 services and timers', notes)
+        # Seen in a dry run on a fresh Ubuntu: "Stop and remove 1 services and timers".
+        with mock.patch.object(type(self.plan), 'units', lambda plan: ['nekoserver-dashboard.service']):
+            one = '\n'.join(self.plan._server_group()['notes'])
+        self.assertIn('Stop and remove 1 service or timer: nekoserver-dashboard.service', one)
         self.assertIn('with the account neko it created', notes)
         self.assertIn('smb.conf (only the include NekoServer wrote) goes too', notes)
         self.assertIn("the package's example smb.conf, set aside by setup, comes back", notes)

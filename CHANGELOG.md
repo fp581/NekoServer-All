@@ -14,6 +14,7 @@ Every copy is read back and checked before it counts. That read came straight af
 
 ### Fixed: the uninstaller
 - **`uninstall.sh --help` shows what it does, and a mistyped option changes nothing.** Only `--dry-run` was read: `--help`, or a typo such as `--dryrun`, opened the real removal menu (which still asked twice before removing anything).
+- **One service reads "1 service or timer"**, not "1 services and timers".
 
 ### Fixed: clearer messages
 - **A damaged or missing settings file is named, with what is wrong** (not JSON, with the line and column; not there; no settings in it; no such profile), in `install.sh`, `acceptance.py` and `recover.py`, instead of Python's own words or a vague line.
