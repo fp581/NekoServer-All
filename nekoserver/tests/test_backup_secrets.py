@@ -188,6 +188,22 @@ class BackupSecretsTests(unittest.TestCase):
             backup_secrets.restore(snap, self.root / 'out', 'correct horse')
         self.assertFalse((self.root / 'out').exists())
 
+    def test_a_backup_from_before_the_key_was_made_again_says_so(self):
+        """Seen on loop drives (0.51.2 review): after the backup key was made again with a
+        new password, an older list said "Wrong password for this backup" to the new one."""
+        self.make_key()
+        snap = self.seal_snapshot()
+        backup_secrets.create_key('new battery staple', self.keys)
+        with self.assertRaisesRegex(RuntimeError, 'earlier backup key'):
+            backup_secrets.restore(snap, self.root / 'out-new', 'new battery staple', key_dir=self.keys)
+        self.assertFalse((self.root / 'out-new').exists())
+        # Neither password: still a wrong password.
+        with self.assertRaisesRegex(RuntimeError, 'Wrong password'):
+            backup_secrets.restore(snap, self.root / 'out-neither', 'nope', key_dir=self.keys)
+        # The password it was made with opens it, with its own key copy.
+        out = backup_secrets.restore(snap, self.root / 'out', 'correct horse', key_dir=self.keys)
+        self.assertEqual((out / 'secrets/accounts/APP-CREDENTIALS.txt').read_bytes(), SECRET)
+
     def test_a_damaged_key_copy_is_never_called_a_wrong_password(self):
         self.make_key()
         snap = self.seal_snapshot()

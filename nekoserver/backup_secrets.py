@@ -34,6 +34,14 @@ CERT_NAME = 'secrets-recipient.pem'
 ARCHIVE_NAME = 'secrets.tar.cms'
 SUBJECT = '/CN=NekoServer backup secrets'
 MIN_LENGTH = 8
+# Said when the password opens this server's backup key but the backup was sealed with an
+# earlier one (the key made again: a new install, or a new backup password). It said
+# "Wrong password for this backup", and the person tried the right new password again.
+EARLIER_KEY = (
+    'This backup was made with an earlier backup key, before this server\'s key was made again '
+    '(a new install, or a new backup password), so your current backup password does not open it. '
+    'Enter the backup password you had when this backup was made; nothing was restored'
+)
 NOT_WRITTEN = 'Nothing was restored: {reason}. Choose a folder on a drive you can write to, with free space.'
 
 
@@ -222,6 +230,9 @@ def opening_key(key, cert, password, damaged, key_dir=KEY_DIR, out=print):
             'The backup key copy in this snapshot is damaged (checksum mismatch), and this server has no '
             'copy of the same key; nothing was restored. Use another monthly snapshot.'
         )
+    if not same and own_cert.is_file() and unlocks(password, own_key):
+        # The password is right for this server's key, which was made after this backup.
+        raise RuntimeError(EARLIER_KEY)
     raise RuntimeError('Wrong password for this backup')
 
 
