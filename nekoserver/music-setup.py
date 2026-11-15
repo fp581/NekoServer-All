@@ -9,6 +9,7 @@ import sys
 
 import music_client
 from neko_common import (
+    SETTINGS_HELP,
     read_settings,
     atomic_json,
     verify_storage,
@@ -22,9 +23,16 @@ from neko_common import (
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        '--config', type=lambda v: Path(checked_settings(v)), default=default_settings(Path(__file__).parent)
+        '--config',
+        type=lambda v: Path(checked_settings(v)),
+        default=default_settings(Path(__file__).parent),
+        help=SETTINGS_HELP,
     )
-    parser.add_argument('--configure', action='store_true')
+    parser.add_argument(
+        '--configure',
+        action='store_true',
+        help='Ask for the login the music check signs in with and save it (without it: only check)',
+    )
     args = parser.parse_args(argv)
     if os.geteuid() != 0:
         parser.error('Run as root to protect the monitor token')

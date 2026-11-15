@@ -1086,6 +1086,12 @@ NO_SETTINGS_HELP = (
 )
 
 
+# What --config is, in every tool's --help.
+SETTINGS_HELP = (
+    'Your settings file. Left out: my-config.json in this folder (in the copy setup keeps on the SSD: its config.json)'
+)
+
+
 def default_settings(folder):
     """The settings file a command in `folder` uses without --config: my-config.json when
     the wizard made it; config.json in the copy kept on the SSD (installer/releases/v...,

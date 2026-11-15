@@ -35,6 +35,7 @@ import zlib
 from pathlib import Path, PurePosixPath
 
 from neko_common import (
+    SETTINGS_HELP,
     read_settings,
     ASSISTANT,
     RECOVERY,
@@ -918,7 +919,10 @@ def main():
     parser.add_argument('action', choices=('run', 'resume'))
     parser.add_argument('--tag', help='with run: the release, such as v0.47.2Beta')
     parser.add_argument(
-        '--config', type=lambda v: Path(checked_settings(v)), default=default_settings(Path(__file__).parent)
+        '--config',
+        type=lambda v: Path(checked_settings(v)),
+        default=default_settings(Path(__file__).parent),
+        help=SETTINGS_HELP,
     )
     args = parser.parse_args()
     if os.geteuid() != 0:

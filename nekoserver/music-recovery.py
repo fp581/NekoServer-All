@@ -116,9 +116,13 @@ def write_copy(folder, source, rel, checksum):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--backup', required=True)
-    parser.add_argument('--snapshot', required=True)
-    parser.add_argument('--destination')
+    parser.add_argument('--backup', required=True, help='The music backup folder (backups/music on the HDD)')
+    parser.add_argument(
+        '--snapshot',
+        required=True,
+        help='The list of one backup run: a file in that folder\'s snapshots (backups/music/snapshots/...)',
+    )
+    parser.add_argument('--destination', help='Restore into this new folder; left out, the backup is only checked')
     args = parser.parse_args(argv)
     existed = args.destination is not None and os.path.lexists(args.destination)
     try:

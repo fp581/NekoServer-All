@@ -37,6 +37,7 @@ import time
 from pathlib import Path
 
 from neko_common import (
+    SETTINGS_HELP,
     read_settings,
     MAINTENANCE_JOURNAL,
     VERSION,
@@ -1106,10 +1107,17 @@ def list_targets(settings, out=print):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('action', choices=('list', 'move', 'back', 'resume'))
-    parser.add_argument('--drive', choices=tuple(DRIVES))
+    parser.add_argument(
+        '--drive',
+        choices=tuple(DRIVES),
+        help='the drive to move: data_ssd (the apps) or media_hdd (the media and backups); with back, only when both were moved',
+    )
     parser.add_argument('--to', help='with move: the new filesystem\'s UUID (see list)')
     parser.add_argument(
-        '--config', type=lambda v: Path(checked_settings(v)), default=default_settings(Path(__file__).parent)
+        '--config',
+        type=lambda v: Path(checked_settings(v)),
+        default=default_settings(Path(__file__).parent),
+        help=SETTINGS_HELP,
     )
     args = parser.parse_args()
     if os.geteuid() != 0:

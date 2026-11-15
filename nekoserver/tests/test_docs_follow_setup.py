@@ -406,5 +406,72 @@ class DashboardGuideTests(unittest.TestCase):
             self.assertIn('\u201c' + titles[extra] + '\u201d', guides)
 
 
+class ToolHelpTests(unittest.TestCase):
+    """Deep check plan 388: --help of the tools the guides tell a person to run. recover.py
+    listed seven commands and eight options without a word on any of them, acceptance.py
+    --save and --manual, and so on: the reader had to go back to the guide for each."""
+
+    # The tool, and the commands of it that have options of their own.
+    TOOLS = {
+        'installer.py': (),
+        'acceptance.py': (),
+        'account-setup.py': (),
+        'backup_secrets.py': (),
+        'gateway_cert.py': (),
+        'migrate.py': (),
+        'recover.py': ('check', 'checkpoint', 'reattach', 'snapshot', 'restore-test', 'resume', 'install-docker'),
+        'neko_restore.py': ('list', 'verify', 'restore', 'where'),
+        'upgrade.py': (),
+        'system_updates.py': (),
+        'app-recovery.py': (),
+        'host-recovery.py': (),
+        'monthly-recovery.py': (),
+        'music-recovery.py': (),
+        'music-setup.py': (),
+    }
+    # An option, or a command of a list of commands, on a line of its own: nothing said.
+    BARE = re.compile(r'^ {2,4}((?:-\w, )?--[\w-]+(?: \S+)?|[a-z][\w-]+)\s*$')
+
+    def help_of(self, tool, *command):
+        import subprocess
+
+        done = subprocess.run(
+            [sys.executable, str(ROOT / tool), *command, '--help'], capture_output=True, text=True, check=False
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return done.stdout
+
+    def unexplained(self, text):
+        lines = text.splitlines()
+        return [
+            found.group(1)
+            for n, line in enumerate(lines)
+            if (found := self.BARE.match(line)) and not (n + 1 < len(lines) and lines[n + 1].startswith(' ' * 6))
+        ]
+
+    def test_every_option_and_command_says_what_it_is(self):
+        for tool, commands in self.TOOLS.items():
+            for command in ((), *((name,) for name in commands)):
+                with self.subTest(tool=tool, command=command):
+                    self.assertEqual(self.unexplained(self.help_of(tool, *command)), [])
+
+    def test_recovery_md_has_a_row_for_every_command_of_recover_py(self):
+        """ "RECOVERY.md explains each command": its table had no row for resume and
+        install-docker."""
+        import recover
+
+        table = doc('RECOVERY.md').split('### What each operation does')[1].split('\n### ')[0]
+        self.assertGreater(len(recover.COMMANDS), 6)
+        for command in recover.COMMANDS:
+            self.assertRegex(table, rf'(?m)^\| {command} \|')
+        self.assertIn('RECOVERY.md, "What each operation does"', recover.EPILOG)
+
+    def test_the_settings_file_is_explained_once_for_every_tool(self):
+        import neko_common
+
+        for tool in ('acceptance.py', 'account-setup.py', 'recover.py', 'migrate.py', 'music-setup.py'):
+            self.assertIn(' '.join(neko_common.SETTINGS_HELP.split()[:6]), ' '.join(self.help_of(tool).split()))
+
+
 if __name__ == '__main__':
     unittest.main()

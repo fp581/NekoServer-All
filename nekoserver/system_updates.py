@@ -18,6 +18,7 @@ from pathlib import Path
 
 import host
 from neko_common import (
+    SETTINGS_HELP,
     read_settings,
     atomic_json,
     checked_settings,
@@ -218,7 +219,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('action', choices=('check',))
     parser.add_argument(
-        '--config', type=lambda v: Path(checked_settings(v)), default=default_settings(Path(__file__).parent)
+        '--config',
+        type=lambda v: Path(checked_settings(v)),
+        default=default_settings(Path(__file__).parent),
+        help=SETTINGS_HELP,
     )
     args = parser.parse_args()
     if os.geteuid() != 0:

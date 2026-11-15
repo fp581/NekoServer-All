@@ -97,6 +97,8 @@ Each list also keeps the checksum of every file's content, so a date restores ex
 
 ### What each operation does
 
+The commands of `recover.py` (`sudo python3 recover.py COMMAND`; `--help` lists them, and `COMMAND --help` a command's own options):
+
 | Command | Default behavior | With --apply |
 | --- | --- | --- |
 | check | Check mounted UUIDs and preserved installer checksums | No apply mode |
@@ -104,6 +106,8 @@ Each list also keeps the checksum of every file's content, so a date restores ex
 | reattach | Verify existing-store reattachment prerequisites | Configure the fresh OS and start the same store after SSD UUID confirmation |
 | snapshot | Verify prerequisites and show a pause/copy/dump preview | Create a new matched Immich bundle; temporarily pause and then resume running services |
 | restore-test | Check all snapshot files and preview a separate instance | Restore into fresh isolated files/database after RESTORE-ISOLATED confirmation |
+| resume | Start Immich again after a snapshot that was cut off (power cut, command killed) | No apply mode |
+| install-docker | Show which Docker and Compose packages would be installed (after replacing Linux) | Install them and keep Docker stopped, for `reattach` |
 
 These operations are separate from ordinary installation. Nothing formats drives, overwrites an existing snapshot/workspace, replaces the live Postgres directory or converts Docker to Podman. A successful check is not proof of restored photos. A snapshot stored alongside the source HDD does not protect against that HDD failing.
 

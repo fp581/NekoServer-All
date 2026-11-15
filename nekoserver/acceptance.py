@@ -1297,10 +1297,22 @@ def save(config, report):
 def main(argv=None):
     neko_common.readable_output()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--config', type=lambda v: Path(checked_settings(v)), default=default_settings(ROOT))
-    parser.add_argument('--profile', default='full')
-    parser.add_argument('--save', action='store_true')
-    parser.add_argument('--manual', action='store_true')
+    parser.add_argument(
+        '--config',
+        type=lambda v: Path(checked_settings(v)),
+        default=default_settings(ROOT),
+        help=neko_common.SETTINGS_HELP,
+    )
+    parser.add_argument(
+        '--profile', default='full', help='The set of setup steps to check (default: full, the whole server)'
+    )
+    parser.add_argument('--save', action='store_true', help='Save the report on the SSD, for the dashboard')
+    parser.add_argument(
+        '--manual',
+        action='store_true',
+        help='Also ask about the tests you watched yourself (a test restore, say) and record your answers; '
+        'needs --save and a terminal',
+    )
     a = parser.parse_args(argv)
     if a.manual and (not a.save or not sys.stdin.isatty()):
         parser.error('--manual requires --save and an interactive terminal')

@@ -14,6 +14,7 @@ import account_setup
 from modules.accounts import finish_pending, where_saved
 from types import SimpleNamespace
 from neko_common import (
+    SETTINGS_HELP,
     safe_path,
     settings_path,
     verify_storage,
@@ -237,9 +238,17 @@ def main():
     )
     parser.add_argument('app', nargs='?', help='with show: the app, such as jellyfin (leave out for a list)')
     parser.add_argument(
-        '--config', type=lambda v: Path(checked_settings(v)), default=default_settings(Path(__file__).parent)
+        '--config',
+        type=lambda v: Path(checked_settings(v)),
+        default=default_settings(Path(__file__).parent),
+        help=SETTINGS_HELP,
     )
-    parser.add_argument('--apply', action='store_true')
+    parser.add_argument(
+        '--apply',
+        action='store_true',
+        help='Set up or check the app accounts, asking as it goes (needs sudo and a terminal); without it '
+        'nothing is changed',
+    )
     args = parser.parse_args()
     if args.action == 'show':
         return show(args.config, args.app)
