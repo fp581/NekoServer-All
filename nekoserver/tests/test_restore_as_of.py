@@ -14,7 +14,9 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from roomy import roomy_drive  # noqa: E402
 import recovery_wizard
 
 EDIT = 'keep.neko-20261101T030000Z.txt'
@@ -37,6 +39,7 @@ class Restoring(unittest.TestCase):
     """A server whose USB drive holds a Nextcloud backup tree (filled by each test class)."""
 
     def setUp(self):
+        roomy_drive(self)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         # The dates said below are this computer's own time: UTC here.

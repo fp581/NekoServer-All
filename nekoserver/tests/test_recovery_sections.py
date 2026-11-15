@@ -27,10 +27,12 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import backup_secrets  # noqa: E402
 import installer  # noqa: E402
 import questions  # noqa: E402
+from roomy import roomy_drive  # noqa: E402
 import recovery_wizard  # noqa: E402
 
 
@@ -49,6 +51,7 @@ class Server:
     mixin of the test classes below, with the helpers they share)."""
 
     def setUp(self):
+        roomy_drive(self)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
