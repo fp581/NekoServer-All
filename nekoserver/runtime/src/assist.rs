@@ -28,7 +28,7 @@ const REPORT: &str = "reports/assistant.json";
 /// The collector's readings, which the summary is made from.
 pub const STATUS: &str = "/run/nekoserver-dashboard/status.json";
 /// The longest question taken, and the longest answer asked for.
-const QUESTION_CHARS: usize = 500;
+pub(crate) const QUESTION_CHARS: usize = 500;
 const ANSWER_TOKENS: u64 = 700;
 /// How many log lines of an attention item's service are read, and how much of them is kept.
 const LOG_LINES: &str = "40";

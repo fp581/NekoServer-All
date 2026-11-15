@@ -1116,9 +1116,11 @@ fn assistant(cfg: &Value, data: Option<&Path>) -> Value {
     };
     let report = common::json(&d.join("reports/assistant.json"), 64000);
     match report["model"].as_str() {
+        // question_chars: how much of a question Neko reads, so the page can say so.
         Some(model) if chosen => json!({"set_up": true, "model": chars(model, 64),
             "memory": chars(report["memory"].as_str().unwrap_or(""), 16),
-            "cpus": chars(report["cpus"].as_str().unwrap_or(""), 8)}),
+            "cpus": chars(report["cpus"].as_str().unwrap_or(""), 8),
+            "question_chars": crate::assist::QUESTION_CHARS}),
         _ => json!({"set_up": false}),
     }
 }
@@ -4712,7 +4714,8 @@ mod user_panel_tests {
         .unwrap();
         assert_eq!(
             assistant(&yes, Some(&root)),
-            json!({"set_up": true, "model": "qwen3.5:4b", "memory": "5g", "cpus": "2"})
+            // How much of a question Neko reads: the page says when one is longer.
+            json!({"set_up": true, "model": "qwen3.5:4b", "memory": "5g", "cpus": "2", "question_chars": 500})
         );
         assert_eq!(
             assistant(&json!({"assistant": {"wanted": false}}), Some(&root)),

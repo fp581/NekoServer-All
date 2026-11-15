@@ -949,6 +949,25 @@ class AskNekoPageTests(unittest.TestCase):
         [asked] = page(('askFlow', {'typed': 'Why?', 'kept': 'Why?', 'answer': 'Because.'}))
         self.assertEqual(asked['sent'][0], ['/api/control/ask', {'question': 'Why?'}])
 
+    def test_a_long_question_and_an_empty_one_are_said(self):
+        """The deep check: a pasted question over 500 characters was cut without a word (the
+        box's maxlength), and Ask with only spaces in the box did nothing and said nothing."""
+        long = 'Why did the backup fail? ' + 'x' * 600
+        [cut] = page(('askTyped', {'typed': long, 'limit': 500}))
+        self.assertIn(f'Your question is {len(long)} characters long. Neko reads only the first 500', cut['typing'])
+        self.assertEqual(cut['sent'][0], ['/api/control/ask', {'question': long}])  # the server cuts it
+        self.assertIn('Neko read only the start of this question.', cut['shown'])
+        self.assertEqual(cut['note'], '')  # sent: the box and its note are empty again
+        [blank] = page(('askTyped', {'typed': '   \n  ', 'limit': 500}))
+        self.assertEqual(blank['sent'], [])
+        self.assertIn('Type your question in the box first: it is empty, or holds only spaces.', blank['note'])
+        [fits] = page(('askTyped', {'typed': 'Why?', 'limit': 500}))
+        self.assertEqual((fits['typing'], fits['note']), ('', ''))
+        self.assertNotIn('only the start', fits['shown'])
+        # The box itself never cuts a paste short; the server's number is the one limit.
+        html = (ROOT / 'dashboard/index.html').read_text()
+        self.assertNotIn('maxlength', re.search(r'<textarea id="ask-input"[^>]*>', html).group(0))
+
     def test_the_page_keeps_and_shows_the_servers_copy_of_the_question(self):
         """Review of 0.49.0: a password typed into the question went into the bug report
         as typed. The page keeps the server's copy of the question (secrets removed)."""

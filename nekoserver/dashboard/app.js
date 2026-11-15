@@ -1841,6 +1841,9 @@ function bugReport(entry) {
 function askEntry(entry) {
   const box = el('article', 'ask-entry');
   box.append(el('p', 'ask-question', entry.question));
+  if (entry.cut) {
+    box.append(el('p', 'hint', entry.cut));
+  }
   const said = shownAnswer(entry.answer);
   if (said || (!entry.error && ASK.busy && entry === ASK.log.at(-1))) {
     box.append(longText('ask-answer', said || 'Thinking…'));
@@ -1932,10 +1935,36 @@ function askUnlock(
   }
   unlockDialog(then, 'ASK NEKO', why);
 }
+/* Neko reads at most the first question_chars characters of a question (the server's
+ * number, in the status): a longer one is said, not cut without a word (the box's
+ * maxlength used to cut a pasted question silently). Empty when the question fits. */
+function askTooLong(question, s = state.status) {
+  const limit = Number(object(s?.assistant).question_chars),
+    length = [...question].length;
+  if (!(limit > 0) || length <= limit) {
+    return '';
+  }
+  return (
+    'Your question is ' +
+    length +
+    ' characters long. Neko reads only the first ' +
+    limit +
+    ', so the rest is left out: shorten it to keep what matters.'
+  );
+}
+/* Ask pressed with nothing but spaces in the box: before, nothing happened and nothing was said. */
+const ASK_EMPTY = 'Type your question in the box first: it is empty, or holds only spaces.';
+function askNote() {
+  $('ask-note').textContent = askTooLong($('ask-input').value.trim());
+}
 /* Ask pressed: the question in the box, about the attention item chosen (if any). */
 function sendQuestion() {
   const question = $('ask-input').value.trim();
-  if (!question || ASK.busy) {
+  if (ASK.busy) {
+    return;
+  }
+  if (!question) {
+    $('ask-note').textContent = ASK_EMPTY;
     return;
   }
   const item = ASK.item;
@@ -1951,8 +1980,10 @@ async function askNeko(question, item) {
   // was locked out (wrong PINs) was lost when the PIN dialog was closed (deep check 165).
   if ($('ask-input').value.trim() === question) {
     $('ask-input').value = '';
+    $('ask-note').textContent = '';
   }
-  const entry = { question, answer: '' };
+  // Said with the question in the history too: the box (and its note) is emptied now.
+  const entry = { question, answer: '', cut: askTooLong(question) ? 'Neko read only the start of this question.' : '' };
   ASK.log.push(entry);
   ASK.busy = true;
   renderAsk();
@@ -5325,6 +5356,7 @@ $('ask-form').addEventListener('submit', e => {
   e.preventDefault();
   sendQuestion();
 });
+$('ask-input').addEventListener('input', askNote);
 $('export').addEventListener('click', diagnostics);
 $('close-dialog').addEventListener('click', () => $('dialog').close());
 $('dialog').addEventListener('close', () => {

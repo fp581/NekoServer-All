@@ -48,9 +48,27 @@ const CALLS = new Set([
 ]);
 /* Calls answered from another function's result, with more of it; the last four run a
    piece of Ask Neko on a page that keeps what is put on it (ASK_PAGE below). */
-const DETAILED = new Set(['issueDetails', 'askFlow', 'approveFlow', 'bugBoxCopy', 'cutOffEntry', 'askSignedOut']);
+const DETAILED = new Set([
+  'issueDetails',
+  'askFlow',
+  'approveFlow',
+  'bugBoxCopy',
+  'cutOffEntry',
+  'askSignedOut',
+  'askTyped'
+]);
 /* What those need of the page script besides the functions above. */
-const ASK_PAGE = ['ASK', 'state', 'askNeko', 'approveRepair', 'askProgress', 'askEntry', 'bugBox', 'sendQuestion'];
+const ASK_PAGE = [
+  'ASK',
+  'state',
+  'askNeko',
+  'approveRepair',
+  'askProgress',
+  'askEntry',
+  'bugBox',
+  'sendQuestion',
+  'askNote'
+];
 const calls = JSON.parse(process.argv[2]);
 
 /* Anything the page touches: every property is another stand-in, every call returns one. */
@@ -375,6 +393,25 @@ SPECIAL.askSignedOut = async argument => {
   app.sendQuestion();
   await Promise.resolve();
   return { box: byId('ask-input').value, dialog: byId('dialog').open === true, sent };
+};
+
+// A question typed (each key runs the box's input listener, askNote) and Ask pressed,
+// signed in, on a server whose Neko reads `limit` characters: what the note under the
+// box said while typing, what was sent, and the history.
+// argument: {typed, limit}.
+SPECIAL.askTyped = async argument => {
+  const byId = keptPage();
+  app.state.status = { assistant: { set_up: true, model: 'small', question_chars: argument.limit } };
+  const sent = server(path => {
+    if (path === '/api/control/ask') return { ok: true, id: 'abc', question: argument.typed.trim(), excerpt: '' };
+    return { text: 'Because.', done: true, failed: null, repair: null };
+  });
+  byId('ask-input').value = argument.typed;
+  app.askNote();
+  const typing = byId('ask-note').textContent;
+  app.sendQuestion();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  return { typing, note: byId('ask-note').textContent, sent, shown: shown(byId('ask-log')) };
 };
 
 /* One call after the other: the ones above each bring their own page and server. */
