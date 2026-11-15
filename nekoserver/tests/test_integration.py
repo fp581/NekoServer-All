@@ -594,6 +594,23 @@ class InstallScriptTests(unittest.TestCase):
             result, _ = self.run_script(self.root)
         self.assertNotIn('Started as root', result.stdout)
 
+    def test_without_sudo_on_a_pc_without_apt_apt_is_not_named(self):
+        # Deep check 270: an Arch PC without sudo was told to run  apt install sudo .
+        no_sudo_no_apt = (
+            ('if ((EUID != 0)); then\n    if command -v sudo', 'if ((1 != 0)); then\n    if command -v no-such-sudo'),
+            ('command -v doas', 'command -v no-such-doas'),
+            (
+                'if command -v apt-get >/dev/null; then\n        echo "  install sudo',
+                'if false; then\n        echo "  install sudo',
+            ),
+        )
+        result, log = self.run_script(self.root, replace=no_sudo_no_apt)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('this PC has no sudo yet', result.stderr)
+        self.assertNotIn('apt install', result.stderr)
+        self.assertIn("install sudo with your Linux's package manager", result.stderr)
+        self.assertIn('SUDO_USER=', result.stderr)
+
     def test_doas_names_the_account_as_sudo_does(self):
         # Deep check 270: started with  doas bash install.sh  setup said "Started as root, not
         # with sudo" and did not know whose account the server was for (doas sets DOAS_USER).

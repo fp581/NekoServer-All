@@ -156,7 +156,12 @@ if "$apply"; then
     else
       # Debian set up with a root password has no sudo at first.
       echo 'Setup needs administrator rights, and this PC has no sudo yet. Become root with  su -  (it asks for the root password), then either:' >&2
-      echo "  install sudo:  apt install sudo  and  usermod -aG sudo $(id -un)  then log out, log in again and run  sudo bash install.sh  here, or" >&2
+      if command -v apt-get >/dev/null; then
+        echo "  install sudo:  apt install sudo  and  usermod -aG sudo $(id -un)  then log out, log in again and run  sudo bash install.sh  here, or" >&2
+      else
+        # (apt is Debian's: Arch, say, installs sudo with pacman and lets the wheel group use it.)
+        echo "  install sudo with your Linux's package manager and let your account use it, then log out, log in again and run  sudo bash install.sh  here, or" >&2
+      fi
       echo "  run it as root with your account named:  cd $ROOT && SUDO_USER=$(id -un) bash install.sh" >&2
     fi
     exit 1
