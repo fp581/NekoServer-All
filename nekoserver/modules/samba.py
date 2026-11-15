@@ -6,6 +6,7 @@ from pathlib import Path
 import host
 from neko_common import (
     look_alike_letters,
+    printable,
     safe_path,
     atomic_write,
     findmnt,
@@ -27,7 +28,12 @@ SAMBA_SECTIONS = ('global', 'homes', 'printers')
 
 def validate_share(name, relative):
     if not name or not name.replace('_', '').isalnum():
-        raise RuntimeError('Invalid SMB share name')
+        # Named, with what a name may hold: "Invalid SMB share name" alone left a person who
+        # added "My Photos" or "Fotos-2024" guessing which one, and why (deep check 486).
+        raise RuntimeError(
+            f'The share name "{printable(name)}" cannot be used: a share name may hold only letters, digits and _ '
+            '(no spaces or other marks, such as My_Photos). Rename it under "shares" in my-config.json'
+        )
     if look_alike_letters(name):
         # Shown with its letters' codes, so the odd ones can be found (deep check 239).
         raise RuntimeError(
@@ -46,7 +52,10 @@ def validate_share(name, relative):
     # Written into smb.conf, which root's smbd reads: a line break would add settings
     # of its own (a command to run, say) and % starts a Samba variable.
     if not re.fullmatch(r'[A-Za-z0-9_./ -]+', str(relative)):
-        raise RuntimeError(f'SMB share path {relative!r} may use only letters, digits, spaces and . _ - /')
+        raise RuntimeError(
+            f'SMB share path {relative!r} may use only the letters A to Z, digits, spaces and . _ - / (no accents). '
+            'Rename the folder, or share another one, under "shares" in my-config.json'
+        )
     # Samba drops the spaces at the end of a setting, so "films " would share the folder
     # "films" instead of the one setup checked.
     if str(p) != str(p).rstrip():
