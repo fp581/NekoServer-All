@@ -27,6 +27,15 @@ const LOCK: &str = ".neko-ledger.lock";
 const FORMAT: &str = "neko-ledger-v1";
 /// Rewrite the ledger after this many new entries, so an interrupted run loses little.
 const CHECKPOINT: usize = 5000;
+/// ... or, in a big ledger, after this share of its entries is new: each rewrite is the
+/// whole file, and every 5,000 the first copy of a million photos wrote about 22 GB of
+/// ledger (deep check 305); this way about 2.4 GB, and a run cut off loses at most a
+/// tenth of what it recorded (those files are checked again on the next run).
+const CHECKPOINT_SHARE: usize = 10;
+/// Whether `unsaved` new entries in a ledger of `entries` are worth a rewrite now.
+fn checkpoint_due(unsaved: usize, entries: usize) -> bool {
+    unsaved >= CHECKPOINT.max(entries / CHECKPOINT_SHARE)
+}
 
 /// Files the ledger keeps next to the tree it describes; never backed up as data.
 pub fn own_file(name: &str) -> bool {
@@ -174,7 +183,7 @@ impl Ledger {
             },
         );
         self.unsaved += 1;
-        if self.unsaved >= CHECKPOINT {
+        if checkpoint_due(self.unsaved, self.entries.len()) {
             self.save()?;
         }
         Ok(Recorded::New)
@@ -479,6 +488,23 @@ pub(crate) mod tests {
         root
     }
     const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    #[test]
+    fn the_first_copy_of_a_million_photos_does_not_rewrite_the_ledger_for_ever() {
+        // Deep check 305: a rewrite every 5,000 new files wrote about 22 GB of ledger
+        // (219 bytes a row, measured on a ledger of a million). Counted as `record` saves.
+        let (mut written, mut unsaved) = (0u64, 0usize);
+        for entries in 1..=1_000_000usize {
+            unsaved += 1;
+            if checkpoint_due(unsaved, entries) {
+                written += entries as u64 * 219;
+                unsaved = 0;
+            }
+        }
+        assert!(written < 3_000_000_000, "{written} bytes written");
+        // A small ledger is still saved every 5,000, and a big one at most a tenth behind.
+        assert!(checkpoint_due(CHECKPOINT, 10_000) && !checkpoint_due(CHECKPOINT - 1, 10_000));
+        assert!(checkpoint_due(100_000, 1_000_000) && !checkpoint_due(99_999, 1_000_000));
+    }
     const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     /// Seen with the real weekly copy (0.51.2 review): a cut-short HDD archive ledger
     /// failed it, and every archive run, with "Checksum ledger is unreadable".
