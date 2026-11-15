@@ -1439,7 +1439,7 @@ fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
             common::json(
                 &Path::new(text(&cfg["data_mount"]))
                     .join(format!("reports/jobs/{report_key}.json")),
-                64000,
+                common::REPORT_LIMIT,
             )
         } else {
             empty()

@@ -54,6 +54,10 @@ impl From<serde_json::Error> for Error {
     }
 }
 pub type Result<T> = std::result::Result<T, Error>;
+/// The most of a job's report (reports/jobs) that is read back. It is written to fit
+/// (backup::report_that_fits): the next run would read a bigger one as empty and lose
+/// its last success.
+pub const REPORT_LIMIT: usize = 64_000;
 /// "1 file", "3 files" (or with its verb: "1 file differs", "3 files differ"): every
 /// count the runtime says goes through this, so none says "1 files" (deep check 300).
 pub fn plural<N: std::fmt::Display + PartialEq + From<u8>>(n: N, one: &str, many: &str) -> String {

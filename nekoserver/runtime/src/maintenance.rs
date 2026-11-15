@@ -4234,7 +4234,7 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
     // Read before the run writes its own report: how many nights running it failed.
     let tried = retries_made(&common::json(
         &data.join("reports/jobs/maintenance.json"),
-        64000,
+        common::REPORT_LIMIT,
     ));
     let undone = std::cell::Cell::new(false);
     let result = backup::execute_with(Some(&data), "maintenance", &cfgpath, || {

@@ -3026,13 +3026,13 @@ fn execute_keeping<F: FnOnce() -> Result<Outcome>>(
         return Err(Error::new("Application SSD missing"));
     }
     let path = data.join(format!("reports/jobs/{name}.json"));
-    let old = common::json(&path, 64000);
+    let old = common::json(&path, common::REPORT_LIMIT);
     let now = common::now();
     let mut row = running_row(name, now, &old);
     common::atomic_json(&path, &row)?;
     let result = operation();
     row["finished_at"] = json!(common::now());
-    let row = settled_report(row, &old, &result, keeps);
+    let row = report_that_fits(settled_report(row, &old, &result, keeps));
     // The report lives on the SSD: with the SSD gone it cannot be written, and the job's
     // own error still comes first.
     let reported = (|| {
@@ -3083,6 +3083,53 @@ fn settled_report(
     }
     row
 }
+/// A report that fits in what is read back (common::REPORT_LIMIT): a partial run's list
+/// of what was left out (50 long Nextcloud paths, say) could pass it, and the next run
+/// read the report as empty and lost `last_success` (deep check 304). The list is
+/// shortened, its texts first, then its length; its count words stay.
+fn report_that_fits(mut row: Value) -> Value {
+    let size = |v: &Value| serde_json::to_vec(v).map_or(usize::MAX, |b| b.len());
+    if size(&row) <= common::REPORT_LIMIT {
+        return row;
+    }
+    shorten_texts(&mut row["missing"], 300);
+    while size(&row) > common::REPORT_LIMIT && halve_lists(&mut row["missing"]) {}
+    if size(&row) > common::REPORT_LIMIT {
+        row["missing"] =
+            json!(["What was left out is too long to keep here; the job's log lists it"]);
+    }
+    row
+}
+fn shorten_texts(v: &mut Value, most: usize) {
+    match v {
+        Value::String(s) if s.chars().count() > most => {
+            *s = s.chars().take(most).collect::<String>() + "…";
+        }
+        Value::Array(rows) => rows.iter_mut().for_each(|r| shorten_texts(r, most)),
+        Value::Object(map) => map.values_mut().for_each(|r| shorten_texts(r, most)),
+        _ => {}
+    }
+}
+/// Every list in `v` cut to half its length; false when none had anything left to cut.
+fn halve_lists(v: &mut Value) -> bool {
+    match v {
+        Value::Array(rows) if rows.len() > 1 => {
+            rows.truncate(rows.len() / 2);
+            true
+        }
+        Value::Array(rows) => halve_each(rows.iter_mut()),
+        Value::Object(map) => halve_each(map.values_mut()),
+        _ => false,
+    }
+}
+/// halve_lists on every one of `rows` (each, not up to the first that had a list).
+fn halve_each<'a>(rows: impl Iterator<Item = &'a mut Value>) -> bool {
+    let mut cut = false;
+    for row in rows {
+        cut |= halve_lists(row);
+    }
+    cut
+}
 /// A job that gave way did not fail: to setup (`common::postponed`), or the weekly USB
 /// copy to the monthly run (`yielded`). Nothing is recorded against it, and it runs
 /// again at its next time.
@@ -3113,12 +3160,12 @@ pub(crate) fn note_failed_report(
 ) -> Result<()> {
     guard_data(cfg, data)?;
     let path = data.join(format!("reports/jobs/{name}.json"));
-    let mut row = common::json(&path, 64000);
+    let mut row = common::json(&path, common::REPORT_LIMIT);
     if row["status"] != "fail" {
         return Ok(());
     }
     row[key] = value;
-    common::atomic_json(&path, &row)
+    common::atomic_json(&path, &report_that_fits(row))
 }
 /// A job's report as it starts. The last success is kept as saved: one saved while the
 /// clock was ahead is still the last success after the clock is put back (the dashboard
@@ -8719,6 +8766,46 @@ mod tests {
         ] {
             assert_eq!(service_busy(state), busy, "{state}");
         }
+    }
+    #[test]
+    fn a_long_list_of_what_was_left_out_never_loses_the_last_success() {
+        // Deep check 304: 50 long Nextcloud paths made a report over the read limit;
+        // the next run read it as {} and its last success was gone.
+        let root = scratch("long-report");
+        let data = root.join("ssd");
+        let path = data.join("reports/jobs/external.json");
+        let long = |n: usize| format!("alice/files/{}/{n}.jpg", "Holiday photos 2024 ".repeat(80));
+        let missing = CloudCopy {
+            skipped: 50,
+            skipped_files: (0..50).map(long).collect(),
+            ..Default::default()
+        }
+        .missing()
+        .unwrap();
+        let old = json!({"job":"external","status":"pass","last_success":160.0});
+        let row = running_row("external", 200.0, &old);
+        let result: Result<Outcome> = Ok(Outcome {
+            partial: Some(missing.clone()),
+        });
+        let unfitted = settled_report(row.clone(), &old, &result, &gave_way);
+        assert!(serde_json::to_vec(&unfitted).unwrap().len() > common::REPORT_LIMIT);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            serde_json::to_vec(&report_that_fits(unfitted)).unwrap(),
+        )
+        .unwrap();
+        let read = common::json(&path, common::REPORT_LIMIT);
+        assert_eq!(read["last_success"], 160.0);
+        assert_eq!(read["status"], "partial");
+        assert_eq!(read["missing"]["in_use"], 50);
+        assert!(!read["missing"]["files"].as_array().unwrap().is_empty());
+        // A short one is kept as it is.
+        let short = settled_report(row, &old, &result, &gave_way);
+        let mut small = short.clone();
+        small["missing"]["files"] = json!(["a.jpg"]);
+        assert_eq!(report_that_fits(small.clone()), small);
+        let _ = fs::remove_dir_all(root);
     }
     #[test]
     fn a_clock_put_back_keeps_the_last_success() {
