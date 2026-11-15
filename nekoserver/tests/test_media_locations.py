@@ -478,6 +478,22 @@ class MediaFoldersTests(unittest.TestCase):
         self.assertEqual((music['target'], music['downloads']), ('library', True))
         self.assertEqual(self.pc.told, [])  # nothing changed, so no app is told anything
 
+    def test_the_apps_are_restarted_only_when_a_folder_they_see_changed(self):
+        # Seen with real mounts: shows copied into the library restarted every media app
+        # (Jellyfin in the middle of a film), because the films folder, left as it was,
+        # was remounted as it already was and that counted as a change.
+        self.add(downloads=True)
+        restarts = [c for c in self.pc.calls() if c.startswith('docker compose')]
+        self.assertTrue(restarts, 'connecting a folder restarts the apps that see it')
+        with mock.patch.object(existing_media, 'copy_now', lambda *a, **k: {'status': 'copied', 'copied': 1}):
+            answer = self.add(self.pc.shows, kind='tv', downloads=False, how='copy')
+        self.assertEqual(answer['state'], 'done', answer)
+        self.assertIn(f'mount -o remount,bind,rw {self.pc.point()}', self.pc.calls())
+        self.assertEqual([c for c in self.pc.calls() if c.startswith('docker compose')], restarts)
+        # Switched to read-only is a change the apps must be restarted for.
+        self.pc.ask(change='target', kind='movies', target='library')
+        self.assertGreater(len([c for c in self.pc.calls() if c.startswith('docker compose')]), len(restarts))
+
     def test_copy_into_the_library_is_setups_copy_with_the_folder_kept(self):
         copied = []
 
