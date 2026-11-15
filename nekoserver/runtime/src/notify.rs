@@ -23,7 +23,9 @@ fn label(id: &str) -> Option<String> {
         "media-stale" => return Some("Media connection checks are stale".into()),
         "media-failure" => return Some("Media connection checks failed".into()),
         "backup-key" => return Some("Monthly backups keep the app passwords unencrypted".into()),
-        "tailscale:login" => return Some("Phone access is signed out of Tailscale".into()),
+        // One id for a sign-in that ran out and one never made (collect.rs, alerts): the
+        // phone said "signed out" to a server that was never signed in (deep check 497).
+        "tailscale:login" => return Some("Phone access needs a Tailscale sign-in".into()),
         "tailscale:off" => return Some("Phone access is off: Tailscale needs you".into()),
         "tailscale:expiry" => {
             return Some("Phone access stops soon: Tailscale sign-in runs out".into())

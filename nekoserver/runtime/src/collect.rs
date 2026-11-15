@@ -3866,6 +3866,13 @@ mod os_tests {
             (shown[0]["level"].as_str(), shown[0]["title"].as_str()),
             (Some("warning"), Some("Phone access is not set up yet"))
         );
+        // The phone's words for both are true for both (deep check 497: it said "signed
+        // out" to a server never signed in).
+        let phone = crate::notify::label_of("tailscale:login").unwrap();
+        assert!(
+            !phone.contains("signed out") && phone.contains("sign-in"),
+            "{phone}"
+        );
         let soon = login_state(
             &json!({"BackendState":"Running","Self":{"KeyExpiry":"2026-10-30T00:00:00Z"}}),
             now,
