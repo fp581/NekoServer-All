@@ -18,6 +18,7 @@ mod live;
 mod lying_drive;
 mod maintenance;
 mod media;
+mod media_folders;
 mod music_backup;
 mod nas_watch;
 mod notify;

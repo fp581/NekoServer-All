@@ -1621,7 +1621,7 @@ pub(crate) fn mount_table_entry_in(table: &str, path: &Path, by_uuid: &Path) -> 
     }
 }
 /// A mountinfo field with its octal escapes (\040 for a space) turned back into text.
-fn mount_table_name(field: &str) -> String {
+pub(crate) fn mount_table_name(field: &str) -> String {
     let mut out = String::with_capacity(field.len());
     let mut rest = field;
     while let Some(at) = rest.find('\\') {
