@@ -343,8 +343,8 @@ if "$apply"; then
   # pass: it says to run setup), or whose resume could not start (a drive missing): setup
   # by hand is the way on, and closes the record once the server passes its check
   # (upgrade.settle_after_setup). It stopped here too, so that advice led nowhere.
-  if ! "$recover" && [[ -e /etc/nekoserver-backups/upgrade.json && -z "${NEKOSERVER_KEEP_SYSTEM:-}" ]] \
-    && ! flock -n /run/nekoserver-operation.lock true; then
+  if ! "$recover" && [[ -e /etc/nekoserver-backups/upgrade.json && -z "${NEKOSERVER_KEEP_SYSTEM:-}" ]] &&
+    ! flock -n /run/nekoserver-operation.lock true; then
     echo 'A NekoServer upgrade is at work (the Updates page of the dashboard shows how far it is). Let it finish, then run  sudo bash install.sh  again.' >&2
     exit 1
   fi
