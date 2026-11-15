@@ -231,7 +231,10 @@ def mount(ctx):
     never fails the step."""
     config = ctx.config
     wanted = existing_media.extras(config)
-    if not wanted:
+    # With the last folder taken back (on the dashboard's Media folders page, say), the
+    # lines setup wrote before are still there: use_in_place takes them out and
+    # disconnects what they connected.
+    if not wanted and not existing_media.connected_before():
         return []
     permanent = []
     for entry in wanted:

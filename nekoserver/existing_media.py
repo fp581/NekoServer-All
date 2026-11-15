@@ -310,7 +310,7 @@ def check(
     as_user=as_app,
     find=findmnt,
     kind=None,
-    fstab=FSTAB,
+    fstab=None,
     statvfs=os.statvfs,
 ):
     """Check a folder a person gave for `category` ('movies', 'tv', 'music').
@@ -325,6 +325,7 @@ def check(
     category_of(category)
     uid, gid = app_user(config)
     real = checked_folder(config, folder)
+    fstab = fstab or FSTAB  # looked up now, not when this file was loaded
     text = fstab.read_text(encoding='utf-8', errors='replace') if fstab.is_file() else ''
     found = where(real, find, kind or source_import.share_type, text, WHAT[category])
     add = None
@@ -649,7 +650,7 @@ def use_in_place(
     permanent=(),
     *,
     run=None,
-    fstab=FSTAB,
+    fstab=None,
     find=findmnt,
     kind=source_import.share_type,
     mounted=source_import.mount_id,
@@ -664,6 +665,7 @@ def use_in_place(
     'reason'}]. Run again after the settings change; with no folders left it removes its
     block."""
     run = run or must_run
+    fstab = fstab or FSTAB
     wanted = extras(config)
     lines = fstab_lines(config)
     before = fstab.read_text(encoding='utf-8') if fstab.is_file() else ''
@@ -677,6 +679,16 @@ def use_in_place(
         if mounted(point) is not None and not disconnected(run, mounted, point):
             log(STILL_CONNECTED.format(point=point, written=written_there(closed_to_new_files(run, point))))
     return [mounted_row(config, entry, (run, find, kind, mounted), log) for entry in wanted]
+
+
+def connected_before(fstab=None):
+    """Whether /etc/fstab still has lines of NekoServer's for the person's folders: with
+    the last folder taken back, they are what is left to disconnect."""
+    fstab = fstab or FSTAB
+    try:
+        return bool(own_lines(fstab.read_text(encoding='utf-8', errors='replace')))
+    except OSError:
+        return False
 
 
 def own_lines(text):
@@ -1145,7 +1157,7 @@ def navidrome_listeners(config):
 # ---- copying instead -----------------------------------------------------------------------
 
 
-def copy_preview(config, category, folder, *, find=findmnt, kind=None, fstab=FSTAB, usage=shutil.disk_usage):
+def copy_preview(config, category, folder, *, find=findmnt, kind=None, fstab=None, usage=shutil.disk_usage):
     """What copying the folder into the NekoServer library would do, before anything is
     copied: {'source', 'destination', 'files', 'bytes', 'free', 'fits', 'conflicts' (files
     the library already has differently: kept, the source's left out), 'source_kept':
@@ -1154,6 +1166,7 @@ def copy_preview(config, category, folder, *, find=findmnt, kind=None, fstab=FST
     folder cannot be read (nothing would be copied)."""
     row = category_of(category)[0]
     real = checked_folder(config, folder)
+    fstab = fstab or FSTAB
     text = fstab.read_text(encoding='utf-8', errors='replace') if fstab.is_file() else ''
     found = where(real, find, kind or source_import.share_type, text, WHAT[category])
     root = files_root(config, row)
