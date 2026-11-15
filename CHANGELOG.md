@@ -31,6 +31,15 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 - **Immich follows a time zone changed after its first setup**, as every other schedule and app already did.
 - **A dashboard PIN asked again and left empty is no longer shown by "Show login".**
 
+### Fixed: names and text with spaces, accents or quotes
+- **Your own folder on a NAS share whose name has a space (`//nas/My Media`) counts as connected**: the minute check read only the first word, so its apps were stopped and kept stopped.
+- **NAS folders named with a space or an accent ("My Films", "Música") are listed and can be typed**; they were left out silently, and typing one was refused as "without spaces".
+- **A folder dragged into the terminal (in quotes), copied from a shell (`My\ Films`) or typed with `~` is that folder**, not "not a folder".
+- **A file whose name starts or ends with a space keeps its current version in the weekly file list and its weekly checksum check** (the same trim as the review's finding).
+- **The card restore tool's search ignores upper and lower case** ("beach" finds "Beach Trip").
+- **A share name or folder Samba cannot take is named, with the rule**; "Música" is a share name.
+- **Counts and sizes said right**: "1 file", lists cut at ten say how many more, and "needs 1.6 GB, the drive has 1.5 GB" instead of two equal numbers.
+
 ### Fixed: moments when a protection was off
 - **A closed terminal or a dropped SSH connection stops setup as Ctrl+C does**, so its clean-up runs: the USB drive measured read-only is unmounted again, the terminal's echo comes back, and the step is not left "running". `recover.py snapshot` starts Immich again when it is stopped that way (it stayed off until the next restart).
 - **A review the terminal has gone past cannot start setup from the window** (Back typed in the terminal while the window still showed the earlier review).
