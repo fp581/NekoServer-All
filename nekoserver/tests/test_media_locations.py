@@ -245,6 +245,15 @@ def tree(folder):
     }
 
 
+class RequestPathTests(unittest.TestCase):
+    def test_only_a_json_request_is_read_and_its_folder_is_where_it_really_is(self):
+        """SonarCloud on PR 89: the request's path comes from the command line, and the
+        lock and the result are written beside it."""
+        with self.assertRaises(SystemExit) as caught:
+            media_locations.run('/nowhere/my-config.json', '/etc/passwd')
+        self.assertIn('must be a .json file', str(caught.exception))
+
+
 class MediaFoldersTests(unittest.TestCase):
     def setUp(self):
         self.pc = PC(self)

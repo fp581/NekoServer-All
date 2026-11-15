@@ -643,7 +643,12 @@ def change(settings, asked, folder, out, steps=None, lock=apps_lock):
 def run(settings_path, request, also=None, steps=None, lock=apps_lock, available=None):
     """The unit's run: the request read, the change made, the answer written. Returns
     the exit code (0 also for a refusal: it is an answer, not a failure of the unit)."""
-    folder = Path(request).parent
+    # Every file this run touches is beside the request: its path (from the command
+    # line) is taken only as the real path of a .json file, and the folder from it.
+    real = os.path.realpath(request)
+    if not (real.startswith(os.sep) and real.endswith('.json')):
+        raise SystemExit(f'The request must be a .json file: {request}')
+    request, folder = real, Path(os.path.dirname(real))
     out = {'id': '', 'state': 'done', 'message': '', 'notes': [], 'next': [], 'log': []}
     try:
         with one_at_a_time(folder):
