@@ -1102,8 +1102,34 @@ fn clear_work(data: &Path) {
 pub(crate) fn secrets_key_ready(key_dir: &Path) -> bool {
     key_dir.join(SECRETS_KEY).is_file() && key_dir.join(SECRETS_CERT).is_file()
 }
-fn encrypt_secrets(data: &Path, snapshot: &Path) -> Result<&'static str> {
-    encrypt_secrets_with(data, snapshot, Path::new(SECRETS_KEY_DIR))
+/// The password files of a snapshot, kept the way that was decided when it began
+/// (`sealing`: a backup key was there, so data.tar is written without them). The key is
+/// not looked for a second time: the apps are stopped and data.tar written in between,
+/// which takes long enough for `backup_secrets.py --setup` to make a key (the snapshot's
+/// own advice) or for one to be taken away. Asked again, the two answers could differ:
+/// "encrypted" on a snapshot whose data.tar held every password in plain text, or
+/// "unencrypted_in_data_tar" on one that held them nowhere.
+fn seal_as_decided(
+    data: &Path,
+    snapshot: &Path,
+    key_dir: &Path,
+    sealing: bool,
+) -> Result<&'static str> {
+    if !sealing {
+        return Ok(if sealed_members(data).is_empty() {
+            "none"
+        } else {
+            "unencrypted_in_data_tar"
+        });
+    }
+    match encrypt_secrets_with(data, snapshot, key_dir)? {
+        "unencrypted_in_data_tar" => Err(Error::new(
+            "The backup key was there when this snapshot began and is gone now, so the app \
+             password files would be in no part of it. Nothing was updated. Make the key again \
+             with  sudo python3 backup_secrets.py --setup  (see MONTHLY-MAINTENANCE.md)",
+        )),
+        kept => Ok(kept),
+    }
 }
 pub(crate) fn encrypt_secrets_with(
     data: &Path,
@@ -4051,9 +4077,9 @@ fn write_snapshot(
     let exclude: &[&str] = if sealing { &SEALED_EXCLUDES } else { &[] };
     tar(data, &paths.0, &snapshot.join("data.tar"), exclude)?;
     tar(media, &paths.1, &snapshot.join("media.tar"), &[])?;
-    let password_files = encrypt_secrets(data, snapshot)?;
+    let password_files = seal_as_decided(data, snapshot, Path::new(SECRETS_KEY_DIR), sealing)?;
     if password_files == "unencrypted_in_data_tar" {
-        println!("Monthly maintenance: no backup key yet, so this snapshot keeps the app password files unencrypted inside data.tar (readable by root only). To encrypt them from now on: sudo python3 backup_secrets.py --setup");
+        println!("Monthly maintenance: there was no backup key when this snapshot began, so it keeps the app password files unencrypted inside data.tar (readable by root only). To encrypt them from now on: sudo python3 backup_secrets.py --setup");
     }
     if sealing {
         // data.tar left these out; keep a private SSD copy so a failed update can be
@@ -6267,6 +6293,126 @@ mod tests {
         assert!(out.status.success(), "{args:?}");
         out.stdout
     }
+    /// A backup key in `keys`, locked with `password`: the format backup_secrets.py makes
+    /// (fewer rounds, so the tests stay quick).
+    fn backup_key(keys: &Path, password: &str) {
+        let pass = format!("pass:{password}");
+        let plain = sh(
+            &[
+                "openssl",
+                "genpkey",
+                "-algorithm",
+                "RSA",
+                "-pkeyopt",
+                "rsa_keygen_bits:2048",
+            ],
+            None,
+        );
+        let locked = sh(
+            &[
+                "openssl",
+                "pkcs8",
+                "-topk8",
+                "-v2",
+                "aes-256-cbc",
+                "-v2prf",
+                "hmacWithSHA256",
+                "-iter",
+                "1000",
+                "-passout",
+                &pass,
+            ],
+            Some(&plain),
+        );
+        let cert = sh(
+            &[
+                "openssl",
+                "req",
+                "-new",
+                "-x509",
+                "-key",
+                "/dev/stdin",
+                "-passin",
+                &pass,
+                "-subj",
+                "/CN=test",
+                "-days",
+                "1",
+            ],
+            Some(&locked),
+        );
+        for (name, bytes) in [(SECRETS_KEY, &locked), (SECRETS_CERT, &cert)] {
+            fs::write(keys.join(name), bytes).unwrap();
+            fs::set_permissions(
+                keys.join(name),
+                <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+            )
+            .unwrap();
+        }
+    }
+    /// Deep check 458. Whether a backup key is there was asked twice: when the snapshot
+    /// began (which decides whether data.tar holds the password files) and again after
+    /// the apps were stopped and data.tar written (which decided the label, and whether
+    /// an encrypted list was made). A key made in between, as the snapshot's own advice
+    /// says to, gave "encrypted" for a snapshot whose data.tar holds every password in
+    /// plain text; the recovery menu then says the password files "are not in it".
+    #[test]
+    fn password_files_are_kept_as_decided_when_the_snapshot_began() {
+        let root = scratch("decided");
+        let (data, keys) = (root.join("ssd"), root.join("keys"));
+        let snap = root.join("hdd/backups/monthly/700-1");
+        for dir in [keys.clone(), snap.clone()] {
+            fs::DirBuilder::new().mode(0o700).create(dir).unwrap();
+        }
+        for (rel, body) in [
+            (
+                "secrets/accounts/APP-CREDENTIALS.txt",
+                "jellyfin: admin / pw\n",
+            ),
+            ("compose/jellyfin/.env", "TZ=UTC\n"),
+            ("appdata/jellyfin/config.xml", "<x/>\n"),
+        ] {
+            fs::create_dir_all(data.join(rel).parent().unwrap()).unwrap();
+            fs::write(data.join(rel), body).unwrap();
+        }
+        let names = vec!["jellyfin".to_string()];
+        let listed = |archive: &Path| {
+            String::from_utf8(sh(&["tar", "-t", "-f", &archive.to_string_lossy()], None)).unwrap()
+        };
+        // Began without a key: data.tar holds the password files...
+        let sealing = secrets_key_ready(&keys);
+        let (paths, _) = snapshot_paths(&names, &data, sealing);
+        tar(&data, &paths, &snap.join("data.tar"), &[]).unwrap();
+        assert!(listed(&snap.join("data.tar")).contains("secrets/accounts/APP-CREDENTIALS.txt"));
+        // ...and the key is made while it is written. The label still says where they are.
+        backup_key(&keys, "made-meanwhile");
+        assert_eq!(
+            seal_as_decided(&data, &snap, &keys, sealing).unwrap(),
+            "unencrypted_in_data_tar"
+        );
+        assert!(!snap.join(SECRETS_ARCHIVE).exists());
+        // Began with a key (data.tar leaves them out), and the key is gone when they are to
+        // be sealed: the snapshot stops with the reason, never one without the passwords.
+        let snap = root.join("hdd/backups/monthly/800-1");
+        fs::DirBuilder::new().mode(0o700).create(&snap).unwrap();
+        let sealing = secrets_key_ready(&keys);
+        let (paths, _) = snapshot_paths(&names, &data, sealing);
+        tar(&data, &paths, &snap.join("data.tar"), &SEALED_EXCLUDES).unwrap();
+        assert!(!listed(&snap.join("data.tar")).contains("APP-CREDENTIALS"));
+        assert!(!listed(&snap.join("data.tar")).contains(".env"));
+        fs::rename(keys.join(SECRETS_KEY), keys.join("moved-aside")).unwrap();
+        let said = seal_as_decided(&data, &snap, &keys, sealing)
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("backup_secrets.py --setup"), "{said}");
+        // The usual case: the key there throughout.
+        fs::rename(keys.join("moved-aside"), keys.join(SECRETS_KEY)).unwrap();
+        assert_eq!(
+            seal_as_decided(&data, &snap, &keys, sealing).unwrap(),
+            "encrypted"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
     /// The rollback of an app whose settings are on another drive (0.50.0): its usual
     /// place is a mount and cannot be renamed, and the snapshot's copy is unpacked on the
     /// app drive, which a rename cannot leave. The copy is taken to the app's drive first
@@ -6622,59 +6768,7 @@ mod tests {
             "unencrypted_in_data_tar"
         );
         assert!(fs::read_dir(&snap).unwrap().next().is_none());
-        // Same key format backup_secrets.py creates.
-        let plain = sh(
-            &[
-                "openssl",
-                "genpkey",
-                "-algorithm",
-                "RSA",
-                "-pkeyopt",
-                "rsa_keygen_bits:2048",
-            ],
-            None,
-        );
-        let locked = sh(
-            &[
-                "openssl",
-                "pkcs8",
-                "-topk8",
-                "-v2",
-                "aes-256-cbc",
-                "-v2prf",
-                "hmacWithSHA256",
-                "-iter",
-                "1000",
-                "-passout",
-                "pass:sudo-pw",
-            ],
-            Some(&plain),
-        );
-        let cert = sh(
-            &[
-                "openssl",
-                "req",
-                "-new",
-                "-x509",
-                "-key",
-                "/dev/stdin",
-                "-passin",
-                "pass:sudo-pw",
-                "-subj",
-                "/CN=test",
-                "-days",
-                "1",
-            ],
-            Some(&locked),
-        );
-        for (name, bytes) in [(SECRETS_KEY, &locked), (SECRETS_CERT, &cert)] {
-            fs::write(keys.join(name), bytes).unwrap();
-            fs::set_permissions(
-                keys.join(name),
-                <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
-            )
-            .unwrap();
-        }
+        backup_key(&keys, "sudo-pw");
         assert_eq!(
             encrypt_secrets_with(&data, &snap, &keys).unwrap(),
             "encrypted"
