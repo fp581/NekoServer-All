@@ -446,6 +446,10 @@ fn plan(
         if !state["entries"][id].is_object() {
             state["entries"][id] = json!({"first_seen":now,"last_sent":null,"sent_level":null});
         }
+        // Back before its recovery was sent: the same problem, still the one sent.
+        if let Some(row) = state["entries"][id].as_object_mut() {
+            row.remove("cleared_at");
+        }
         let row = &state["entries"][id];
         let first = row["first_seen"]
             .as_f64()
@@ -476,7 +480,17 @@ fn plan(
         }
         if !active.contains_key(&id) && fresh && !unknown.contains(&id) {
             if state["entries"][&id]["last_sent"].is_number() {
-                events.push((id, true, "recovered".into()));
+                // A recovery is sent once it lasted as long as a problem must before it is
+                // sent: one that lasted a moment sent RECOVERED, then the alert again
+                // (deep check 306).
+                let cleared = state["entries"][&id]["cleared_at"]
+                    .as_f64()
+                    .filter(|t| t.is_finite() && *t <= now)
+                    .unwrap_or(now);
+                state["entries"][&id]["cleared_at"] = json!(cleared);
+                if now - cleared >= debounce as f64 {
+                    events.push((id, true, "recovered".into()));
+                }
             } else {
                 state["entries"].as_object_mut().unwrap().remove(&id);
             }
@@ -816,7 +830,8 @@ mod tests {
         // Whole again: the alert is gone and the array reports healthy -> recovered.
         let mut whole = snapshot(1500., json!([]));
         whole["arrays"] = json!([{"id":"md-md0","status":"healthy"}]);
-        let (_, events) = plan(&whole, &state, 1500., 180, 43200);
+        // (debounce 0: what is tested is the evidence; the wait has its own test)
+        let (_, events) = plan(&whole, &state, 1500., 0, 43200);
         assert_eq!(
             events,
             vec![(
@@ -869,7 +884,8 @@ mod tests {
             assert!(e.is_empty(), "{id}: {e:?}");
             assert!(state["entries"][id].is_object(), "{id}");
             s["tailscale"] = seen;
-            let (_, e) = plan(&s, &opened(id), 1000., 180, 43200);
+            // (debounce 0: what is tested is the evidence; the wait has its own test)
+            let (_, e) = plan(&s, &opened(id), 1000., 0, 43200);
             assert_eq!(ids(&e), [id]);
         }
         let mut s = snapshot(1000., json!([]));
@@ -880,7 +896,8 @@ mod tests {
             "{e:?}"
         );
         s["heartbeat"] = json!({"status":"pass","timer":{"installed":true}});
-        let (_, e) = plan(&s, &opened("heartbeat:delivery"), 1000., 180, 43200);
+        // (debounce 0: what is tested is the evidence; the wait has its own test)
+        let (_, e) = plan(&s, &opened("heartbeat:delivery"), 1000., 0, 43200);
         assert_eq!(ids(&e), ["heartbeat:delivery"]);
         // Switched off: dropped, nothing sent.
         s["heartbeat"] = json!({"status":"unknown","timer":{"installed":false}});
@@ -908,7 +925,8 @@ mod tests {
         let (_, e) = plan(&s, &opened, 1000., 180, 43200);
         assert!(e.is_empty(), "{e:?}");
         s["network_storage"]["targets"][0]["state"] = json!("connected");
-        let (_, e) = plan(&s, &opened, 1000., 180, 43200);
+        // (debounce 0: what is tested is the evidence; the wait has its own test)
+        let (_, e) = plan(&s, &opened, 1000., 0, 43200);
         assert_eq!(e[0].0, id);
         s["network_storage"] = Value::Null;
         let (state, e) = plan(&s, &opened, 1000., 180, 43200);
@@ -976,6 +994,23 @@ mod tests {
         let previous = json!({"format":"neko-notifications-v1","entries":{"app:sonarr":{"last_sent":1000,"first_seen":900,"sent_level":"warning"}}});
         let (_, e) = plan(&json!({}), &previous, 2000., 0, 43200);
         assert!(!e.iter().any(|(_, r, _)| *r));
+    }
+    #[test]
+    fn a_recovery_that_lasts_a_moment_sends_nothing() {
+        // Deep check 306: a problem that went away for one reading sent RECOVERED.
+        let sent = json!({"format":"neko-notifications-v1","entries":{"app:sonarr":{"last_sent":1000,"first_seen":900,"sent_level":"warning"}}});
+        let alert = json!([{"id":"app:sonarr","level":"warning"}]);
+        let (state, e) = plan(&snapshot(1100., json!([])), &sent, 1100., 180, 43200);
+        assert!(e.is_empty(), "{e:?}");
+        // Back a minute later: no RECOVERED, and no new alert (it was sent already).
+        let (state, e) = plan(&snapshot(1160., alert.clone()), &state, 1160., 180, 43200);
+        assert!(e.is_empty(), "{e:?}");
+        assert!(state["entries"]["app:sonarr"]["cleared_at"].is_null());
+        // Gone for good: RECOVERED once it has stayed away as long as the debounce.
+        let (state, e) = plan(&snapshot(1200., json!([])), &state, 1200., 180, 43200);
+        assert!(e.is_empty(), "{e:?}");
+        let (_, e) = plan(&snapshot(1380., json!([])), &state, 1380., 180, 43200);
+        assert_eq!(e, vec![("app:sonarr".into(), true, "recovered".into())]);
     }
     #[test]
     fn reported_problem_recovers_on_fresh_input() {
