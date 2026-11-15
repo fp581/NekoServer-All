@@ -120,6 +120,7 @@ readonly_mode=false
 recover=false
 finish=false
 full=false
+help=false
 previous=''
 for arg in "$@"; do
   case "$arg" in
@@ -136,7 +137,11 @@ for arg in "$@"; do
       apply=true
       finish=true
       ;;
-    --check | --dry-run | --help | -h) readonly_mode=true ;;
+    --check | --dry-run) readonly_mode=true ;;
+    --help | -h)
+      readonly_mode=true
+      help=true
+      ;;
   esac
   [[ "$previous" == --profile && "$arg" == full ]] && full=true
   [[ "$arg" == --profile=full ]] && full=true
@@ -145,6 +150,19 @@ done
 if "$apply" && "$readonly_mode"; then
   echo 'Use --apply separately from --check, --dry-run, or --help.' >&2
   exit 2
+fi
+# The processor first, for --check too: it said "Configuration ... valid" on an ARM
+# board that setup itself then refused (deep check 297).
+machine=$(uname -m)
+if ! "$help" && [[ "$machine" != x86_64 ]]; then
+  # What kind of computer that is, in words (i686 is an older 32-bit PC, not an ARM board).
+  case "$machine" in
+    arm* | aarch64) kind=' (a Raspberry Pi or another ARM board, say)' ;;
+    i?86) kind=', a 32-bit PC' ;;
+    *) kind='' ;;
+  esac
+  echo "NekoServer runs on 64-bit Intel or AMD PCs (x86_64); this one is $machine$kind." >&2
+  exit 1
 fi
 
 if "$apply"; then
@@ -275,17 +293,6 @@ if "$apply"; then
     fi
   else
     echo 'Automatic setup supports Arch Linux / Nyarch (with pacman), Debian / Ubuntu (with apt), Fedora and RHEL / Rocky / AlmaLinux (with dnf), and openSUSE (with zypper).' >&2
-    exit 1
-  fi
-  machine=$(uname -m)
-  if [[ "$machine" != x86_64 ]]; then
-    # What kind of computer that is, in words (i686 is an older 32-bit PC, not an ARM board).
-    case "$machine" in
-      arm* | aarch64) kind=' (a Raspberry Pi or another ARM board, say)' ;;
-      i?86) kind=', a 32-bit PC' ;;
-      *) kind='' ;;
-    esac
-    echo "NekoServer runs on 64-bit Intel or AMD PCs (x86_64); this one is $machine$kind." >&2
     exit 1
   fi
   if ! command -v systemctl >/dev/null; then

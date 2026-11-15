@@ -608,6 +608,13 @@ class InstallScriptTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1)
                 self.assertIn('NekoServer runs on 64-bit Intel or AMD PCs (x86_64); ' + words, result.stderr)
                 self.assertNotIn('PACMAN', log)
+                # Deep check 297: --check said the configuration was valid there.
+                result, log = self.run_script(self.root, args=['--check'])
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('NekoServer runs on 64-bit Intel or AMD PCs (x86_64); ' + words, result.stderr)
+                self.assertNotIn('START', log)
+        result, log = self.run_script(self.root, args=['--help'])  # help is still shown
+        self.assertIn('START --help', log)
 
     def test_without_sudo_on_a_pc_without_apt_apt_is_not_named(self):
         # Deep check 270: an Arch PC without sudo was told to run  apt install sudo .
