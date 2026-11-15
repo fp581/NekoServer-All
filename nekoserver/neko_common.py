@@ -2483,12 +2483,13 @@ def identity_matches(path, expected):
     return found is not None and found == (expected.get('uuid'), expected.get('fstype'), wanted)
 
 
-def verify_storage(config, keys=('data_ssd', 'media_hdd'), ask=None):
+def verify_storage(config, keys=('data_ssd', 'media_hdd'), ask=None, writable=False):
     """The drives are the ones setup chose (UUID, filesystem, Btrfs subvolume, the NAS disk's
     WWN), no copy of one is connected, and the SSD and the HDD are two filesystems: checked
     by the runtime (`nekoserver-runtime check-drives`, backup.rs), the same check every job
     and Docker's start guard make. The rules live once, there; setup kept a copy of its own,
-    which already disagreed with it (the review of 0.47.0)."""
+    which already disagreed with it (the review of 0.47.0). `writable`: each also takes new
+    files (not turned read-only by Linux after write errors)."""
     import tempfile
 
     import native_runtime
@@ -2504,7 +2505,9 @@ def verify_storage(config, keys=('data_ssd', 'media_hdd'), ask=None):
     with tempfile.TemporaryDirectory(prefix='neko-drives-') as work:
         path = Path(work) / 'drives.json'
         path.write_text(json.dumps(settings))
-        args = ['check-drives', '--config', str(path), '--drives', ','.join(keys)]
+        args = ['check-drives', '--config', str(path), '--drives', ','.join(keys)] + (
+            ['--writable'] if writable else []
+        )
         code, said = (ask or native_runtime.ask_runtime)(Path(__file__).resolve().parent, config, args)
     if code != 0:
         raise RuntimeError(native_runtime.reason_of(said, f'the drive check stopped (exit {code})'))

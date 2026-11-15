@@ -205,9 +205,12 @@ def drive_problem(config, keys):
     """Why the drives under `keys` are not the ones setup chose, or None: the runtime's own
     check (check-drives: UUID, filesystem, Btrfs subvolume, the NAS disk's WWN, no copy
     connected, two filesystems), the one every job makes. This compared the UUID and
-    filesystem only, so it passed a drive every backup refused (the review of 0.47.1)."""
+    filesystem only, so it passed a drive every backup refused (the review of 0.47.1).
+    The SSD and the HDD must also take new files: the right drive that Linux turned
+    read-only after write errors passed as mounted (deep check 431). The USB drive is
+    judged by its identity alone (the recovery menu leaves it mounted read-only)."""
     try:
-        verify_storage(config, keys)
+        verify_storage(config, keys, writable='usb' not in keys)
     except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as exc:
         return str(exc) or 'the drive check could not run'
     return None
@@ -845,17 +848,19 @@ def inspect(config, profile='full', now=None):
     matched = {}
     for role, name in (('data_ssd', 'Application SSD'), ('media_hdd', 'Media HDD')):
         configured = bool(config['storage'][role].get('uuid'))
-        problem = drive_problem(config, (role,)) if configured else 'not configured'
+        problem = (
+            drive_problem(config, (role,)) if configured else 'No drive is chosen for it yet: run  sudo bash install.sh'
+        )
         matched[role] = problem is None
         add(
             'mount:' + role,
             name,
             verdict(matched[role], configured),
-            'The drive setup chose is mounted (the runtime\'s drive check).'
+            'The drive setup chose is mounted and takes new files (the runtime\'s drive check).'
             if matched[role]
-            else 'Configure and mount the intended drive; no private data is inspected on a mismatch ('
-            + problem
-            + ').',
+            # The runtime's words say what is wrong and what to do (another drive, or the
+            # right one turned read-only), so they come first.
+            else problem.rstrip('.') + '. Nothing on the drive is read until this is fixed.',
         )
     distinct = drive_problem(config, ('data_ssd', 'media_hdd')) if all(matched.values()) else 'not checked'
     drives = distinct is None

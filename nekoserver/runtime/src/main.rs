@@ -126,7 +126,7 @@ fn entry() -> Result<()> {
         | "update-check" => vec!["config"],
         "update-apps" => vec!["config", "app"],
         "check-compose" => vec!["config", "app", "model", "upload", "database"],
-        "check-drives" => vec!["config", "drives"],
+        "check-drives" => vec!["config", "drives", "writable"],
         "job-states" => vec!["config"],
         "notify" => vec!["config", "snapshot", "state", "runtime", "test"],
         "media-health" => vec!["config", "output", "checking"],
@@ -184,6 +184,7 @@ fn entry() -> Result<()> {
             || key == "no-lights"
             || key == "no-fans"
             || key == "checking"
+            || key == "writable"
         {
             "true".into()
         } else {

@@ -181,7 +181,22 @@ class DriveCheckTests(unittest.TestCase):
     def test_the_runtimes_drive_check_is_the_one_asked(self):
         with mock.patch.object(acceptance, 'verify_storage', side_effect=RuntimeError('wrong subvolume')) as asked:
             self.assertEqual(acceptance.drive_problem({}, ('data_ssd',)), 'wrong subvolume')
-        asked.assert_called_once_with({}, ('data_ssd',))
+        asked.assert_called_once_with({}, ('data_ssd',), writable=True)
+
+    def test_the_ssd_and_the_hdd_must_take_new_files(self):
+        """Deep check 431 (seen with the real runtime and a loop drive mounted read-only):
+        the drive setup chose, turned read-only by Linux after write errors, passed as
+        mounted. The USB drive is judged by its identity alone."""
+        asked = []
+
+        def ask(project, config, args):
+            asked.append(args)
+            return 0, 'ok'
+
+        with mock.patch('native_runtime.ask_runtime', side_effect=ask):
+            for keys in (('data_ssd',), ('media_hdd',), ('data_ssd', 'media_hdd'), ('usb',)):
+                self.assertIsNone(acceptance.drive_problem(config(Path('/tmp/x')), keys))
+        self.assertEqual(['--writable' in args for args in asked], [True, True, True, False])
 
 
 class ShownUnitsTests(unittest.TestCase):

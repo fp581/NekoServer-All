@@ -3844,6 +3844,15 @@ pub fn check_drives(a: &crate::Args) -> Result<()> {
         } else {
             checked_drive(&cfg, key, &path)?
         };
+        // --writable (the acceptance check): the drive also takes new files. The right
+        // drive that Linux turned read-only after write errors passed as "mounted", while
+        // every backup and app write on it failed (deep check 431). Without it a
+        // read-only drive still passes: the recovery menu must reach one to check it.
+        if a.flag("writable") {
+            if let Some(why) = no_writes(key, &path, false) {
+                return Err(Error::new(&why));
+            }
+        }
         let shared = seen
             .iter()
             .find(|(other, id)| *id == uuid && !may_share(&cfg, other, key));
