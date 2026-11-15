@@ -381,9 +381,28 @@ def seerr_signed_in_as(client, result, entry):
     check(me.get('id') == 1 and me.get('email', '').casefold() == entry['username'].casefold())
 
 
+SEERR_PASSWORD_OFF = (
+    'not tried: password sign-in is switched off in Seerr (Settings, Users, "Enable Local Sign-In"), '
+    'so Seerr takes no password and the saved one could not be tried; the saved login is kept. Switch it '
+    'on again for NekoServer to check this login'
+)
+
+
 def seerr(client, entry, jellyfin_entry):
+    """Seerr's first user, signed in with the saved email and password. Returns a note
+    for the setup log, or None."""
     login_body = {'email': entry['username'], 'password': entry['password']}
-    result = attempt(lambda: client.call('/api/v1/auth/local', 'POST', login_body))
+    try:
+        result = attempt(lambda: client.call('/api/v1/auth/local', 'POST', login_body))
+    except HTTPFailure as exc:
+        # Seerr answers every password with HTTP 500 ("Password sign-in is disabled")
+        # once "Enable Local Sign-In" is off, which people do to have their users sign in
+        # with Jellyfin only. That is not a wrong password: it can't be tried. (A Seerr
+        # setup is still to make has it on: Seerr starts with it on.)
+        if exc.code != 500 or client.call('/api/v1/settings/public').get('localLogin') is not False:
+            raise
+        check(not entry['allow_create'])
+        return SEERR_PASSWORD_OFF
     if not result:
         allowed(entry)
         check(client.call('/api/v1/settings/public').get('initialized') is False)
@@ -582,8 +601,8 @@ def signs_in(config, app, client_factory=Client):
     installs a new version). Read-only: with `allow_create` off the app checks below never
     make or change an account, and nothing is written to the saved logins. Returns None
     when there is no saved login to try, or it could not be tried (Nextcloud with
-    two-factor sign-in on); raises with the reason (never a password) when
-    the app refuses it."""
+    two-factor sign-in on, Seerr with password sign-in off); raises with the reason
+    (never a password) when the app refuses it."""
     entry = store.get(config, app)
     if not entry:
         return None
@@ -595,7 +614,9 @@ def signs_in(config, app, client_factory=Client):
         if app in ARR:
             arr(client, entry, config, app)
         elif app == 'seerr':
-            seerr(client, entry, None)
+            # Password sign-in switched off in Seerr: the saved one was not tried.
+            if seerr(client, entry, None) == SEERR_PASSWORD_OFF:
+                return None
         elif app == 'nextcloud':
             # Two-factor sign-in on: Nextcloud refuses a plain password, so the saved one
             # was not tried. That is "not known", never "signed in".
@@ -658,7 +679,7 @@ def provision(config, apps, output=print, client_factory=Client):
 
                 music_client.save(config, music_client.credential(entry['username'], entry['password']))
             elif app == 'seerr':
-                seerr(client, entry, store.get(config, 'jellyfin', verified=True))
+                note = seerr(client, entry, store.get(config, 'jellyfin', verified=True))
             elif app == 'nextcloud':
                 note = nextcloud(client, entry, config)
             else:
