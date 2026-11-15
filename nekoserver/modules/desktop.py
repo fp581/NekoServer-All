@@ -18,8 +18,9 @@ from neko_common import (
     atomic_write,
     dashboard_port,
     find_program,
-    media_group,
+    immich_wanted,
     media_services,
+    nextcloud_enabled,
     safe_path,
 )
 
@@ -66,9 +67,12 @@ def installed_apps(config):
     for app in APPS:
         if app in MEDIA_APPS:
             present = app in services
-        else:  # Immich and Nextcloud have their own folder once set up.
-            present = (data / 'compose' / app / 'compose.yaml').is_file()
-            present = present and (app != 'immich' or media_group(config, 'photos'))
+        else:
+            # Immich and Nextcloud have their own folder once set up, and keep it when
+            # switched off: the app must be wanted too, by the rule its own step uses
+            # (review of 0.51.2: a switched-off Nextcloud or Immich kept its shortcut).
+            wanted = immich_wanted(config) if app == 'immich' else nextcloud_enabled(config)
+            present = wanted and (data / 'compose' / app / 'compose.yaml').is_file()
         if present:
             found.append(app)
     return found
@@ -106,6 +110,16 @@ def ours(path):
         return MANAGED in path.read_text(errors='replace')
     except OSError:
         return False
+
+
+def retire(folder, files, log):
+    """Take away NekoServer's own shortcut of an app that is no longer set up (switched
+    off since): it would open a page that is not there. One of yours is never touched."""
+    for app in APPS:
+        path = safe_path(folder / f'nekoserver-{app}.desktop')
+        if path.name not in files and path.is_file() and ours(path):
+            path.unlink()
+            log(f'Desktop: took away the {APPS[app][0]} shortcut (it is switched off in setup)')
 
 
 def place(path, text, user, home, log):
@@ -163,6 +177,7 @@ def run(ctx):
         else:
             folders.append(desktop)
     for folder in folders:
+        retire(folder, files, ctx.log)
         for name, text in files.items():
             place(folder / name, text, user, home, ctx.log)
     ctx.log(
