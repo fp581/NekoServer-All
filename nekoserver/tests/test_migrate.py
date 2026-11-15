@@ -449,6 +449,13 @@ class MoveTests(unittest.TestCase):
         self.assertIn(('umount', str(self.staging)), again)
         self.assertLess(again.index(('umount', str(self.staging))), again.index(('mount_staging', str(self.staging))))
 
+    def test_one_file_that_differs_is_said_as_one(self):
+        """Deep check 485: "1 files differ after the copy"."""
+        with mock.patch.object(migrate, 'differences', return_value=['films/a.mkv']):
+            self.move()
+        said = '\n'.join(map(str, self.said))
+        self.assertIn('1 file differs after the copy (the first: films/a.mkv)', said)
+
     def test_a_good_copy_switches_to_the_new_drive_and_keeps_the_old_one(self):
         with mock.patch.object(migrate, 'differences', return_value=[]):
             self.assertEqual(self.move(), 0)

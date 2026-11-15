@@ -37,6 +37,7 @@ import time
 from pathlib import Path
 
 from neko_common import (
+    file_count,
     SETTINGS_HELP,
     read_settings,
     MAINTENANCE_JOURNAL,
@@ -717,7 +718,8 @@ def copy_to_new(journal, drive, old, new, places, out):
     same_drives(mountpoint, old, staging, new)
     differ = differences(mountpoint, staging)
     if differ:
-        raise RuntimeError(f'{len(differ)} files differ after the copy (the first: {differ[0]})')
+        differs = 'differs' if len(differ) == 1 else 'differ'
+        raise RuntimeError(f'{file_count(len(differ))} {differs} after the copy (the first: {differ[0]})')
     same_drives(mountpoint, old, staging, new)
 
 

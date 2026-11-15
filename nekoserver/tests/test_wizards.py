@@ -2233,6 +2233,15 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertEqual(len(left), 1, 'only the file copied whole')
         self.assertEqual(left[0].read_bytes(), (self.root / 'src' / left[0].name).read_bytes())
 
+    def test_one_file_with_several_versions_is_said_as_one(self):
+        """Deep check 485: "1 files had more than one version; you get the newest of each"."""
+        self.write('src/report.txt', b'first')
+        self.write('src/report.neko-20261022T120000Z.txt', b'second')
+        self.write('src/.report.txt.neko-latest', b'report.neko-20261022T120000Z.txt')
+        said = []
+        recovery_wizard.copy_latest([('src', self.root / 'src')], self.root / 'restored', output=said.append)
+        self.assertIn('1 file had more than one version; you get its newest one:', said)
+
     def test_a_password_list_from_a_snapshot_without_a_backup_key(self):
         import tarfile
 

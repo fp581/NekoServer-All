@@ -834,7 +834,10 @@ def copy_latest(sources, destination, output=print, checked=None, chosen=None):
     copy_each(checked, destination, [(path, target, None) for path, target, _, _ in chosen])
     several = [(t, when, n) for _, t, when, n in chosen if n > 1]
     if several:
-        output(f'{len(several)} files had more than one version; you get the newest of each:')
+        output(
+            f'{file_count(len(several))} had more than one version; you get '
+            + ('its newest one:' if len(several) == 1 else 'the newest of each:')
+        )
         for target, when, count in sorted(several)[:10]:
             output(f'  {target}: version from {when} ({count} versions on the backup)')
         if len(several) > 10:
