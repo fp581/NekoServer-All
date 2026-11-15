@@ -3488,7 +3488,8 @@ fn usb_damage(e: &Error) -> bool {
 }
 /// Said when the night ended before the apps were stopped even with the checksum check
 /// postponed: no monthly snapshot can be taken until the night is longer.
-const NIGHT_TOO_SHORT: &str = "The monthly run cannot fit into the night: it ended before the apps could be stopped, even with the checksum check left for another month, so no monthly snapshot was taken. Start it earlier (the monthly backup time setup asks for: backup_times.monthly) or let it run longer (maintenance.night_end_hour, up to 7)";
+/// Short enough, with the hour it ends now, to stay whole in the 300-character reason.
+const NIGHT_TOO_SHORT: &str = "The monthly run cannot fit into the night: it ended before the apps could be stopped, even with the checksum check left for next month, so no snapshot was taken. Start it earlier (setup's monthly backup time, backup_times.monthly) or let it run longer";
 /// Kept on the SSD when a month's night ran out before the apps were stopped.
 const NIGHT_MARKER: &str = "reports/jobs/maintenance-night-ran-out.json";
 fn night_ran_out(data: &Path) -> bool {
@@ -4004,7 +4005,7 @@ fn running_models(cfg: &Value, names: &[String], snapshot: &Path) -> Result<(Val
 fn night_ended(cfg: &Value, postponed: bool, audit: bool, data_root: &Path) -> Error {
     if postponed {
         return Error::new(&format!(
-            "{NIGHT_TOO_SHORT} (maintenance.night_end_hour is {})",
+            "{NIGHT_TOO_SHORT} (maintenance.night_end_hour is {}, up to 7)",
             cfg["maintenance"]["night_end_hour"].as_i64().unwrap_or(6)
         ));
     }
@@ -8288,6 +8289,19 @@ mod tests {
         )));
     }
 
+    /// Deep check plan 276: a failed job's reason is cut at 300 characters (common::
+    /// sanitize) for its report and the dashboard. The night's message was 345, so it
+    /// read "or let it run longer (maintenance.night_end_hour…": the limit, "up to 7",
+    /// and the hour it is now were cut off.
+    #[test]
+    fn a_night_too_short_keeps_its_advice_whole() {
+        for hour in [5, 7] {
+            let cfg = json!({"maintenance": {"night_end_hour": hour}});
+            let said = night_ended(&cfg, true, false, Path::new("/nonexistent")).to_string();
+            assert_eq!(common::sanitize(&said), said, "{} characters", said.len());
+            assert!(said.contains("up to 7") && said.contains(&format!("is {hour}")));
+        }
+    }
     #[test]
     fn a_night_that_ran_out_lets_the_next_month_take_its_snapshot() {
         // On a big library the checksum check could use up every night, so no monthly
