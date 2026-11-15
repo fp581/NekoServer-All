@@ -455,6 +455,42 @@ class VersionTests(Base):
             with self.subTest(first=order[0].identity['sequence_number']):
                 self.assertEqual((dest / DOC).read_bytes(), b'second draft')
 
+    def test_a_restored_file_damaged_or_gone_since_is_restored_again(self):
+        """Review of 0.51.2 (P2): with --progress a file damaged since at the same size was
+        "done before", and an older version was left on the card as "a newer version is
+        restored" though that newer file was gone."""
+        second = Card(self.tmp / 'card2', seq=2, volume=VOLUME_2)
+        version(self.card, self.card.add(DOC, b'first draft'), 1, OLD_TIME, '2001-02-03T04:05:08Z')
+        version(second, second.add(DOC, b'second draft'), 2, NEW_TIME, '2023-11-14T22:13:21Z')
+        progress = str(self.tmp / 'progress.json')
+        newer = [CARD_FLAG, str(second.top), 'restore', str(self.dest), '--progress', progress]
+        self.assertEqual(tool.main(newer, say=self.said.append), 0)
+        # Damaged at the same size: not "done before"; its name is taken by other bytes.
+        (self.dest / DOC).write_bytes(b'SECOND DRAFT')
+        self.said = []
+        self.assertEqual(tool.main(newer, say=self.said.append), 1)
+        self.assertNotIn('done before', said_text(self))
+        # Gone: the older version on the first card is the best at hand, and is restored.
+        (self.dest / DOC).unlink()
+        self.said = []
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', progress), 0, said_text(self))
+        self.assertNotIn('a newer version is restored', said_text(self))
+        self.assertEqual((self.dest / DOC).read_bytes(), b'first draft')
+
+    def test_a_new_progress_file_overwrites_no_file_beside_it(self):
+        """Review of 0.51.2 (P2): the progress file was first written as "<name>.new", opened
+        for writing whatever was there."""
+        self.card.add(A_2001, b'card a')
+        progress = self.tmp / 'progress.json'
+        mine = self.tmp / 'progress.json.new'
+        mine.write_bytes(b'my own file')
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 0)
+        self.assertEqual(mine.read_bytes(), b'my own file')
+        self.assertEqual(len(progress_done(progress)), 1)
+        self.assertEqual(
+            sorted(p.name for p in self.tmp.glob('progress.json*')), ['progress.json', 'progress.json.new']
+        )
+
     def test_a_file_changed_after_it_was_restored_is_not_replaced(self):
         second = Card(self.tmp / 'card2', seq=2, volume=VOLUME_2)
         version(self.card, self.card.add(DOC, b'first draft'), 1, OLD_TIME, '2001-02-03T04:05:08Z')

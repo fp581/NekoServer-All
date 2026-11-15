@@ -8,10 +8,9 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import sys
 
-from neko_common import safe_path
+from neko_common import copy_checked_into, safe_path
 from snapshot_restore import failure_reason
 
 # What a drive answers when it cannot hold a file's name: exFAT and FAT refuse " * : < > ?
@@ -98,20 +97,20 @@ def names_refused(refused, total, dest):
 
 def write_copy(folder, source, rel, checksum):
     """One music file copied to `rel` under the open `folder` (its descriptor): its
-    subfolders made and the file created and read back through that descriptor, then
-    compared with its checksum."""
+    subfolders made, the file created there, read back from the drive and compared with
+    its checksum."""
     for parent in reversed(rel.parents):
         if str(parent) != '.':
             try:
                 os.mkdir(str(parent), 0o700, dir_fd=folder)
             except FileExistsError:
                 pass
-    out = os.open(str(rel), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=folder)
-    with source.open('rb') as inp, os.fdopen(out, 'wb') as stream:
-        shutil.copyfileobj(inp, stream)
-    back = os.open(str(rel), os.O_RDONLY | os.O_NOFOLLOW, dir_fd=folder)
-    with os.fdopen(back, 'rb') as stream:
-        if hashlib.file_digest(stream, 'sha256').hexdigest() != checksum:
+    # Written out to the drive and read back from the drive itself, as every other restore
+    # does (review of 0.51.2: read straight after the write, Linux answered from its
+    # memory, so a drive that did not keep the bytes passed).
+    with source.open('rb') as inp:
+        if copy_checked_into(inp, folder, str(rel), what=str(rel)) != checksum:
+            os.unlink(str(rel), dir_fd=folder)
             raise RuntimeError('Restored music checksum mismatch')
 
 

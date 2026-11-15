@@ -364,6 +364,48 @@ class SourceWizardTests(unittest.TestCase):
             self.assertFalse((Path(d) / 'config').exists())
 
 
+class AlreadyCopiedTests(unittest.TestCase):
+    def test_another_file_of_the_same_size_and_date_is_not_the_copy(self):
+        """Review of 0.51.2 (P2): a file in the library with its original's size and date
+        was "already copied" without a look at its contents, and the source then counted
+        as imported, so a run again skipped it."""
+        import source_import
+
+        with tempfile.TemporaryDirectory() as d:
+            film, copy = Path(d) / 'film.mkv', Path(d) / 'library.mkv'
+            film.write_bytes(b'a' * 3_000_000)
+            for other in (b'a' * 2_999_999 + b'b', b'b' + b'a' * 2_999_999, b'a' * 1_500_000 + b'b' + b'a' * 1_499_999):
+                copy.write_bytes(other)
+                os.utime(copy, ns=(film.stat().st_atime_ns, film.stat().st_mtime_ns))
+                self.assertFalse(source_import.already_copied(film, copy))
+            copy.write_bytes(film.read_bytes())
+            os.utime(copy, ns=(film.stat().st_atime_ns, film.stat().st_mtime_ns))
+            self.assertTrue(source_import.already_copied(film, copy))
+
+
+class RehearsalSqlTests(unittest.TestCase):
+    def test_only_the_dumps_own_statement_is_swapped_never_saved_text(self):
+        """Review of 0.51.2 (P2): the restore rehearsal replaced pg_dump's search_path
+        statement anywhere in the dump, so the same text inside a saved row (an album's
+        description) was changed in the copy it restored."""
+        import recovery_tools
+
+        statement = recovery_tools.SEARCH_PATH_EMPTY
+        dump = [
+            statement + b'\n',
+            b'COPY public.album (id, description) FROM stdin;\n',
+            b'1\t' + statement + b'\n',
+            statement + b'\n',  # a row that is that text alone
+            b'\\.\n',
+            b"INSERT INTO album VALUES (2, 'see " + statement.replace(b"'", b"''") + b"');\n",
+            statement + b'\n',
+        ]
+        staged = list(recovery_tools.staged_sql(dump))
+        self.assertEqual(staged[0], recovery_tools.SEARCH_PATH_PUBLIC + b'\n')
+        self.assertEqual(staged[1:6], dump[1:6])
+        self.assertEqual(staged[6], recovery_tools.SEARCH_PATH_PUBLIC + b'\n')
+
+
 class SourceListPathTests(unittest.TestCase):
     def test_only_a_json_file_is_read_as_the_source_list(self):
         """SonarCloud on PR 87 (path traversal from the command line): source_import read

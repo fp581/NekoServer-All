@@ -876,8 +876,12 @@ class Progress:
         if mode == 'a':
             self.out = open(self.path, 'a', encoding='utf-8')  # noqa: SIM115 (closed by close())
             return
-        temp = self.path + '.new'
-        with open(temp, 'w', encoding='utf-8') as f:
+        # A new file of a name nobody else has, made only if it is not there (review of
+        # 0.51.2: the fixed name "<progress file>.new" was opened for writing whatever it
+        # was, so a file or link of that name was overwritten).
+        temp = '%s.%s.new' % (self.path, os.urandom(4).hex())
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
             f.write(json.dumps({'format': PROGRESS_FORMAT, 'version': 2}) + '\n')
             for version_id, entry in self.done.items():
                 f.write(json.dumps(dict(entry, version_id=version_id), ensure_ascii=False) + '\n')
@@ -906,11 +910,10 @@ class Progress:
         entry = self._entry(rec['version_id'])
         if entry is None:
             return False
-        try:
-            st = os.stat(entry['path'], dir_fd=dest_fd, follow_symlinks=False)
-        except (OSError, ValueError):
-            return False
-        return stat.S_ISREG(st.st_mode) and st.st_size == rec['byte_size']
+        # Done before only when the file is still there with the record's own bytes (review
+        # of 0.51.2: its size alone was looked at, so a file damaged since, at the same
+        # size, was reported as restored and never copied again).
+        return holds(dest_fd, entry['path'], rec['checksum'])
 
     def at_original(self, rec):
         """(version ID, entry) of another version of rec's file restored under its own name
@@ -1103,10 +1106,14 @@ def one_version(card, rec, dest_fd, choices, chosen):
     replacing_ours = False
     if earlier is not None and entry_age(earlier[1]) is not None:
         earlier_version, earlier_entry = earlier
-        if entry_age(earlier_entry) > age(rec):
+        there = holds(dest_fd, earlier_entry['path'], earlier_entry.get('sha256'))
+        # A newer version restored before counts only while it is still there (review of
+        # 0.51.2: with it deleted or damaged since, this older copy, the best one at hand,
+        # was left on the card as "a newer version is restored").
+        if entry_age(earlier_entry) > age(rec) and there:
             return older(card, rec, dest_fd, choices, earlier_entry['path'])
         # An older version this restore put there itself, unchanged since: replaced.
-        replacing_ours = holds(dest_fd, earlier_entry['path'], earlier_entry.get('sha256'))
+        replacing_ours = there and entry_age(earlier_entry) <= age(rec)
     overwrite = choices.overwrite | {rec['original_relative_path']} if replacing_ours else choices.overwrite
     outcome, where = restore_one(card, rec, dest_fd, choices.rename, overwrite, choices.listing)
     if outcome == 'restored' and replacing_ours:

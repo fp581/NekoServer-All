@@ -466,16 +466,40 @@ def move_legacy(folder, media, category, guard=None):
     return left
 
 
+SAMPLE = 1024 * 1024  # bytes of each piece same_samples compares
+
+
+def same_samples(first, second, size):
+    """Whether two files of the same `size` hold the same bytes at their start, middle and
+    end (all of them when they are small). For a file of the same size and date as its
+    original (review of 0.51.2: that alone made it "already copied", so another file, or a
+    copy cut off and filled up, counted as imported for good). Not the whole file: reading
+    every film again at every run would take hours; a different or cut-off file differs in
+    one of these pieces."""
+    places = sorted({0, max(0, size // 2 - SAMPLE // 2), max(0, size - SAMPLE)})
+    try:
+        with first.open('rb') as one, second.open('rb') as two:
+            for place in places:
+                one.seek(place)
+                two.seek(place)
+                if one.read(SAMPLE) != two.read(SAMPLE):
+                    return False
+    except OSError:
+        return False
+    return True
+
+
 def already_copied(current, dest, apply=False):
     """True when `dest` is the copy of `current` an earlier run made; False when it is a
     different file (never replaced). Same size and date (copies keep their original's
-    date): not read again. Otherwise (a copy from before 0.39.5) the contents decide, and
-    a match takes its original's date, so the next run doesn't read both again."""
+    date): not read whole again, but three pieces of both are compared (same_samples).
+    Otherwise (a copy from before 0.39.5) the contents decide, and a match takes its
+    original's date, so the next run doesn't read both again."""
     if dest.is_symlink() or not dest.is_file():
         return False  # a symlink there is never "the copy"
     have, want = dest.stat(), current.stat()
     if (have.st_size, have.st_mtime_ns) == (want.st_size, want.st_mtime_ns):
-        return True
+        return same_samples(current, dest, want.st_size)
     if have.st_size != want.st_size or digest(current) != digest(dest):
         return False
     if apply:

@@ -59,15 +59,16 @@ class RestoreTests(unittest.TestCase):
         so a folder swapped in mid-restore (its parent may be writable by others) got the
         rest of the files while the count printed said all were restored."""
         out, moved = self.dir / 'restored', self.dir / 'moved-away'
-        real = shutil.copyfileobj
+        real = music.copy_checked_into
 
-        def swap(inp, stream, *args):
-            real(inp, stream, *args)
+        def swap(*args, **kwargs):
+            landed = real(*args, **kwargs)
             if not moved.exists():
                 out.rename(moved)
                 out.mkdir()
+            return landed
 
-        with mock.patch.object(music.shutil, 'copyfileobj', swap):
+        with mock.patch.object(music, 'copy_checked_into', swap):
             with self.assertRaisesRegex(RuntimeError, 'was replaced while the music was restored'):
                 music.restore(self.backup, self.snapshot, out)
         # Every file went into the folder that was made, none into the one swapped in.
@@ -90,13 +91,25 @@ class RestoreTests(unittest.TestCase):
 
         def tamper(fd, mode='r', *args, **kwargs):
             stream = real(fd, mode, *args, **kwargs)
-            if mode == 'wb':
+            if mode == 'w+b':
                 stream.write(b'junk')
             return stream
 
         with mock.patch.object(music.os, 'fdopen', tamper):
-            with self.assertRaisesRegex(RuntimeError, 'Restored music checksum mismatch'):
+            with self.assertRaisesRegex(RuntimeError, 'does not match what was read'):
                 music.restore(self.backup, self.snapshot, out)
+
+    def test_each_file_is_written_out_and_read_back_from_the_drive(self):
+        """Review of 0.51.2 (P2): the copy was read back straight after the write, with no
+        fsync, so Linux answered from its memory and not from the drive."""
+        calls = []
+        real_sync, real_advise = os.fsync, os.posix_fadvise
+        with (
+            mock.patch.object(os, 'fsync', lambda fd: (calls.append('fsync'), real_sync(fd))[1]),
+            mock.patch.object(os, 'posix_fadvise', lambda *a: (calls.append('drop'), real_advise(*a))[1]),
+        ):
+            self.assertEqual(music.restore(self.backup, self.snapshot, self.dir / 'restored'), 3)
+        self.assertEqual(calls, ['fsync', 'drop'] * 3)
 
     def refusing_colons(self, errno_number):
         """os.open as an exFAT drive answers it: a name with ':' is refused."""

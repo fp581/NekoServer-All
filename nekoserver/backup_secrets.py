@@ -180,29 +180,32 @@ def new_password(ask=getpass.getpass, out=print, key_dir=KEY_DIR, stamp=None, us
     """The backup password was forgotten: a new key, locked with a new password, for the
     backups from now on. The old key is kept beside it, renamed, never deleted: each
     backup carries its own copy of the key it was made with, so an old password that
-    comes back to mind still opens those. Until a new password is confirmed, the old key
-    stays in place (without one, monthly snapshots would keep the passwords unencrypted)."""
+    comes back to mind still opens those. Until the new key is whole, the old one stays
+    in place and in use (without a key, a backup would keep the passwords unencrypted)."""
     if not configured(key_dir):
         return setup(ask, out, key_dir)
     out('A new backup password, for the backups from now on.')
     out('Backups made before keep the password they were made with: they open only with that one.')
     out('Choose the new backup password (at least 8 characters; your login password is fine too).')
     stamp = stamp or time.strftime('%Y%m%d-%H%M%S')
-    kept = [(key_dir / name, key_dir / f'{name}.before-{stamp}') for name in (KEY_NAME, CERT_NAME)]
-    for current, aside in kept:
-        current.rename(aside)
+    # The new key is made in a folder of its own while the password is asked: the key in
+    # use stays where it is until the new one is whole (review of 0.51.2: it was moved
+    # aside before the question, so a backup running meanwhile found no key and kept the
+    # passwords unencrypted).
+    staging = key_dir / f'.new-key-{stamp}'
     try:
-        setup(ask, out, key_dir, intro=False)
-    except BaseException as exc:
-        for current, aside in kept:
-            current.unlink(missing_ok=True)  # a half-made new key, if any
-            aside.rename(current)
-        if isinstance(exc, RuntimeError):
-            raise RuntimeError(
-                'No new backup password was confirmed, so nothing changed: the backup password is the one you '
-                'had. Run  sudo python3 backup_secrets.py --new-password  to try again'
-            ) from None
-        raise
+        setup(ask, out, staging, intro=False)
+        for name in (KEY_NAME, CERT_NAME):
+            os.link(key_dir / name, key_dir / f'{name}.before-{stamp}')  # the old one, kept
+        for name in (CERT_NAME, KEY_NAME):
+            os.replace(staging / name, key_dir / name)
+    except RuntimeError:
+        raise RuntimeError(
+            'No new backup password was confirmed, so nothing changed: the backup password is the one you '
+            'had. Run  sudo python3 backup_secrets.py --new-password  to try again'
+        ) from None
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
     # Setup seals a list only for the weekly USB copy: without one it made none, and the
     # person was told a list with the new password was there (deep check 360).
     out(NEW_LIST_BY_SETUP if usb_copy() else NEW_LIST_MONTHLY)

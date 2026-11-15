@@ -92,6 +92,23 @@ class ForgottenBackupPasswordTests(unittest.TestCase):
         self.assertTrue((self.keys / (backup_secrets.CERT_NAME + '.before-T')).is_file())
         self.assertIn('sudo bash install.sh', self.out[-1])
 
+    def test_the_key_in_use_stays_in_place_while_the_new_password_is_asked(self):
+        """Review of 0.51.2 (P2): the key was moved aside before the question, so a backup
+        running while the person typed found no key and kept the passwords unencrypted."""
+        old = (self.keys / backup_secrets.KEY_NAME).read_bytes()
+        seen = []
+
+        def typed(prompt=''):
+            seen.append(
+                backup_secrets.configured(self.keys) and (self.keys / backup_secrets.KEY_NAME).read_bytes() == old
+            )
+            return 'second password'
+
+        backup_secrets.new_password(typed, self.out.append, self.keys, 'T', usb_copy=lambda: True)
+        self.assertEqual(seen, [True, True])
+        self.assertTrue(backup_secrets.unlocks('second password', self.keys / backup_secrets.KEY_NAME))
+        self.assertEqual([p.name for p in self.keys.iterdir() if p.name.startswith('.new-key')], [])
+
     def test_without_a_usb_copy_setup_is_not_said_to_make_a_new_list(self):
         """Deep check 360: only the weekly USB copy's step seals a list at setup, so on a
         server without one "run sudo bash install.sh: it makes a new password list" made
