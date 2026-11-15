@@ -25,11 +25,22 @@ DEPENDENCIES = ['media', 'recovery']
 DESCRIPTION = 'Nightly private media application snapshots with automatic restart recovery'
 
 
+# The one case an app backup is removed before a new one has succeeded (runtime,
+# backup::make_room), in the words every place that states the rule uses (backup_plan.rule).
+ROOM_EXCEPTION = (
+    'when the HDD is too full for the next backup, the oldest ones are removed first to make room (never the '
+    'newest, and none when that would not make enough room)'
+)
+
+
 def retention(keep):
     """What happens to older snapshots, as setup says it."""
-    if keep == 0:
-        return 'Every snapshot is kept (none are deleted automatically).'
-    return f'The newest {keep} complete snapshots are kept; older ones are deleted after each successful run.'
+    kept = (
+        'Every snapshot is kept (none is deleted to keep to a number)'
+        if keep == 0
+        else f'The newest {keep} complete snapshots are kept; older ones are deleted after each successful run'
+    )
+    return f'{kept}. One exception: {ROOM_EXCEPTION}.'
 
 
 # How many nightly backups are kept (0.50.0): 3 on a new server, a whole number from 1 to

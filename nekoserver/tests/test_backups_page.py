@@ -62,7 +62,7 @@ class BackupsPageTests(unittest.TestCase):
             (backup_plan.count(ctx.config, 'app_backup')[0], backup_plan.count(ctx.config, 'host_backup')[0]), (5, 3)
         )
         self.assertEqual(len(ctx.saved), 1)
-        self.assertTrue(any('nothing is removed before the next backup succeeds' in line for line in said))
+        self.assertIn('The newest 5 nightly app backups are kept from now on. ' + backup_plan.rule('app_backup'), said)
 
     def test_an_earlier_count_stays_until_a_number_is_chosen(self):
         config = {**self.template, 'app_backup': {'keep_snapshots': 14}}

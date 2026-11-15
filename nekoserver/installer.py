@@ -326,13 +326,13 @@ def review_backup_counts(config, ask=None, held=None):
     for group in waiting:
         what = backup_plan.COUNTED[group][0]
         keep = backup_plan.count(config, group)[0]
-        kept = backup_plan.kept_words(keep, what)
+        kept = backup_plan.kept_words(keep, what, group)
         said = backup_plan.review(config, group, backup_plan.DEFAULT, held(group) if held else None)
         if ask is not None and ask(f'{said}\nKeep the newest {backup_plan.DEFAULT} {what} from now on?') is True:
             backup_plan.set_count(config, group, backup_plan.DEFAULT)
             lines.append(
-                f'Backups: the newest {backup_plan.DEFAULT} {what} are kept from now on, not {kept}; the older ones '
-                'are removed after the next backup that succeeds, none before'
+                f'Backups: the newest {backup_plan.DEFAULT} {what} are kept from now on, not {kept}. '
+                + backup_plan.rule(group)
             )
         else:
             lines.append(

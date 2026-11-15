@@ -68,7 +68,7 @@ Run `sudo bash install.sh` again at any time: it keeps your answers and asks onl
 
 ## Backups
 
-- **Every night**: the apps' settings and databases, and this PC's own settings. The newest **3** of each are kept; you can choose any number from **1 to 7**. An older one is removed only after a new one has succeeded. Music kept on a drive of its own is copied every night too.
+- **Every night**: the apps' settings and databases, and this PC's own settings. The newest **3** of each are kept; you can choose any number from **1 to 7**. An older one is removed only after a new one has succeeded, with one exception: when the HDD is too full for the next app backup, the oldest app backups are removed first to make room (never the newest). Music kept on a drive of its own is copied every night too.
 - **Every week**: your original photos and the Immich database to the backup drive, and (if you chose a removable drive) photos and Nextcloud files to it. These copies only ever add: a photo you delete stays in the backup.
 - **Every month**: every backup copy is checked, a snapshot of every app is made and a restore is tried, then the apps are updated; an update that fails is undone.
 - Films and shows are **not** backed up: the backups page lists them, and what the download apps found can be downloaded again.

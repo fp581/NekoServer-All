@@ -17,6 +17,8 @@ removed from them because "only N are kept".
 
 A count is applied by the scheduled job itself, only after a new backup of that kind was
 finished and published, and never to the newest one (runtime, common::prune_snapshots).
+One exception, said wherever the rule is (`rule`): the nightly app backup removes its
+oldest backups before it copies when the HDD is too full for it (backup::make_room).
 Nothing here, and nothing in setup, removes a backup.
 """
 
@@ -40,6 +42,11 @@ REVIEWED = 'backup_counts_reviewed'
 SNAPSHOT = re.compile(r'^snapshot-\d+-\d+$')
 DAYS = {'Mon': 'Monday', 'Tue': 'Tuesday', 'Wed': 'Wednesday', 'Thu': 'Thursday', 'Fri': 'Friday'}
 DAYS.update(Sat='Saturday', Sun='Sunday')
+# The counted backups that make room for themselves on a full HDD (runtime,
+# backup::make_room): the app backups. The settings backup fails instead, and says how
+# much room it needs.
+MAKES_ROOM = ('app_backup',)
+ROOM_EXCEPTION = app_backup.ROOM_EXCEPTION
 NEVER_REMOVED = 'everything, in every version; nothing is ever removed to keep to a number'
 FROM_THE_FIRST = 'as far back as the first backup'  # how far back a copy that only adds reaches
 
@@ -109,8 +116,22 @@ def held(config, group):
         return None
 
 
-def kept_words(keep, what):
-    return f'every one of the {what} (none is ever removed)' if keep == 0 else f'the newest {keep} {what}'
+def kept_words(keep, what, group=None):
+    """How many are kept, in words. "Every one" (0, an earlier setting) is no promise that
+    none ever goes: a kind that makes room on a full HDD (`group`) says so."""
+    if keep != 0:
+        return f'the newest {keep} {what}'
+    room = '; only a full HDD removes the oldest, to make room' if group in MAKES_ROOM else ''
+    return f'every one of the {what} (none is removed to keep to a number{room})'
+
+
+def rule(group):
+    """When an older backup of this kind is removed, in one sentence: said under its count
+    on the backups page, before its question in the terminal, and when a count changes.
+    The exception is part of it (the review of 0.51.2: "a backup that fails removes
+    nothing" was said of app backups that had made room first)."""
+    exception = f', with one exception: {ROOM_EXCEPTION}' if group in MAKES_ROOM else ''
+    return 'An older one is removed only after a new backup has succeeded' + exception + '.'
 
 
 def review(config, group, new=DEFAULT, held=None):
@@ -121,7 +142,7 @@ def review(config, group, new=DEFAULT, held=None):
     keep, earlier = count(config, group)
     if keep == new:
         return None
-    said = f'This server keeps {kept_words(keep, what)}.'
+    said = f'This server keeps {kept_words(keep, what, group)}.'
     said += f' New servers keep {DEFAULT}, and the most that can be chosen from now on is {MOST}.' if earlier else ''
     if held is not None:
         said += f' There {"is" if held == 1 else "are"} {held} now.'
@@ -133,11 +154,13 @@ def review(config, group, new=DEFAULT, held=None):
         effect = f'the {held - new} oldest {"is" if held - new == 1 else "are"} removed'
     else:
         return said + f' With {new}, none of them is removed, as there are not more than {new}.'
+    # Only the kind that makes room has the exception: the settings backups were told of
+    # one too, though theirs fails on a full HDD and removes nothing.
+    exception = f', with one exception: {ROOM_EXCEPTION}' if group in MAKES_ROOM else ''
     return (
         said + f' If you change it to {new}, {effect}, but only after the next backup that succeeds. Nothing is '
-        'removed now, and the newest backup always stays. A backup that fails removes nothing, with one '
-        'exception: when the HDD is too full for the next backup, the oldest ones are removed first to make '
-        'room. Your photos, videos, films and music are not touched by this number.'
+        f'removed now, and the newest backup always stays. A backup that fails removes nothing{exception}. '
+        'Your photos, videos, films and music are not touched by this number.'
     )
 
 
@@ -153,6 +176,7 @@ def count_field(config, group, held=None):
         'most': MOST,
         'default': DEFAULT,
         'earlier': earlier,
+        'rule': rule(group),
         'review': review(config, group, DEFAULT, held) if earlier else None,
     }
 
@@ -219,7 +243,7 @@ def table(config, held=None):
             what,
             (drive, COUNTED[group][1]),
             f'every night at {times[time]}',
-            kept_words(keep, COUNTED[group][0]),
+            kept_words(keep, COUNTED[group][0], group),
             covers(keep, 1, 'night'),
             group,
             same_drive(config, placement.CORE, placement.INSTALL, drive),

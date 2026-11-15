@@ -331,7 +331,15 @@ class SetupWindowTests(unittest.TestCase):
         page = state['question']['page']
         page['fields'].update(keep_app_backup='3', keep_host_backup='3')
         page['counts'] = [
-            {'group': 'app_backup', 'what': 'nightly app backups', 'value': 3, 'least': 1, 'most': 7, 'review': None},
+            {
+                'group': 'app_backup',
+                'what': 'nightly app backups',
+                'value': 3,
+                'least': 1,
+                'most': 7,
+                'review': None,
+                'rule': 'An older one goes after a new one, or to make room.',
+            },  # fmt: skip
             {
                 'group': 'host_backup',
                 'what': 'nightly settings backups',
@@ -339,6 +347,7 @@ class SetupWindowTests(unittest.TestCase):
                 'least': 1,
                 'most': 7,
                 'review': None,
+                'rule': 'An older one goes after a new one.',
             },
         ]
         page['table'] = [
@@ -353,7 +362,7 @@ class SetupWindowTests(unittest.TestCase):
             ['Keep the latest nightly app backups', 'Keep the latest nightly settings backups'],
         )
         self.assertEqual([row[1] for row in seen['rows']][3:], [['3'], ['3']])
-        self.assertIn('An older one is removed only after a new backup has succeeded.', seen['rows'][3][2])
+        self.assertIn('From 1 to 7. An older one goes after a new one, or to make room. This never', seen['rows'][3][2])
         self.assertEqual(
             seen['backups'],
             [

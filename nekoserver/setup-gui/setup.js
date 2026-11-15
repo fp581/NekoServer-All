@@ -526,7 +526,10 @@
           count.least +
           ' to ' +
           count.most +
-          '. An older one is removed only after a new backup has succeeded. This never deletes your photos, films or music.' +
+          '. ' +
+          // When an older one goes, exceptions included: setup's own sentence (backup_plan.rule).
+          count.rule +
+          ' This never deletes your photos, films or music.' +
           (count.review ? ' ' + count.review + ' Leave it empty to leave them as they are.' : '')
       );
     });

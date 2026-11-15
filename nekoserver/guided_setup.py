@@ -1022,8 +1022,8 @@ def ask_backup_counts(counts, prompt, output):
     for field in counts:
         least, most = field['least'], field['most']
         output(
-            f"Every night: the newest {field['what']} are kept, and an older one is removed only after a new "
-            f'backup has succeeded. From {least} to {most}. This never deletes your photos, films or music.'
+            f"Every night: the newest {field['what']} are kept. {field['rule']} "
+            f'From {least} to {most}. This never deletes your photos, films or music.'
         )
         if field['review']:
             output(field['review'])
@@ -1057,9 +1057,7 @@ def keep_counts(ctx, chosen, output):
             backup_plan.set_count(ctx.config, group, int(answer))
             changed = True
             what = backup_plan.COUNTED[group][0]
-            output(
-                f'The newest {answer} {what} are kept from now on; nothing is removed before the next backup succeeds.'
-            )
+            output(f'The newest {answer} {what} are kept from now on. {backup_plan.rule(group)}')
             ctx.log(f'Backups kept: {answer} {what}')
     if changed:
         save_settings(ctx)
