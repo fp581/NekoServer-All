@@ -2082,6 +2082,29 @@ class RecoveryWizardTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'on another NAS disk than setup chose'):
                 usb.open()
 
+    def test_another_drive_mounted_at_the_usb_drives_folder_is_not_read(self):
+        """Deep check plan 288: with the UUID check of a drive mounted there already taken
+        out, every test still passed: a restore would read another drive's files."""
+        config = {**self.config, 'photos': {'external_backup_uuid': 'usb-11111'}}
+        with (
+            mock.patch.object(recovery_wizard.subprocess, 'run', return_value=mock.Mock(returncode=0)),
+            mock.patch.object(recovery_wizard, 'findmnt', return_value='other-2222 rw,nosuid,nodev,noexec /dev/sdy'),
+        ):
+            self.assertIsNone(recovery_wizard.Usb(config).open())
+
+    def test_the_usb_drive_is_not_opened_while_the_weekly_copy_holds_it(self):
+        """Deep check plan 288: with the lock taken out, every test still passed."""
+        import fcntl
+
+        config = {**self.config, 'photos': {'external_backup_uuid': 'usb-11111'}}
+        with tempfile.TemporaryDirectory() as d:
+            lock = Path(d) / 'photo-backup.lock'
+            with open(lock, 'w') as held, mock.patch.object(recovery_wizard, 'USB_LOCK', lock):
+                fcntl.flock(held, fcntl.LOCK_EX)
+                with self.assertRaisesRegex(RuntimeError, 'the weekly backup is using the USB drive'):
+                    with recovery_wizard.Usb(config):
+                        pass
+
     def test_the_wwn_check_looks_at_the_mounted_device_not_the_uuids_link(self):
         """The review of 0.47.0: with two LUNs of one filesystem UUID, the by-uuid link names
         only one of them, so a copy mounted by hand passed when the link named the right disk."""
