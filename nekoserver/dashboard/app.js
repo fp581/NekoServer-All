@@ -4704,7 +4704,7 @@ const GUIDES = {
     title: 'Outside heartbeat',
     intro: 'An outside service notices when the whole server goes quiet. Optional.',
     steps: [
-      'Make sure the monitor runs somewhere other than this server.',
+      'Set it up with setup: run  sudo bash install.sh  on the server and switch on “Warn me if the server stops checking in” (HEARTBEAT.md has the steps). The monitor must run somewhere other than this server.',
       'Check the heartbeat service below.',
       'Test it once: you should get an alert when it stops, and another when it’s back.'
     ],
@@ -4714,7 +4714,7 @@ const GUIDES = {
     title: 'Phone notifications',
     intro: 'Background notifications and this page’s browser alerts are different things.',
     steps: [
-      'Set up background notifications with setup.',
+      'Set up background notifications with setup: run  sudo bash install.sh  on the server and switch on “Send alerts to my phone” on its first page (NOTIFICATIONS.md has the steps on the phone).',
       'Check the service below. Keep private addresses out of screenshots.',
       'Browser alerts only work while this page is open.'
     ],
@@ -4749,7 +4749,7 @@ const GUIDES = {
     intro: 'NekoServer can only set fans that Linux can control. Laptops and some boards keep fans to themselves.',
     steps: [
       'Check the control service with the commands below.',
-      'No outputs listed? Install the “lm_sensors” package, run “sudo sensors-detect”, accept its suggestions, then restart.',
+      'No outputs listed? Install the sensors package of your Linux (“lm_sensors” on Arch, Fedora and RHEL, “lm-sensors” on Debian and Ubuntu, “sensors” on openSUSE), run “sudo sensors-detect”, accept its suggestions, then restart. DASHBOARD.md, “A sensor is missing”, has the command for each.',
       'Fans plugged into a hub or a case controller may only be visible to that device’s own app.'
     ],
     unit: 'nekoserver-control.service'
@@ -4781,7 +4781,7 @@ const GUIDES = {
     title: 'Why a sensor is missing',
     intro: 'The dashboard finds every sensor Linux reports, automatically.',
     steps: [
-      'Some motherboards need a driver: for many boards, install the “lm_sensors” package and run “sudo sensors-detect”, then restart.',
+      'Some motherboards need a driver: for many boards, install the sensors package of your Linux (“lm_sensors” on Arch, Fedora and RHEL, “lm-sensors” on Debian and Ubuntu, “sensors” on openSUSE) and run “sudo sensors-detect”, then restart. DASHBOARD.md, “A sensor is missing”, has the command for each.',
       'Virtual machines usually have no sensors.',
       'NVIDIA graphics need the NVIDIA driver; its readings update once a minute.'
     ],

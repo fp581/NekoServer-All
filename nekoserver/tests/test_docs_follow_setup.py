@@ -347,5 +347,64 @@ class BeginnerFirstTests(unittest.TestCase):
                 self.assertNotIn(stale, text, guide.name)
 
 
+class DashboardGuideTests(unittest.TestCase):
+    """Deep check plans 382 and 387: DASHBOARD.md and the dashboard's own Help guides
+    (dashboard/app.js) read against the page."""
+
+    APP = ROOT / 'dashboard/app.js'
+
+    def routes(self):
+        listed = self.APP.read_text().split('const ROUTES = {')[1].split('};')[0]
+        return re.findall(r":\s*'([^']+)'", listed)
+
+    def test_every_page_of_the_dashboard_is_in_the_pages_table(self):
+        """The Updates page (where an app is updated and NekoServer upgraded) was missing."""
+        table = doc('DASHBOARD.md').split('## The pages')[1].split('\n## ')[0]
+        pages = self.routes()
+        self.assertGreater(len(pages), 10)
+        for page in pages:
+            self.assertIn(f'| **{page}** |', table)
+
+    def test_the_system_tab_is_described_as_it_is(self):
+        """ "System: what it will cover (a later release)": the tab shows the waiting Linux
+        updates and whether a restart is needed (system_updates.py); only installing them
+        from the page is for later."""
+        text = doc('DASHBOARD.md')
+        self.assertNotIn('what it will cover', text)
+        self.assertIn("'No package updates waiting.'", self.APP.read_text())
+        self.assertIn('whether the computer needs a restart', text)
+
+    def test_help_names_the_sensors_package_of_every_linux(self):
+        """Help said to install the "lm_sensors" package: on Debian and Ubuntu that name
+        does not exist (lm-sensors), nor on openSUSE (sensors). DASHBOARD.md has each."""
+        guides = self.APP.read_text().split('const GUIDES = {')[1].split('\n};')[0]
+        lines = [line for line in guides.splitlines() if 'lm_sensors' in line]
+        self.assertEqual(len(lines), 2)
+        for line in lines:
+            for name in (
+                'lm-sensors',
+                '\u201csensors\u201d on openSUSE',
+                'DASHBOARD.md, \u201cA sensor is missing\u201d',
+            ):
+                self.assertIn(name, line)
+        commands = doc('DASHBOARD.md').split('## A sensor is missing')[1].split('\n## ')[0]
+        for command in (
+            'pacman -S lm_sensors',
+            'apt-get install lm-sensors',
+            'dnf install lm_sensors',
+            'zypper install sensors',
+        ):
+            self.assertIn(command, commands)
+
+    def test_help_names_the_switches_of_setups_first_page(self):
+        """ "Set up background notifications with setup" did not say how."""
+        import explanations
+
+        titles = {row['id']: row['title'] for row in explanations.EXTRAS}
+        guides = self.APP.read_text().split('const GUIDES = {')[1].split('\n};')[0]
+        for extra in ('notifications', 'heartbeat'):
+            self.assertIn('\u201c' + titles[extra] + '\u201d', guides)
+
+
 if __name__ == '__main__':
     unittest.main()
