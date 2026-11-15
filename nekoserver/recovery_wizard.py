@@ -35,6 +35,7 @@ import zlib
 
 import guided_setup
 import nfs_exports
+from neko_restore import read_at_most
 from neko_common import (
     nextcloud_enabled,
     OPERATION_LOCK,
@@ -891,7 +892,7 @@ def read_inventory(path):
     restored from it). A v2 list's entries all have a checksum; a v1 list's have none."""
     try:
         with gzip.open(path, 'rb') as stream:
-            raw = stream.read(INVENTORY_LIMIT + 1)
+            raw = read_at_most(stream, INVENTORY_LIMIT)
         value = json.loads(raw) if len(raw) <= INVENTORY_LIMIT else None
     except (OSError, EOFError, ValueError, zlib.error):
         return None

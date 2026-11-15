@@ -329,6 +329,20 @@ def open_dir(name, dir_fd=None):
     return os.open(name, DIR_FLAGS, dir_fd=dir_fd)
 
 
+def read_at_most(stream, limit):
+    """Up to limit + 1 bytes of an open file, a CHUNK at a time: one read(limit + 1) sets
+    that much memory aside first, and with a 1 GB limit it failed with MemoryError on a
+    computer with little memory, however small the file (deep check 275)."""
+    parts, size = [], 0
+    while size <= limit:
+        chunk = stream.read(min(CHUNK, limit + 1 - size))
+        if not chunk:
+            break
+        parts.append(chunk)
+        size += len(chunk)
+    return b''.join(parts)
+
+
 def read_limited(dir_fd, name, limit):
     fd = os.open(name, FILE_FLAGS, dir_fd=dir_fd)
     try:
@@ -783,7 +797,7 @@ class Progress:
         if os.path.exists(path):
             try:
                 with open(path, 'rb') as f:
-                    data = f.read(PROGRESS_LIMIT + 1)
+                    data = read_at_most(f, PROGRESS_LIMIT)
             except OSError as e:
                 raise Unusable('the progress file %s is not usable: %s' % (path, e.strerror)) from None
             if len(data) > PROGRESS_LIMIT:
