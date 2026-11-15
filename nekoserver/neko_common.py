@@ -430,9 +430,9 @@ def nas_disk_wwn(saved, seen, label, choose):
 # What a name from outside (a drive's label, a folder's name) must not carry onto the
 # terminal as it is: control characters (ESC starts the sequences that clear the screen
 # or retitle the window) and the marks that turn text right to left, which can make
-# "pics‮gpj.exe" read as "picsexe.jpg". neko_restore.show does the same for its
+# "pics<RLO>gpj.exe" read as "picsexe.jpg". neko_restore.show does the same for its
 # lists (that file stands alone, so it has its own).
-UNSHOWN = re.compile('[\x00-\x1f\x7f-\x9f؜‎‏‪-‮⁦-⁩]')
+UNSHOWN = re.compile('[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]')
 
 
 def printable(text):

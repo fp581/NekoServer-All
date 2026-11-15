@@ -14,11 +14,11 @@ import neko_common
 
 # What a USB stick can be given as its label or model: clear the screen, retitle the
 # window, and a right-to-left mark that makes "gpj.exe" read as "exe.jpg".
-HOSTILE = 'pics\x1b[2J\x1b]0;pwned\x07‮gpj.exe\x9b'
+HOSTILE = 'pics\x1b[2J\x1b]0;pwned\x07\u202egpj.exe\x9b'
 
 
 def raw(text):
-    return any(c in text for c in '\x1b\x07‮\x9b')
+    return any(c in text for c in '\x1b\x07\u202e\x9b')
 
 
 class DriveNameTests(unittest.TestCase):
