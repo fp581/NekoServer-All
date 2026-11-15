@@ -426,14 +426,18 @@ fn volumes_ours(name: &str, model: &Value) -> Result<()> {
         }
         let inspected: Value = serde_json::from_str(&docker(&["volume", "inspect", &volume])?)?;
         if !volume_is_ours(name, key, &inspected[0]) {
-            return Err(Error::new(&format!(
-                "The Docker volume {volume} was not made by NekoServer for {name} (or has storage options): \
-                 Compose would use it as it is. Look at it with `sudo docker volume inspect {volume}`; \
-                 if it is not needed, remove it (`sudo docker volume rm {volume}`) and run setup again"
-            )));
+            return Err(foreign_volume(&volume, name));
         }
     }
     Ok(())
+}
+/// The volume's name twice, not three times, so the reason stays within its 300 characters.
+fn foreign_volume(volume: &str, name: &str) -> Error {
+    Error::new(&format!(
+        "The Docker volume {volume} is not the one NekoServer made for {name} (or it has storage \
+         options), and Compose would use it as it is. If you don't need what it holds, run \
+         `sudo docker volume rm {volume}`, then run setup again"
+    ))
 }
 /// One volume as `docker volume inspect` shows it: Compose's own for this app's `key`.
 fn volume_is_ours(name: &str, key: &str, v: &Value) -> bool {
@@ -8300,6 +8304,17 @@ mod tests {
             let said = night_ended(&cfg, true, false, Path::new("/nonexistent")).to_string();
             assert_eq!(common::sanitize(&said), said, "{} characters", said.len());
             assert!(said.contains("up to 7") && said.contains(&format!("is {hour}")));
+        }
+    }
+    /// Deep check plan 276: the reason for a volume Compose would take over as it is was
+    /// over 300 characters with a real volume name, so the cut dropped the command that
+    /// removes it and "run setup again".
+    #[test]
+    fn a_foreign_volume_keeps_its_advice_whole() {
+        for (app, key) in [("immich", "model-cache"), ("nextcloud", "nextcloud-db")] {
+            let said = foreign_volume(&format!("neko-{app}_{key}"), app).to_string();
+            assert_eq!(common::sanitize(&said), said, "{} characters", said.len());
+            assert!(said.contains(&format!("sudo docker volume rm neko-{app}_{key}")));
         }
     }
     #[test]
