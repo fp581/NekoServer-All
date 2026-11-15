@@ -3412,6 +3412,17 @@ NO_MEDIA_BACKUP = (
 )
 
 
+# Immich and Nextcloud keep what was deleted in their own trash for 30 days (their
+# defaults; NekoServer does not change them). It is the quicker way back, and the only one
+# for a photo or file newer than the last weekly backup, which no backup holds yet: the
+# guide and this menu sent the person straight to the backups (deep check 501).
+TRASH_FIRST = (
+    'Deleted a photo or a file in the last 30 days? Look in the app\'s own trash first: in Immich,',
+    '"Trash" in the menu; in Nextcloud, "Deleted files" in Files. Restoring it there puts it back',
+    'where it was, also one newer than the last weekly backup, which no backup holds yet.',
+)
+
+
 def restore_section(config, prompt, output):
     """Sections 1 and 2: what to restore is chosen here; each restore then asks for its
     backup, date, files and folder, shows the review, and writes only once approved."""
@@ -3424,6 +3435,8 @@ def restore_section(config, prompt, output):
     )
     if media_group(config, 'movies') or media_group(config, 'music'):
         say(output, *NO_MEDIA_BACKUP)
+    if media_group(config, 'photos') or nextcloud_on(config):
+        say(output, *TRASH_FIRST)
     pick = choose('What would you like to restore?', menu(config), prompt, output)
     if pick is None:
         return

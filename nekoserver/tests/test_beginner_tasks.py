@@ -29,6 +29,40 @@ def answers(*values):
     return lambda question='': next(it)
 
 
+class DeletedPhotoTests(unittest.TestCase):
+    """Deep check 501 (week 4 of a household): a photo taken on Tuesday, deleted on Thursday.
+    The guide and the recovery menu went straight to the weekly backups, which do not hold it
+    yet (the photo archive runs on Sundays): the person found nothing, and was never told that
+    Immich keeps it in its Trash for 30 days."""
+
+    def said(self, config):
+        out = []
+        recovery_wizard.restore_section(config, answers('0'), out.append)
+        return '\n'.join(out)
+
+    def test_the_restore_list_says_to_look_in_the_apps_trash_first(self):
+        said = self.said({'media_mount': '/nonexistent/hdd', 'data_mount': '/nonexistent/ssd'})
+        self.assertIn('Look in the app\'s own trash first', said)
+        self.assertIn('"Trash"', said)
+        self.assertIn('"Deleted files"', said)
+        self.assertLess(said.index('trash first'), said.index('What would you like to restore?'))
+
+    def test_a_server_without_immich_or_nextcloud_is_not_told_about_their_trash(self):
+        config = {
+            'media_mount': '/nonexistent/hdd',
+            'data_mount': '/nonexistent/ssd',
+            'media_apps': {'photos': False, 'movies': True, 'music': False},
+            'nextcloud': {'enabled': False},
+        }
+        self.assertNotIn('trash first', self.said(config))
+
+    def test_recovery_md_sends_a_deleted_photo_to_the_trash_first(self):
+        table = doc('RECOVERY.md').split('## Which situation are you in?')[1].split('\n## ')[0]
+        for words, trash in (('deleted photos', "Immich's Trash"), ('lost files in Nextcloud', 'Deleted files')):
+            row = next(line for line in table.splitlines() if words in line)
+            self.assertLess(row.index(trash), row.index('Recovery menu'), row)
+
+
 class DeletedFilmTests(unittest.TestCase):
     """Deep check 253: a film deleted by mistake. The recovery menu listed photos, Nextcloud
     files, passwords and settings, and said nothing about films: the beginner looked for a
