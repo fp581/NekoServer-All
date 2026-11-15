@@ -1156,13 +1156,19 @@ fn start_update_job(config: &Path, op: &str, app: &str, sig: &str) -> Value {
     if let Some(job) = apps::unfinished_job(&apps::journals()) {
         return refuse("E47", &format!("{job} is still waiting to be finished; NekoServer finishes it on its own. Try again after that."));
     }
-    match common::probe(&["systemctl", "start", "--no-block", &unit], 30) {
-        (0, _) => json!({"ok": true, "message": if op == "app_update_check" {
-            "Looking for new versions now. The Updates page shows what it finds.".to_string()
-        } else {
-            format!("{app}: updating now, with a snapshot first. It goes on if you close this page; the Updates page shows how far it is.")
-        }}),
-        _ => refuse("E47", "The update could not be started. Is another update or backup running? Backups shows which one."),
+    let started = common::probe(&["systemctl", "start", "--no-block", &unit], 30).0 == 0;
+    update_job_answer(op, app, started)
+}
+/// What "Update now" and "Check for updates" answer: the app by its name ("Jellyfin",
+/// not "jellyfin"), and a check that could not start called a check, not an update
+/// (deep check 309).
+fn update_job_answer(op: &str, app: &str, started: bool) -> Value {
+    let check = op == "app_update_check";
+    match (check, started) {
+        (true, true) => json!({"ok": true, "message": "Looking for new versions now. The Updates page shows what it finds."}),
+        (false, true) => json!({"ok": true, "message": format!("{}: updating now, with a snapshot first. It goes on if you close this page; the Updates page shows how far it is.", apps::app_name(app))}),
+        (true, false) => refuse("E47", "The check for updates could not be started. Is an update or a backup running? Backups shows which one."),
+        (false, false) => refuse("E47", &format!("The update of {} could not be started. Is another update or backup running? Backups shows which one.", apps::app_name(app))),
     }
 }
 /// The temperatures detection watches: every sensor that can be read when it starts.
@@ -1633,6 +1639,23 @@ pub fn run(a: &Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn update_answers_name_the_app_and_say_what_did_not_start() {
+        // Deep check 309: "jellyfin: updating now", and a check that could not start
+        // said "The update could not be started".
+        let said = |op: &str, started: bool| {
+            update_job_answer(op, "jellyfin", started)["message"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert!(said("app_update_run", true).starts_with("Jellyfin: updating now"));
+        assert!(said("app_update_run", false)
+            .starts_with("The update of Jellyfin could not be started"));
+        assert!(said("app_update_check", false)
+            .starts_with("The check for updates could not be started"));
+        assert!(said("app_update_check", true).starts_with("Looking for new versions now"));
+    }
 
     fn service(board: &fans::tests::Board, pin: Option<&str>, port: u16) -> Arc<Service> {
         let config = board.0.join("config");

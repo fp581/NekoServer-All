@@ -148,7 +148,7 @@ pub fn installed(cfg: &Value) -> Vec<&'static str> {
         })
         .collect()
 }
-fn app_name(app: &str) -> &'static str {
+pub(crate) fn app_name(app: &str) -> &'static str {
     APPS.iter().find(|a| a.0 == app).map_or("The app", |a| a.1)
 }
 
