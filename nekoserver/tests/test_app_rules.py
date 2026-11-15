@@ -173,5 +173,37 @@ class SeerrPasswordSignInOff(unittest.TestCase):
             account_setup.seerr(self.client(True), dict(self.entry, password='wrong'), None)
 
 
+class AppStillStartingAfterAnUpdate(unittest.TestCase):
+    """After an update an app can take many minutes to update its database before it
+    answers (Jellyfin 12 answers every request with 503 meanwhile). A setup run then is
+    told to try again once it answers; never to type the app's login again, which it has
+    not refused."""
+
+    def test_a_busy_app_is_tried_again_not_retyped(self):
+        server = stand_in(lambda *_: (503, {}, b'Jellyfin is starting'))
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        entry = {'username': 'neko_j', 'password': 'pw', 'allow_create': False, 'state': 'verified'}
+        said, saved = [], {}
+        with (
+            mock.patch.object(account_setup.store, 'get', return_value=entry),
+            mock.patch.object(account_setup.store, 'update', side_effect=lambda c, a, **v: saved.update(v)),
+            mock.patch.object(account_setup.store, 'fresh', return_value=False),
+            mock.patch.object(account_setup, 'verify_project', return_value=server.server_address[1]),
+        ):
+            pending = account_setup.provision(
+                {'data_mount': '/x', 'accounts': {'wait_seconds': 2}},
+                ['jellyfin'],
+                said.append,
+                lambda app, port=None: account_setup.Client(app, server.server_address[1]),
+            )
+        self.assertEqual(pending, ['jellyfin'])
+        text = ' '.join(said)
+        self.assertIn('did not answer within 2 seconds', text)
+        self.assertIn('once Jellyfin administrator answers', text)
+        self.assertNotIn('type the login', text)
+        self.assertEqual(saved.get('state'), 'needs_setup')
+
+
 if __name__ == '__main__':
     unittest.main()

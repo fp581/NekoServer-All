@@ -134,6 +134,19 @@ def check(condition):
         raise RuntimeError('Authenticated account identity/administrator check did not match')
 
 
+class NotAnswering(HTTPFailure):
+    """The app did not answer in time: it may still be starting. After an update an app
+    can take many minutes to update its database first (Jellyfin answers 503 meanwhile,
+    Immich does not answer at all), and that says nothing about its login."""
+
+    def __init__(self, code, seconds):
+        super().__init__(code)
+        self.args = (
+            f'it did not answer within {seconds} seconds; it may still be starting (after an update an app '
+            'can be busy updating its database for a while)',
+        )
+
+
 def wait(app, client, seconds=60):
     endpoint = HEALTH.get(app, '/api/' + ARR.get(app, ('v1', 0))[0] + '/system/status')
     deadline = time.monotonic() + seconds
@@ -144,8 +157,10 @@ def wait(app, client, seconds=60):
         except HTTPFailure as exc:
             if exc.code in (401, 403):
                 return
-            if exc.code not in (0, 502, 503, 500) or time.monotonic() >= deadline:
+            if exc.code not in (0, 502, 503, 500):
                 raise
+            if time.monotonic() >= deadline:
+                raise NotAnswering(exc.code, seconds) from None
             time.sleep(min(2, max(0, deadline - time.monotonic())))
 
 
@@ -631,9 +646,13 @@ def signs_in(config, app, client_factory=Client):
         client.close()
 
 
-def what_to_do(config, app, entry):
-    """What to do about an app that did not take its saved login, in plain words."""
+def what_to_do(config, app, entry, answered=True):
+    """What to do about an app that did not take its saved login, in plain words. An app
+    that did not answer at all (`answered` false) has not refused anything: it is tried
+    again, never re-typed."""
     name = store.APPS[app][0]
+    if not answered:
+        return f'Run  sudo bash install.sh  again once {name} answers: setup then tries its saved login again.'
     try:
         own_account = not entry.get('allow_create') or not store.fresh(config, app)
     except (RuntimeError, OSError):
@@ -703,7 +722,7 @@ def provision(config, apps, output=print, client_factory=Client):
             # (A reply of another shape, a list where a record was expected, reaches here
             # as AttributeError: said in words.)
             reason = ODD_ANSWER if isinstance(exc, AttributeError) else str(exc) or type(exc).__name__
-            advice = what_to_do(config, app, entry)
+            advice = what_to_do(config, app, entry, answered=not isinstance(exc, NotAnswering))
             output(f'{store.APPS[app][0]}: not verified ({reason}); the saved login is kept. {advice}')
         finally:
             client.close()
