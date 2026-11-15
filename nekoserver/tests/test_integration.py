@@ -1116,6 +1116,7 @@ class InterruptedSetupTests(unittest.TestCase):
         class Response:
             def __init__(self, request):
                 urls.append(getattr(request, 'full_url', request))
+                self.left = InterruptedSetupTests.MANIFEST
 
             def __enter__(self):
                 return self
@@ -1123,8 +1124,9 @@ class InterruptedSetupTests(unittest.TestCase):
             def __exit__(self, *a):
                 return False
 
-            def read(self, n):
-                return InterruptedSetupTests.MANIFEST
+            def read(self, n):  # as a web answer is read: once, then nothing
+                said, self.left = self.left[:n], self.left[n:]
+                return said
 
         writes = []
         real = photos.atomic_write

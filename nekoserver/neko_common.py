@@ -1188,7 +1188,7 @@ def fetch(url, what, limit, timeout=30, opener=None, headers=None):
             promised = getattr(response, 'headers', {}).get('Content-Length')
             if len(data) > limit:
                 raise RuntimeError(f'{what}: the answer from {url} is larger than expected; try again later')
-            if isinstance(promised, str) and promised.isdigit() and len(data) < int(promised):
+            if isinstance(promised, str) and promised.isdecimal() and len(data) < int(promised):
                 raise http.client.IncompleteRead(data, int(promised) - len(data))
             return data
     except http.client.HTTPException as exc:
