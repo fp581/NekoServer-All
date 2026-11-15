@@ -31,6 +31,16 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 - **Immich follows a time zone changed after its first setup**, as every other schedule and app already did.
 - **A dashboard PIN asked again and left empty is no longer shown by "Show login".**
 
+### Fixed: the first month of a household
+- **A USB drive left unplugged on copy night is a warning, not a 3 am urgent alert.** The weekly copy counted it as an urgent failure, so the phone rang at the highest priority that night and every 12 hours after, until the drive came back. The dashboard's card says the drive was not plugged in, as the alert does.
+- **A 12-hour reminder comes quietly and says "still"**; only a new problem is sent as urgent.
+- **A shared network folder that stops answering reaches the phone** (it was urgent on the dashboard only).
+- **"Phone access needs a Tailscale sign-in"**, true whether the sign-in ran out or was never made ("signed out" was said to a server never signed in).
+- **For a deleted photo or file, the recovery menu and RECOVERY.md look in the app's own trash first** (Immich's Trash, Nextcloud's Deleted files): the weekly backups don't hold a photo from this week yet.
+- **Ask Neko knows when each backup last worked and when it runs next**, so "When were my photos last backed up?" gets a true answer.
+- **README says how to give someone in the family a login of their own**, and how to limit a child's Jellyfin login.
+- **"Restore tried: Not yet" says how to try a restore and record it.**
+
 ### Fixed: the phones, TVs and PCs people use
 - **Seerr's "Play on Jellyfin" buttons and alert links open on a phone**: they led to Jellyfin's address inside Docker. Setup now gives Seerr the gateway's Jellyfin address (the Tailscale one first), and keeps one you typed.
 - **Setup and README say how to open the shared folders** from Windows, a Mac, Linux and a Chromebook (Windows never lists them under Network by itself), with the login.
