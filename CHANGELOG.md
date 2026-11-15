@@ -13,6 +13,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **The SD-card engine** (not switched on yet) and **the card restore tool**'s second check.
 
 ### Fixed: getting files back (the recovery menu, restore tools, backup cards)
+- **The recovery menu left after only looking around says nothing was changed**, not that restores "stay as they are".
 - **A backup card unplugged mid-restore is said as such** ("The card stopped answering", the files so far are complete, how to carry on), instead of every remaining file called damaged.
 - **Card searches find accented names written the Mac or phone way** (`list --search`, `restore --search`, `where`).
 - **Restored files are not given to an account that no longer exists**: they stay root's, with a `chown` line that works.
@@ -37,6 +38,10 @@ Every copy is read back and checked before it counts. That read came straight af
 - **Nothing is restored onto the card itself.** `restore /mnt` (the card) copied every file onto the card, among its records; a folder on the card is now refused, also through a link.
 
 ### Fixed: backups and upgrades
+- **A drive that turned read-only, or that Linux shut down after errors, is named before a job writes to it**, instead of "os error 30" or "os error 5"; a read-only SSD no longer makes every job wait 3 hours "for another NekoServer job".
+- **A restore from an exFAT USB drive no longer calls the photos it could not hold "missing"** or lists them for repair: they are safe on the HDD.
+- **A failed snapshot's half-made folder is removed when the run ends**, not left (as big as the snapshot) until the next night.
+- **A file name with a line break no longer cuts a snapshot's failure reason** (it then named another file).
 - **A NekoServer update whose download was cut off or damaged is said in plain words**, not tarfile's list or "IncompleteRead".
 - **The weekly Immich database copy never falls on a time the clocks skip**: on the Sunday the clocks go forward in the US and Europe, 02:15 does not exist, and the USB copy got the week-old database copy. It moves earlier (01:45) where that would happen.
 - **Setup says when a backup time you choose falls in the hour the clocks skip** (it would not run that night), and offers another; Enter keeps yours. The old default database copy time (02:15) moves to 01:45 where it is skipped.
@@ -51,6 +56,12 @@ Every copy is read back and checked before it counts. That read came straight af
 - **An older password list after the backup key was made again says it is from the earlier key** and asks for that password, instead of "Wrong password" to the right new one.
 
 ### Fixed: setup and its tools
+- **"Continue unfinished setup" says what it really does** (it asks the first page, drives and review again), not that it goes straight on at the step that stopped.
+- **On one drive, the review names that drive** for the photos, not "the drive of the backups".
+- **Backup times typed as "2:30" are taken** (kept as 02:30).
+- **A drive named in the settings with a name no drive can have ("d-1") is said so**, instead of "not a drive under storage".
+- **Drive checks name the problem as it is**: a drive mounted out of its place, two roles sharing one filesystem (said for the USB drive too, before), and an exFAT drive mounted through a FUSE helper (now mounted with Linux's own exFAT driver).
+- **The runtime build copies only the binary it compiled itself** (two builds sharing one folder copied each other's).
 - **An automatic update cut off earlier is said with the command that finishes it** (`sudo dpkg --configure -a`), not apt's raw line.
 - **A damaged or missing settings file is named, with what is wrong** (not JSON, with the line and column; not there; no settings in it; no such profile), in `install.sh`, `acceptance.py` and `recover.py`, instead of Python's own words or a vague line.
 - **`recover.py check --config my.json` reads my.json.** The option was read only before the command.
@@ -82,6 +93,9 @@ Every copy is read back and checked before it counts. That read came straight af
 - **`notify --test` says what happened**: that the alert server took the test and to look at your phone, or that it was not sent and what to check. It printed nothing, or only "Notification delivery failed".
 
 ### Fixed: the dashboard and Ask Neko
+- **A drive under LUKS or LVM gets its health (SMART) check** from the one disk under it, instead of "Physical disk mapping unavailable" forever.
+- **A drive at exactly 90% is no longer "Over 90% used".**
+- **A drive that doesn't answer hdparm in time keeps its own power settings, and that is said**, instead of the power-settings service failing.
 - **Keyboard focus stays on its control when the page refreshes** (it fell back to the top every few seconds on the apps' ⋯ buttons, Updates, "See more", "Detect fans").
 - **Nothing is covered or pushed sideways on a narrow phone at 200% zoom** (the page title was hidden under the top buttons at 320 px).
 - **The processes page with over 5,000 programs lists the busiest and counts them all**; newer busy programs were left out and the count was wrong.
