@@ -334,13 +334,18 @@ if "$apply"; then
     echo "A drive move is not finished (/etc/nekoserver-backups/migrate.json). Finish it with  sudo python3 migrate.py resume  (it runs setup itself)." >&2
     exit 1
   fi
-  # The same for a NekoServer upgrade at work or cut off (runtime/src/shared.json
-  # recovery.upgrade): it runs setup itself, with NEKOSERVER_KEEP_SYSTEM. A setup started
-  # by hand meanwhile would take the setup lock from the upgrade's own run (so it could
-  # neither set up the new release nor put the old one back) and set this folder's
-  # release up over a server half upgraded. The service waits for an upgrade at work.
-  if ! "$recover" && [[ -e /etc/nekoserver-backups/upgrade.json && -z "${NEKOSERVER_KEEP_SYSTEM:-}" ]]; then
-    echo 'A NekoServer upgrade is at work or was cut off (/etc/nekoserver-backups/upgrade.json). Let it finish: run  sudo systemctl start nekoserver-upgrade-resume.service  (it waits for an upgrade at work, then finishes or puts back a cut-off one), then run  sudo bash install.sh  again.' >&2
+  # The same for a NekoServer upgrade at work (runtime/src/shared.json recovery.upgrade
+  # and operation_lock): it runs setup itself, with NEKOSERVER_KEEP_SYSTEM, and holds the
+  # operation lock from start to end (so does the service that puts a cut-off one right
+  # at boot). A setup started by hand meanwhile would take the setup lock from the
+  # upgrade's own run, so it could neither set up the new release nor put the old one back.
+  # A record with nothing at work is one the upgrade left to you (its way back did not
+  # pass: it says to run setup), or whose resume could not start (a drive missing): setup
+  # by hand is the way on, and closes the record once the server passes its check
+  # (upgrade.settle_after_setup). It stopped here too, so that advice led nowhere.
+  if ! "$recover" && [[ -e /etc/nekoserver-backups/upgrade.json && -z "${NEKOSERVER_KEEP_SYSTEM:-}" ]] \
+    && ! flock -n /run/nekoserver-operation.lock true; then
+    echo 'A NekoServer upgrade is at work (the Updates page of the dashboard shows how far it is). Let it finish, then run  sudo bash install.sh  again.' >&2
     exit 1
   fi
   if ! "$recover" && [[ -e /etc/nekoserver-backups/maintenance-resume.json ]]; then

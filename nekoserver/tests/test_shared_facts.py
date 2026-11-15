@@ -133,6 +133,7 @@ class ShellCopies(unittest.TestCase):
         script = (ROOT / 'install.sh').read_text()
         self.assertIn('exec 9>>' + SHARED['setup_lock'] + '\n', script)
         self.assertIn('-e ' + SHARED['recovery']['maintenance']['journal'] + ' ]]', script)
+        self.assertIn('flock -n ' + SHARED['operation_lock'] + ' true', script)
         for path in re.findall(r'/etc/nekoserver-backups/[a-z-]+\.json', script):
             known = [r['journal'] for r in SHARED['recovery'].values()] + [str(migrate.JOURNAL)]
             self.assertIn(path, known)

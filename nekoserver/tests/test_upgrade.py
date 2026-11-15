@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import upgrade  # noqa: E402
-from neko_common import VERSION  # noqa: E402
+from neko_common import VERSION, hold_operation  # noqa: E402
 
 NEWER = 'v{}.{}.{}Beta'.format(*[int(n) + (1 if i == 1 else 0) for i, n in enumerate(VERSION.split('.'))])
 FINISHED = 'Finished: 2 of 3 steps done; 1 failed, waiting or unfinished'  # the installer's last line
@@ -1074,7 +1074,8 @@ class SetupByHandDuringAnUpgrade(unittest.TestCase):
     the upgrade's own run then could not get, so neither the new release nor the way
     back could be set up). The upgrade's own runs pass NEKOSERVER_KEEP_SYSTEM."""
 
-    SHARED = json.loads((ROOT / 'runtime/src/shared.json').read_text())['recovery']['upgrade']
+    FACTS = json.loads((ROOT / 'runtime/src/shared.json').read_text())
+    SHARED = FACTS['recovery']['upgrade']
 
     def guard(self):
         """install.sh's check of the upgrade record, as it stands in the script."""
@@ -1083,24 +1084,37 @@ class SetupByHandDuringAnUpgrade(unittest.TestCase):
         end = next(i for i in range(start, len(lines)) if lines[i].strip() == 'fi')
         return '\n'.join(lines[start : end + 1])
 
-    def run_guard(self, journal, **env):
+    def run_guard(self, journal, lock, **env):
         guard = self.guard().replace(self.SHARED['journal'], str(journal))
+        guard = guard.replace(self.FACTS['operation_lock'], str(lock))
         script = 'recover=false\n' + guard + '\necho went-on\n'
         return subprocess.run(
             ['bash', '-c', script], capture_output=True, text=True, env={'PATH': '/usr/bin:/bin', **env}, check=False
         )
 
-    def test_a_setup_by_hand_stops_and_names_the_service(self):
+    def test_a_setup_by_hand_stops_while_an_upgrade_is_at_work(self):
         with tempfile.TemporaryDirectory() as folder:
-            journal = Path(folder) / 'upgrade.json'
-            self.assertIn('went-on', self.run_guard(journal).stdout)
-            journal.write_text('{"format": "neko-upgrade-v1", "phase": "downloading"}')
-            stopped = self.run_guard(journal)
-            self.assertEqual(stopped.returncode, 1)
-            self.assertNotIn('went-on', stopped.stdout)
-            self.assertIn('sudo systemctl start ' + self.SHARED['service'], stopped.stderr)
-            # The upgrade's own setup (and its way back) goes on.
-            self.assertIn('went-on', self.run_guard(journal, NEKOSERVER_KEEP_SYSTEM='1').stdout)
+            journal, lock = Path(folder) / 'upgrade.json', Path(folder) / 'operation.lock'
+            self.assertIn('went-on', self.run_guard(journal, lock).stdout)
+            journal.write_text('{"format": "neko-upgrade-v1", "phase": "installing"}')
+            # The upgrade (or the service putting a cut-off one right) holds the operation lock.
+            with hold_operation(lock):
+                stopped = self.run_guard(journal, lock)
+                self.assertEqual(stopped.returncode, 1)
+                self.assertNotIn('went-on', stopped.stdout)
+                self.assertIn('upgrade is at work', stopped.stderr)
+                # The upgrade's own setup (and its way back) goes on.
+                self.assertIn('went-on', self.run_guard(journal, lock, NEKOSERVER_KEEP_SYSTEM='1').stdout)
+
+    def test_a_setup_by_hand_goes_on_when_the_upgrade_left_the_server_to_you(self):
+        """A way back that did not pass says "Run  sudo bash install.sh  in <release>", and
+        settle_after_setup closes the record after it. install.sh stopped that run and sent
+        the person to the resume service, which tried the same way back again: the record
+        could never go (deep check 354). Nothing holds the lock then."""
+        with tempfile.TemporaryDirectory() as folder:
+            journal, lock = Path(folder) / 'upgrade.json', Path(folder) / 'operation.lock'
+            journal.write_text('{"format": "neko-upgrade-v1", "phase": "going_back", "problem": "x"}')
+            self.assertIn('went-on', self.run_guard(journal, lock).stdout)
 
 
 if __name__ == '__main__':
