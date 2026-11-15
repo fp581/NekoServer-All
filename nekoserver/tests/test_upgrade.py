@@ -755,7 +755,7 @@ class UpgradeTests(unittest.TestCase):
 
     def test_a_cut_off_upgrade_is_put_right_at_the_next_start(self):
         upgrade.record('downloading', self.journal, to=NEWER, previous=str(self.previous))
-        self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(), self.journal), 0)
+        self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(), self.journal), 1)
         self.assertFalse(self.journal.exists())
         upgrade.record('installing', self.journal, to=NEWER, previous=str(self.previous), before=['storage'])
         self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(0), self.journal), 1)
@@ -1025,6 +1025,30 @@ class UpgradeReportTests(unittest.TestCase):
         self.journal.write_text('{}')  # the record is still there: it needs you
         self.assertEqual(upgrade.service_code(2, self.journal), 2)
         self.assertIn('return service_code(reported(', (ROOT / 'upgrade.py').read_text())
+
+    def test_an_upgrade_cut_off_while_it_downloaded_is_not_reported_as_passed(self):
+        """Deep check 316, under systemd: a record left at "downloading" (a restart during
+        the download), then nekoserver-upgrade-resume at the next start. The report said
+        "pass" with a new last success, and the dashboard showed the upgrade as done while
+        the server still ran the release it had."""
+        earlier = self.report(0, 'NekoServer is installed and checked')
+        upgrade.record('downloading', self.journal, to=NEWER)
+        row = upgrade.reported(
+            self.config,
+            upgrade.RESUME_UNIT,
+            lambda out: upgrade.resume_held(None, out, None, self.journal),
+            journal=self.journal,
+            now=self.now,
+            out=lambda line: None,
+        )
+        self.assertEqual(row, 1)
+        report = json.loads(self.path.read_text())
+        self.assertEqual(report['status'], 'partial')
+        self.assertEqual(report['last_success'], earlier['last_success'])
+        self.assertIn(f'The upgrade to {NEWER} was cut off while it downloaded', report['missing'][0])
+        self.assertIn(f'still runs {VERSION}', report['missing'][0])
+        # Its service still ends well: nothing needs you.
+        self.assertEqual(upgrade.service_code(row, self.journal), 0)
 
     def test_an_error_still_ends_the_report(self):
         self.journal.write_text('{}')

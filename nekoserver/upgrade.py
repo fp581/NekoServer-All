@@ -765,8 +765,13 @@ def resume_held(settings, out, setup, journal):
         return 0
     if saved.get('phase') == 'downloading':
         journal.unlink(missing_ok=True)
-        out('An upgrade was cut off while it downloaded; nothing had changed')
-        return 0
+        out(
+            f'The upgrade to {saved.get("to") or "a newer release"} was cut off while it downloaded; nothing had '
+            f'changed and this server still runs {VERSION}. Start the upgrade again from the Updates page'
+        )
+        # 1, not 0: nothing was upgraded, so the report says "partial", not "pass" (deep
+        # check 316: the dashboard showed the cut-off upgrade as a success).
+        return 1
     config = json.loads(settings_path(settings).read_text())
     if settled(config, out, journal, saved=saved):
         return 0
