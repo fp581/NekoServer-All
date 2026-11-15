@@ -521,6 +521,7 @@ def how_to_open(mode, ip, user, shares):
         '"This PC", "Map network drive").',
         f'  Mac: in Finder choose Go, "Connect to Server", type  smb://{where}/{first}  and choose "Registered User".',
         f'  Linux: in the file manager press Ctrl+L and type  smb://{where}/{first}',
+        f'  Chromebook: in Files choose More (\u22ee), Services, "SMB file share", and type  \\\\{where}\\{first}',
         f'  Sign in as {user} with the shared folders\' password chosen in setup.',
     ]
     if mode != 'lan':

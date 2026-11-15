@@ -217,6 +217,7 @@ The home address is, for example, `https://192.168.1.20:8442` for the app menu (
 - **Windows:** in File Explorer's address bar type `\\192.168.1.20\Media` and press Enter. To keep it as a drive letter, right-click *This PC*, *Map network drive*, and type the same address.
 - **Mac:** in Finder choose *Go*, *Connect to Server*, type `smb://192.168.1.20/Media`, and choose *Registered User*.
 - **Linux** (GNOME Files, Dolphin): press Ctrl+L and type `smb://192.168.1.20/Media`.
+- **Chromebook:** in *Files* choose *More* (⋮), *Services*, *SMB file share*, and type `\\192.168.1.20\Media` as the file share URL.
 
 Sign in with the username of the account that ran setup (`"samba_user"` under `"networking"` names another) and the password you chose for the shared folders in setup. Windows offers to remember it.
 

@@ -527,6 +527,7 @@ class SambaHowToOpenTests(unittest.TestCase):
         self.assertIn('\\\\192.168.1.20\\Media', said)  # Windows
         self.assertEqual(said.count('smb://192.168.1.20/Media'), 2)  # Mac, Linux
         self.assertIn('Sign in as neko', said)
+        self.assertIn('"SMB file share"', said)  # deep check 567: a Chromebook
 
     def test_over_tailscale_it_names_the_address_to_use(self):
         lines = samba.how_to_open('tailnet', None, 'neko', {'Media': 'library'})
