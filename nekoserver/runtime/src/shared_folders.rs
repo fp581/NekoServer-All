@@ -118,8 +118,13 @@ fn in_a_library(cfg: &Value, point: &Path) -> bool {
 /// itself, really mounted: not systemd's automount alone ("autofs systemd-1"), not
 /// another share, not nothing.
 fn really_mounted(found: Option<&str>, share: &str) -> bool {
-    let mut fields = found.unwrap_or("").split_whitespace();
-    let (fstype, source) = (fields.next().unwrap_or(""), fields.next().unwrap_or(""));
+    // The source is the rest of the line, spaces and all: a Windows or NAS share is often
+    // called "//nas/My Media", and its first word alone never matched, so its apps were
+    // stopped every minute as if the share were away.
+    let (fstype, source) = found
+        .unwrap_or("")
+        .split_once(char::is_whitespace)
+        .map_or(("", ""), |(fstype, rest)| (fstype, rest.trim_start()));
     !fstype.is_empty() && fstype != "autofs" && source == share
 }
 
@@ -439,6 +444,15 @@ mod tests {
         assert!(!really_mounted(Some("nfs4 other:/tank"), "nas:/tank"));
         assert!(!really_mounted(None, "nas:/tank"));
         assert!(!really_mounted(Some(""), "nas:/tank"));
+    }
+
+    #[test]
+    fn a_share_with_spaces_in_its_name_is_the_share() {
+        // findmnt's "FSTYPE SOURCE" for a Windows share, as it prints it.
+        assert!(really_mounted(Some("cifs //nas/My Media"), "//nas/My Media"));
+        assert!(really_mounted(Some("cifs   //nas/My Media"), "//nas/My Media"));
+        assert!(!really_mounted(Some("cifs //nas/My"), "//nas/My Media"));
+        assert!(!really_mounted(Some("autofs //nas/My Media"), "//nas/My Media"));
     }
 
     /// Gate run C8: with the share away, the apps that see it stop; once it answers and
