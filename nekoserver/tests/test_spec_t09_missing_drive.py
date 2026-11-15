@@ -141,7 +141,9 @@ class MissingDriveTests(unittest.TestCase):
 
     def test_the_check_covers_both_drives_and_every_share_in_use(self):
         guard = self.functions[GUARD]
-        main = self.functions[('backup', 'main_drives')]
+        # main_drives hands the real drive check to main_drives_with (tests give their own).
+        self.assertIn('main_drives_with(c, data, media, &checked_drive)', self.functions[('backup', 'main_drives')])
+        main = self.functions[('backup', 'main_drives_with')]
         self.assertIn('[("data_ssd", data), ("media_hdd", media)]', main)
         self.assertIn('checked_drive(c, key, path)?', main)
         for body in (guard, self.functions[PRESENT]):

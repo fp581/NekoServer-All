@@ -3605,6 +3605,15 @@ pub(crate) fn guard_present(cfgpath: &Path, data: &Path, media: &Path) -> Result
 }
 /// The SSD and the HDD the settings name, mounted where they say: their identities.
 fn main_drives(c: &Value, data: &Path, media: &Path) -> Result<Vec<String>> {
+    main_drives_with(c, data, media, &checked_drive)
+}
+/// `main_drives` with the drive check given (tests give one that needs no mounted drive).
+fn main_drives_with(
+    c: &Value,
+    data: &Path,
+    media: &Path,
+    checked_drive: &dyn Fn(&Value, &str, &Path) -> Result<String>,
+) -> Result<Vec<String>> {
     if c["data_mount"].as_str() != data.to_str() || c["media_mount"].as_str() != media.to_str() {
         return Err(Error::new("Backup paths must match verified configuration"));
     }
@@ -5218,6 +5227,48 @@ mod tests {
         let err = drive_check(&settings(""), "data_ssd", at, &entry("/mnt/other")).unwrap_err();
         assert!(err.to_string().contains("another Btrfs subvolume"), "{err}");
         let _ = fs::remove_dir_all(root);
+    }
+    /// Deep check plan 288: changes to the drive check that no test noticed. findmnt's
+    /// answer without a source (a filesystem with no UUID shifts its columns) passed, then
+    /// crashed on the missing column; a subvolume written with a closing slash ("/@data/")
+    /// is the one mounted ("/@data").
+    #[test]
+    fn a_drive_check_takes_only_a_whole_answer_and_a_subvolume_as_written() {
+        let at = Path::new("/mnt/data");
+        let c = json!({"storage": {"data_ssd": {"uuid": "ab-cd", "fstype": "btrfs", "subvolume": "/@data/"}}});
+        assert_eq!(
+            drive_check(&c, "data_ssd", at, "ab-cd btrfs /dev/sdb1[/@data]").unwrap(),
+            "ab-cd"
+        );
+        let plain = json!({"storage": {"data_ssd": {"uuid": "ab-cd", "fstype": "ext4"}}});
+        assert!(drive_check(&plain, "data_ssd", at, "ab-cd ext4").is_err());
+    }
+    /// Deep check plan 288: the SSD and the HDD must be two drives (unless the settings
+    /// keep both as folders of one on purpose), at the settings' own paths, and every other
+    /// drive is one of its own: each of these could be taken out unnoticed.
+    #[test]
+    fn the_guard_wants_two_drives_at_the_settings_paths() {
+        let (data, media) = (
+            Path::new("/srv/nekoserver"),
+            Path::new("/mnt/nekoserver-media"),
+        );
+        let mut c = json!({"data_mount": "/srv/nekoserver", "media_mount": "/mnt/nekoserver-media",
+            "storage": {"data_ssd": {"uuid": "one"}, "media_hdd": {"uuid": "two"}}});
+        let by_settings = |c: &Value, key: &str, _: &Path| -> Result<String> {
+            Ok(c["storage"][key]["uuid"].as_str().unwrap().to_string())
+        };
+        assert_eq!(
+            main_drives_with(&c, data, media, &by_settings).unwrap(),
+            ["one", "two"]
+        );
+        assert!(main_drives_with(&c, data, Path::new("/mnt/other"), &by_settings).is_err());
+        c["storage"]["media_hdd"]["uuid"] = json!("one");
+        let same = main_drives_with(&c, data, media, &by_settings).unwrap_err();
+        assert!(same.to_string().contains("Distinct"), "{same}");
+        let mut ids = vec!["one".to_string(), "two".to_string()];
+        assert!(distinct(&mut ids, "two".into()).is_err());
+        distinct(&mut ids, "three".into()).unwrap();
+        assert_eq!(ids, ["one", "two", "three"]);
     }
     /// The 0.46.0 review, H04: with Nextcloud's files on the SSD, the USB copy refused its
     /// own folder ("outside media mount") and copied nothing, photos included. The folder
@@ -9482,7 +9533,10 @@ mod tests {
             let from = &source[source.find(start).unwrap()..];
             from[..from.find("\n}\n").unwrap()].to_string()
         };
-        assert!(body("fn main_drives(").contains("checked_drive(c, key, path)"));
+        assert!(
+            body("fn main_drives(").contains("main_drives_with(c, data, media, &checked_drive)")
+        );
+        assert!(body("fn main_drives_with(").contains("checked_drive(c, key, path)"));
         assert!(body("pub fn guard(").contains("main_drives(&c, data, media)?"));
         assert!(body("pub(crate) fn guard_present(").contains("main_drives(&c, data, media)?"));
     }
