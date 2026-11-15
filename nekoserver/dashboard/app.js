@@ -877,7 +877,7 @@ function backupIssues(s, add) {
         name + ' · ' + jobLabel(job),
         text(job.reason, 'Review the last backup attempt.'),
         guideFor('job:' + job.id),
-        severity(job.status === 'fail'),
+        severity(job.status === 'fail' && job.usb_away !== true),
         unit
       );
     } // a backup that has not run yet is no problem: Home's "Getting started" says when it will
@@ -2231,6 +2231,11 @@ function backupBadge(job, fresh) {
   }
   if (job.blocked) {
     return badge('warning', 'Can’t run now');
+  }
+  // The weekly copy found the USB drive away (collect.rs usb_was_away): its alert is a
+  // warning saying so, and the card agrees instead of an urgent "Failed".
+  if (job.usb_away === true) {
+    return badge('warning', 'USB drive not plugged in');
   }
   return badge(job.status, notSetUp ? 'Not set up' : jobLabel(job));
 }

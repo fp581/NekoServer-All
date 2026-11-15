@@ -151,5 +151,28 @@ console.log(JSON.stringify(rows));'''
         )
 
 
+def backup_badge(job):
+    """Run the dashboard's own backupBadge on one backup row (badge and the label stubbed)."""
+    app = (ROOT / 'dashboard/app.js').read_text()
+    func = re.search(r'^function backupBadge\(job, fresh\) \{.*?^\}', app, re.MULTILINE | re.DOTALL).group(0)
+    stubs = (
+        "const badge = (s, l) => [s, l];\nconst numeric = v => typeof v === 'number';\nconst jobLabel = j => 'Failed';"
+    )
+    script = f'{stubs}\n{func}\nconsole.log(JSON.stringify(backupBadge({json.dumps(job)}, true)));'
+    return json.loads(subprocess.run([NODE, '-e', script], capture_output=True, text=True, check=True).stdout)
+
+
+@unittest.skipUnless(NODE, 'node is not installed')
+class UsbAwayCardTests(unittest.TestCase):
+    """Deep check 496: the USB drive left unplugged for the weekly copy. Its alert is a
+    warning saying so (collect.rs usb_away); the backup's card said an urgent "Failed"."""
+
+    def test_the_card_says_the_usb_drive_was_not_plugged_in(self):
+        away = {'id': 'external', 'status': 'fail', 'usb_away': True, 'timer': {'installed': True}}
+        self.assertEqual(backup_badge(away), ['warning', 'USB drive not plugged in'])
+        other = {'id': 'external', 'status': 'fail', 'timer': {'installed': True}}
+        self.assertEqual(backup_badge(other), ['fail', 'Failed'])
+
+
 if __name__ == '__main__':
     unittest.main()
