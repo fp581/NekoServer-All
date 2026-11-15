@@ -67,6 +67,11 @@
     ]
   },
   "writers": ["docker.socket", "docker.service", "smbd.service", "smb.service", "nekoserver-gateway-lan.service"],
+  "usb_keeps": {
+    "_about": "How many of each the weekly copy keeps on the USB drive, the newest ones (backup.rs); the photos and files themselves are never counted or removed. Setup's backups page says these numbers (backup_plan.py offline_row).",
+    "password_lists": 3,
+    "database_copies": 4
+  },
   "left_out": {
     "_about": "The list the weekly copy keeps on an exFAT USB drive of the photos it left out because exFAT can't store their names (backup.rs mirror_on). They are safe on the HDD: a restore from the USB drive (recovery_wizard.py) says so, and never calls them missing copies to repair.",
     "file": ".neko-left-out.json",

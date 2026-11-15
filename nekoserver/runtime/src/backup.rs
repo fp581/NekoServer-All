@@ -2423,8 +2423,16 @@ fn copy_cloud_with(
         integrity: report,
     })
 }
-/// Weekly Immich database copies kept on the USB drive (newest first; older ones go).
-const USB_DUMPS: u64 = 4;
+/// How many of `what` the USB drive keeps, the newest ones (shared.json "usb_keeps":
+/// setup's backups page says the same numbers).
+fn usb_keeps(what: &str) -> u64 {
+    common::SHARED["usb_keeps"][what]
+        .as_u64()
+        .expect("shared.json names how many the USB drive keeps")
+}
+/// Weekly database copies of an app kept on the USB drive (newest first; older ones go).
+static USB_DUMPS: std::sync::LazyLock<u64> =
+    std::sync::LazyLock::new(|| usb_keeps("database_copies"));
 /// Weekly Nextcloud database copies kept on the HDD and on the USB drive.
 const CLOUD_DUMPS: u64 = 4;
 /// An app whose database the weekly jobs copy: Immich (its own weekly job) and
@@ -2658,7 +2666,7 @@ fn copy_newest_of(kind: &DumpKind, hdd_dumps: &Path, usb: &Path) -> Result<Optio
         format!("{label} version that made the newest database copy ({name}): {version}\nEach copy's own version and checksum are in the .json file next to it.\n{}\n", kind.guide).as_bytes(),
         0o600,
     )?;
-    prune_dumps_of(kind.app, &folder, USB_DUMPS, Some(&name))?;
+    prune_dumps_of(kind.app, &folder, *USB_DUMPS, Some(&name))?;
     println!("USB: {label} database copy {name} ({label} {version})");
     Ok((!problems.is_empty()).then(|| problems.join("; ")))
 }
@@ -2702,7 +2710,8 @@ fn is_dump(app: &str, name: &str) -> bool {
 /// Without it, a server whose SSD and HDD both broke had no password list anywhere.
 const USB_PASSWORDS: &str = "passwords";
 /// How many snapshots' password lists the USB drive keeps (the newest ones).
-const USB_PASSWORD_LISTS: usize = 3;
+static USB_PASSWORD_LISTS: std::sync::LazyLock<usize> =
+    std::sync::LazyLock::new(|| usb_keeps("password_lists") as usize);
 /// A snapshot's password list: each file with the manifest key that records its checksum.
 const SECRETS_FILES: [(&str, &str); 3] = [
     ("secrets", crate::maintenance::SECRETS_ARCHIVE),
@@ -2873,7 +2882,7 @@ fn copy_newest_secrets(sources: &[PathBuf], usb: &Path) -> Result<Option<String>
         &common::bytes(&source.join("manifest.json"), 2_000_000)?,
         0o600,
     )?;
-    keep_newest_lists(&folder, USB_PASSWORD_LISTS)?;
+    keep_newest_lists(&folder, *USB_PASSWORD_LISTS)?;
     let date = chrono::DateTime::from_timestamp_micros(snapshot_stamp(&run).unwrap_or(0) as i64)
         .map(|d| d.format("%Y-%m-%d").to_string())
         .unwrap_or_else(|| run.clone());
@@ -2958,7 +2967,7 @@ fn seal_passwords_at(data: &Path, lists: &Path, key_dir: &Path, now: f64) -> Res
         let _ = fs::remove_dir_all(common::safe(&folder)?);
         return Err(e);
     }
-    keep_newest_lists(lists, USB_PASSWORD_LISTS)?;
+    keep_newest_lists(lists, *USB_PASSWORD_LISTS)?;
     common::atomic_json(&state, &json!({"run": run, "contents": contents}))?;
     Ok(Sealed::Made(run))
 }

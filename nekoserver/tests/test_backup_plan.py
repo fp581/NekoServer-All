@@ -362,10 +362,11 @@ class TableTests(unittest.TestCase):
         self.assertEqual([key for key, row in rows.items() if row['group']], list(COUNTED))
         for key in ('photo_archive', 'offline'):
             self.assertIsNone(rows[key]['field'])
-            self.assertEqual(
-                rows[key]['kept'], 'everything, in every version; nothing is ever removed to keep to a number'
-            )
+            self.assertIn('in every version', rows[key]['kept'])
             self.assertIsNone(rows[key]['covers_days'])
+        self.assertEqual(
+            rows['photo_archive']['kept'], 'everything, in every version; nothing is ever removed to keep to a number'
+        )
         for key in ('photo_database', 'monthly'):
             self.assertIsNone(rows[key]['field'])
             self.assertIn('the 1-to-7 number does not apply to it', rows[key]['note'])
@@ -396,6 +397,21 @@ class TableTests(unittest.TestCase):
         self.assertEqual((rows['offline']['drive'], rows['offline']['when']), ('usb', 'every week, Sunday at 03:00'))
         self.assertIsNone(rows['offline']['note'])
         self.assertIn('your photos and videos', rows['offline']['what'])
+        # Deep check 418: the row names the password lists, of which the weekly copy keeps
+        # the newest 3 (and 4 database copies); it said "nothing is ever removed" of it all.
+        self.assertIn('the app password lists', rows['offline']['what'])
+        self.assertEqual(
+            rows['offline']['kept'],
+            'every photo and file, in every version (none is ever removed); of the password lists the newest 3, '
+            'of the database copies the newest 4',
+        )
+        runtime = (ROOT / 'runtime/src/backup.rs').read_text(encoding='utf-8')
+        for what in backup_plan.USB_KEEPS:
+            if not what.startswith('_'):
+                self.assertIn(f'usb_keeps("{what}")', runtime)  # the job keeps to the same numbers
+        import explanations
+
+        self.assertNotIn('nothing is ever deleted', explanations.STEP_EXPLANATIONS['photo_backup'])
         # The backups go to the media drive; the apps are on the SSD: not the same drive.
         self.assertFalse(rows['app_backup']['same_drive'])
         self.assertFalse(rows['photo_archive']['same_drive'])

@@ -27,7 +27,7 @@ from pathlib import Path
 
 import placement
 from modules import app_backup, host_backup, photo_backup, storage
-from neko_common import job_times, media_group, media_services, music_backed_up
+from neko_common import SHARED, job_times, media_group, media_services, music_backed_up
 
 DEFAULT, LEAST, MOST = app_backup.KEEP_DEFAULT, app_backup.KEEP_LEAST, app_backup.KEEP_MOST
 # The backups the 1-to-7 count applies to: (what is counted, their folder on the backup drive).
@@ -308,7 +308,7 @@ def offline_row(config, times, row):
     what = 'A second copy on a drive you can unplug: ' + ', '.join(copied + ['the app password lists'])
     takes = any(photo_backup.copies(config))
     if offline and takes:
-        row('offline', what, (offline, None), weekly(times), NEVER_REMOVED, ('as far back as the first copy', None))
+        row('offline', what, (offline, None), weekly(times), OFFLINE_KEPT, ('as far back as the first copy', None))
         return
     when = 'never: ' + ('no such drive is set up' if takes else NOTHING_TO_COPY)
     note = None
@@ -333,6 +333,14 @@ def music_row(config, times, drive, row):
     )
 
 
+# What the offline copy keeps. Its row names the password lists too, and those are counted
+# (the weekly copy keeps the newest ones, as it does of the database copies beside the
+# photos): "nothing is ever removed" was said of all of it (deep check 418).
+USB_KEEPS = SHARED['usb_keeps']
+OFFLINE_KEPT = (
+    'every photo and file, in every version (none is ever removed); of the password lists the newest '
+    f"{USB_KEEPS['password_lists']}, of the database copies the newest {USB_KEEPS['database_copies']}"
+)
 NOTHING_TO_COPY = 'there is nothing for it to copy (no Immich, no Nextcloud)'
 DOWNLOADABLE = (
     'Not backed up: no backup job copies them (they are often larger than any backup drive). What Radarr '
