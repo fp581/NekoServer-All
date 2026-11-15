@@ -369,13 +369,7 @@ impl Controller {
     /// a probe input with nothing connected reads 127 °C (or -128 °C) on many boards, or
     /// says so in its `_fault` file. No working part of a PC gets that hot.
     pub fn temperature(&self, id: &str) -> Option<f64> {
-        let t = self.inventory.temps.iter().find(|t| t.id == id)?;
-        if read(&t.path("_fault")) == "1" {
-            return None;
-        }
-        number(&t.path("_input"))
-            .map(|v| v / 1000.0)
-            .filter(|v| (-40.0..UNCONNECTED_C).contains(v))
+        reading(self.inventory.temps.iter().find(|t| t.id == id)?)
     }
     /// Any sensor near its own critical limit (less 3 °C) or at 105 °C, or above 95 °C for
     /// five minutes: everything to full speed.
@@ -709,6 +703,15 @@ pub fn detect<F: FnMut(&Controller, u64) -> bool>(
     result
 }
 
+/// A temperature channel's reading in °C (see Fans::temperature), None when it is not one.
+fn reading(t: &Channel) -> Option<f64> {
+    if read(&t.path("_fault")) == "1" {
+        return None;
+    }
+    number(&t.path("_input"))
+        .map(|v| v / 1000.0)
+        .filter(|v| (-40.0..UNCONNECTED_C).contains(v))
+}
 pub fn inventory_json(inv: &Inventory) -> Value {
     let one = |c: &Channel, value: Value| json!({"id": c.id, "label": c.label, "chip": c.chip, "value": value});
     // A speed outside 0–255 is no speed (seen with a stand-in chip answering 300: the Fans
@@ -717,7 +720,9 @@ pub fn inventory_json(inv: &Inventory) -> Value {
     json!({
         "outputs": inv.outputs.iter().map(|o| one(o, json!(speed(o).map(|v| (v * 100.0 / 255.0).round())))).collect::<Vec<_>>(),
         "fans": inv.fans.iter().map(|f| one(f, json!(number(&f.path("_input"))))).collect::<Vec<_>>(),
-        "temps": inv.temps.iter().map(|t| one(t, json!(number(&t.path("_input")).map(|v| (v / 100.0).round() / 10.0)))).collect::<Vec<_>>(),
+        // As fan control reads them: a probe with nothing connected (999,999 °C, 127 °C)
+        // has no reading on the Fans page either (deep check 308).
+        "temps": inv.temps.iter().map(|t| one(t, json!(reading(t).map(|v| (v * 10.0).round() / 10.0)))).collect::<Vec<_>>(),
     })
 }
 
@@ -805,6 +810,20 @@ pub mod tests {
         assert_eq!(shown["outputs"][1]["value"], Value::Null, "{shown}");
         b.set("pwm1", "255");
         assert_eq!(inventory_json(&inv)["outputs"][0]["value"], json!(100.0));
+    }
+
+    /// Deep check 308: a probe reading 999,999 °C reached the Fans page's sensor list
+    /// (and its curve marker), though fan control itself never uses it.
+    #[test]
+    fn a_temperature_that_is_not_a_reading_is_not_shown() {
+        let b = Board::new("odd-temperature");
+        let inv = discover(&b.hwmon());
+        b.set("temp1_input", "999999000");
+        assert_eq!(inventory_json(&inv)["temps"][0]["value"], Value::Null);
+        b.set("temp1_input", "127000");
+        assert_eq!(inventory_json(&inv)["temps"][0]["value"], Value::Null);
+        b.set("temp1_input", "45250");
+        assert_eq!(inventory_json(&inv)["temps"][0]["value"], json!(45.3));
     }
 
     #[test]

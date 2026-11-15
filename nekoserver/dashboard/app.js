@@ -2567,11 +2567,13 @@ function voltageRow(v) {
   row.append(el('span', '', text(v.label) + ' · ' + text(v.chip)), el('strong', '', v.value.toFixed(2) + ' V'));
   return row;
 }
-function sensorBadge(live, sensors) {
+/* The badge sits on the Temperatures card: it counts the temperatures shown there, not
+ * every fan and voltage reading too ("6 found" above one sensor, deep check 308). */
+function sensorBadge({ live, temps, fresh }) {
   if (!live) {
     return ['unknown', state.liveError || 'Waiting'];
   }
-  return liveFresh() ? ['neutral', sensors.length + ' found'] : ['warning', 'Last reading ' + ago(live.generated_at)];
+  return fresh ? ['neutral', temps.length + ' found'] : ['warning', 'Last reading ' + ago(live.generated_at)];
 }
 /* Hard drive temperatures come from the collector's SMART check (every 30 minutes,
  * never waking a sleeping drive): reading them live could keep a drive awake. */
@@ -2590,13 +2592,13 @@ function renderSensors() {
   const live = state.live,
     sensors = list(live?.sensors);
   const of = kind => sensors.filter(s => s.kind === kind);
-  setBadge('sensor-count', ...sensorBadge(live, sensors));
+  const temps = [...of('temperature'), ...driveTemperatures()],
+    groups = [...new Set(temps.map(t => t.group))];
+  setBadge('sensor-count', ...sensorBadge({ live, temps, fresh: liveFresh() }));
   if (!live) {
     put('temperatures', [empty(state.liveError ? codeLine(state.liveError) : 'Looking for sensors…')]);
     return;
   }
-  const temps = [...of('temperature'), ...driveTemperatures()],
-    groups = [...new Set(temps.map(t => t.group))];
   put(
     'temperatures',
     groups.length
@@ -2959,7 +2961,7 @@ function fanName(fan) {
   return text(fan.label).replace(/^fan/, 'Fan ');
 }
 function temperatureName(t) {
-  return text(t.label) + ' · ' + text(t.chip);
+  return text(t.label) + ' · ' + text(t.chip) + (numeric(t.value) ? '' : ' (no reading)');
 }
 function draftFrom(setting, temps) {
   const s = object(setting);
@@ -2972,7 +2974,7 @@ function draftFrom(setting, temps) {
       'auto'
     ),
     fixed: numeric(s.fixed) ? Math.max(20, s.fixed) : 60, // never below the 20 % floor
-    sensor: text(s.sensor, temps[0]?.id || ''),
+    sensor: text(s.sensor, (temps.find(t => numeric(t.value)) || temps[0])?.id || ''),
     points: list(s.points).length ? s.points.map(p => [...p]) : PRESETS.Balanced.map(p => [...p]),
     min: numeric(s.min) ? s.min : 20,
     name: text(s.name),

@@ -61,6 +61,20 @@ class DashboardPageTests(unittest.TestCase):
         )
         self.assertIn('an update, an upgrade) need your PIN', (ROOT / 'dashboard/app.js').read_text())
 
+    def test_the_temperatures_badge_counts_the_temperatures_shown(self):
+        # Deep check 308: "6 found" above one temperature (the fans and voltages were
+        # counted too), and a probe with no reading was listed on the Fans page as is.
+        one = [{'kind': 'temperature', 'label': 'CPU', 'value': 45}]
+        said = page(
+            ('sensorBadge', {'live': {'generated_at': 1}, 'temps': one, 'fresh': True}),
+            ('temperatureName', {'label': 'AUXTIN', 'chip': 'nct6798', 'value': None}),
+            ('temperatureName', {'label': 'CPUTIN', 'chip': 'nct6798', 'value': 45.5}),
+        )
+        self.assertEqual(said[0], ['neutral', '1 found'])
+        self.assertEqual(said[1:], ['AUXTIN · nct6798 (no reading)', 'CPUTIN · nct6798'])
+        source = (ROOT / 'dashboard/app.js').read_text()
+        self.assertIn("sensorBadge({ live, temps, fresh: liveFresh() })", source)
+
     def test_one_of_something_is_said_in_the_singular(self):
         # Deep checks 158 and 168: readings a day old said "Showing readings from 1 days
         # ago", and a board with one fan output "1 outputs".
