@@ -8,6 +8,7 @@ before_install.check(config, look) only looks. Every case here stands in for thi
 
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -15,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import before_install  # noqa: E402
+import capabilities  # noqa: E402
 from modules import assistant, capacity  # noqa: E402
 
 GB = 1024**3
@@ -262,6 +264,28 @@ class CheckTests(unittest.TestCase):
         self.assertIn('with less than 8 GB those can be stopped', found['warnings'][0]['problem'])
         self.assertEqual(self.check(memory=7.6)['warnings'], [])
         self.assertEqual(self.check(memory=0)['warnings'], [])  # not readable: nothing is made up
+
+    def test_less_memory_than_the_apps_need_idle_does_not_say_go_on(self):
+        """Deep check 294: 1 GB said "You can go on", though the apps use about 2 GB idle."""
+        said = self.check(memory=1.0)['warnings'][0]
+        self.assertIn(
+            'This PC has 1.0 GB of memory the apps may use, less than they need even when idle.', said['problem']
+        )
+        self.assertNotIn('You can go on', said['do'])
+        self.assertIn('Add memory (4 GB at the very least', said['do'])
+        self.assertIn('keep being stopped', capabilities.memory_note(1.0))
+
+    def test_a_container_memory_limit_counts_not_the_hosts_memory(self):
+        """Deep check 294: MemTotal in a container is the host's; its limit is what the apps get."""
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / 'proc').mkdir()
+            (Path(root) / 'proc/meminfo').write_text('MemTotal:       67108864 kB\nMemFree: 1 kB\n')
+            self.assertEqual(capabilities.memory_gib(root), 64)
+            (Path(root) / 'sys/fs/cgroup').mkdir(parents=True)
+            (Path(root) / 'sys/fs/cgroup/memory.max').write_text('max\n')
+            self.assertEqual(capabilities.memory_gib(root), 64)
+            (Path(root) / 'sys/fs/cgroup/memory.max').write_text(str(2**30) + '\n')
+            self.assertEqual(capabilities.memory_gib(root), 1)
 
     def test_the_ai_assistant_says_when_no_model_fits_in_memory(self):
         chosen = settings(assistant={'wanted': True, 'model': 'auto'})

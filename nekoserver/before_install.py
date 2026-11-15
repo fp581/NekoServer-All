@@ -289,7 +289,16 @@ def memory_findings(config, look):
     if not total:
         return []
     found = []
-    if total < capabilities.ENOUGH_MEMORY_GIB:
+    if total < capabilities.TOO_LITTLE_MEMORY_GIB:
+        # Not "You can go on": the apps need about 2 GB when idle (deep check 294).
+        found.append(
+            finding(
+                'memory',
+                f'This PC has {total:.1f} GB of memory the apps may use, less than they need even when idle.',
+                capabilities.TOO_LITTLE_MEMORY + '.',
+            )
+        )
+    elif total < capabilities.ENOUGH_MEMORY_GIB:
         found.append(
             finding(
                 'memory',
