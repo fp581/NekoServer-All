@@ -5460,7 +5460,10 @@ fn usb_copy(a: &Args, check: Check, weekly: bool) -> Result<()> {
         // A drive that would not unmount is reported after the copy's own error, which
         // is the one that says what went wrong (and damage still reads as damage: the
         // monthly run stops only for an error that starts with INTEGRITY).
-        let unmounted = if mounted_here {
+        // A drive that dropped out (unplugged, or a USB hub that lost it) is unmounted
+        // already: "umount ... not mounted" was added to the report's reason, pushing
+        // what happened out of the 300 characters the dashboard shows (deep check 528).
+        let unmounted = if mounted_here && common::mounted(&run.dest) {
             success(&["umount", &run.dest.to_string_lossy()], 45)
         } else {
             Ok(())
@@ -5484,16 +5487,23 @@ fn copy_to_usb(run: &UsbRun) -> Result<Option<Value>> {
     let dest = &run.dest;
     // From here every folder and file made on the USB drive first checks it is still
     // mounted: unplugged mid-copy, the copy stops instead of filling the system disk
-    // through the empty folder it was mounted on.
+    // through the empty folder it was mounted on. A failure once it is gone says so.
     // Held before the checks that it is the USB drive, not after: a drive that dropped
     // out between those checks and the hold left the hold on the system disk's empty
     // folder, and every photo was copied onto the system disk (deep check 528, on loop
     // drives: 317 MB there, and each later copy refused the folder as not empty).
-    let _usb = common::expect_drive(dest)?;
-    run.still()?;
-    // Also when someone else mounted it: no private copy onto a readable drive.
-    require_private_mount(dest, &run.fstype)?;
-    run.drives()?;
+    let usb = common::expect_drive(dest)?;
+    usb.unless_gone((|| {
+        run.still()?;
+        // Also when someone else mounted it: no private copy onto a readable drive.
+        require_private_mount(dest, &run.fstype)?;
+        run.drives()?;
+        copy_onto_usb(run)
+    })())
+}
+/// `copy_to_usb` once the drive is checked and held.
+fn copy_onto_usb(run: &UsbRun) -> Result<Option<Value>> {
+    let dest = &run.dest;
     let mut photos = None;
     if let Some(source) = &run.source {
         common::stage("copying photos and videos to the USB drive");
@@ -6803,6 +6813,24 @@ mod tests {
         assert!(body[asked..].starts_with(
             "run.answering() {\n        return execute_keeping(Some(&run.data), \"external\""
         ));
+    }
+    /// Deep check 528, the weekly copy on loop drives with the USB drive unplugged part-way:
+    /// a step that failed once the drive was gone said its raw error, and the unmount of
+    /// the drive that was no longer mounted added "umount ... not mounted" to the reason.
+    #[test]
+    fn a_usb_drive_unplugged_mid_copy_is_said_as_gone_without_an_unmount_error() {
+        let source = include_str!("backup.rs");
+        let part = |entry: &str| {
+            let start = source.find(entry).unwrap();
+            &source[start..start + source[start..].find("\n}\n").unwrap()]
+        };
+        let copy = part("fn copy_to_usb(run: &UsbRun)");
+        let held = copy.find("let usb = common::expect_drive(dest)?;").unwrap();
+        assert!(copy[held..]
+            .starts_with("let usb = common::expect_drive(dest)?;\n    usb.unless_gone((|| {"));
+        assert!(copy.ends_with("copy_onto_usb(run)\n    })())"), "{copy}");
+        assert!(part("fn usb_copy(a: &Args")
+            .contains("if mounted_here && common::mounted(&run.dest) {"));
     }
     /// Deep check 528, on loop drives: the USB drive dropped out just after the copy had
     /// checked it was mounted and before it held the drive; the hold then took the system

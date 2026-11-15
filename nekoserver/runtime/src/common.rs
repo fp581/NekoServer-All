@@ -196,6 +196,19 @@ pub fn on_drive(path: &Path) -> Result<()> {
     }
     Ok(())
 }
+impl DriveHold {
+    /// A job's result, said as the drive being gone when it failed after the held drive
+    /// went away: the check before each write catches most of it, but a drive unplugged
+    /// between that check and the write (or while a file was being read) left only the raw
+    /// error of that step (".neko-part is missing (No such file or directory)"), which
+    /// does not say the drive was disconnected (deep check 528).
+    pub fn unless_gone<T>(&self, result: Result<T>) -> Result<T> {
+        match result {
+            Err(e) => Err(on_drive(&self.0).err().unwrap_or(e)),
+            done => done,
+        }
+    }
+}
 pub fn now() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2238,6 +2251,40 @@ mod lock_tests {
         }
         // Released: paths are no longer checked.
         directory(&root.join("gone/backups"), 0o755).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+    /// Deep check 528, on loop drives: a USB drive unplugged between the check before a
+    /// write and the write failed the weekly copy with ".neko-part is missing (No such
+    /// file or directory)", not saying the drive was gone.
+    #[test]
+    fn a_step_that_fails_after_the_drive_went_away_says_the_drive_is_gone() {
+        use std::os::unix::fs::MetadataExt;
+        let root = scratch("drive-gone-said");
+        let dev = fs::metadata(&root).unwrap().dev();
+        let raw = || -> Result<()> {
+            Err(Error::new(
+                "x.neko-part is missing (No such file or directory (os error 2))",
+            ))
+        };
+        {
+            // The drive is still there: the step's own error is said.
+            let held = expect_device(&root, dev).unwrap();
+            assert!(held
+                .unless_gone(raw())
+                .unwrap_err()
+                .to_string()
+                .contains("neko-part"));
+            assert!(held.unless_gone(Ok(7)).is_ok());
+        }
+        {
+            // Gone meanwhile: that is what is said.
+            let held = expect_device(&root, dev + 1).unwrap();
+            let said = held.unless_gone(raw()).unwrap_err().to_string();
+            assert!(
+                said.contains("is gone (disconnected, or it failed)"),
+                "{said}"
+            );
+        }
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

@@ -71,7 +71,7 @@ CHECKED = {
     'control': [('control', 'run'), ('apps', 'finish_restarts_when_free'), ('apps', 'shared_lock'), GUARD],
 }
 # The weekly job also writes to the USB drive: that drive has its own check.
-USB_CHAIN = [('backup', 'weekly'), ('backup', 'usb_copy'), ('backup', 'copy_to_usb'), USB]
+USB_CHAIN = [('backup', 'weekly'), ('backup', 'usb_copy'), ('backup', 'copy_to_usb'), ('backup', 'copy_onto_usb'), USB]
 # Commands with no drive check, and why that is right (or what to know about them).
 NOT_CHECKED = {
     'serve': 'the dashboard: it shows what the collector saved and writes to no drive',
@@ -134,10 +134,12 @@ class MissingDriveTests(unittest.TestCase):
             self.assertEqual(re.findall(early, body[: body.find(check)]), [], function)
 
     def test_the_usb_copy_checks_its_drive_before_and_holds_it_while_copying(self):
+        # copy_to_usb checks and holds the drive, then copy_onto_usb copies.
         body = self.functions[('backup', 'copy_to_usb')]
-        first_copy = re.search(r'mirror(_on)?\(', body).start()  # mirror_on: onto exFAT too
+        first_copy = body.find('copy_onto_usb(run)')
         for check in ('require_private_mount(dest', 'run.drives()', 'common::expect_drive(dest)'):
             self.assertTrue(0 <= body.find(check) < first_copy, check)
+        self.assertRegex(self.functions[('backup', 'copy_onto_usb')], r'mirror(_on)?\(')  # mirror_on: onto exFAT too
 
     def test_the_check_covers_both_drives_and_every_share_in_use(self):
         guard = self.functions[GUARD]
