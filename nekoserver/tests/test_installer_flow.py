@@ -150,6 +150,22 @@ class InstallerFlowTests(unittest.TestCase):
             self.assertEqual(installer.main(['--recover', '--config', str(self.config)]), 130)
         self.assertIn('sudo bash install.sh --recover', printed[-1])
 
+    def test_a_slip_in_setups_own_code_says_what_to_do(self):
+        """Deep check 291: a KeyError recorded only "'data_ssd'", shown as is on the
+        finishing screen and the dashboard."""
+        (self.root / 'modules' / 'slip.py').write_text("DEPENDENCIES = []\ndef run(ctx):\n    return {}['data_ssd']\n")
+        with (
+            mock.patch('config_checks.validate'),
+            mock.patch('builtins.print'),
+            mock.patch.object(installer, 'retry_now', return_value=False),
+        ):
+            installer._execute(self.args(module='slip'), self.root)
+        reason = json.loads((self.state / 'state.json').read_text())['slip']['reason']
+        self.assertIn('unexpected problem', reason)
+        self.assertIn("KeyError 'data_ssd' in slip.py, line 3", reason)  # kept for a bug report
+        self.assertIn('Run setup again', reason)
+        self.assertIn(str(self.state / 'install.log'), reason)
+
     def test_the_exit_code_tells_a_failed_step_from_one_that_waits_for_you(self):
         """The upgrade reads it (upgrade.setup_problem): until 0.48.1 both ended with 1, so
         a step that failed passed for one that only waits for you."""

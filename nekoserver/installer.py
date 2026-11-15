@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 import setup_progress
 
@@ -159,6 +160,28 @@ def ordered(modules, selected):
     for name in selected:
         visit(name)
     return result
+
+
+# Errors of setup's own code: their text alone ("'data_ssd'" from a KeyError) tells a
+# person nothing, so the reason says what happened and what to do (deep check 291).
+CODE_ERRORS = (LookupError, TypeError, AttributeError, NameError, AssertionError, ArithmeticError, RecursionError)
+
+
+def code_error_reason(exc, log_path=None):
+    """Plain words for a slip in setup's own code, with the raw detail (and where it
+    happened) kept in brackets for a bug report."""
+    detail = type(exc).__name__ + (f' {exc}' if str(exc) else '')
+    frames = traceback.extract_tb(exc.__traceback__) if exc.__traceback__ else []
+    if frames:
+        where = Path(frames[-1].filename)
+        here = Path(__file__).resolve().parent
+        shown = where.relative_to(here) if where.is_relative_to(here) else where.name
+        detail += f' in {shown}, line {frames[-1].lineno}'
+    log = f'the setup log ({log_path})' if log_path else 'the setup log'
+    return (
+        f'Setup stopped on an unexpected problem in its own code ({detail}). Run setup again: '
+        f'it starts this step over. If it stops here again, send {log} with a bug report.'
+    )
 
 
 def failure_reason(exc):
@@ -603,7 +626,7 @@ def _execute(args, root=ROOT):
                 stopped_by_hand(states, name, state_path, log)
                 raise
             except Exception as exc:
-                reason = failure_reason(exc)
+                reason = code_error_reason(exc, log_path) if isinstance(exc, CODE_ERRORS) else failure_reason(exc)
                 states[name] = {'status': 'failed', 'reason': reason}
                 log(f'FAILED {name}: {reason}')
                 # Avoid tracebacks from providers that may contain sensitive arguments.
