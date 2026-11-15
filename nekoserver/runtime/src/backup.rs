@@ -3547,16 +3547,60 @@ pub fn keep_count(keep: &Value, earlier: &Value, setting: &str) -> (u64, Option<
 /// While the drive is short, the oldest snapshots are removed first, but the newest
 /// complete one always stays, as the one good backup. Still short: the error `short`
 /// gives (told what is free). Without this a full drive failed every night for good.
+/// Nothing is removed when removing every older snapshot would still not make the room
+/// (a drive filled by something else: the films, say): the backups went, all but one,
+/// for a backup that could not be made anyway (deep check 419).
 /// Returns the names removed, for the report (`short_history`).
 pub fn make_room(root: &Path, needed: u128, short: &dyn Fn(u128) -> String) -> Result<Vec<String>> {
-    make_room_with(root, needed, &|| common::free_bytes(root), short)
+    make_room_with(
+        root,
+        needed,
+        &|| common::free_bytes(root),
+        &|name| tree_bytes(&root.join(name)),
+        short,
+    )
+}
+/// The room removing `folder` gives back: what its files take on the drive. A part that
+/// can't be read counts as nothing, so the room is never overestimated.
+fn tree_bytes(folder: &Path) -> u128 {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| match fs::symlink_metadata(entry.path()) {
+            Ok(meta) if meta.is_dir() => tree_bytes(&entry.path()),
+            Ok(meta) => meta.blocks() as u128 * 512,
+            Err(_) => 0,
+        })
+        .sum()
 }
 fn make_room_with(
     root: &Path,
     needed: u128,
     free: &dyn Fn() -> Result<u128>,
+    size: &dyn Fn(&str) -> u128,
     short: &dyn Fn(u128) -> String,
 ) -> Result<Vec<String>> {
+    let have = free()?;
+    if have >= needed {
+        return Ok(vec![]);
+    }
+    // Every snapshot but the newest could go: is that enough?
+    let found = common::complete_snapshots(root)?;
+    let older = &found[..found.len().saturating_sub(1)];
+    let gain: u128 = older.iter().map(|(_, name)| size(name)).sum();
+    if have.saturating_add(gain) < needed {
+        let kept = if older.is_empty() {
+            "There is no older backup to remove for room (the newest one is always kept)"
+        } else {
+            "No older backup was removed: removing them all (but the newest, which is always kept) would not make that much room"
+        };
+        return Err(Error::new(&format!(
+            "{}. {kept}. Free up space there",
+            short(have)
+        )));
+    }
     let mut removed = vec![];
     loop {
         let have = free()?;
@@ -3565,7 +3609,8 @@ fn make_room_with(
         }
         let found = common::complete_snapshots(root)?;
         let [(_, oldest), _, ..] = found.as_slice() else {
-            return Err(Error::new(&short(have)));
+            // Less came free than the snapshots took (something else is filling the drive).
+            return Err(failed_after_room(root, &removed, Error::new(&short(have))));
         };
         common::remove_snapshot(root, oldest)?;
         println!("Backup: the drive was short of space, so the oldest snapshot ({oldest}) was removed early; the newest ones are kept");
@@ -8885,9 +8930,12 @@ mod tests {
         // Each snapshot takes 40 of the drive's 130.
         let count = || common::complete_snapshots(&root).unwrap().len() as u128;
         let free = || Ok(130 - 40 * count());
+        let size = |_: &str| 40;
         let short = |have: u128| format!("short: {have} free");
-        assert!(make_room_with(&root, 10, &free, &short).unwrap().is_empty());
-        let removed = make_room_with(&root, 50, &free, &short).unwrap();
+        assert!(make_room_with(&root, 10, &free, &size, &short)
+            .unwrap()
+            .is_empty());
+        let removed = make_room_with(&root, 50, &free, &size, &short).unwrap();
         assert_eq!(removed, ["snapshot-100-1"]);
         assert_eq!(names(&root), ["snapshot-200-1", "snapshot-300-1"]);
         // Two of the seven snapshots the settings keep are left: the run says so (the
@@ -8919,9 +8967,53 @@ mod tests {
         );
         let plain = failed_after_room(&root, &[], Error::new("Source changed"));
         assert_eq!(plain.to_string(), "Source changed");
-        let error = make_room_with(&root, 100, &free, &short).unwrap_err();
-        assert_eq!(error.to_string(), "short: 90 free");
+        let _ = fs::remove_dir_all(root);
+    }
+    /// Deep check 419: a drive too full even without the older backups (the films fill
+    /// it) lost every backup but the newest, and the run failed all the same.
+    #[test]
+    fn a_drive_too_full_even_without_the_older_backups_keeps_them() {
+        let root = scratch("make-no-room");
+        for name in ["snapshot-100-1", "snapshot-200-1", "snapshot-300-1"] {
+            finished(&root, name);
+        }
+        let count = || common::complete_snapshots(&root).unwrap().len() as u128;
+        let free = || Ok(130 - 40 * count());
+        let size = |_: &str| 40;
+        let short = |have: u128| format!("short: {have} free");
+        // 10 free, 80 more with the two older ones gone: 100 can never be had.
+        let error = make_room_with(&root, 100, &free, &size, &short).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "short: 10 free. No older backup was removed: removing them all (but the newest, which is always kept) would not make that much room. Free up space there"
+        );
+        assert_eq!(names(&root).len(), 3);
+        // 90 can: both older ones go, the newest stays.
+        let removed = make_room_with(&root, 90, &free, &size, &short).unwrap();
+        assert_eq!(removed, ["snapshot-100-1", "snapshot-200-1"]);
+        // Only the newest is left and the drive is short again: nothing more to remove.
+        let error = make_room_with(&root, 100, &free, &size, &short).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with("short: 90 free. There is no older backup to remove"),
+            "{error}"
+        );
         assert_eq!(names(&root), ["snapshot-300-1"]);
+        // Less came free than the snapshots took: the run says what went for it.
+        for name in ["snapshot-100-1", "snapshot-200-1"] {
+            finished(&root, name);
+        }
+        let stuck = || Ok(10u128);
+        let error = make_room_with(&root, 50, &stuck, &size, &short).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "short: 10 free. Before it failed, 2 older snapshots were removed to make room on the HDD, so 1 backup is left: free space on the HDD"
+        );
+        // What a snapshot takes on the drive is measured from its files.
+        fs::write(root.join("snapshot-300-1/big.db"), vec![7u8; 1 << 20]).unwrap();
+        assert!(tree_bytes(&root.join("snapshot-300-1")) >= 1 << 20);
+        assert_eq!(tree_bytes(&root.join("missing")), 0);
         let _ = fs::remove_dir_all(root);
     }
     /// A finished snapshot in `root`, as a job publishes it.

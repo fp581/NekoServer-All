@@ -478,12 +478,12 @@ fn current_checkpoint(saved: &Value, version: &str, root: &str) -> Option<Value>
 /// Space kept free on the HDD after a nightly app backup (2 GB, as the settings backup
 /// keeps by default): the HDD also holds the media library and the other backups.
 const RESERVE: u128 = 2 << 30;
-/// The nightly app backup's message when the HDD is too full even after older app
-/// backups were removed (the newest is always kept).
+/// The nightly app backup's message when the HDD is too full: what is free and what is
+/// needed. `backup::make_room` adds what became of the older app backups.
 fn short_of_space(media: &Path, have: u128, needed: u128) -> String {
     let gb = |b: u128| format!("{:.1}", b as f64 / (1u64 << 30) as f64);
     format!(
-        "Not enough space on the HDD ({}) for the nightly app backup: {} GB free, about {} GB needed (the app files plus 2 GB kept free), even after removing older app backups (the newest one is always kept). Free up space there",
+        "Not enough space on the HDD ({}) for the nightly app backup: {} GB free, about {} GB needed (the app files plus 2 GB kept free)",
         media.display(),
         gb(have),
         gb(needed)
