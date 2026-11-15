@@ -243,6 +243,14 @@ def listener(client, entry, administrator, admin_entry):
     return value
 
 
+# The app's "Authentication Required" settings (Settings, General, Security) that still ask
+# for the login: setup chooses "Enabled"; "Disabled for Local Addresses" is the app's
+# other choice, often picked by hand later, and still asks everyone outside the home
+# network. The password is proved by the sign-in below either way (the app sets its
+# cookie only for the right one).
+SIGN_IN_REQUIRED = ('enabled', 'disabledforlocaladdresses')
+
+
 def arr(client, entry, config, app):
     key_file = safe_path(Path(config['data_mount']) / 'appdata' / app / 'config.xml')
     try:
@@ -277,7 +285,7 @@ def arr(client, entry, config, app):
     check(
         verified.get('username') == entry['username']
         and str(verified.get('authenticationMethod', '')).lower() == 'forms'
-        and str(verified.get('authenticationRequired', '')).lower() == 'enabled'
+        and str(verified.get('authenticationRequired', '')).lower() in SIGN_IN_REQUIRED
     )
     # API-key success is not proof of the selected login password. Use a fresh
     # cookie session without the API key and verify an authenticated page.
