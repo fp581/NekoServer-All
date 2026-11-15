@@ -590,6 +590,19 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
     output('Account choices saved privately; passwords are not printed or written to installer logs.')
 
 
+def shares_account(config):
+    """The account the shared folders belong to, worked out as the shared folders step
+    does (samba.samba_account): the one named in the settings, else the one the shares
+    already have, else the person who ran sudo. Asking Samba about the person at the
+    keyboard instead found no password whenever the shares were someone else's (a second
+    administrator, "samba_user" in the settings): every run then made a new password that
+    "Show login" showed and Samba never got."""
+    from modules import samba
+
+    settings = config.get('networking')
+    return samba.samba_account(settings if isinstance(settings, dict) else {}) or 'neko'
+
+
 def others_wanted(config):
     """The server secrets this server has not chosen yet: the dashboard PIN (none set) and
     the shared folders' password (the shared folders switched on and no password yet)."""
@@ -600,7 +613,7 @@ def others_wanted(config):
     if not Path('/etc/nekoserver-control/pin.json').exists():
         wanted.append('dashboard_pin')
     if config.get('samba', {}).get('enabled', True) is not False:
-        user = os.environ.get('SUDO_USER') or 'neko'
+        user = shares_account(config)
         known = ''
         if shutil.which('pdbedit'):
             try:

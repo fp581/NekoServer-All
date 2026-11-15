@@ -143,6 +143,57 @@ class AheadTests(unittest.TestCase):
         self.assertEqual(account_store.AHEAD, {})
 
 
+class SharesOfAnotherAccountTests(unittest.TestCase):
+    """Deep check 400: the shared folders belong to another account than the person who
+    runs setup (a second administrator, or "samba_user" in the settings). Samba was asked
+    about the person at the keyboard, found no password, and every run made a new one:
+    "Show login" then showed a password Samba never got, in place of the real one."""
+
+    def setUp(self):
+        self.addCleanup(account_store.AHEAD.clear)
+        asked = []
+
+        def pdbedit(argv, **_):
+            asked.append(argv[-1])
+            return SimpleNamespace(stdout='bob:1001:Bob\n' if argv[-1] == 'bob' else '', returncode=0)
+
+        self.asked = asked
+        for patch in (
+            mock.patch.object(account_store.Path, 'exists', return_value=True),  # a PIN is set already
+            mock.patch('shutil.which', return_value='/usr/bin/pdbedit'),
+            mock.patch('subprocess.run', side_effect=pdbedit),
+            mock.patch.dict('os.environ', {'SUDO_USER': 'alice'}),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_the_account_named_in_the_settings_is_the_one_samba_is_asked_about(self):
+        wanted = ORIGINAL_OTHERS_WANTED({'networking': {'samba_user': 'bob'}})
+        self.assertEqual(self.asked, ['bob'])
+        self.assertEqual(wanted, [])
+
+    def test_the_account_the_shares_already_have_is_kept_for_a_second_administrator(self):
+        from modules import samba
+
+        with mock.patch.object(samba, 'previous_account', return_value='bob'):
+            wanted = ORIGINAL_OTHERS_WANTED({'networking': {'samba_user': 'auto'}})
+        self.assertEqual((self.asked, wanted), (['bob'], []))
+
+    def test_no_new_password_is_made_over_the_one_the_shares_have(self):
+        stored = {'format': 1, 'mode': 'generate', 'apps': {'immich': {}}, 'others': {'shared_folders': 'k' * 32}}
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(account_store, 'load', return_value=stored):
+            config = settings(folder, networking={'samba_user': 'bob'})
+            account_store.ask_ahead(config, mock.Mock(side_effect=AssertionError('asked')), output=lambda line: None)
+        self.assertEqual(account_store.AHEAD, {})
+
+    def test_shares_with_no_account_yet_are_the_person_who_ran_sudo(self):
+        from modules import samba
+
+        with mock.patch.object(samba, 'previous_account', return_value=None):
+            wanted = ORIGINAL_OTHERS_WANTED({})
+        self.assertEqual((self.asked, wanted), (['alice'], ['shared_folders']))
+
+
 class StepsTakeThemTests(unittest.TestCase):
     def setUp(self):
         self.addCleanup(account_store.AHEAD.clear)
