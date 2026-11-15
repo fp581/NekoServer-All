@@ -47,7 +47,8 @@ const CALLS = new Set([
   'outputsBadge',
   'sensorBadge',
   'temperatureName',
-  'blockedNext'
+  'blockedNext',
+  'mediaOutcome'
 ]);
 /* Calls answered from another function's result, with more of it; the last four run a
    piece of Ask Neko on a page that keeps what is put on it (ASK_PAGE below). */
@@ -58,7 +59,9 @@ const DETAILED = new Set([
   'bugBoxCopy',
   'cutOffEntry',
   'askSignedOut',
-  'askTyped'
+  'askTyped',
+  'mediaFlow',
+  'mediaSignedOut'
 ]);
 /* What those need of the page script besides the functions above. */
 const ASK_PAGE = [
@@ -70,7 +73,10 @@ const ASK_PAGE = [
   'askEntry',
   'bugBox',
   'sendQuestion',
-  'askNote'
+  'askNote',
+  // The Media folders page (mediaFlow, mediaSignedOut below).
+  'MEDIA',
+  'renderMedia'
 ];
 const calls = JSON.parse(process.argv[2]);
 
@@ -415,6 +421,58 @@ SPECIAL.askTyped = async argument => {
   app.sendQuestion();
   for (let i = 0; i < 20; i++) await Promise.resolve();
   return { typing, note: byId('ask-note').textContent, sent, shown: shown(byId('ask-log')) };
+};
+
+/* ---- the Media folders page ----
+   A signed-in device opens the page: it asks for a look, follows the answer, and draws
+   each kind with the form to add a folder; the form is then filled in and sent.
+   argument: {result: what media-state answers as the last result, add: {path, downloads,
+   how}}. Returns what was sent, what the page then shows, and what the form sent. */
+async function settle() {
+  for (let i = 0; i < 30; i++) await Promise.resolve();
+}
+SPECIAL.mediaFlow = async argument => {
+  const byId = keptPage();
+  app.state.route = 'media';
+  Object.assign(app.MEDIA, { answer: null, asked: false, formKey: '', browse: null });
+  Object.assign(app.MEDIA.form, { kind: '', path: '', how: 'in_place', downloads: false });
+  const sent = server(path => {
+    if (path === '/api/control/media-state') return { ok: true, working: false, result: argument.result };
+    return { ok: true, id: 'abc', message: 'Working on it. This page shows how it ends.' };
+  });
+  app.renderMedia();
+  await settle();
+  const looked = sent.splice(0);
+  const page = shown(byId('media-folders'));
+  const form = byId('media-add').children[0];
+  const add = argument.add;
+  let formSent = null;
+  if (form && add) {
+    const path = find(form, n => n.tag === 'input' && n.type === 'text');
+    path.value = add.path;
+    path.clicked(); // its input listener
+    if (add.how === 'copy') {
+      find(form, n => n.tag === 'input' && n.type === 'radio' && n.value === 'copy').clicked();
+    }
+    const downloads = find(form, n => n.tag === 'input' && n.type === 'checkbox');
+    downloads.checked = add.downloads;
+    downloads.clicked();
+    form.clicked({ preventDefault() {} });
+    await settle();
+    formSent = sent.filter(([p]) => p === '/api/control/media-change').map(([, body]) => body);
+  }
+  return { looked, page, form: form ? shown(form) : null, formSent };
+};
+// A device not signed in: the page shows how to unlock, and asks the server nothing.
+SPECIAL.mediaSignedOut = async () => {
+  const byId = keptPage();
+  app.state.route = 'media';
+  app.state.control = { access: { signed_in: false, pin_set: true } };
+  Object.assign(app.MEDIA, { answer: null, asked: false, formKey: '' });
+  const sent = server(() => ({ ok: true }));
+  app.renderMedia();
+  await settle();
+  return { sent, page: shown(byId('media-folders')), form: byId('media-add').children.length };
 };
 
 /* One call after the other: the ones above each bring their own page and server. */

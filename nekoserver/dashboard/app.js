@@ -242,6 +242,7 @@ const ROUTES = {
   processes: 'Processes',
   health: 'Server health',
   updates: 'Updates',
+  media: 'Media folders',
   attention: 'Needs attention',
   help: 'Help'
 };
@@ -249,7 +250,7 @@ const ROUTES = {
 const LIVE_ROUTES = new Set(['home', 'hardware', 'sensors']);
 /* Pages whose buttons change something: they read whether this device may (the PIN).
  * Ask Neko is one: asking and approving a fix need the PIN. */
-const CONTROL_ROUTES = new Set(['cooling', 'apps', 'processes', 'home', 'ask']);
+const CONTROL_ROUTES = new Set(['cooling', 'apps', 'processes', 'home', 'ask', 'media']);
 /* Short, stable error codes. E10-E42 come from the server; E01, E02 and E12 are
  * noticed by this page. DASHBOARD.md lists the same table. */
 const ERRORS = {
@@ -5223,6 +5224,395 @@ function moreMenu() {
   openDialog('NEKOSERVER', 'All pages', [nav, button('Settings', preferences)]);
 }
 
+/* ---------- media folders ---------- */
+/* The Media folders page (DASHBOARD.md, "Media folders"): the folders of films, shows and
+ * music the server plays, and where new downloads go. The page only asks: the control
+ * service checks each change and has it made as root by media_locations.py, the code
+ * setup uses for the same choice. Everything here needs the PIN. */
+const MEDIA = {
+  answer: null, // what /api/control/media-state said last: {working, result}
+  asked: false, // a look was asked for since the page was opened
+  timer: 0,
+  browse: null, // the folders offered to pick from, as media-browse said them
+  path: null, // the form's folder box and the list to pick from (made with the form)
+  box: null,
+  form: { kind: '', path: '', how: 'in_place', downloads: false },
+  formKey: ''
+};
+const MEDIA_POLL = 2000; // how often the page looks while a change is at work
+const MEDIA_KIND = { movies: 'Films', tv: 'Shows', music: 'Music' };
+const MEDIA_ROLE = { in_place: 'Used where it is', new_files: 'For new downloads only' };
+const MEDIA_KEPT = 'The files in it are not touched: nothing is deleted, moved or changed.';
+function mediaKinds(answer = MEDIA.answer) {
+  return list(object(object(answer).result).kinds).filter(k => Object.hasOwn(MEDIA_KIND, k.kind));
+}
+/* What the last answer says, as the page shows it at the top: [badge state, title, words]. */
+function mediaOutcome(answer) {
+  const a = object(answer),
+    r = object(a.result);
+  if (a.working) {
+    return ['starting', 'Working on it…', text(r.state) === 'working' ? text(r.message) : ''];
+  }
+  return firstOf(
+    [
+      [!a.result, null],
+      [r.state === 'done', ['pass', 'Done', text(r.message)]],
+      [r.state === 'refused', ['warning', 'Not changed', text(r.message)]],
+      [r.state === 'failed', ['fail', 'Something went wrong', text(r.message)]]
+    ],
+    null
+  );
+}
+async function mediaState() {
+  const answer = await postControl('media-state');
+  clearTimeout(MEDIA.timer);
+  if (answer.ok) {
+    MEDIA.answer = answer;
+    if (answer.working) {
+      MEDIA.timer = setTimeout(() => void mediaState(), MEDIA_POLL);
+    }
+  } else if (answer.error === 'E43') {
+    MEDIA.answer = null;
+  }
+  if (state.route === 'media') {
+    withFocus(renderMedia);
+  }
+  return answer;
+}
+/* A change sent (or a look): refused at once with its words, else followed until it ends. */
+async function mediaChange(body, starting) {
+  const answer = await postControl('media-change', body);
+  if (answer.ok) {
+    if (starting) {
+      toast(starting);
+    }
+    MEDIA.answer = { ...object(MEDIA.answer), working: true };
+  } else if (answer.error === 'E43' && state.control?.access?.pin_set) {
+    unlockDialog(() => void mediaChange(body, starting), 'MEDIA FOLDERS', MEDIA_PIN);
+    return answer;
+  } else if (body.change !== 'look' || answer.error !== 'E47') {
+    toast(controlMessage(answer)); // a look while a change is at work just follows it
+  }
+  await mediaState();
+  return answer;
+}
+const MEDIA_PIN = 'Your media folders are changed as the server’s administrator, so it needs your PIN on every device.';
+function mediaLook() {
+  MEDIA.asked = true;
+  void mediaChange({ change: 'look' });
+}
+function mediaUnlock() {
+  if (state.control?.access?.pin_set === false) {
+    toast('Media folders need a PIN. Run setup again in a terminal on the server to choose one.');
+    return;
+  }
+  unlockDialog(mediaLook, 'MEDIA FOLDERS', MEDIA_PIN);
+}
+function mediaFolderRow(kind, f) {
+  const row = el('div', 'row media-folder'),
+    info = el('div');
+  info.append(el('h3', '', f.path), el('p', '', text(MEDIA_ROLE[f.use], 'Your folder')));
+  if (f.new_files) {
+    info.append(el('p', 'media-target', 'New downloads go here'));
+  }
+  if (!f.ready) {
+    info.append(longText('reason', text(f.reason, 'Not there now.')));
+  }
+  const actions = el('div', 'update-actions');
+  if (kind.downloads && f.use === 'in_place' && !f.new_files) {
+    actions.append(
+      button('Send new downloads here', () =>
+        mediaChange(
+          { change: 'target', kind: kind.kind, target: 'in_place' },
+          'Checking that new ' + kind.words + ' can be saved in ' + f.path + '…'
+        )
+      )
+    );
+  }
+  const away = button('Take away', () => confirmTakeAway(kind, f));
+  away.setAttribute('aria-label', 'Take away ' + f.path);
+  actions.append(away);
+  info.append(actions);
+  row.append(info, badge(f.ready ? 'pass' : 'warning', f.ready ? 'Ready' : 'Not ready'));
+  return row;
+}
+function confirmTakeAway(kind, f) {
+  confirmDialog(
+    'MEDIA FOLDERS',
+    'Take away ' + f.path + '?',
+    'It is disconnected from your ' +
+      kind.words +
+      ': the apps stop showing what is in it. ' +
+      MEDIA_KEPT +
+      ' An app that has a file open there keeps it until it restarts; the page says so if a restart is needed.',
+    'Take it away',
+    () => void mediaChange({ change: 'remove', kind: kind.kind, use: f.use }, 'Disconnecting ' + f.path + '…')
+  );
+}
+function mediaKindCard(kind) {
+  const card = el('article', 'card media-kind'),
+    rows = el('div', 'row-list');
+  card.append(cardHeading(text(MEDIA_KIND[kind.kind]), badge('pass', plural(list(kind.folders).length + 1, 'place'))));
+  const library = el('div', 'row media-folder'),
+    info = el('div');
+  info.append(el('h3', '', 'NekoServer library'), el('p', '', text(kind.library)));
+  if (kind.target === 'library') {
+    info.append(el('p', 'media-target', 'New downloads go here'));
+  } else if (kind.downloads) {
+    const back = button('Send new downloads here', () =>
+      mediaChange(
+        { change: 'target', kind: kind.kind, target: 'library' },
+        'New ' + kind.words + ' go to the library from now on…'
+      )
+    );
+    back.setAttribute('aria-label', 'Send new ' + kind.words + ' to the NekoServer library');
+    const actions = el('div', 'update-actions');
+    actions.append(back);
+    info.append(actions);
+  }
+  library.append(info, badge('pass', 'Ready'));
+  rows.append(library, ...list(kind.folders).map(f => mediaFolderRow(kind, f)));
+  card.append(rows);
+  for (const path of words(kind.copies)) {
+    card.append(hint('Waiting to be copied into the library: ' + path));
+  }
+  if (!kind.downloads) {
+    card.append(hint('This server does not download new ' + kind.words + ', so there is no place to choose for them.'));
+  }
+  return card;
+}
+function mediaOutcomeNodes(answer) {
+  const said = mediaOutcome(answer);
+  // A look that went well says nothing more than the folders below it.
+  const look = object(object(object(answer).result).asked).change === 'look';
+  if (!said || (look && said[0] === 'pass')) {
+    return [];
+  }
+  const [level, title, message] = said,
+    r = object(object(answer).result),
+    box = el('div', 'callout media-outcome');
+  box.setAttribute('role', 'status');
+  box.append(
+    cardHeading(level === 'starting' ? title : 'Last change', badge(level, level === 'starting' ? 'Working' : title))
+  );
+  if (message) {
+    box.append(longText('', message));
+  }
+  for (const note of words(r.notes)) {
+    box.append(longText('hint', note));
+  }
+  const next = words(r.next);
+  if (next.length && !object(answer).working) {
+    box.append(el('h4', '', 'What to do next'));
+    const steps = el('ul', 'media-next');
+    for (const step of next) {
+      steps.append(el('li', '', step));
+    }
+    box.append(steps);
+  }
+  return [box];
+}
+function renderMedia() {
+  if (!signedIn()) {
+    MEDIA.answer = null;
+    MEDIA.asked = false;
+    MEDIA.formKey = '';
+    put('media-add', []);
+    const pin = state.control?.access?.pin_set;
+    put('media-folders', [
+      hint(
+        pin === false
+          ? 'Media folders need a PIN. Run setup again in a terminal on the server to choose one.'
+          : 'Your media folders are shown and changed with your PIN, on every device (the server too).'
+      ),
+      pin === false ? el('span') : button('Unlock media folders', mediaUnlock, 'button small')
+    ]);
+    return;
+  }
+  if (!MEDIA.asked) {
+    mediaLook();
+  }
+  const kinds = mediaKinds();
+  const nodes = mediaOutcomeNodes(MEDIA.answer);
+  if (!kinds.length) {
+    nodes.push(
+      empty(
+        MEDIA.answer?.working || !MEDIA.answer
+          ? 'Looking at your folders…'
+          : 'This server plays no films, shows or music.'
+      )
+    );
+  } else {
+    const grid = el('div', 'card-grid auto media-kinds');
+    grid.append(...kinds.map(mediaKindCard));
+    nodes.push(grid);
+  }
+  nodes.push(button('Look again', mediaLook, 'button small secondary'));
+  put('media-folders', nodes);
+  // The form is drawn again only when what it offers changes: typing in it is never undone.
+  const key = JSON.stringify(kinds.map(k => [k.kind, k.downloads, k.room]));
+  if (kinds.length && key !== MEDIA.formKey) {
+    MEDIA.formKey = key;
+    withFocus(() => put('media-add', [mediaForm(kinds)]));
+  }
+}
+function mediaRadio(name, value, label, checked, onChange) {
+  const wrap = el('label', 'media-choice'),
+    input = el('input');
+  Object.assign(input, { type: 'radio', name, value, checked });
+  input.addEventListener('change', onChange);
+  wrap.append(input, el('span', '', label));
+  return wrap;
+}
+function mediaForm(kinds) {
+  const f = MEDIA.form;
+  if (!kinds.some(k => k.kind === f.kind)) {
+    f.kind = kinds[0].kind;
+  }
+  const form = el('form', 'card media-form');
+  form.append(el('h3', '', 'Add a folder'));
+  const kindField = el('label', 'field', 'What is in it'),
+    kindSelect = el('select');
+  kindSelect.id = 'media-kind';
+  for (const k of kinds) {
+    const option = el('option', '', text(MEDIA_KIND[k.kind]));
+    option.value = k.kind;
+    kindSelect.append(option);
+  }
+  kindSelect.value = f.kind;
+  kindField.append(kindSelect);
+  const pathField = el('label', 'field', 'The folder, as this server sees it'),
+    path = el('input');
+  Object.assign(path, { type: 'text', id: 'media-path', value: f.path, autocomplete: 'off', spellcheck: false });
+  path.placeholder = '/mnt/nas/films';
+  path.addEventListener('input', () => {
+    f.path = path.value;
+  });
+  pathField.append(path);
+  const pick = button('Pick a folder', () => void mediaBrowse(''));
+  pick.id = 'media-pick';
+  const browse = el('div', 'media-browse');
+  MEDIA.path = path;
+  MEDIA.box = browse;
+  const how = el('fieldset', 'media-how');
+  how.append(el('legend', '', 'How'));
+  const downloadsBox = el('input'),
+    downloadsField = el('label', 'media-choice');
+  Object.assign(downloadsBox, { type: 'checkbox', id: 'media-downloads', checked: f.downloads });
+  downloadsField.append(downloadsBox, el('span', '', 'New downloads go there'));
+  const note = el('p', 'hint');
+  const fit = () => {
+    const kind = kinds.find(k => k.kind === f.kind) || kinds[0];
+    const copying = f.how === 'copy';
+    downloadsBox.disabled = copying || !kind.downloads;
+    if (downloadsBox.disabled) {
+      downloadsBox.checked = f.downloads = false;
+    }
+    note.textContent = firstOf(
+      [
+        [copying, 'Its files are copied into the NekoServer library; your folder is kept as it is.'],
+        [!kind.downloads, 'This server does not download new ' + kind.words + '.'],
+        [
+          !kind.room.in_place && !kind.room.new_files,
+          'Your ' + kind.words + ' have both their folders already: take one away first, or copy this one.'
+        ],
+        [
+          !kind.room.in_place,
+          'Your ' + kind.words + ' use a folder where it is already: this one can only take the new downloads.'
+        ]
+      ],
+      'Nothing in the folder is copied, moved or changed: the apps read it where it is.'
+    );
+  };
+  how.append(
+    mediaRadio('media-how', 'in_place', 'Use it where it is', f.how === 'in_place', () => {
+      f.how = 'in_place';
+      fit();
+    }),
+    mediaRadio('media-how', 'copy', 'Copy its files into the library', f.how === 'copy', () => {
+      f.how = 'copy';
+      fit();
+    }),
+    downloadsField,
+    note
+  );
+  kindSelect.addEventListener('change', () => {
+    f.kind = kindSelect.value;
+    fit();
+  });
+  downloadsBox.addEventListener('change', () => {
+    f.downloads = downloadsBox.checked;
+  });
+  fit();
+  const go = el('button', 'button', 'Connect folder');
+  go.type = 'submit';
+  form.addEventListener('submit', e => {
+    e.preventDefault();
+    if (!f.path.trim()) {
+      toast('Type the folder first, or pick one.');
+      path.focus();
+      return;
+    }
+    // A folder that is copied is not connected: new downloads can't go there.
+    const downloads = f.how === 'in_place' && !downloadsBox.disabled && f.downloads;
+    const body = { change: 'add', kind: f.kind, path: f.path.trim(), how: f.how, downloads };
+    void mediaChange(body, 'Checking ' + body.path + ' as the apps would see it…');
+  });
+  form.append(kindField, pathField, pick, browse, how, go);
+  return form;
+}
+/* The folders to pick from: the server lists them (the page never reads the disk). */
+async function mediaBrowse(path) {
+  const answer = await postControl('media-browse', path ? { path } : {});
+  if (!answer.ok) {
+    toast(controlMessage(answer));
+    return;
+  }
+  MEDIA.browse = answer;
+  const box = MEDIA.box;
+  if (!box?.isConnected) {
+    return;
+  }
+  const nodes = [];
+  const here = text(answer.path);
+  if (here) {
+    const top = el('div', 'update-actions');
+    const use = button('Use ' + here, () => {
+      MEDIA.form.path = here;
+      MEDIA.path.value = here;
+      box.replaceChildren();
+      MEDIA.path.focus();
+    });
+    use.id = 'media-use';
+    top.append(
+      use,
+      button(answer.parent ? 'Up' : 'Back to the drives', () => void mediaBrowse(text(answer.parent)))
+    );
+    nodes.push(el('p', 'hint', 'In ' + here + ':'), top);
+  } else {
+    nodes.push(el('p', 'hint', 'Drives and shared folders connected to this server:'));
+  }
+  const folders = list(answer.folders);
+  const listing = el('ul', 'media-list');
+  for (const f of folders) {
+    const item = el('li'),
+      open = button((f.share ? '⇄ ' : f.mount ? '▣ ' : '') + text(f.name), () => void mediaBrowse(text(f.path)));
+    open.setAttribute('aria-label', 'Open ' + text(f.path));
+    item.append(open);
+    listing.append(item);
+  }
+  nodes.push(
+    folders.length
+      ? listing
+      : hint(here ? 'No folders in it.' : 'No drive or shared folder is connected under /mnt, /media or /srv.')
+  );
+  if (answer.more) {
+    nodes.push(hint('There are more: type the rest of the path in the box.'));
+  }
+  box.replaceChildren(...nodes);
+  (box.querySelector('#media-use') || box.querySelector('button'))?.focus();
+}
+
 /* ---------- routing & rendering ---------- */
 function markActive() {
   for (const a of document.querySelectorAll('[data-route]')) {
@@ -5279,6 +5669,7 @@ const PAGES = {
   processes: renderProcesses,
   health: renderHealth,
   updates: renderUpdates,
+  media: renderMedia,
   help: renderHelp
 };
 function render() {

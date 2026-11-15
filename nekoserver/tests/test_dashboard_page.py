@@ -1119,5 +1119,129 @@ class WhatShouldIDoTests(unittest.TestCase):
             self.assertIn(title, cards)
 
 
+def media_result(**parts):
+    """media_locations.py's answer for the page (result.json), with one folder of films."""
+    films = {
+        'kind': 'movies',
+        'words': 'films',
+        'library': '/mnt/nekoserver-media/library/movies',
+        'downloads': True,
+        'target': 'in_place',
+        'folders': [
+            {'use': 'in_place', 'path': '/mnt/nas/films', 'new_files': True, 'ready': True, 'reason': None},
+        ],
+        'copies': [],
+        'room': {'in_place': False, 'new_files': True},
+    }
+    music = {
+        'kind': 'music',
+        'words': 'music',
+        'library': '/srv/nekoserver/library/music',
+        'downloads': False,
+        'target': None,
+        'folders': [
+            {
+                'use': 'in_place',
+                'path': '/mnt/usb/music',
+                'new_files': False,
+                'ready': False,
+                'reason': 'Your music in /mnt/usb/music are not there now (/dev/sdd1 is not connected).',
+            }
+        ],
+        'copies': [],
+        'room': {'in_place': False, 'new_files': False},
+    }
+    return {
+        'format': 'neko-media-folders-v1',
+        'state': 'done',
+        'message': '',
+        'notes': [],
+        'next': [],
+        'kinds': [films, music],
+        **parts,
+    }
+
+
+@unittest.skipUnless(NODE, 'node is not installed')
+class MediaFoldersPageTests(unittest.TestCase):
+    """The Media folders page (dashboard_harness.mjs: mediaFlow, mediaSignedOut)."""
+
+    def test_the_page_looks_then_shows_each_kind_with_its_folders_and_where_downloads_go(self):
+        (flow,) = page(('mediaFlow', {'result': media_result(message='Your films are connected.')}))
+        # A look is asked for (root does it), then its answer is read.
+        self.assertEqual(
+            flow['looked'],
+            [['/api/control/media-change', {'change': 'look'}], ['/api/control/media-state', {}]],
+        )
+        shown = flow['page']
+        for words in (
+            'Done',
+            'Your films are connected.',
+            'Films',
+            'NekoServer library',
+            '/mnt/nekoserver-media/library/movies',
+            '/mnt/nas/films',
+            'Used where it is',
+            'New downloads go here',
+            'Send new downloads here',  # back to the library
+            'Take away',
+            'Music',
+            'Not ready',
+            '/dev/sdd1 is not connected',
+            'This server does not download new music',
+        ):
+            self.assertIn(words, shown)
+        # Where the films' new downloads go is said once, at the folder that takes them.
+        self.assertEqual(shown.count('New downloads go here'), 1)
+        self.assertIn('Add a folder', flow['form'])
+        self.assertIn('Pick a folder', flow['form'])
+        # Films use a folder where it is already: the form says what another one can be.
+        self.assertIn('this one can only take the new downloads', flow['form'])
+
+    def test_the_form_sends_the_folder_how_and_whether_new_downloads_go_there(self):
+        (flow,) = page(
+            ('mediaFlow', {'result': media_result(), 'add': {'path': '  /mnt/nas/new films ', 'downloads': True}})
+        )
+        self.assertEqual(
+            flow['formSent'][-1],
+            {'change': 'add', 'kind': 'movies', 'path': '/mnt/nas/new films', 'how': 'in_place', 'downloads': True},
+        )
+        # A folder that is copied takes no new downloads: the box goes off with it.
+        (copy,) = page(
+            ('mediaFlow', {'result': media_result(), 'add': {'path': '/mnt/old', 'downloads': True, 'how': 'copy'}})
+        )
+        self.assertEqual(copy['formSent'][-1]['how'], 'copy')
+        self.assertIs(copy['formSent'][-1]['downloads'], False)
+
+    def test_a_refusal_and_the_next_steps_are_said_in_the_servers_words(self):
+        refused = media_result(state='refused', message='Nothing is mounted at /mnt/nas now.')
+        (flow,) = page(('mediaFlow', {'result': refused}))
+        self.assertIn('Not changed', flow['page'])
+        self.assertIn('Nothing is mounted at /mnt/nas now.', flow['page'])
+        steps = media_result(next=['Seerr: Open Seerr, Settings, Services, Radarr, and choose /data/existing/movies'])
+        (flow,) = page(('mediaFlow', {'result': steps}))
+        self.assertIn('What to do next', flow['page'])
+        self.assertIn('choose /data/existing/movies', flow['page'])
+        said = page(
+            ('mediaOutcome', {'working': True, 'result': {'state': 'working', 'message': 'Telling the apps…'}}),
+            ('mediaOutcome', {'working': False, 'result': {'state': 'failed', 'message': 'It stopped.'}}),
+            ('mediaOutcome', {'working': False, 'result': None}),
+        )
+        self.assertEqual(
+            said,
+            [
+                ['starting', 'Working on it…', 'Telling the apps…'],
+                ['fail', 'Something went wrong', 'It stopped.'],
+                None,
+            ],
+        )
+
+    def test_without_the_pin_nothing_is_asked_or_shown(self):
+        (out,) = page(('mediaSignedOut', None))
+        self.assertEqual(out['sent'], [])
+        self.assertEqual(out['form'], 0)
+        self.assertIn('Unlock media folders', out['page'])
+
+
 if __name__ == '__main__':
     unittest.main()
