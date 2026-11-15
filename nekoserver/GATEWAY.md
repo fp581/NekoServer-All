@@ -27,6 +27,7 @@ TV apps can't be given your server's certificate, so a TV uses the Tailscale add
 - **Android TV and Google TV** (Sony, Philips, TCL and others, and the Google TV Streamer or Chromecast with Google TV) and **Apple TV** (tvOS 17 or later): install Tailscale from the TV's app store and sign in to your Tailscale account, then install Jellyfin (on Apple TV: Swiftfin or Infuse) and enter the Jellyfin address ending in `:8443`.
 - **Fire TV:** Tailscale is not in Amazon's app store; it is installed from Tailscale's own site (https://tailscale.com/docs/install/amazon-fire), which takes some fiddling, and the newest sticks (Vega OS, such as the Fire TV Stick 4K Select) cannot run it.
 - **LG (webOS), Samsung (Tizen) and Roku TVs** have no Tailscale app, so their Jellyfin app cannot reach your server. Plug in a box or stick that has one (Google TV Streamer, Apple TV), or connect the server to the TV with an HDMI cable ([TV-SETUP.md](TV-SETUP.md)).
+- **Signing in on the TV** needs no typing of the long password with the remote: choose **Quick Connect** on the TV's sign-in screen (behind *Manual Login* on some), and it shows a six-letter code. In Jellyfin on your phone, already signed in, open your picture, then *Quick Connect*, and type that code.
 - **Casting from the phone** (the cast button in the Jellyfin app) does not work: the Chromecast or TV then fetches the film itself and cannot reach the private address. Use the Jellyfin app on the TV or stick instead.
 
 ---

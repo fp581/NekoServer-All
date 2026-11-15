@@ -487,6 +487,14 @@ class GatewayGuideTests(unittest.TestCase):
         self.assertIn('Casting from the phone', part)
         self.assertIn('(GATEWAY.md#on-a-tv)', doc('README.md'))
 
+    def test_a_tv_signs_in_without_typing_the_password(self):
+        """Deep check 553: setup makes Jellyfin's password 32 random letters, and a TV app
+        asked for it to be typed with the remote. Jellyfin's Quick Connect (on by default)
+        signs the TV in with a code entered on the phone instead."""
+        part = doc('GATEWAY.md').split('## On a TV')[1].split('\n## ')[0]
+        self.assertIn('Quick Connect', part)
+        self.assertIn('code', part)
+
 
 class ToolHelpTests(unittest.TestCase):
     """Deep check plan 388: --help of the tools the guides tell a person to run. recover.py
