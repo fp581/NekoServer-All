@@ -53,6 +53,18 @@ def jellyfin_key(root, settings, server_id):
     )
 
 
+def chosen_folders(config):
+    """Where the settings say requests are saved (seerr_providers.request_folders), for
+    the check of Seerr's providers: one that still saves into a folder chosen earlier
+    passed on its path alone, though that folder no longer takes new files. None when
+    the settings cannot say (a damaged "placement"): the check then takes the folder
+    the provider has, as before."""
+    try:
+        return seerr_providers.request_folders(config)
+    except (RuntimeError, KeyError, TypeError, ValueError):
+        return None
+
+
 def check(config, factory=ReadClient):
     root = safe_path(config['data_mount'])
     apps = media_services(config)
@@ -133,6 +145,7 @@ def check(config, factory=ReadClient):
                 apps=apps,
                 factory=factory,
                 verify_only=True,
+                folders=chosen_folders(config),
             )
     if 'navidrome' in apps:
         import music_client
