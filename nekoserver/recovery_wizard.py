@@ -589,9 +589,10 @@ class Checked:
     def summary(self, destination=None):
         text = f'Checksums matched for {file_count(self.verified)}'
         if self.unverified:
+            it, it_was = ('it', 'it was') if self.unverified == 1 else ('them', 'they were')
             text += (
-                f'; {file_count(self.unverified)} had no recorded checksum yet (the backup that copied it did '
-                'not finish, or it was backed up before checksums were kept) and could not be checked'
+                f'; {file_count(self.unverified)} had no recorded checksum yet (the backup that copied {it} did '
+                f'not finish, or {it_was} backed up before checksums were kept) and could not be checked'
             )
         text += '.'
         if self.ledger_problem:

@@ -1167,6 +1167,17 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertEqual((restored / 'a.txt').read_bytes(), b'kept safe')
         self.assertIn('Checksums matched for 1 file; 1 file had no recorded checksum yet', '\n'.join(out))
 
+    def test_the_files_with_no_checksum_are_it_for_one_and_them_for_more(self):
+        """The summary said "2 files had no recorded checksum yet (the backup that copied it
+        ..., or it was backed up ...)"."""
+        checked = recovery_wizard.Checked(None)
+        checked.unverified = 1
+        self.assertIn('copied it did not finish, or it was backed up', checked.summary())
+        checked.unverified = 2
+        said = checked.summary()
+        self.assertIn('2 files had no recorded checksum yet (the backup that copied them did not finish, ', said)
+        self.assertIn('or they were backed up before checksums were kept)', said)
+
     def test_a_damaged_backup_file_is_left_out_and_named_and_the_rest_restored(self):
         self.write('usb/nextcloud/alice/files/a.txt', b'kept safe')
         self.write('usb/nextcloud/alice/files/b.txt', b'also safe')
