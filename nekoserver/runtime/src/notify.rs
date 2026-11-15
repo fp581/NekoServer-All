@@ -507,6 +507,14 @@ fn report(runtime: &Path, state: &Value, now: f64, pending: usize) -> Result<()>
         0o644,
     )
 }
+/// How many alerts the delivery record (delivery.json) says are waiting to be sent. A
+/// test message sends none of them, so `notify --test` keeps the number: it wrote
+/// "pending 0" over alerts that were still waiting (deep check, D9).
+fn still_waiting(runtime: &Path) -> usize {
+    common::json(&runtime.join("delivery.json"), 64000)["pending"]
+        .as_u64()
+        .map_or(0, |n| n.min(1000) as usize)
+}
 /// Is a message due now? A retry is never set more than an hour ahead, so one further
 /// ahead was set while the clock was ahead: it is ignored, or alerts would wait until the
 /// clock reached it again (days, after a clock put back by days).
@@ -617,7 +625,7 @@ pub fn run(a: &Args) -> Result<()> {
         let mut state = after_test(old, result.is_ok(), now);
         state["destination"] = json!(destination);
         common::atomic_json(&path, &state)?;
-        report(&runtime, &state, now, 0)?;
+        report(&runtime, &state, now, still_waiting(&runtime))?;
         return test_said(result).map(|said| println!("{said}"));
     }
     let snapshot = common::json(&a.path("snapshot")?, 2_000_000);
@@ -704,6 +712,30 @@ mod tests {
             &after_test(sent, true, 1000.0)["next_attempt"],
             1000.0
         ));
+    }
+    /// D9: `notify --test` wrote "pending 0" to the delivery record while alerts were
+    /// still waiting to be sent (a test sends none of them).
+    #[test]
+    fn a_test_message_keeps_the_number_of_alerts_still_waiting() {
+        let runtime =
+            std::env::temp_dir().join(format!("neko-notify-waiting-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&runtime);
+        std::fs::create_dir_all(&runtime).unwrap();
+        assert_eq!(still_waiting(&runtime), 0, "no record yet");
+        let state = json!({"delivery_status":"fail","next_attempt":4600.0});
+        report(&runtime, &state, 1000.0, 3).unwrap();
+        assert_eq!(still_waiting(&runtime), 3);
+        // What --test writes: the test's own outcome, and the alerts still waiting.
+        let tested = after_test(state, true, 1100.0);
+        report(&runtime, &tested, 1100.0, still_waiting(&runtime)).unwrap();
+        let record = common::json(&runtime.join("delivery.json"), 64000);
+        assert_eq!(record["pending"], 3);
+        assert_eq!(record["status"], "pass");
+        let run = include_str!("notify.rs");
+        let test_branch = &run[run.find("if a.flag(\"test\") {").unwrap()..];
+        let test_branch = &test_branch[..test_branch.find("return test_said").unwrap()];
+        assert!(test_branch.contains("report(&runtime, &state, now, still_waiting(&runtime))"));
+        std::fs::remove_dir_all(&runtime).unwrap();
     }
     /// Deep check 249: a home-network address that changed reaches the phone too, and is
     /// not called recovered while the connections can't be listed.
