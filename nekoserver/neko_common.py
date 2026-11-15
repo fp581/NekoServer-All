@@ -716,42 +716,44 @@ class _JsonMembers:
                 raise ValueError('no comma')
 
 
-def read_ledger(root):
-    """{relative path: sha256} recorded for a backup tree, or {} if it has no ledger yet.
-    A ledger with any unsafe path or malformed entry is not trusted at all. Read row by
-    row, keeping only each row's checksum (_JsonMembers)."""
-    path = Path(root) / LEDGER_NAME
-    if not path.exists():
-        return {}
+def _ledger_rows(path, rest):
+    """Each (relative path, row) of the checksum ledger at `path`, one at a time: the
+    file is read a piece at a time and never held whole (_JsonMembers). Its other
+    members (format, retired) are put into `rest`. A ledger with any unsafe path or
+    malformed entry is not trusted at all."""
     if path.is_symlink() or not path.is_file():
         raise RuntimeError(f'The checksum ledger {path} is not a regular file')
-    out, entries, ledger_format, invalid = {}, False, None, False
+    entries = False
     try:
         with path.open(encoding='utf-8') as handle:
             reader = _JsonMembers(handle)
             for key in reader.members():
                 if key != 'entries':
-                    value = reader.value()
-                    ledger_format = value if key == 'format' else ledger_format
+                    rest[key] = reader.value()
                     continue
                 entries = True
                 for rel in reader.members():
                     row = reader.value()
                     sha = row.get('sha256') if isinstance(row, dict) else None
                     if not valid_ledger_path(rel) or not (isinstance(sha, str) and re.fullmatch(r'[0-9a-f]{64}', sha)):
-                        invalid = True
-                    else:
-                        out[rel] = sha
+                        raise RuntimeError(f'The checksum ledger {path} has an invalid entry; it is not trusted')
+                    yield rel, row
             if not reader.at_end():
                 raise ValueError('more after the ledger')
     except (OSError, ValueError):
         entries = False
     # The format comes after the entries in the file: judged once it is all read.
-    if not entries or ledger_format != 'neko-ledger-v1':
+    if not entries or rest.get('format') != 'neko-ledger-v1':
         raise RuntimeError(f'The checksum ledger {path} is unreadable')
-    if invalid:
-        raise RuntimeError(f'The checksum ledger {path} has an invalid entry; it is not trusted')
-    return out
+
+
+def read_ledger(root):
+    """{relative path: sha256} recorded for a backup tree, or {} if it has no ledger yet.
+    Read row by row, keeping only each row's checksum (_ledger_rows)."""
+    path = Path(root) / LEDGER_NAME
+    if not path.exists():
+        return {}
+    return {rel: row['sha256'] for rel, row in _ledger_rows(path, {})}
 
 
 def record_ledger(root, entries, how, replace=(), retire=None):
@@ -763,66 +765,84 @@ def record_ledger(root, entries, how, replace=(), retire=None):
     recovery wizard asks first); only those are overwritten. `retire`: {path: why} for
     saved copies you accepted as lost (the wizard asks first): each entry moves to
     "retired" with when and why, so the checks stop expecting it (backup's ledger.rs
-    keeps that part as it is)."""
+    keeps that part as it is).
+    The ledger is copied row by row into the new file, like read_ledger reads it: read
+    whole, a ledger of a million photos took most of a gigabyte in the recovery menu."""
     import fcntl
-    import time
     import uuid
 
     root = safe_path(Path(root))
+    for rel, sha in entries.items():
+        if not valid_ledger_path(rel) or not re.fullmatch(r'[0-9a-f]{64}', sha):
+            raise RuntimeError('Refusing an invalid checksum ledger entry')
     with open(root / '.neko-ledger.lock', 'a') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError('A backup job is using this backup right now; try again when it has finished') from None
         path = root / LEDGER_NAME
-        value = json.loads(path.read_text()) if path.exists() else {'format': 'neko-ledger-v1', 'entries': {}}
-        read_ledger(root)  # refuse to extend a ledger that is not trusted
-        added = []
-        for rel, sha in entries.items():
-            if not valid_ledger_path(rel) or not re.fullmatch(r'[0-9a-f]{64}', sha):
-                raise RuntimeError('Refusing an invalid checksum ledger entry')
-            if rel in value['entries'] and rel not in replace:
-                continue
-            value['entries'][rel] = {
-                'sha256': sha,
-                'size': (root / rel).stat().st_size,
-                'verified_at': time.time(),
-                'how': how,
-            }
-            added.append(rel)
-        added += retire_entries(value, retire or {})
-        if added:
-            temp = root / f'{LEDGER_NAME}.{uuid.uuid4()}.tmp'
-            try:
-                with open(temp, 'x') as out:
-                    os.fchmod(out.fileno(), 0o600)
-                    json.dump(value, out)
-                    out.flush()
-                    os.fsync(out.fileno())
+        temp = root / f'{LEDGER_NAME}.{uuid.uuid4()}.tmp'
+        try:
+            with open(temp, 'x', encoding='utf-8') as out:
+                os.fchmod(out.fileno(), 0o600)
+                added = _copy_ledger(path, out, root, entries, how, set(replace), retire or {})
+                out.flush()
+                os.fsync(out.fileno())
+            if added:
                 os.replace(temp, path)
                 fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
                 try:
                     os.fsync(fd)
                 finally:
                     os.close(fd)
-            finally:
-                if temp.exists():
-                    temp.unlink()
+        finally:
+            if temp.exists():
+                temp.unlink()
         return added
 
 
-def retire_entries(value, retire):
-    """Move each of `retire`'s paths ({path: why}) from a ledger's entries to its
-    "retired" part, with when and why. Returns the paths moved."""
+def _copy_ledger(path, out, root, entries, how, replace, retire):
+    """Write the ledger at `path` to `out` with record_ledger's changes, one row at a
+    time. Returns the paths added, then the paths retired."""
     import time
 
-    moved = []
-    for rel, why in retire.items():
-        old = value['entries'].pop(rel, None) if valid_ledger_path(rel) else None
-        if old is not None:
-            value.setdefault('retired', {})[rel] = {**old, 'retired_at': time.time(), 'why': why}
-            moved.append(rel)
-    return moved
+    def new_row(rel):
+        return {'sha256': entries[rel], 'size': (root / rel).stat().st_size, 'verified_at': time.time(), 'how': how}
+
+    rest, retired, added, there = {}, {}, set(), set()
+    written = False
+    out.write('{"entries": {')
+
+    def put(rel, row):
+        nonlocal written
+        if rel in retire:  # given up as lost: kept under "retired", with when and why
+            retired[rel] = {**row, 'retired_at': time.time(), 'why': retire[rel]}
+            return
+        out.write((', ' if written else '') + json.dumps(rel) + ': ' + json.dumps(row))
+        written = True
+
+    for rel, row in _ledger_rows(path, rest) if path.exists() else ():
+        if rel in entries:
+            there.add(rel)
+            if rel in replace:
+                row = new_row(rel)
+                added.add(rel)
+        put(rel, row)
+    for rel in entries:
+        if rel not in there:
+            added.add(rel)
+            put(rel, new_row(rel))
+    out.write('}')
+    before = rest.pop('retired', {})
+    if not isinstance(before, dict):
+        raise RuntimeError(f'The checksum ledger {path} is unreadable')
+    rest['format'] = 'neko-ledger-v1'
+    if before or retired:
+        rest['retired'] = {**before, **retired}
+    for key, value in rest.items():
+        out.write(', ' + json.dumps(key) + ': ' + json.dumps(value))
+    out.write('}')
+    return [rel for rel in entries if rel in added] + [rel for rel in retire if rel in retired]
 
 
 def sha256_file(path):
