@@ -96,7 +96,8 @@
     "targets": ["library", "in_place", "new_files"],
     "browse_roots": ["/mnt", "/media", "/run/media", "/srv"],
     "browse_limit": 200,
-    "busy": "Already working on a change to your media folders. Wait until it has finished (this page shows it), then try again."
+    "busy": "Already working on a change to your media folders. Wait until it has finished (this page shows it), then try again.",
+    "away": "That drive or share does not answer now. Check that it is switched on and connected, then try again. Nothing was changed."
   },
   "setup_lock": "/run/nekoserver-setup.lock",
   "operation_lock": "/run/nekoserver-operation.lock",

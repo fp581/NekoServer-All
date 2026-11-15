@@ -315,6 +315,36 @@ class MediaFoldersTests(unittest.TestCase):
         self.assertEqual(odd['state'], 'refused')
         self.assertIn('full path', odd['message'])
 
+    def test_a_share_that_does_not_answer_is_refused_without_waiting_for_it(self):
+        # A share that stopped answering holds every look at its folders. Seen for real
+        # (a FUSE share whose server never answered): the run waited in the kernel for
+        # good, holding the lock the nightly backups take, and the page said "Working on
+        # it" until the PC was restarted. Each look is asked of a child with a time limit.
+        self.add(downloads=False)
+        looked = []
+
+        def no_answer(argv, seconds):
+            looked.append((argv, seconds))
+            return None  # the child did not end in time
+
+        on_nas = functools.partial(lambda nas, path: str(path).startswith(str(nas)), self.pc.nas)
+        with (
+            mock.patch.object(media_locations, 'on_a_share', on_nas),
+            mock.patch.object(media_locations, 'answered_within', no_answer),
+        ):
+            before = self.pc.settings()
+            for asked in (
+                {'change': 'add', 'kind': 'tv', 'path': str(self.pc.shows), 'how': 'in_place', 'downloads': False},
+                {'change': 'add', 'kind': 'tv', 'path': str(self.pc.shows), 'how': 'copy', 'downloads': False},
+                {'change': 'target', 'kind': 'movies', 'target': 'in_place'},
+            ):
+                with self.subTest(asked=asked):
+                    answer = self.pc.ask(**asked)
+                    self.assertEqual((answer['state'], answer['message']), ('refused', media_locations.AWAY))
+                    self.assertEqual(self.pc.settings(), before)
+        self.assertEqual(looked[-1], (['test', '-d', f'{self.pc.films}/.'], media_locations.LOOK_SECONDS))
+        self.assertEqual(len(looked), 3)
+
     def test_one_folder_is_used_where_it_is_and_one_more_only_for_new_downloads(self):
         self.add(downloads=False)
         other = self.pc.top / 'big' / 'films'

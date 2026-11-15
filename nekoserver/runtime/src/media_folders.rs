@@ -56,7 +56,10 @@ const NOT_STARTED: &str = "The change could not be started, so nothing was chang
 const STOPPED: &str = "The change stopped before it had finished (the server restarted, or the change failed). Press Look again to see your folders as they are now; nothing more is changed.";
 const ASK_PATH: &str =
     "Type the folder as a full path, starting with / (for example /mnt/nas/films).";
-const AWAY: &str = "That drive or share does not answer now. Check that it is switched on and connected, then try again.";
+/// A drive or share that did not answer a look in time (media_locations.py says the same).
+fn away() -> &'static str {
+    fact("away")
+}
 
 /// The page's folder in the control service's runtime folder, and how it starts the
 /// service. One lock: two presses at once never both start a change.
@@ -333,7 +336,7 @@ pub fn inside(path: &str, table: &str, cfg: &Value) -> Value {
     let wanted = PathBuf::from(path);
     let look = std::thread::spawn(move || names_in(&wanted, limit));
     let Some(found) = common::joined(look, LOOK_LIMIT) else {
-        return refuse("E47", AWAY);
+        return refuse("E47", away());
     };
     let (names, more) = match found {
         Ok(found) => found,

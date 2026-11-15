@@ -41,6 +41,7 @@ from neko_common import (
     SETUP_LOCK,
     OPERATION_LOCK,
     SHARED,
+    answered_within,
     atomic_json,
     checked_settings,
     default_settings,
@@ -49,6 +50,7 @@ from neko_common import (
     media_group,
     media_services,
     music_library,
+    on_a_share,
     read_settings,
     verify_storage,
 )
@@ -71,6 +73,7 @@ class Refusal(RuntimeError):
 # ---- what is said --------------------------------------------------------------------------
 
 BUSY = FACTS['busy']  # the control service says the same (media_folders.rs)
+AWAY = FACTS['away']  # ... and this, when a share does not answer the folder picker
 SETUP_RUNNING = (
     'Setup is running on the server right now and may change the same folders. Try again once it has finished.'
 )
@@ -253,6 +256,20 @@ def kept_flags(entry, old):
     return entry
 
 
+LOOK_SECONDS = 15
+
+
+def answering(path):
+    """Refusal when `path` is on a share that does not answer within LOOK_SECONDS. setup's
+    checks look at the folder in this process, and on a share that stopped answering
+    such a look waits for as long as it is away. This run has no time limit (a copy takes
+    hours) and holds the lock the backups wait for: one look that never ends stopped the
+    nightly backups and every later change until the PC was restarted (seen with a
+    share that stopped answering: the page said "Working on it" for good)."""
+    if on_a_share(path) and answered_within(['test', '-d', path + '/.'], LOOK_SECONDS) is None:
+        raise Refusal(AWAY)
+
+
 def add(config, asked, out):
     """Connect a folder (or have it copied). Returns the kinds whose apps are to be told."""
     kind, words = asked['kind'], WORDS[asked['kind']]
@@ -260,6 +277,7 @@ def add(config, asked, out):
         raise Refusal(NOT_ON.format(words=words))
     if asked['downloads'] and not existing_page.downloads(config, kind):
         raise Refusal(NO_DOWNLOADS.format(words=words))
+    answering(asked['path'])
     if asked['how'] == 'copy':
         return copy_in(config, kind, asked['path'], out)
     entries = entries_of(config, kind)
@@ -366,6 +384,7 @@ def target(config, asked, out):
         out['message'] = f'New {words} are saved in the NekoServer library ({library_folder(config, kind)}) now.'
     else:
         old = entries[IN_PLACE]
+        answering(old['path'])
         try:
             found = existing_media.check(config, kind, old['path'], True)
         except existing_media.Refused as refused:
