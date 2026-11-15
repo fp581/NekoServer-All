@@ -330,5 +330,17 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(slept, [])
 
 
+class CloudOriginGuideTests(unittest.TestCase):
+    """Deep check 557: NEXTCLOUD.md said the most recently applied gateway becomes
+    Nextcloud's one origin and to reapply the chosen gateway to switch it, which setup has
+    not done since 0.21.1 (each gateway only adds its host; the first one's address stays
+    the address of background emails), so reapplying changed nothing."""
+
+    def test_the_guide_describes_what_setup_does(self):
+        text = (Path(__file__).resolve().parents[1] / 'NEXTCLOUD.md').read_text()
+        self.assertNotIn('most recently applied gateway', text)
+        self.assertIn("first gateway's address", text)
+
+
 if __name__ == '__main__':
     unittest.main()
