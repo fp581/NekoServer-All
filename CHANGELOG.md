@@ -41,6 +41,8 @@ Every copy is read back and checked before it counts. That read came straight af
 - **Nothing is restored onto the card itself.** `restore /mnt` (the card) copied every file onto the card, among its records; a folder on the card is now refused, also through a link.
 
 ### Fixed: backups and upgrades
+- **The monthly run's reasons keep their advice whole on the dashboard** ("night too short" lost the setting's name, "foreign Docker volume" lost "run setup again").
+- **The monthly recovery says when Docker doesn't answer** (after 60 seconds), instead of waiting for good.
 - **An upgrade from the dashboard works on Debian 12's Python (3.11.2)**: it stopped with "module 'tarfile' has no attribute 'FilterError'"; the same safety checks are now done by hand there.
 - **A returning drive waits for a running job before starting the apps** (up to 30 minutes, then says so), instead of starting Docker in the middle of a job or an update's rollback.
 - **Root writes into a folder an app owns through the opened folder**, so a folder swapped for a link meanwhile is refused, not followed.
@@ -66,6 +68,8 @@ Every copy is read back and checked before it counts. That read came straight af
 - **An older password list after the backup key was made again says it is from the earlier key** and asks for that password, instead of "Wrong password" to the right new one.
 
 ### Fixed: setup and its tools
+- **A number out of range in my-config.json names the setting and its range** (it was "Invalid journal bound" or "Invalid maintenance.keep_snapshots").
+- **The gateway certificate export says why it failed**, not one sentence for every cause.
 - **`install.sh --check` works in a Latin-1 terminal** (it stopped on a dash it could not show).
 - **`doas bash install.sh` knows whose account it is**, and a PC without sudo is told how to get it with its own package manager, not apt.
 - **A 32-bit PC is called a 32-bit PC**, not "a Raspberry Pi or another ARM board"; an image-based Fedora gets the read-only-system message.
@@ -85,7 +89,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **The setup window refuses a change sent from another page on this PC** (the sign-in cookie goes to every port of 127.0.0.1), and closes a connection that stops halfway after 10 seconds.
 - **A drive's label or model can no longer send escape codes to the terminal** in the drive list.
 - **Downloads stop at their whole time limit** (one byte a second ran 40 s against 5 s), and an answer cut off, too large or not a web site's is said plainly.
-- **Docs**: HOST-BACKUPS.md names all five Linux families; moving to a new PC, letting a friend watch your films (and that they can open the dashboard), renaming the server, where films go and what to do when a drive fills up later.
+- **Docs**: two broken links fixed; HOST-BACKUPS.md names all five Linux families; moving to a new PC, letting a friend watch your films (and that they can open the dashboard), renaming the server, where films go and what to do when a drive fills up later.
 - **"Continue unfinished setup" says what it really does** (it asks the first page, drives and review again), not that it goes straight on at the step that stopped.
 - **On one drive, the review names that drive** for the photos, not "the drive of the backups".
 - **Backup times typed as "2:30" are taken** (kept as 02:30).
@@ -123,6 +127,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **`notify --test` says what happened**: that the alert server took the test and to look at your phone, or that it was not sent and what to check. It printed nothing, or only "Notification delivery failed".
 
 ### Fixed: the dashboard and Ask Neko
+- **What a backup left out is cut at a word or sentence**, not mid-word ("…the whole Nextcl").
 - **Ask Neko says when a question is too long** (it was cut at 500 characters silently) **and when the box is empty**.
 - **Ask Neko leaves out the alert and heartbeat addresses** read from where setup keeps them (it looked in the settings, where they never are).
 - **A home-network address the PC no longer has (a new router) is said**, instead of a green page while home addresses and shared folders had stopped.
