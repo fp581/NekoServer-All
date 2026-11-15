@@ -582,6 +582,20 @@ class UpgradeTests(unittest.TestCase):
         self.assertIn('the check could not be made', ' '.join(self.said))
         self.assertFalse(self.journal.exists())
 
+    def test_a_download_that_does_not_fit_on_the_ssd_says_so(self):
+        # Deep check 601, the update run for real on a nearly full SSD: the dashboard's
+        # upgrade row said "[Errno 28] No space left on device", which names no drive.
+        import errno
+
+        full = OSError(errno.ENOSPC, 'No space left on device')
+        with mock.patch.object(upgrade, 'download', side_effect=full):
+            self.assertEqual(self.upgrade(self.setup(0)), 1)
+        self.assertFalse(self.journal.exists())
+        said = self.said[-1]
+        self.assertIn('The SSD is full, so the download of', said)
+        self.assertIn('Make room on the SSD, then start the upgrade again', said)
+        self.assertNotIn('Errno', said)
+
     def test_a_download_that_is_not_that_release_changes_nothing(self):
         for payload in (release(NEWER, version='0.0.1'), b'not an archive', release('v0.0.1Beta')):
             with self.subTest(payload=payload[:20]):

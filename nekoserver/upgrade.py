@@ -23,6 +23,7 @@ it got, so a power cut at any point is put right at the next start):
 
 import argparse
 import contextlib
+import errno
 import http.client
 import json
 import os
@@ -616,7 +617,7 @@ def upgrade_held(
         # A download cut off part-way (a short archive, a connection closed early) is one
         # of these too: the record goes, and app updates and the monthly check go on.
         journal.unlink(missing_ok=True)
-        out(f'{exc or type(exc).__name__}; this server stays on {VERSION}')
+        out(f'{download_words(exc, tag, work)}; this server stays on {VERSION}')
         return 1
     out(f'Setting up {tag} (this takes a while: it builds the background program). The log: {log_file}')
     record('installing', journal, project=str(project))
@@ -639,6 +640,20 @@ def upgrade_held(
 
 # What a download, an archive or a check over the network can raise when it fails part-way.
 DOWNLOAD_ERRORS = (RuntimeError, OSError, tarfile.TarError, EOFError, ValueError, http.client.HTTPException)
+# Said when the release did not fit on the SSD, where it is downloaded and unpacked.
+NO_ROOM = (
+    'The SSD is full, so the download of {tag} did not fit in {work} (the release and its unpacked files take '
+    'a few hundred MB); nothing was changed. Make room on the SSD, then start the upgrade again'
+)
+
+
+def download_words(exc, tag, work):
+    """What to say of a download that failed. A full SSD was said as Python's own
+    "[Errno 28] No space left on device", which names neither the drive nor what to do
+    (deep check 601, the update run on a nearly full SSD)."""
+    if isinstance(exc, OSError) and exc.errno == errno.ENOSPC:
+        return NO_ROOM.format(tag=tag, work=work)
+    return str(exc) or type(exc).__name__
 
 
 def checked(check):
