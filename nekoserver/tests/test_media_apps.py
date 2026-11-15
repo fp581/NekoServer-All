@@ -392,6 +392,46 @@ class StepTests(unittest.TestCase):
                 self.assertIsNone(samba.run(ctx))
         self.assertTrue(any(line.startswith('Shared folders: nothing to share') for line in ctx.logs))
 
+    def test_folders_shared_before_stop_being_shared_when_none_is_left(self):
+        """Deep check 400: the last share taken out of the settings (or its app switched
+        off). Setup said "nothing to share" and never looked at the share file of the
+        earlier run: Samba went on sharing every folder in it."""
+        with tempfile.TemporaryDirectory() as hdd:
+            share_file = Path(hdd) / 'nekoserver.conf'
+            earlier = {'shares': {'Media': 'library', 'Mine': 'my files'}, 'tailnet_only': True}
+            share_file.write_text(samba.share_config(earlier, Path('/mnt/m'), 'neko'))
+            config = settings(False)
+            config['media_mount'] = hdd
+            config['networking']['shares'] = {}
+            ctx, ran = context(config), []
+            with (
+                mock.patch.object(samba.host, 'current') as family,
+                mock.patch.object(samba, 'SHARE_FILE', str(share_file)),
+                mock.patch.object(samba, 'call', side_effect=lambda argv, timeout=180: ran.append(argv)),
+            ):
+                family.return_value.service.return_value = 'smb.service'
+                self.assertIsNone(samba.run(ctx))
+                now = share_file.read_text()
+                self.assertEqual(samba.shares_in(now), [])
+                self.assertNotIn('/mnt/m', now)
+                # Who may connect stays as it was, and the file stays NekoServer's.
+                self.assertTrue(now.startswith(samba.MANAGED_HEADER))
+                self.assertIn('[global]\n', now)
+                self.assertIn('   hosts deny = ALL\n', now)
+                self.assertEqual(ran, [['systemctl', 'try-restart', 'smb.service']])
+                self.assertIn(
+                    'Shared folders: Media, Mine are no longer shared (nothing is left to share in the settings). '
+                    'Other computers can no longer open them; the folders and every file in them stay on the drive.',
+                    ctx.logs,
+                )
+                # The next run finds nothing left to take out.
+                self.assertIsNone(samba.run(ctx))
+                self.assertEqual(len(ran), 1)
+            # A file someone else wrote is never touched.
+            share_file.write_text('[Theirs]\n   path = /srv/theirs\n')
+            self.assertEqual(samba.stop_sharing('smb.service', ctx.log, share_file, ran.append), [])
+            self.assertEqual(share_file.read_text(), '[Theirs]\n   path = /srv/theirs\n')
+
     def test_the_first_checkup_and_acceptance_leave_their_checks_out(self):
         modules = ['system', 'storage', 'docker', 'nextcloud', 'dashboard', 'host_backup', *neko_common.MEDIA_STEPS]
         with mock.patch.object(acceptance.tv, 'available', return_value=True):

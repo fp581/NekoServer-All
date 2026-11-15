@@ -166,6 +166,59 @@ MADE_BY_SETUP = {
 }  # NekoServer's own share file, included by smb.conf
 
 
+def shares_in(text):
+    """The names of the folders a share file shares: every section but Samba's own."""
+    sections = [line.strip()[1:-1] for line in text.splitlines() if re.fullmatch(r'\[[^\]]+\]', line.strip())]
+    return [name for name in sections if name.lower() not in SAMBA_SECTIONS]
+
+
+def without_shares(text):
+    """NekoServer's share file with every shared folder taken out; the server's own
+    settings ([global]: who may connect, and from where) stay as they are."""
+    kept, keeping = [], True
+    for line in text.splitlines():
+        if re.fullmatch(r'\[[^\]]+\]', line.strip()):
+            keeping = line.strip()[1:-1].lower() in SAMBA_SECTIONS
+        if keeping:
+            kept.append(line)
+    return '\n'.join(kept).rstrip('\n') + '\n'
+
+
+NO_LONGER_SHARED = (
+    'Shared folders: {names} no longer shared (nothing is left to share in the settings). Other computers can '
+    'no longer open {them}; the {folders} and every file in {them} stay on the drive.'
+)
+
+
+def stop_sharing(service, log, managed=None, run=None):
+    """Nothing is to be shared any more (the last share taken out of the settings, or its
+    app switched off), while NekoServer's share file still shares the folders of an
+    earlier run. With several shares the one taken out goes when the file is written
+    again; with none left the file was not looked at, and Samba went on sharing them
+    all, whatever the settings said. They are taken out of the file and Samba reads it
+    again. Returns the names no longer shared."""
+    managed = safe_path(managed or SHARE_FILE)
+    try:
+        current = managed.read_text()
+    except OSError:
+        return []  # never set up
+    names = shares_in(current)
+    if not current.startswith(MANAGED_HEADER) or not names:
+        return []
+    atomic_write(managed, without_shares(current), 0o644)
+    # While it runs it reads the file again; stopped, it reads it when it next starts.
+    (run or call)(['systemctl', 'try-restart', service], timeout=40)
+    one = len(names) == 1
+    log(
+        NO_LONGER_SHARED.format(
+            names=', '.join(names) + (' is' if one else ' are'),
+            them='it' if one else 'them',
+            folders='folder' if one else 'folders',
+        )
+    )
+    return names
+
+
 def check_rewrite(current, mode, settings):
     """NekoServer's own share file is rewritten when the settings change (a share added,
     Immich switched on, write access, another account). Two cases stop setup: a file
@@ -316,6 +369,8 @@ def run(context):
     settings = context.config.get('networking', {})
     settings = dict(settings, shares=wanted_shares(context.config))
     if not settings['shares']:
+        # Folders shared at an earlier run stop being shared, as one taken out of several does.
+        stop_sharing(service, context.log)
         context.log(
             'Shared folders: nothing to share (the Media and Photos folders come with the media apps, which are '
             'left out); add a share of your own under "shares" in my-config.json to have one'
