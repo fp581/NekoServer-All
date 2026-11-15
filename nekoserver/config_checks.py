@@ -125,6 +125,67 @@ def validate(config, plan):
             raise RuntimeError('Invalid external backup filesystem')
 
 
+# Settings a release reads or writes that the template (config.json) does not show: with
+# the template's own keys, the keys a mistyped one is compared with (unknown_settings).
+SETTINGS_BEYOND_TEMPLATE = {
+    '': (
+        *('locations', 'placement', 'drives', 'media_apps', 'install', 'acceptance_scope'),
+        # setup's own notes: installer.RETENTION_REVIEWED, existing_page.ASKED and COPIES
+        *('profile_steps_known', 'retention_reviewed', 'existing_media_asked', 'existing_media_copy'),
+    ),
+    'docker': ('persistent_root',),
+    'photos': (
+        'backup_time',
+        'backup_weekday',
+        'database_backup_time',
+        'external_backup_network',
+        'external_backup_wanted',
+    ),
+    'music': ('backup_time', 'your_login'),
+    'networking': ('allow_tailnet_to_lan', 'lan_cidr', 'lan_ip'),
+    'gateway': ('lan_ports',),
+    'dashboard': ('remote',),
+}
+# Groups whose keys are names you choose (a step, a profile, a drive): not checked.
+FREE_NAMES = ('modules', 'profiles', 'storage', 'drives', 'placement', 'install', 'locations')
+
+
+def unknown_settings(config, template, where='the settings file'):
+    """A warning for each key no release knows: a mistyped one ("media.servics") was
+    taken silently and its setting left at the default (deep check 292). Inside a group
+    only a key close to a known one is named, since setup itself saves answers
+    ("wanted") under any group."""
+    import difflib
+
+    said = []
+    if not template:  # no template to compare with: nothing can be said
+        return said
+
+    def warn(name, close):
+        hint = f' Did you mean "{close[0]}"?' if close else ''
+        said.append(
+            f'Warning: "{name}" in {where} is not a setting NekoServer knows, so it does nothing.'
+            f'{hint} Check its spelling.'
+        )
+
+    top = [*template, *SETTINGS_BEYOND_TEMPLATE['']]
+    for key, value in config.items():
+        if key.startswith('_'):  # a comment of yours
+            continue
+        if key not in top:
+            warn(key, difflib.get_close_matches(key, top, 1, 0.75))
+            continue
+        known = template.get(key)
+        if key in FREE_NAMES or not isinstance(value, dict) or not isinstance(known, dict):
+            continue
+        names = [*known, *SETTINGS_BEYOND_TEMPLATE.get(key, ()), 'wanted', 'enabled']
+        for inner in value:
+            close = difflib.get_close_matches(inner, names, 1, 0.75)
+            if inner not in names and not inner.startswith('_') and close:
+                warn(f'{key}.{inner}', [f'{key}.{close[0]}'])
+    return said
+
+
 def _time(value):
     if not isinstance(value, str) or not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]', value):
         raise RuntimeError('Invalid job time; use HH:MM')

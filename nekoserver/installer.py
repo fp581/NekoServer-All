@@ -534,6 +534,12 @@ def _execute(args, root=ROOT):
     from config_checks import validate
 
     validate(config, plan)
+    from config_checks import unknown_settings
+
+    mistyped = unknown_settings(config, template_settings(ROOT), Path(args.config).name)
+    if args.check or args.dry_run:
+        for line in mistyped:
+            print(line)
     if args.apply and set(plan) & {
         'docker',
         'server_os',
@@ -591,6 +597,8 @@ def _execute(args, root=ROOT):
 
     if args.apply and not (args.module or args.retry_failed or getattr(args, 'retry_step', None)):
         record_profile(safe_path(state_dir / PROFILE_FILE), args.profile, plan, previous, log)
+    for line in mistyped:
+        log(line)
     ctx = Context(config, log, apply=args.apply, config_path=args.config, saved=as_read)
     ctx.plan = plan  # the steps of this run (the drives step asks the backup times only when one writes a timer)
     ctx.only = args.module  # the one step asked for by name (install.sh --module), or None
