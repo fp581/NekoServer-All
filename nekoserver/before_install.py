@@ -20,6 +20,7 @@ import json
 import shutil
 import socket
 import subprocess
+from pathlib import Path
 
 import capabilities
 import placement
@@ -45,6 +46,7 @@ SOURCES = (
     ('ghcr.io', 'the rest of the apps'),
 )
 MODEL_SOURCE = ('registry.ollama.ai', 'the AI assistant and its model')
+NO_NAME = 'no_name'  # Look.reaches: the place's name could not be looked up (DNS)
 # Rough minutes of setup on a usual home connection, by what is chosen. Estimates, not
 # measurements: the gate's timed installs should replace them.
 MINUTES = {'base': 15, 'photos': 10, 'movies': 10, 'music': 3, placement.CLOUD: 8, ASSISTANT: 10}
@@ -90,12 +92,36 @@ class Look:
             return None
 
     def reaches(self, host):
-        """Whether a download place answers (a connection to its HTTPS port, then closed)."""
+        """Whether a download place answers (a connection to its HTTPS port, then closed):
+        True, False, or NO_NAME when its name could not be looked up at all."""
+        try:
+            socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+        except OSError:
+            return NO_NAME
         try:
             socket.create_connection((host, 443), timeout=8).close()
             return True
         except OSError:
             return False
+
+    def connected(self):
+        """Whether this PC has a way out to the internet: a default route, IPv4 or IPv6,
+        on a real connection (not "lo")."""
+        try:
+            for line in Path('/proc/net/route').read_text().splitlines()[1:]:
+                fields = line.split()  # interface, destination (00000000: the default), ...
+                if len(fields) > 1 and fields[1] == '00000000' and fields[0] != 'lo':
+                    return True
+        except OSError:
+            pass
+        try:
+            for line in Path('/proc/net/ipv6_route').read_text().splitlines():
+                fields = line.split()  # destination, its length, ..., interface last
+                if len(fields) == 10 and fields[0] == '0' * 32 and fields[1] == '00' and fields[9] != 'lo':
+                    return True
+        except OSError:
+            pass
+        return False
 
     def memory(self):
         """This PC's memory in GiB (0 when it can't be read)."""
@@ -260,9 +286,23 @@ def space_findings(name, facts, need):
 def download_findings(config, look):
     """The places setup downloads from that do not answer now: blocking, as nothing can be installed."""
     wanted = SOURCES + ((MODEL_SOURCE,) if model_gb(config)[2] else ())
-    silent = [(host, what) for host, what in wanted if not look.reaches(host)]
+    answers = {host: look.reaches(host) for host, _what in wanted}
+    silent = [(host, what) for host, what in wanted if answers[host] is not True]
     if not silent:
         return []
+    unnamed = all(answers[host] == NO_NAME for host, _what in wanted)
+    if len(silent) == len(wanted) and unnamed and getattr(look, 'connected', lambda: False)():
+        # On the network, yet no name could be looked up: the cable is not the problem
+        # (deep check 295).
+        return [
+            finding(
+                'downloads',
+                'This PC is on a network but cannot look up the names of the places setup downloads from '
+                '(name lookup, DNS, does not work).',
+                'Check the DNS server in this PC\'s network settings or in your router (1.1.1.1 or 9.9.9.9 '
+                'work), or restart the router, then look again.',
+            )
+        ]
     if len(silent) == len(wanted):
         return [
             finding(

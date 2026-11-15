@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -254,6 +255,35 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(
             problems(found['blocking']), ['ghcr.io does not answer. Setup downloads the rest of the apps from there.']
         )
+
+    def test_only_the_name_lookup_down_does_not_blame_the_cable(self):
+        """Deep check 295: with DNS down (a route out, no name looked up) it said "Check the
+        network cable or Wi-Fi". The real Look, with the system's lookup and routes stood in for."""
+        import socket
+
+        look = before_install.Look()
+        config = settings()
+        with (
+            mock.patch('socket.getaddrinfo', side_effect=socket.gaierror(-3, 'Temporary failure in name resolution')),
+            mock.patch.object(before_install.Look, 'connected', return_value=True),
+        ):
+            said = before_install.download_findings(config, look)[0]
+        self.assertIn('cannot look up the names', said['problem'])
+        self.assertNotIn('cable', said['do'])
+        self.assertIn('DNS server', said['do'])
+        # No way out at all: the cable or Wi-Fi it is.
+        with (
+            mock.patch('socket.getaddrinfo', side_effect=socket.gaierror(-3, 'Temporary failure in name resolution')),
+            mock.patch.object(before_install.Look, 'connected', return_value=False),
+        ):
+            self.assertIn('network cable or Wi-Fi', before_install.download_findings(config, look)[0]['do'])
+
+    def test_a_default_route_is_a_way_out(self):
+        table = 'Iface\tDestination\tGateway\nlo\t00000000\t0\neth0\t000200C0\t0\n'
+        with mock.patch.object(Path, 'read_text', side_effect=[table, '']):
+            self.assertFalse(before_install.Look().connected())
+        with mock.patch.object(Path, 'read_text', side_effect=[table + 'eth0\t00000000\t010200C0\n', '']):
+            self.assertTrue(before_install.Look().connected())
 
     # ---- memory
 
