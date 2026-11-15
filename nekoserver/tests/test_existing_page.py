@@ -450,6 +450,36 @@ class SetupTests(unittest.TestCase):
         source = (ROOT / 'modules/media.py').read_text()
         self.assertLess(source.index('restart_for_own_folders(manifests'), source.index('stop_unselected(compose_dir'))
 
+    def test_setup_run_again_restarts_no_app_for_a_folder_as_it_was(self):
+        """Deep check 597/610 (the update to 0.51.3, run with real mounts): a folder that is
+        connected already is remounted at every setup run, with the options it has. That
+        was counted as a change, so every setup run and every upgrade restarted the apps
+        that see it (a film playing in Jellyfin stopped, downloads were cut off) and said
+        "Your own folders changed". Only a remount that turns it read-only or back is one."""
+        ctx = self.with_folder()
+        point = '/mnt/nekoserver-media/library/existing/movies'
+        writable = {point: True}
+
+        def remounts(mode):
+            def use_in_place(config, permanent, run, log):
+                run(['mount', '-o', f'remount,bind,{mode}', point], 120)
+                return [{'holds': 'movies', 'path': '/mnt/tank/films', 'mounted': True, 'reason': None}]
+
+            return use_in_place
+
+        def must_run(argv, timeout):
+            writable[argv[-1]] = argv[2].endswith(',rw')
+
+        for mode, change in (('rw', False), ('rw', False), ('ro', True), ('ro', False), ('rw', True)):
+            with (
+                mock.patch.object(existing_media, 'folder_answers', return_value=False),
+                mock.patch.object(existing_media, 'must_run', side_effect=must_run),
+                mock.patch.object(existing_media, 'takes_new_files', side_effect=lambda p: writable[p]),
+                mock.patch.object(existing_media, 'use_in_place', side_effect=remounts(mode)),
+            ):
+                existing_page.mount(ctx)
+            self.assertEqual(ctx.existing_mounts_changed, change, mode)
+
     def test_a_share_that_is_away_is_said_and_never_fails_the_step(self):
         ctx = self.with_folder()
         away = [

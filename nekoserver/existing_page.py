@@ -224,6 +224,13 @@ def ask(ctx, prompt=None, output=print):
     return True
 
 
+def remount_as_it_is(argv):
+    """`argv` remounts a connected folder read-only or not, and it is that already."""
+    if len(argv) != 4 or argv[1] != '-o' or argv[2] not in ('remount,bind,ro', 'remount,bind,rw'):
+        return False
+    return existing_media.takes_new_files(argv[3]) == argv[2].endswith(',rw')
+
+
 def mount(ctx):
     """Before the apps start: every folder used in place is mounted where the apps see
     it, now and at every start. A share that is not permanent yet gets its line (the one
@@ -248,7 +255,11 @@ def mount(ctx):
     def noted(argv, timeout):
         # A folder connected, disconnected or switched between read-only and not: an app
         # already running sees none of that the way the PC does (stopped_apps_see_it).
-        if argv[0] in ('mount', 'umount'):
+        # A remount that leaves a folder as it is (every folder is remounted on each run)
+        # changes nothing an app sees: counted, it restarted every media app, Jellyfin
+        # in the middle of a film, for a change to something else (seen on the
+        # dashboard's Media folders page: music copied in restarted them all).
+        if argv[0] == 'umount' or (argv[0] == 'mount' and not remount_as_it_is(argv)):
             changed.append(argv)
         return existing_media.must_run(argv, timeout)
 
