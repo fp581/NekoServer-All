@@ -2,6 +2,8 @@
 Description=NekoServer LAN HTTPS gateway
 Wants=network-online.target
 After=network-online.target
+StartLimitIntervalSec=10min
+StartLimitBurst=6
 RequiresMountsFor=/srv/nekoserver /mnt/nekoserver-media
 [Service]
 User=caddy

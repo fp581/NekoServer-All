@@ -483,7 +483,13 @@ def unit(config, code, state):
     media = config['media_mount']
     guard = str(code / 'nekoserver-runtime') + ' gateway-guard'
     return (
-        '[Unit]\nDescription=NekoServer LAN HTTPS gateway\nWants=network-online.target\nAfter=network-online.target\nRequiresMountsFor='
+        '[Unit]\nDescription=NekoServer LAN HTTPS gateway\nWants=network-online.target\nAfter=network-online.target\n'
+        # A refusal of the start check (ExecStartPre) is a failure Restart= retries, and
+        # RestartPreventExitStatus= looks only at the main process: every 10 s it stayed
+        # under systemd's own limit (5 in 10 s) and retried for ever. Six tries, about a
+        # minute, then it shows as failed on the dashboard (Starts by itself). Drive return,
+        # the NAS check and setup start it again.
+        'StartLimitIntervalSec=10min\nStartLimitBurst=6\nRequiresMountsFor='
         + data
         + ' '
         + media

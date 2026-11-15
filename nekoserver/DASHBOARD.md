@@ -220,7 +220,8 @@ After a restart (or a power cut):
 
 - the drives mount, then **Docker** starts (it waits for both drives) and starts every app again;
 - **Tailscale** reconnects, with its phone addresses;
-- the **dashboard** starts, takes its first readings 15 seconds after boot and every minute after that, and restarts itself if it ever stops.
+- the **dashboard** starts, takes its first readings 15 seconds after boot and every minute after that, and restarts itself if it ever stops;
+- the **home network gateway** (the HTTPS addresses at home) starts once the drives and the network are there. If its start check refuses (the PC's home address changed, say), it tries six times, about a minute, then stops and shows as stopped with an error; run setup again (`sudo bash install.sh`) to choose the home address again.
 
 Server health → *Starts by itself* shows each of these: whether it starts at boot and whether it is working now. A service that stopped with an error is never shown green, even when it starts at boot; Needs attention lists it (urgent for Docker, Tailscale, the dashboard and Samba), together with anything switched off.
 

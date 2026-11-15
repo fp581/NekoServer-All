@@ -1177,6 +1177,10 @@ pub(crate) const STARTUP: &[(&str, &str)] = &[
     ("smbd.service", "Shared folders (Samba)"),
     ("nekoserver-hdd-policy.service", "Drive power settings"),
     (
+        "nekoserver-gateway-lan.service",
+        "Home network gateway (HTTPS)",
+    ),
+    (
         "nekoserver-app-resume.service",
         "Restart apps after an interrupted backup",
     ),
@@ -4141,6 +4145,25 @@ mod os_tests {
         assert_eq!(
             shown[0]["title"],
             "Shared folders (Samba) has stopped with an error"
+        );
+    }
+    /// The deep check: the home network gateway starts by itself (drive return starts it
+    /// with Docker and Samba) but was not in Starts by itself, so one that gave up after a
+    /// refused start check was nowhere on the dashboard.
+    #[test]
+    fn every_service_kept_on_the_drives_is_in_starts_by_itself() {
+        for unit in crate::drive_return::SERVICES {
+            assert!(STARTUP.iter().any(|(u, _)| *u == unit), "{unit}");
+        }
+        let failed = parse_startup("Id=nekoserver-gateway-lan.service\nLoadState=loaded\nUnitFileState=enabled\nActiveState=failed");
+        let shown = alerts(&json!({ "startup": failed }));
+        assert_eq!(
+            shown[0]["id"],
+            "startup:nekoserver-gateway-lan.service:failed"
+        );
+        assert_eq!(
+            shown[0]["title"],
+            "Home network gateway (HTTPS) has stopped with an error"
         );
     }
     #[test]
