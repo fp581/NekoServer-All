@@ -278,7 +278,65 @@ fn configured(app: &str, endpoint: &str, rows: &[Value], selected: &[&str], data
 fn readiness_row(rows: &mut Value, id: &str, state: &str, reason: &str) {
     rows[id] = json!({"result":state,"reason":reason});
 }
-fn provider(data: &Path, key: &str, app: &str) -> Result<bool> {
+/// The folder the settings save new films or shows in, as the apps see it: the person's
+/// own folder chosen for them under "placement" ("save new ones here too"), else the
+/// library's own. The rule of existing_media.new_files_folder, which setup gives Seerr's
+/// provider (tests/fixtures/request_folder_cases.json has the cases both run). None when
+/// the list is not one setup accepts: then the provider's own folder is judged alone.
+fn chosen_folder(cfg: &Value, app: &str) -> Option<String> {
+    let kind = match app {
+        "sonarr" => "tv",
+        "radarr" => "movies",
+        _ => return None,
+    };
+    // Films' and shows' folders are listed in the "movies" row.
+    let entries = match &cfg["placement"]["movies"]["extra"] {
+        Value::Null => vec![],
+        Value::Array(rows) => rows.iter().collect(),
+        _ => return None,
+    };
+    // The (kind, use) pairs listed, and the kinds given a place for new ones: setup
+    // refuses settings that list one twice, or name two places for new ones.
+    let mut seen = vec![];
+    let mut writable = vec![];
+    let mut found = None;
+    for entry in entries {
+        let holds = entry["holds"].as_str()?;
+        let used = entry["use"]
+            .as_str()
+            .filter(|u| ["in_place", "new_files"].contains(u))?;
+        let new_files = match &entry["new_files"] {
+            Value::Null => used == "new_files",
+            Value::Bool(new_files) => *new_files,
+            _ => return None,
+        };
+        let complete = ["path", "mount", "share", "fstype"]
+            .iter()
+            .all(|key| entry[*key].is_string());
+        if !["movies", "tv"].contains(&holds)
+            || seen.contains(&(holds, used))
+            || !complete
+            || (used == "new_files" && !new_files)
+            || (new_files && writable.contains(&holds))
+        {
+            return None;
+        }
+        seen.push((holds, used));
+        if new_files {
+            writable.push(holds);
+        }
+        if holds == kind && new_files {
+            found = Some(if used == "in_place" {
+                format!("/data/existing/{kind}")
+            } else {
+                format!("/data/existing/{kind}-new")
+            });
+        }
+    }
+    Some(found.unwrap_or_else(|| directory(app).to_string()))
+}
+/// `chosen`: the folder the settings save new ones in (chosen_folder), when known.
+fn provider(data: &Path, key: &str, app: &str, chosen: Option<&str>) -> Result<bool> {
     let values = seerr(key, &format!("/settings/{app}"))?;
     let values = array(&values)?;
     if values.iter().any(|v| !v["is4k"].is_boolean()) {
@@ -316,6 +374,13 @@ fn provider(data: &Path, key: &str, app: &str) -> Result<bool> {
     let Some(folder) = request_folder(app, text(&p["activeDirectory"])) else {
         return Ok(false);
     };
+    // A folder chosen for new ones before, and taken back since (setup names it, and
+    // the folder to choose in Seerr instead), no longer takes new files: a request
+    // saved there is downloaded and never arrives. It passed on its path alone (deep
+    // check 429; setup's own check is told the folder since deep check 391).
+    if chosen.is_some_and(|chosen| chosen != folder) {
+        return Ok(false);
+    }
     if p["isDefault"] != true
         || p["hostname"] != app
         || p["port"] != normal_port
@@ -464,7 +529,7 @@ fn jellyfin_key(data: &Path, saved: &Value, server_id: &str) -> Option<String> {
     (!server_id.is_empty() && linked == server_id && !key.is_empty()).then(|| key.to_string())
 }
 
-fn readiness(data: &Path, selected: &[&str]) -> Value {
+fn readiness(cfg: &Value, data: &Path, selected: &[&str]) -> Value {
     let mut rows = json!({});
     let settings = if selected.contains(&"seerr") {
         common::json(&data.join("appdata/seerr/settings.json"), 2_000_000)
@@ -572,7 +637,7 @@ fn readiness(data: &Path, selected: &[&str]) -> Value {
             let outcome = if key.is_empty() {
                 Ok(false)
             } else {
-                provider(data, key, app)
+                provider(data, key, app, chosen_folder(cfg, app).as_deref())
             };
             readiness_row(
                 &mut rows,
@@ -834,7 +899,7 @@ pub fn run(a: &Args) -> Result<()> {
         }
         integrations[app] = row;
     }
-    let readiness = readiness(&data, &selected);
+    let readiness = readiness(&cfg, &data, &selected);
     let mut counts = json!({"pass":0,"warning":0,"fail":0,"needs_setup":0});
     for group in [&services, &integrations, &readiness] {
         for row in group.as_object().unwrap().values() {
@@ -991,6 +1056,27 @@ mod tests {
             assert_eq!(got.as_deref(), case["expected"].as_str(), "case {name}");
             let _ = std::fs::remove_dir_all(&root);
         }
+    }
+    /// Deep check 429: the folder the settings save new ones in, as setup reads them
+    /// (`tests/test_seerr_folders.py` runs the same cases against Python).
+    #[test]
+    fn the_chosen_folder_matches_the_shared_fixture() {
+        let cases: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/request_folder_cases.json"
+        ))
+        .unwrap();
+        for case in cases.as_array().unwrap() {
+            let cfg = json!({"placement": case["placement"]});
+            for app in ["radarr", "sonarr"] {
+                assert_eq!(
+                    chosen_folder(&cfg, app).as_deref(),
+                    case["expected"][app].as_str(),
+                    "{} ({app})",
+                    case["name"]
+                );
+            }
+        }
+        assert_eq!(chosen_folder(&json!({}), "lidarr"), None);
     }
     /// Deep check 428 (the real check run against a stand-in Docker): Radarr's and
     /// Seerr's own data mounted read-only passed, on its path alone.

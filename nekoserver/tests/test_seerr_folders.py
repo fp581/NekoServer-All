@@ -1,6 +1,7 @@
 """ "Save new ones here too" reaches Seerr (0.50.0): a request made in Seerr is saved in the
 person's own folder when they chose one for new films or shows, not in the library's."""
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -196,6 +197,24 @@ class ProfileChoiceTests(unittest.TestCase):
         self.assertEqual(mc.recommended_names(), ['the pirate bay', 'yts', 'eztv'])
         schemas = [{'name': 'The Pirate Bay'}, {'name': '1337x'}, {'name': 'YTS'}]
         self.assertEqual(mc.recommended_among(schemas, mc.recommended_names()), [1, 3])  # EZTV missing: left out
+
+
+class SharedRequestFolderTests(unittest.TestCase):
+    """Deep check 429: the runtime's hourly check (media.rs chosen_folder) is told the same
+    folder for Seerr's requests as setup (request_folders): the cases both run."""
+
+    def test_the_settings_choose_the_folder_the_runtime_expects(self):
+        cases = json.loads((ROOT / 'tests/fixtures/request_folder_cases.json').read_text())
+        base = json.loads((ROOT / 'config.json').read_text())
+        for case in cases:
+            config = {**base, 'placement': case['placement']}
+            # The folders are only named: each is taken as the real folder it names.
+            with mock.patch.object(existing_media, 'real_path', side_effect=lambda path, *a, **k: path):
+                try:
+                    found = sp.request_folders(config)
+                except RuntimeError:
+                    found = None
+            self.assertEqual(found, case['expected'], case['name'])
 
 
 if __name__ == '__main__':
