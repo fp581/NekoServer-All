@@ -79,7 +79,10 @@ def checked_env(env, upload, db):
     required = ('UPLOAD_LOCATION=' + str(upload), 'DB_DATA_LOCATION=' + str(db))
     if any(r not in content.splitlines() for r in required):
         raise RuntimeError(
-            'Existing Immich paths differ; refusing overwrite. Follow STORAGE.md for a verified migration before applying this layout'
+            'Existing Immich paths differ: Immich on this server keeps its photos or its database in other folders than '
+            f'these settings name (see {env}), so setup changes nothing rather than start Immich on an empty folder. '
+            'To move them, follow STORAGE.md, "Where each app keeps your files" (stop the apps, copy the folder, '
+            'then change the setting), and run setup again'
         )
     return content
 

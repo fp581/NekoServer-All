@@ -148,5 +148,71 @@ class UpdateTimesTests(unittest.TestCase):
         self.assertIn('`update_day`', backups)
 
 
+MESSAGES = [
+    *SOURCES,
+    *ROOT.glob('dashboard/*.js'),
+    *ROOT.glob('setup-gui/*.js'),
+    *ROOT.glob('runtime/src/**/*.rs'),
+    ROOT / 'runtime/src/shared.json',
+]
+# A guide's section named in a message: STORAGE.md, "Where each app keeps your files".
+NAMED_SECTION = re.compile(r'([A-Z][A-Z0-9-]+\.md), ["\u201c]([^"\u201d]{3,90})["\u201d]')
+
+
+def sections(text):
+    """What a guide names its parts: its headings and its bold paragraph labels."""
+    heads = re.findall(r'^#{1,6}\s+(.*)$', text, re.M) + re.findall(r'\*\*([^*]+)\*\*', text)
+    return [head.replace('`', '').strip().lower() for head in heads]
+
+
+class MessageReferenceTests(unittest.TestCase):
+    """Deep check plan 389: a message that sends the reader to a guide names a guide and a
+    section that are there."""
+
+    def test_every_section_a_message_names_is_in_that_guide(self):
+        named = 0
+        for path in MESSAGES:
+            for name, section in NAMED_SECTION.findall(joined(path.read_text())):
+                if not (ROOT / name).is_file():
+                    continue  # a file name in an example, not one of the guides
+                named += 1
+                # A name wrapped over two lines of a comment or of a list of strings.
+                section = re.sub(r"'?,?\s*\n\s*(//[/!]?|#|')?\s*", ' ', section)
+                with self.subTest(source=path.name, guide=name, section=section):
+                    self.assertTrue(any(section.lower().rstrip('.') in s for s in sections(doc(name))))
+        self.assertGreater(named, 12)
+
+    def test_immich_folders_elsewhere_are_sent_to_the_section_that_says_how_to_move_them(self):
+        """ "Follow STORAGE.md for a verified migration": STORAGE.md had none, only "the
+        verified, stopped-writer migration described in the prior release"."""
+        said = joined((ROOT / 'modules/photos.py').read_text())
+        self.assertIn('STORAGE.md, "Where each app keeps your files"', said)
+        self.assertNotIn('described in the prior release', doc('STORAGE.md'))
+
+
+class StorageGuideTests(unittest.TestCase):
+    """Deep check plan 378: STORAGE.md read against setup."""
+
+    def test_the_nas_switch_is_named_as_the_first_page_shows_it(self):
+        import explanations
+
+        title = next(row['title'] for row in explanations.EXTRAS if row['id'] == 'network_storage')
+        text = doc('STORAGE.md')
+        self.assertEqual(text.count(f'*{title}*'), 2)
+        self.assertNotIn('are in a network storage box (NAS)*', text)
+
+    def test_the_disk_linux_runs_from_can_hold_the_apps_and_the_media(self):
+        """STORAGE.md said it "is never offered as the SSD, HDD or USB drive"; since 0.50.0
+        it is, for a PC with one drive (only the USB backup drive must be a drive of its own)."""
+        printed = (ROOT / 'tests/golden/drive-questions.txt').read_text()
+        self.assertIn('the disk Linux runs from\n       Can be the app SSD or the media HDD.', printed)
+        text = doc('STORAGE.md')
+        self.assertNotIn('never offered as the SSD', text)
+        self.assertIn('is never offered as the USB drive', text)
+
+    def test_the_monthly_check_installs_no_updates(self):
+        self.assertNotIn('install updates', doc('STORAGE.md'))
+
+
 if __name__ == '__main__':
     unittest.main()
