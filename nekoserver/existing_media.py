@@ -37,14 +37,19 @@ import nfs_exports
 import placement
 import source_import
 from neko_common import (
+    EXTRA_MOUNTS,
     app_port,
     atomic_json,
     atomic_write,
+    extra_drives,
     files_root,
     findmnt,
     folder_answers,
     local_opener,
+    mount_path,
+    movies_library,
     music_downloads,
+    music_library,
     real_path,
     verify_storage,
 )
@@ -105,6 +110,10 @@ REFUSALS = {
     'permissions of your folder. {fix}',
     'whitespace_share': 'The shared folder {share} is mounted at a folder with a space in its name ({mount}); '
     'NekoServer cannot write that into /etc/fstab. Mount it at a folder without spaces, then try again.',
+    'nekoserver_drive': '{path} is on the drive you chose as {role}. Setup mounts that drive itself, at {base}, so '
+    'a folder on it is not added as a folder of yours (and it needs no line of its own in /etc/fstab). Press Enter '
+    'here for now. Once setup has finished, move your {what} into NekoServer\'s library, where the apps find '
+    'them:  sudo mv "{later}"/* "{library}"/{note}',
 }
 # Why "save new ones here too" is not offered for a folder that can be read.
 NO_NEW_FILES = {
@@ -201,6 +210,61 @@ def where(path, find=findmnt, kind=source_import.share_type, fstab_text='', what
         raise Refused('bare_mount_folder', path=path)
     persistent = mount == '/' or mount in listed
     return {'mount': mount, 'share': share or '', 'fstype': fstype or '', 'persistent': persistent}
+
+
+def drive_of_nekoserver(config, uuid):
+    """(the role's words, the folder setup mounts the drive at) when the filesystem with
+    this UUID is a drive the settings give NekoServer: the app SSD or the media HDD as
+    chosen on the storage page (also a minute ago, before the approval), or another drive
+    of a group's; None otherwise. The disk Linux runs from is never one: a role kept there
+    is only a folder of it, and the person's own folders beside it stay theirs."""
+    import drive_table
+    from modules.storage import ONE_DRIVE, SHARED_FOLDERS
+
+    if not uuid:
+        return None
+    storage = config.get('storage') if isinstance(config.get('storage'), dict) else {}
+    for key, mount_key in (('data_ssd', 'data_mount'), ('media_hdd', 'media_mount')):
+        record = storage.get(key) if isinstance(storage.get(key), dict) else {}
+        if record.get('uuid') != uuid:
+            continue
+        if record.get('folder') is None:
+            return drive_table.role(key), str(mount_path(config[mount_key]))
+        if record['folder'] in SHARED_FOLDERS.values():
+            return drive_table.role(key), ONE_DRIVE
+    for name, record in extra_drives(config).items():
+        network = record.get('network') if isinstance(record.get('network'), dict) else {}
+        if record.get('uuid') == uuid and not network.get('export'):
+            return 'a drive of its own for NekoServer', str(EXTRA_MOUNTS / name)
+    return None
+
+
+def on_nekoserver_drive(config, category, real, found, find):
+    """Refused when the folder is on a drive setup itself mounts (the person's films on
+    the HDD they chose as the media HDD, opened by the desktop at /media/<account>/...):
+    the desktop's mount is not permanent, but the advice for that (a line in /etc/fstab)
+    would then stop the storage step, which mounts the drive itself. Says where the
+    folder is once setup has mounted the drive, and the one move into the library."""
+    if found['fstype'] in NETWORK:
+        return
+    ours = drive_of_nekoserver(config, find('UUID', real, '--target'))
+    if ours is None or found['mount'] == ours[1]:
+        return  # not NekoServer's, or mounted where setup mounts it: checked as usual
+    role, base = ours
+    later = os.path.join(base, os.path.relpath(real, found['mount']))
+    library = music_library(config) if category == 'music' else movies_library(config) / category
+    same = str(library).startswith(base.rstrip('/') + '/')
+    note = ' (a move on the same drive takes a moment and needs no room).' if same else '.'
+    raise Refused(
+        'nekoserver_drive',
+        path=real,
+        role=role,
+        base=base,
+        what=WHAT[category],
+        later=later,
+        library=library,
+        note=note,
+    )
 
 
 # What the apps' user does in the folder, in a process of its own running as that user:
@@ -327,6 +391,7 @@ def check(
     real = checked_folder(config, folder)
     text = fstab.read_text(encoding='utf-8', errors='replace') if fstab.is_file() else ''
     found = where(real, find, kind or source_import.share_type, text, WHAT[category])
+    on_nekoserver_drive(config, category, real, found, find)
     add = None
     if not found['persistent']:
         if found['fstype'] not in nfs_exports.FILESYSTEMS:

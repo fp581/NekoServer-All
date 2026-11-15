@@ -46,6 +46,7 @@ class Server:
             str(self.media): ('/dev/sdb1', 'ext4'),
             str(self.ssd): ('/dev/sdc1', 'ext4'),
         }
+        self.uuids = {}  # {mount folder: its filesystem's UUID}, where a test needs one
         self.bound = {}  # mount points bound by "mount", as the kernel's table would have them
         # What each bound point is bound to, where it is not the folder the settings name.
         self.bound_from = {}
@@ -69,7 +70,8 @@ class Server:
 
     def find(self, column, path, by='--mountpoint'):
         mount = self.holding(path)
-        return {'TARGET': mount, 'SOURCE': self.mounts[mount][0], 'FSTYPE': self.mounts[mount][1]}[column]
+        said = {'TARGET': mount, 'SOURCE': self.mounts[mount][0], 'FSTYPE': self.mounts[mount][1]}
+        return {**said, 'UUID': self.uuids.get(mount)}[column]
 
     def kind(self, path):
         return self.find('FSTYPE', path)
@@ -160,6 +162,35 @@ class CheckTests(unittest.TestCase):
         refused = self.refusal()
         self.assertEqual(refused.code, 'not_permanent')
         self.assertIn('only until the next restart', str(refused))
+
+    def test_films_on_the_drive_chosen_as_the_media_hdd_are_not_sent_to_fstab(self):
+        # The HDD just chosen as the media HDD, opened by the desktop (udisks) at
+        # /media/<account>/media with the films on it: not in /etc/fstab. The advice to
+        # make that mount permanent led to a line for the drive, which then stopped the
+        # storage step ("/etc/fstab already has a line for this drive"): a circle.
+        desktop = self.pc.top / 'desktop-media'
+        films = desktop / 'Movies'
+        (films / 'Alien (1979)').mkdir(parents=True)
+        self.pc.mounts[str(desktop)] = ('/dev/sdb1', 'ext4')
+        self.pc.uuids[str(desktop)] = 'hdd-uuid'  # the media HDD's, as the storage page saved it
+        refused = self.refusal(folder=films)
+        self.assertEqual(refused.code, 'nekoserver_drive')
+        said = str(refused)
+        self.assertIn('the drive you chose as the media HDD', said)
+        self.assertNotIn('Mount at system startup', said)
+        self.assertIn('Press Enter here for now', said)
+        media = self.pc.media
+        self.assertIn(f'sudo mv "{media}/Movies"/* "{media}/library/movies"/', said)
+        self.assertIn('needs no room', said)
+        # Shows go to their own library folder; music to the music library (on the SSD here).
+        self.assertIn(f'"{media}/library/tv"/', str(self.refusal(folder=films, category='tv')))
+        self.pc.config['locations'] = {'music': 'ssd'}
+        music = str(self.refusal(folder=films, category='music'))
+        self.assertIn(f'"{self.pc.ssd}/library/music"/', music)
+        self.assertNotIn('needs no room', music)
+        # Another drive the desktop opened is the person's own: what to do about that.
+        self.pc.uuids[str(desktop)] = 'their-own'
+        self.assertEqual(self.refusal(folder=films).code, 'not_permanent')
 
     def test_a_folder_the_apps_account_cannot_read_says_who_and_where_to_fix_it(self):
         refused = self.refusal(said={'read': 'read Permission denied'})
