@@ -634,18 +634,55 @@ fn readings(status: &Value, now: f64) -> String {
             text(&s["status"]),
         ));
     }
+    if let Some(pc) = this_pc(&status["metrics"]) {
+        lines.push(pc);
+    }
     for a in rows("applications") {
         lines.push(format!(
-            "App {}: {}{}",
+            "App {}: {}{}{}",
             text(&a["name"]),
             text(&a["state"]),
             match a["health"].as_str() {
                 Some(h @ ("unhealthy" | "starting")) => format!(", {h}"),
                 _ => String::new(),
-            }
+            },
+            app_use(&a),
         ));
     }
     common::shortened(&lines.join("\n"), SUMMARY_CHARS)
+}
+
+/// How busy the PC is, as Home shows it: "What's using the processor?" and "Why is it so
+/// slow?" had nothing to go on but the low-memory alert (deep check 640).
+fn this_pc(m: &Value) -> Option<String> {
+    let mut said = vec![];
+    if let Some(cpu) = m["cpu_percent"].as_f64() {
+        said.push(format!("processor {cpu:.0}% busy"));
+    }
+    if let Some(memory) = m["memory_percent"].as_f64() {
+        let of = match (m["memory_used"].as_f64(), m["memory_total"].as_f64()) {
+            (Some(used), Some(total)) => format!(" ({:.1} of {:.1} GB)", used / 1e9, total / 1e9),
+            _ => String::new(),
+        };
+        said.push(format!("memory {memory:.0}% used{of}"));
+    }
+    if let Some(t) = m["temperature"].as_f64() {
+        said.push(format!("processor temperature {t:.0} °C"));
+    }
+    (!said.is_empty()).then(|| format!("This PC: {}", said.join(", ")))
+}
+
+/// What an app's containers use together, as Your apps shows it. Docker counts the
+/// processor per core, so a busy app passes 100%: said, so the model does not read
+/// 250% as a mistake.
+fn app_use(a: &Value) -> String {
+    match (a["cpu_percent"].as_f64(), a["memory_used"].as_f64()) {
+        (Some(cpu), Some(memory)) => format!(
+            ", using {cpu:.0}% processor (100% is one core) and {:.1} GB memory",
+            memory / 1e9
+        ),
+        _ => String::new(),
+    }
 }
 
 /// The attention item `id` from the readings: (its title and detail, the service or app
@@ -2006,6 +2043,38 @@ mod tests {
         assert!(s.contains("Drive Media HDD: mounted, 80.0 GB free"), "{s}");
         assert!(s.contains("App Seerr: restarting"), "{s}");
         assert!(s.contains("Backup Photo archive: fail"), "{s}");
+    }
+
+    /// Deep check 640 ("What's using the CPU?"): the readings have the PC's processor,
+    /// memory and temperature and each app's use, as Home and Your apps show them; the
+    /// model was given none of it.
+    #[test]
+    fn the_summary_says_how_busy_the_pc_and_each_app_is() {
+        let status = json!({
+            "metrics": {"cpu_percent": 87.4, "memory_percent": 61.0, "memory_used": 9.5e9,
+                "memory_total": 15.6e9, "temperature": 78.6, "uptime_seconds": 3600},
+            "applications": [
+                {"name": "Jellyfin", "state": "running", "health": "healthy", "cpu_percent": 312.5, "memory_used": 1.2e9},
+                {"name": "Immich", "state": "running", "health": "healthy", "cpu_percent": 0.4, "memory_used": 8.0e8},
+                {"name": "Seerr", "state": "exited", "health": "unknown", "cpu_percent": null, "memory_used": null}]});
+        let s = readings(&status, 0.0);
+        assert!(
+            s.contains("This PC: processor 87% busy, memory 61% used (9.5 of 15.6 GB), processor temperature 79 °C"),
+            "{s}"
+        );
+        assert!(
+            s.contains(
+                "App Jellyfin: running, using 312% processor (100% is one core) and 1.2 GB memory"
+            ),
+            "{s}"
+        );
+        assert!(s.contains("App Immich: running, using 0% processor"), "{s}");
+        assert!(
+            s.contains("App Seerr: exited\n") || s.ends_with("App Seerr: exited"),
+            "{s}"
+        );
+        // Nothing read: no line made up.
+        assert!(!readings(&json!({"metrics": {"cpu_percent": null}}), 0.0).contains("This PC"));
     }
 
     /// Review of 0.49.0: an unreadable status file became {} and the model was told
