@@ -1121,11 +1121,33 @@ fn start_upgrade(config: &Path, tag: &str) -> Value {
     if let Some(job) = apps::unfinished_job(&apps::journals()) {
         return refuse("E47", &format!("{job} is still waiting to be finished; NekoServer finishes it on its own. Try again after that."));
     }
+    if let Some(drive) = upgrade_drive_missing(&cfg, Path::new("/dev/disk/by-uuid")) {
+        return refuse("E47", &format!("The {drive} is not connected, so NekoServer can't be upgraded now: the upgrade needs every drive. Nothing was changed. Connect it, then press Upgrade again."));
+    }
     let unit = format!("nekoserver-upgrade@{tag}.service");
     match common::probe(&["systemctl", "start", "--no-block", &unit], 30) {
         (0, _) => json!({"ok": true, "message": format!("Upgrading NekoServer to {tag}. It goes on if you close this page; the Updates page shows how far it is.")}),
         _ => refuse("E47", "The upgrade could not be started. Is an update or a backup running? Backups shows which one."),
     }
+}
+/// The drive the upgrade needs that is not connected, as the page names it, if any. The
+/// upgrade's service needs the SSD and the HDD mounted (RequiresMountsFor), and so does
+/// the setup it runs: with one unplugged, systemd never started the service, and the
+/// page said "Upgrading" and then nothing (deep check 352). A folder a NAS shares, or a
+/// folder of the system disk, has no disk to look for.
+fn upgrade_drive_missing(cfg: &Value, by_uuid: &Path) -> Option<&'static str> {
+    [("data_ssd", "application SSD"), ("media_hdd", "media HDD")]
+        .into_iter()
+        .find(|(key, _)| {
+            let record = &cfg["storage"][*key];
+            let uuid = record["uuid"].as_str().unwrap_or("");
+            let own_disk = record["folder"].is_null()
+                && !uuid.is_empty()
+                && !uuid.contains('/')
+                && !common::is_nfs_identity(uuid);
+            own_disk && !by_uuid.join(uuid).exists()
+        })
+        .map(|(_, name)| name)
 }
 /// "Update now" for one app, to the version `sig` shown on the page
 /// (nekoserver-update-now@<app>:<sig>: the same snapshot, update, checks and undo as on
@@ -1655,6 +1677,32 @@ mod tests {
         assert!(said("app_update_check", false)
             .starts_with("The check for updates could not be started"));
         assert!(said("app_update_check", true).starts_with("Looking for new versions now"));
+    }
+
+    #[test]
+    fn an_upgrade_is_refused_while_a_drive_is_unplugged() {
+        // Deep check 352: the page said "Upgrading" and the service never started.
+        let by_uuid =
+            std::env::temp_dir().join(format!("neko-upgrade-drives-{}", std::process::id()));
+        fs::create_dir_all(&by_uuid).unwrap();
+        fs::write(by_uuid.join("ssd-1"), "").unwrap();
+        let cfg =
+            json!({"storage": {"data_ssd": {"uuid": "ssd-1"}, "media_hdd": {"uuid": "hdd-1"}}});
+        assert_eq!(upgrade_drive_missing(&cfg, &by_uuid), Some("media HDD"));
+        fs::write(by_uuid.join("hdd-1"), "").unwrap();
+        assert_eq!(upgrade_drive_missing(&cfg, &by_uuid), None);
+        // A folder a NAS shares, or one of the system disk, has no disk to look for.
+        let shared = json!({"storage": {"data_ssd": {"uuid": "ssd-1"},
+            "media_hdd": {"uuid": "nfs-0123456789abcdef", "network": {"transport": "nfs"}}}});
+        assert_eq!(upgrade_drive_missing(&shared, &by_uuid), None);
+        let folder = json!({"storage": {"data_ssd": {"uuid": "gone", "folder": "/var/lib/nekoserver/apps"},
+            "media_hdd": {"uuid": "hdd-1"}}});
+        assert_eq!(upgrade_drive_missing(&folder, &by_uuid), None);
+        fs::remove_dir_all(&by_uuid).unwrap();
+        // Asked before the service is started.
+        let source = include_str!("control.rs");
+        let start = &source[source.find("fn start_upgrade(").unwrap()..];
+        assert!(start.find("upgrade_drive_missing(").unwrap() < start.find("systemctl").unwrap());
     }
 
     fn service(board: &fans::tests::Board, pin: Option<&str>, port: u16) -> Arc<Service> {
