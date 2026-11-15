@@ -31,6 +31,13 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 - **Immich follows a time zone changed after its first setup**, as every other schedule and app already did.
 - **A dashboard PIN asked again and left empty is no longer shown by "Show login".**
 
+### Fixed: logins the apps' own settings change
+Each was told "type the login the app has now" at every setup run, though the saved login was right:
+- **Sonarr, Radarr, Lidarr or Prowlarr set to "Disabled for Local Addresses"**: the password is checked by the app's sign-in instead.
+- **Seerr with "Enable Local Sign-In" off**: the login is kept and said as not tried, as for Nextcloud with two-factor on.
+- **qBittorrent with "Bypass authentication" for some computers**: the login is kept and said as not tried; setup's own new login is still checked.
+- **An app still updating its database after an update**: setup says it did not answer in time, and to run setup again once it does.
+
 ### Fixed: backups and getting files back
 - **Restored photos and Nextcloud files get the dates their originals had.** The backup now notes when each original was last changed, and the recovery menu sets it on each restored file once its checksum passes; restored photos without EXIF data no longer land on the day of the restore in Immich. Files copied off the drive by hand keep the copy's date (STORAGE.md, RECOVERY.md).
 - **On a full HDD the nightly app backup removes no older backup when that cannot make the room.** It removed them one by one until only the newest was left, and failed anyway (films filling the drive). It now measures first. A night that did remove backups for room says so with any count setting.
