@@ -594,6 +594,21 @@ class InstallScriptTests(unittest.TestCase):
             result, _ = self.run_script(self.root)
         self.assertNotIn('Started as root', result.stdout)
 
+    def test_another_processor_is_named_in_words(self):
+        # Deep check 272: a 32-bit PC (i686) was called "a Raspberry Pi or another ARM board".
+        uname = self.root / 'bin/uname'
+        for machine, words in (
+            ('i686', 'this one is i686, a 32-bit PC.'),
+            ('aarch64', 'this one is aarch64 (a Raspberry Pi or another ARM board, say).'),
+            ('riscv64', 'this one is riscv64.'),
+        ):
+            with self.subTest(machine):
+                uname.write_text(f'#!/bin/sh\nif [ "$1" = -m ]; then echo {machine}; else /bin/uname "$@"; fi\n')
+                result, log = self.run_script(self.root)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('NekoServer runs on 64-bit Intel or AMD PCs (x86_64); ' + words, result.stderr)
+                self.assertNotIn('PACMAN', log)
+
     def test_without_sudo_on_a_pc_without_apt_apt_is_not_named(self):
         # Deep check 270: an Arch PC without sudo was told to run  apt install sudo .
         no_sudo_no_apt = (

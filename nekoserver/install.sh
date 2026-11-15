@@ -262,8 +262,15 @@ if "$apply"; then
     echo 'Automatic setup supports Arch Linux / Nyarch (with pacman), Debian / Ubuntu (with apt), Fedora and RHEL / Rocky / AlmaLinux (with dnf), and openSUSE (with zypper).' >&2
     exit 1
   fi
-  if [[ "$(uname -m)" != x86_64 ]]; then
-    echo "NekoServer runs on 64-bit Intel or AMD PCs (x86_64); this one is $(uname -m) (a Raspberry Pi or another ARM board, say)." >&2
+  machine=$(uname -m)
+  if [[ "$machine" != x86_64 ]]; then
+    # What kind of computer that is, in words (i686 is an older 32-bit PC, not an ARM board).
+    case "$machine" in
+      arm* | aarch64) kind=' (a Raspberry Pi or another ARM board, say)' ;;
+      i?86) kind=', a 32-bit PC' ;;
+      *) kind='' ;;
+    esac
+    echo "NekoServer runs on 64-bit Intel or AMD PCs (x86_64); this one is $machine$kind." >&2
     exit 1
   fi
   if ! command -v systemctl >/dev/null; then
