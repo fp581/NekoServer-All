@@ -5232,6 +5232,7 @@ function moreMenu() {
 const MEDIA = {
   answer: null, // what /api/control/media-state said last: {working, result}
   asked: false, // a look was asked for since the page was opened
+  refused: null, // the server's refusal of the last look (the app SSD away, say), or null
   timer: 0,
   browse: null, // the folders offered to pick from, as media-browse said them
   path: null, // the form's folder box and the list to pick from (made with the form)
@@ -5269,6 +5270,7 @@ async function mediaState() {
   if (answer.ok) {
     MEDIA.answer = answer;
     if (answer.working) {
+      MEDIA.refused = null; // the look was refused only because this change is at work
       MEDIA.timer = setTimeout(() => void mediaState(), MEDIA_POLL);
     }
   } else if (answer.error === 'E43') {
@@ -5282,6 +5284,12 @@ async function mediaState() {
 /* A change sent (or a look): refused at once with its words, else followed until it ends. */
 async function mediaChange(body, starting) {
   const answer = await postControl('media-change', body);
+  if (body.change === 'look' && answer.error !== 'E43') {
+    // Said on the page until a look goes through: a look refused (the app SSD away) left
+    // the page saying "This server plays no films, shows or music", or showing the last
+    // answer as if it were now. One refused because a change is at work follows it.
+    MEDIA.refused = answer.ok ? null : answer;
+  }
   if (answer.ok) {
     if (starting) {
       toast(starting);
@@ -5416,6 +5424,7 @@ function renderMedia() {
   if (!signedIn()) {
     MEDIA.answer = null;
     MEDIA.asked = false;
+    MEDIA.refused = null;
     MEDIA.formKey = '';
     put('media-add', []);
     const pin = state.control?.access?.pin_set;
@@ -5434,12 +5443,29 @@ function renderMedia() {
   }
   const kinds = mediaKinds();
   const nodes = mediaOutcomeNodes(MEDIA.answer);
+  const refused = MEDIA.answer?.working ? null : MEDIA.refused;
+  if (refused) {
+    const box = el('div', 'callout media-outcome');
+    box.setAttribute('role', 'status');
+    box.append(
+      cardHeading('Your folders could not be looked at now', badge('warning', 'Not looked at')),
+      longText('', controlMessage(refused))
+    );
+    if (kinds.length) {
+      box.append(longText('hint', 'What is shown below is from the last look, and may have changed since.'));
+    }
+    nodes.unshift(box);
+  }
   if (!kinds.length) {
     nodes.push(
       empty(
-        MEDIA.answer?.working || !MEDIA.answer
-          ? 'Looking at your folders…'
-          : 'This server plays no films, shows or music.'
+        firstOf(
+          [
+            [refused, 'Your folders are shown here once the server can look at them. Then press Look again.'],
+            [MEDIA.answer?.working || !MEDIA.answer, 'Looking at your folders…']
+          ],
+          'This server plays no films, shows or music.'
+        )
       )
     );
   } else {

@@ -1236,6 +1236,29 @@ class MediaFoldersPageTests(unittest.TestCase):
             ],
         )
 
+    def test_a_look_the_server_refuses_is_said_never_shown_as_no_media(self):
+        # Seen for real with the app SSD unplugged: the look was refused (E47) and the page
+        # said "This server plays no films, shows or music", or, with an earlier answer,
+        # showed every folder Ready, the SSD's too, and never said the SSD was away.
+        ssd = {
+            'ok': False,
+            'error': 'E47',
+            'message': "The app SSD is not connected, so your media folders can't be changed now.",
+        }
+        (first, later, busy) = page(
+            ('mediaFlow', {'result': None, 'look': ssd}),
+            ('mediaFlow', {'result': media_result(), 'look': ssd}),
+            # Refused only because a change is at work: the page follows that change.
+            ('mediaFlow', {'result': media_result(state='working'), 'look': ssd, 'working': True}),
+        )
+        self.assertIn('app SSD is not connected', first['page'])
+        self.assertIn('Not looked at', first['page'])
+        self.assertNotIn('plays no films', first['page'])
+        self.assertIn('app SSD is not connected', later['page'])
+        self.assertIn('from the last look', later['page'])
+        self.assertNotIn('Not looked at', busy['page'])
+        self.assertIn('Working', busy['page'])
+
     def test_without_the_pin_nothing_is_asked_or_shown(self):
         (out,) = page(('mediaSignedOut', None))
         self.assertEqual(out['sent'], [])
