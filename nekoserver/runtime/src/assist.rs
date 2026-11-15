@@ -517,12 +517,41 @@ pub fn summary(status: &Value, now: f64) -> String {
             ago(age)
         )
     };
-    format!("{heading}\n{}", readings(status))
+    format!("{heading}\n{}", readings(status, now))
+}
+
+/// When a backup last worked and when it runs next, as the model is told them: "last
+/// success 3 days ago, next run in 4 days". Without them "When were my photos last backed
+/// up?", the first thing a household asks, had no answer but "I do not know" (or a
+/// made-up one), though the dashboard shows both (deep check 510). A time further ahead
+/// than the clock allows is left out: its age is not known.
+fn backup_times(row: &Value, now: f64) -> String {
+    let mut said = vec![];
+    match row["last_success"].as_f64() {
+        Some(t) if t <= now + AHEAD_SECONDS => said.push(format!(
+            "last success {}",
+            if now - t < 60.0 {
+                "just now".to_string()
+            } else {
+                format!("{} ago", ago(now - t))
+            }
+        )),
+        Some(_) => {}
+        None => said.push("no success yet".to_string()),
+    }
+    if let Some(t) = row["timer"]["next_run_at"].as_f64().filter(|t| *t > now) {
+        said.push(format!("next run in {}", ago(t - now)));
+    }
+    if said.is_empty() {
+        String::new()
+    } else {
+        format!("; {}", said.join(", "))
+    }
 }
 
 /// A short summary of the readings: what needs attention, the backups, the drives, the
 /// apps. Plain lines, at most SUMMARY_CHARS characters.
-fn readings(status: &Value) -> String {
+fn readings(status: &Value, now: f64) -> String {
     let rows = |key: &str| status[key].as_array().cloned().unwrap_or_default();
     let text = |v: &Value| v.as_str().unwrap_or("").to_string();
     let mut lines = vec![format!(
@@ -544,13 +573,14 @@ fn readings(status: &Value) -> String {
     }
     for b in rows("backups") {
         lines.push(format!(
-            "Backup {}: {}{}",
+            "Backup {}: {}{}{}",
             text(&b["name"]),
             text(&b["status"]),
             b["reason"]
                 .as_str()
                 .map(|r| format!(" ({r})"))
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            backup_times(&b, now),
         ));
     }
     for s in rows("storage") {
@@ -1810,12 +1840,41 @@ mod tests {
             "backups": [{"id": "host", "name": "Host and user snapshot", "status": "fail", "reason": "No space left"}],
             "storage": [{"name": "Media HDD", "status": "mounted", "total": 20_000_000_000u64, "used": 8_000_000_000u64}],
             "applications": [{"name": "Jellyfin", "state": "running", "health": "unhealthy"}]});
-        let s = readings(&status);
+        let s = readings(&status, 1_800_000_000.0);
         assert!(s.contains("NekoServer 0.49.0"));
         assert!(s.contains("Needs attention: Host and user snapshot failed (critical)"));
         assert!(s.contains("Backup Host and user snapshot: fail (No space left)"));
         assert!(s.contains("Drive Media HDD: mounted, 12.0 GB free"));
         assert!(s.contains("App Jellyfin: running, unhealthy"));
+    }
+
+    /// Deep check 510 (Ask Neko: "When were my photos last backed up?"): the model was
+    /// given each backup's state only, never when it last worked or runs next, so it could
+    /// only say it did not know, or make a time up.
+    #[test]
+    fn the_summary_says_when_each_backup_last_worked_and_runs_next() {
+        let now = 1_800_000_000.0;
+        let status = json!({"backups": [
+            {"name": "Photo archive", "status": "pass", "last_success": now - 3.0 * 86_400.0,
+             "timer": {"next_run_at": now + 4.0 * 86_400.0}},
+            {"name": "USB copy (photos and files)", "status": "fail", "reason": "Plug it in", "last_success": null,
+             "timer": {"next_run_at": now + 5.0 * 3600.0}},
+            {"name": "Host and user snapshot", "status": "pass", "last_success": now + 7200.0}]});
+        let s = readings(&status, now);
+        assert!(
+            s.contains("Backup Photo archive: pass; last success 3 days ago, next run in 4 days"),
+            "{s}"
+        );
+        assert!(
+            s.contains("Backup USB copy (photos and files): fail (Plug it in); no success yet, next run in 5 hours"),
+            "{s}"
+        );
+        // Stamped by a clock that was ahead: no age is made up for it.
+        assert!(
+            s.contains("Backup Host and user snapshot: pass\n")
+                || s.ends_with("Backup Host and user snapshot: pass"),
+            "{s}"
+        );
     }
 
     /// Review of 0.49.0: an unreadable status file became {} and the model was told
@@ -1915,19 +1974,19 @@ mod tests {
         );
         assert!(row.get("total").is_some() && row.get("used").is_some());
         assert!(row.get("free").is_none(), "the collector gives no \"free\"");
-        let not_mounted = readings(&json!({"storage": [row.clone()]}));
+        let not_mounted = readings(&json!({"storage": [row.clone()]}), 0.0);
         assert!(
             not_mounted.contains("Drive Media HDD: mounted, ? free"),
             "{not_mounted}"
         );
         row["total"] = json!(2_000_000_000_000u64);
         row["used"] = json!(1_487_500_000_000u64);
-        let s = readings(&json!({"storage": [row]}));
+        let s = readings(&json!({"storage": [row]}), 0.0);
         assert!(s.contains("Drive Media HDD: mounted, 512.5 GB free"), "{s}");
         // A reading that makes no sense (more used than there is) is never a negative.
         let odd =
             json!({"storage": [{"name": "SSD", "status": "mounted", "total": 10, "used": 20}]});
-        assert!(readings(&odd).contains("Drive SSD: mounted, 0.0 GB free"));
+        assert!(readings(&odd, 0.0).contains("Drive SSD: mounted, 0.0 GB free"));
     }
 
     #[test]
