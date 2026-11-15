@@ -1159,6 +1159,13 @@ class Debian(PackageLock, Family):
     )
     # Debian's own container packages that would conflict with Docker's.
     conflicts = ('docker.io', 'docker-compose', 'docker-doc', 'podman-docker', 'containerd', 'runc')
+    # A package a newer release folded into another, which only "Provides" the old name:
+    # Mesa 25.2.8-3 and later (Ubuntu 26.04) put the VA drivers in mesa-libgallium.
+    # dpkg-query and apt-cache policy know only real packages, so the old name looked
+    # "not offered" and AMD's video driver was never installed. The new one is asked for
+    # only where the release has no package of the old name (Ubuntu 24.04, Debian 12
+    # and 13 still do).
+    folded = MappingProxyType({'mesa-va-drivers': 'mesa-libgallium'})
 
     def __init__(self, run=run_command, release=None, fetch=_fetch):
         super().__init__(run, release)
@@ -1266,11 +1273,23 @@ class Debian(PackageLock, Family):
         if not self.ready():
             return False
         self.refresh()
-        for name in self.names(wanted):
-            policy = self._call(['apt-cache', 'policy', name], 60).stdout
-            if 'Candidate:' not in policy or 'Candidate: (none)' in policy:
-                return False
-        return True
+        return all(self.offered(name) for name in self.names(wanted))
+
+    def offered(self, name):
+        """apt has a version of this very package to install."""
+        policy = self._call(['apt-cache', 'policy', name], 60).stdout or ''
+        return 'Candidate:' in policy and 'Candidate: (none)' not in policy
+
+    def names(self, wanted):
+        return [self.unfolded(name) for name in super().names(wanted)]
+
+    def unfolded(self, name):
+        """The package to ask for: the one a folded package went into (`folded`), when
+        this release has no package of the old name (installed or offered)."""
+        into = self.folded.get(name)
+        if into is None or not self.ready() or self.has(name) or self.offered(name):
+            return name
+        return into
 
     def sources(self, address):
         """Every apt source file that already uses this repository address (one-line
