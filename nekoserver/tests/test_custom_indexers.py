@@ -9,6 +9,7 @@ from the info hash of a public definition), so a mistake in the templates shows 
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import sys
 import tempfile
@@ -254,10 +255,14 @@ class InstallTests(unittest.TestCase):
         self.custom = self.data / 'appdata' / 'prowlarr' / 'Definitions' / 'Custom'
         self.target = self.custom / 'torrentio.yml'
         self.owners = []
-        noted = lambda path, uid, gid, follow_symlinks=True: self.owners.append((path, uid, gid, follow_symlinks))  # noqa: E731
-        chown = mock.patch.object(custom_indexers.os, 'chown', noted)
-        chown.start()
-        self.addCleanup(chown.stop)
+        # Folders are given away by name in their open parent, the file by its open handle.
+        noted = lambda name, uid, gid, dir_fd=None, follow_symlinks=True: self.owners.append(  # noqa: E731
+            (name, uid, gid, follow_symlinks)
+        )
+        for name, fake in (('chown', noted), ('fchown', lambda fd, uid, gid: self.owners.append(('file', uid, gid)))):
+            patch = mock.patch.object(custom_indexers.os, name, fake)
+            patch.start()
+            self.addCleanup(patch.stop)
         self.said = []
 
     def install(self):
@@ -266,8 +271,9 @@ class InstallTests(unittest.TestCase):
     def test_the_definition_goes_into_prowlarrs_custom_folder_owned_by_prowlarrs_account(self):
         self.assertEqual(self.install(), ['torrentio.yml'])
         self.assertEqual(self.target.read_text(encoding='utf-8'), custom_indexers.shipped_text('torrentio.yml'))
-        self.assertIn((self.target, 1000, 1001, False), self.owners)  # never through a link
-        self.assertIn((self.custom, 1000, 1001, False), self.owners)
+        self.assertIn(('file', 1000, 1001), self.owners)
+        self.assertIn(('Custom', 1000, 1001, False), self.owners)  # never through a link
+        self.assertIn(('Definitions', 1000, 1001, False), self.owners)
         self.assertIn('Torrentio'.lower(), self.said[0])
         # Again: nothing written, so Prowlarr is not restarted for nothing.
         self.assertEqual(self.install(), [])
@@ -299,6 +305,41 @@ class InstallTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             custom_indexers.custom_folder(self.data)
 
+    def test_a_folder_swapped_for_a_link_while_writing_is_never_followed(self):
+        """The deep check: Prowlarr's account owns Definitions/Custom, and root wrote by path
+        after checking it, so the folder swapped for a link in that gap put root's file
+        (given to Prowlarr's account) in a folder Prowlarr may not write to. It is now
+        written through the folder opened once, without links."""
+        self.install()
+        self.target.write_text(custom_indexers.MARK + 'id: older\n', encoding='utf-8')
+        elsewhere = self.data / 'root-only'
+        elsewhere.mkdir()
+        flush = os.fsync
+
+        def swap_then_sync(fd):
+            # The moment the new file is written, before it is put in place.
+            if not self.custom.is_symlink():
+                self.custom.rename(self.custom.parent / 'kept')
+                self.custom.symlink_to(elsewhere)
+            flush(fd)
+
+        with mock.patch.object(os, 'fsync', swap_then_sync):
+            try:
+                self.install()
+            except (OSError, RuntimeError):
+                pass  # refusing is right too
+        self.assertEqual(list(elsewhere.iterdir()), [])
+        # The definition went into the folder that was opened (Prowlarr's own, moved).
+        self.assertEqual(
+            (self.custom.parent / 'kept/torrentio.yml').read_text(encoding='utf-8'),
+            custom_indexers.shipped_text('torrentio.yml'),
+        )
+        # Asked again with the link still there: refused, said plainly, nothing written.
+        with self.assertRaises(RuntimeError) as refused:
+            self.install()
+        self.assertIn('is a link or not a folder now', str(refused.exception))
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
     def test_remove_takes_out_only_nekoservers_file(self):
         self.install()
         mine = self.custom / 'my-tracker.yml'
@@ -309,6 +350,33 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(custom_indexers.remove(self.data, self.said.append), [])
 
 
+class AtomicWriteTests(unittest.TestCase):
+    def test_a_folder_swapped_for_a_link_after_the_check_is_not_followed(self):
+        """neko_common.atomic_write checked the path, then made and renamed the file by
+        path: a folder swapped for a link in between was followed (the file made where the
+        link led, or the rename lost). Now the folder opened once is written in."""
+        import neko_common
+
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d) / 'app-owned'
+            folder.mkdir()
+            elsewhere = Path(d) / 'root-only'
+            elsewhere.mkdir()
+            flush = os.fsync
+
+            def swap_then_sync(fd):
+                if not folder.is_symlink():
+                    folder.rename(Path(d) / 'kept')
+                    folder.symlink_to(elsewhere)
+                flush(fd)
+
+            with mock.patch.object(os, 'fsync', swap_then_sync):
+                neko_common.atomic_write(folder / 'settings.json', '{}')
+            self.assertEqual(list(elsewhere.iterdir()), [])
+            self.assertEqual((Path(d) / 'kept/settings.json').read_text(), '{}')
+            self.assertEqual(sorted(p.name for p in (Path(d) / 'kept').iterdir()), ['settings.json'])
+
+
 class UninstallerTests(unittest.TestCase):
     def setUp(self):
         self.uninstaller = load('uninstaller_torrentio', 'uninstaller.py')
@@ -317,7 +385,7 @@ class UninstallerTests(unittest.TestCase):
         self.root = Path(tmp.name)
         self.data = self.root / 'srv' / 'nekoserver'
         (self.data / 'appdata' / 'prowlarr').mkdir(parents=True)
-        with mock.patch.object(custom_indexers.os, 'chown'):
+        with mock.patch.object(custom_indexers.os, 'chown'), mock.patch.object(custom_indexers.os, 'fchown'):
             custom_indexers.install(self.data, 1000, 1000, lambda line: None)
         self.file = self.data / 'appdata/prowlarr/Definitions/Custom/torrentio.yml'
         self.plan = SimpleNamespace(

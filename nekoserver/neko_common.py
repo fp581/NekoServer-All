@@ -13,7 +13,6 @@ import shutil
 import socket
 import stat
 import subprocess
-import tempfile
 import time
 import unicodedata
 import urllib.error
@@ -1691,22 +1690,56 @@ def last_words(output, limit=500):
 def atomic_write(path, payload, mode=0o600):
     path = safe_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(prefix='.' + path.name + '-', dir=path.parent)
-    temp = Path(name)
+    # The folder is opened once (never through a link) and the file made and renamed in
+    # it, not by path again: a folder swapped for a link after the check is not followed.
+    folder = os.open(path.parent, FOLDER_FLAGS)
+    try:
+        atomic_write_at(folder, path.name, payload, mode)
+    finally:
+        os.close(folder)
+
+
+def atomic_write_at(folder, name, payload, mode=0o600, owner=None):
+    """atomic_write for `name` in an open folder (its fd): the temporary file is made,
+    given to `owner` (uid, gid) when named, and renamed relative to that folder."""
+    temp = f'.{name}-{os.urandom(4).hex()}'
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, mode, dir_fd=folder)
     try:
         with os.fdopen(fd, 'wb') as stream:
             os.fchmod(stream.fileno(), mode)
+            if owner:
+                os.fchown(stream.fileno(), *owner)
             stream.write(payload.encode('utf-8') if isinstance(payload, str) else payload)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temp, path)
-        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        os.replace(temp, name, src_dir_fd=folder, dst_dir_fd=folder)
+        os.fsync(folder)  # the new name survives a power cut
     finally:
-        temp.unlink(missing_ok=True)
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(temp, dir_fd=folder)
+
+
+def open_folder_below(root, parts, make=0, owner=None):
+    """The folder root/parts... opened (an fd the caller closes), one part at a time from
+    the one before, never through a link. For root writing into a folder an app's account
+    owns: that account could swap a part for a link between a check of the path and a
+    write by path; opened this way, a link is refused (OSError). The last `make` parts are
+    made when missing, given to `owner` (uid, gid) when named."""
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for index, part in enumerate(parts):
+            if index >= len(parts) - make:
+                with contextlib.suppress(FileExistsError):
+                    os.mkdir(part, 0o755, dir_fd=fd)
+                    if owner:
+                        os.chown(part, *owner, dir_fd=fd, follow_symlinks=False)
+            found = os.open(part, FOLDER_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = found
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
 
 
 def atomic_json(path, payload):
