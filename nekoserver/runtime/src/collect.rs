@@ -1264,6 +1264,16 @@ fn parse_startup(out: &str) -> Vec<Value> {
         })
         .collect()
 }
+/// What to do about a service that failed. The home gateway gives up after six tries
+/// (gateway_tools.unit: StartLimitBurst) and then stays stopped until a drive comes
+/// back, the NAS check or setup starts it: said, with the command that starts it now
+/// (deep check 301).
+fn failed_advice(unit: &str) -> &'static str {
+    match unit {
+        "nekoserver-gateway-lan.service" => "It gave up after several failed starts and stays stopped until a drive comes back, the NAS check runs or setup runs. Once the drives are connected, start it now: sudo systemctl start nekoserver-gateway-lan.service (if it stops again, sudo journalctl -u nekoserver-gateway-lan.service says why). Until then the apps' home addresses don't answer; the Tailscale addresses keep working.",
+        _ => "Its last start or run failed. The guide shows how to read its log; setup can start it again.",
+    }
+}
 /// Why a job is intentionally not part of this server now (its app or backup switched
 /// off), or None when its schedule is expected.
 fn retired(cfg: &Value, key: &str) -> Option<&'static str> {
@@ -2658,7 +2668,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
                 format!("startup:{name}:failed"),
                 if core { "critical" } else { "warning" },
                 format!("{} has stopped with an error", text(&unit["name"])),
-                "Its last start or run failed. The guide shows how to read its log; setup can start it again.",
+                failed_advice(name),
             );
         } else if stays_running(name) && unit["active"] == "inactive" {
             // Not failed, yet not running: Docker waiting for a drive that never
@@ -4162,6 +4172,18 @@ mod os_tests {
         assert_eq!(
             shown[0]["title"],
             "Home network gateway (HTTPS) has stopped with an error"
+        );
+        // Deep check 301: it stays stopped after giving up; the alert says so and how
+        // to start it.
+        let said = shown[0]["detail"].as_str().unwrap_or_default().to_string()
+            + shown[0]["action"].as_str().unwrap_or_default();
+        assert!(
+            said.contains("stays stopped until a drive comes back"),
+            "{said}"
+        );
+        assert!(
+            said.contains("sudo systemctl start nekoserver-gateway-lan.service"),
+            "{said}"
         );
     }
     #[test]
