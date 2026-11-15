@@ -3538,7 +3538,7 @@ pub fn keep_count(keep: &Value, earlier: &Value, setting: &str) -> (u64, Option<
         _ => (
             0,
             Some(format!(
-                "the number of backups to keep ({setting}.keep_snapshots) is {keep}, not a whole number from 1 to 7, so no older backup was removed; run  sudo bash install.sh  to set it"
+                "the number of backups to keep ({setting}.keep_snapshots) is {keep}, not a whole number from 1 to 7, so no older backup was removed to keep to it; run  sudo bash install.sh  to set it"
             )),
         ),
     }
@@ -3592,20 +3592,30 @@ pub fn failed_after_room(root: &Path, removed: &[String], error: Error) -> Error
 /// What the report says when `make_room` removed snapshots (`removed`) and, with the new
 /// one published, `root` holds fewer than the `keep` snapshots the settings ask for: the
 /// run is done in part, so the dashboard shows the history is shorter than believed.
-/// Nothing when the kept number is still there (the removed ones were beyond it).
+/// Nothing when the kept number is still there (the removed ones were beyond it). With
+/// `keep` 0 (every snapshot is kept, or the count was refused) any snapshot removed for
+/// room is one the settings kept: it is said too (deep check 419: such a run ended
+/// "pass", or with "no older backup was removed", the opposite of what it did).
 pub fn short_history(root: &Path, removed: &[String], keep: u64) -> Result<Option<Value>> {
     let left = common::complete_snapshots(root)?.len();
-    if removed.is_empty() || left as u64 >= keep {
+    if removed.is_empty() || (keep > 0 && left as u64 >= keep) {
         return Ok(None);
     }
+    let remain = if keep == 0 {
+        common::plural(left, "snapshot remains", "snapshots remain")
+    } else {
+        format!(
+            "{left} of the {} the settings keep (app_backup.keep_snapshots) remain",
+            common::plural(keep, "snapshot", "snapshots")
+        )
+    };
     let count = common::plural(
         removed.len(),
         "older application snapshot was",
         "older application snapshots were",
     );
     Ok(Some(json!([format!(
-        "the HDD was short of space, so {count} removed to make room for tonight's snapshot; {left} of the {} the settings keep (app_backup.keep_snapshots) remain",
-        common::plural(keep, "snapshot", "snapshots")
+        "the HDD was short of space, so {count} removed to make room for tonight's snapshot; {remain}"
     )])))
 }
 /// Check the drives, take the lock monthly maintenance and the other jobs hold, then
@@ -8892,6 +8902,14 @@ mod tests {
         // Nothing removed, or as many left as the settings keep: nothing to say.
         assert_eq!(short_history(&root, &[], 7).unwrap(), None);
         assert_eq!(short_history(&root, &removed, 2).unwrap(), None);
+        // Every snapshot is kept (0), or the count was refused (0 too): the one removed
+        // for room was one the settings kept, so it is said (deep check 419).
+        let said = short_history(&root, &removed, 0).unwrap().unwrap();
+        assert_eq!(
+            said[0],
+            "the HDD was short of space, so 1 older application snapshot was removed to make room for tonight's snapshot; 2 snapshots remain"
+        );
+        assert_eq!(short_history(&root, &[], 0).unwrap(), None);
         // The backup then fails: its reason says the older one went for nothing (review
         // of 0.51.2), and is left alone when nothing was removed.
         let failed = failed_after_room(&root, &removed, Error::new("Source changed"));
@@ -9030,7 +9048,10 @@ mod tests {
                 )),
                 "{why}"
             );
-            assert!(why.contains("no older backup was removed"), "{why}");
+            assert!(
+                why.contains("no older backup was removed to keep to it"),
+                "{why}"
+            );
         }
         assert_eq!(keep_count(&json!(3651), &yes, "app_backup").0, 0);
         // A refused count removes nothing even from a folder full of snapshots.

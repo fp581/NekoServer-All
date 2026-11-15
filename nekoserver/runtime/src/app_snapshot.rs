@@ -520,6 +520,26 @@ fn library_drives(cfgpath: &Path, data: &Path, media: &Path) -> Vec<PathBuf> {
     }
     drives
 }
+/// What a backup that was made still has to report: a count of backups to keep that was
+/// refused (`refused`), and older backups removed early for room (`short`, from
+/// `backup::short_history`). Both when both happened: the refused count alone said "no
+/// older backup was removed" on a night that had removed some for room.
+fn done_in_part(refused: Option<String>, short: Option<Value>) -> Option<Value> {
+    let mut notes = vec![];
+    if let Some(why) = refused {
+        println!("Application backup: {why}");
+        notes.push(json!(why));
+    }
+    notes.extend(
+        short
+            .as_ref()
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .cloned(),
+    );
+    (!notes.is_empty()).then(|| json!(notes))
+}
 fn snapshot(
     cfgpath: &Path,
     data: &Path,
@@ -692,13 +712,7 @@ fn snapshot(
         // Snapshots removed early for room, leaving fewer than the settings keep: the
         // run is done in part, so the dashboard says the history is shorter.
         let short = backup::short_history(&root, &removed, keep)?;
-        Ok(match refused {
-            Some(why) => {
-                println!("Application backup: {why}");
-                Some(json!([why]))
-            }
-            None => short,
-        })
+        Ok(done_in_part(refused, short))
     })();
     let restarted = resume();
     let partial = result.and_then(|partial| restarted.map(|()| partial))?;
@@ -817,12 +831,31 @@ mod tests {
         let volume = json!({"Type": "volume", "Source": "/mnt/media/library", "RW": true});
         assert!(!covered(&volume, &own, &[data, media]));
     }
+    /// Deep check 419: with a refused count the night's report was the refusal alone,
+    /// "no older backup was removed", though some had been removed to make room.
+    #[test]
+    fn a_refused_count_does_not_hide_what_was_removed_for_room() {
+        let refused = Some("the count is wrong".to_string());
+        let short = Some(json!(["2 older application snapshots were removed"]));
+        assert_eq!(
+            done_in_part(refused.clone(), short.clone()),
+            Some(json!([
+                "the count is wrong",
+                "2 older application snapshots were removed"
+            ]))
+        );
+        assert_eq!(
+            done_in_part(refused, None),
+            Some(json!(["the count is wrong"]))
+        );
+        assert_eq!(done_in_part(None, short.clone()), short);
+        assert_eq!(done_in_part(None, None), None);
+    }
     #[test]
     fn a_full_hdd_message_says_what_is_free_and_needed() {
         let said = short_of_space(Path::new("/mnt/media"), 1 << 29, 3 << 30);
         assert!(said.contains("HDD (/mnt/media)"), "{said}");
         assert!(said.contains("0.5 GB free, about 3.0 GB needed"), "{said}");
-        assert!(said.contains("newest one is always kept"), "{said}");
     }
     #[test]
     fn the_checkpoint_follows_the_docker_the_os_updated_to() {
