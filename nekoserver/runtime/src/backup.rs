@@ -4507,8 +4507,9 @@ const CLOUD_MISSING: &str = "the Nextcloud files folder is missing, so Nextcloud
 /// Nextcloud's server-side encryption keeps each file encrypted in the files folder and
 /// its keys in `files_encryption` folders (the server's at the top, each user's in their
 /// own folder). The weekly copy takes only the files, so it couldn't be decrypted after
-/// losing the server: the backup is reported as incomplete, never as a good one.
-const CLOUD_ENCRYPTED: &str = "Nextcloud's server-side encryption is on, and this backup copies the encrypted files without the keys needed to read them, so it can't restore them on its own. Keep the files readable (Nextcloud: Administration → Security → turn encryption off and decrypt), or keep your own backup of the whole Nextcloud data folder";
+/// losing the server: the backup is reported as incomplete, never as a good one. Under
+/// 300 characters, so the dashboard shows the advice whole.
+pub(crate) const CLOUD_ENCRYPTED: &str = "Nextcloud's server-side encryption is on, and this backup copies the encrypted files without the keys to read them, so it can't restore them on its own. Turn encryption off and decrypt the files (Nextcloud: Administration → Security), or keep your own backup of the whole Nextcloud data folder";
 /// Whether Nextcloud's server-side encryption is (or was) in use in this files folder.
 fn cloud_encrypted(cloud: &Path) -> bool {
     let keys =

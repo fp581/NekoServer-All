@@ -1732,7 +1732,7 @@ fn partial_reason(missing: &Value) -> String {
             .iter()
             .filter_map(|v| v.as_str())
             .filter(|s| !s.trim().is_empty())
-            .map(|s| capitalised(&chars(s, 300)))
+            .map(|s| capitalised(&whole(s, 300)))
             .collect();
         if !said.is_empty() {
             let mut text = said.iter().take(5).cloned().collect::<Vec<_>>().join(". ");
@@ -1759,7 +1759,7 @@ fn partial_reason(missing: &Value) -> String {
     // a source that could not be copied at all (the Nextcloud folder missing), and the
     // password list (none on the HDD yet, or a damaged one).
     for key in crate::backup::INCOMPLETE_PARTS {
-        let problem = capitalised(&chars(text(&missing[key]), 300));
+        let problem = capitalised(&whole(text(&missing[key]), 300));
         if !problem.is_empty() {
             parts.push(problem);
         }
@@ -4431,6 +4431,18 @@ mod os_tests {
         let shown = partial_reason(&with_database);
         assert!(shown.starts_with("No Immich database copy"), "{shown}");
         assert!(shown.contains("sudo bash install.sh"), "{shown}");
+    }
+    /// Deep check plan 276: what a backup left out was cut at exactly 300 characters, in
+    /// the middle of a word. The Nextcloud encryption advice (316) read "or keep your own
+    /// backup of the whole Nextcl" on the dashboard.
+    #[test]
+    fn what_a_backup_left_out_is_never_cut_mid_word() {
+        let said = crate::backup::CLOUD_ENCRYPTED.to_string();
+        let cloud = crate::backup::incomplete(None, None, Some(said.clone()), None).unwrap();
+        assert_eq!(partial_reason(&cloud), capitalised(&said));
+        let long = format!("USB check: {}", "the drive would not mount ".repeat(20));
+        let shown = partial_reason(&json!([long]));
+        assert!(shown.ends_with("mount…"), "{shown}");
     }
     #[test]
     fn a_monthly_run_done_in_part_says_why() {
