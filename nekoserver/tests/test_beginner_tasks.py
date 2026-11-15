@@ -63,6 +63,21 @@ class DeletedPhotoTests(unittest.TestCase):
             self.assertLess(row.index(trash), row.index('Recovery menu'), row)
 
 
+class FamilyLoginTests(unittest.TestCase):
+    """Deep checks 492 and 507: a second person's phone added to Immich, a child's tablet
+    with a Jellyfin login. No guide said how to give someone an Immich login of their own
+    (the second phone signed in as the owner, and every photo landed in one library), nor how
+    to keep a child to what they may see."""
+
+    def test_the_readme_says_how_to_add_someone_in_each_app(self):
+        part = doc('README.md').split('**Someone else in the family.**')[1].split('\n**')[0]
+        self.assertIn('Create user', part)  # Immich
+        self.assertIn('their own library', part)
+        self.assertIn('Accounts', part)  # Nextcloud
+        self.assertIn('Parental control', part)  # Jellyfin, for a child
+        self.assertIn('Seerr', part)
+
+
 class DeletedFilmTests(unittest.TestCase):
     """Deep check 253: a film deleted by mistake. The recovery menu listed photos, Nextcloud
     files, passwords and settings, and said nothing about films: the beginner looked for a
