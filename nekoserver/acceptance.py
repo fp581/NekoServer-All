@@ -319,15 +319,23 @@ def containers(config, photos=False):
                         library = (
                             files_root(config, 'music' if app in ('navidrome', 'lidarr') else 'movies') / 'library'
                         )
+                        # (folder, where the app sees it, whether the app only reads it)
                         if app == 'jellyfin':
                             needed = [('movies', '/data/movies', True), ('tv', '/data/tv', True)]
                         elif app == 'navidrome':
                             needed = [('music', '/music', True)]
                         else:
                             needed = [('', DATA, False)]
-                        mounts = mounts and all(bound(str(library / rel), (dest,), ro) for rel, dest, ro in needed)
+                        # The others import, rename and download there: read-only (as a
+                        # monthly update checks them, and leaves them when it cannot open
+                        # them up again) they cannot work, though the folder is right.
+                        mounts = mounts and all(
+                            bound(str(library / rel), (dest,), readonly=ro, writable=not ro) for rel, dest, ro in needed
+                        )
                         if app == 'qbittorrent':
-                            mounts = mounts and bound(str(music_downloads(config)), ('/data/downloads/music',))
+                            mounts = mounts and bound(
+                                str(music_downloads(config)), ('/data/downloads/music',), writable=True
+                            )
                 network = v.get('NetworkSettings', {})
                 bindings = network.get('Ports', {})
                 peer = peer_port(v) if app == 'qbittorrent' else None

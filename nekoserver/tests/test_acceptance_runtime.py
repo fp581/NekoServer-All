@@ -308,5 +308,65 @@ class AppDataContainerTests(unittest.TestCase):
         )
 
 
+class LibraryWriterContainerTests(unittest.TestCase):
+    """Deep check 426: Sonarr, Radarr, Lidarr and qBittorrent import, rename and download
+    into the library, but their library mounted read-only passed the container check on
+    its path alone. A monthly update checks them that way, and they stay that way when it
+    cannot open them up again (an app slow to answer) until its resume does."""
+
+    def checked(self, read_only=()):
+        """The four apps' containers as setup makes them; `read_only`: the apps whose
+        library (or, for qBittorrent, its music downloads) Docker mounted read-only."""
+        apps = ['sonarr', 'radarr', 'lidarr', 'qbittorrent']
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(Path(tmp))
+            cfg['media']['services'] = apps
+            films = acceptance.files_root(cfg, 'movies') / 'library'
+            music = acceptance.files_root(cfg, 'music') / 'library'
+            binds = {
+                app: [
+                    (cfg['data_mount'] + '/appdata/' + app, '/config', True),
+                    (
+                        str(music if app == 'lidarr' else films),
+                        '/data',
+                        not (app in read_only and app != 'qbittorrent'),
+                    ),
+                ]
+                for app in apps
+            }
+            downloads = str(acceptance.music_downloads(cfg))
+            binds['qbittorrent'].append((downloads, '/data/downloads/music', 'qbittorrent' not in read_only))
+            asked = []
+
+            def docker(argv, timeout):
+                if 'ps' in argv:
+                    asked.append(argv[-1].rsplit('=', 1)[1])
+                    return 0, 'a' * 12 + '\n'
+                app = asked[-1]
+                port = str(acceptance.health.APPS[app][2])
+                container = {
+                    'Config': {
+                        'Labels': {'com.docker.compose.project': 'neko-' + app, 'com.docker.compose.service': app}
+                    },
+                    'State': {'Status': 'running', 'Health': {'Status': 'healthy'}},
+                    'Mounts': [{'Type': 'bind', 'Source': s, 'Destination': t, 'RW': rw} for s, t, rw in binds[app]],
+                    'NetworkSettings': {
+                        'Ports': {port + '/tcp': [{'HostIp': '127.0.0.1', 'HostPort': port}]},
+                        'Networks': {'nekoserver-media': {}},
+                    },
+                }
+                return 0, json.dumps([container])
+
+            with mock.patch.object(acceptance.health, 'run', side_effect=docker):
+                return {r['id']: r['status'] for r in acceptance.containers(cfg)}
+
+    def test_a_library_the_app_cannot_write_to_fails(self):
+        self.assertEqual(set(self.checked().values()), {'pass'})
+        for app in ('sonarr', 'radarr', 'lidarr', 'qbittorrent'):
+            states = self.checked(read_only=(app,))
+            self.assertEqual(states.pop('container:' + app), 'fail', app)
+            self.assertEqual(set(states.values()), {'pass'}, states)
+
+
 if __name__ == '__main__':
     unittest.main()
