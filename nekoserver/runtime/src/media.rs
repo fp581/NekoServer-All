@@ -622,6 +622,21 @@ fn writable_as_expected(app: &str, expected: bool, actual: &Value, checking: boo
     *actual == expected
         || (checking && expected && LIBRARY_WRITERS.contains(&app) && *actual == false)
 }
+/// The app's own data folder (`expected`) is mounted where the app keeps it, writable:
+/// its settings and database are written there. Read-only, the folder was the right one
+/// and the app still could not work, and this passed on the path alone (the review of
+/// 0.51.2 found the same in the acceptance check; deep check 428 here). A monthly update
+/// never makes it read-only (maintenance.rs quarantined leaves /config as it is).
+fn own_data_mounted(app: &str, mounts: &[Value], expected: &Path) -> bool {
+    let target = match app {
+        "seerr" => "/app/config",
+        "navidrome" => "/data",
+        _ => "/config",
+    };
+    mounts.iter().any(|m| {
+        Path::new(text(&m["Source"])) == expected && m["Destination"] == target && m["RW"] == true
+    })
+}
 /// `checking`: a monthly update is checking the apps before it commits, with the
 /// library mounts of the apps that import, move or delete media made read-only.
 /// `music`: the drive that holds the music library and its downloads (setup's choice).
@@ -654,16 +669,7 @@ fn inspect(app: &str, data: &Path, media: &Path, music: &Path, checking: bool) -
         .get("nekoserver-media")
         .is_some();
     let mounts = array(&item["Mounts"])?;
-    let expected = data.join(format!("appdata/{app}"));
-    let appdata = mounts.iter().any(|m| {
-        Path::new(text(&m["Source"])) == expected
-            && m["Destination"]
-                == match app {
-                    "seerr" => "/app/config",
-                    "navidrome" => "/data",
-                    _ => "/config",
-                }
-    });
+    let appdata = own_data_mounted(app, mounts, &data.join(format!("appdata/{app}")));
     let expected_media = match app {
         "jellyfin" => vec![("movies", "/data/movies", false), ("tv", "/data/tv", false)],
         "navidrome" => vec![("music", "/music", false)],
@@ -984,6 +990,30 @@ mod tests {
             );
             assert_eq!(got.as_deref(), case["expected"].as_str(), "case {name}");
             let _ = std::fs::remove_dir_all(&root);
+        }
+    }
+    /// Deep check 428 (the real check run against a stand-in Docker): Radarr's and
+    /// Seerr's own data mounted read-only passed, on its path alone.
+    #[test]
+    fn app_data_the_app_cannot_write_to_is_not_its_data_mounted() {
+        let data = Path::new("/srv/nekoserver/appdata");
+        for (app, target) in [
+            ("radarr", "/config"),
+            ("seerr", "/app/config"),
+            ("navidrome", "/data"),
+        ] {
+            let folder = data.join(app);
+            let mount = |rw: bool| json!([{"Type": "bind", "Source": folder.to_str().unwrap(), "Destination": target, "RW": rw}]);
+            let writable = mount(true);
+            assert!(
+                own_data_mounted(app, writable.as_array().unwrap(), &folder),
+                "{app}"
+            );
+            let read_only = mount(false);
+            assert!(
+                !own_data_mounted(app, read_only.as_array().unwrap(), &folder),
+                "{app}"
+            );
         }
     }
     #[test]
