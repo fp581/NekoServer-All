@@ -361,6 +361,8 @@ def _run(context):
         except Exception as exc:
             context.log(f'{name} failed: {exc}. Manifest preserved: {dest}; others will continue.')
             failed.append(str(exc) if str(exc).startswith(name) else f'{name}: {exc}')
+    if getattr(context, 'existing_mounts_changed', False):
+        restart_for_own_folders(manifests, failed, context.log)
     stop_unselected(compose_dir, selected, context.log)
     if failed:
         # The reason belongs on the finishing screen too, not only in the log.
@@ -371,6 +373,38 @@ def _run(context):
     context.log(
         'Media stack deployed. Run the onboarding module to connect accounts, libraries and API keys; verify actual playback.'
     )
+
+
+# The place in the apps where the person's own folders are seen (existing_media.CONTAINER).
+OWN_FOLDERS = '/data/existing'
+
+
+def restart_for_own_folders(manifests, failed, log, run=None):
+    """Setup connected, disconnected or remounted one of the person's own folders while
+    the apps run. A folder reaches an app that is running through its rslave bind, but
+    as Linux copies it: read-write, whatever the PC's own mount says (tried with real
+    mounts: a folder connected read-only, or switched back to read-only, stayed
+    writable for Sonarr, Radarr, Lidarr and qBittorrent). An app started anew takes the
+    folders as the PC has them, so each app that sees them is restarted. Returns the
+    apps restarted."""
+    run = run or run_cmd
+    restarted = []
+    for name, (dest, content) in manifests.items():
+        if OWN_FOLDERS not in content or any(str(reason).startswith(name) for reason in failed):
+            continue
+        base = ['docker', 'compose', '-f', str(dest), '-p', f'neko-{name}', *compose_image_override(dest)]
+        try:
+            run([*base, 'restart'], timeout=300)
+        except RuntimeError as exc:
+            log(f'{name}: not restarted ({exc}); it sees your own folders as they are only after a restart')
+            continue
+        restarted.append(name)
+    if restarted:
+        log(
+            'Your own folders changed, so these apps were restarted to see them as they are now (read-only '
+            'unless new files are saved there): ' + ', '.join(restarted)
+        )
+    return restarted
 
 
 def left_out(context, run=None):

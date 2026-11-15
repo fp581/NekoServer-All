@@ -382,6 +382,49 @@ class SetupTests(unittest.TestCase):
         source = (ROOT / 'modules/media.py').read_text()
         self.assertLess(source.index('existing_page.mount(context)'), source.index('compose_up('))
 
+    def test_a_folder_connected_while_the_apps_run_restarts_the_apps_that_see_it(self):
+        """Deep check 391, tried with real mounts: a folder connected (or switched back to
+        read-only) while the apps run reaches them read-write, whatever the PC's mount
+        says. Only an app started anew sees it as it is."""
+        from modules import media
+
+        ctx = self.with_folder()
+
+        def connects(config, permanent, run, log):
+            run(['mount', '/mnt/nekoserver-media/library/existing/movies'], 120)
+            return [{'holds': 'movies', 'path': '/mnt/tank/films', 'mounted': True, 'reason': None}]
+
+        with (
+            mock.patch.object(existing_media, 'folder_answers', return_value=False),
+            mock.patch.object(existing_media, 'must_run') as ran,
+            mock.patch.object(existing_media, 'use_in_place', side_effect=connects),
+        ):
+            existing_page.mount(ctx)
+        ran.assert_called_once()
+        self.assertTrue(ctx.existing_mounts_changed)
+        manifests = {
+            name: (Path(f'/srv/neko/compose/{name}/compose.yaml'), (ROOT / f'compose/{name}.yaml').read_text())
+            for name in ('jellyfin', 'radarr', 'prowlarr', 'seerr', 'sonarr')
+        }
+        restarted = []
+        with mock.patch.object(media, 'compose_image_override', return_value=[]):
+            done = media.restart_for_own_folders(
+                manifests, ['sonarr: did not start'], ctx.log, lambda argv, timeout: restarted.append(argv)
+            )
+        # The apps that see /data/existing; not the ones that don't, nor one that failed to start.
+        self.assertEqual(done, ['jellyfin', 'radarr'])
+        self.assertEqual(restarted[0][-3:], ['-p', 'neko-jellyfin', 'restart'])
+        self.assertIn('these apps were restarted to see them as they are now', ctx.logs[-1])
+        # Nothing changed: nothing is restarted.
+        with (
+            mock.patch.object(existing_media, 'folder_answers', return_value=False),
+            mock.patch.object(existing_media, 'use_in_place', return_value=[]),
+        ):
+            existing_page.mount(ctx)
+        self.assertFalse(ctx.existing_mounts_changed)
+        source = (ROOT / 'modules/media.py').read_text()
+        self.assertLess(source.index('restart_for_own_folders(manifests'), source.index('stop_unselected(compose_dir'))
+
     def test_a_share_that_is_away_is_said_and_never_fails_the_step(self):
         ctx = self.with_folder()
         away = [

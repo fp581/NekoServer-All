@@ -675,7 +675,7 @@ def use_in_place(
     # the new ones no longer name is disconnected, so no app goes on seeing it.
     for point in sorted(set(fstab_mounts('\n'.join(own_lines(before)))) - set(fstab_mounts('\n'.join(lines)))):
         if mounted(point) is not None and not disconnected(run, mounted, point):
-            log(STILL_CONNECTED.format(point=point))
+            log(STILL_CONNECTED.format(point=point, written=written_there(closed_to_new_files(run, point))))
     return [mounted_row(config, entry, (run, find, kind, mounted), log) for entry in wanted]
 
 
@@ -713,13 +713,45 @@ def disconnected(run, mounted, point):
     return mounted(point) is None
 
 
+def closed_to_new_files(run, point):
+    """The folder still connected at `point` made read-only. It could not be disconnected
+    (an app has it open), and it may be one that took new files: left as it was, the apps
+    went on saving into a folder the person had taken back or replaced, while setup said
+    nothing new was written there. False when even that is refused (an app is writing a
+    file there right now)."""
+    try:
+        run(['mount', '-o', 'remount,bind,ro', str(point)], 120)
+    except RuntimeError:
+        return False
+    return True
+
+
+def takes_new_files(point):
+    """Whether what is connected at `point` can be written to, asked of the mount itself."""
+    try:
+        return not read_only(point)
+    except OSError:
+        return False
+
+
+def written_there(closed):
+    """What to say about new files in a folder that is still connected: `closed`, it is
+    read-only now."""
+    if closed:
+        return 'Nothing new is written there.'
+    return (
+        'An app is writing there right now, so it could not be closed to new files either: until the '
+        'restart, new files may still be saved in it.'
+    )
+
+
 STILL_CONNECTED = (
-    'The folder chosen before is still connected at {point} (an app has it open), so it was left. '
-    'Restart the PC, then run setup again: nothing new is written there meanwhile.'
+    'The folder chosen before is still connected at {point} (an app has it open), so it was left. {written} '
+    'Restart the PC, then run setup again.'
 )
 OTHER_FOLDER = (
     'Your {what} were changed to {path}, but the folder chosen before is still connected to the library '
-    '(an app has it open). Nothing new is written there. Restart the PC, then run setup again.'
+    '(an app has it open). {written} Restart the PC, then run setup again.'
 )
 
 
@@ -745,7 +777,8 @@ def mounted_row(config, entry, tools, log):
     # 0.51.2: the settings and the checks named the new folder, the apps saw the old one).
     if mounted(point) is not None and not same_folder(point, entry['path']):
         if not disconnected(run, mounted, point):
-            row['reason'] = OTHER_FOLDER.format(what=WHAT[entry['holds']], path=entry['path'])
+            written = written_there(closed_to_new_files(run, point))
+            row['reason'] = OTHER_FOLDER.format(what=WHAT[entry['holds']], path=entry['path'], written=written)
             log(row['reason'])
             return row
     if mounted(point) is None:
@@ -788,7 +821,9 @@ def available(config, find=findmnt, kind=source_import.share_type, mounted=sourc
         if not there:
             reason = away_words(entry)
         elif other:
-            reason = OTHER_FOLDER.format(what=WHAT[entry['holds']], path=entry['path'])
+            # Said as it is now: read-only since setup found it still connected, or not.
+            written = written_there(not takes_new_files(point))
+            reason = OTHER_FOLDER.format(what=WHAT[entry['holds']], path=entry['path'], written=written)
         elif not bound:
             reason = f'{entry["path"]} is there, but not connected to the library yet; run setup again (or restart)'
         rows.append(

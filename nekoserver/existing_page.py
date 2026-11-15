@@ -243,7 +243,17 @@ def mount(ctx):
             continue  # away now: use_in_place says so
         if line:
             permanent.append(line)
-    rows = existing_media.use_in_place(config, permanent, log=ctx.log)
+    changed = []
+
+    def noted(argv, timeout):
+        # A folder connected, disconnected or switched between read-only and not: an app
+        # already running sees none of that the way the PC does (stopped_apps_see_it).
+        if argv[0] in ('mount', 'umount'):
+            changed.append(argv)
+        return existing_media.must_run(argv, timeout)
+
+    rows = existing_media.use_in_place(config, permanent, run=noted, log=ctx.log)
+    ctx.existing_mounts_changed = bool(changed)
     for row in rows:
         ctx.log(
             f"Your own folder ({row['holds']}): {row['path']} is "

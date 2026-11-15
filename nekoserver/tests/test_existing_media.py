@@ -373,11 +373,14 @@ class MountTests(unittest.TestCase):
         self.pc = Server(self)
         self.ran = []
         self.busy = set()  # mount points an app holds open: umount fails there
+        self.written = set()  # ... and those an app is writing a file in: not made read-only either
 
     def run_tool(self, argv, timeout):
         self.ran.append(argv)
         if argv[0] == 'mount' and '-o' not in argv:
             self.pc.bound[argv[-1]] = '77'
+        if argv[:2] == ['mount', '-o'] and argv[2].endswith(',ro') and argv[-1] in self.written:
+            raise RuntimeError('mount failed: mount point is busy')
         if argv[0] == 'umount':
             if argv[-1] in self.busy:
                 raise RuntimeError('umount failed: target is busy')
@@ -471,9 +474,48 @@ class MountTests(unittest.TestCase):
         self.busy.add(point)
         self.ran.clear()
         (row,) = self.use(config)
-        self.assertEqual(self.ran, [['umount', point]])
+        self.assertEqual(self.ran, [['umount', point], ['mount', '-o', 'remount,bind,ro', point]])
         self.assertFalse(row['mounted'])
         self.assertIn('Restart the PC, then run setup again', row['reason'])
+
+    def test_a_folder_that_stays_connected_is_closed_to_new_files(self):
+        """Deep check 391, run with real mounts: a folder that took new files, replaced
+        or taken back while an app held it open, stayed connected read-write. Setup said
+        "nothing new is written there", and the apps went on saving into it."""
+        point = str(self.pc.media / 'library' / 'existing' / 'movies')
+        said = []
+
+        def use(config):
+            how = self.pc.how()
+            return existing_media.use_in_place(config, run=self.run_tool, fstab=self.pc.fstab, log=said.append, **how)
+
+        closed = ['mount', '-o', 'remount,bind,ro', point]
+        use(self.pc.chosen(new_files=True))
+        self.pc.bound_from[point] = str(self.pc.nas / 'old films')  # the folder was changed since
+        self.busy.add(point)
+        self.ran.clear()
+        (row,) = use(self.pc.chosen())
+        self.assertEqual(self.ran[-2:], [['umount', point], closed])
+        self.assertIn(
+            'is still connected to the library (an app has it open). Nothing new is written there.', row['reason']
+        )
+        # Taken back instead: the same.
+        self.ran.clear()
+        use(self.pc.config)
+        self.assertEqual(self.ran[-2:], [['umount', point], closed])
+        self.assertIn('so it was left. Nothing new is written there. Restart the PC', said[-1])
+        # An app is writing a file there this moment: said as it is, never promised.
+        use(self.pc.chosen(new_files=True))
+        self.written.add(point)
+        (row,) = use(self.pc.chosen())
+        self.assertNotIn('Nothing new is written there', row['reason'])
+        self.assertIn('until the restart, new files may still be saved in it', row['reason'])
+        # The check says what the mount itself says, not what was hoped.
+        for writable, words in ((True, 'new files may still be saved in it'), (False, 'Nothing new is written there.')):
+            with mock.patch.object(existing_media, 'takes_new_files', return_value=writable):
+                (state,) = existing_media.available(self.pc.chosen(), **self.pc.how())
+            self.assertFalse(state['ready'])
+            self.assertIn(words, state['reason'])
 
     def test_a_folder_taken_back_is_disconnected(self):
         config = self.pc.chosen()
