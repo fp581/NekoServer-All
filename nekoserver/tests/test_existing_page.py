@@ -295,8 +295,49 @@ class MusicTests(unittest.TestCase):
         with mock.patch.object(existing_media, 'music_libraries', return_value=rows) as made:
             self.assertEqual(existing_page.music_libraries({'a': 1}, True), rows)
         made.assert_called_once_with({'a': 1}, True)
-        source = (ROOT / 'onboard.py').read_text()
-        self.assertIn('existing_page.music_libraries(config, a.apply)', source)
+
+    def music_step(self, rows, **groups):
+        """The Music step on a server with these media groups, Navidrome's own check passing."""
+        from modules import music
+
+        config = {
+            'data_mount': '/srv/x',
+            'media': {'services': ['jellyfin', 'navidrome', 'lidarr']},
+            'media_apps': {'photos': False, 'movies': False, 'music': True, **groups},
+        }
+        ctx = context(**config)
+        ctx.apply = True
+        with (
+            mock.patch.object(music.os, 'geteuid', return_value=0),
+            mock.patch('neko_common.verify_storage'),
+            mock.patch.object(music.music_client, 'check', return_value={'status': 'pass'}),
+            mock.patch.object(music, 'atomic_json'),
+            mock.patch.object(existing_media, 'music_libraries', return_value=rows) as made,
+        ):
+            return music.run(ctx), made, ctx
+
+    def test_a_server_without_jellyfin_gets_it_too(self):
+        """Review of 0.51.2: the library was made with Jellyfin's (onboard.py --libraries,
+        given only with Jellyfin among the apps), so a music-only server never got it."""
+        import neko_common
+
+        rows = [{'check': 'navidrome:existing:music', 'status': 'pass'}]
+        for groups in ({}, {'music_downloads': False}, {'movies': True}):
+            result, made, ctx = self.music_step(rows, **groups)
+            self.assertIsNone(result, groups)
+            made.assert_called_once_with(ctx.config, True)
+        # Navidrome alone: the connecting step is left out altogether, so it can't be there.
+        alone = {'media_apps': {'photos': False, 'movies': False, 'music': True, 'music_downloads': False}}
+        self.assertIn('onboarding', neko_common.media_steps_left_out(alone))
+        self.assertNotIn('existing_page.music_libraries', (ROOT / 'onboard.py').read_text())
+
+    def test_a_folder_navidrome_did_not_take_is_a_step_left_with_its_reason(self):
+        why = 'Navidrome\'s administrator login is not set up yet'
+        result, _, ctx = self.music_step(
+            [{'check': 'navidrome:existing:music', 'status': 'needs_setup', 'reason': why}]
+        )
+        self.assertEqual(result['status'], 'needs_setup')
+        self.assertIn('Your own music folder is not in Navidrome yet: ' + why, result['reason'])
 
 
 class TableTests(unittest.TestCase):

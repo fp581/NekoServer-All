@@ -225,8 +225,8 @@ def main(argv=None):
         library_results = media_libraries.configure(
             root, films, a.apply, apps, more=existing_page.libraries(config, a.apply)
         )
-        # Navidrome's library for the person's own music folder, used where it is.
-        library_results += existing_page.music_libraries(config, a.apply)
+        # Navidrome's library for the person's own music folder is the Music step's
+        # (modules/music.py): it must not wait for Jellyfin's libraries.
         if a.request_providers:
             library_results = [r for r in library_results if r['check'] != 'seerr:request_providers']
         findings += library_results

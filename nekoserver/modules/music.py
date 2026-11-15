@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import sys
 
+import existing_page
 import music_client
 import setup_progress
 from neko_common import VERSION, atomic_json, media_group, media_services, music_library
@@ -50,8 +51,26 @@ def run(ctx):
     ctx.log(
         f'Music uses {music_library(ctx.config)} read-only; Lidarr imports into the same folder. Music gateway: the HTTPS address setup printed for Music (port 8446 unless another program had it; the phone setup page lists it). Phone/desktop client login and real playback remain acceptance steps.'
     )
+    left = own_folder(ctx)
     if result['status'] != 'pass':
         return {
             'status': 'needs_setup',
             'reason': 'Finish the Navidrome listener using music-setup.py --configure on the server',
         }
+    if left:
+        return {'status': 'needs_setup', 'reason': left}
+
+
+OWN_FOLDER = 'Your own music folder is not in Navidrome yet: {why}. Run setup again once that is sorted out'
+
+
+def own_folder(ctx):
+    """Navidrome's library for the music folder the person already had, used where it is:
+    made here, by the step that runs whenever Navidrome is set up. Returns why it is not
+    there yet, or None. (Review of 0.51.2: it was made where Jellyfin's libraries are, so
+    a server with Movies and shows switched off never got it.)"""
+    rows = existing_page.music_libraries(ctx.config, True)
+    for row in rows:
+        ctx.log('Music: your own music folder in Navidrome: ' + row['status'])
+    missing = next((row for row in rows if row['status'] != 'pass'), None)
+    return OWN_FOLDER.format(why=missing.get('reason') or 'Navidrome did not take it') if missing else None
