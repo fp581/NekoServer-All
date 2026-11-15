@@ -281,6 +281,24 @@ A shortcut you changed or made yourself with the same name is never replaced. To
 
 `"auto"` means "the user who ran `sudo`", which is you. Only change it if a **different** account on the server should be the TV account; then type that account's username, e.g. `"user": "livingroom"`.
 
+### Other ways to run setup
+
+`sudo bash install.sh` with nothing after it is all most people ever need. The other options are for repairs and checks; the guides name them where they are needed. `bash install.sh --help` lists them too.
+
+| Command | What it does |
+| --- | --- |
+| `sudo bash install.sh` | The guided setup of everything (the same as `--wizard`). |
+| `sudo bash install.sh --recover` | The recovery menu: get things back from your backups ([Backups](#backups)). |
+| `sudo bash install.sh --finish-update` | Finishes a monthly update that an earlier release left unfinished. Setup says so when it is needed. |
+| `bash install.sh --check` | Only looks: checks that your settings file is valid and lists the steps. Nothing is changed, and no password is needed. |
+| `bash install.sh --dry-run` | Only looks: shows what a run would do. Nothing is changed. |
+| `sudo bash install.sh --module NAME --apply` | Runs one step (a module, such as `dashboard` or `notifications`) and the steps it needs. |
+| `sudo bash install.sh --profile NAME --apply` | Runs a named set of steps (a profile, such as `remote_access` for Tailscale and the phone). |
+| `sudo bash install.sh --all --apply` | Runs every step switched on in the settings, without the wizard's questions. |
+| `sudo bash install.sh --retry-failed --apply` | Runs again only the steps that failed or waited last time, and the steps they need. |
+
+`--apply` is what lets a run change anything: without it, `--module`, `--profile`, `--all` and `--retry-failed` only show what they would do. Add `--config FILE` to use a settings file other than `my-config.json` in this folder. `--state-dir FOLDER` moves setup's record of which steps are done; it is for tests and is rarely needed.
+
 ---
 
 ## Uninstalling

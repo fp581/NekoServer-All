@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+import installer  # noqa: E402
 import network_access  # noqa: E402
 import questions  # noqa: E402
 from modules import storage  # noqa: E402
@@ -102,6 +103,38 @@ class SetupWindowTests(unittest.TestCase):
         self.assertNotIn('This setup window was already opened', text)
         self.assertIn('This setup window is open somewhere else', joined((ROOT / 'setup_gui.py').read_text()))
         self.assertIn('This setup window is open somewhere else', text)
+
+
+class OptionsTests(unittest.TestCase):
+    """install.sh --help ended "README.md shows when each is needed", and README.md named
+    one of the twelve options."""
+
+    def options(self):
+        return re.findall(r'^\s+(--[a-z-]+)', self.help_text(), re.M)
+
+    def help_text(self):
+        import contextlib
+        import io
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            installer.main(['--help'])
+        return out.getvalue()
+
+    def test_every_option_of_setup_is_in_the_readme(self):
+        part = doc('README.md').split('### Other ways to run setup')[1].split('\n## ')[0]
+        options = [option for option in self.options() if option != '--help']
+        self.assertGreater(len(options), 8)
+        for option in options:
+            self.assertIn(option, part)
+
+    def test_the_readme_names_no_option_setup_does_not_have(self):
+        part = doc('README.md').split('### Other ways to run setup')[1].split('\n## ')[0]
+        for option in set(re.findall(r'--[a-z][a-z-]+', part)):
+            self.assertIn(option, self.options() + ['--help'])
+
+    def test_help_names_the_section(self):
+        self.assertIn('README.md, "Other ways to run setup"', ' '.join(self.help_text().split()))
 
 
 class UpdateTimesTests(unittest.TestCase):

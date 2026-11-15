@@ -972,16 +972,20 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         prog='sudo bash install.sh',
         description='Set up NekoServer on this PC. With no options it runs the guided setup (--wizard).',
-        epilog='The other options are for repairs and checks; README.md shows when each is needed.',
+        epilog='The other options are for repairs and checks; README.md, "Other ways to run setup", lists each one.',
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         '--all', action='store_true', help='Run every step switched on in the settings, without questions'
     )
-    mode.add_argument('--profile', metavar='NAME', help='Run named module profile')
-    mode.add_argument('--module', metavar='NAME', help='Run a module and its dependencies')
+    mode.add_argument('--profile', metavar='NAME', help='Run a named set of steps (a profile, such as remote_access)')
     mode.add_argument(
-        '--retry-failed', action='store_true', help='Retry failed or blocked modules and their dependencies'
+        '--module', metavar='NAME', help='Run one step (a module, such as dashboard) and the steps it needs'
+    )
+    mode.add_argument(
+        '--retry-failed',
+        action='store_true',
+        help='Run again only the steps that failed or waited last time, and the steps they need',
     )
     mode.add_argument(
         '--wizard', action='store_true', help='Guided setup of everything (what `sudo bash install.sh` runs)'
@@ -995,12 +999,12 @@ def main(argv=None):
     parser.add_argument(
         '--apply',
         action='store_true',
-        help='Allow explicitly supported system changes (requires root for Docker install)',
+        help='Let this run change the system (needs sudo); without it a run only shows what it would do',
     )
     parser.add_argument(
-        '--check', action='store_true', help='Validate configuration and dependency graph without running'
+        '--check', action='store_true', help='Only look: check that the settings file is valid and list the steps'
     )
-    parser.add_argument('--dry-run', action='store_true', help='Preview execution; writes nothing')
+    parser.add_argument('--dry-run', action='store_true', help='Only look: show what a run would do; changes nothing')
     parser.add_argument('--config', help='Settings file (default: my-config.json here, the one the wizard made)')
     parser.add_argument(
         '--state-dir', default=str(DEFAULT_STATE), help='Where setup records which steps are done (rarely needed)'
