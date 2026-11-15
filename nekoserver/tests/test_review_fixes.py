@@ -2444,6 +2444,41 @@ class ConnectorRerunTests(unittest.TestCase):
         fields = {f['name']: f.get('value') for f in posted[0]['fields']}
         self.assertEqual((fields['tvCategory'], fields['host'], fields['username']), ('tv', 'qbittorrent', 'u'))
 
+    def test_a_typed_qbittorrent_password_is_saved_in_the_apps_and_the_question_says_so(self):
+        """Deep check 411: the question said the password "is used once to connect the apps
+        and is not kept", while it is saved in Sonarr, Radarr and Lidarr (their download
+        client), which is how they reach qBittorrent from then on."""
+        import questions
+
+        connect = load_connector()
+        schema = {
+            'implementation': 'QBittorrent',
+            'fields': [{'name': n} for n in ('host', 'port', 'username', 'password', 'tvCategory')],
+        }
+        posted = []
+
+        def request(app, key, endpoint, method='GET', payload=None, **k):
+            if method == 'POST':
+                posted.append(payload)
+                return payload
+            return {'/downloadclient': [], '/downloadclient/schema': [schema]}[endpoint]
+
+        typed = {'qbit_password': 'typed-secret', 'qbit_user': ''}
+        with (
+            mock.patch.object(connect.account_store, 'get', return_value=None),
+            mock.patch.object(connect.questions, 'ask', side_effect=lambda key, prompt=None: typed[key]),
+            mock.patch.object(connect, 'app_key', return_value='k'),
+            mock.patch.object(connect, 'request', side_effect=request),
+            mock.patch('builtins.print'),
+        ):
+            connect.configure_download_clients(Path('/x'), True, apps=('sonarr',), verify_qbit=False)
+        saved = {f['name']: f.get('value') for f in posted[0]['fields']}
+        self.assertEqual(saved['password'], 'typed-secret')  # kept, in Sonarr
+        hint = questions.Q['qbit_password']['hint']
+        self.assertNotIn('not kept', hint)
+        self.assertIn('Sonarr, Radarr and Lidarr save it', hint)
+        self.assertIn('NekoServer keeps no copy', hint)
+
 
 class JellyfinKeyHeaderTests(unittest.TestCase):
     """Jellyfin 12 wants the key in the MediaBrowser Authorization header (Token="..."),

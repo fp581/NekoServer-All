@@ -284,7 +284,9 @@ Q = {
     'qbit_password': {
         'screen': CONNECTING,
         'title': 'What is the password of your download app (qBittorrent)?',
-        'hint': 'It is used once to connect the apps and is not kept.',
+        # Not "is not kept": the apps that download keep it, as their way to the download app.
+        'hint': 'Sonarr, Radarr and Lidarr save it in their own settings, to reach the download app. '
+        'NekoServer keeps no copy of it.',
         'kind': 'secret',
         'send': 'Connect',
     },
