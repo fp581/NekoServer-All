@@ -504,14 +504,14 @@ def run(context):
 
 
 def how_to_open(mode, ip, user, shares):
-    """What to type on another computer to open the shares. They never show up by
-    themselves under "Network": Windows finds servers there with WS-Discovery and the
-    old NetBIOS browsing, which this Samba does not offer (disable netbios), and a Mac
-    lists one only when its name is announced. Typing the address always works."""
+    """What to type on another computer to open the shares. Windows never lists them
+    under "Network" by itself: it finds servers there with WS-Discovery and the old
+    NetBIOS browsing, which this Samba does not offer (disable netbios); a Mac or Linux
+    lists them only when the server's avahi announces them. Typing the address always works."""
     where = ip if mode == 'lan' else '100.x.y.z'
     first = next(iter(shares))
     lines = [
-        'Shared folders: to open them from another computer, type their address; they do not show up '
+        'Shared folders: to open them from another computer, type their address; they may not show up '
         'by themselves under "Network". '
         + ('' if mode == 'lan' else 'Tailscale must be on there. ')
         + 'Shares: '

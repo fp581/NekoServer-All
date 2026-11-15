@@ -477,7 +477,7 @@ class SambaSharesTests(unittest.TestCase):
 
 
 class SambaHowToOpenTests(unittest.TestCase):
-    """Deep check 558-560: the shares never show up under "Network" by themselves
+    """Deep check 558-560: Windows never lists the shares under "Network" by itself
     (Windows finds servers there through WS-Discovery or NetBIOS, both of which this Samba
     leaves out), and no guide or line of setup said what to type instead, on Windows, a
     Mac or Linux: a person who looked under Network found nothing."""
@@ -523,7 +523,7 @@ class SambaHowToOpenTests(unittest.TestCase):
 
     def test_setup_says_what_to_type_on_each_computer(self):
         said = self.run_to_the_end()
-        self.assertIn('do not show up by themselves under "Network"', said)
+        self.assertIn('may not show up by themselves under "Network"', said)
         self.assertIn('\\\\192.168.1.20\\Media', said)  # Windows
         self.assertEqual(said.count('smb://192.168.1.20/Media'), 2)  # Mac, Linux
         self.assertIn('Sign in as neko', said)
