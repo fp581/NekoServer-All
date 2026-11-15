@@ -13,6 +13,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **The SD-card engine** (not switched on yet) and **the card restore tool**'s second check.
 
 ### Fixed: getting files back (the recovery menu, restore tools, backup cards)
+- **The recovery menu reads the checksum ledger row by row** (855 MB → 300 MB at a million photos).
 - **Two card restores into one folder at once no longer delete each other's half-written files** (both used one temporary name, giving false failures and false "skipped").
 - **A Nextcloud restore with very long paths finishes** (its last check ended in a traceback instead of "Done").
 - **The card restore tool works on a PC with little memory**: reading even a small progress file reserved 1 GB up front.
@@ -43,6 +44,10 @@ Every copy is read back and checked before it counts. That read came straight af
 - **Nothing is restored onto the card itself.** `restore /mnt` (the card) copied every file onto the card, among its records; a folder on the card is now refused, also through a link.
 
 ### Fixed: backups and upgrades
+- **"Upgrade NekoServer" with a drive unplugged says so** and which drive, instead of "Upgrading…" and then nothing.
+- **Job reports are written to fit what is read back**, so a long partial report no longer loses the last success.
+- **A big checksum ledger is rewritten every tenth of its size**: a first copy of a million photos wrote about 22 GB of ledger, now about 2.4 GB.
+- **A new backup password says when the first list with it is made** (setup makes one only with a USB copy).
 - **A drive move waits for the dashboard's minute-long jobs** (readings, alerts, heartbeat) instead of stopping after hours of copying; a real backup still stops it.
 - **The "a backup is running" message says to run the same command again**, not always `sudo bash install.sh`.
 - **A file too deep for Linux's path limit no longer stops the whole backup for good**: it is left out and named, and the rest is copied (every file sorting after it was never backed up again; photo archive, Nextcloud copy and USB photo copy).
@@ -75,6 +80,15 @@ Every copy is read back and checked before it counts. That read came straight af
 - **An older password list after the backup key was made again says it is from the earlier key** and asks for that password, instead of "Wrong password" to the right new one.
 
 ### Fixed: setup and its tools
+- **A slip in setup's own code is said in words**, with the log and "run setup again", not Python's raw text (`'data_ssd'`).
+- **A settings key no release knows is warned about**, naming the one meant (`media.servics` → `media.services`).
+- **One list of optional steps for the terminal and the window**: a failed TV, phone-alert or heartbeat step needs you in both.
+- **The memory check counts a container's limit**, and 1 GB no longer says "You can go on".
+- **DNS down is no longer blamed on the cable or Wi-Fi**; every package source failing is no longer called "some".
+- **`install.sh --check` refuses an ARM or 32-bit PC too**, and the Python tools started with doas know whose server it is.
+- **The TV step uses a Flatpak Steam already on the PC**, instead of installing a second Steam.
+- **Hardware video: a driver not offered (Fedora without RPM Fusion) is named**, not called built in.
+- **Setup by hand goes on when an upgrade left the server to you** (a failed way back could block it for good).
 - **A number out of range in my-config.json names the setting and its range** (it was "Invalid journal bound" or "Invalid maintenance.keep_snapshots").
 - **The gateway certificate export says why it failed**, not one sentence for every cause.
 - **`install.sh --check` works in a Latin-1 terminal** (it stopped on a dash it could not show).
@@ -134,6 +148,11 @@ Every copy is read back and checked before it counts. That read came straight af
 - **`notify --test` says what happened**: that the alert server took the test and to look at your phone, or that it was not sent and what to check. It printed nothing, or only "Notification delivery failed".
 
 ### Fixed: the dashboard and Ask Neko
+- **Counts agree everywhere in the runtime** ("1 file differs", never "1 files").
+- **A home gateway that gave up says it stays stopped**, and the command that starts it.
+- **A recovery that lasts only a moment sends no RECOVERED alert.**
+- **The SMART cache keeps the 20 newest readings**; the Sensors badge counts the temperatures shown, and no 999,999 °C reaches the Fans page.
+- **"Update now" names the app**, and a check for updates that can't start says so.
 - **Waiting phone alerts go within a minute once a test gets through**, instead of up to an hour behind the retry delay.
 - **What a backup left out is cut at a word or sentence**, not mid-word ("…the whole Nextcl").
 - **Ask Neko says when a question is too long** (it was cut at 500 characters silently) **and when the box is empty**.
