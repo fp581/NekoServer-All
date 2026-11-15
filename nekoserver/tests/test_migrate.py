@@ -187,11 +187,26 @@ class StopTests(unittest.TestCase):
 
     def test_a_backup_at_work_stops_the_move_instead_of_being_cut_off(self):
         self.units['activating'] = ['nekoserver-app-backup.service']  # a oneshot job running
+        waits = []
         with self.assertRaisesRegex(RuntimeError, 'nekoserver-app-backup.service is at work'):
-            migrate.stop_writers(self.journal)
+            migrate.stop_writers(self.journal, out=lambda line: None, sleep=waits.append)
         self.assertNotIn(['systemctl', 'stop', 'nekoserver-app-backup.service'], self.calls)
         # The timers it stopped are noted, so they start again.
         self.assertEqual(migrate.read(self.journal)['stopped'], ['nekoserver-app-backup.timer'])
+        self.assertEqual(sum(waits), migrate.SHORT_JOBS_WAIT)  # a few minutes, not for ever
+
+    def test_a_short_job_at_work_is_waited_for_not_a_reason_to_stop_the_move(self):
+        # Plan 370: the dashboard's collector runs every minute for a few seconds; caught at
+        # work when the timers stopped, it ended a move after hours of copying.
+        self.units['activating'] = ['nekoserver-dashboard-collect.service']
+        said = []
+
+        def collector_ends(seconds):
+            self.units['activating'] = []
+
+        stopped = migrate.stop_writers(self.journal, out=said.append, sleep=collector_ends)
+        self.assertEqual(stopped, ['nekoserver-app-backup.timer', 'nekoserver-dashboard.service'])
+        self.assertIn('Waiting for nekoserver-dashboard-collect.service to finish', said[0])
 
     def test_a_timer_that_does_not_stop_stops_the_move(self):
         """The review of 0.47.9: a timer whose stop failed was passed over (the final check

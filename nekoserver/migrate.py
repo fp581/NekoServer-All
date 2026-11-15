@@ -378,12 +378,32 @@ def nekoserver_units(states='active'):
 
 AT_WORK = 'activating,deactivating,reloading'
 TIMER = '.timer'
+# How long a job at work is waited for once the timers are stopped: the dashboard's
+# collector, the phone alerts and the heartbeat run every minute for a few seconds (the
+# collector at most 180), so one of them was often at work just then and a move ended
+# after its hours of copying with "is at work (a backup or another job)". A backup at
+# work takes longer than this and still stops the move.
+SHORT_JOBS_WAIT = 200
 
 
-def stop_writers(journal=JOURNAL):
+def jobs_at_work(out=print, sleep=time.sleep, wait=SHORT_JOBS_WAIT):
+    """NekoServer's services at work (not timers), once short ones had `wait` seconds to end."""
+    waited = 0
+    while True:
+        busy = [u for u in nekoserver_units(AT_WORK) if not u.endswith(TIMER)]
+        if not busy or waited >= wait:
+            return busy
+        if waited == 0:
+            out('Waiting for ' + ', '.join(busy) + ' to finish (at most a few minutes)...')
+        sleep(5)
+        waited += 5
+
+
+def stop_writers(journal=JOURNAL, out=print, sleep=time.sleep):
     """Everything that writes to the drives stops; what ran is noted to start again. The
     timers go first, so no job starts meanwhile; a job already at work (a backup worker,
-    a oneshot service: "activating") stops the move rather than being cut off half-way."""
+    a oneshot service: "activating") is given a few minutes to end, then stops the move
+    rather than being cut off half-way."""
     timers = [u for u in nekoserver_units() if u.endswith(TIMER)]
     record(journal, phase='stopped', stopped=timers)
     for unit in timers:
@@ -393,7 +413,7 @@ def stop_writers(journal=JOURNAL):
     ticking = [u for u in nekoserver_units('active,' + AT_WORK) if u.endswith(TIMER)]
     if ticking:
         raise RuntimeError('These did not stop: ' + ', '.join(ticking))
-    busy = [u for u in nekoserver_units(AT_WORK) if not u.endswith(TIMER)]
+    busy = jobs_at_work(out, sleep)
     if busy:
         raise RuntimeError(', '.join(busy) + ' is at work (a backup or another job); try again once it has finished')
     rest = active(WRITERS) + [u for u in nekoserver_units() if not u.endswith(TIMER)]
