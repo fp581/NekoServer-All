@@ -4,7 +4,7 @@ Every night NekoServer copies this PC's own settings to the HDD: the settings se
 
 You do nothing for it: it runs by itself an hour after the daily backup time (05:15 unless you chose another time), keeps the newest 3 nights (setup's backups page takes 1 to 7), and the dashboard's Backups page shows how the last run went.
 
-- **Getting something back:** `sudo bash install.sh --recover`, then **Restore something from a backup** and **Steam and Samba settings, from a nightly backup**. It restores into a new folder and replaces nothing ([RECOVERY.md](RECOVERY.md)).
+- **Getting something back:** `sudo bash install.sh --recover`, then **Restore something from a backup** and **Steam and Samba settings, from a nightly backup**. It restores into a new folder and replaces nothing ([RECOVERY.md](RECOVERY.md)). The restored folders are called `source0`, `source1` and so on; `restore-report.json` beside them says which original folder each one is. To use a file from them, close the program it belongs to (Steam, say), copy the file back to where it belongs with `sudo cp -a FILE WHERE-IT-BELONGS` (`-a` keeps its owner), and start the program again.
 - **Steam left open at night?** Steam's files are copied only while Steam is closed, because they change while it runs. On such a night everything else is still backed up, and the dashboard shows the run as *partial* with "Steam was open". Close Steam now and then, so its saves are copied.
 - **Game saves somewhere else, or a folder of your own?** Add them under `"extra_paths"` in `"host_backup"` in `my-config.json` (the example below) and run `sudo bash install.sh` again.
 - **What it does not protect against:** the copy is on the HDD, so it survives losing the system disk or the SSD, not losing the HDD itself.

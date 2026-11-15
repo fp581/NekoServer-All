@@ -349,6 +349,8 @@ class BeginnerFirstTests(unittest.TestCase):
                 'explicitly when upgrading',
                 'select it explicitly',
                 'explicit module command when upgrading',
+                'to install it explicitly',
+                'no Rust toolchain is needed',
                 '512GB',
             ):
                 self.assertNotIn(stale, text, guide.name)
@@ -411,6 +413,37 @@ class DashboardGuideTests(unittest.TestCase):
         guides = self.APP.read_text().split('const GUIDES = {')[1].split('\n};')[0]
         for extra in ('notifications', 'heartbeat'):
             self.assertIn('\u201c' + titles[extra] + '\u201d', guides)
+
+
+class RestoredSettingsTests(unittest.TestCase):
+    """Deep check plan 389: after restoring app settings the recovery menu says "See
+    APP-BACKUPS.md or HOST-BACKUPS.md for the exact steps", and neither page had them."""
+
+    def test_the_pages_the_menu_names_have_the_steps(self):
+        import recovery_wizard
+
+        said = joined((ROOT / 'recovery_wizard.py').read_text())
+        self.assertIn('See APP-BACKUPS.md or HOST-BACKUPS.md for the exact steps.', said)
+        apps = doc('APP-BACKUPS.md')
+        steps = apps.split("## Putting one app's settings back")[1].split('\n## ')[0]
+        self.assertLess(apps.index("## Putting one app's settings back"), apps.index('## For administrators'))
+        self.assertIn(f"**{dict(recovery_wizard.MENU)['apps']}**", steps)
+        for line in (
+            'sudo docker stop neko-jellyfin-jellyfin-1',
+            'sudo cp -a FOLDER/appdata/jellyfin /srv/nekoserver/appdata/',
+            'sudo docker start neko-jellyfin-jellyfin-1',
+        ):
+            self.assertIn(line, steps)
+        self.assertIn('sudo cp -a FILE WHERE-IT-BELONGS', doc('HOST-BACKUPS.md'))
+        self.assertIn('(APP-BACKUPS.md#putting-one-apps-settings-back)', doc('RECOVERY.md'))
+
+    def test_the_containers_and_folders_of_the_steps_are_the_ones_setup_makes(self):
+        """The app's container is its Compose project and service (neko-<app>, <app>), and
+        its settings are appdata/<app> on the SSD, as the snapshot keeps them."""
+        self.assertIn("project neko-{name}", (ROOT / 'modules/media.py').read_text())
+        self.assertIn('"${NEKO_DATA}/appdata/jellyfin:/config"', (ROOT / 'compose/jellyfin.yaml').read_text())
+        self.assertNotIn('container_name', (ROOT / 'compose/jellyfin.yaml').read_text())
+        self.assertIn('("appdata", devices.settings(service))', (ROOT / 'runtime/src/app_snapshot.rs').read_text())
 
 
 class GatewayGuideTests(unittest.TestCase):

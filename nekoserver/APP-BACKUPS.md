@@ -1,17 +1,46 @@
-# Media application backups and restoration
+# Backups of the apps' settings
+
+Every night NekoServer copies the settings of the media apps to the HDD: Jellyfin (your users, what you watched), Navidrome (playlists, favourites), Seerr, Sonarr, Radarr, Lidarr, Prowlarr and qBittorrent. Each night's copy is a **snapshot**: the settings as they were at that moment, kept with its date. The newest 3 are kept (setup's backups page takes 1 to 7). Your films, shows and music are not in it (they are not backed up), and Immich and Nextcloud have backups of their own ([STORAGE.md](STORAGE.md)).
+
+You do nothing for it. It runs at the daily backup time (04:15 unless you chose another), and stops the media apps for a short while as it copies, so a film playing at that minute pauses. The dashboard's Backups page shows how the last run went.
+
+## Putting one app's settings back
+
+When a change went wrong (a setting you regret, a library that got muddled), bring the settings of that app back from the night before:
+
+1. Run `sudo bash install.sh --recover`, choose **Restore something from a backup**, then **App settings, from a nightly backup**, and the night you want. It restores every app's settings into a **new** folder and replaces nothing; it names the folder, for example `/mnt/nekoserver-media/restored/apps-20261114-093000`.
+2. Stop the app, put its present settings aside, copy the restored ones in their place, and start it again. For Jellyfin, with the folder the menu named in place of `FOLDER`:
+
+   ```bash
+   sudo docker stop neko-jellyfin-jellyfin-1
+   sudo mv /srv/nekoserver/appdata/jellyfin /srv/nekoserver/appdata/jellyfin.before
+   sudo cp -a FOLDER/appdata/jellyfin /srv/nekoserver/appdata/
+   sudo docker start neko-jellyfin-jellyfin-1
+   ```
+
+   For another app, write its name in place of `jellyfin` everywhere (`sonarr`, `radarr`, `lidarr`, `prowlarr`, `seerr`, `navidrome`, `qbittorrent`). `/srv/nekoserver` is your SSD's folder. `cp -a` keeps each file's owner, which the app needs.
+3. Open the app and check it. When all is well, delete the settings you put aside (`sudo rm -r /srv/nekoserver/appdata/jellyfin.before`) and the restore folder. If it is not, stop the app again and move the `.before` folder back.
+
+Only the `appdata` folder is copied back. The `compose` folder in the restore is for reference: never start an app from it.
+
+---
+
+## For administrators
+
+The rest of this page is the technical reference.
 
 The `app_backup` module schedules a private nightly snapshot at the daily backup time setup asked for (**04:15** unless you said otherwise: `"daily"` under `"backup_times"` in your settings). It briefly stops the selected media apps and resumes exactly the containers that were running. This includes qBittorrent; active transfers pause while the snapshot runs. Plan the schedule outside playback/download maintenance windows. Do not deploy, upgrade or change app settings concurrently.
 
-## Install or upgrade
+### Install or upgrade
 
-Use your existing confirmed configuration. It runs on the bundled Rust program; no Rust toolchain is needed on the server.
+Use your existing confirmed configuration. It runs on NekoServer's own program, which setup builds on this PC.
 
 ```bash
 python3 installer.py --config /path/to/your/config.json --module app_backup --check
 sudo bash install.sh --config /path/to/your/config.json --module app_backup --apply
 ```
 
-New sample `media` and `full` profiles include the module. Existing profiles in an older configuration are preserved: use `--module app_backup` to install it explicitly. The installer checks both mounted UUIDs before deploying the timer. It does not format disks or change existing appdata ownership.
+The `media` and `full` profiles include the module, and an update adds it to the profiles of an older `my-config.json` (a step you took out yourself stays out). The installer checks both mounted UUIDs before deploying the timer. It does not format disks or change existing appdata ownership.
 
 ```bash
 systemctl status nekoserver-app-backup.timer
@@ -24,7 +53,7 @@ Snapshots are created under `/mnt/nekoserver-media/backups/media-applications/sn
 
 Symlinks, sockets, FIFOs, devices and nested filesystems inside an app's folder are not restorable state; they are skipped and listed under `skipped` in the snapshot's manifest instead of failing the night's backup. Hard-linked files are copied as ordinary files. The SSD music library and downloads (`library/` on the SSD) are media, not app state, and are not included.
 
-## Contents and permissions
+### Contents and permissions
 
 | Included | Excluded |
 | --- | --- |
@@ -37,7 +66,7 @@ Snapshots contain API keys and possibly passwords. Directories are private (`070
 
 Custom writable mounts and app folders shared with another container are refused: the run fails and says why, so review it locally instead of assuming a partial snapshot covers everything. Symlinks, special files and nested filesystems inside an app's folder are skipped and listed under `skipped` in the manifest (see above), and hard-linked files are copied as ordinary files; nothing is skipped without being listed. Compose folders and installer bundles must be stable while the snapshot runs: a file that changes, appears or disappears during the copy makes the run fail.
 
-## Verify and restore into a separate directory
+### Verify and restore into a separate directory
 
 ```bash
 sudo python3 app-recovery.py verify --snapshot /mnt/nekoserver-media/backups/media-applications/snapshot-EXAMPLE
@@ -51,7 +80,7 @@ This verifies the full inventory and checksums, then copies files into a **new**
 
 The generated `restore-report.json` records file verification and explicitly keeps application startup unverified. A complete rehearsal still needs a separate Docker host/VM or a deliberately isolated project with rewritten paths, blocked network access and no production media/database mounts. Confirm actual SQLite/database recovery, users, libraries, API settings and request/download routing before treating the snapshot as a proven operational restore. This release does not automate that container rehearsal.
 
-## Interrupted runs
+### Interrupted runs
 
 The worker saves a private resume journal before stopping any container. On ordinary failure it attempts every restart and retains the journal if a restart fails. The backup service runs the native resume command through `ExecStopPost`; an enabled boot service retries after Docker starts. Recovery uses saved container IDs and exact Compose labels and never starts containers that were already stopped. When a saved container is gone because the app was set up again since (which gives it a new container), and exactly one container with that app's Compose labels is there now, that one is started if it is stopped and the app counts as recovered; with none or several, nothing is guessed and the log says what to do (start the app again, or remove the extra containers, then run the resume service below; if you removed the app on purpose, delete the journal). Before, such a gone container blocked every later nightly backup. A later snapshot retries pending recovery before stopping apps again. A monthly update that was cut off holds the nightly app backup back only while its journal says it was in the middle of updating or rolling back; before it changed anything, or once the update stands, the nightly backups go on.
 
@@ -62,7 +91,7 @@ sudo journalctl -u nekoserver-app-resume.service --no-pager
 
 If recovery still fails, inspect Docker and the private `/etc/nekoserver-backups/app-resume.json` locally. Do not delete the journal until the intended original containers have been recovered. A successful file snapshot can coexist with failed app restart; the job remains failed. `ExecStopPost` recovery after forced termination and reboot/power-loss recovery still require a real systemd/server rehearsal.
 
-## Acceptance
+### Acceptance
 
 ```bash
 # In the NekoServer folder (it reads your my-config.json). Add --manual to record the
