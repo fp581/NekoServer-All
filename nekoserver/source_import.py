@@ -657,8 +657,9 @@ def copy_source(source, media, apply=False, uid=None, gid=None, guard=None):
     free = shutil.disk_usage(media).free
     if required > free:
         raise Said(
-            f'Nothing was copied: it needs {size_words(required)} and the library drive has {size_words(free)} free. '
-            'Free some room or take this folder out of the source list'
+            # With how much is missing: rounded, both sizes could read "1.5 GB" (deep check 483).
+            f'Nothing was copied: it needs {size_words(required)} and the library drive has {size_words(free)} free '
+            f'({size_words(required - free)} too little). Free some room or take this folder out of the source list'
         )
     skipped = copy_entries(entries, folder, uid, gid, guard, links) if apply else []
     copied = len(entries) + len(links) - len(skipped) if apply else 0
