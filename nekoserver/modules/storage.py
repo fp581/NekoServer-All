@@ -1871,6 +1871,13 @@ def wished_places(context, inventory):
     room = room_ahead(config, table)
     on_nas = bool(config.get('storage', {}).get('media_hdd', {}).get('network'))
     others = data_drives(config, inventory)
+    # The window's page offers every drive as "a drive of their own" (the roles are chosen
+    # on the same page); the ones that became the app SSD or the backups' drive are those.
+    taken = {
+        str(row['number']): WINDOW_ROLES[role]
+        for row in table
+        if (role := drive_table.role_of(row, config)) in WINDOW_ROLES
+    }
     places = {}
     for what, words, threshold in WHERE:
         if what not in asked:
@@ -1879,7 +1886,7 @@ def wished_places(context, inventory):
             setup_progress.page_answer(what)  # not a choice: said once the drives are mounted
             continue
         best = recommended(room['ssd'], threshold)
-        places[what] = asked_location(context, words, best, room, on_nas, key=what, others=others)
+        places[what] = asked_location(context, words, best, room, on_nas, key=what, others=others, taken=taken)
     return places
 
 
@@ -2506,6 +2513,8 @@ def free_gb(folder):
 
 
 DRIVE_WORDS = {'ssd': 'the SSD', 'media': 'the media drive'}
+# The roles by the names a place has ("ssd", "media").
+WINDOW_ROLES = {'data_ssd': 'ssd', 'media_hdd': 'media'}
 
 
 def taken_place(context, words, place):
@@ -2737,12 +2746,12 @@ def same_place(context, what, words, chosen, kept):
         )
 
 
-def asked_location(context, words, best, room, on_nas, input_fn=None, key=None, others=()):
+def asked_location(context, words, best, room, on_nas, input_fn=None, key=None, others=(), taken=None):
     """The drive for `words`, asked: the better one first, Enter takes it. `others`: the
     drives beyond the two that it may be kept on (data_drives), offered after them; one
     chosen is returned as its row. `key`: its line on the storage page, where the window
     names the drive itself ("ssd", "media", "drive:4" for row 4 of the list) or leaves it
-    to setup."""
+    to setup. `taken`: {row number: "ssd" or "media"} for the drives that are the two."""
     import drive_table
 
     # "The most room" only when it has it (seen on the rig: said of a media drive with
@@ -2767,10 +2776,10 @@ def asked_location(context, words, best, room, on_nas, input_fn=None, key=None, 
     first = len(options) + 1
     for n, row in enumerate(others, first):
         context.log(f'  {n}) a drive of their own: {drive_table.brief(row)}')
-    return place_asked(context, (options, others), input_fn, key)
+    return place_asked(context, (options, others), input_fn, key, taken)
 
 
-def place_asked(context, offered, input_fn, key):
+def place_asked(context, offered, input_fn, key, taken=None):
     """The place the person names among `offered` (the drives, the drives of their own),
     asked three times at most; the recommended one (the first) after that."""
     import drive_table
@@ -2781,20 +2790,23 @@ def place_asked(context, offered, input_fn, key):
         if len(options) == 1 and answer.isdecimal() and int(answer) >= 2:
             # Numbered from 2 here: the place_answered numbers count two drives first.
             answer = str(int(answer) + 1)
-        place = place_answered(answer, options, others)
+        place = place_answered(answer, options, others, taken)
         if place is not None:
             return place
         context.log(f'Type a number from 1 to {len(options) + len(others)}, or press Enter.')
     return options[0]
 
 
-def place_answered(answer, options, others):
+def place_answered(answer, options, others, taken=None):
     """The place an answer names: "ssd" or "media" (the window's words), a row of `others`
     ("drive:4" from the window, or its number in the terminal's list), the first of
-    `options` for Enter alone. None for an answer that names none."""
+    `options` for Enter alone. None for an answer that names none. The window's row of
+    the drive that became the app SSD or the backups' drive (`taken`) is that drive."""
     if answer in DRIVE_WORDS:
         return answer
     if window_row(answer) is not None:
+        if window_row(answer) in (taken or {}):
+            return taken[window_row(answer)]
         return next((row for row in others if str(row['number']) == window_row(answer)), None)
     if answer in ('', '1', '2'):
         return options[int(answer) - 1] if answer else options[0]
