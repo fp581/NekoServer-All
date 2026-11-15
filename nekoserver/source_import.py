@@ -149,6 +149,8 @@ def stable_inodes(path):
 
 # Files still being written by another program; never imported.
 TEMPORARY = ('.neko-part', '.part', '.tmp', '.crdownload', '.!qB')
+# How to copy what is new in a source copied before (it is skipped otherwise).
+AGAIN = 'sudo python3 source_import.py --config my-config.json --again --apply'
 
 
 class DriveGone(Exception):
@@ -481,14 +483,23 @@ def already_copied(current, dest, apply=False):
     return True
 
 
-def planned_copies(folder, target, apply=False, conflicts=None):
+def planned_copies(folder, target, apply=False, conflicts=None, downloading=None):
     """[(file, where it goes, its stat)] for every file not imported yet. Strict listing:
     a folder that cannot be read makes this source incomplete (nothing is copied),
     instead of silently leaving an album out. A different file already at a file's place
     in the library (another source's `folder.jpg`, one Sonarr replaced) is kept and the
-    file left out: its path, relative to the source, goes into `conflicts`."""
+    file left out: its path, relative to the source, goes into `conflicts`. A file still
+    being downloaded (TEMPORARY) is left out too, its path in `downloading`."""
+
+    def unfinished(here, name):
+        if not name.endswith(TEMPORARY):
+            return False
+        if downloading is not None:
+            downloading.append(shown_name((Path(here) / name).relative_to(folder)))
+        return True
+
     try:
-        found = strict_files(folder, lambda here, name: name.endswith(TEMPORARY))
+        found = strict_files(folder, unfinished)
     except UnreadableEntries as exc:
         raise IncompleteSource(
             [Path(p).relative_to(folder).as_posix() if Path(p).is_relative_to(folder) else '.' for p, _ in exc.problems]
@@ -550,8 +561,8 @@ def copy_source(source, media, apply=False, uid=None, gid=None, guard=None):
     left = move_legacy(folder, media, category, guard) if apply else []
     if left:
         return legacy_left(left, folder, media, category)
-    conflicts = []
-    entries = planned_copies(folder, target, apply, conflicts)
+    conflicts, downloading = [], []
+    entries = planned_copies(folder, target, apply, conflicts, downloading)
     required = sum(stat.st_size for _, _, stat in entries)
     free = shutil.disk_usage(media).free
     if required > free:
@@ -568,7 +579,7 @@ def copy_source(source, media, apply=False, uid=None, gid=None, guard=None):
         'bytes': required,
         'destination': str(target),
     }
-    return with_skipped(with_conflicts(result, conflicts), skipped)
+    return with_downloading(with_skipped(with_conflicts(result, conflicts), skipped), downloading)
 
 
 def shown_name(path):
@@ -600,6 +611,21 @@ def with_skipped(result, skipped):
         said = (
             f'{len(skipped)} files were not copied because their names could not be used (rename them, then '
             'copy again with --again): ' + ', '.join(skipped[:10])
+        )
+        result['reason'] = result['reason'] + '. ' + said if result.get('reason') else said
+    return result
+
+
+def with_downloading(result, downloading):
+    """The report row, naming the files left out because they were still being downloaded:
+    the source counts as imported, so without this the finished download was never copied
+    and nothing said so."""
+    if downloading:
+        result['still_downloading'] = len(downloading)
+        said = (
+            f'{len(downloading)} files were still being downloaded (or written) and were not copied: '
+            + ', '.join(downloading[:10])
+            + f'. When they have finished, copy them with  {AGAIN}  (in the NekoServer folder)'
         )
         result['reason'] = result['reason'] + '. ' + said if result.get('reason') else said
     return result
@@ -684,7 +710,7 @@ def import_one(source, root, apply, owner, guard, finished, again=False):
         return {
             'status': 'imported_earlier',
             'copied': 0,
-            'reason': 'Copied before; not copied again (to copy what is new in it, in the NekoServer folder: sudo python3 source_import.py --config my-config.json --again --apply)',
+            'reason': f'Copied before; not copied again (to copy what is new in it, in the NekoServer folder: {AGAIN})',
         }
     try:
         result = copy_source(source, root, apply, *owner, guard)

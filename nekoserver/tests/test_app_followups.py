@@ -144,6 +144,20 @@ class SymlinkSafeImportTests(unittest.TestCase):
         # A second run finds the copy and makes none.
         self.assertEqual(source_import.copy_source(self.entry, self.media, apply=True)['copied'], 0)
 
+    def test_a_file_still_being_downloaded_is_named_with_how_to_copy_it_later(self):
+        # Deep check plan 341: qBittorrent's .!qB (and .part) files were left out without
+        # a word, and the source was then recorded as imported, so the finished download
+        # was never copied and nothing said so.
+        (self.source / 'Album/track2.flac.!qB').write_bytes(b'half')
+        (self.source / 'Other.part').write_bytes(b'half')
+        result = source_import.copy_source(self.entry, self.media, apply=True)
+        self.assertEqual(result['copied'], 1)
+        self.assertEqual(result['still_downloading'], 2)
+        self.assertIn('Album/track2.flac.!qB', result['reason'])
+        self.assertIn('Other.part', result['reason'])
+        self.assertIn(source_import.AGAIN, result['reason'])
+        self.assertFalse((self.media / 'library/music/Album/track2.flac.!qB').exists())
+
 
 class FakeArr:
     """Prowlarr and the Arr apps' API, as media-connect.py's request() sees it."""
