@@ -204,7 +204,8 @@ class ImmichContainerTests(unittest.TestCase):
     container, so every Immich container failed, and with it the home addresses' step
     (gateway_lan) on every server with Immich."""
 
-    def checked(self, server_target, database_target):
+    def checked(self, server_target, database_target, read_only=()):
+        """`read_only`: the services whose folder Docker mounted read-only."""
         with tempfile.TemporaryDirectory() as tmp:
             cfg = config(Path(tmp))
             binds = {
@@ -219,7 +220,7 @@ class ImmichContainerTests(unittest.TestCase):
                     return 0, 'a' * 12 + '\n'
                 service = asked[-1]
                 labels = {'com.docker.compose.project': 'neko-immich', 'com.docker.compose.service': service}
-                mounts = [{'Type': 'bind', 'Source': s, 'Destination': t, 'RW': True} for s, t in [binds[service]]] if service in binds else []  # fmt: skip
+                mounts = [{'Type': 'bind', 'Source': s, 'Destination': t, 'RW': service not in read_only} for s, t in [binds[service]]] if service in binds else []  # fmt: skip
                 ports = (
                     {'2283/tcp': [{'HostIp': '127.0.0.1', 'HostPort': '2283'}]} if service == 'immich-server' else {}
                 )
@@ -240,6 +241,71 @@ class ImmichContainerTests(unittest.TestCase):
         states = self.checked('/photos', '/var/lib/postgresql/data')
         self.assertEqual(states['container:immich-server'], 'fail')
         self.assertEqual(states['container:database'], 'pass')
+
+    def test_photos_or_a_database_immich_cannot_write_to_fail(self):
+        """Review of 0.51.2: the folders were the right ones, so a read-only mount passed."""
+        for service in ('immich-server', 'database'):
+            states = self.checked('/data', '/var/lib/postgresql/data', read_only=(service,))
+            self.assertEqual(states.pop('container:' + service), 'fail')
+            self.assertEqual(set(states.values()), {'pass'}, states)
+
+
+class AppDataContainerTests(unittest.TestCase):
+    """Review of 0.51.2: Jellyfin's settings and Navidrome's database are written by the
+    app: their folder mounted read-only passed the container check, on its path alone."""
+
+    def checked(self, read_only=()):
+        """Jellyfin's and Navidrome's containers as setup makes them; `read_only`: the
+        apps whose own data folder Docker mounted read-only."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(Path(tmp))
+            cfg['media']['services'] = ['jellyfin', 'navidrome']
+            films = acceptance.files_root(cfg, 'movies') / 'library'
+            music = acceptance.files_root(cfg, 'music') / 'library'
+            # (folder, where the app sees it, writable)
+            binds = {
+                'jellyfin': [
+                    (cfg['data_mount'] + '/appdata/jellyfin', '/config', 'jellyfin' not in read_only),
+                    (str(films / 'movies'), '/data/movies', False),
+                    (str(films / 'tv'), '/data/tv', False),
+                ],
+                'navidrome': [
+                    (cfg['data_mount'] + '/appdata/navidrome', '/data', 'navidrome' not in read_only),
+                    (str(music / 'music'), '/music', False),
+                ],
+            }
+            asked = []
+
+            def docker(argv, timeout):
+                if 'ps' in argv:
+                    asked.append(argv[-1].rsplit('=', 1)[1])
+                    return 0, 'a' * 12 + '\n'
+                app = asked[-1]
+                port = str(acceptance.health.APPS[app][2])
+                container = {
+                    'Config': {
+                        'Labels': {'com.docker.compose.project': 'neko-' + app, 'com.docker.compose.service': app}
+                    },
+                    'State': {'Status': 'running', 'Health': {'Status': 'healthy'}},
+                    'Mounts': [{'Type': 'bind', 'Source': s, 'Destination': t, 'RW': rw} for s, t, rw in binds[app]],
+                    'NetworkSettings': {
+                        'Ports': {port + '/tcp': [{'HostIp': '127.0.0.1', 'HostPort': port}]},
+                        'Networks': {'nekoserver-media': {}},
+                    },
+                }
+                return 0, json.dumps([container])
+
+            with mock.patch.object(acceptance.health, 'run', side_effect=docker):
+                return {r['id']: r['status'] for r in acceptance.containers(cfg)}
+
+    def test_app_data_the_app_cannot_write_to_fails(self):
+        self.assertEqual(self.checked(), {'container:jellyfin': 'pass', 'container:navidrome': 'pass'})
+        self.assertEqual(
+            self.checked(read_only=('jellyfin',)), {'container:jellyfin': 'fail', 'container:navidrome': 'pass'}
+        )
+        self.assertEqual(
+            self.checked(read_only=('navidrome',)), {'container:jellyfin': 'pass', 'container:navidrome': 'fail'}
+        )
 
 
 if __name__ == '__main__':

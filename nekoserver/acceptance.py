@@ -289,11 +289,13 @@ def containers(config, photos=False):
                 )
                 binds = [m for m in v.get('Mounts', []) if isinstance(m, dict) and m.get('Type') == 'bind']
 
-                def bound(source, targets, readonly=False, binds=binds):
+                def bound(source, targets, readonly=False, writable=False, binds=binds):
+                    """`writable`: the app must be able to write there (Docker's "RW")."""
                     return any(
                         m.get('Source') == source
                         and m.get('Destination') in targets
                         and (not readonly or m.get('RW') is False)
+                        and (not writable or m.get('RW') is True)
                         for m in binds
                     )
 
@@ -306,10 +308,13 @@ def containers(config, photos=False):
                         expected = str(Path(config['data_mount']) / 'appdata/immich/postgres')
                     else:
                         expected = None
-                    mounts = expected is None or bound(expected, targets)
+                    # Photos are uploaded and the database written there: read-only, the
+                    # folder would be the right one and Immich still unusable (review of
+                    # 0.51.2: only the paths were checked). The same for an app's own data.
+                    mounts = expected is None or bound(expected, targets, writable=True)
                 else:
                     destination = {'seerr': '/app/config', 'navidrome': DATA}.get(app, '/config')
-                    mounts = bound(str(Path(config['data_mount']) / 'appdata' / app), (destination,))
+                    mounts = bound(str(Path(config['data_mount']) / 'appdata' / app), (destination,), writable=True)
                     if app in ('jellyfin', 'navidrome', 'sonarr', 'radarr', 'lidarr', 'qbittorrent'):
                         library = (
                             files_root(config, 'music' if app in ('navidrome', 'lidarr') else 'movies') / 'library'
@@ -348,7 +353,7 @@ def containers(config, photos=False):
         elif starting:
             detail = STARTING
         else:
-            detail = 'Inspect container health, bind mounts, network and published ports locally.'
+            detail = 'Inspect container health, bind mounts (its own data folder must be writable), network and published ports locally.'
         results.append(item('container:' + svc, health.APPS[app][0] + ' / ' + svc, state, detail))
     return results
 
