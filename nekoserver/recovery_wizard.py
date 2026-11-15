@@ -1604,10 +1604,28 @@ def part_way(target, output):
         raise
 
 
+@contextlib.contextmanager
+def usb_if_free(config, output):
+    """The USB drive (as Usb opens it), or None, said, when it can't be opened now: the
+    weekly copy holds it, or it is refused. For a restore that has the HDD's backup too,
+    which then goes on with that (the audit of 0.46.2, for the password lists; deep check
+    682 for the photos: on a Sunday the weekly copy can hold the drive for hours, and the
+    photo restore stopped although the HDD's archive needs no USB drive). Only opening the
+    drive is caught: the restore's own failure (a mistyped backup password, deep check 688)
+    was taken for the drive's, said as "The USB drive is not looked at: Wrong password"."""
+    with contextlib.ExitStack() as held:
+        try:
+            usb = held.enter_context(Usb(config))
+        except RuntimeError as exc:
+            output(f'The USB drive is not looked at: {exc}.')
+            usb = None
+        yield usb
+
+
 def restore_photos(config, prompt, output):
     media = Path(config['media_mount'])
     archive = media / config.get('photos', {}).get('archive_dir', ARCHIVE_DIR)
-    with Usb(config) as usb:
+    with usb_if_free(config, output) as usb:
         places = {'hdd': f'The HDD: the weekly copy in {archive}', 'usb': f'The USB drive: the weekly copy in {usb}'}
         sources = [('hdd', places['hdd'])] if archive.is_dir() else []
         if usb and ((usb / 'upload').is_dir() or (usb / 'library').is_dir()):
@@ -1979,18 +1997,7 @@ def restore_passwords(config, prompt, output):
     setup's) and the USB drive's copies, when it is plugged in (the review of 0.46.1: with
     any list on the HDD, a newer one on the USB drive was never offered)."""
     hdd = password_snapshots(config)
-    with contextlib.ExitStack() as held:
-        # Only opening the USB drive may fail here and fall back to the HDD's lists: the
-        # restore's own failure (a mistyped backup password, deep check 688) was taken
-        # for the drive's, said as "The USB drive is not looked at: Wrong password" and
-        # then "No password list on the HDD, nor on the USB drive", of a list just found.
-        try:
-            usb = held.enter_context(Usb(config))
-        except RuntimeError as exc:
-            # The USB drive busy (the weekly copy) or refused: the HDD's lists all the same
-            # (the audit of 0.46.2).
-            output(f'The USB drive is not looked at: {exc}.')
-            usb = None
+    with usb_if_free(config, output) as usb:
         runs = newest_first(hdd + usb_password_lists(usb))
         if runs:
             return restore_password_list(config, runs, prompt, output)

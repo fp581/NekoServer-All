@@ -48,7 +48,7 @@ Not sure? Start the recovery menu anyway. Choosing something there changes nothi
    - **Everything ever kept**: every file the backup has, also ones you deleted or renamed. Use this when you can't find something. The menu then asks **Which versions of each file?**: only the newest version of each (recommended), or every version, the older ones too.
 6. **Choose the folder.** The menu suggests a new folder on the HDD, normally in `/mnt/nekoserver-media/restored/`, with the date and time in its name, and shows the free space on that drive. Use it, or type another new folder.
 7. **Read "Review this restore".** It shows everything once: what is restored, the exact backup it comes from, which files and how big they are, the exact new folder, any files this backup no longer has, that nothing is overwritten, and that no app is stopped. Then it asks **Restore these items now?** Type `yes` to start. `no` goes back, and nothing has been changed. Enter alone does nothing.
-8. **Wait.** The menu waits if the weekly backup is using the USB drive. Every restored file is checked against the backup.
+8. **Wait.** Every restored file is checked against the backup. While the weekly backup is using the USB drive (on Sundays, for an hour or more), the menu says so and does not read that drive: photos and password lists come from the HDD then, and for Nextcloud files (which only the USB drive has) try again once it has finished.
 9. **Find your files** in the folder the review showed. The end of the restore says how to put the files back.
 
 Good to know:

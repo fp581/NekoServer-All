@@ -940,6 +940,19 @@ class RecoveryWizardTests(unittest.TestCase):
         # Other accounts never get in (the restore itself is given to the person's own).
         self.assertEqual((self.media / 'restored').stat().st_mode & 0o007, 0)
 
+    def test_photos_come_from_the_hdd_while_the_weekly_copy_holds_the_usb_drive(self):
+        """Deep check 682, on loop drives: with the weekly copy at work (it holds the USB
+        drive, for hours on a big first copy), the photo restore stopped with "the weekly
+        backup is using the USB drive right now", although the HDD's archive needs none."""
+        self.write('hdd/photos/archive/library/b.heic', b'photo2')
+        busy = RuntimeError('the weekly backup is using the USB drive right now')
+        with mock.patch.object(recovery_wizard.Usb, '__enter__', side_effect=busy):
+            out = []
+            recovery_wizard.restore_photos(self.config, answers('1', '2', '1', 'yes'), out.append)
+        restored = next((self.media / 'restored').iterdir())
+        self.assertEqual((restored / 'library/b.heic').read_bytes(), b'photo2')
+        self.assertIn('The USB drive is not looked at: the weekly backup is using the USB drive', out[0])
+
     def test_the_rebuild_command_follows_photos_on_the_media_drive(self):
         """The 0.46.0 review, H08: RECOVERY.md sent the photos to the SSD's library even when
         setup had put Immich's library on the media drive."""
