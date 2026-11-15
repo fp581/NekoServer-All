@@ -21,6 +21,18 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 - **An app switched off gets no desktop shortcut**, though its files are kept (Nextcloud, and Immich with only its own switch off); a shortcut setup made for it earlier is taken away.
 - **A kind of media whose folders could not be used is asked about again**, as "Run setup again to give one" said (the question was saved as answered), and films, shows or music switched on later get the question too.
 
+### Fixed: backups and getting files back
+- **Restored photos and Nextcloud files get the dates their originals had.** The backup now notes when each original was last changed, and the recovery menu sets it on each restored file once its checksum passes; restored photos without EXIF data no longer land on the day of the restore in Immich. Files copied off the drive by hand keep the copy's date (STORAGE.md, RECOVERY.md).
+- **Nightly backups on the night of the monthly run are skipped, not failed**: they waited 3 hours for it, then failed with an alert.
+- **A file too big for the USB drive's free space is left out and named, and the rest is copied**; every file after it was never copied.
+- **A file renamed only in upper or lower case stays backed up on an exFAT USB drive** (it was left out every week and could not be restored under either name).
+- **A media import keeps a hard-linked file as one file** (it was counted and copied twice), and no longer copies qBittorrent's `.parts` leftovers as media.
+- **Errors name the file or the program they are about** (was "No such file or directory (os error 2)" or a bare "Invalid JSON"), and a job waiting for another says which job holds the lock, in plain words.
+- **A returning drive no longer says every service "finished what a cut-off job left"** when nothing was cut off.
+- **The recovery menu writes the checksum ledger row by row** (38 MB of memory for an 8 MB ledger, now under 1 MB).
+- **`notify --test` keeps the number of alerts still waiting**; the card restore tool's `list` says "1 file", not "1 file(s)"; the dashboard no longer says "this backup can't run" on the upgrade row.
+- **The uninstaller also removes `systemctl edit` overrides of NekoServer's services and its idle folders under /run.**
+
 ### Fixed: the guides and the tools' help
 - **README.md and GUIDED-SETUP.md quote the questions, the drive list and the steps as setup has them now** (six questions were in old words; the app updates are weekly, not "on the 1st"; the setup window does open again).
 - **Each guide page starts with what a user does**; the reference is kept under "For administrators" (NOTIFICATIONS, HEARTBEAT, NEXTCLOUD, HOST-BACKUPS, SERVER-OS). False statements about upgrades and a Rust compiler are gone.
