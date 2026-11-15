@@ -213,7 +213,13 @@ def guarded(context, step):
         return step(context)
 
 
-BUSY = 'A NekoServer backup or monthly update is running right now. Wait for it to finish (usually under an hour), then run  sudo bash install.sh  again.'
+# Said by every program that takes the lock (setup, account-setup.py, the recovery menu,
+# reattach), so it names no one command: "run install.sh again" sent the person who had
+# run account-setup.py or the recovery menu to the wrong one.
+BUSY = (
+    'A NekoServer backup or monthly update is running right now (the Backups page of the dashboard shows '
+    'which one). Wait for it to finish (usually under an hour), then run the same command again.'
+)
 
 
 def wait_for(stream, patient, limit=1800, sleep=None):

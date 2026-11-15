@@ -368,8 +368,12 @@ class BusyLockTests(unittest.TestCase):
             fcntl.flock(holder, fcntl.LOCK_EX)
             with self.assertRaisesRegex(RuntimeError, 'backup or monthly update is running'):
                 recovery_tools.wait_for(mine, False)
-            with self.assertRaisesRegex(RuntimeError, 'run  sudo bash install.sh  again'):
+            # Plan 362: also said to account-setup.py and the recovery menu, which are not
+            # started with install.sh.
+            with self.assertRaises(RuntimeError) as said:
                 recovery_tools.wait_for(mine, True, limit=10, sleep=lambda s: None)
+            self.assertIn('then run the same command again', str(said.exception))
+            self.assertNotIn('install.sh', str(said.exception))
             tries = []
 
             def finish(seconds):
