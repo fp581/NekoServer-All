@@ -89,6 +89,39 @@ class FailureTests(unittest.TestCase):
         self.assertIn('ERROR: building the runtime: Compiling the runtime failed', printed)
         self.assertNotIn('Traceback', printed)
 
+    def test_a_binary_another_build_put_in_the_shared_folder_is_not_copied(self):
+        """Deep check plan 210: two builds sharing one CARGO_TARGET_DIR each copied the binary
+        the other had just compiled, and recorded their own sources beside it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project, shared = Path(tmp) / 'runtime', Path(tmp) / 'target'
+            (project / 'bin').mkdir(parents=True)
+            (project / 'bin/nekoserver-runtime').write_bytes(b'earlier')
+
+            def run(argv, **kwargs):
+                if 'build' in argv:  # the other build's binary lands here as this one finishes
+                    (shared / 'release').mkdir(parents=True)
+                    (shared / 'release/nekoserver-runtime').write_bytes(b'\x7fELF' + b'0' * 32)
+                return mock.Mock(returncode=0)
+
+            with (
+                mock.patch.object(build, 'ROOT', project),
+                mock.patch.dict(build.os.environ, {'CARGO_TARGET_DIR': str(shared)}),
+                mock.patch.object(build, 'free_megabytes', return_value=4096),
+                mock.patch.object(build.os, 'geteuid', return_value=1000),
+                mock.patch.object(build.platform, 'system', return_value='Linux'),
+                mock.patch.object(build.platform, 'machine', return_value='x86_64'),
+                mock.patch.object(build, 'toolchain', return_value=('cargo', 'rustc', 'host', Path('/none'), 'rustc')),
+                mock.patch.object(build.subprocess, 'run', side_effect=run),
+                self.assertRaisesRegex(RuntimeError, 'another build that uses the same build folder') as said,
+            ):
+                build.main()
+            self.assertIn(str(shared), str(said.exception))
+            self.assertEqual((project / 'bin/nekoserver-runtime').read_bytes(), b'earlier')
+            self.assertFalse((project / 'build.json').exists())
+        # The mark is the build's own, and in the runtime's sources as build.py looks for it.
+        main = (ROOT / 'runtime/src/main.rs').read_text()
+        self.assertIn(f'option_env!("{build.MARK_VARIABLE}")', main)
+
     def test_files_are_replaced_whole(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / 'nekoserver-runtime'
@@ -218,6 +251,19 @@ class BuildNeededTests(unittest.TestCase):
                 }
             )
         )
+
+    def test_a_runtime_not_built_yet_is_said_so_with_how_to_build_it(self):
+        """Seen running recover.py check in a fresh download on a new Ubuntu: "a file or
+        folder it needs does not exist: …/runtime/build.json. Check the path." Nothing was
+        wrong with a path; the runtime had not been built yet."""
+        import native_runtime
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.project(tmp)
+            with self.assertRaises(RuntimeError) as caught:
+                native_runtime.payload(tmp, {})
+        self.assertIn('not built yet', str(caught.exception))
+        self.assertIn('python3 runtime/build.py', str(caught.exception))
 
     def test_a_module_in_a_folder_of_its_own_is_one_of_the_sources(self):
         # 0.51.0: the card engine is in src/cardset/. A change there is a change of the

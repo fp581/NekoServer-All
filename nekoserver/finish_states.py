@@ -24,6 +24,8 @@ import time
 from pathlib import Path
 
 from neko_common import (
+    OPTIONAL_STEPS,
+    nextcloud_enabled,
     APPS,
     app_port,
     atomic_json,
@@ -41,8 +43,6 @@ SEEN, NOT_WORKING, LATER = 'seen', 'not_working', 'later'
 
 # The setup step that installs each app (every media app comes with the "media" step).
 STEP_OF = {'immich': 'photos', 'nextcloud': 'nextcloud'}
-# A step a finished server does not wait for (wizard.OPTIONAL and acceptance.OPTIONAL).
-OPTIONAL_STEPS = frozenset(('assistant', 'tv', 'notifications', 'heartbeat'))
 # The one thing a person tries in each app: (test, the app it belongs to, whether an
 # empty library means there is nothing to try yet).
 APP_TESTS = (
@@ -54,7 +54,12 @@ APP_TESTS = (
 # A TV connected to this PC: each seen on its own, never "everything worked".
 TV_TESTS = ('tv_picture', 'tv_sound', 'tv_controller', 'tv_steam')
 # A witnessed test of the acceptance checklist that shows the same thing (acceptance.manual_tests).
-SAME_AS = {'play_video': 'media_workflow', 'play_song': 'music_playback', 'cloud_file': 'cloud_client'}
+SAME_AS = {
+    'play_video': 'media_workflow',
+    'play_song': 'music_playback',
+    'cloud_file': 'cloud_client',
+    **dict.fromkeys(TV_TESTS, 'tv_session'),  # the TV's picture, sound, controller and Steam
+}
 # Each backup's step, and its report in reports/jobs (first_checkup.JOBS).
 BACKUPS = (
     ('app_backup', 'applications'),
@@ -140,10 +145,13 @@ def address(facts, app, is_installed):
 
 def said(facts, test):
     """What a person said about a test (seen, not_working, later), or None: their own
-    word first, else the same test passed or failed in the acceptance checklist."""
+    word first, else a yes to it in the TV step, else the same test passed or failed in
+    the acceptance checklist."""
     own = facts['person'].get(test)
     if own in (SEEN, NOT_WORKING, LATER):
         return own
+    if test in facts.get('tv_confirmed', ()):
+        return SEEN  # said "yes" to it in the TV step
     return {'pass': SEEN, 'fail': NOT_WORKING}.get(facts['witnessed'].get(SAME_AS.get(test)))
 
 
@@ -378,7 +386,7 @@ def chosen_apps(config, links=None):
     selected = list(media_services(config))
     if immich_wanted(config):
         selected.append('immich')
-    if config.get('nextcloud', {}).get('enabled') is True:
+    if nextcloud_enabled(config):
         selected.append('nextcloud')
     found = []
     for app in (a for a in APPS if a in selected):
@@ -397,7 +405,7 @@ def app_backup_off(config):
 
 def offline_backup_off(config):
     """The offline copy has nothing to copy, or no removable drive was chosen for it."""
-    if not immich_wanted(config) and config.get('nextcloud', {}).get('enabled') is not True:
+    if not immich_wanted(config) and not nextcloud_enabled(config):
         return True
     photos = config.get('photos', {})
     return photos.get('external_backup_wanted') is False and not photos.get('external_backup_uuid')
@@ -454,6 +462,22 @@ def witnessed_tests(data):
         and r.get('status') in ('pass', 'fail')
         and r.get('evidence') == 'user_reported'
     }
+
+
+def tv_confirmed(data):
+    """The TV tests (tv_picture ...) a person said worked in the TV step: the tries its
+    report keeps as confirmed, each standing for the tests modules/tv.HANDOFF_TESTS names."""
+    from modules.tv import HANDOFF_TESTS
+
+    rows = read_object(below(data, TV_REPORT)).get('checks')
+    confirmed = {
+        row.get('check')
+        for row in (rows if isinstance(rows, list) else [])
+        if isinstance(row, dict) and row.get('status') == 'user_confirmed'
+    }
+    return sorted(
+        'tv_' + test for handoff, tests in HANDOFF_TESTS.items() if 'tv:' + handoff in confirmed for test in tests
+    )
 
 
 def person_tests(data):
@@ -537,6 +561,7 @@ def collect(config, plan, read=None):
         'jobs': job_statuses(data),
         'witnessed': witnessed_tests(data),
         'person': person_tests(data),
+        'tv_confirmed': tv_confirmed(data),
     }
 
 

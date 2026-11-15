@@ -79,6 +79,7 @@ DEFAULT_MOUNTS = {
 # A drive's mount folder from the settings is used only when it is a plain absolute
 # folder of its own; the root and the system's folders are never a drive of NekoServer's.
 ROOT_HOME = '/root'
+SHORTCUT_SIZE = 65536  # a desktop shortcut NekoServer writes is a few hundred bytes
 HOMES = '/home'
 PROTECTED = (
     '/',
@@ -166,6 +167,16 @@ CHOICES = (
     ),
 )
 PERSONAL = {'photos': 'photos', 'media': 'movies and music', 'cloud': 'Nextcloud files', 'backups': 'backups'}
+# The checklist's number of the apps' data.
+DATA_NUMBER = next(number for number, (key, *_) in enumerate(CHOICES, 1) if key == 'data')
+# The files kept by choice whose app knows them only through its database, which is in
+# the apps' data on the SSD: (choice, what they are, the app).
+FILES_WITH_A_DATABASE = (('photos', 'photos and videos', 'Immich'), ('cloud', 'Nextcloud files', 'Nextcloud'))
+KEPT_WITHOUT_DATABASE = (
+    'Your {what} stay ({places}), but {app}\'s database goes with the apps\' data. Installed again, {app} '
+    'starts empty and does not show them; the files stay where they are. To have them in {app} again, '
+    'keep the apps\' data too (switch {number} off).'
+)
 # What NekoServer itself keeps at the top of each drive, by choice. Only these are ever
 # removed: anything else on a drive (a folder of your own) is listed as staying.
 SSD_DATA = (
@@ -478,6 +489,31 @@ def no_containers_why(which=shutil.which, euid=os.geteuid):
     return 'Docker is not running, or nothing was deployed'
 
 
+def inside_home(folder, home):
+    """The folder is in the home, once links are followed. Each person makes their own
+    Desktop (a link) and names their own in user-dirs.dirs: one leading out of the home
+    had root delete a nekoserver-*.desktop file in /opt (seen in a chroot copy)."""
+    real, top = os.path.realpath(folder), os.path.realpath(home)
+    return real == top or real.startswith(top.rstrip('/') + '/')
+
+
+def start_of(path, follow):
+    """The first SHORTCUT_SIZE bytes of a plain file in someone's home, or None: a pipe
+    there would keep the uninstaller waiting, a device such as /dev/zero would fill the
+    memory. `follow`: whether a link may lead to it."""
+    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | (0 if follow else os.O_NOFOLLOW)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        return os.read(fd, SHORTCUT_SIZE) if stat.S_ISREG(os.fstat(fd).st_mode) else None
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
 class Plan:
     """Everything a run would remove, by choice, found on this PC (a test's root stands
     in for /). Only what exists is listed, so the plan shown is the truth."""
@@ -586,7 +622,7 @@ class Plan:
         for home in homes:
             for folder in (home / '.local/share/applications', home / 'Desktop', self.xdg_desktop(home)):
                 try:
-                    if folder is not None and self.folder_here(folder):
+                    if folder is not None and self.folder_here(folder) and inside_home(folder, home):
                         found.extend(p for p in folder.glob('nekoserver-*.desktop') if self.ours(p))
                 except OSError:  # not readable by this account (a dry run without sudo)
                     self.could_not_look(folder)
@@ -639,21 +675,21 @@ class Plan:
     @staticmethod
     def xdg_desktop(home):
         """The desktop folder named in ~/.config/user-dirs.dirs, when it names one."""
-        try:
-            for line in (home / '.config/user-dirs.dirs').read_text().splitlines():
-                if line.startswith('XDG_DESKTOP_DIR='):
-                    value = line.split('=', 1)[1].strip().strip('"')
-                    return Path(value.replace('$HOME', str(home)))
-        except OSError:
-            pass
+        # Its owner's file, which may be a link (dotfile managers make them): followed,
+        # but read only when it is a plain file, as start_of does.
+        text = start_of(home / '.config/user-dirs.dirs', follow=True) or b''
+        for line in text.decode(errors='replace').splitlines():
+            if line.startswith('XDG_DESKTOP_DIR='):
+                value = line.split('=', 1)[1].strip().strip('"')
+                return Path(value.replace('$HOME', str(home)))
         return None
 
     @staticmethod
     def ours(path):
-        try:
-            return 'NekoServer' in path.read_text(errors='replace')
-        except OSError:
-            return False
+        """A shortcut NekoServer wrote: a plain file (never followed through a link) that
+        names it. The desktop folders are each person's own: a pipe named like a shortcut
+        kept the plan waiting for good, and a link to /dev/zero filled the memory."""
+        return b'NekoServer' in (start_of(path, follow=False) or b'')
 
     def samba(self):
         """(share file, smb.conf to remove or None, accounts NekoServer created). An account
@@ -933,7 +969,8 @@ class Plan:
         notes = []
         units = self.units()
         if units:
-            notes.append('Stop and remove ' + str(len(units)) + ' services and timers: ' + ', '.join(units))
+            what = 'service or timer' if len(units) == 1 else 'services and timers'
+            notes.append('Stop and remove ' + str(len(units)) + ' ' + what + ': ' + ', '.join(units))
         paths = self.system_paths() + self.shortcuts() + self.os_dropins() + self.setup_state()
         notes.extend(self.kept())
         if self.unfinished_packages():
@@ -1124,9 +1161,24 @@ class Plan:
             lines.append('   - ' + share + ' at ' + mount + ' (your own shared folder: kept, with its /etc/fstab line)')
         return lines
 
+    def kept_without_database(self, chosen):
+        """What the person keeps whose app's database goes with the apps' data: kept as
+        files, which a new installation's empty app does not show (0.51.2 user check:
+        photos kept, the apps' data removed, setup again started Immich empty beside
+        them, and nothing said so at either end)."""
+        if 'data' not in chosen:
+            return []
+        return [
+            KEPT_WITHOUT_DATABASE.format(
+                what=what, app=app, number=DATA_NUMBER, places=', '.join(str(p) for p in self.groups[key]['paths'])
+            )
+            for key, what, app in FILES_WITH_A_DATABASE
+            if key not in chosen and self.groups.get(key, {}).get('paths')
+        ]
+
     def describe(self, chosen):
         """The plan, in full, for the person to read before confirming."""
-        lines = ['!! ' + w for w in self.warnings]
+        lines = ['!! ' + w for w in self.warnings + self.kept_without_database(chosen)]
         lines.extend(self.places())
         others = self.others()
         if others:
@@ -1172,7 +1224,7 @@ def choose(ask=input, out=print):
 
 
 def _toggle(chosen, token, out):
-    if not token.isdigit() or not 1 <= int(token) <= len(CHOICES):
+    if not token.isdecimal() or not 1 <= int(token) <= len(CHOICES):
         out(' Not a choice: ' + token)
         return
     key = CHOICES[int(token) - 1][0]
@@ -2296,7 +2348,21 @@ def busy(locks=SETUP_LOCKS, journal=None):
     return None, held
 
 
+USAGE = '''Remove NekoServer from this PC: what you choose, after two confirmations.
+  sudo bash uninstall.sh             choose what goes, see the plan, confirm twice
+  sudo bash uninstall.sh --dry-run   see what each choice would remove; nothing changes
+Nothing is ever formatted; what you keep stays as it is.'''
+
+
 def main(argv):
+    # Only these words: anything else (a typo of --dry-run, say) once ran the real removal.
+    if any(arg in ('-h', '--help') for arg in argv):
+        print(USAGE)
+        return 0
+    unknown = [arg for arg in argv if arg != '--dry-run']
+    if unknown:
+        print(f'Unknown option {unknown[0]}. Nothing was changed.\n\n{USAGE}', file=sys.stderr)
+        return 2
     dry = '--dry-run' in argv
     if not dry and os.geteuid() != 0:
         print('Run with sudo:  sudo bash uninstall.sh   (or  --dry-run  to only look)', file=sys.stderr)

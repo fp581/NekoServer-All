@@ -39,19 +39,23 @@ def resolve_immich_version(value, opener=urllib.request.urlopen):
         if not version_ok(value):
             raise RuntimeError('Invalid Immich release version')
         return value
-    data = json.loads(
-        fetch(
-            'https://api.github.com/repos/immich-app/immich/releases/latest',
-            'Finding the current Immich release',
-            100000,
-            20,
-            opener,
-            {'Accept': 'application/vnd.github+json'},
-        )
+    answer = fetch(
+        'https://api.github.com/repos/immich-app/immich/releases/latest',
+        'Finding the current Immich release',
+        100000,
+        20,
+        opener,
+        {'Accept': 'application/vnd.github+json'},
     )
-    tag = data.get('tag_name', '')
-    if not version_ok(tag):
-        raise RuntimeError('GitHub did not return a valid stable Immich release')
+    try:
+        data = json.loads(answer)
+    except ValueError:
+        data = None  # a web page in its place (a proxy's, say), or a cut-off answer
+    # Never a draft or a pre-release, as the monthly update refuses them (immich_next).
+    stable = isinstance(data, dict) and data.get('draft') is not True and data.get('prerelease') is not True
+    tag = data.get('tag_name') if stable else None
+    if not isinstance(tag, str) or not version_ok(tag):
+        raise RuntimeError('GitHub did not answer with a stable Immich release; run setup again later')
     return tag
 
 

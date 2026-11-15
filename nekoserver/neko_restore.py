@@ -40,6 +40,8 @@ Exit status: 0 all well, 1 something was damaged, missing, skipped or not restor
 """
 
 import argparse
+import contextlib
+import dataclasses
 import errno
 import hashlib
 import json
@@ -48,6 +50,7 @@ import re
 import stat
 import sys
 import time
+import unicodedata
 
 ROOT_NAME = 'NekoBackup'
 SMALL_FILE = 16384
@@ -62,6 +65,13 @@ RENAMED = '_renamed'
 THERE_ALREADY = '%s is there already'
 # A file already at its place with exactly the record's bytes (an earlier restore's).
 SAME_FILE = 'same file'
+# Said after a restore that skipped files without --rename: those are still only on the
+# card, and the summary's count alone does not say how to get them.
+SKIPPED_HINT = (
+    'The skipped files are still only on the card. To restore them too, run the same '
+    'command again with --rename: each then goes under _renamed/ (add --report <new file> '
+    'to see which name is which file).'
+)
 # Where Linux mounts a removable card: a card given with --card must be below one of these
 # (or be the card this tool runs from).
 CARD_ROOTS = ('/media/', '/run/media/', '/mnt/')
@@ -83,6 +93,19 @@ class Invalid(Exception):
 
 class Unusable(Exception):
     """The card or the command cannot be used at all."""
+
+
+class CardGone(Exception):
+    """The card stopped answering in the middle of a run (unplugged, or its reader failed):
+    the run stops, instead of saying every file after it is damaged or missing."""
+
+
+CARD_GONE = (
+    'The card stopped answering: it was unplugged, or its reader or the card failed. The files '
+    'restored so far are complete. Plug the card in again and run the same command: with '
+    '--progress it carries on where it stopped, and without it the files already restored count '
+    'as "same file".'
+)
 
 
 # ---- reading with bounds (the engine's format.rs, field for field) -------------------
@@ -307,6 +330,20 @@ def open_dir(name, dir_fd=None):
     return os.open(name, DIR_FLAGS, dir_fd=dir_fd)
 
 
+def read_at_most(stream, limit):
+    """Up to limit + 1 bytes of an open file, a CHUNK at a time: one read(limit + 1) sets
+    that much memory aside first, and with a 1 GB limit it failed with MemoryError on a
+    computer with little memory, however small the file (deep check 275)."""
+    parts, size = [], 0
+    while size <= limit:
+        chunk = stream.read(min(CHUNK, limit + 1 - size))
+        if not chunk:
+            break
+        parts.append(chunk)
+        size += len(chunk)
+    return b''.join(parts)
+
+
 def read_limited(dir_fd, name, limit):
     fd = os.open(name, FILE_FLAGS, dir_fd=dir_fd)
     try:
@@ -379,6 +416,15 @@ class Card:
     def __exit__(self, *exc):
         self.close()
 
+    def still_there(self):
+        """Raise CardGone when the card no longer answers (its identity.json cannot be
+        looked at): called when a file of it cannot be read, so that an unplugged card is
+        said as such, not as one damaged or missing file after another."""
+        try:
+            os.stat('identity.json', dir_fd=self.nb, follow_symlinks=False)
+        except OSError:
+            raise CardGone(CARD_GONE) from None
+
     def _sub(self, name):
         try:
             return open_dir(name, self.nb)
@@ -402,7 +448,11 @@ class Card:
                         where = 'records/%s/%s' % (show(hh), show(name))
                         try:
                             rec = parse_record(read_limited(d, name, SMALL_FILE))
-                        except (Invalid, OSError) as e:
+                        except Invalid as e:
+                            yield None, where, str(e)
+                            continue
+                        except OSError as e:
+                            self.still_there()
                             yield None, where, str(e)
                             continue
                         problem = self._contradiction(rec, hh, name)
@@ -459,16 +509,28 @@ def check_copy(card, rec):
     try:
         fd = card.open_payload(rec)
     except FileNotFoundError:
+        card.still_there()
         return 'missing'
-    except (OSError, Invalid):
+    except OSError:
+        card.still_there()
+        return 'damaged'
+    except Invalid:
         return 'damaged'
     try:
         digest, size = hash_fd(fd, rec['byte_size'])
     except OSError:
+        card.still_there()
         return 'damaged'
     finally:
         os.close(fd)
     return 'ok' if (digest, size) == (rec['checksum'], rec['byte_size']) else 'damaged'
+
+
+def holds_text(path, text):
+    """Whether `path` holds `text`, as plain text (no pattern), with accented letters
+    compared as letters: "é" typed on Linux is one character, the same "é" in a name from
+    a Mac or a phone is two (e and an accent), and the search found nothing."""
+    return unicodedata.normalize('NFC', text) in unicodedata.normalize('NFC', path)
 
 
 def selected(card, search=None, record_ids=None):
@@ -479,7 +541,7 @@ def selected(card, search=None, record_ids=None):
             unusable.append((where, why))
         elif record_ids and rec['record_id'] not in record_ids:
             continue
-        elif search and search not in rec['original_relative_path']:
+        elif search and not holds_text(rec['original_relative_path'], search):
             continue
         else:
             chosen.append(rec)
@@ -597,15 +659,73 @@ def write_checked(src, rec, dir_fd, temp):
         raise Invalid('the archived file does not match its record (damaged on the card)')
 
 
+def from_the_drive(fd):
+    """The next reads of `fd` come from the drive, not from Linux's copy in memory: the
+    file written out, then its cached pages dropped. Read back without this, a USB stick
+    that does not keep what it is given (a fake-capacity one) passed the second check."""
+    os.fsync(fd)
+    try:
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+    except (AttributeError, OSError):
+        pass  # a system without it: the check reads what Linux has, as before
+
+
+@contextlib.contextmanager
+def folder_held(dir_fd):
+    """This folder to this restore alone while it places one file. Two restores into one
+    folder at once removed each other's half-written file (its name is the record's) and
+    said "No such file or directory", or "is there already" for the file the other placed.
+    The second now waits for the first's file, then finds it there as "same file". The
+    lock goes with the process, so one that was killed never leaves it held."""
+    try:
+        import fcntl
+
+        fcntl.flock(dir_fd, fcntl.LOCK_EX)
+        held = True
+    except (ImportError, OSError):
+        held = False  # a system or folder without locks: one restore at a time, as before
+    try:
+        yield
+    finally:
+        if held:
+            fcntl.flock(dir_fd, fcntl.LOCK_UN)
+
+
+def remove_leftover(dir_fd, temp):
+    """Remove `temp` when an earlier restore left it: one stopped hard (killed, a power
+    cut) while writing this file cannot remove it, and the next run then failed the file
+    with "File exists". The name is this tool's own and never holds a verified file."""
+    try:
+        os.unlink(temp, dir_fd=dir_fd)
+    except FileNotFoundError:
+        pass
+
+
 def copy_verified(card, rec, dir_fd, temp):
     """The archived file copied into `temp` (new, in the destination folder) while it is
     hashed; then the written file read back and hashed. Raises Invalid on any mismatch,
     after removing `temp`: no unverified output is left."""
-    src = card.open_payload(rec)
+    # Said as verify says it: the card's copy missing, or damaged; the system's words ("No
+    # such file or directory", "Too many levels of symbolic links") sounded like the
+    # destination's fault.
     try:
-        write_checked(src, rec, dir_fd, temp)
+        src = card.open_payload(rec)
+    except FileNotFoundError:
+        card.still_there()
+        raise Invalid('its copy is missing from the card') from None
+    except OSError:
+        card.still_there()
+        raise Invalid('its copy on the card is damaged (not a plain file)') from None
+    try:
+        remove_leftover(dir_fd, temp)
+        try:
+            write_checked(src, rec, dir_fd, temp)
+        except OSError:
+            card.still_there()  # the card's bytes stopped coming mid-file
+            raise
         back = os.open(temp, FILE_FLAGS, dir_fd=dir_fd)
         try:
+            from_the_drive(back)
             if hash_fd(back, rec['byte_size']) != (rec['checksum'], rec['byte_size']):
                 raise Invalid('the restored file does not read back as written')
         finally:
@@ -699,12 +819,15 @@ class Progress:
         if os.path.exists(path):
             try:
                 with open(path, 'rb') as f:
-                    data = f.read(PROGRESS_LIMIT + 1)
+                    data = read_at_most(f, PROGRESS_LIMIT)
             except OSError as e:
                 raise Unusable('the progress file %s is not usable: %s' % (path, e.strerror)) from None
             if len(data) > PROGRESS_LIMIT:
                 raise Unusable('the progress file %s is too large' % path)
-            if self._read(data):
+            # A file whose last line was cut off (a stop or a power cut while it was
+            # written) is written again without it: lines added after it would have joined
+            # it, and the file was then refused on the next run.
+            if self._read(data) and data.endswith(b'\n'):
                 self._open('a')
                 return
         self._open('w')
@@ -848,14 +971,15 @@ def restore_one(card, rec, dest_fd, rename, overwrite, listing=None):
     try:
         d = descend(dest_fd, parts[:-1], listing=listing)
         try:
-            clash(d, parts[-1], listing)
-            named = target in overwrite
-            if exists(d, parts[-1]) and not named:
-                if same_file(d, parts[-1], rec):
-                    return SAME_FILE, target  # restored before (by a run without --progress)
-                raise Taken('a file is there already')
-            copy_verified(card, rec, d, temp)
-            publish(d, temp, parts[-1], named, listing)
+            with folder_held(d):
+                clash(d, parts[-1], listing)
+                named = target in overwrite
+                if exists(d, parts[-1]) and not named:
+                    if same_file(d, parts[-1], rec):
+                        return SAME_FILE, target  # restored before (by a run without --progress)
+                    raise Taken('a file is there already')
+                copy_verified(card, rec, d, temp)
+                publish(d, temp, parts[-1], named, listing)
         finally:
             os.close(d)
         return 'restored', target
@@ -877,12 +1001,13 @@ def renamed_copy(card, rec, dest_fd, temp, listing=None):
     try:
         d = descend(dest_fd, [RENAMED], listing=listing)
         try:
-            if exists(d, other):
-                if same_file(d, other, rec):
-                    return SAME_FILE, '%s/%s' % (RENAMED, other)
-                return 'skipped', THERE_ALREADY % (RENAMED + '/' + other)
-            copy_verified(card, rec, d, temp)
-            publish(d, temp, other, False, listing)
+            with folder_held(d):
+                if exists(d, other):
+                    if same_file(d, other, rec):
+                        return SAME_FILE, '%s/%s' % (RENAMED, other)
+                    return 'skipped', THERE_ALREADY % (RENAMED + '/' + other)
+                copy_verified(card, rec, d, temp)
+                publish(d, temp, other, False, listing)
         finally:
             os.close(d)
     except (Taken, Invalid) as why:
@@ -944,38 +1069,72 @@ def holds(dest_fd, path, checksum):
         os.close(fd)
 
 
-def older(card, rec, dest_fd, opts, newer_where):
+@dataclasses.dataclass(frozen=True)
+class Choices:
+    """What the person chose for one restore, handed to each file's steps together."""
+
+    rename: bool  # --rename: a file whose place is taken goes under _renamed/
+    overwrite: frozenset  # --overwrite: the paths the person named to be replaced
+    progress: object  # the Progress file (--progress), or None
+    listing: Listing  # the names in each destination folder, listed once
+
+
+def older(card, rec, dest_fd, choices, newer_where):
     """A version older than the one restored under the file's name: kept under _renamed/
     with --rename, else named and left on the card."""
-    rename, _overwrite, _progress, listing = opts
-    if rename:
-        return renamed_copy(card, rec, dest_fd, '.neko-restore-%s.part' % rec['record_id'], listing)
+    if choices.rename:
+        return renamed_copy(card, rec, dest_fd, '.neko-restore-%s.part' % rec['record_id'], choices.listing)
     return 'older', 'a newer version is restored as %s' % newer_where
 
 
-def one_version(card, rec, dest_fd, opts, chosen):
+def one_version(card, rec, dest_fd, choices, chosen):
     """One record of a file, after the newer versions of it were handled. `chosen` is the
-    (record, where) restored for that file in this run, if any."""
-    rename, overwrite, progress, listing = opts
+    (record, where) restored for that file in this run, or None."""
+    progress = choices.progress
     if progress is not None and progress.has(dest_fd, rec):
         return 'done before', progress.done[rec['version_id']]['path']
     if chosen is not None:
-        if chosen[0]['version_id'] == rec['version_id']:
-            return 'same version', chosen[1]
-        return older(card, rec, dest_fd, opts, chosen[1])
+        chosen_rec, chosen_where = chosen
+        if chosen_rec['version_id'] == rec['version_id']:
+            return 'same version', chosen_where
+        return older(card, rec, dest_fd, choices, chosen_where)
+    # A version of this file an earlier run restored under its name (from another card).
     earlier = progress.at_original(rec) if progress is not None else None
-    allowed = overwrite
+    replacing_ours = False
     if earlier is not None and entry_age(earlier[1]) is not None:
-        entry = earlier[1]
-        if entry_age(entry) > age(rec):
-            return older(card, rec, dest_fd, opts, entry['path'])
+        earlier_version, earlier_entry = earlier
+        if entry_age(earlier_entry) > age(rec):
+            return older(card, rec, dest_fd, choices, earlier_entry['path'])
         # An older version this restore put there itself, unchanged since: replaced.
-        if holds(dest_fd, entry['path'], entry.get('sha256')):
-            allowed = overwrite | {rec['original_relative_path']}
-    outcome, where = restore_one(card, rec, dest_fd, rename, allowed, listing)
-    if outcome == 'restored' and allowed is not overwrite:
-        progress.supersede(earlier[0], rec)
+        replacing_ours = holds(dest_fd, earlier_entry['path'], earlier_entry.get('sha256'))
+    overwrite = choices.overwrite | {rec['original_relative_path']} if replacing_ours else choices.overwrite
+    outcome, where = restore_one(card, rec, dest_fd, choices.rename, overwrite, choices.listing)
+    if outcome == 'restored' and replacing_ours:
+        progress.supersede(earlier_version, rec)
     return outcome, where
+
+
+def inside(dir_fd, top_fd):
+    """Whether the open folder `dir_fd` is `top_fd` or below it, by device and inode,
+    walking up through ".." to the root (a link or another name of the card counts too)."""
+    want = os.fstat(top_fd)
+    want = (want.st_dev, want.st_ino)
+    fd = os.dup(dir_fd)
+    try:
+        seen = None
+        while True:
+            st = os.fstat(fd)
+            here = (st.st_dev, st.st_ino)
+            if here == want:
+                return True
+            if here == seen:
+                return False  # the root: its ".." is itself
+            seen = here
+            up = os.open('..', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=fd)
+            os.close(fd)
+            fd = up
+    finally:
+        os.close(fd)
 
 
 def restore(card, records, destination, rename=False, overwrite=(), progress=None, say=print):
@@ -986,13 +1145,20 @@ def restore(card, records, destination, rename=False, overwrite=(), progress=Non
         dest_fd = os.open(destination, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     except OSError as e:
         raise Unusable('the destination %s cannot be opened (%s)' % (show(destination), e.strerror)) from None
+    # Never onto the card itself: it is the backup, maybe the last copy of these files.
+    if inside(dest_fd, card.top):
+        os.close(dest_fd)
+        raise Unusable(
+            '%s is on the card itself. Restore onto another drive: the card is your backup, and '
+            'is kept as it is' % show(destination)
+        )
     report = []
-    opts = (rename, set(overwrite), progress, Listing())
+    choices = Choices(rename, frozenset(overwrite), progress, Listing())
     try:
         for recs in by_file(records):
             chosen = None
             for rec in recs:
-                outcome, where = one_version(card, rec, dest_fd, opts, chosen)
+                outcome, where = one_version(card, rec, dest_fd, choices, chosen)
                 if outcome in ('restored', 'renamed', SAME_FILE) and progress is not None:
                     progress.add(rec, where)
                 if chosen is None and outcome in KEPT:
@@ -1133,7 +1299,7 @@ def version_said(raw, text, labels):
         check_relative_path(path)
     except Invalid:
         return None
-    if text not in path:
+    if not holds_text(path, text):
         return None
     copies = line.get('copies') if isinstance(line.get('copies'), list) else []
     held = ', '.join(
@@ -1228,6 +1394,8 @@ def cmd_restore(card, args, say):
     for row in report:
         counts[row['outcome']] = counts.get(row['outcome'], 0) + 1
     say(', '.join('%s %d' % kv for kv in sorted(counts.items())))
+    if counts.get('skipped') and not args.rename:
+        say(SKIPPED_HINT)
     for where_, why in unusable:
         say(UNUSABLE % (where_, why))
     fine = all(row['outcome'] in FINE for row in report)
@@ -1272,6 +1440,9 @@ def main(argv=None, say=print):
             return commands[args.command](card, args, say)
     except Unusable as e:
         say('Cannot use this: %s' % e)
+        return 2
+    except CardGone as e:
+        say(str(e))
         return 2
     except KeyboardInterrupt:
         say('Stopped. Files restored so far are complete; a file that was being written was removed.')

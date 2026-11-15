@@ -200,6 +200,25 @@ impl Dir {
     }
 
     /// Open the regular file `name` to read.
+    /// `name` opened to be read from the card itself, not from the kernel's memory: its
+    /// dirty pages written out, then its cached pages dropped, so that the next read
+    /// fetches what the card holds. Reading back without this read the page cache: a
+    /// fake-capacity or failing card that kept other bytes passed every check.
+    pub fn open_from_card(&self, name: &str) -> Res<File> {
+        let file = self.open_file(name)?;
+        file.sync_data()
+            .map_err(|e| CardError::io("write out before the readback", &e))?;
+        // SAFETY: a valid open descriptor; the call only advises the kernel.
+        let rc = unsafe { libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
+        if rc != 0 {
+            return Err(CardError::io(
+                "drop the cached copy before the readback",
+                &std::io::Error::from_raw_os_error(rc),
+            ));
+        }
+        Ok(file)
+    }
+
     pub fn open_file(&self, name: &str) -> Res<File> {
         let fd = openat2(
             self.fd.as_raw_fd(),

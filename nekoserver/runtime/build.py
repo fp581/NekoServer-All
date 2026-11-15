@@ -7,7 +7,7 @@ library, which is what `sudo bash install.sh` builds on the PC that installs Nek
 (git keeps the sources, not the binary). As an ordinary user, or as root from
 install.sh (NEKOSERVER_BUILD_AS_ROOT=1)."""
 
-import hashlib, json, os, platform, re, shutil, subprocess, sys, time
+import hashlib, json, os, platform, re, secrets, shutil, subprocess, sys, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -143,6 +143,23 @@ def cargo_step(argv, what):
         raise RuntimeError(f'{what} failed (the lines above say why). Fix that, then run  sudo bash install.sh  again.')
 
 
+# Built into the binary (main.rs BUILD_MARK): a mark new to each build, so the binary
+# copied is known to be the one this build made. Two builds sharing one CARGO_TARGET_DIR
+# each copied what the other had just compiled, and recorded their own sources beside it
+# (deep check plan 210).
+MARK_VARIABLE = 'NEKOSERVER_BUILD_MARK'
+
+
+def this_build(blob, mark, built):
+    """`blob` (read from `built`) is the binary this build compiled, carrying `mark`."""
+    if mark.encode() not in blob:
+        raise RuntimeError(
+            f'The runtime at {built} is not the one this build just compiled: another build that uses the '
+            f'same build folder ({built.parents[1]}) replaced it meanwhile. Nothing was copied. Run the build '
+            'again when the other one has finished (or give each build its own CARGO_TARGET_DIR).'
+        )
+
+
 def replace_file(path, data, mode):
     """path gets data whole or not at all (written beside it, then renamed over it): a
     build cut off half-way never leaves half a binary, or a record of another one."""
@@ -176,11 +193,14 @@ def main():
         [cargo, 'clean', '--release', '--offline', *target_arguments, '-p', 'nekoserver-runtime'],
         'Cleaning the earlier runtime build',
     )
+    mark = secrets.token_hex(16)
+    os.environ[MARK_VARIABLE] = mark
     cargo_step([cargo, 'build', '--release', '--locked', '--offline', *arguments], 'Compiling the runtime')
     built = built_path(target, arguments)
     # The binary first, its record (build.json) last: install.sh compares the two, so a
     # build cut off between them is built again.
     blob = built.read_bytes()
+    this_build(blob, mark, built)
     out = ROOT / 'bin/nekoserver-runtime'
     out.parent.mkdir(exist_ok=True)
     replace_file(out, blob, 0o750)

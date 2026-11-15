@@ -23,7 +23,7 @@ sys.path.insert(0, str(ROOT))
 
 import backup_plan  # noqa: E402
 import installer  # noqa: E402
-from modules import app_backup, host_backup  # noqa: E402
+from modules import app_backup, host_backup, storage  # noqa: E402
 
 COUNTED = ('app_backup', 'host_backup')
 
@@ -355,6 +355,20 @@ class TableTests(unittest.TestCase):
         # on the drive that holds them, and the table says so.
         config['locations'] = {'photos': 'media'}
         self.assertTrue(self.rows(config)['photo_archive']['same_drive'])
+
+    def test_one_drive_for_everything_marks_every_backup_on_it_as_on_the_same_drive(self):
+        # Seen on a PC with one disk: the backups page said nothing, as "ssd" and "media"
+        # were taken for two drives though both roles were folders of the disk Linux runs from.
+        for folders in (storage.SYSTEM_FOLDERS, storage.SHARED_FOLDERS):  # the disk Linux runs from; one of its own
+            config = template()
+            config['storage'] = {
+                key: {'uuid': 'disk-0001', 'fstype': 'ext4', 'folder': folder} for key, folder in folders.items()
+            }
+            rows = self.rows(config)
+            for key in ('app_backup', 'host_backup', 'photo_archive', 'photo_database', 'monthly'):
+                self.assertTrue(rows[key]['same_drive'], (folders, key))
+        # Two drives: as before.
+        self.assertFalse(self.rows(template())['app_backup']['same_drive'])
 
     def test_a_server_without_some_apps_has_no_rows_for_them(self):
         config = template()

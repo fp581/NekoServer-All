@@ -7,10 +7,20 @@ Does not mount remote shares, add trackers, or handle secrets.
 
 import argparse
 import json
+import os
 import re
 import urllib.parse
 from pathlib import Path
-from neko_common import safe_path, atomic_json, checked_settings, default_settings, remember_answer
+from neko_common import (
+    read_settings,
+    safe_path,
+    atomic_json,
+    checked_settings,
+    default_settings,
+    mount_path,
+    remember_answer,
+)
+from source_import import source_list
 
 KINDS = ('movies', 'tv', 'music')
 # What the folder to give holds, per category: its folders are copied into the library as
@@ -180,13 +190,27 @@ def main():
     parser.add_argument('--output')
     parser.add_argument('--list', action='store_true', help='Show existing source references (no secrets)')
     args = parser.parse_args()
-    settings = json.loads(safe_path(args.config).read_text())
-    target = safe_path(args.output or str(Path(settings['data_mount']) / 'config' / 'media-sources.json'))
-    existing = json.loads(target.read_text()) if target.exists() else {}
+    try:
+        settings = read_settings(args.config)
+    except RuntimeError as exc:
+        raise SystemExit(f'Nothing was saved: {exc}') from None
+    target = safe_path(args.output or str(mount_path(settings['data_mount']) / 'config' / 'media-sources.json'))
+    try:
+        existing = {'sources': source_list(target)} if target.exists() else {}
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
     if args.list:
         print(json.dumps(existing, indent=2))
         return
-    before = len(existing.get('sources', [])) if isinstance(existing, dict) else 0
+    # The list (and the answer kept for setup) go on the data SSD. With the SSD not
+    # mounted its folder is an empty one on the system disk: writing there would fill the
+    # system disk and hide the list once the SSD comes back.
+    data = mount_path(settings['data_mount'])
+    if not os.path.ismount(data):
+        raise SystemExit(
+            f'Nothing was saved: the data SSD is not mounted at {data}. Connect it (or restart) and try again.'
+        )
+    before = len(existing.get('sources', []))
     config = collect(existing)
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.is_symlink():

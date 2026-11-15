@@ -1,7 +1,9 @@
 """The uninstaller (uninstall.sh, uninstaller.py): what it finds, what it asks, what it
 removes, and what it never touches."""
 
+import contextlib
 import fcntl
+import io
 import json
 import os
 import sys
@@ -211,6 +213,40 @@ class FakeSystem:
             return RealPlan(settings, self.root, run=self.run, group_exists=group_exists, identity=self.identity)
 
 
+class OptionTests(unittest.TestCase):
+    """Seen on a fresh Ubuntu 24.04: `uninstaller.py --help` (and `uninstall.sh --help`)
+    started the real removal menu. Only --dry-run was read; any other word, a typo such as
+    --dryrun included, ran the real thing."""
+
+    def run_main(self, argv):
+        """(exit code, what was said) for these words; never the removal itself."""
+        out = io.StringIO()
+        with (
+            mock.patch.object(uninstaller, 'removal', side_effect=AssertionError('removal started')) as removal,
+            mock.patch.object(uninstaller, 'busy', side_effect=AssertionError('locks taken')),
+            mock.patch.object(uninstaller.os, 'geteuid', return_value=0),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(out),
+        ):
+            code = uninstaller.main(argv)
+        removal.assert_not_called()
+        return code, out.getvalue()
+
+    def test_help_says_what_it_does_and_changes_nothing(self):
+        for flag in ('--help', '-h'):
+            code, said = self.run_main([flag])
+            self.assertEqual(code, 0, said)
+            self.assertIn('--dry-run', said)
+            self.assertIn('two confirmations', said)
+
+    def test_an_unknown_option_is_refused_before_anything(self):
+        for typo in ('--dryrun', '--dry_run', '-n', '--yes'):
+            code, said = self.run_main([typo])
+            self.assertEqual(code, 2, said)
+            self.assertIn(typo, said)
+            self.assertIn('Nothing was changed', said)
+
+
 class FakeSubvolume:
     """os as it answers for a Btrfs subvolume named `name`: its folder and everything in
     it on a device number of its own, the folder's inode 256. Its mount is the one of the
@@ -270,6 +306,72 @@ class PlanTests(unittest.TestCase):
         self.system = FakeSystem(self.tmp.name).populate()
         self.plan = self.system.plan()
 
+    def test_a_trap_named_like_a_shortcut_on_a_desktop_is_not_read(self):
+        """Deep check 240: a person's Desktop is theirs. A pipe named like NekoServer's
+        shortcut kept the plan (the dry run too) waiting for good, and a link to /dev/zero
+        filled the memory; a link to a real shortcut elsewhere was taken as one to remove."""
+        import threading
+
+        desktop = self.system.root / 'home/neko/Desktop'
+        os.mkfifo(desktop / 'nekoserver-pipe.desktop')
+        (desktop / 'nekoserver-zero.desktop').symlink_to('/dev/zero')
+        (desktop / 'nekoserver-elsewhere.desktop').symlink_to(desktop / 'nekoserver-steam.desktop')
+        found = []
+        looked = threading.Thread(target=lambda: found.append(self.plan.shortcuts()), daemon=True)
+        looked.start()
+        looked.join(10)
+        if looked.is_alive():  # free the plan's thread: open the pipe's other end
+            with open(desktop / 'nekoserver-pipe.desktop', 'w'):
+                pass
+            self.fail('the plan waited on a pipe on the Desktop')
+        names = {p.name for p in found[0]}
+        self.assertIn('nekoserver-steam.desktop', names)
+        self.assertFalse(names & {'nekoserver-pipe.desktop', 'nekoserver-zero.desktop', 'nekoserver-elsewhere.desktop'})
+
+    def test_a_pipe_in_place_of_the_desktop_folders_list_is_not_read(self):
+        """~/.config/user-dirs.dirs is its owner's file too: a pipe there kept the plan
+        waiting for good. A link to a real list is still followed (dotfile managers)."""
+        import threading
+
+        config = self.system.root / 'home/neko/.config'
+        config.mkdir(parents=True, exist_ok=True)
+        os.mkfifo(config / 'user-dirs.dirs')
+        found = []
+        looked = threading.Thread(target=lambda: found.append(self.plan.shortcuts()), daemon=True)
+        looked.start()
+        looked.join(10)
+        if looked.is_alive():
+            with open(config / 'user-dirs.dirs', 'w'):
+                pass
+            self.fail('the plan waited on a pipe in place of user-dirs.dirs')
+        (config / 'user-dirs.dirs').unlink()
+        (config / 'dirs-kept-elsewhere').write_text('XDG_DESKTOP_DIR="$HOME/Schreibtisch"\n')
+        (config / 'user-dirs.dirs').symlink_to('dirs-kept-elsewhere')
+        self.assertEqual(
+            self.plan.xdg_desktop(self.system.root / 'home/neko'), self.system.root / 'home/neko/Schreibtisch'
+        )
+
+    def test_a_desktop_leading_out_of_the_home_loses_nothing(self):
+        """Deep check 240, in a chroot copy: ~/Desktop made a link to /opt/elsewhere (and
+        another account's user-dirs.dirs naming it) had root delete the
+        nekoserver-*.desktop file there. A Desktop inside the home, through a link, is
+        still looked in."""
+        root = self.system.root
+        outside = root / 'opt/elsewhere'
+        outside.mkdir(parents=True)
+        (outside / 'nekoserver-a.desktop').write_text('[Desktop Entry]\nComment=NekoServer\n')
+        (root / 'home/alice').mkdir(parents=True)
+        (root / 'home/alice/Desktop').symlink_to(outside)
+        (root / 'home/bob/.config').mkdir(parents=True)
+        (root / 'home/bob/.config/user-dirs.dirs').write_text(f'XDG_DESKTOP_DIR="{outside}"\n')
+        (root / 'home/carol/Synced/Desktop').mkdir(parents=True)
+        (root / 'home/carol/Synced/Desktop/nekoserver-b.desktop').write_text('Comment=NekoServer\n')
+        (root / 'home/carol/Desktop').symlink_to('Synced/Desktop')
+        names = {str(p.relative_to(root)) for p in self.plan.shortcuts()}
+        self.assertFalse([name for name in names if 'nekoserver-a.desktop' in name], names)
+        self.assertIn('home/carol/Desktop/nekoserver-b.desktop', names)
+        self.assertIn('home/neko/Desktop/nekoserver-steam.desktop', names)
+
     def test_the_server_choice_lists_only_nekoservers_own_things(self):
         group = self.plan.groups['server']
         names = {str(p.relative_to(self.system.root)) for p in group['paths']}
@@ -305,6 +407,10 @@ class PlanTests(unittest.TestCase):
         )
         notes = '\n'.join(group['notes'])
         self.assertIn('4 services and timers', notes)
+        # Seen in a dry run on a fresh Ubuntu: "Stop and remove 1 services and timers".
+        with mock.patch.object(type(self.plan), 'units', lambda plan: ['nekoserver-dashboard.service']):
+            one = '\n'.join(self.plan._server_group()['notes'])
+        self.assertIn('Stop and remove 1 service or timer: nekoserver-dashboard.service', one)
         self.assertIn('with the account neko it created', notes)
         self.assertIn('smb.conf (only the include NekoServer wrote) goes too', notes)
         self.assertIn("the package's example smb.conf, set aside by setup, comes back", notes)
@@ -443,6 +549,22 @@ class PlanTests(unittest.TestCase):
             self.plan.phrase({'server', 'photos', 'backups', 'media'}),
             'remove NekoServer and delete my photos, movies and music, backups',
         )
+
+    def test_photos_kept_without_their_database_are_said_before_the_yes(self):
+        """0.51.2 user check (in a chroot copy): photos kept, the apps' data removed. Immich's
+        database goes with the apps' data, so setup again starts Immich empty beside the
+        kept photos; nothing said so."""
+        photos = str(self.system.root / 'srv/nekoserver/photos')
+        text = self.plan.describe({'server', 'apps', 'data'})
+        warned = [line for line in text.splitlines() if line.startswith('!! Your photos and videos stay')]
+        self.assertEqual(len(warned), 1, text)
+        self.assertIn(photos, warned[0])
+        self.assertIn("Immich's database goes with the apps' data", warned[0])
+        self.assertIn('keep the apps\' data too (switch 3 off)', warned[0])
+        self.assertEqual(uninstaller.CHOICES[uninstaller.DATA_NUMBER - 1][0], 'data')
+        # The apps' data kept, or the photos removed too: nothing to say.
+        for chosen in ({'server', 'apps'}, {'server', 'data', 'photos'}):
+            self.assertNotIn('Your photos and videos stay', self.plan.describe(chosen))
 
     def test_without_sudo_a_size_it_cannot_count_is_said_not_understated(self):
         """IT-07: as the user, du counts only the private installer folder itself (4.0K)."""

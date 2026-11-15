@@ -7,6 +7,7 @@ from pathlib import Path
 import host
 import setup_progress
 from neko_common import (
+    nextcloud_enabled,
     SHARED,
     immich_wanted,
     media_apps_wanted,
@@ -23,6 +24,8 @@ from neko_common import (
     atomic_json,
     atomic_write,
     check_units,
+    chosen_timezone,
+    host_timezone,
     mount_path,
     safe_path,
     write_units,
@@ -128,7 +131,7 @@ def own_port(unit):
     for line in (unit or '').split('\n'):
         words = line.split()
         if line.startswith(EXEC_START) and 'serve' in words and '--port' in words[:-1]:
-            return int(words[words.index('--port') + 1]) if words[words.index('--port') + 1].isdigit() else None
+            return int(words[words.index('--port') + 1]) if words[words.index('--port') + 1].isdecimal() else None
     return None
 
 
@@ -137,7 +140,7 @@ def socket_port(unit):
     for line in (unit or '').split('\n'):
         if line.startswith('ListenStream=127.0.0.1:'):
             value = line.rpartition(':')[2].strip()
-            return int(value) if value.isdigit() else None
+            return int(value) if value.isdecimal() else None
     return None
 
 
@@ -578,7 +581,7 @@ def collector_settings(cfg, smart, interval=60):
     clean['heartbeat'] = {'interval_seconds': cfg.get('heartbeat', {}).get('interval_seconds', 300)}
     clean['runtime'] = {'backend': cfg.get('runtime', {}).get('backend')}
     clean['gateway'] = {k: cfg.get('gateway', {}).get(k) for k in ('services', 'lan_ip', 'lan_cidr')}
-    clean['nextcloud'] = {'enabled': cfg.get('nextcloud', {}).get('enabled', False)}
+    clean['nextcloud'] = {'enabled': nextcloud_enabled(cfg)}
     # The TV step's choice (guided_setup.wanted saves it as tv.wanted): with its report on the
     # SSD, it decides whether the page offers Steam Big Picture.
     clean['tv'] = {'wanted': cfg.get('tv', {}).get('wanted')}
@@ -586,6 +589,9 @@ def collector_settings(cfg, smart, interval=60):
     assistant = cfg.get('assistant', {})
     clean['assistant'] = {'wanted': assistant.get('wanted') is True if isinstance(assistant, dict) else False}
     clean['acceptance_scope'] = scope_digest(cfg)
+    # The zone the schedules were written in, and whether it is this PC's own ("auto"): the
+    # page says so when this PC's zone was changed since (deep check 216).
+    clean['timezone'] = {'zone': host_timezone(cfg), 'follows_this_pc': chosen_timezone(cfg) is None}
     # The profiles an acceptance run may name (config.json), for the collector to check.
     clean['acceptance_profiles'] = sorted(
         name for name in cfg.get('profiles', {}) if re.fullmatch(r'[a-z_]{1,40}', name)
@@ -799,7 +805,7 @@ def main_pid(unit):
         check=False,
     )
     value = (result.stdout or '').strip()
-    return int(value) if result.returncode == 0 and value.isdigit() and value != '0' else None
+    return int(value) if result.returncode == 0 and value.isdecimal() and value != '0' else None
 
 
 def openrgb_private(wait=10, sleep=time.sleep):

@@ -10,6 +10,7 @@ import native_runtime
 import host
 from neko_common import (
     SHARED,
+    whole_number,
     SYSTEMD_UNITS,
     VERSION,
     atomic_json,
@@ -65,10 +66,7 @@ def settings(config):
         ('journal_ram_mb', 64, 16, 256),
         ('journal_retention_days', 14, 1, 90),
     ):
-        value = opts.get(key, default)
-        if type(value) is not int or not low <= value <= high:
-            raise RuntimeError('Invalid journal bound')
-        values[key] = value
+        values[key] = whole_number(opts, 'server_os', key, default, low, high)
     return policy, values
 
 
@@ -113,7 +111,10 @@ def files(config, journald=JOURNALD):
     return {
         '/etc/systemd/sleep.conf.d/90-nekoserver.conf': MARKER
         + '[Sleep]\nAllowSuspend=no\nAllowHibernation=no\nAllowHybridSleep=no\nAllowSuspendThenHibernate=no\n',
-        '/etc/systemd/logind.conf.d/90-nekoserver.conf': MARKER + '[Login]\nIdleAction=ignore\n',
+        # A laptop as the server keeps running with its lid closed (deep check 260).
+        '/etc/systemd/logind.conf.d/90-nekoserver.conf': MARKER
+        + '[Login]\nIdleAction=ignore\nHandleLidSwitch=ignore\nHandleLidSwitchExternalPower=ignore\n'
+        'HandleLidSwitchDocked=ignore\n',
         JOURNAL_DROPIN: MARKER + '[Journal]\n' + ''.join(key + '=' + value + '\n' for key, value in wanted.items()),
     }
 

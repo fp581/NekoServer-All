@@ -250,6 +250,8 @@ def secure_addresses(ctx):
             ctx.log('Tailscale addresses: ' + str(exc))
             return {'status': 'needs_setup', 'reason': 'Secure addresses not set up: ' + str(exc)}
     if not interactive:
+        if gateway_tools.tailscale_status().get('BackendState') == 'Running' and not gateway_tools.https_ready():
+            return {'status': 'needs_setup', 'reason': gateway_tools.HTTPS_OFF}
         configure_routes()
         return answering(result)
     if guided_setup.checkpoint(
@@ -266,7 +268,7 @@ def secure_addresses(ctx):
             'Answer yes. The installer then creates a secure address for each app. '
             'If that fails, check both settings above are on and answer no to try again.',
         ],
-        [('url', 'https://console.tailscale.com/admin/dns')],
+        [('url', gateway_tools.DNS_PAGE)],
         verify=configure_routes,
         ask='tailscale_https',
     ):

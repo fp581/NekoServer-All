@@ -18,7 +18,7 @@ import shutil
 import subprocess
 
 import setup_progress
-from neko_common import extra_drives, typed
+from neko_common import extra_drives, printable, typed
 
 # The roles a drive can have, by what setup calls them; what goes on each is
 # neko_common.drive_holds, for the apps this server has.
@@ -148,8 +148,10 @@ def entry(dev, disk, **more):
         'size': dev.get('size'),
         'size_note': '',
         'type': kind_of(disk),
-        'model': str(dev.get('model') or disk.get('model') or '').strip(),
-        'label': dev.get('label') or '',
+        # The two names a drive brings with it, printed as they are on the terminal: a
+        # label with ESC in it cleared the screen or retitled the window (deep check 228).
+        'model': printable(str(dev.get('model') or disk.get('model') or '').strip()),
+        'label': printable(dev.get('label') or ''),
         'fstype': dev.get('fstype') or '',
         'uuid': dev.get('uuid') or '',
         'mountpoint': dev.get('mountpoint') or next(iter(sorted(mount_points(dev))), None),
@@ -526,7 +528,10 @@ def system_verdict(key, config):
     needed = sum(storage.sizes(role_key)[0] for role_key in {key, *system_roles(config)})
     if free < needed:
         both = ' together with what is already kept there' if set(system_roles(config)) - {key} else ''
-        return f'it has too little room: {free} GB free, and {role(key)} needs at least {needed} GB there{both}'
+        return (
+            f'it has too little room: {free} GB free, and {role(key)} needs at least {needed} GB there{both}. '
+            f'Free {needed - free} GB more on it to use it'
+        )
     return ''
 
 
@@ -740,6 +745,19 @@ def for_window(table, key, config):
     ]
 
 
+def another_drive(key):
+    """The drive to connect when none here can have the role: what to buy, in sizes a
+    shop shows (seen on a PC with one disk and too little room on it: the stop said why,
+    not what would let setup go on)."""
+    from modules import storage
+
+    smallest, recommended = storage.sizes(key)
+    return (
+        f'  Or connect a drive for it: one of {storage.drive_needed(smallest)} GB or more ({recommended} GB or more '
+        'is recommended), already formatted (ext4 is the safe choice).'
+    )
+
+
 def none_usable(table, key, config):
     """Why no drive here can have this role, drive by drive, and what to do."""
     lines = [f"  - {brief(row)}: {verdict(row, key, config)}" for row in table]
@@ -748,7 +766,7 @@ def none_usable(table, key, config):
     )
     return (
         f'No drive here can be {role(key)} ({holds(config, key)}). NekoServer never formats a drive by itself, '
-        f'and never takes a drive that is in use elsewhere.\n{found}\n'
+        f'and never takes a drive that is in use elsewhere.\n{found}\n{another_drive(key)}\n'
         'Then run  sudo bash install.sh  again. Nothing was changed.'
     )
 
@@ -758,7 +776,7 @@ def none_usable(table, key, config):
 
 def numbered(table, answer):
     """The row with the number typed, or None."""
-    return table[int(answer) - 1] if answer.isdigit() and 1 <= int(answer) <= len(table) else None
+    return table[int(answer) - 1] if answer.isdecimal() and 1 <= int(answer) <= len(table) else None
 
 
 STORAGE_PAGE = 'storage'  # the page every drive question of the drives step is on (modules/storage.py)

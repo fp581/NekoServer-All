@@ -3,7 +3,7 @@
 (the NekoServer tab, "Upgrade NekoServer"): a background service runs this, so closing
 the page stops nothing.
 
-  sudo python3 upgrade.py run --tag v0.51.1Beta    the upgrade (nekoserver-upgrade@<tag>)
+  sudo python3 upgrade.py run --tag v0.51.2Beta    the upgrade (nekoserver-upgrade@<tag>)
   sudo python3 upgrade.py resume                   after a restart: put a cut-off one right
 
 What it does, in order (a record in /etc/nekoserver-backups/upgrade.json says how far
@@ -31,9 +31,11 @@ import subprocess
 import sys
 import tarfile
 import time
-from pathlib import Path
+import zlib
+from pathlib import Path, PurePosixPath
 
 from neko_common import (
+    read_settings,
     ASSISTANT,
     RECOVERY,
     SETUP_LOCK,
@@ -74,10 +76,15 @@ UNITS = Path('/etc/systemd/system')
 # Where each release's files are kept on the SSD (modules/recovery.py).
 RELEASES = 'installer/releases'
 LIMIT = 200 * 1024 * 1024  # the release archive is a few MB
+# Said for a download cut off part-way, or an archive that is not whole.
+CUT_OFF = (
+    'The download of {tag} was cut off or is damaged (it is not a whole release); nothing was changed. '
+    'Check that this PC is connected to the internet, then start the upgrade again'
+)
 
 
 def numbers(text):
-    """(0, 44, 0) from "v0.51.1Beta" or "0.51.1"; None for anything else."""
+    """(0, 44, 0) from "v0.51.2Beta" or "0.51.2"; None for anything else."""
     match = TAG.fullmatch(text)
     return tuple(int(n) for n in match.groups()[:3]) if match else None
 
@@ -121,12 +128,38 @@ def owner(config):
     return samba.previous_account() or tv.previous_user(config)
 
 
+def unpack(bundle, target, tag):
+    """The release's files into `target`, refusing links, devices, absolute paths and paths
+    out of the folder: tarfile's 'data' filter, done by hand on Python 3.11.0 to 3.11.3,
+    which lack it (Debian 12 has 3.11.2: the upgrade stopped there with an AttributeError)."""
+    refused = RuntimeError(f'The download of {tag} is not a NekoServer release; nothing was changed')
+    if hasattr(tarfile, 'data_filter'):
+        try:
+            bundle.extractall(target, filter='data')
+        except tarfile.FilterError:
+            raise refused from None
+        return
+    members = bundle.getmembers()
+    for member in members:
+        if not (member.isfile() or member.isdir()) or member.name.startswith('/'):
+            raise refused
+        if '..' in PurePosixPath(member.name).parts:
+            raise refused
+        # As the filter does: owned by whoever unpacks it, no set-user-ID or group/other write bits.
+        member.uid, member.gid, member.uname, member.gname = os.getuid(), os.getgid(), '', ''
+        member.mode &= 0o755
+    bundle.extractall(target, members=members)
+
+
 def download(tag, work, get=fetch):
     """The release, unpacked into `work`/<tag>, checked to name that version (not signed:
     see the top of this file): returns its nekoserver folder."""
     ensure_directory(work, 0o700)
     archive = safe_path(work / (tag + ARCHIVE_SUFFIX))
-    payload = get(ARCHIVE.format(tag=tag), 'NekoServer ' + tag, LIMIT + 1, timeout=300)
+    try:
+        payload = get(ARCHIVE.format(tag=tag), 'NekoServer ' + tag, LIMIT + 1, timeout=300)
+    except http.client.HTTPException:  # the connection closed part-way
+        raise RuntimeError(CUT_OFF.format(tag=tag)) from None
     if len(payload) > LIMIT:
         raise RuntimeError(f'The download of {tag} is larger than any NekoServer release; nothing was changed')
     atomic_write(archive, payload, 0o600)
@@ -136,9 +169,12 @@ def download(tag, work, get=fetch):
 
         shutil.rmtree(target)
     ensure_directory(target, 0o700)
-    with tarfile.open(archive) as bundle:
-        # The 'data' filter refuses links out of the folder, devices and absolute paths.
-        bundle.extractall(target, filter='data')
+    try:
+        with tarfile.open(archive) as bundle:
+            unpack(bundle, target, tag)
+    except (tarfile.TarError, EOFError, zlib.error):
+        # A short or damaged archive: tarfile's own words list every format it tried.
+        raise RuntimeError(CUT_OFF.format(tag=tag)) from None
     tops = [p for p in target.iterdir() if p.is_dir()]
     if len(tops) != 1 or not (tops[0] / 'nekoserver/install.sh').is_file():
         raise RuntimeError(f'The download of {tag} is not a NekoServer release; nothing was changed')
@@ -165,13 +201,30 @@ def kept_release(config, folder):
     return path
 
 
-def steps_done(config):
-    """The setup steps recorded as done (the record on the SSD)."""
+def step_states(config):
+    """Each setup step's recorded status (the record on the SSD): {name: status}."""
     try:
         states = json.loads((ssd(config) / 'installer/state/state.json').read_text())
     except (OSError, ValueError, KeyError, RuntimeError):
-        return set()
-    return {name for name, state in states.items() if isinstance(state, dict) and state.get('status') == DONE}
+        return {}
+    if not isinstance(states, dict):
+        return {}
+    return {name: state.get('status') for name, state in states.items() if isinstance(state, dict)}
+
+
+def steps_done(config):
+    """The setup steps recorded as done."""
+    return {name for name, status in step_states(config).items() if status == DONE}
+
+
+# What the installer records for a step that failed, and for one a cut-off run left
+# part-way (installer.py): the last setup run did not finish whole.
+UNFINISHED = ('failed', 'running')
+
+
+def steps_unfinished(config):
+    """The setup steps that failed or were cut off in the last run, sorted."""
+    return sorted(name for name, status in step_states(config).items() if status in UNFINISHED)
 
 
 def setup_profile(config, modules=None):
@@ -712,8 +765,13 @@ def resume_held(settings, out, setup, journal):
         return 0
     if saved.get('phase') == 'downloading':
         journal.unlink(missing_ok=True)
-        out('An upgrade was cut off while it downloaded; nothing had changed')
-        return 0
+        out(
+            f'The upgrade to {saved.get("to") or "a newer release"} was cut off while it downloaded; nothing had '
+            f'changed and this server still runs {VERSION}. Start the upgrade again from the Updates page'
+        )
+        # 1, not 0: nothing was upgraded, so the report says "partial", not "pass" (deep
+        # check 316: the dashboard showed the cut-off upgrade as a success).
+        return 1
     config = json.loads(settings_path(settings).read_text())
     if settled(config, out, journal, saved=saved):
         return 0
@@ -744,6 +802,15 @@ def settled(config, out=print, journal=JOURNAL, saved=None, check=None, by_hand=
     wanted, here = numbers(str(saved.get('to') or '')), numbers(VERSION)
     back = by_hand and here == numbers(Path(str(saved.get('previous') or '')).name)
     if not wanted or not (here >= wanted or back):
+        return False
+    if not by_hand and saved.get('phase') != 'verifying' and steps_unfinished(config):
+        # At a start, the release running this may be the failed one itself: the way back
+        # cut off (a power cut) before the older setup rewrote the resume service. A step
+        # new in it that failed is not among those checked, so the check passed and the
+        # record was closed on a release that failed. A person's setup that ended whole
+        # leaves no such step; one that did not finish is put back like the upgrade. Cut
+        # off while it was checked, setup had ended whole: a step that failed then failed
+        # before the upgrade too, and the check decides.
         return False
     before = [step for step in saved.get('before') or [] if isinstance(step, str)]
     if checked(check or (lambda: verify(config, 'v' + VERSION, before))) is not None:
@@ -858,7 +925,11 @@ def main():
         parser.error('Run it with sudo')
     if args.action == 'run' and not (args.tag and TAG.fullmatch(args.tag)):
         parser.error('run needs --tag with a release, such as v0.47.2Beta')
-    config = json.loads(settings_path(args.config).read_text())
+    try:
+        config = read_settings(args.config)
+    except RuntimeError as exc:
+        print(f'Nothing was upgraded: {exc}', file=sys.stderr)
+        return 2
     if args.action == 'resume':
         return service_code(reported(config, RESUME_UNIT, lambda out: resume(args.config, out)))
     recovery = ssd(config) / 'installer/recovery.lock'

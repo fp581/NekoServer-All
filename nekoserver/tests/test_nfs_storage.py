@@ -734,6 +734,7 @@ class WeeklyCopyTests(unittest.TestCase):
         with (
             mock.patch.object(recovery_wizard, 'drive_rows', return_value=rows),
             mock.patch.object(recovery_wizard.os.path, 'ismount', return_value=True),
+            mock.patch.object(recovery_wizard, 'is_mount_point', return_value=True),
         ):
             recovery_wizard.checked_drive(
                 config,

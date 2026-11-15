@@ -1,7 +1,7 @@
 """Pure checks for selected modules, before any installer module can mutate OS state."""
 
 import re
-from neko_common import DASHBOARD_DEFAULT_PORT, host_timezone
+from neko_common import DASHBOARD_DEFAULT_PORT, host_timezone, whole_number
 from modules import (
     app_backup,
     dashboard,
@@ -46,10 +46,14 @@ def validate(config, plan):
     for name in plan:
         if name in validators:
             validators[name](config)
-    from neko_common import DRIVE_KEYS, LOCATIONS, extra_drives
+    from neko_common import DRIVE_KEYS, LOCATIONS, extra_drives, not_a_drive
 
     places = config.get('locations', {})
     drives = {*DRIVE_KEYS, *extra_drives(config)}
+    storage = config.get('storage') if isinstance(config.get('storage'), dict) else {}
+    for key, value in places.items() if isinstance(places, dict) else ():
+        if key in LOCATIONS and value not in drives and isinstance(storage.get(value), dict):
+            raise RuntimeError(f'locations.{key}: ' + not_a_drive(config, value))
     if not isinstance(places, dict) or any(k not in LOCATIONS or v not in drives for k, v in places.items()):
         raise RuntimeError(
             'locations must name photos, music, cloud or movies, each "ssd", "media" or a drive under "storage"'
@@ -95,20 +99,14 @@ def validate(config, plan):
     if set(plan) & {'media', 'photos', 'photo_backup', 'photo_preservation', 'music_backup', 'maintenance'}:
         host_timezone(config)
     if 'media_monitor' in plan:
-        value = config.get('monitoring', {}).get('interval_minutes', 60)
-        if type(value) is not int or not 15 <= value <= 1440:
-            raise RuntimeError('Invalid media monitoring interval')
+        whole_number(config.get('monitoring', {}), 'monitoring', 'interval_minutes', 60, 15, 1440)
     if 'onboarding' in plan:
-        value = config.get('onboarding', {}).get('wait_seconds', 180)
-        if type(value) is not int or not 0 <= value <= 600:
-            raise RuntimeError('Invalid startup wait')
+        whole_number(config.get('onboarding', {}), 'onboarding', 'wait_seconds', 180, 0, 600)
     if set(plan) & {'account_credentials', 'accounts'}:
         import account_store
 
         account_store.enabled(config)
-        value = config.get('accounts', {}).get('wait_seconds', 180)
-        if type(value) is not int or not 0 <= value <= 600:
-            raise RuntimeError('Account startup wait must be 0..600 seconds')
+        whole_number(config.get('accounts', {}), 'accounts', 'wait_seconds', 180, 0, 600)
     opts = config.get('photos', {})
     if 'photos' in plan:
         value = opts.get('immich_version', 'auto')
@@ -116,10 +114,8 @@ def validate(config, plan):
             raise RuntimeError('Invalid Immich release version')
     if 'photo_preservation' in plan:
         for key, default, minimum in (('archive_interval_minutes', 60, 15), ('archive_min_age_seconds', 600, 60)):
-            value = opts.get(key, default)
             maximum = 10080 if key == 'archive_interval_minutes' else 31536000
-            if type(value) is not int or not minimum <= value <= maximum:
-                raise RuntimeError('Invalid photo archive interval/age')
+            whole_number(opts, 'photos', key, default, minimum, maximum)
         _time(opts.get('database_backup_time', '02:15'))
     if 'photo_backup' in plan:
         _time(opts.get('backup_time', '03:00'))
@@ -127,6 +123,67 @@ def validate(config, plan):
             raise RuntimeError('Invalid external backup weekday')
         if opts.get('external_backup_fstype', 'ext4') not in ('ext4', 'xfs', 'btrfs', 'exfat'):
             raise RuntimeError('Invalid external backup filesystem')
+
+
+# Settings a release reads or writes that the template (config.json) does not show: with
+# the template's own keys, the keys a mistyped one is compared with (unknown_settings).
+SETTINGS_BEYOND_TEMPLATE = {
+    '': (
+        *('locations', 'placement', 'drives', 'media_apps', 'install', 'acceptance_scope'),
+        # setup's own notes: installer.RETENTION_REVIEWED, existing_page.ASKED and COPIES
+        *('profile_steps_known', 'retention_reviewed', 'existing_media_asked', 'existing_media_copy'),
+    ),
+    'docker': ('persistent_root',),
+    'photos': (
+        'backup_time',
+        'backup_weekday',
+        'database_backup_time',
+        'external_backup_network',
+        'external_backup_wanted',
+    ),
+    'music': ('backup_time', 'your_login'),
+    'networking': ('allow_tailnet_to_lan', 'lan_cidr', 'lan_ip'),
+    'gateway': ('lan_ports',),
+    'dashboard': ('remote',),
+}
+# Groups whose keys are names you choose (a step, a profile, a drive): not checked.
+FREE_NAMES = ('modules', 'profiles', 'storage', 'drives', 'placement', 'install', 'locations')
+
+
+def unknown_settings(config, template, where='the settings file'):
+    """A warning for each key no release knows: a mistyped one ("media.servics") was
+    taken silently and its setting left at the default (deep check 292). Inside a group
+    only a key close to a known one is named, since setup itself saves answers
+    ("wanted") under any group."""
+    import difflib
+
+    said = []
+    if not template:  # no template to compare with: nothing can be said
+        return said
+
+    def warn(name, close):
+        hint = f' Did you mean "{close[0]}"?' if close else ''
+        said.append(
+            f'Warning: "{name}" in {where} is not a setting NekoServer knows, so it does nothing.'
+            f'{hint} Check its spelling.'
+        )
+
+    top = [*template, *SETTINGS_BEYOND_TEMPLATE['']]
+    for key, value in config.items():
+        if key.startswith('_'):  # a comment of yours
+            continue
+        if key not in top:
+            warn(key, difflib.get_close_matches(key, top, 1, 0.75))
+            continue
+        known = template.get(key)
+        if key in FREE_NAMES or not isinstance(value, dict) or not isinstance(known, dict):
+            continue
+        names = [*known, *SETTINGS_BEYOND_TEMPLATE.get(key, ()), 'wanted', 'enabled']
+        for inner in value:
+            close = difflib.get_close_matches(inner, names, 1, 0.75)
+            if inner not in names and not inner.startswith('_') and close:
+                warn(f'{key}.{inner}', [f'{key}.{close[0]}'])
+    return said
 
 
 def _time(value):

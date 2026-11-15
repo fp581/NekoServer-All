@@ -3,7 +3,9 @@
 import contextlib
 import ctypes
 import errno
+import functools
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -11,18 +13,50 @@ import shutil
 import socket
 import stat
 import subprocess
-import tempfile
+import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.51.1'
+VERSION = '0.51.2'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
 ZONEINFO = Path('/usr/share/zoneinfo')
 ETC_TIMEZONE = Path('/etc/timezone')
+
+
+def adopt_doas_user(environ=os.environ):
+    """doas (sudo's stand-in on some PCs) names the account that started it in DOAS_USER
+    alone; NekoServer reads SUDO_USER (and SUDO_UID, SUDO_GID) to know whose account the
+    server is for. Taken over here, once, as install.sh does, so a tool started with doas
+    itself (doas python3 migrate.py) sees the same account (deep check 298)."""
+    import pwd
+
+    name = environ.get('DOAS_USER')
+    if not name or (environ.get('SUDO_USER') or name) != name:
+        return
+    environ['SUDO_USER'] = name
+    try:
+        entry = pwd.getpwnam(name)
+    except KeyError:
+        return
+    environ.setdefault('SUDO_UID', str(entry.pw_uid))
+    environ.setdefault('SUDO_GID', str(entry.pw_gid))
+
+
+adopt_doas_user()
+
+
+def readable_output():
+    """Text the terminal's character set has no room for (a dash, or a file name in another
+    script, on a Latin-1 locale) is shown as "?" instead of stopping the tool with a codec
+    error (deep check 271: "sudo bash install.sh --check" stopped on its first line)."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(errors='replace')
 
 
 def local_timezone(localtime='/etc/localtime', etc_timezone=ETC_TIMEZONE, zoneinfo=ZONEINFO):
@@ -42,6 +76,19 @@ def local_timezone(localtime='/etc/localtime', etc_timezone=ETC_TIMEZONE, zonein
     return name if name and TIMEZONE_PATTERN.fullmatch(name) and (Path(zoneinfo) / name).is_file() else None
 
 
+def chosen_timezone(config):
+    """The zone the settings name (``timezone``, or the legacy ``media.timezone`` and
+    ``maintenance.timezone``), None when they leave it to this PC (``"auto"``, or none)."""
+    value = config.get('timezone')
+    if value == 'auto':
+        return None
+    for section in ('media', 'maintenance'):
+        if value is None:
+            group = config.get(section, {})
+            value = group.get('timezone') if isinstance(group, dict) else None
+    return value
+
+
 def host_timezone(config):
     """IANA zone used for container TZ and systemd timer schedules.
 
@@ -49,14 +96,7 @@ def host_timezone(config):
     ``maintenance.timezone`` keys, then the host's /etc/localtime, then UTC.
     ``"auto"`` (the default in a new config) means "use this PC's timezone".
     """
-    value = config.get('timezone')
-    automatic = value == 'auto'
-    if automatic:
-        value = None
-    for section in ('media', 'maintenance'):
-        if value is None and not automatic:
-            group = config.get(section, {})
-            value = group.get('timezone') if isinstance(group, dict) else None
+    value = chosen_timezone(config)
     if value is None:
         value = local_timezone()
     if value is None:
@@ -65,8 +105,25 @@ def host_timezone(config):
     if not isinstance(value, str) or not TIMEZONE_PATTERN.fullmatch(value):
         raise RuntimeError('timezone must be an IANA zone such as Europe/London')
     if ZONEINFO.is_dir() and not (ZONEINFO / value).is_file():
-        raise RuntimeError(f'timezone {value} is not installed under {ZONEINFO}')
+        raise RuntimeError(unknown_zone(value))
     return value
+
+
+def unknown_zone(value):
+    """Why a time zone name was refused, with the one most likely meant: a typo or the wrong
+    capitals ("Europe/Londn", "europe/london") were "not installed", which sent a person
+    looking for something to install."""
+    import difflib
+    import zoneinfo
+
+    known = sorted(zoneinfo.available_timezones())
+    meant = next((zone for zone in known if zone.lower() == value.lower()), None)
+    meant = meant or next(iter(difflib.get_close_matches(value, known, n=1, cutoff=0.8)), None)
+    guess = f' did you mean {meant}?' if meant else ''
+    return (
+        f'timezone {value} is not a time zone this PC knows:{guess} Write it as in the full list '
+        '(timedatectl list-timezones), such as Europe/London, or "auto" for this PC\'s own'
+    )
 
 
 # The facts setup shares with the runtime (runtime/src/shared.json, built into it): one
@@ -96,6 +153,11 @@ DASHBOARD_DEFAULT_PORT = 8787
 # APP_PORTS: something of the person's own on it (an Ollama they installed) keeps it,
 # and the assistant is not installed.
 ASSISTANT = 'assistant'
+# The steps a finished server does not wait for, in the terminal, the setup window and
+# the dashboard alike (deep check 293): the assistant, whose step turns anything that
+# goes wrong into "needs a look". The TV, phone alerts and heartbeat are needed once you
+# asked for them (left out, their step finishes anyway).
+OPTIONAL_STEPS = frozenset((ASSISTANT,))
 OLLAMA_PORT = 11434
 
 
@@ -122,9 +184,53 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def local_opener(*handlers):
-    """An opener for the apps on this computer: no proxy, no redirects."""
-    return urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect(), *handlers)
+def local_opener(*handlers, seconds=None):
+    """An opener for the apps on this computer: no proxy, no redirects. `seconds`: the most
+    one request may take in all, its answer read whole (TimeLimit)."""
+    timed = (TimeLimit(seconds),) if seconds else ()
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect(), *timed, *handlers)
+
+
+class TimeLimit(urllib.request.HTTPHandler):
+    """Plain HTTP requests that end with TimeoutError once they have taken `seconds` in
+    all. The socket's own timeout counts per read: an app answering a byte every few
+    seconds kept every read within it, and setup waiting for good."""
+
+    def __init__(self, seconds):
+        super().__init__()
+        self.seconds = seconds
+
+    def http_open(self, req):
+        return self.do_open(lambda host, **options: _TimedConnection(host, seconds=self.seconds, **options), req)
+
+
+class _TimedConnection(http.client.HTTPConnection):
+    """A connection whose socket reads stop at its deadline (_TimedSocket)."""
+
+    def __init__(self, host, seconds, **options):
+        super().__init__(host, **options)
+        self.seconds = seconds
+
+    def connect(self):
+        deadline = time.monotonic() + self.seconds
+        super().connect()
+        plain = self.sock
+        timeout = plain.gettimeout()
+        self.sock = _TimedSocket(plain.family, plain.type, plain.proto, fileno=plain.detach())
+        self.sock.read_timeout, self.sock.deadline = timeout, deadline
+
+
+class _TimedSocket(socket.socket):
+    """A socket whose every read waits at most until `deadline` (time.monotonic), and at
+    most `read_timeout` seconds (None: no limit of its own). http.client reads the answer,
+    headers and body, through recv_into."""
+
+    def recv_into(self, buffer, nbytes=0, flags=0):
+        left = self.deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError('the answer did not come whole in time')
+        self.settimeout(left if self.read_timeout is None else min(self.read_timeout, left))
+        return super().recv_into(buffer, nbytes, flags)
 
 
 # Where NekoServer's systemd units live; every one it writes starts with this.
@@ -321,6 +427,40 @@ def nas_disk_wwn(saved, seen, label, choose):
     return seen
 
 
+# What a name from outside (a drive's label, a folder's name) must not carry onto the
+# terminal as it is: control characters (ESC starts the sequences that clear the screen
+# or retitle the window) and the marks that turn text right to left, which can make
+# "pics<RLO>gpj.exe" read as "picsexe.jpg". neko_restore.show does the same for its
+# lists (that file stands alone, so it has its own).
+UNSHOWN = re.compile('[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]')
+
+
+def printable(text):
+    """`text` as it can be printed: each such character written as its code (\\x1b)."""
+    return UNSHOWN.sub(lambda m: m.group(0).encode('unicode_escape').decode('ascii'), str(text))
+
+
+def whole_number(opts, group, key, default, low, high):
+    """The whole number `key` under `group` in the settings (`opts` is that group), from
+    `low` to `high`; anything else refused with the setting, the file and the range named,
+    so the person knows what to write (deep check plan 277: "Invalid journal bound")."""
+    value = opts.get(key, default)
+    if type(value) is not int or not low <= value <= high:
+        raise RuntimeError(
+            f'"{key}" under "{group}" in my-config.json is {value!r}: write a whole number from {low} to '
+            f'{high} there (or take the line out to use {default}), then run setup again'
+        )
+    return value
+
+
+def look_alike_letters(text):
+    """True when `text` mixes Latin letters with Cyrillic or Greek ones, many of which look
+    the same (Cyrillic а and Latin a): "Меdia" can't be told from "Media" on a screen.
+    A name all in one alphabet ("Медиа", "Música") is fine."""
+    scripts = {unicodedata.name(c, '').split(' ')[0] for c in text if c.isalpha()}
+    return 'LATIN' in scripts and bool(scripts & {'CYRILLIC', 'GREEK'})
+
+
 def safe_path(path):
     path = Path(path)
     if '..' in path.parts:
@@ -372,6 +512,13 @@ def reading_max_age(snapshot):
 # alone decide who can read the backup copies, so it is mounted for root only. Same
 # options as the backup program (backup.rs usb_mount_options).
 PRIVATE_EXFAT = 'uid=0,gid=0,fmask=0177,dmask=0077'
+
+
+def usb_mount_command(fstype, writable, device, folder):
+    """The mount command for the USB backup drive: private, and for exFAT with Linux's own
+    driver (shared.json "exfat_mount"; through FUSE who may read it can't be checked)."""
+    driver = SHARED['exfat_mount']['arguments'] if fstype == 'exfat' else []
+    return ['mount', *driver, '-o', usb_mount_options(fstype, writable), device, str(folder)]
 
 
 def usb_mount_options(fstype, writable=False):
@@ -495,27 +642,115 @@ def valid_ledger_path(rel):
     )
 
 
+_JSON_GAP = re.compile(r'[ \t\n\r]*')
+
+
+class _JsonMembers:
+    """The members of the JSON object in a file, one at a time, read a piece at a time:
+    a ledger of a million photos read whole took 829 MB and 6.8 s in the recovery menu
+    (deep check 302); the runtime reads it row by row too (ledger.rs)."""
+
+    PIECE = 1 << 20
+
+    def __init__(self, handle):
+        import json.scanner
+
+        self.handle, self.text, self.at, self.done = handle, '', 0, False
+        self.scan = json.scanner.make_scanner(json.JSONDecoder())  # one JSON value at a place
+
+    def _more(self):
+        piece = self.handle.read(self.PIECE)
+        self.done = not piece
+        self.text, self.at = self.text[self.at :] + piece, 0
+
+    def _char(self):
+        """The next character that is not white space (consumed), '' at the end."""
+        while True:
+            at = _JSON_GAP.match(self.text, self.at).end()
+            if at < len(self.text):
+                self.at = at + 1
+                return self.text[at]
+            if self.done:
+                return ''
+            self._more()
+
+    def value(self):
+        """The next whole JSON value."""
+        while True:
+            self.at = _JSON_GAP.match(self.text, self.at).end()
+            try:
+                value, end = self.scan(self.text, self.at)
+            except (StopIteration, ValueError):
+                end = None
+            # Cut at the piece's end (or not whole yet): read on and take it again.
+            if end is None or (end == len(self.text) and not self.done):
+                if self.done:
+                    raise ValueError('cut short')
+                self._more()
+                continue
+            self.at = end
+            return value
+
+    def at_end(self):
+        """Only white space is left (nothing after the object)."""
+        return self._char() == ''
+
+    def members(self):
+        """The key of each member of the object that comes next; the caller takes the
+        member's value with value(), or its own members with members()."""
+        if self._char() != '{':
+            raise ValueError('not an object')
+        sign = self._char()
+        while sign != '}':
+            if sign != '"':
+                raise ValueError('no key')
+            self.at -= 1
+            key = self.value()
+            if self._char() != ':':
+                raise ValueError('no colon')
+            yield key
+            sign = self._char()
+            if sign == ',':
+                sign = self._char()
+            elif sign != '}':
+                raise ValueError('no comma')
+
+
 def read_ledger(root):
     """{relative path: sha256} recorded for a backup tree, or {} if it has no ledger yet.
-    A ledger with any unsafe path or malformed entry is not trusted at all."""
+    A ledger with any unsafe path or malformed entry is not trusted at all. Read row by
+    row, keeping only each row's checksum (_JsonMembers)."""
     path = Path(root) / LEDGER_NAME
     if not path.exists():
         return {}
     if path.is_symlink() or not path.is_file():
         raise RuntimeError(f'The checksum ledger {path} is not a regular file')
+    out, entries, ledger_format, invalid = {}, False, None, False
     try:
-        value = json.loads(path.read_text())
-        entries = value['entries'] if value.get('format') == 'neko-ledger-v1' else None
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        entries = None
-    if not isinstance(entries, dict):
+        with path.open(encoding='utf-8') as handle:
+            reader = _JsonMembers(handle)
+            for key in reader.members():
+                if key != 'entries':
+                    value = reader.value()
+                    ledger_format = value if key == 'format' else ledger_format
+                    continue
+                entries = True
+                for rel in reader.members():
+                    row = reader.value()
+                    sha = row.get('sha256') if isinstance(row, dict) else None
+                    if not valid_ledger_path(rel) or not (isinstance(sha, str) and re.fullmatch(r'[0-9a-f]{64}', sha)):
+                        invalid = True
+                    else:
+                        out[rel] = sha
+            if not reader.at_end():
+                raise ValueError('more after the ledger')
+    except (OSError, ValueError):
+        entries = False
+    # The format comes after the entries in the file: judged once it is all read.
+    if not entries or ledger_format != 'neko-ledger-v1':
         raise RuntimeError(f'The checksum ledger {path} is unreadable')
-    out = {}
-    for rel, row in entries.items():
-        sha = row.get('sha256') if isinstance(row, dict) else None
-        if not valid_ledger_path(rel) or not (isinstance(sha, str) and re.fullmatch(r'[0-9a-f]{64}', sha)):
-            raise RuntimeError(f'The checksum ledger {path} has an invalid entry; it is not trusted')
-        out[rel] = sha
+    if invalid:
+        raise RuntimeError(f'The checksum ledger {path} has an invalid entry; it is not trusted')
     return out
 
 
@@ -747,20 +982,28 @@ def copy_checked_into(src, folder, name, expected=None, what=None):
     what = what or name
     fd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=folder)
     stream = hashlib.sha256()
-    with os.fdopen(fd, 'w+b') as out:
-        os.fchmod(out.fileno(), 0o600)
-        while chunk := src.read(1 << 20):
-            stream.update(chunk)
-            out.write(chunk)
-        out.flush()
-        os.fsync(out.fileno())
-        # Written to the drive: dropped from memory, so the read below comes from the
-        # drive itself (from memory, damage on the drive would never be seen).
-        os.posix_fadvise(out.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
-        out.seek(0)
-        landed = hashlib.file_digest(out, 'sha256').hexdigest()
-    if landed != stream.hexdigest():
-        raise RuntimeError(f'Restoring {what} failed: the copy written to disk does not match what was read')
+    try:
+        with os.fdopen(fd, 'w+b') as out:
+            os.fchmod(out.fileno(), 0o600)
+            while chunk := src.read(1 << 20):
+                stream.update(chunk)
+                out.write(chunk)
+            out.flush()
+            os.fsync(out.fileno())
+            # Written to the drive: dropped from memory, so the read below comes from the
+            # drive itself (from memory, damage on the drive would never be seen).
+            os.posix_fadvise(out.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+            out.seek(0)
+            landed = hashlib.file_digest(out, 'sha256').hexdigest()
+        if landed != stream.hexdigest():
+            raise RuntimeError(f'Restoring {what} failed: the copy written to disk does not match what was read')
+    except (OSError, RuntimeError):
+        # A copy cut off part-way (the drive filled up, a read error) or written wrong is
+        # never left under the file's own name: a restore stopped by a full drive left a
+        # cut-off file there among the good ones, said to be "there as they are".
+        with contextlib.suppress(OSError):
+            os.unlink(name, dir_fd=folder)
+        raise
     if expected is not None and landed != expected:
         raise BackupDamaged(f'{what} is damaged on the backup (it no longer matches its recorded checksum)')
     return landed
@@ -776,6 +1019,59 @@ def settings_path(value):
     if path.suffix != '.json':
         raise RuntimeError('Settings file must be a .json file: ' + str(path))
     return safe_path(path)
+
+
+def read_settings(value):
+    """The settings file (--config) as a dict, read through settings_path. Whatever is
+    wrong with it is a RuntimeError naming the file in plain words: before, commands
+    such as music-setup.py and migrate.py ended with a Python traceback on a cut-off file."""
+    try:
+        path = settings_path(value)
+    except RuntimeError as exc:
+        raise RuntimeError(f'{value} can not be used as the settings file: {exc}') from None
+    try:
+        config = json.loads(path.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        raise RuntimeError(
+            f'{path} is not there. Name your settings file with --config, or run  '
+            'sudo bash install.sh  without it (the guided setup makes my-config.json)'
+        ) from None
+    except OSError as exc:
+        raise RuntimeError(f'{path} could not be read ({exc.strerror})') from None
+    except ValueError as exc:  # UnicodeError too
+        where = f' (line {exc.lineno}, column {exc.colno})' if isinstance(exc, json.JSONDecodeError) else ''
+        raise RuntimeError(
+            f'{path} is not valid JSON{where}: it is damaged, or not a settings file. '
+            'Fix it, or name another with --config'
+        ) from None
+    if not isinstance(config, dict):
+        raise RuntimeError(f'{path} is not a settings file (no settings in it)')
+    template = settings_template()
+    wrong = next((k for k, v in config.items() if k in template and type(v) is not type(template[k])), None)
+    if wrong:
+        # Said here, once: before, "media": null or "data_mount": [] ended media-connect.py,
+        # onboard.py and source-wizard.py with a Python traceback (deep check 227).
+        raise RuntimeError(
+            f'{path} is damaged: "{wrong}" should be {KIND_WORDS[type(template[wrong])]}, as in the '
+            f'{SETTINGS_TEMPLATE} that came with NekoServer. Fix it, or name another with --config'
+        )
+    return config
+
+
+# What each kind of value in the settings template is called in a message.
+KIND_WORDS = {dict: 'a section in { }', list: 'a list in [ ]', str: 'text in quotes', bool: 'true or false'}
+
+
+@functools.cache
+def settings_template():
+    """The top-level settings of the template (config.json beside this file) whose kind
+    every settings file keeps: a section stays a section, a folder stays text. Empty when
+    the template can't be read (reading settings does not need it)."""
+    try:
+        template = json.loads((Path(__file__).resolve().parent / SETTINGS_TEMPLATE).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in template.items() if type(v) in KIND_WORDS} if isinstance(template, dict) else {}
 
 
 # The settings a command uses when no --config is given (default_settings).
@@ -846,11 +1142,29 @@ def extra_drives(config):
     storage = config.get('storage')
     if not isinstance(storage, dict):
         return {}
+    # Only a name a drive can have counts, as for the runtime (common::extra_drive): a
+    # "d-1" was a drive here, so drives_in_use listed it and drive_folder then said it
+    # "is not a drive under storage" (deep check plan 196).
     return {
         name: record
         for name, record in storage.items()
-        if name not in OLD_STORAGE_KEYS and name not in DRIVE_KEYS and isinstance(record, dict)
+        if name not in OLD_STORAGE_KEYS
+        and name not in DRIVE_KEYS
+        and isinstance(record, dict)
+        and DRIVE_NAME.fullmatch(name)
     }
+
+
+def not_a_drive(config, drive):
+    """Why `drive` is no drive of these settings, in words."""
+    storage = config.get('storage')
+    if isinstance(storage, dict) and isinstance(storage.get(drive), dict):
+        return (
+            f'"{drive}" under "storage" in my-config.json is not a name a drive can have: setup names them '
+            'd3, d4 and so on (a small letter, then small letters or digits, 16 at most). Run  sudo bash '
+            'install.sh  to choose that drive again'
+        )
+    return f'"{drive}" is not a drive under "storage" in my-config.json'
 
 
 def drive_folder(config, drive):
@@ -858,8 +1172,8 @@ def drive_folder(config, drive):
     "media", /mnt/nekoserver-drives/<name> for another one under "storage"."""
     if drive in DRIVE_KEYS:
         return mount_path(config[DRIVE_KEYS[drive]])
-    if drive not in extra_drives(config) or not DRIVE_NAME.fullmatch(str(drive)):
-        raise RuntimeError(f'"{drive}" is not a drive under "storage" in my-config.json')
+    if drive not in extra_drives(config):
+        raise RuntimeError(not_a_drive(config, drive))
     return EXTRA_MOUNTS / drive
 
 
@@ -889,6 +1203,8 @@ def location(config, what):
     default, _ = LOCATIONS[what]
     chosen = (config.get('locations') or {}).get(what, default)
     if chosen not in DRIVE_KEYS and chosen not in extra_drives(config):
+        if isinstance(chosen, str) and isinstance((config.get('storage') or {}).get(chosen), dict):
+            raise RuntimeError(f'locations.{what}: ' + not_a_drive(config, chosen))
         raise RuntimeError(f'locations.{what} must be "ssd", "media" or a drive under "storage"')
     return chosen
 
@@ -966,13 +1282,60 @@ def relative_path(value):
     return path
 
 
+# Where a JSON answer can start in occ's output: the start of a line (after spaces).
+OCC_JSON_START = re.compile(r'^[ \t]*([{\[])', re.MULTILINE)
+
+
+def occ_json(text):
+    """The JSON answer Nextcloud's occ printed (`--output=json`), or None when there is
+    none. PHP prints its warnings and notices on the same output, before or after the
+    answer, and they carry braces of their own ("{closure}"): taking everything from the
+    first "{" read no answer at all then, and setup waited 15 minutes for one. The
+    answer is the first JSON value that starts a line; whatever follows it is left."""
+    decoder = json.JSONDecoder()
+    for start in OCC_JSON_START.finditer(text or ''):
+        try:
+            return decoder.raw_decode(text, start.start(1))[0]
+        except ValueError:
+            continue
+    return None
+
+
 def fetch(url, what, limit, timeout=30, opener=None, headers=None):
     """A download setup needs (an app's release list or compose file), or a plain reason
     it failed: no internet, a page that is gone, GitHub's request limit."""
     request = urllib.request.Request(url, headers={'User-Agent': 'NekoServer-installer', **(headers or {})})
     try:
         with (opener or urllib.request.urlopen)(request, timeout=timeout) as response:
-            return response.read(limit)
+            # `timeout` is for the whole answer: the socket's own limit is per read, and a
+            # server sending a byte a second kept setup waiting for good.
+            deadline, data = time.monotonic() + timeout, b''
+            read = getattr(response, 'read1', response.read)
+            while len(data) <= limit:
+                if time.monotonic() > deadline:
+                    raise RuntimeError(
+                        f'{what}: {url} answered too slowly (not within {timeout} seconds); try again later'
+                    )
+                chunk = read(min(65536, limit + 1 - len(data)))
+                if not chunk:
+                    break
+                data += chunk
+            # Before, the first `limit` bytes were taken as the whole answer, and an
+            # answer cut off part-way as what there was: a compose file cut short was used.
+            promised = getattr(response, 'headers', {}).get('Content-Length')
+            if len(data) > limit:
+                raise RuntimeError(f'{what}: the answer from {url} is larger than expected; try again later')
+            if isinstance(promised, str) and promised.isdecimal() and len(data) < int(promised):
+                raise http.client.IncompleteRead(data, int(promised) - len(data))
+            return data
+    except http.client.HTTPException as exc:
+        # Not an OSError: an answer cut off part-way (IncompleteRead) or a header line
+        # too long to be a web site's (LineTooLong, a proxy's page, say) came out in
+        # Python's words ("got more than 65536 bytes when reading header line").
+        raise RuntimeError(
+            f'{what}: the answer from {url} was cut off or was not a web site\'s answer ({type(exc).__name__}); '
+            'try again later'
+        ) from None
     except urllib.error.HTTPError as exc:
         if exc.code in (403, 429) and 'api.github.com' in url:
             raise RuntimeError(
@@ -1340,10 +1703,9 @@ AWAY_FOR = 60
 _ASKED = {}  # (what, path) -> (answer, when): real paths for the run, "no answer" for AWAY_FOR
 
 
-def network_mounts(table=None):
-    """The mount points of network filesystems (and automounts) on this PC, from the
-    kernel's mount table (a file in /proc, never a look at a share). None when it can't
-    be read."""
+def mount_table(table=None):
+    """(mount point, filesystem type) of every mount on this PC, from the kernel's mount
+    table (a file in /proc, never a look at a folder). None when it can't be read."""
     try:
         text = (table or MOUNTINFO).read_text(encoding='utf-8', errors='replace')
     except OSError:
@@ -1352,9 +1714,27 @@ def network_mounts(table=None):
     for line in text.splitlines():
         mine, _, theirs = line.partition(' - ')
         fields, kind = mine.split(), theirs.split()[:1]
-        if len(fields) > 4 and kind and kind[0] in NETWORK_FILESYSTEMS:
-            found.append(re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), fields[4]))
+        if len(fields) > 4 and kind:
+            found.append((re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), fields[4]), kind[0]))
     return found
+
+
+def network_mounts(table=None):
+    """The mount points of network filesystems (and automounts) on this PC, from the
+    kernel's mount table (never a look at a share). None when it can't be read."""
+    mounts = mount_table(table)
+    return None if mounts is None else [point for point, kind in mounts if kind in NETWORK_FILESYSTEMS]
+
+
+def is_mount_point(path, table=None):
+    """Something is mounted at `path`, as the kernel's mount table says. os.path.ismount
+    looks at the folder itself, and on a share that stopped answering that look waits
+    for as long as the share is away (seen in 0.51.1: the recovery menu's drive check
+    froze before its own time limit). os.path.ismount only when the table can't be read."""
+    mounts = mount_table(table)
+    if mounts is None:
+        return os.path.ismount(path)
+    return os.path.normpath(str(path)) in {point for point, _ in mounts}
 
 
 def on_a_share(path, table=None):
@@ -1448,22 +1828,60 @@ def last_words(output, limit=500):
 def atomic_write(path, payload, mode=0o600):
     path = safe_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(prefix='.' + path.name + '-', dir=path.parent)
-    temp = Path(name)
+    # Written only where its real path is the path asked for: a link on the way is refused.
+    real = os.path.realpath(path)
+    if not real.startswith(os.sep) or real != os.path.abspath(path):
+        raise RuntimeError(f'Refusing symlink path: {path}')
+    # The folder is opened once (never through a link) and the file made and renamed in
+    # it, not by path again: a folder swapped for a link after the check is not followed.
+    folder = os.open(os.path.dirname(real), FOLDER_FLAGS)
+    try:
+        atomic_write_at(folder, os.path.basename(real), payload, mode)
+    finally:
+        os.close(folder)
+
+
+def atomic_write_at(folder, name, payload, mode=0o600, owner=None):
+    """atomic_write for `name` in an open folder (its fd): the temporary file is made,
+    given to `owner` (uid, gid) when named, and renamed relative to that folder."""
+    temp = f'.{name}-{os.urandom(4).hex()}'
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, mode, dir_fd=folder)
     try:
         with os.fdopen(fd, 'wb') as stream:
             os.fchmod(stream.fileno(), mode)
+            if owner:
+                os.fchown(stream.fileno(), *owner)
             stream.write(payload.encode('utf-8') if isinstance(payload, str) else payload)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temp, path)
-        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        os.replace(temp, name, src_dir_fd=folder, dst_dir_fd=folder)
+        os.fsync(folder)  # the new name survives a power cut
     finally:
-        temp.unlink(missing_ok=True)
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(temp, dir_fd=folder)
+
+
+def open_folder_below(root, parts, make=0, owner=None):
+    """The folder root/parts... opened (an fd the caller closes), one part at a time from
+    the one before, never through a link. For root writing into a folder an app's account
+    owns: that account could swap a part for a link between a check of the path and a
+    write by path; opened this way, a link is refused (OSError). The last `make` parts are
+    made when missing, given to `owner` (uid, gid) when named."""
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for index, part in enumerate(parts):
+            if index >= len(parts) - make:
+                with contextlib.suppress(FileExistsError):
+                    os.mkdir(part, 0o755, dir_fd=fd)
+                    if owner:
+                        os.chown(part, *owner, dir_fd=fd, follow_symlinks=False)
+            found = os.open(part, FOLDER_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = found
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
 
 
 def atomic_json(path, payload):
@@ -1557,7 +1975,7 @@ def listed(parts):
 def drive_holds(config, key):
     """What goes on the drive of this role ('data_ssd', 'media_hdd', 'usb'), naming only
     what this server has (gate run C: "your apps, photos and music" with Photos off)."""
-    cloud = bool(config.get('nextcloud', {}).get('enabled', False))
+    cloud = nextcloud_enabled(config)
     if key == 'data_ssd':
         return listed(
             ['your apps'] + ['photos'] * media_group(config, 'photos') + ['music'] * media_group(config, 'music')
@@ -1656,6 +2074,15 @@ def immich_wanted(config):
     return media_group(config, 'photos') and config.get('photos', {}).get('deploy_immich') is True
 
 
+def nextcloud_enabled(config):
+    """Nextcloud is set up, read the one way everything reads it: on unless its "enabled"
+    is false, as modules/nextcloud.py runs it (and config_checks.nextcloud_default writes
+    a missing one in as true). Read as off before, a missing "enabled" left a running
+    Nextcloud out of the dashboard, the capacity notes and the weekly USB copy."""
+    section = config.get('nextcloud')
+    return not (isinstance(section, dict) and section.get('enabled') is False)
+
+
 # The optional questions setup asks (the media apps, the backup times, and when it
 # connects the media apps), by the key their last answer is kept under, and the words
 # the next run shows them with.
@@ -1724,6 +2151,16 @@ def valid_time(text):
     return isinstance(text, str) and TIME_OF_DAY.fullmatch(text) is not None
 
 
+def typed_time(text):
+    """A time of day as typed at a question, "2:30" or "02:30", as "HH:MM" (the form the
+    settings keep and everything reads); None when it is no time of day. "2:30" was refused
+    as no time (deep check plan 201)."""
+    if not isinstance(text, str):
+        return None
+    padded = '0' + text if re.fullmatch(r'\d:\d\d', text, re.ASCII) else text
+    return padded if valid_time(padded) else None
+
+
 def minutes_later(time, minutes):
     """ "HH:MM" shifted by `minutes` (negative for earlier), going round midnight."""
     hours, mins = (int(part) for part in time.split(':'))
@@ -1738,6 +2175,73 @@ def day_before_if_wrapped(day, time, minutes):
     hours, mins = (int(part) for part in time.split(':'))
     days = (hours * 60 + mins + minutes) // (24 * 60)
     return WEEKDAYS[(WEEKDAYS.index(day) + days) % 7]
+
+
+# How far the Immich database copy moves earlier at a time, when its usual time before the
+# USB copy is skipped by a clock change (database_offset).
+CLOCK_CHANGE_STEP = 15
+
+
+def clock_change_skips(time, zone, on_day=lambda date: True, today=None):
+    """The first date of the coming year, among those `on_day` accepts (every day unless
+    given), on which `time` (HH:MM) does not exist in `zone`, or None: the night the clocks
+    go forward skips it (02:30 on the last Sunday of March in Berlin), and systemd then
+    runs a job set for it not that night but at its next time. `today`: where the year
+    starts (tests)."""
+    import datetime as dt
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    try:
+        place = ZoneInfo(zone)
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+    hours, mins = (int(part) for part in time.split(':'))
+    start = today or dt.date.today()
+    for ahead in range(366):
+        date = start + dt.timedelta(days=ahead)
+        if not on_day(date):
+            continue
+        local = dt.datetime(date.year, date.month, date.day, hours, mins)
+        there = local.replace(tzinfo=place).astimezone(dt.timezone.utc).astimezone(place)
+        if there.replace(tzinfo=None) != local:
+            return date
+    return None
+
+
+def on_weekday(day):
+    """For clock_change_skips: the dates that fall on weekday `day` ("Sun")."""
+    return lambda date: WEEKDAYS[date.weekday()] == day
+
+
+def skipped_by_clock_change(day, time, zone, today=None):
+    """Whether `time` (HH:MM) on weekday `day` does not exist on one such day of the coming
+    year in `zone` (02:15 on a Sunday in March in New York and in Berlin): systemd then
+    runs a job set for it a week later, not that day."""
+    return clock_change_skips(time, zone, on_weekday(day), today) is not None
+
+
+def earlier_past_clock_change(day, time, offset, zone, today=None):
+    """`offset` (minutes from `time` on weekday `day`), made earlier by CLOCK_CHANGE_STEP
+    until the time it lands on is not skipped by a clock change in `zone`."""
+    while offset > -24 * 60 and skipped_by_clock_change(
+        day_before_if_wrapped(day, time, offset), minutes_later(time, offset), zone, today
+    ):
+        offset -= CLOCK_CHANGE_STEP
+    return offset
+
+
+def database_offset(day, time, zone, today=None):
+    """Minutes from the USB copy (weekday `day` at `time`) to its Immich database copy: 45
+    before it, or earlier still when that time is skipped by a clock change in `zone`. The
+    copy would be skipped that week and the USB drive would get the week-old one (found on
+    0.51.2: Sunday 02:15 before the default 03:00, in New York or Berlin, is 01:45 now)."""
+    return earlier_past_clock_change(day, time, -DATABASE_BEFORE_USB, zone, today)
+
+
+# The Immich database copy's time in the settings template before 0.48.0, which nobody
+# was asked about: on those servers it is still written in the settings, as
+# photos.database_backup_time, and is skipped by the clock change like the one above.
+DATABASE_TIME_BEFORE_0_48 = '02:15'
 
 
 def backup_times(config):
@@ -1788,27 +2292,32 @@ def job_times(config):
         day = photos.get('backup_weekday', WEEKLY_DAY_DEFAULT) if isinstance(photos, dict) else WEEKLY_DAY_DEFAULT
         if day not in WEEKDAYS:
             raise RuntimeError('photos.backup_weekday must be one of ' + ', '.join(WEEKDAYS))
-        database = _own_time(config, 'photos', 'database_backup_time', '02:15')
+        database = _own_time(config, 'photos', 'database_backup_time', DATABASE_TIME_BEFORE_0_48)
+        weekly, weekly_day = database, day
+        if database == DATABASE_TIME_BEFORE_0_48:
+            # The old default, not a time a person chose: moved like the one derived
+            # from "backup_times" below, so the USB copy never takes a week-old one.
+            offset = earlier_past_clock_change(day, database, 0, host_timezone(config))
+            weekly, weekly_day = minutes_later(database, offset), day_before_if_wrapped(day, database, offset)
         return {
             'app': _own_time(config, 'app_backup', 'time', DAILY_DEFAULT),
             'music': _own_time(config, 'music', 'backup_time', '03:45'),
             'host': _own_time(config, 'host_backup', 'time', '05:15'),
             'photo_database': database,
-            'photo_database_weekly': database,
-            'photo_database_weekly_day': day,
+            'photo_database_weekly': weekly,
+            'photo_database_weekly_day': weekly_day,
             'usb_day': day,
             'usb': _own_time(config, 'photos', 'backup_time', WEEKLY_DEFAULT),
             'monthly': _own_time(config, 'maintenance', 'time', MONTHLY_DEFAULT),
         }
+    before_usb = database_offset(chosen['weekly_day'], chosen['weekly'], host_timezone(config))
     return {
         'app': minutes_later(chosen['daily'], NIGHTLY_OFFSETS['app']),
         'music': minutes_later(chosen['daily'], NIGHTLY_OFFSETS['music']),
         'host': minutes_later(chosen['daily'], NIGHTLY_OFFSETS['host']),
         'photo_database': minutes_later(chosen['daily'], NIGHTLY_OFFSETS['photo_database']),
-        'photo_database_weekly': minutes_later(chosen['weekly'], -DATABASE_BEFORE_USB),
-        'photo_database_weekly_day': day_before_if_wrapped(
-            chosen['weekly_day'], chosen['weekly'], -DATABASE_BEFORE_USB
-        ),
+        'photo_database_weekly': minutes_later(chosen['weekly'], before_usb),
+        'photo_database_weekly_day': day_before_if_wrapped(chosen['weekly_day'], chosen['weekly'], before_usb),
         'usb_day': chosen['weekly_day'],
         'usb': chosen['weekly'],
         'monthly': chosen['monthly'],
@@ -1985,10 +2494,17 @@ def ensure_room(folder, need, what='This restore'):
     reserve = max(5 * GIB, usage.total // 20)
     if need + reserve > usage.free:
         raise RuntimeError(
-            f'not enough free space: {what.lower()} needs {need / GIB:.1f} GB and '
-            f'{usage.free / GIB:.1f} GB is free on that drive (5 GB or 5% is kept free). '
+            f'not enough free space: {what.lower()} needs {size_said(need)}, and the drive must keep '
+            f'{size_said(reserve)} free (5 GB or 5% of it), but only {size_said(usage.free)} is free on it. '
             'Free some space or choose a folder on another drive.'
         )
+
+
+def size_said(size):
+    """A size in words: GB from 1 GB up, MB below (a small restore was "0.0 GB")."""
+    if size >= GIB:
+        return f'{size / GIB:.1f} GB'
+    return f'{max(1, round(size / 1024**2))} MB'
 
 
 def file_count(count):

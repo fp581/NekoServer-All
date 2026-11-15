@@ -64,14 +64,16 @@ def options(config):
 def resolve_image(value):
     if value != 'auto':
         return value
-    release = json.loads(
-        fetch(
-            'https://api.github.com/repos/nextcloud/server/releases/latest',
-            'Finding the current Nextcloud release',
-            200000,
-        )
+    answer = fetch(
+        'https://api.github.com/repos/nextcloud/server/releases/latest',
+        'Finding the current Nextcloud release',
+        200000,
     )
-    return image_for_release(release)
+    try:
+        release = json.loads(answer)
+    except ValueError:
+        release = None  # a web page in its place (a proxy's, say), or a cut-off answer
+    return image_for_release(release if isinstance(release, dict) else {})
 
 
 def image_for_release(release):
@@ -80,7 +82,7 @@ def image_for_release(release):
     Docker image can lag the GitHub release by days, which would fail the install."""
     match = re.fullmatch(r'v(\d+)\.(\d+)\.(\d+)', release.get('tag_name', ''))
     if not match or release.get('prerelease') or release.get('draft'):
-        raise RuntimeError('Stable Nextcloud release could not be resolved')
+        raise RuntimeError('GitHub did not answer with a stable Nextcloud release; run setup again later')
     major, minor, patch = (int(x) for x in match.groups())
     if minor == 0 and patch < 2:
         major -= 1
@@ -229,6 +231,19 @@ UNLISTED = (
 )
 
 
+def account_names(accounts):
+    """The account names in occ user:list's answer ({name: display name}), or None when it
+    is not such a list. PHP writes an array whose keys are exactly 0, 1, 2... as a JSON
+    list, so accounts named only "0", "1"... come as a list of their display names: their
+    names are the positions then (such an answer was read as no list of accounts, and
+    their folders were never made)."""
+    if isinstance(accounts, list):
+        return [str(position) for position in range(len(accounts))]
+    if isinstance(accounts, dict):
+        return [name for name in accounts if isinstance(name, str)]
+    return None
+
+
 def listed_accounts(base, run=subprocess.run):
     """The account names Nextcloud lists (occ user:list). A command that fails, does not
     answer or answers with something other than a list of accounts is an error, never an
@@ -245,12 +260,7 @@ def listed_accounts(base, run=subprocess.run):
         raise RuntimeError(UNLISTED.format(why='it did not answer within 2 minutes')) from None
     if listed.returncode != 0:
         raise RuntimeError(UNLISTED.format(why=f'occ user:list ended with error {listed.returncode}'))
-    text = listed.stdout or ''
-    try:
-        accounts = json.loads(text[text.index('{') :])
-    except ValueError:
-        accounts = None
-    names = [name for name in accounts if isinstance(name, str)] if isinstance(accounts, dict) else None
+    names = account_names(neko_common.occ_json(listed.stdout))
     if names is None:
         raise RuntimeError(UNLISTED.format(why='its answer was not a list of accounts'))
     # Every account gets its folder: one whose name Nextcloud itself would not accept is
@@ -273,7 +283,7 @@ def scan_errors(text):
         cells = [c.strip() for c in line.strip().strip('|').split('|')]
         if 'Errors' in cells:
             header = cells
-        elif header and len(cells) == len(header) and cells[header.index('Errors')].isdigit():
+        elif header and len(cells) == len(header) and cells[header.index('Errors')].isdecimal():
             return int(cells[header.index('Errors')])
     return None
 
@@ -467,11 +477,8 @@ def status(base, run=subprocess.run):
         )
     except subprocess.TimeoutExpired:
         return None
-    text = result.stdout or ''
-    try:
-        return json.loads(text[text.index('{') :]) if result.returncode == 0 else None
-    except ValueError:
-        return None
+    found = neko_common.occ_json(result.stdout) if result.returncode == 0 else None
+    return found if isinstance(found, dict) else None
 
 
 def last_log_lines(base, run=subprocess.run):
@@ -566,10 +573,31 @@ def stop_installed(ctx, run_command=None, hold=None, journal=None):
             *compose_image_override(manifest),
         ]
         (run_command or command)(base + ['stop'])
-    ctx.log(
-        'Nextcloud: turned off. Its containers are stopped; your files and database are kept. '
-        'Set "enabled": true under "nextcloud" and run  sudo bash install.sh  to start it again.'
-    )
+    try:
+        folder = cloud_files(ctx.config)
+    except (KeyError, RuntimeError):
+        folder = 'their folder on the drive chosen for them'  # settings without the drives: said in words
+    ctx.log(TURNED_OFF.format(folder=folder))
+
+
+# What switching Nextcloud off keeps and what stops (deep check 246: the person was told
+# neither where the files are now nor that the weekly USB copy stops taking them).
+TURNED_OFF = (
+    'Nextcloud: turned off. Its containers are stopped. Kept: your files (in {folder}), its database, '
+    'and the copies already on the USB drive (the recovery menu still restores them). The weekly USB copy no '
+    'longer copies Nextcloud files. To start it again as it was, switch Personal files back on on setup\'s '
+    'first page and run  sudo bash install.sh.'
+)
+
+
+# A folder a new Nextcloud would use holds something already (another install's files or
+# database): it is never written over nor made Nextcloud's without you.
+EARLIER_DATA = (
+    'Nextcloud is not set up yet, but {folder} already holds files (from another or an earlier Nextcloud, '
+    'say). Setup never writes over them. To start a new, empty Nextcloud, move that folder away (sudo mv '
+    '{folder} {folder}.before), run setup again, and copy your files into Nextcloud afterwards. To bring '
+    'back an earlier NekoServer Nextcloud instead, restore it from its backup (RECOVERY.md)'
+)
 
 
 def run(ctx):
@@ -611,7 +639,7 @@ def run(ctx):
             for existing in (data / HTML, data / POSTGRES, cloud_files(config)):
                 safe_path(existing)
                 if existing.exists() and any(existing.iterdir()):
-                    raise RuntimeError('Existing Nextcloud data preserved; explicit recovery required')
+                    raise RuntimeError(EARLIER_DATA.format(folder=existing))
             image = resolve_image(image)
             payload = json.dumps(model(config, image), indent=2) + '\n'
             for target, mode in (

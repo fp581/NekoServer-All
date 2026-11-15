@@ -3,6 +3,7 @@ the same rules as the monthly update (maintenance.rs valid_model): an altered fi
 no more of this PC than NekoServer gives Immich."""
 
 import copy
+import io
 import json
 import os
 import subprocess
@@ -275,6 +276,31 @@ class ImmichComposeTests(unittest.TestCase):
             source.index('checked_model(json.loads(shown.stdout), upload, db, cfg)'),
             source.index("compose_up(base, 'Immich', ctx.log, 1200)"),
         )
+
+
+class ImmichReleaseTests(unittest.TestCase):
+    """Deep check 175, against a stand-in for GitHub's API: what setup does with each
+    answer its "latest release" lookup can get."""
+
+    def answer(self, body):
+        # Read as a web answer is: once, then nothing.
+        return photos.resolve_immich_version('auto', lambda request, timeout: io.BytesIO(body.encode()))
+
+    def test_only_a_stable_release_is_taken_and_any_other_answer_is_said_plainly(self):
+        self.assertEqual(self.answer(json.dumps({'tag_name': 'v2.3.1', 'prerelease': False})), 'v2.3.1')
+        for body in (
+            json.dumps({'tag_name': 'v2.4.0', 'prerelease': True}),  # as the monthly update refuses it
+            json.dumps({'tag_name': 'v2.4.0', 'draft': True}),
+            json.dumps([{'tag_name': 'v2.3.1'}]),  # a list (the releases page) was a traceback
+            'null',
+            '<html>sign in to the network</html>',  # was "Expecting value: line 1 column 1"
+            '',
+        ):
+            with self.subTest(body=body[:30]), self.assertRaises(RuntimeError) as said:
+                self.answer(body)
+            self.assertEqual(
+                str(said.exception), 'GitHub did not answer with a stable Immich release; run setup again later'
+            )
 
 
 if __name__ == '__main__':

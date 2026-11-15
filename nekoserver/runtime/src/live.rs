@@ -694,10 +694,6 @@ impl Live {
             .unwrap_or_default();
         pids.sort_unstable();
         for pid in pids {
-            if rows.len() >= MAX_PROCESSES {
-                truncated = true;
-                break;
-            }
             let stat = read(&self.proc.join(format!("{pid}/stat")));
             // The name can hold spaces and ')': the last ')' ends it.
             let (Some(open), Some(close)) = (stat.find('('), stat.rfind(')')) else {
@@ -739,7 +735,25 @@ impl Live {
                 "kind": kind, "desktop": desktop.map(|d| d.label),
             }));
         }
+        // Every process is counted; past MAX_PROCESSES only the busiest are listed (by
+        // processor, then memory). Cutting the list off at the 5000th process number left
+        // out the newest ones, a runaway program among them (deep check 163: 5,107 running,
+        // the page said "5000 running" and could not show the busiest).
         let count = rows.len();
+        if count > MAX_PROCESSES {
+            let load = |r: &Value| {
+                (
+                    r["cpu"].as_f64().unwrap_or(-1.0),
+                    r["memory"].as_u64().unwrap_or(0),
+                )
+            };
+            rows.sort_by(|a, b| {
+                let (a, b) = (load(a), load(b));
+                b.0.total_cmp(&a.0).then(b.1.cmp(&a.1))
+            });
+            rows.truncate(MAX_PROCESSES);
+            truncated = true;
+        }
         self.processes_before = Some((now, boot, ticks));
         json!({"format": "neko-processes-v1", "generated_at": crate::common::now(),
             "rows": rows, "count": count, "skipped": skipped, "truncated": truncated})
@@ -1229,6 +1243,32 @@ mod tests {
             Some(id.clone())
         );
         assert_eq!(container_of("0::/user.slice/user-1000.slice"), None);
+    }
+
+    /// Deep check 163: with more than MAX_PROCESSES running, the list stopped at the
+    /// 5000th process number, so a busy program started later was never shown, and the
+    /// count said 5000.
+    #[test]
+    fn with_too_many_processes_the_busiest_are_listed_and_all_counted() {
+        let t = Tree::new("many");
+        let stat = |pid: u32, ticks: u64| {
+            format!("{pid} (p{pid}) S 1 1 1 0 -1 0 0 0 0 0 {ticks} 0 0 0 20 0 1 0 500 0 25 0 0")
+        };
+        let busy = MAX_PROCESSES as u32 + 10; // the newest, highest number
+        t.put("proc/sys/kernel/random/boot_id", "b");
+        for pid in 1..=busy {
+            t.put(&format!("proc/{pid}/stat"), &stat(pid, 0));
+        }
+        let mut live = Live::new(&t.0.join("proc"), &t.0.join("sys"));
+        let apps = HashMap::new();
+        live.scan(&apps);
+        t.put(&format!("proc/{busy}/stat"), &stat(busy, 500));
+        let v = live.scan(&apps);
+        assert_eq!(v["count"], busy, "every process is counted");
+        assert_eq!(v["truncated"], true);
+        let rows = v["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), MAX_PROCESSES);
+        assert_eq!(rows[0]["pid"], busy, "the busy one is listed (first)");
     }
 
     #[test]

@@ -37,6 +37,7 @@ import time
 from pathlib import Path
 
 from neko_common import (
+    read_settings,
     MAINTENANCE_JOURNAL,
     VERSION,
     OPERATION_LOCK,
@@ -99,8 +100,7 @@ def record(journal=JOURNAL, **fields):
 
 
 def load_settings(settings):
-    path = settings_path(settings)
-    return path, json.loads(path.read_text())
+    return settings_path(settings), read_settings(settings)
 
 
 def lsblk():
@@ -283,11 +283,20 @@ def mount_staging(uuid, fstype, staging=STAGING):
     return staging
 
 
-def copy(source, target, final=False, out=print):
+def copy(source, target, final=False, out=print, again=False):
     """One pass of the copy; the last one (`final`, with the apps stopped) also removes
-    from the new drive what was deleted on the old one meanwhile."""
-    argv = [*RSYNC, *(['--delete'] if final else []), f'{source}/', f'{target}/']
-    out('Copying ' + ('what changed (the apps are stopped)' if final else 'everything (the apps keep running)') + '...')
+    from the new drive what was deleted on the old one meanwhile. `again`: the new drive
+    holds an earlier attempt's copy, whose files are compared by checksum, not by size
+    and time: a file the comparison found different (a bad cable, say) keeps its size and
+    time, so it was never copied again and every later attempt stopped on it (seen in
+    0.51.1)."""
+    argv = [*RSYNC, *(['--delete'] if final else []), *(['--checksum'] if again else []), f'{source}/', f'{target}/']
+    if final:
+        out('Copying what changed (the apps are stopped)...')
+    elif again:
+        out('Copying everything again, checking what an earlier attempt copied (the apps keep running)...')
+    else:
+        out('Copying everything (the apps keep running)...')
     done = run(argv, check=False, capture=False)
     # 24: files vanished while copying (the apps were running): the last pass gets them.
     if done.returncode not in ((0,) if final else (0, 24)):
@@ -328,7 +337,7 @@ def started_since(units, since):
     for unit in units:
         shown = run(['systemctl', 'show', '--property=InactiveExitTimestampMonotonic', unit], 30, check=False)
         value = (getattr(shown, 'stdout', '') or '').strip().partition('=')[2]
-        if getattr(shown, 'returncode', 0) or not value.isdigit():
+        if getattr(shown, 'returncode', 0) or not value.isdecimal():
             return None
         if int(value) > since:
             started.append(unit)
@@ -369,12 +378,32 @@ def nekoserver_units(states='active'):
 
 AT_WORK = 'activating,deactivating,reloading'
 TIMER = '.timer'
+# How long a job at work is waited for once the timers are stopped: the dashboard's
+# collector, the phone alerts and the heartbeat run every minute for a few seconds (the
+# collector at most 180), so one of them was often at work just then and a move ended
+# after its hours of copying with "is at work (a backup or another job)". A backup at
+# work takes longer than this and still stops the move.
+SHORT_JOBS_WAIT = 200
 
 
-def stop_writers(journal=JOURNAL):
+def jobs_at_work(out=print, sleep=time.sleep, wait=SHORT_JOBS_WAIT):
+    """NekoServer's services at work (not timers), once short ones had `wait` seconds to end."""
+    waited = 0
+    while True:
+        busy = [u for u in nekoserver_units(AT_WORK) if not u.endswith(TIMER)]
+        if not busy or waited >= wait:
+            return busy
+        if waited == 0:
+            out('Waiting for ' + ', '.join(busy) + ' to finish (at most a few minutes)...')
+        sleep(5)
+        waited += 5
+
+
+def stop_writers(journal=JOURNAL, out=print, sleep=time.sleep):
     """Everything that writes to the drives stops; what ran is noted to start again. The
     timers go first, so no job starts meanwhile; a job already at work (a backup worker,
-    a oneshot service: "activating") stops the move rather than being cut off half-way."""
+    a oneshot service: "activating") is given a few minutes to end, then stops the move
+    rather than being cut off half-way."""
     timers = [u for u in nekoserver_units() if u.endswith(TIMER)]
     record(journal, phase='stopped', stopped=timers)
     for unit in timers:
@@ -384,7 +413,7 @@ def stop_writers(journal=JOURNAL):
     ticking = [u for u in nekoserver_units('active,' + AT_WORK) if u.endswith(TIMER)]
     if ticking:
         raise RuntimeError('These did not stop: ' + ', '.join(ticking))
-    busy = [u for u in nekoserver_units(AT_WORK) if not u.endswith(TIMER)]
+    busy = jobs_at_work(out, sleep)
     if busy:
         raise RuntimeError(', '.join(busy) + ' is at work (a backup or another job); try again once it has finished')
     rest = active(WRITERS) + [u for u in nekoserver_units() if not u.endswith(TIMER)]
@@ -481,6 +510,25 @@ def mount_lines(lines, mountpoint):
 def names_drive(line, uuid):
     """The fstab line's source is the drive `uuid` (UUID=..., quoted or not)."""
     return line.split()[0].replace('"', '') == f'UUID={uuid}'
+
+
+def fstab_problem(mountpoint, uuid, fstab=FSTAB):
+    """Why the switch could not rewrite /etc/fstab for the drive `uuid` at `mountpoint`
+    (it needs exactly one line mounting that folder, naming the drive as UUID=...), or
+    None. Checked before anything is done: found only at the switch, the old drive was
+    already unmounted and the apps stopped, and resume stopped at the same place (seen
+    in 0.51.1 with a /dev/disk/by-uuid/ line)."""
+    try:
+        lines = fstab.read_text().splitlines()
+    except OSError as exc:
+        return f'{fstab} can not be read ({exc.strerror}); nothing was changed'
+    found = mount_lines(lines, mountpoint)
+    if len(found) == 1 and names_drive(lines[found[0]], uuid):
+        return None
+    return (
+        f'{fstab} must have exactly one line that mounts {mountpoint}, starting with UUID={uuid}, for the move to '
+        f'switch it; nothing was changed. Make it so (sudo bash install.sh says what to change), then try again'
+    )
 
 
 def switch_fstab(mountpoint, old_uuid, new_uuid, fstype, fstab=FSTAB, now=None, subvolume=None):
@@ -611,6 +659,10 @@ def move_held(settings, drive, new_uuid, out, journal, staging, fstab):
         return 2
     if mounted[2]:
         old['subvolume'] = mounted[2]
+    problem = fstab_problem(mountpoint, old['uuid'], fstab)
+    if problem:
+        out(problem)
+        return 2
     found, left_out = targets(config, drive)
     target = next((t for t in found if t[0] == new_uuid), None)
     if target is None:
@@ -642,7 +694,8 @@ def copy_to_new(journal, drive, old, new, places, out):
     name). Raises when the move must stop."""
     mountpoint, staging, name = places
     mount_staging(new['uuid'], new['fstype'], staging)
-    if not empty(staging) and not our_copy(journal, drive, old.get('uuid'), new['uuid']):
+    again = not empty(staging)
+    if again and not our_copy(journal, drive, old.get('uuid'), new['uuid']):
         raise RuntimeError(f'{name} is not empty; NekoServer only moves to an empty filesystem')
     # A move started again goes on with the copy this one makes (its last pass removes
     # what is no longer on the old drive, and every file is compared after it).
@@ -650,12 +703,16 @@ def copy_to_new(journal, drive, old, new, places, out):
     atomic_json(copy_note(journal), {'drive': drive, 'old': old.get('uuid'), 'new': new['uuid']})
     record(journal, phase='copying')
     same_drives(mountpoint, old, staging, new)
-    copy(mountpoint, staging, out=out)
+    copy(mountpoint, staging, out=out, again=again)
     stop_writers(journal)
     same_drives(mountpoint, old, staging, new)
     copy(mountpoint, staging, final=True, out=out)
     record(journal, phase='verifying')
     out('Comparing every file on both drives by checksum (this reads both drives once more)...')
+    # Mounted again first, so the comparison reads the new drive, not Linux's memory of
+    # what was just copied onto it: a new drive that kept other bytes passed before.
+    run(['umount', str(staging)], 300)
+    mount_staging(new['uuid'], new['fstype'], staging)
     same_drives(mountpoint, old, staging, new)
     differ = differences(mountpoint, staging)
     if differ:
@@ -665,30 +722,72 @@ def copy_to_new(journal, drive, old, new, places, out):
 
 UUID = re.compile(r'[A-Za-z0-9-]{8,80}')
 SUBVOLUME = re.compile(r'(/[A-Za-z0-9@._-]+)*')
+# A drive's folder as setup writes it (/mnt/nekoserver-media, say): a full path of plain
+# names. The move's record is a file, so its folder is checked before any command sees it.
+FOLDER = re.compile(r'(/[A-Za-z0-9@._-]+)+')
+
+
+def drive_not_back(saved):
+    """Why the drive in place before the move (the record's "old") is not mounted at its
+    folder again, after mounting it from /etc/fstab (which still names it) when nothing
+    is: a move cut off in its switch, just after it unmounted that drive, left the folder
+    an empty one on the system disk, and the apps started on it wrote there (seen in
+    0.51.1: resume said "the apps run as before" with the drive unmounted). None when it
+    is in place, or the record names no folder (nothing to check)."""
+    folder, old = saved.get('mount'), saved.get('old') or {}
+    if not folder or not old.get('uuid'):
+        return None
+    if not FOLDER.fullmatch(folder):
+        # Never handed to a command: a damaged record ("--all", say) would be an option.
+        return (
+            f'the record of the drive move is damaged (it names {folder!r} as the drive\'s folder), so the apps '
+            'were not started. Restart the PC: /etc/fstab mounts the drive that is in place'
+        )
+    expected = (old['uuid'], old.get('fstype'), old.get('subvolume') or '')
+    if mounted_identity(folder) is None:
+        run(['mount', '--', folder], 120, check=False)  # after "--": a folder, never an option
+    there = mounted_identity(folder)
+    if there == expected:
+        return None
+    shown = f'the drive {there[0]}' if there else 'no drive'
+    return (
+        f'{folder} has {shown} mounted, not the drive it had before ({old["uuid"]}), so the apps were not started '
+        '(they would write to the wrong place). Connect that drive and mount it (sudo mount ' + folder + '), then  '
+        'sudo python3 migrate.py resume'
+    )
 
 
 def stopped_safely(exc, label, journal, staging, out=print):
-    """The move stopped before its switch: the new drive is unmounted and what the move
-    stopped (as its record says: also when stopping failed part-way) is started again.
-    The record goes only once all of it runs again; otherwise it stays, with what is left.
-    Only the move's own new drive is unmounted: a folder that was in use already (the move
-    refused it) keeps what someone else mounted there (the review of 0.47.2)."""
+    """The move stopped before its switch: the new drive is unmounted, the drive in place
+    before is mounted again if the switch had unmounted it, and what the move stopped (as
+    its record says: also when stopping failed part-way) is started again. The record goes
+    only once all of it runs again; otherwise it stays, with what is left. Only the move's
+    own new drive is unmounted: a folder that was in use already (the move refused it)
+    keeps what someone else mounted there (the review of 0.47.2)."""
     saved = read(journal) or {}
     ours = (saved.get('new') or {}).get('uuid')
     there = mounted_identity(staging)
     if ours and there and there[0] == ours:
         run(['umount', str(staging)], 120, check=False)
+    going_back = saved.get('direction') == 'back'
+    unchanged = f'The {label} is still the drive it was moved to' if going_back else f'The {label} is the old drive'
+    stop = 'Going back stopped' if going_back else 'The move stopped'
+    missing = drive_not_back(saved)
+    if missing:
+        record(journal, phase='restart_failed')
+        out(f'{stop}: {exc}. But {missing}')
+        return 2
     failed = start_again(saved.get('stopped'), out)
     if failed:
         record(journal, phase='restart_failed', stopped=failed)
         out(
-            f'The move stopped: {exc}. The {label} is the old drive, unchanged, but these did not start again: '
+            f'{stop}: {exc}. {unchanged}, unchanged, but these did not start again: '
             + ', '.join(failed)
             + '. Start them (sudo systemctl start <name>), then  sudo python3 migrate.py resume'
         )
         return 2
     journal.unlink(missing_ok=True)
-    out(f'The move stopped: {exc}. The {label} is the old drive, unchanged; the apps run as before.')
+    out(f'{stop}: {exc}. {unchanged}, unchanged; the apps run as before.')
     return 1
 
 
@@ -852,7 +951,7 @@ def connected_uuids(folder='/dev/disk/by-uuid'):
         return set()
 
 
-def back_problem(config, path, drive, previous, current):
+def back_problem(config, path, drive, previous, current, fstab=FSTAB):
     """Why `back` can't take `drive` back now, or None: another job at work, the settings'
     records not valid, run from the drive it moves, the old drive not connected."""
     mount_key, label = DRIVES[drive]
@@ -869,7 +968,7 @@ def back_problem(config, path, drive, previous, current):
         return FROM_THE_DOWNLOAD.format(label=label)
     if previous['uuid'] not in connected_uuids():
         return f'The old {label} ({previous["uuid"]}) is not connected'
-    return None
+    return fstab_problem(mount_path(config[mount_key]), current['uuid'], fstab)
 
 
 def back_held(settings, out, journal, staging, fstab, wanted=None):
@@ -881,7 +980,7 @@ def back_held(settings, out, journal, staging, fstab, wanted=None):
     mount_key, label = DRIVES[drive]
     previous = config['storage'][drive]['previous_drive']
     current = {k: v for k, v in config['storage'][drive].items() if k != 'previous_drive'}
-    problem = back_problem(config, path, drive, previous, current)
+    problem = back_problem(config, path, drive, previous, current, fstab)
     if problem:
         out(problem)
         return 2
@@ -946,6 +1045,8 @@ def resume_held(settings, out, journal, staging, fstab):
             return 2
         return 0
     phase = saved.get('phase')
+    drive = saved.get('drive')
+    label = DRIVES[drive][1] if isinstance(drive, str) and drive in DRIVES else 'drive'
     if phase == 'switching' and ran_again_on_old(saved, fstab):
         # Not switched yet, and what the move stopped runs again (a restart started it on
         # the old drive): what was written since is not on the new drive, so switching to
@@ -959,7 +1060,7 @@ def resume_held(settings, out, journal, staging, fstab):
         return stopped_safely(
             'the apps ran again on the old drive before it switched (a restart, say), or that cannot be ruled '
             f"out, so the new drive's copy may not be up to date. {again}",
-            'drive',
+            label,
             journal,
             staging,
             out,
@@ -977,7 +1078,7 @@ def resume_held(settings, out, journal, staging, fstab):
         path, config = load_settings(settings)
         checked_move(saved, config, saved['drive'])
         return started_and_checked(config, saved['drive'], journal, out)
-    return stopped_safely('it was cut off before it switched (a restart, say)', 'drive', journal, staging, out)
+    return stopped_safely('it was cut off before it switched (a restart, say)', label, journal, staging, out)
 
 
 def list_targets(settings, out=print):
@@ -1013,11 +1114,19 @@ def main():
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error('Run it with sudo')
+    try:
+        read_settings(args.config)  # a damaged file is said in words, before anything is done
+    except RuntimeError as exc:
+        print(f'Nothing was moved: {exc}', file=sys.stderr)
+        return 2
     if not shutil.which('rsync'):
         parser.error('rsync is needed: run  sudo bash install.sh  (it installs it), then try again')
     if args.action == 'move':
-        if not (args.drive and args.to and UUID.fullmatch(args.to)):
+        if not (args.drive and args.to):
             parser.error('move needs --drive and --to (the UUID list shows)')
+        if not UUID.fullmatch(args.to):
+            # Said apart: "needs --drive and --to" was all a mistyped UUID got.
+            parser.error(f'--to {args.to} is not a filesystem UUID: copy one from  sudo python3 migrate.py list')
         return move(args.config, args.drive, args.to)
     if args.action == 'back':
         return back(args.config, drive=args.drive)

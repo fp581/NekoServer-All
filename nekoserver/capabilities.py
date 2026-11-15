@@ -9,12 +9,14 @@ Everything else (AppArmor, firewall, desktop) is reported so a beginner can see 
 was found.
 """
 
+import datetime as dt
 import json
 import platform
 import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import host
@@ -50,11 +52,13 @@ def firewall_hint(firewalls):
             '(your network instead of 192.168.1.0/24)'
         )
     else:
-        # nftables on its own (Arch's nftables.service, say): a rule in its own ruleset.
+        # nftables on its own (Arch's nftables.service, say): a rule in its own ruleset,
+        # inserted first: Arch's ruleset ends with a reject, and a rule added after it
+        # let nothing through (tried in a network namespace).
         example = (
-            'sudo nft add rule inet filter input ip saddr 192.168.1.0/24 tcp dport { 445, 8442-8447, 8450-8499 } accept  '
-            '(your network instead of 192.168.1.0/24, and the same rule in /etc/nftables.conf so it stays '
-            'after a restart)'
+            'sudo nft insert rule inet filter input ip saddr 192.168.1.0/24 tcp dport { 445, 8442-8447, 8450-8499 } '
+            'accept  (your network instead of 192.168.1.0/24; to keep it after a restart, put the same rule in '
+            '/etc/nftables.conf too, in the input chain above its reject line)'
         )
     return (
         ', '.join(firewalls) + ' is on: allow your home network to reach shared folders (port 445) and the home '
@@ -66,18 +70,36 @@ def firewall_hint(firewalls):
 
 
 def memory_gib(root='/'):
-    """Total memory in GiB (0 when it can't be read)."""
+    """The memory the apps may use, in GiB (0 when it can't be read): the PC's total, or
+    less when this system is a container with a memory limit. /proc/meminfo shows the
+    host's memory there, so a 1 GB container read as 64 GB (deep check 294)."""
+    total = 0
     for line in _read(root, '/proc/meminfo').splitlines():
         if line.startswith('MemTotal:'):
             try:
-                return int(line.split()[1]) / 2**20  # kB
+                total = int(line.split()[1]) / 2**20  # kB
             except (IndexError, ValueError):
                 return 0
-    return 0
+    # The limit of the whole system as it sees itself ("max": none), cgroups v2.
+    limit = _read(root, '/sys/fs/cgroup/memory.max')
+    if total and limit.isdecimal():
+        return min(total, int(limit) / 2**30)
+    return total
 
 
 # An "8 GB" PC reports a little less (the kernel and the graphics keep some).
 ENOUGH_MEMORY_GIB = 7
+# Below this the apps (about 2 GB when idle) and the system do not fit at all: a "4 GB"
+# PC reports about 3.7.
+TOO_LITTLE_MEMORY_GIB = 3
+TOO_LITTLE_MEMORY = (
+    'The apps alone use about 2 GB when idle, so with this little memory they keep being stopped. '
+    'Add memory (4 GB at the very least, 8 GB to be comfortable) before you go on, or choose fewer apps'
+)
+# No clock that is right reads earlier than this: this release did not exist yet. (It never
+# needs moving: it only has to be before any release.) A clock further back makes every
+# download fail on signatures or certificates, with errors that do not name the clock.
+EARLIEST_RIGHT_DATE = '2026-01-01'
 
 
 def memory_note(gib):
@@ -86,7 +108,9 @@ def memory_note(gib):
     if not gib:
         return 'unknown'
     found = f'{gib:.1f} GB'
-    if gib < ENOUGH_MEMORY_GIB:
+    if gib < TOO_LITTLE_MEMORY_GIB:
+        found += ': ' + TOO_LITTLE_MEMORY
+    elif gib < ENOUGH_MEMORY_GIB:
         found += (
             ': the apps use about 2 GB when idle and more while Immich looks at new photos or Jellyfin '
             'converts a video; with less than 8 GB those can be stopped for lack of memory. Add memory if you can'
@@ -162,7 +186,7 @@ def docker_rows(docker, compose, installed):
     ]
 
 
-def detect(run=subprocess.run, root='/', machine=None, python=None, which=shutil.which):
+def detect(run=subprocess.run, root='/', machine=None, python=None, which=shutil.which, now=None):
     """One row per finding: name, label, what was found, whether it is fine, and whether
     setup must stop without it."""
     machine = machine or platform.machine()
@@ -177,6 +201,7 @@ def detect(run=subprocess.run, root='/', machine=None, python=None, which=shutil
     target = _output(run, ['systemctl', 'get-default']) if systemd else ''
     memory = memory_gib(root)
     synchronised = clock(run, which)
+    today = dt.datetime.fromtimestamp(time.time() if now is None else now, dt.timezone.utc).date().isoformat()
     return [
         row('architecture', 'x86-64 processor', machine, machine == 'x86_64', True),
         row('python', 'Python 3.11 or newer', '.'.join(map(str, python)), tuple(python) >= MIN_PYTHON, True),
@@ -218,6 +243,18 @@ def detect(run=subprocess.run, root='/', machine=None, python=None, which=shutil
             'Memory (8 GB or more recommended)',
             memory_note(memory),
             not memory or memory >= ENOUGH_MEMORY_GIB,
+        ),
+        row(
+            'date',
+            "This PC's date",
+            today,
+            today >= EARLIEST_RIGHT_DATE,
+            True,
+            problem=(
+                f"this PC's clock says {today}, which is wrong (this release did not exist then), so every "
+                'download would fail. Let the network set it:  sudo timedatectl set-ntp true  (or set it by hand: '
+                "sudo timedatectl set-time 'YYYY-MM-DD HH:MM'), then run  sudo bash install.sh  again."
+            ),
         ),
         row(
             'clock',

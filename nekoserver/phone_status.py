@@ -33,7 +33,7 @@ from neko_common import atomic_json, safe_path
 PASS, FAIL, UNKNOWN = 'pass', 'fail', 'unknown'
 OBSERVED, NOT_TESTED = 'observed', 'not_tested'  # a person's observation, never a machine check
 PHONE_SYSTEMS = {'ios': 'iPhone or iPad', 'android': 'Android phone'}
-DNS_PAGE = 'https://login.tailscale.com/admin/dns'
+DNS_PAGE = gateway_tools.DNS_PAGE
 MACHINES_PAGE = 'https://login.tailscale.com/admin/machines'
 MACHINE_NAME = re.compile(r'[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+\.ts\.net')  # as gateway_tools.tailnode
 SETUP_AGAIN = 'Run  sudo bash install.sh  again'
@@ -457,15 +457,18 @@ def depends_on(row_id, addresses):
     return ''
 
 
-def remember(config, rows, addresses, now=None):
+def remember(config, rows, addresses, now=None, unchanged=()):
     """Keep the rows just checked, each with what it stands on and when it was checked;
     a row that passed before on the same addresses keeps the time it last passed
     ('last_passed'). What was checked now is what is saved: a check that fails or cannot
-    tell is never covered by an older pass. Returns the rows as saved, for the page."""
+    tell is never covered by an older pass. `unchanged`: ids of rows not checked again
+    this time, kept in the file as they were (else the next opening checks them anew).
+    Returns the rows checked now as saved, for the page."""
     saved = _saved(config)
     before = saved.get('rows') if isinstance(saved.get('rows'), dict) else {}
     moment = now or time.time()
-    kept = {}
+    kept = {row_id: before[row_id] for row_id in unchanged if isinstance(before.get(row_id), dict)}
+    shown = []
     for fresh in rows:
         stands_on = depends_on(fresh['id'], addresses)
         old = before.get(fresh['id'])
@@ -476,8 +479,9 @@ def remember(config, rows, addresses, now=None):
             'checked_at': moment,
             'last_passed': last_passed(fresh, old if same else None, moment),
         }
+        shown.append(_shown(kept[fresh['id']]))
     atomic_json(saved_path(config), {**saved, 'format': 'neko-phone-status-v1', 'rows': kept})
-    return [_shown(one) for one in kept.values()]
+    return shown
 
 
 def last_passed(fresh, old, moment):
@@ -594,7 +598,7 @@ def check(config, command=gateway_tools.command, probe=gateway_tools.https_answe
     ]
     if https['kept']:
         # Nothing new was learnt about it: its saved time stays the time it was checked.
-        shown = remember(config, [one for one in rows if one is not https], addresses, now)
+        shown = remember(config, [one for one in rows if one is not https], addresses, now, unchanged=('https',))
         shown.insert(1, https)
     else:
         shown = remember(config, rows, addresses, now)

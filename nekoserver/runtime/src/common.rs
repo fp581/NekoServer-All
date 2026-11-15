@@ -37,6 +37,14 @@ impl From<std::io::Error> for Error {
     // The system's own reason ("No space left on device") is kept: without it a full or
     // failing drive read as an unexplained failure.
     fn from(e: std::io::Error) -> Self {
+        // A full drive is said in words with what to do (the job's stage says which
+        // drive): a backup drive nearly full for weeks showed only "Filesystem or process
+        // operation failed: No space left on device (os error 28)" (deep check 217).
+        if matches!(e.raw_os_error(), Some(libc::ENOSPC) | Some(libc::EDQUOT)) {
+            return Self(format!(
+                "The drive it was writing to is full ({e}): make room on it, or move to a bigger drive"
+            ));
+        }
         Self(format!("Filesystem or process operation failed: {e}"))
     }
 }
@@ -46,6 +54,16 @@ impl From<serde_json::Error> for Error {
     }
 }
 pub type Result<T> = std::result::Result<T, Error>;
+/// The most of a job's report (reports/jobs) that is read back. It is written to fit
+/// (backup::report_that_fits): the next run would read a bigger one as empty and lose
+/// its last success.
+pub const REPORT_LIMIT: usize = 64_000;
+/// "1 file", "3 files" (or with its verb: "1 file differs", "3 files differ"): every
+/// count the runtime says goes through this, so none says "1 files" (deep check 300).
+pub fn plural<N: std::fmt::Display + PartialEq + From<u8>>(n: N, one: &str, many: &str) -> String {
+    let words = if n == N::from(1) { one } else { many };
+    format!("{n} {words}")
+}
 /// `result`, with a later failure (unmounting, writing the report) added after its own
 /// error instead of replacing it: the first error is the one that explains the run.
 pub fn first_error<T>(result: Result<T>, later: Result<()>) -> Result<T> {
@@ -158,7 +176,23 @@ pub fn safe(path: &Path) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 pub fn mount_path(s: &str) -> Result<PathBuf> {
-    let p = safe(Path::new(s))?;
+    safe(Path::new(s))?;
+    unlooked_mount_path(s)
+}
+/// `mount_path` without a look at the folder itself, only at the folders above it: on a
+/// share that stopped answering (a NAS away), a look at its folder waits for as long as
+/// the NAS is away, so the NAS check froze before its own 20-second test write (seen in
+/// 0.51.1). For a folder whose mount is then checked in the mount table (a link can't be
+/// a mount point there).
+pub fn unlooked_mount_path(s: &str) -> Result<PathBuf> {
+    let path = Path::new(s);
+    if let Some(above) = path.parent() {
+        safe(above)?;
+    }
+    let p = path.to_path_buf();
+    if p.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(Error::new("Parent traversal refused"));
+    }
     if !p.is_absolute()
         || ["/", "/mnt", "/srv", "/home", "/var", "/tmp"].contains(&s)
         || !s
@@ -415,9 +449,17 @@ pub fn drives_in_use(cfg: &serde_json::Value) -> Vec<String> {
         .filter(|drive| extra_drive(cfg, drive))
         .map(str::to_string)
         .collect();
-    found.sort();
+    found.sort_by(|a, b| drive_order(a).cmp(&drive_order(b)));
     found.dedup();
     found
+}
+/// A drive name's place in a list: by its letters, then by the number it ends with, so
+/// "d3" comes before "d10" (setup names new drives d3, d4 ... and never gives a lost
+/// drive's name again, so d10 and up are reached; the dashboard listed d10 first).
+fn drive_order(name: &str) -> (&str, u64, &str) {
+    let letters = name.trim_end_matches(|c: char| c.is_ascii_digit());
+    let number = name[letters.len()..].parse().unwrap_or(0);
+    (letters, number, name)
 }
 /// The folder the films, the shows and their downloads are in: as setup said ("paths":
 /// "library", written only when they are off the media drive), else the media drive's.
@@ -622,6 +664,49 @@ pub fn clear_leftovers(root: &Path, partial: bool) -> Result<Vec<String>> {
     }
     Ok(removed)
 }
+/// The filesystem at `path` takes no writes: marked read-only (filesystem_read_only), or
+/// shut down by Linux after errors. XFS does not turn read-only: it shuts down, keeps
+/// "rw" in the mount table, still answers statvfs, and fails everything else with an
+/// input/output error, even a look at its top folder (`look`, which reads nothing from
+/// the drive: that folder is always held in memory). Seen in 0.51.2 with an XFS HDD shut
+/// down: every job failed with "Input/output error" while the dashboard showed it healthy.
+pub(crate) fn turned_read_only(
+    mountinfo: &str,
+    path: &Path,
+    look: &std::io::Result<fs::Metadata>,
+) -> bool {
+    shut_down(look) || filesystem_read_only(mountinfo, path)
+}
+/// Whether the filesystem mounted at `path` is itself read-only, from a mountinfo list:
+/// the filesystem's own options (after the " - ", its type and its source), never the
+/// mount's (the sixth field). This collector runs with ProtectSystem=strict, so in its
+/// own view every drive is a read-only mount, and statvfs (ST_RDONLY) says so too: every
+/// server with a drive of its own showed "turned read-only" for the SSD and the HDD, as
+/// critical alerts (seen on the rig, 0.46.2 and 0.46.3). What Linux does after write
+/// errors is turn the filesystem read-only, which shows here. The last line for the
+/// folder counts (a later mount covers an earlier one).
+/// Newer Linux (6.12 and later) no longer marks an ext4 that met errors "ro": it stays
+/// "rw" with "emergency_ro" among its options, and refuses every write (seen in 0.51.1,
+/// a test drive turned read-only part-way through the nightly app backup).
+const READ_ONLY_OPTIONS: [&str; 2] = ["ro", "emergency_ro"];
+pub(crate) fn filesystem_read_only(mountinfo: &str, path: &Path) -> bool {
+    let wanted = path.to_string_lossy();
+    mountinfo
+        .lines()
+        .filter_map(|line| {
+            let (mount, filesystem) = line.split_once(" - ")?;
+            (mount.split(' ').nth(4)? == wanted).then_some(filesystem)
+        })
+        .next_back()
+        .and_then(|filesystem| filesystem.split(' ').nth(2))
+        .is_some_and(|options| options.split(',').any(|o| READ_ONLY_OPTIONS.contains(&o)))
+}
+/// The filesystem mounted at `path` was shut down by Linux after errors (`look`, a look
+/// at its top folder, failed with an input/output error): see turned_read_only.
+pub(crate) fn shut_down(look: &std::io::Result<fs::Metadata>) -> bool {
+    look.as_ref()
+        .is_err_and(|e| e.raw_os_error() == Some(libc::EIO))
+}
 /// Bytes free for this program on the filesystem holding `path`.
 pub fn free_bytes(path: &Path) -> Result<u128> {
     let c = CString::new(path.as_os_str().as_bytes()).map_err(|_| Error::new("Invalid path"))?;
@@ -740,6 +825,21 @@ pub fn atomic_json(path: &Path, v: &Value) -> Result<()> {
     b.push(b'\n');
     atomic(path, &b, 0o600)
 }
+/// The SHA-256 of a copy just written, read from the drive, not from Linux's memory: the
+/// file written out and its cached pages dropped first. Read back without this, a drive
+/// that does not keep what it is given (a fake-capacity or failing USB drive) passed.
+pub fn digest_landed(path: &Path) -> Result<String> {
+    let f = file(path)?;
+    f.sync_data()?;
+    // SAFETY: a valid open descriptor; the call only advises the kernel.
+    let rc = unsafe { libc::posix_fadvise(f.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
+    if rc != 0 {
+        return Err(std::io::Error::from_raw_os_error(rc).into());
+    }
+    drop(f);
+    digest(path)
+}
+
 pub fn digest(path: &Path) -> Result<String> {
     let mut f = file(path)?;
     let mut h = Sha256::new();
@@ -858,9 +958,15 @@ pub fn lock(path: &Path) -> Result<File> {
     if !f.metadata()?.is_file()
         || unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0
     {
-        return Err(Error::new("Job already running or unsafe lock"));
+        return Err(Error::new(LOCK_BUSY));
     }
     Ok(f)
+}
+/// What `lock` says when another job holds the lock. Any other failure (the drive turned
+/// read-only, say) is no other job, and waiting hours for it helped nothing.
+const LOCK_BUSY: &str = "Job already running or unsafe lock";
+fn busy(e: &Error) -> bool {
+    e.to_string() == LOCK_BUSY
 }
 /// Shared recovery lock for scheduled jobs: wait for a job that is already running
 /// (polling every 5 s, up to `max`) instead of failing. Scheduled backups and the
@@ -871,12 +977,13 @@ pub fn lock_wait(path: &Path, max: Duration) -> Result<File> {
     loop {
         match lock(path) {
             Ok(f) => return Ok(f),
+            Err(e) if !busy(&e) => return Err(e),
             Err(e) => {
                 if start.elapsed() >= max {
                     return Err(Error::new(&format!(
-                        "Another NekoServer job still held {} after {} minutes",
+                        "Another NekoServer job still held {} after {}",
                         path.display(),
-                        max.as_secs() / 60
+                        plural(max.as_secs() / 60, "minute", "minutes")
                     )));
                 }
                 if !announced {
@@ -925,6 +1032,7 @@ fn shared_lock_wait_with(
     loop {
         match lock(path) {
             Ok(f) => return Ok(f),
+            Err(e) if !busy(&e) => return Err(e),
             Err(e) => {
                 let setup = held_by(path, setup_lock);
                 let limit = if setup { while_setup.min(max) } else { max };
@@ -935,9 +1043,9 @@ fn shared_lock_wait_with(
                         ))
                     } else {
                         Error::new(&format!(
-                            "Another NekoServer job still held {} after {} minutes",
+                            "Another NekoServer job still held {} after {}",
                             path.display(),
-                            max.as_secs() / 60
+                            plural(max.as_secs() / 60, "minute", "minutes")
                         ))
                     });
                 }
@@ -1070,6 +1178,21 @@ pub fn sanitize(text: &str) -> String {
         Some(rest) if !rest.ends_with('.') => rest.to_string(),
         _ => short,
     }
+}
+/// A file's name for a message: a line break or other control character in it written
+/// as "\\n" and the like. sanitize keeps a reason's last line, so a name with a line
+/// break cut the message there, and it named another file (deep check plan 204).
+pub fn printable(text: &str) -> String {
+    text.chars()
+        .flat_map(|c| {
+            let escaped: Vec<char> = if c.is_control() {
+                c.escape_default().collect()
+            } else {
+                vec![c]
+            };
+            escaped
+        })
+        .collect()
 }
 /// `text` in at most `max` characters: when longer, cut after its last whole sentence
 /// that fits (if that keeps most of it; it then ends with that sentence, no "…" after
@@ -1303,6 +1426,13 @@ pub fn drive_at(path: &Path, timeout: u64) -> Result<Option<String>> {
 pub fn waits_for_first_use(found: &str) -> bool {
     found.split_whitespace().next() == Some("autofs")
 }
+/// The folder at `path` can be listed within `seconds`, by a program of its own that is
+/// stopped after that: a network share (or a drive) that stopped answering holds every
+/// look at it, so this job never looks at it itself first.
+pub fn answers(path: &Path, seconds: u64) -> bool {
+    let shown = path.to_string_lossy();
+    command(&["ls", "-1", "--", &shown], seconds).is_ok_and(|(code, _)| code == 0)
+}
 pub fn mounted(path: &Path) -> bool {
     probe(
         &["findmnt", "-n", "--mountpoint", &path.to_string_lossy()],
@@ -1534,6 +1664,11 @@ mod media_answer_tests {
         let placed = json!({"storage": {"d4": {"uuid": "u4"}, "d3": {"uuid": "u3"}},
             "locations": {"photos": "d3"}, "installed": {"immich": "d4", "jellyfin": "d4", "x": "nowhere"}});
         assert_eq!(drives_in_use(&placed), ["d3", "d4"]);
+        // In the order of their numbers: d3 before d10, as the dashboard's cards show them.
+        let many = json!({"storage": {"d10": {}, "d3": {}, "d11": {}, "media2": {}, "d9": {}},
+            "locations": {"photos": "d10", "music": "d3", "cloud": "d11", "movies": "media2"},
+            "installed": {"immich": "d9"}});
+        assert_eq!(drives_in_use(&many), ["d3", "d9", "d10", "d11", "media2"]);
         // A folder on a drive nothing is placed on is refused, and so is a drive not listed.
         let mut stray = cfg.clone();
         stray["paths"]["photos"] = json!("/mnt/nekoserver-drives/d9/photos");
@@ -1688,6 +1823,16 @@ mod media_answer_tests {
 }
 #[cfg(test)]
 mod catalogue_tests {
+    #[test]
+    fn plural_says_one_and_many() {
+        assert_eq!(super::plural(1usize, "file", "files"), "1 file");
+        assert_eq!(super::plural(0u64, "file", "files"), "0 files");
+        assert_eq!(
+            super::plural(2i64, "file differs", "files differ"),
+            "2 files differ"
+        );
+        assert_eq!(super::plural(1.0f64, "second", "seconds"), "1 second");
+    }
     #[test]
     fn every_app_of_the_shared_catalogue_is_read_whole() {
         let listed = super::SHARED["apps"].as_array().unwrap().len();
@@ -1977,9 +2122,28 @@ mod lock_tests {
     }
     #[test]
     fn a_system_error_keeps_its_reason() {
-        let error = Error::from(std::io::Error::from_raw_os_error(libc::ENOSPC)).to_string();
-        assert!(error.contains("No space left on device"), "{error}");
+        let error = Error::from(std::io::Error::from_raw_os_error(libc::EIO)).to_string();
+        assert!(error.contains("Input/output error"), "{error}");
         assert!(error.starts_with("Filesystem or process operation failed"));
+    }
+    /// Deep check 217 (the real `copy` command, five weeks against a USB stand-in with
+    /// 3 MB free): each week said only "Filesystem or process operation failed: No space
+    /// left on device (os error 28)".
+    #[test]
+    fn a_full_drive_is_said_in_words_with_what_to_do() {
+        for full in [libc::ENOSPC, libc::EDQUOT] {
+            let error = Error::from(std::io::Error::from_raw_os_error(full)).to_string();
+            assert!(
+                error.starts_with("The drive it was writing to is full ("),
+                "{error}"
+            );
+            assert!(
+                error.contains("make room on it, or move to a bigger drive"),
+                "{error}"
+            );
+        }
+        let said = Error::from(std::io::Error::from_raw_os_error(libc::ENOSPC)).to_string();
+        assert!(said.contains("No space left on device"), "{said}");
     }
     #[test]
     fn a_time_from_a_clock_that_was_ahead_is_shown_not_hidden() {
@@ -2187,5 +2351,27 @@ mod lock_tests {
         let short = Duration::from_millis(50);
         let waited = shared_lock_wait_with(&shared, &setup, Duration::from_secs(60), short);
         assert!(postponed(&waited.unwrap_err()));
+    }
+    /// Deep check plan 192: on an SSD turned read-only the jobs' lock file can't be made,
+    /// and the nightly music backup waited 3 hours "for another NekoServer job to finish
+    /// (Read-only file system)". Only a lock another job holds is waited for.
+    #[test]
+    fn a_lock_that_cannot_be_made_is_not_waited_for() {
+        let root = std::env::temp_dir().join(format!("neko-lock-made-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("file"), b"").unwrap();
+        let path = root.join("file/recovery.lock"); // its folder can't be made: ENOTDIR
+        let start = Instant::now();
+        let long = Duration::from_secs(60);
+        for result in [
+            lock_wait(&path, long),
+            shared_lock_wait_with(&path, &root.join("setup.lock"), long, long),
+        ] {
+            let said = result.unwrap_err().to_string();
+            assert!(!said.contains("Another NekoServer job"), "{said}");
+        }
+        assert!(start.elapsed() < Duration::from_secs(5));
+        let _ = fs::remove_dir_all(&root);
     }
 }

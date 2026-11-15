@@ -228,10 +228,26 @@ def setup_window(path, output):
             '\nClosed it by mistake? Open  ' + window.url + '  again in a browser on this PC, from this account.'
         )
     else:
-        output('\nTo follow along in a window, open  ' + window.url + '  in a browser on this PC.')
+        output(no_window_said(window.url))
     return window
 
 
+def no_window_said(url, user=None):
+    """No window could be opened here (a server without a desktop, set up over SSH, say):
+    the terminal is enough, and another computer can show the window through an SSH
+    tunnel, which reaches it as this PC itself and as the account that ran sudo (deep
+    check 259: "open it in a browser on this PC" on a PC that has no browser)."""
+    port = url.split(':')[2].split('/')[0]
+    user = user or os.environ.get('SUDO_USER') or 'you'
+    return (
+        '\nNo window could be opened on this PC. Every question is asked here in the terminal; nothing is '
+        'missing. To answer in a browser on another computer instead, connect from it with  '
+        f'ssh -L {port}:127.0.0.1:{port} {user}@<this server\'s address>  and open  {url}  there '
+        '(or open it in a browser on this PC, if it has one).'
+    )
+
+
+WINDOW_FETCHES_END = 5  # seconds an open setup window may take to fetch how setup ended
 STARTED = object()  # the window's Install button was pressed while the terminal waited for a line
 CONTINUED = object()  # its Continue button, on the first page
 BACK = object()  # its Back button, on the review
@@ -476,6 +492,15 @@ def choose_storage(path, output):
             return storage.choose_ahead(read_json(path) or {}, output)
     except RuntimeError as problem:
         output(f'\nSetup stopped: {problem}')
+        # The setup window says it too (it showed only "Setup has ended", the reason and
+        # what to buy or do being in the terminal alone): its stopped page, as before setup.
+        setup_progress.event(
+            'finished',
+            title=setup_gui.STOPPED_TITLE,
+            lines=setup_gui.stop_lines(str(problem)),
+            complete=False,
+            stopped=True,
+        )
         return None
     except (EOFError, KeyboardInterrupt):
         output('')
@@ -673,7 +698,7 @@ def show_checkup(checkup, output):
 # step turns anything that goes wrong (a download cut off, too little memory) into "needs
 # a look". It is still listed with its reason; the first checkup, the exit code and the
 # headline do not wait for it (as upgrade.works_on leaves it out).
-OPTIONAL = frozenset((ASSISTANT,))
+OPTIONAL = neko_common.OPTIONAL_STEPS
 
 
 def planned(config, states, ran=()):
@@ -980,9 +1005,18 @@ def choice_said(found, choice):
     job = found.get('job') or {}
     if choice == 'continue' and job.get('kind') in JOBS_CUT_OFF:
         return 'Finish what was cut off', 'Nothing else can be changed until this is finished.'
+    if choice == 'continue' and not goes_straight_on(found, choice):
+        # The usual way (run): the first page, the drives and the review come first, then
+        # every step again. "Goes on at Tailscale" read as if it went straight there
+        # (deep check plan 198).
+        where = f' (it stopped at "{title(job["step"])}")' if job.get('step') else ''
+        return (
+            'Continue unfinished setup',
+            'Shows your saved answers again first, then runs setup once more' + where + '. What is already '
+            'done stays done.',
+        )
     if choice == 'continue':
-        where = f' Goes on at "{title(job["step"])}".' if job.get('step') else ''
-        return 'Continue unfinished setup', 'What is already done stays done.' + where
+        return 'Continue unfinished setup', 'Goes on with what was left; what is already done stays done.'
     if choice == 'update':
         return (
             'Review this NekoServer update',
@@ -1002,6 +1036,9 @@ def choice_said(found, choice):
     )
 
 
+TRIES_ON_THE_MENU = 3  # answers not on the list before the menu of a found NekoServer stops setup
+
+
 def existing_installation(found, prompt=input, output=print):
     """The page: what was found, and the choices that apply, by number. Returns the
     choice ('continue', 'update', 'change', 'restore'), or None when the person stops
@@ -1019,7 +1056,7 @@ def existing_installation(found, prompt=input, output=print):
         output('       ' + under)
     first = choice_said(found, choices[0])[0]
     question = f'Type its number, or no to stop (Enter alone: 1, {first}): '
-    for _ in range(3):
+    for _ in range(TRIES_ON_THE_MENU):
         try:
             answer = prompt(question).strip().lower()
         except (EOFError, KeyboardInterrupt):
@@ -1032,6 +1069,8 @@ def existing_installation(found, prompt=input, output=print):
         if answer.isdecimal() and 1 <= int(answer) <= len(choices):
             return choices[int(answer) - 1]
         output(f'Type a number from 1 to {len(choices)}, or no.')
+    # Said, or setup ended at the third typo with only "Nothing was changed".
+    output(f'None of the {TRIES_ON_THE_MENU} answers was a number from the list, so setup stops here.')
     return None
 
 
@@ -1275,12 +1314,17 @@ def run(execute, default_state, prompt=input, output=print, root=ROOT, config=No
             exit_code = run_steps(execute, path, default_state, straight, (prompt, output, window))
         else:
             output(
-                'No apps were set up. (The system update and the packages NekoServer needs are '
-                'already installed; that is all.) Run  sudo bash install.sh  when you are ready.'
+                # Only Arch updates the whole system first (install.sh); the others only install packages.
+                'No apps were set up. Only the packages NekoServer needs were installed (on Arch the whole '
+                'system was updated first). Run  sudo bash install.sh  when you are ready.'
             )
             exit_code = 0
     finally:
         if window is not None:
+            if setup_progress.last('finished'):
+                # A page that says how setup ended (it stopped at the storage page, say)
+                # is fetched before the window's server goes; an open window asks every second.
+                window.delivered.wait(WINDOW_FETCHES_END)
             window.stop()
         setup_progress.disable()
     return exit_code

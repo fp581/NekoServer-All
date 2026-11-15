@@ -15,11 +15,15 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import backup_secrets  # noqa: E402
 import first_checkup
+import neko_common  # noqa: E402
 import recovery_wizard  # noqa: E402
 import wizard  # noqa: E402
 from modules import capacity  # noqa: E402
+from roomy import roomy_drive  # noqa: E402
 
 GIB = 1024**3
 REAL_HDD_READY = recovery_wizard.hdd_ready  # the real drive check (most tests replace it)
@@ -37,6 +41,20 @@ def chown_refused(folder, uid, gid):
         return True
     finally:
         probe.unlink()
+
+
+def set_up(config):
+    """`config` as the settings of a server setup has set up: they name its drives."""
+    return {**config, 'storage': {'media_hdd': {'uuid': 'the-hdd', 'fstype': 'ext4'}}}
+
+
+def has_account(uid):
+    """Whether this system has an account with the number `uid`."""
+    try:
+        pwd.getpwuid(uid)
+        return True
+    except KeyError:
+        return False
 
 
 def answers(*values):
@@ -139,7 +157,10 @@ class WizardFlowTests(unittest.TestCase):
         code = wizard.run(execute, self.root / 'state', prompt=answers('no'), output=out.append, root=self.root)
         self.assertEqual(code, 0)
         execute.assert_not_called()
-        self.assertTrue(any('No apps were set up' in line for line in out))
+        said = next(line for line in out if 'No apps were set up' in line)
+        # Only Arch updates the whole system before setup (said on Ubuntu, where it never ran).
+        self.assertNotIn('The system update and', said)
+        self.assertIn('on Arch the whole system was updated first', said)
 
     def test_yes_runs_the_full_install_with_the_settings_file(self):
         execute = mock.Mock(return_value=0)
@@ -816,6 +837,7 @@ def then_stopped(*values):
 
 class RecoveryWizardTests(unittest.TestCase):
     def setUp(self):
+        roomy_drive(self)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
@@ -992,6 +1014,28 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertIn('ENCRYPTED', text)
         self.assertNotIn('upload the', text)
 
+    def test_the_encryption_check_reads_a_file_whose_path_is_longer_than_linux_opens(self):
+        # Deep check plan 337: a restore writes through open folders, so a file deep in
+        # long folder names comes back even when its whole path is over 4096 bytes. The
+        # check after it looked each file up by that path and stopped the menu with a
+        # traceback (File name too long) once the restore had finished.
+        folder = self.root / 'restored'
+        folder.mkdir()
+        fd = os.open(folder, os.O_RDONLY)
+        try:
+            for _ in range(22):  # 22 folders of 200 bytes: past 4096 with the folder
+                os.mkdir('d' * 200, dir_fd=fd)
+                deeper = os.open('d' * 200, os.O_RDONLY, dir_fd=fd)
+                os.close(fd)
+                fd = deeper
+            deep = os.open('deep.txt', os.O_WRONLY | os.O_CREAT, 0o600, dir_fd=fd)
+            os.write(deep, b'HBEGIN:oc_encryption_module:OC_DEFAULT_MODULE:HEND')
+            os.close(deep)
+        finally:
+            os.close(fd)
+        self.assertTrue(recovery_wizard.encrypted_by_nextcloud(folder))
+        self.assertFalse(recovery_wizard.encrypted_by_nextcloud(folder, sample=0))
+
     def test_newest_version_is_restored_under_its_own_name(self):
         usb = self.root / 'usb'
         files = 'usb/nextcloud/alice/files/'
@@ -1144,6 +1188,17 @@ class RecoveryWizardTests(unittest.TestCase):
         restored = next((self.media / 'restored').iterdir()) / 'files'
         self.assertEqual((restored / 'a.txt').read_bytes(), b'kept safe')
         self.assertIn('Checksums matched for 1 file; 1 file had no recorded checksum yet', '\n'.join(out))
+
+    def test_the_files_with_no_checksum_are_it_for_one_and_them_for_more(self):
+        """The summary said "2 files had no recorded checksum yet (the backup that copied it
+        ..., or it was backed up ...)"."""
+        checked = recovery_wizard.Checked(None)
+        checked.unverified = 1
+        self.assertIn('copied it did not finish, or it was backed up', checked.summary())
+        checked.unverified = 2
+        said = checked.summary()
+        self.assertIn('2 files had no recorded checksum yet (the backup that copied them did not finish, ', said)
+        self.assertIn('or they were backed up before checksums were kept)', said)
 
     def test_a_damaged_backup_file_is_left_out_and_named_and_the_rest_restored(self):
         self.write('usb/nextcloud/alice/files/a.txt', b'kept safe')
@@ -1459,6 +1514,31 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertEqual((self.media / 'photos/archive/upload/u/missing.jpg').read_bytes(), b'gone from the HDD')
         self.assertEqual(left['archive']['missing'], [])
 
+    def test_photos_the_exfat_usb_drive_cannot_hold_are_not_missing_copies(self):
+        """Deep check plan 191: the weekly copy leaves off an exFAT USB drive the photos whose
+        names it can't store (backup.rs mirror_on), but its checksum list names them, so a
+        restore from the drive called them missing and listed them for the repair."""
+        self.write('hdd/photos/archive/library/u1/IMG_0001.JPG', b'one')
+        self.write('usb/library/u1/IMG_0001.JPG', b'one')
+        names = {'library/u1/IMG_0001.JPG': b'one', 'library/u1/img_0001.jpg': b'two', 'library/u1/colon:a.jpg': b'3'}
+        self.ledger('usb', names)
+        left = ['library/u1/colon:a.jpg', 'library/u1/img_0001.jpg']
+        self.write('usb/.neko-left-out.json', json.dumps({'format': 'neko-left-out-v1', 'files': left}).encode())
+        (self.root / 'ssd/reports').mkdir()
+        out = []
+        with (
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / 'usb'),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+        ):
+            recovery_wizard.restore_photos(self.config, answers('2', '1', '1', 'yes'), out.append)
+        said = '\n'.join(out)
+        self.assertNotIn('cannot come back from it', said)
+        self.assertNotIn('Fix damaged backup copies" (in', said)
+        self.assertIn('2 files (for example library/u1/colon:a.jpg, library/u1/img_0001.jpg) are not on this USB', said)
+        self.assertIn('They are safe on the HDD', said)
+        self.assertIn('Done: 1 file copied', said)
+        self.assertFalse((self.root / 'ssd/reports/integrity.json').exists())
+
     def test_a_missing_copy_is_listed_for_repair_even_when_you_stop_the_restore(self):
         import hashlib
 
@@ -1578,7 +1658,7 @@ class RecoveryWizardTests(unittest.TestCase):
         out = []
         with (
             mock.patch.object(os, 'geteuid', return_value=0),
-            mock.patch.object(recovery_wizard, 'settings', return_value=self.config),
+            mock.patch.object(recovery_wizard, 'settings', return_value=set_up(self.config)),
         ):
             self.assertEqual(recovery_wizard.run(answers('0'), out.append), 0)
         said = '\n'.join(out)
@@ -1806,6 +1886,7 @@ class RecoveryWizardTests(unittest.TestCase):
             mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=None),
             mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
             mock.patch.object(recovery_wizard, 'reachable', return_value=True),
+            mock.patch.object(recovery_wizard, 'account', return_value=('4321', '/home/4321')),
         ):
             recovery_wizard.restore_photos(self.config, answers('1', '1', '1', 'yes'), out.append)
         said = '\n'.join(out)
@@ -1822,6 +1903,30 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertIn('now belong to 4321, so you can open them from your desktop', said)
         self.assertLess(said.index('belong to'), said.index('click "Upload"'))
 
+    def test_restored_files_are_not_given_to_an_account_that_is_gone(self):
+        """Plan 153: the settings' media account (4242 here) no longer on this PC, the
+        menu run without sudo (from the setup window, as root): the files were given to
+        the number 4242 and said to be "yours, to open from your desktop", which no account
+        could; the chown it offered ("4242:") is refused by chown itself."""
+        gone = next(n for n in range(4242, 60000) if not has_account(n))
+        target = self.root / 'restored-photos'
+        (target / 'upload').mkdir(parents=True)
+        (target / 'upload/a.jpg').write_bytes(b'photo')
+        before = (target / 'upload/a.jpg').stat().st_uid
+        with (
+            mock.patch.dict(os.environ, {'SUDO_UID': '', 'SUDO_GID': ''}),
+            mock.patch.object(recovery_wizard, 'give_to') as give_to,
+        ):
+            lines = recovery_wizard.handed_over(
+                {'media_mount': str(self.media), 'media': {'uid': gone, 'gid': gone}}, target
+            )
+        said = '\n'.join(lines)
+        give_to.assert_not_called()
+        self.assertEqual((target / 'upload/a.jpg').stat().st_uid, before)
+        self.assertIn(f'no account number {gone}', said)
+        self.assertIn(f'sudo chown -R YOU: "{target}"', said)
+        self.assertNotIn('open them from your desktop', said)
+
     def test_a_restored_folder_out_of_the_person_s_reach_is_said_with_how_to_move_it(self):
         target = self.root / 'private/back'
         target.mkdir(parents=True)
@@ -1829,6 +1934,7 @@ class RecoveryWizardTests(unittest.TestCase):
         with (
             mock.patch.object(recovery_wizard, 'give_to'),
             mock.patch.object(recovery_wizard, 'owner', return_value=(4321, 4322)),
+            mock.patch.object(recovery_wizard, 'account', return_value=('alice', '/home')),
         ):
             lines = recovery_wizard.handed_over({'media_mount': str(self.media)}, target)
         self.assertIn('can\'t get to where it is', lines[0])
@@ -1855,12 +1961,14 @@ class RecoveryWizardTests(unittest.TestCase):
         stopped = []
         with (
             mock.patch.object(os, 'geteuid', return_value=0),
-            mock.patch.object(recovery_wizard, 'settings', return_value=self.config),
+            mock.patch.object(recovery_wizard, 'settings', return_value=set_up(self.config)),
             mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / 'usb'),
             mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
         ):
             recovery_wizard.run(then_stopped('2', '1', 'yes', '1'), stopped.append)
-        self.assertIn('Stopped. Nothing more was changed; what was already restored', stopped[-1])
+        # Only looked around (both drives away, then a menu left by Ctrl+D): nothing was
+        # restored or repaired, so it is not said to stay (deep check plan 200).
+        self.assertEqual(stopped[-1], '\nStopped. Nothing was changed.')
 
     def test_a_restore_made_again_at_once_gets_a_folder_of_its_own(self):
         # UP-13: the suggested folder was named to the minute, so a second restore within
@@ -1887,14 +1995,43 @@ class RecoveryWizardTests(unittest.TestCase):
         with (
             mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb),
             mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
-            mock.patch.object(recovery_wizard, 'tool', side_effect=lambda *a: restored.append(a) or True),
+            mock.patch.object(backup_secrets, 'asked_restore', side_effect=lambda *a, **k: restored.append(a)),
             mock.patch.object(recovery_wizard, 'new_folder', return_value=self.root / 'out'),
         ):
             out = []
             recovery_wizard.restore_passwords(self.config, answers('1', 'yes'), out.append)
         said = '\n'.join(out)
         self.assertIn('(copy on the USB drive)', said)
-        self.assertEqual(restored[0][:3], ('backup_secrets.py', '--restore', str(usb / 'passwords/100-1')))
+        self.assertEqual(restored[0], (usb / 'passwords/100-1', self.root / 'out'))
+
+    def test_a_sealed_password_lists_password_is_asked_where_the_window_sees_it(self):
+        """Plan 147: the menu run with the setup window opened backup_secrets.py as a program
+        of its own, whose getpass went to the terminal only: the window, where the person
+        had answered every question so far, waited with none. It is asked in the menu's
+        own process now, through getpass.getpass (which the window watches)."""
+        self.write('hdd/backups/monthly/1700000000000000-4/manifest.json', b'{"format":"neko-maintenance-v1"}')
+        self.write('hdd/backups/monthly/1700000000000000-4/secrets.tar.cms', b'sealed')
+        target = self.root / 'passwords'
+        asked, opened = [], []
+
+        def unsealed(snapshot, destination, password, key_dir=None, out=print):
+            opened.append(password)
+            (destination / 'secrets/accounts').mkdir(parents=True)
+            return destination
+
+        with (
+            mock.patch.object(recovery_wizard, 'hdd_ready', return_value=True),
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=None),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+            mock.patch.object(recovery_wizard.subprocess, 'run', side_effect=AssertionError('a program of its own')),
+            mock.patch('getpass.getpass', side_effect=lambda prompt='': asked.append(prompt) or 'the password'),
+            mock.patch.object(backup_secrets, 'restore', unsealed),
+        ):
+            out = []
+            recovery_wizard.restore_passwords(self.config, answers('1', '2', str(target), '1', 'yes'), out.append)
+        self.assertEqual(asked, [backup_secrets.RESTORE_PROMPT])
+        self.assertEqual(opened, ['the password'])
+        self.assertIn('Done. Open it with', '\n'.join(out))
 
     def test_the_lists_setup_makes_on_the_hdd_are_offered_newest_first(self):
         """The 0.46.1 audit: the menu looked only at the monthly snapshots, so setup's newer
@@ -1917,11 +2054,11 @@ class RecoveryWizardTests(unittest.TestCase):
         with (
             mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / 'usb'),
             mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
-            mock.patch.object(recovery_wizard, 'tool', side_effect=lambda *a: restored.append(a) or True),
+            mock.patch.object(backup_secrets, 'asked_restore', side_effect=lambda *a, **k: restored.append(a)),
             mock.patch.object(recovery_wizard, 'new_folder', return_value=self.root / 'out'),
         ):
             recovery_wizard.restore_passwords(self.config, answers('1', 'yes'), [].append)
-        self.assertEqual(restored[0][2], str(self.root / 'usb/passwords/1750000000000000-0'))
+        self.assertEqual(restored[0][0], self.root / 'usb/passwords/1750000000000000-0')
 
     def test_a_busy_usb_drive_never_hides_the_hdds_lists(self):
         """The audit of 0.46.2: the weekly copy holding the USB drive stopped the restore of a
@@ -1935,12 +2072,12 @@ class RecoveryWizardTests(unittest.TestCase):
                 '__enter__',
                 side_effect=RuntimeError('the weekly backup is using the USB drive right now'),
             ),
-            mock.patch.object(recovery_wizard, 'tool', side_effect=lambda *a: restored.append(a) or True),
+            mock.patch.object(backup_secrets, 'asked_restore', side_effect=lambda *a, **k: restored.append(a)),
             mock.patch.object(recovery_wizard, 'new_folder', return_value=self.root / 'out'),
         ):
             recovery_wizard.restore_passwords(self.config, answers('1', 'yes'), out.append)
         self.assertIn('The USB drive is not looked at', out[0])
-        self.assertEqual(restored[0][2], str(self.media / 'backups/monthly/1700000000000000-4'))
+        self.assertEqual(restored[0][0], self.media / 'backups/monthly/1700000000000000-4')
 
     def test_a_mount_check_that_does_not_answer_is_said_in_words(self):
         usb = recovery_wizard.Usb({**self.config, 'photos': {'external_backup_uuid': 'usb-11111'}})
@@ -1966,6 +2103,29 @@ class RecoveryWizardTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, 'on another NAS disk than setup chose'):
                 usb.open()
+
+    def test_another_drive_mounted_at_the_usb_drives_folder_is_not_read(self):
+        """Deep check plan 288: with the UUID check of a drive mounted there already taken
+        out, every test still passed: a restore would read another drive's files."""
+        config = {**self.config, 'photos': {'external_backup_uuid': 'usb-11111'}}
+        with (
+            mock.patch.object(recovery_wizard.subprocess, 'run', return_value=mock.Mock(returncode=0)),
+            mock.patch.object(recovery_wizard, 'findmnt', return_value='other-2222 rw,nosuid,nodev,noexec /dev/sdy'),
+        ):
+            self.assertIsNone(recovery_wizard.Usb(config).open())
+
+    def test_the_usb_drive_is_not_opened_while_the_weekly_copy_holds_it(self):
+        """Deep check plan 288: with the lock taken out, every test still passed."""
+        import fcntl
+
+        config = {**self.config, 'photos': {'external_backup_uuid': 'usb-11111'}}
+        with tempfile.TemporaryDirectory() as d:
+            lock = Path(d) / 'photo-backup.lock'
+            with open(lock, 'w') as held, mock.patch.object(recovery_wizard, 'USB_LOCK', lock):
+                fcntl.flock(held, fcntl.LOCK_EX)
+                with self.assertRaisesRegex(RuntimeError, 'the weekly backup is using the USB drive'):
+                    with recovery_wizard.Usb(config):
+                        pass
 
     def test_the_wwn_check_looks_at_the_mounted_device_not_the_uuids_link(self):
         """The review of 0.47.0: with two LUNs of one filesystem UUID, the by-uuid link names
@@ -2007,6 +2167,40 @@ class RecoveryWizardTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'filled up after 1 of 2 files') as caught:
                 recovery_wizard.copy_new([('src', self.root / 'src')], self.root / 'restored', checked)
         self.assertIn('run the restore again', str(caught.exception))
+
+    def test_a_drive_that_fills_up_is_said_the_same_for_the_newest_versions_and_leaves_no_cut_off_file(self):
+        """Seen restoring photos onto a small drive that filled up: the recommended choice
+        (only the newest version of each file) said "[Errno 28] No space left on device",
+        and the file being written when it filled stayed there, cut off, under its own name."""
+        import errno
+
+        self.write('src/a.txt', b'a' * 600)
+        self.write('src/b.txt', b'b' * 600)
+        restored = self.root / 'restored'
+        real, room = os.fdopen, [1000]
+
+        def filling(fd, *args, **kwargs):
+            """A drive with room for 1000 bytes: the second file is cut off."""
+            out = real(fd, *args, **kwargs)
+            write = out.write
+
+            def write_some(data):
+                if len(data) > room[0]:
+                    write(data[: room[0]])
+                    raise OSError(errno.ENOSPC, 'No space left on device')
+                room[0] -= len(data)
+                return write(data)
+
+            out.write = write_some
+            return out
+
+        checked = recovery_wizard.Checked(None)
+        with mock.patch.object(neko_common.os, 'fdopen', filling):
+            with self.assertRaisesRegex(RuntimeError, 'filled up after 1 of 2 files'):
+                recovery_wizard.copy_latest([('src', self.root / 'src')], restored, checked=checked)
+        left = list((restored / 'src').iterdir())
+        self.assertEqual(len(left), 1, 'only the file copied whole')
+        self.assertEqual(left[0].read_bytes(), (self.root / 'src' / left[0].name).read_bytes())
 
     def test_a_password_list_from_a_snapshot_without_a_backup_key(self):
         import tarfile
@@ -2054,12 +2248,35 @@ class RecoveryWizardTests(unittest.TestCase):
             self.assertEqual(recovery_wizard.run(answers(), lambda s: None), 2)
         with (
             mock.patch('os.geteuid', return_value=0),
-            mock.patch.object(recovery_wizard, 'settings', return_value=self.config),
+            mock.patch.object(recovery_wizard, 'settings', return_value=set_up(self.config)),
         ):
             out = []
             self.assertEqual(recovery_wizard.run(answers('0'), out.append), 0)
             # Said first, before any choice: nothing happens by choosing, and Enter never approves.
             self.assertTrue(any('Pressing Enter alone never approves anything' in line for line in out))
+
+    def test_a_fresh_download_without_settings_says_so_not_that_a_drive_is_away(self):
+        """Plan 148, run for real on a release folder from git with nothing set up: the menu
+        took the release's own config.json (no drive in it) and said of the HDD plugged in
+        "The HDD is not mounted at /mnt/nekoserver-media ... Connect it (or restart the PC)",
+        then "No photo backup found"."""
+        import wizard
+
+        release = self.root / 'nekoserver'
+        release.mkdir()
+        shutil.copy(recovery_wizard.ROOT / 'config.json', release / 'config.json')
+        out = []
+        with (
+            mock.patch('os.geteuid', return_value=0),
+            mock.patch.object(recovery_wizard, 'stop_on_sigterm'),
+            mock.patch.object(recovery_wizard, 'ROOT', release),
+            mock.patch.object(wizard, 'earlier_settings', return_value=None),
+        ):
+            self.assertEqual(recovery_wizard.run(answers('1', '1', '0', '0'), out.append), 2)
+        said = '\n'.join(out)
+        self.assertIn('No settings of a server set up on this PC were found', said)
+        self.assertIn('my-config.json', said)
+        self.assertNotIn('Connect it', said)
 
 
 class RestoreDestinationTests(unittest.TestCase):
@@ -2069,6 +2286,7 @@ class RestoreDestinationTests(unittest.TestCase):
     still said they were all restored and verified."""
 
     def setUp(self):
+        roomy_drive(self)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name)

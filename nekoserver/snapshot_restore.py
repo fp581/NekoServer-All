@@ -35,7 +35,7 @@ class Kind:
     def root_ok(self, first):
         if self.roots:
             return first in self.roots
-        return first.startswith('source') and first[6:].isdigit()
+        return first.startswith('source') and first[6:].isdecimal()
 
     def kinds(self):
         return ('file', 'directory', 'symlink') if self.links else ('file', 'directory')
@@ -244,6 +244,9 @@ def copy_row(kind, snapshot, target, row):
         shutil.copyfileobj(source, output, 65536)
         output.flush()
         os.fsync(output.fileno())
+        # Dropped from memory, so the check reads what the drive holds (read from memory,
+        # a drive that did not keep the bytes passed).
+        os.posix_fadvise(output.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
         output.seek(0)
         found = hashlib.sha256()
         for block in iter(lambda: output.read(1 << 20), b''):
@@ -312,7 +315,8 @@ def main(kind, description, argv=None):
         else:
             restore(kind, args.snapshot, args.destination, args.preserve_owners)
             print(kind.restored_message)
-    except (OSError, RuntimeError, ValueError, KeyError, TypeError) as exc:
+    # Ctrl+C too: said like any other stop (it was a Python traceback), with what is left.
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError, KeyboardInterrupt) as exc:
         print(kind.failed_message + ' Reason: ' + failure_reason(exc), file=sys.stderr)
         if args.command == 'restore' and not existed and Path(args.destination).exists():
             print(
@@ -332,6 +336,8 @@ def failure_reason(exc):
     never hold file contents or passwords."""
     if isinstance(exc, RuntimeError):
         return str(exc)
+    if isinstance(exc, KeyboardInterrupt):
+        return 'stopped with Ctrl+C'
     if isinstance(exc, OSError):
         where = f' ({exc.filename})' if exc.filename else ''
         return (exc.strerror or type(exc).__name__) + where

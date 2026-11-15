@@ -1,5 +1,232 @@
 # Changelog
 
+## v0.51.2 — (in progress; the release number is 0.51.2)
+
+Fixes only, from a wider review of 0.51.0 and from trying the tools on a fresh Ubuntu 24.04. Nothing changes in how NekoServer is used.
+
+### Fixed: copies are checked on the drive, not in memory
+Every copy is read back and checked before it counts. That read came straight after the write, so Linux answered from its memory, not from the drive: a fake-capacity or failing drive passed, and a file counted as backed up that the drive did not hold. Each check below now reads the drive itself. Shown on drive images whose bytes were changed under the filesystem: the old checks passed, the new ones fail.
+- **The weekly USB photo copy**, and the music, archive, app and host copies that share its copy step.
+- **The monthly snapshot's own check**, run right after the snapshot before an update.
+- **Moving to a new drive:** the final comparison now reads the new drive (unmounted and mounted again first). The old drive was never changed, so `migrate.py back` always worked. Tested with stand-in drives only.
+- **Importing a library you already had**, and **restoring an app snapshot**.
+- **The SD-card engine** (not switched on yet) and **the card restore tool**'s second check.
+
+### Fixed: getting files back (the recovery menu, restore tools, backup cards)
+- **The recovery menu reads the checksum ledger row by row** (855 MB → 300 MB at a million photos).
+- **Two card restores into one folder at once no longer delete each other's half-written files** (both used one temporary name, giving false failures and false "skipped").
+- **A Nextcloud restore with very long paths finishes** (its last check ended in a traceback instead of "Done").
+- **The card restore tool works on a PC with little memory**: reading even a small progress file reserved 1 GB up front.
+- **"1 file … it", "2 files … them"** in the restore summary.
+- **The recovery menu says films, shows and music have no backup**, so a deleted film isn't looked for there.
+- **The recovery menu left after only looking around says nothing was changed**, not that restores "stay as they are".
+- **A backup card unplugged mid-restore is said as such** ("The card stopped answering", the files so far are complete, how to carry on), instead of every remaining file called damaged.
+- **Card searches find accented names written the Mac or phone way** (`list --search`, `restore --search`, `where`).
+- **Restored files are not given to an account that no longer exists**: they stay root's, with a `chown` line that works.
+- **The recovery menu without a settings file says so**, instead of "The HDD is not mounted" about a drive that was plugged in.
+- **A restore stopped with Ctrl+C names its folder as incomplete** and says to delete it and restore again; `app-recovery.py` and `host-recovery.py` say it in words, not a traceback.
+- **A drive check or repair whose e2fsck fails, hangs or asks a question says so plainly**; e2fsck no longer waits for an answer nobody sees.
+- **`recover.py reattach` with another server's settings says what differs** and to use the settings kept on the SSD.
+- **A sealed password list's password is asked in the setup window too**, not only in the terminal while the window waited.
+- **The recovery menu's drive check names a drive that is not connected**, instead of "Both drives take new files and Linux counted no errors on them" (seen with neither drive connected). "The application SSD" also keeps its capital letters there.
+- **A restore says when the HDD that holds its backups is not connected**, instead of "No nightly backup… found on the HDD yet" or "No complete monthly snapshot on the HDD yet", which read as if no backup had ever been made.
+- **The monthly and music restore tools say what went wrong in plain words** (a damaged snapshot, a missing folder), instead of a traceback; a music restore onto exFAT restores every file the drive accepts and names the ones it refused.
+- **A drive that fills up during a restore leaves no cut-off file**, and says so plainly for every choice (a half-written photo stayed under its own name, said to be "there as it is").
+- **A restore refused for lack of room names the space the drive must keep free**, instead of "needs 0.0 GB and 0.1 GB is free".
+- **The recovery menu says a read-only or full drive in words, with what to do**, instead of Python's "[Errno 30] Read-only file system: '/mnt/…'".
+- **A monthly restore or the password list onto a full, read-only or too small drive is said in plain words**, naming any folder left incomplete, instead of a traceback.
+- **Messages name the recovery menu's choices as the menu shows them** ("Fix damaged backup copies", "Check a drive that stopped taking new files"), one wording kept in shared.json; since 0.50.0 they named choices that were no longer there.
+- **Restoring from a card, a copy missing or replaced on the card is said as such**, as `verify` says it, instead of "No such file or directory".
+- **A card restore killed while it wrote a file finishes that file on the next run** (it failed it with "File exists", and a third run was needed).
+- **A card restore stopped while it wrote its progress file can go on**: the next run added its lines after the cut-off one, and the run after that refused the whole file.
+- **The recovery menu's drive check no longer freezes on a network share that stopped answering.**
+- **A restore that skipped files says how to get them too** (`--rename`), instead of ending with only "skipped 2". Seen restoring onto an exFAT stick, which cannot hold a name with `:` or tell `Same.jpg` from `same.jpg`.
+- **Nothing is restored onto the card itself.** `restore /mnt` (the card) copied every file onto the card, among its records; a folder on the card is now refused, also through a link.
+
+### Fixed: backups and upgrades
+- **"Upgrade NekoServer" with a drive unplugged says so** and which drive, instead of "Upgrading…" and then nothing.
+- **Job reports are written to fit what is read back**, so a long partial report no longer loses the last success.
+- **A big checksum ledger is rewritten every tenth of its size**: a first copy of a million photos wrote about 22 GB of ledger, now about 2.4 GB.
+- **A new backup password says when the first list with it is made** (setup makes one only with a USB copy).
+- **A drive move waits for the dashboard's minute-long jobs** (readings, alerts, heartbeat) instead of stopping after hours of copying; a real backup still stops it.
+- **The "a backup is running" message says to run the same command again**, not always `sudo bash install.sh`.
+- **A file too deep for Linux's path limit no longer stops the whole backup for good**: it is left out and named, and the rest is copied (every file sorting after it was never backed up again; photo archive, Nextcloud copy and USB photo copy).
+- **An upgrade cut off while downloading is not reported as passed** (the dashboard showed it done while the old release still ran).
+- **A monthly-run failure is said under its own step**, not "while waiting for a weekly USB copy".
+- **The monthly run's reasons keep their advice whole on the dashboard** ("night too short" lost the setting's name, "foreign Docker volume" lost "run setup again").
+- **The monthly recovery says when Docker doesn't answer** (after 60 seconds), instead of waiting for good.
+- **An upgrade from the dashboard works on Debian 12's Python (3.11.2)**: it stopped with "module 'tarfile' has no attribute 'FilterError'"; the same safety checks are now done by hand there.
+- **A returning drive waits for a running job before starting the apps** (up to 30 minutes, then says so), instead of starting Docker in the middle of a job or an update's rollback.
+- **Root writes into a folder an app owns through the opened folder**, so a folder swapped for a link meanwhile is refused, not followed.
+- **A full USB backup drive says to use a bigger one, never to delete copies on it**; any job on a full drive says so in words (was "No space left on device (os error 28)").
+- **A forgotten backup password is said with what to do**, and a new one can be chosen (`backup_secrets.py --new-password`) for future lists.
+- **The checksum ledger and the lists of files are read and written row by row**: a 1-million-photo ledger took 2.7 GB of memory to add one photo, now 365 MB; a 100,000-photo archive run went from 345 MB to about 72 MB. The files are the same, byte for byte.
+- **The setup log no longer grows forever**: past 2 MB a run starts a new one and keeps the one before.
+- **A drive that turned read-only, or that Linux shut down after errors, is named before a job writes to it**, instead of "os error 30" or "os error 5"; a read-only SSD no longer makes every job wait 3 hours "for another NekoServer job".
+- **A restore from an exFAT USB drive no longer calls the photos it could not hold "missing"** or lists them for repair: they are safe on the HDD.
+- **A failed snapshot's half-made folder is removed when the run ends**, not left (as big as the snapshot) until the next night.
+- **A file name with a line break no longer cuts a snapshot's failure reason** (it then named another file).
+- **A NekoServer update whose download was cut off or damaged is said in plain words**, not tarfile's list or "IncompleteRead".
+- **The weekly Immich database copy never falls on a time the clocks skip**: on the Sunday the clocks go forward in the US and Europe, 02:15 does not exist, and the USB copy got the week-old database copy. It moves earlier (01:45) where that would happen.
+- **Setup says when a backup time you choose falls in the hour the clocks skip** (it would not run that night), and offers another; Enter keeps yours. The old default database copy time (02:15) moves to 01:45 where it is skipped.
+- **A failed upgrade whose way back was cut off by a power cut is put back at the next start**, instead of being closed as "passed its check" on the release that failed.
+- **No "manual major upgrade" notice for an older Immich release marked "latest"**.
+- **A missing USB drive for the weekly copy says how to choose a new one** (remove `external_backup_uuid`, then run setup), instead of only "External drive missing".
+- **Photos an exFAT USB drive can't name are left out and listed**, not lost: a name with `:` stopped the whole weekly copy, and `IMG_1.JPG` beside `img_1.jpg` shared one file there (the second never copied, or each week one "repaired" over the other). They stay on the HDD; the report counts them.
+- **A USB or NAS backup folder that stopped answering is said after 30 seconds**, instead of the weekly copy (and the monthly drive check) waiting for good with no report.
+- **A failed database copy says what Docker said** and that the app must be running (it was only "Database dump failed or too small", also for a stopped Immich).
+- **A file changed while the nightly app backup copied it is named**, with "the next run tries again".
+- **A damaged checksum ledger is named, with how to start a new one**, instead of "Checksum ledger is unreadable" at every run.
+- **An older password list after the backup key was made again says it is from the earlier key** and asks for that password, instead of "Wrong password" to the right new one.
+
+### Fixed: setup and its tools
+- **A slip in setup's own code is said in words**, with the log and "run setup again", not Python's raw text (`'data_ssd'`).
+- **A settings key no release knows is warned about**, naming the one meant (`media.servics` → `media.services`).
+- **One list of optional steps for the terminal and the window**: a failed TV, phone-alert or heartbeat step needs you in both.
+- **The memory check counts a container's limit**, and 1 GB no longer says "You can go on".
+- **DNS down is no longer blamed on the cable or Wi-Fi**; every package source failing is no longer called "some".
+- **`install.sh --check` refuses an ARM or 32-bit PC too**, and the Python tools started with doas know whose server it is.
+- **The TV step uses a Flatpak Steam already on the PC**, instead of installing a second Steam.
+- **Hardware video: a driver not offered (Fedora without RPM Fusion) is named**, not called built in.
+- **Setup by hand goes on when an upgrade left the server to you** (a failed way back could block it for good).
+- **A number out of range in my-config.json names the setting and its range** (it was "Invalid journal bound" or "Invalid maintenance.keep_snapshots").
+- **The gateway certificate export says why it failed**, not one sentence for every cause.
+- **`install.sh --check` works in a Latin-1 terminal** (it stopped on a dash it could not show).
+- **`doas bash install.sh` knows whose account it is**, and a PC without sudo is told how to get it with its own package manager, not apt.
+- **A 32-bit PC is called a 32-bit PC**, not "a Raspberry Pi or another ARM board"; an image-based Fedora gets the read-only-system message.
+- **Arch with AMD graphics gets its video decoding** (now part of mesa; it was silently left out).
+- **A download with no DNS answering says how to start the name service**, besides the usual causes.
+- **`sudo bash install.sh` by hand stops while a NekoServer upgrade is at work or was cut off**, naming the service that finishes it; it took the setup lock, so the upgrade could neither finish nor put the old release back.
+- **The source wizard saves nothing while the data SSD is not mounted** (as root it wrote onto the system disk).
+- **The review promises only what the steps set up**: the TV switch needs Movies and shows, and Immich follows the photos step's own rule.
+- **Ctrl+D at "Show a login now?" keeps the phone or TV part for the next run**, as the screen says, instead of failing the step.
+- **A media app mistyped by hand in the settings is named**, with the valid names.
+- **Nextcloud's "enabled" is read one way everywhere** (missing means on); some places read it as off.
+- **A cut-off settings file, or a setting of the wrong kind, is named in plain words by every command** (music-setup, migrate, media-connect, source-wizard, `upgrade resume`, onboard and system updates showed tracebacks).
+- **Phone alerts that stopped arriving are tested again by setup**, which asks for the address again when the test fails (it kept the broken one silently).
+- **Turning Nextcloud off says what is kept and what stops** (the files stay on the HDD; the USB copy stops), and its old copies stay restorable from the recovery menu.
+- **On a server without a desktop, the setup window's message says the terminal is enough** and gives the `ssh -L` line to open the window from another PC.
+- **A laptop as the server keeps running with its lid closed**, and the dashboard says when it runs on battery.
+- **The setup window refuses a change sent from another page on this PC** (the sign-in cookie goes to every port of 127.0.0.1), and closes a connection that stops halfway after 10 seconds.
+- **A drive's label or model can no longer send escape codes to the terminal** in the drive list.
+- **Downloads stop at their whole time limit** (one byte a second ran 40 s against 5 s), and an answer cut off, too large or not a web site's is said plainly.
+- **Docs**: two broken links fixed; HOST-BACKUPS.md names all five Linux families; moving to a new PC, letting a friend watch your films (and that they can open the dashboard), renaming the server, where films go and what to do when a drive fills up later.
+- **"Continue unfinished setup" says what it really does** (it asks the first page, drives and review again), not that it goes straight on at the step that stopped.
+- **On one drive, the review names that drive** for the photos, not "the drive of the backups".
+- **Backup times typed as "2:30" are taken** (kept as 02:30).
+- **A drive named in the settings with a name no drive can have ("d-1") is said so**, instead of "not a drive under storage".
+- **Drive checks name the problem as it is**: a drive mounted out of its place, two roles sharing one filesystem (said for the USB drive too, before), and an exFAT drive mounted through a FUSE helper (now mounted with Linux's own exFAT driver).
+- **The runtime build copies only the binary it compiled itself** (two builds sharing one folder copied each other's).
+- **An automatic update cut off earlier is said with the command that finishes it** (`sudo dpkg --configure -a`), not apt's raw line.
+- **A damaged or missing settings file is named, with what is wrong** (not JSON, with the line and column; not there; no settings in it; no such profile), in `install.sh`, `acceptance.py` and `recover.py`, instead of Python's own words or a vague line.
+- **`recover.py check --config my.json` reads my.json.** The option was read only before the command.
+- **`recover.py` in a fresh download says the runtime is not built yet, and how to build it**, instead of "…runtime/build.json does not exist. Check the path".
+- **`recover.py` with a setting of the wrong kind** (`"storage": "x"`, say) **says so without a Python traceback** around the words.
+- **`music-setup.py` with a drive not connected (or the runtime not built) says why and stops**, instead of a Python traceback.
+- **`acceptance.py` and `source_import.py` say why they stopped** (a drive not connected, the runtime not built, a setting missing), instead of "inspect configuration and local services" or "check configured mounts".
+- **Setup without internet says the package source could not be reached, and why** ("Could not connect to …"), with what to do, instead of apt's "Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?".
+- **A clock set years back stops setup at once, saying to fix the date**, instead of failing on the package lists' signatures as "package sources could not be reached".
+- **A misspelt time zone is said with the one meant** ("Europe/Londn: did you mean Europe/London?"), instead of "not installed under /usr/share/zoneinfo".
+- **A Btrfs drive mounted with the wrong subvolume is refused with what to do** (restart the PC, or run setup), not only named.
+- **The wrong folder of an ext4 or XFS drive mounted in its place is called that**, not "another Btrfs subvolume"; a Btrfs subvolume deleted while mounted is said as deleted, with how to get the files back, instead of "restart the PC".
+- **The finishing page fits a narrow window**: each app's states, address and test buttons were cut off at the right edge.
+- **`migrate.py move --to <not a UUID>` says so**, instead of "move needs --drive and --to".
+- **A drive move cut off right after the old drive was unmounted mounts it again before the apps start**: `resume` started them on the empty folder on the system disk and said "the apps run as before". An fstab line the switch can't rewrite now stops the move before anything changes; a retry checks the earlier copy by checksum (a file found different was skipped and failed every time); a cut-off "back" says which drive is mounted.
+- **The drive checks name the drive they checked** (an extra drive or the USB drive was "the HDD").
+- **The TV step names a TV account that doesn't exist and what to set**, instead of "getpwnam(): name not found".
+- **Onboarding checks and connects only the apps whose group is on**: on a music-only server it waited for Jellyfin, Seerr, Sonarr and Radarr and never finished.
+- **The finishing page counts the TV tries you said yes to in the TV step**, instead of "nobody has tried this yet".
+- **Importing a library you already had**: a damaged source list is said and kept (it crashed, or was rewritten as a list of letters); a full library drive and a share only noted say why, not "Source inaccessible, unmounted, overlapping"; a folder on a drive of this PC is no longer called a network share.
+- **The phone page keeps its HTTPS check** between openings, instead of checking every connection again every second time.
+- **A number typed as "²" or "①" is asked again**, in setup, the recovery menu, the uninstaller and the drive picker, instead of ending in a Python traceback.
+- **A setup stopped for want of a drive says what to free or buy** (how many GB more, or a drive of what size), and the setup window shows the reason too, not only "Setup has ended".
+- **On a PC with one drive, every backup says it is on the same drive as what it copies.**
+- **Typos are asked again, not taken as an answer**: "no" to "Back this up too?" (media you already have) backed it up, and "yse" to "Does your NAS ask for a password?" was no. Three typos at the "NekoServer was found" menu now say why setup stops.
+- **"No apps were set up" no longer claims a system update** where only packages were installed (only Arch updates the whole system first).
+- **RECOVERY.md**: what to restore is chosen by its name (the menu's numbers differ per server), and a broken SSD or HDD needs no edit of `my-config.json`.
+- **Phone alerts: a test you did not see arrive asks for the address again** at the next setup run (a typo in the hidden address still reaches the alert server), and the step stays "needs you" until a test arrives.
+- **`notify --test` says what happened**: that the alert server took the test and to look at your phone, or that it was not sent and what to check. It printed nothing, or only "Notification delivery failed".
+
+### Fixed: the dashboard and Ask Neko
+- **Counts agree everywhere in the runtime** ("1 file differs", never "1 files").
+- **A home gateway that gave up says it stays stopped**, and the command that starts it.
+- **A recovery that lasts only a moment sends no RECOVERED alert.**
+- **The SMART cache keeps the 20 newest readings**; the Sensors badge counts the temperatures shown, and no 999,999 °C reaches the Fans page.
+- **"Update now" names the app**, and a check for updates that can't start says so.
+- **Waiting phone alerts go within a minute once a test gets through**, instead of up to an hour behind the retry delay.
+- **What a backup left out is cut at a word or sentence**, not mid-word ("…the whole Nextcl").
+- **Ask Neko says when a question is too long** (it was cut at 500 characters silently) **and when the box is empty**.
+- **Ask Neko leaves out the alert and heartbeat addresses** read from where setup keeps them (it looked in the settings, where they never are).
+- **A home-network address the PC no longer has (a new router) is said**, instead of a green page while home addresses and shared folders had stopped.
+- **A time zone changed since setup is said**, with what to do (the monthly update, which stops the apps, could move into the day).
+- **Slow connections no longer stop the page**: 200 of them made every page load fail.
+- **Help has a guide for a server that got slow.**
+- **A drive under LUKS or LVM gets its health (SMART) check** from the one disk under it, instead of "Physical disk mapping unavailable" forever.
+- **A drive at exactly 90% is no longer "Over 90% used".**
+- **A drive that doesn't answer hdparm in time keeps its own power settings, and that is said**, instead of the power-settings service failing.
+- **Keyboard focus stays on its control when the page refreshes** (it fell back to the top every few seconds on the apps' ⋯ buttons, Updates, "See more", "Detect fans").
+- **Nothing is covered or pushed sideways on a narrow phone at 200% zoom** (the page title was hidden under the top buttons at 320 px).
+- **The processes page with over 5,000 programs lists the busiest and counts them all**; newer busy programs were left out and the count was wrong.
+- **A heartbeat check-in made while the clock was ahead is not counted as missed** (a working heartbeat showed "stale" and could send a phone alert).
+- **A fan speed Linux can't give (outside 0–255) is not shown as a percentage** ("Now 118%").
+- **An app restart with Docker unrunnable says so plainly**, not "Permission denied (os error 13)".
+- **One of something is said in the singular** ("1 day ago", "1 output", threads, lights).
+- **A question typed before the PIN dialog stays in its box.**
+- **A damaged phone-alert record is set aside (kept, with its date) and alerts start fresh**, instead of every alert run failing with "Invalid JSON".
+- **Extra drives are listed in the order of their numbers** (d3 before d10).
+- **A PC whose system disk has no UUID (Ubuntu's ZFS-on-root install, say) no longer shows "OS SSD unavailable"** as an urgent alert while it runs fine. The blank UUID column was read as "no drive there".
+- **A drive Linux turned read-only after errors is shown so on newer kernels** (6.12 and later keep it "rw" with emergency_ro).
+- **A RAID array that does not run (broken, or not started at boot) is a lost drive with an alert**, not a quiet warning.
+- **A NAS that stopped answering is "waiting for the network storage box"**, and the NAS check and the readings no longer hang on it.
+- **A drive that is connected but not the one chosen (reformatted, replaced, or another part of it mounted) is told to run setup**, not to "Reconnect it".
+- **An XFS drive Linux shut down after errors shows as read-only**, with the read-only alert and its steps, instead of healthy while every job failed with "Input/output error".
+- **An app SSD that turned read-only, or is full, gets its own alert with what fixes it**, not "App SSD can't be written… restart the PC" (a restart fixes neither). The dashboard's own failed write had replaced the read-only alert, or stood beside the "almost full" one.
+- **A drive filling up (over 90%) says what stops when it is full and what to do before then**, as the urgent alert does, instead of "Review free space before uploads or backups".
+- **A USB copy that lacks the password list says so on the dashboard**, not only "Incomplete; see the job's report".
+- **The dashboard says what Tailscale needs**: a sign-in already past while Tailscale still says "Running" is "signed out" (was "phone access stops soon"); a Tailscale switched off, or waiting for your approval in its admin console, now says so and what to do (was nothing).
+- **A long address in an alert's title wraps on a phone** instead of pushing the whole page sideways.
+- **A greyed-out menu item's note is readable** (it measured 2.3:1; now only the label is dimmed).
+- **Ask Neko takes a password in quotes out whole**: `password: "correct horse battery"` kept "horse battery".
+- **Ask Neko takes out a password named in another language** (Passwort, contraseña, mot de passe, wachtwoord, senha, סיסמה, пароль), not only in English.
+- **Ask Neko says plainly when it is busy** with an answer left by a reloaded page, and when its service is stopped (it said "Fan and light control unavailable").
+- **Ask Neko is free for the next question when the page leaves an answer that never ends**, instead of "Neko is busy" until the assistant hung up; an assistant that hangs up at once is said as such, not as "took too long".
+- **"What should I do?" on an alert opens the guide about it**, and the alerts' advice names pages the dashboard has, in words a beginner can follow.
+- **DASHBOARD.md says where a forgotten PIN can be found**, and what the reset gives.
+
+### Fixed: apps and the network
+- **A media import names the files it leaves out because they are still downloading** (`.!qB`, `.part`) and how to copy them later; the finished film was never copied.
+- **The home gateway stops retrying a refused start** (it looped for good) and is shown under "Starts by itself" like Docker and Samba.
+- **A share name mixing Latin with Cyrillic or Greek letters is refused** ("Меdia" beside "Media").
+- **Immich and Nextcloud take only a stable release** (pre-releases and drafts were accepted), and an odd answer from the release list is said plainly, not a traceback.
+- **The nftables rule setup advises is inserted, so it works** (added at the end it was never reached under Arch's rules).
+- **An IPv6-only home network is said as such**, not "plug in a network cable".
+- **Tailscale with MagicDNS or HTTPS off says what to switch on** when nobody is there to answer.
+- **A shared-folders password too long for Samba (over 254 bytes) is said plainly**, not "Mismatch - password unchanged".
+- **An API key made again by hand in Sonarr or Radarr**: Prowlarr gets the current key (its link was called verified with the old one), and Seerr says where to paste it.
+- **Films on a drive of their own are looked for there** when Jellyfin and the Arr apps are connected.
+- **Nextcloud over another install's data folder names the folder and what to do**, not "explicit recovery required".
+- **A drive's top folder with lost+found is no longer "unreadable"** when you choose your own media folder.
+- **Connecting the media apps and qBittorrent has a total time limit per request**, so an app answering a byte at a time can't keep setup waiting without end.
+- **The gateway step waits for Tailscale to be ready** when Tailscale answers oddly (still starting, signed out: `"Self": null`), instead of stopping setup with a Python error.
+- **Samba shares exactly the folders named**: a share called `global`, `homes` or `printers` (names Samba keeps for itself), two names differing only in case, and a folder ending in a space are now refused with what to change; before, the first vanished, the second merged, and the third shared another folder.
+- **qBittorrent's refused login says why**: a wrong saved password, or this PC blocked after too many tries (wait an hour, or restart it), instead of "API request failed; inspect local WebUI"; an odd answer is said plainly.
+- **The media apps' connector says plainly when an app answers with a web page or an odd list**, and goes on with the other apps, instead of a traceback or "Expecting value: line 1 column 1".
+- **Nextcloud's answers are read with PHP warnings around them**: setup waited 15 minutes for Nextcloud and failed when PHP printed a notice before or after occ's answer; accounts named only with digits ("0", "1") were not seen as accounts.
+
+### Fixed: the uninstaller
+- **A Desktop folder that is a link out of the home loses nothing outside it** (a real run deleted a file in /opt), and a pipe or a link to /dev/zero named like a shortcut no longer hangs the plan or fills memory.
+- **`uninstall.sh --help` shows what it does, and a mistyped option changes nothing.** Only `--dry-run` was read: `--help`, or a typo such as `--dryrun`, opened the real removal menu (which still asked twice before removing anything).
+- **One service reads "1 service or timer"**, not "1 services and timers".
+- **Keeping your photos (or Nextcloud files) while removing the apps' data is said before the yes**: the app's database goes, so a new installation starts it empty and does not show them.
+
+### Fixed: SD-card backup sets (the engine, not switched on yet)
+- **The catalogue's copy for the host backup is private** (readable by root only). It was readable by every user, and a new catalogue was, for a moment.
+- **A card never gets a set inventory it cannot read back.** The engine now stops, naming the limit, before writing a list larger than its reader takes.
+
+### Checked
+- The tests run to the end on Python 3.11.0–3.11.2 (Debian 12) as well.
+- **The card's restore tool runs on Python 3.8, as it promises**: its tests now run on a real Python 3.8 in CI (they pass), so a newer Python feature in it fails the build instead of a restore on an older PC.
+
 ## v0.51.1 — 2026-11-13
 
 Fixes only, found by a code review of 0.51.0 and by trying the restore tool on real card images: mostly in the tool that gets files back from a backup card. Nothing changes in how NekoServer is used.

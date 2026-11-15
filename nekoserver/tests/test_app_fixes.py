@@ -563,6 +563,33 @@ class NextcloudSettingsTests(unittest.TestCase):
         config_checks.nextcloud_default(empty, ('nextcloud',))
         self.assertEqual(empty, {'nextcloud': {'enabled': True}})
 
+    def test_every_reader_reads_a_missing_enabled_as_on(self):
+        """capacity.py, dashboard.py and photo_backup.py (and neko_common.drive_holds) read
+        a settings file without "enabled" as Nextcloud off, the rest as on: one Nextcloud
+        was on in one place and missing from the dashboard and the weekly USB copy."""
+        import finish_states
+        import gateway_tools
+        import neko_common
+        import placement
+        import recovery_wizard
+        from modules import capacity, dashboard, photo_backup, storage
+
+        nothing = json.loads((ROOT / 'config.json').read_text())
+        nothing['media_apps'] = {'photos': False, 'movies': False, 'music': False}
+        for section, on in (({'admin_user': 'admin'}, True), ({'enabled': True}, True), ({'enabled': False}, False)):
+            config = {**nothing, 'nextcloud': section}
+            with self.subTest(section=section):
+                self.assertIs(neko_common.nextcloud_enabled(config), on)
+                self.assertEqual('Nextcloud' in capacity.usb_pending_words(config), on)
+                self.assertEqual(dashboard.collector_settings(config, 3600)['nextcloud'], {'enabled': on})
+                self.assertEqual(photo_backup.copies(config), (False, on))
+                self.assertEqual('Nextcloud' in neko_common.drive_holds(config, 'media_hdd'), on)
+                self.assertIs(gateway_tools.installed(config, 'nextcloud'), on)
+                self.assertIs(finish_states.offline_backup_off(config), not on)
+                self.assertIs(placement.applies(config, placement.CLOUD), on)
+                self.assertIs(storage.asked_where(config, 'cloud'), on)
+                self.assertIs(recovery_wizard.nextcloud_on(config), on)
+
     def test_its_database_gets_a_minute_to_stop(self):
         from modules import nextcloud
 

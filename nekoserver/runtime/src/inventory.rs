@@ -11,6 +11,7 @@
 //! missing or damaged inventory only means the restore offers everything, as before.
 use crate::common::{self, Error, Result};
 use crate::ledger::Ledger;
+use serde_core::de::{DeserializeSeed, Deserializer, IgnoredAny, MapAccess, Visitor};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
@@ -125,38 +126,129 @@ fn current_copy(target: &Path) -> Option<String> {
     })
 }
 
+/// Each listed file, in the order of their names in the tree: (that name, its saved copy,
+/// that copy's SHA-256), taken from the inventory and the checksum list, not copied. As
+/// JSON trees (the new list, a copy of it and the newest one read back) they took 290 MB
+/// of the nightly archive's 345 MB at 100,000 photos, about 3 GB at a million (deep
+/// check 223).
+type Listed<'a> = Vec<(&'a str, &'a str, std::borrow::Cow<'a, str>)>;
+/// What writes an inventory's JSON text.
+type Text<'a> = dyn Fn(&mut dyn Write) -> Result<()> + Sync + 'a;
 /// The inventory as gzip-compressed JSON (by the system's gzip, which every supported
-/// Linux has).
-fn compressed(value: &Value) -> Result<Vec<u8>> {
-    let text = serde_json::to_vec(value)?;
+/// Linux has); `text` writes the JSON.
+fn compressed(text: &Text) -> Result<Vec<u8>> {
     let mut child = Command::new("gzip")
         .args(["-n", "-c"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
-    let mut stdin = child
+    let stdin = child
         .stdin
         .take()
         .ok_or_else(|| Error::new("gzip did not start"))?;
     // Written from its own thread: gzip's output is read meanwhile, so a big list never
     // fills both pipes.
-    let writer = std::thread::spawn(move || stdin.write_all(&text));
-    let output = child.wait_with_output()?;
-    writer
-        .join()
-        .map_err(|_| Error::new("gzip input failed"))??;
-    if !output.status.success() || output.stdout.is_empty() {
-        return Err(Error::new("gzip failed"));
+    std::thread::scope(|scope| {
+        let writer = scope.spawn(move || -> Result<()> {
+            let mut out = std::io::BufWriter::new(stdin);
+            text(&mut out)?;
+            Ok(out.flush()?)
+        });
+        let output = child.wait_with_output()?;
+        writer
+            .join()
+            .map_err(|_| Error::new("gzip input failed"))??;
+        if !output.status.success() || output.stdout.is_empty() {
+            return Err(Error::new("gzip failed"));
+        }
+        Ok(output.stdout)
+    })
+}
+/// An inventory's JSON (`{"files": …, "format": …, "made_at": …}`), written to `out` a
+/// row at a time.
+fn list_text(out: &mut dyn Write, files: &Listed<'_>, made_at: &str) -> Result<()> {
+    out.write_all(b"{\"files\":{")?;
+    for (n, (key, copy, sha256)) in files.iter().enumerate() {
+        if n > 0 {
+            out.write_all(b",")?;
+        }
+        out.write_all(&serde_json::to_vec(key)?)?;
+        out.write_all(b":")?;
+        out.write_all(&serde_json::to_vec(
+            &json!({"copy": copy, "sha256": sha256}),
+        )?)?;
     }
-    Ok(output.stdout)
+    out.write_all(b"},\"format\":")?;
+    out.write_all(&serde_json::to_vec(FORMAT)?)?;
+    out.write_all(b",\"made_at\":")?;
+    out.write_all(&serde_json::to_vec(made_at)?)?;
+    Ok(out.write_all(b"}")?)
+}
+/// Whether an inventory read back lists exactly `files` (and is of this format): looked at
+/// row by row as it is read, so no second list is ever made of it.
+struct Same<'a>(&'a Listed<'a>);
+impl<'de> DeserializeSeed<'de> for Same<'_> {
+    type Value = bool;
+    fn deserialize<D: Deserializer<'de>>(self, d: D) -> std::result::Result<bool, D::Error> {
+        d.deserialize_map(self)
+    }
+}
+impl<'de> Visitor<'de> for Same<'_> {
+    type Value = bool;
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a list of files")
+    }
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<bool, A::Error> {
+        let (mut format, mut files) = (false, false);
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "format" => format = map.next_value::<Value>()? == FORMAT,
+                "files" => files = map.next_value_seed(SameRows(self.0))?,
+                _ => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        Ok(format && files)
+    }
+}
+/// Whether the "files" read back are exactly `files`: each a copy and its checksum.
+struct SameRows<'a>(&'a Listed<'a>);
+impl<'de> DeserializeSeed<'de> for SameRows<'_> {
+    type Value = bool;
+    fn deserialize<D: Deserializer<'de>>(self, d: D) -> std::result::Result<bool, D::Error> {
+        d.deserialize_map(self)
+    }
+}
+impl<'de> Visitor<'de> for SameRows<'_> {
+    type Value = bool;
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("the listed files")
+    }
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<bool, A::Error> {
+        let (mut same, mut rows) = (true, 0);
+        while let Some((key, row)) = map.next_entry::<String, Value>()? {
+            rows += 1;
+            same = same
+                && row.as_object().is_some_and(|r| r.len() == 2)
+                && self
+                    .0
+                    .binary_search_by(|(listed, ..)| (*listed).cmp(key.as_str()))
+                    .is_ok_and(|at| {
+                        let (_, copy, sha256) = &self.0[at];
+                        row["copy"] == *copy && row["sha256"] == sha256.as_ref()
+                    });
+        }
+        Ok(same && rows == self.0.len())
+    }
 }
 
 /// Each listed file with its saved copy and that copy's SHA-256: the one the checksum
 /// list (`ledger`) records for it, else read from the copy now. A copy that can be read
 /// neither way is left out (a restore then names it missing, never guesses).
-fn with_checksums(root: &Path, inventory: &Inventory, ledger: &Ledger) -> BTreeMap<String, Value> {
-    let mut out = BTreeMap::new();
+fn with_checksums<'a>(root: &Path, inventory: &'a Inventory, ledger: &'a Ledger) -> Listed<'a> {
+    let mut out = Listed::new();
     for (key, copy) in &inventory.files {
         let saved = match key.rsplit_once('/') {
             Some((folder, _)) => format!("{folder}/{copy}"),
@@ -164,10 +256,10 @@ fn with_checksums(root: &Path, inventory: &Inventory, ledger: &Ledger) -> BTreeM
         };
         let sum = ledger
             .get(&saved)
-            .map(|e| e.sha256.clone())
-            .or_else(|| common::digest(&root.join(&saved)).ok());
+            .map(|e| std::borrow::Cow::Borrowed(e.sha256.as_str()))
+            .or_else(|| common::digest(&root.join(&saved)).ok().map(Into::into));
         if let Some(sha256) = sum {
-            out.insert(key.clone(), json!({"copy": copy, "sha256": sha256}));
+            out.push((key, copy, sha256));
         }
     }
     out
@@ -201,8 +293,8 @@ fn next_name(folder: &Path, now: &str) -> Result<PathBuf> {
     }
 }
 
-/// The newest inventory in `folder` and the files it lists, if it can be read.
-fn newest(folder: &Path) -> Option<(PathBuf, Value)> {
+/// The newest inventory in `folder`, when it can be read and lists exactly `files`.
+fn newest_alike(folder: &Path, files: &Listed<'_>) -> Option<PathBuf> {
     let mut names: Vec<String> = fs::read_dir(folder)
         .ok()?
         .flatten()
@@ -212,16 +304,24 @@ fn newest(folder: &Path) -> Option<(PathBuf, Value)> {
         .collect();
     oldest_first(&mut names);
     let path = folder.join(names.pop()?);
-    let text = unpacked(&path, UNPACKED_MAX)?;
-    let value: Value = serde_json::from_slice(&text).ok()?;
-    (value["format"] == FORMAT).then(|| (path, value["files"].clone()))
+    let alike = unpacked(&path, UNPACKED_MAX, &mut |text| {
+        let mut read = serde_json::Deserializer::from_reader(text);
+        let same = Same(files).deserialize(&mut read).ok()?;
+        read.end().ok().map(|()| same)
+    })?;
+    alike.then_some(path)
 }
 /// The most an inventory may unpack to: well over the list of millions of files, but a
 /// small file on the backup drive that unpacks to far more (a "zip bomb") is read no
 /// further, so it can't fill the memory.
 const UNPACKED_MAX: u64 = 1 << 30;
-/// The file at `path` unpacked by gzip, if it unpacks fully to at most `max` bytes.
-fn unpacked(path: &Path, max: u64) -> Option<Vec<u8>> {
+/// What `read` makes of the file at `path` unpacked by gzip (read as it unpacks, never
+/// whole into memory), if it unpacks fully to at most `max` bytes.
+fn unpacked<T>(
+    path: &Path,
+    max: u64,
+    read: &mut dyn FnMut(&mut dyn std::io::Read) -> Option<T>,
+) -> Option<T> {
     use std::io::Read;
     let mut child = Command::new("gzip")
         .args(["-d", "-c"])
@@ -230,17 +330,17 @@ fn unpacked(path: &Path, max: u64) -> Option<Vec<u8>> {
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-    let mut out = vec![];
-    let read = child
-        .stdout
-        .take()
-        .map(|s| s.take(max + 1).read_to_end(&mut out));
-    let whole = matches!(read, Some(Ok(_))) && out.len() as u64 <= max;
+    let mut text = std::io::BufReader::new(child.stdout.take()?.take(max + 1));
+    let found = read(&mut text);
+    // Read to its end: nothing may follow what `read` took, beyond `max` either.
+    let whole = found.is_some()
+        && std::io::copy(&mut text, &mut std::io::sink()).is_ok()
+        && text.get_ref().limit() > 0;
     if !whole {
         let _ = child.kill();
     }
     let done = child.wait().ok()?;
-    (whole && done.success()).then_some(out)
+    (whole && done.success()).then_some(found?)
 }
 /// Write `inventory` for the tree at `root`, then keep the newest KEPT. Returns its path
 /// and true; or the newest list already there and false when that one names the same
@@ -257,7 +357,7 @@ fn write_with(
     root: &Path,
     inventory: &Inventory,
     ledger: &Ledger,
-    pack: &dyn Fn(&Value) -> Result<Vec<u8>>,
+    pack: &dyn Fn(&Text) -> Result<Vec<u8>>,
 ) -> Result<(PathBuf, bool)> {
     let folder = root.join(FOLDER);
     common::directory(&folder, 0o700)?;
@@ -265,7 +365,7 @@ fn write_with(
         .map(|d| d.format("%Y%m%dT%H%M%SZ").to_string())
         .unwrap_or_default();
     let files = with_checksums(root, inventory, ledger);
-    if let Some((path, _)) = newest(&folder).filter(|(_, listed)| *listed == json!(files)) {
+    if let Some(path) = newest_alike(&folder, &files) {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         note_run(&folder, &now, Some(&name))?;
         return Ok((path, false));
@@ -273,8 +373,7 @@ fn write_with(
     // First: this run has no list yet. Only once its list is there does the note name it.
     note_run(&folder, &now, None)?;
     let path = next_name(&folder, &now)?;
-    let value = json!({"format": FORMAT, "made_at": now, "files": files});
-    common::atomic(&path, &pack(&value)?, 0o600)?;
+    common::atomic(&path, &pack(&|out| list_text(out, &files, &now))?, 0o600)?;
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     note_run(&folder, &now, Some(&name))?;
     prune(&folder, KEPT, &name)?;
@@ -360,16 +459,24 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let file = dir.join("list.json.gz");
-        fs::write(
-            &file,
-            compressed(&json!({"format": FORMAT, "files": {"a": 1}})).unwrap(),
-        )
-        .unwrap();
-        assert!(unpacked(&file, 1 << 20).is_some());
-        assert!(unpacked(&file, 10).is_none());
+        let text = br#"{"format":"neko-inventory-v2","files":{"a":1}}"#;
+        fs::write(&file, compressed(&|out| Ok(out.write_all(text)?)).unwrap()).unwrap();
+        let all = &mut |r: &mut dyn std::io::Read| {
+            let mut v = vec![];
+            r.read_to_end(&mut v).ok().map(|_| v)
+        };
+        assert_eq!(unpacked(&file, 1 << 20, all).unwrap(), text);
+        assert!(unpacked(&file, 10, all).is_none());
+        // Read as it unpacks: one that goes on past `max` after the part taken is refused.
+        let first = &mut |r: &mut dyn std::io::Read| {
+            let mut v = [0; 5];
+            r.read_exact(&mut v).ok().map(|_| v)
+        };
+        assert!(unpacked(&file, 1 << 20, first).is_some());
+        assert!(unpacked(&file, 10, first).is_none());
         // Not gzip: nothing.
         fs::write(&file, b"plain").unwrap();
-        assert!(unpacked(&file, 1 << 20).is_none());
+        assert!(unpacked(&file, 1 << 20, all).is_none());
         let _ = fs::remove_dir_all(&dir);
     }
     #[test]
@@ -445,6 +552,53 @@ mod tests {
         assert_eq!(names[2], "20261025T030000Z-2.json.gz");
         fs::remove_dir_all(folder).unwrap();
     }
+    /// Deep check 223 (the nightly archive at 100,000 photos): writing the list of files
+    /// took 290 MB of its 345 MB, as JSON trees of the new list, a copy of it and the
+    /// newest one read back (about 3 GB at a million photos).
+    #[test]
+    fn a_big_list_of_files_is_written_and_compared_without_trees_of_it() {
+        let root = std::env::temp_dir().join(format!("neko-inventory-big-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("upload")).unwrap();
+        let mut ledger = Ledger::open(&root).unwrap();
+        let mut live = Inventory::default();
+        for n in 0..20_000 {
+            let key = format!("upload/IMG_{n:06}.jpg");
+            fs::write(root.join(&key), b"").unwrap();
+            ledger
+                .record(&key, &format!("{n:064x}"), 0, "copied")
+                .unwrap();
+            live.add(&root.join(&key), &root);
+        }
+        let ((path, written), _, first) =
+            crate::ledger::tests::measured(|| write(&root, &live, &ledger).unwrap());
+        assert!(written);
+        let text = Command::new("gzip")
+            .arg("-dc")
+            .arg(&path)
+            .output()
+            .unwrap()
+            .stdout;
+        let size = text.len() as isize;
+        // What a restore reads: every file with its copy and checksum, as before.
+        let list: Value = serde_json::from_slice(&text).unwrap();
+        assert_eq!(list["format"], FORMAT);
+        assert_eq!(
+            list["files"]["upload/IMG_000007.jpg"],
+            json!({"copy": "IMG_000007.jpg", "sha256": format!("{:064x}", 7)})
+        );
+        assert_eq!(serde_json::to_vec(&list).unwrap(), text);
+        // The same files again: compared with the newest list, nothing new is written.
+        let ((again, written), _, second) =
+            crate::ledger::tests::measured(|| write(&root, &live, &ledger).unwrap());
+        assert!(!written);
+        assert_eq!(again, path);
+        for most in [first, second] {
+            assert!(most < size, "{most} at most, the list is {size}");
+        }
+        drop(ledger);
+        let _ = fs::remove_dir_all(root);
+    }
     #[test]
     fn a_run_whose_list_could_not_be_written_is_noted_as_having_none() {
         let root =
@@ -465,7 +619,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(1100));
         fs::write(root.join("a/new.txt"), b"new").unwrap();
         live.add(&root.join("a/new.txt"), &root);
-        let full = |_: &Value| -> Result<Vec<u8>> { Err(Error::new("No space left on device")) };
+        let full = |_: &Text| -> Result<Vec<u8>> { Err(Error::new("No space left on device")) };
         assert!(write_with(&root, &live, &ledger, &full).is_err());
         assert!(note()["list"].is_null());
         assert_ne!(note()["at"], "");

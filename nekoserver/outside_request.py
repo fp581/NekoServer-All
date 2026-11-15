@@ -85,12 +85,29 @@ def mark_tested(private, answer):
     atomic_json(private, saved)
 
 
+def mark_seen(private, seen):
+    """Keep whether the person saw the test arrive (`seen`: their plain yes). A server
+    takes a message for a topic name with a typo in it just the same (ntfy.sh makes any
+    topic it is sent to), so only the person can tell that the address is not the one
+    their phone follows."""
+    saved = _saved(private)
+    if not saved:
+        return
+    saved.update(seen=seen is True)
+    atomic_json(private, saved)
+
+
+def not_seen(private):
+    """The person said the last test did not arrive: the address is asked for again."""
+    return _saved(private).get('seen') is False
+
+
 def kept_test(private, **destination):
     """The test record to save with `destination`: the earlier one when the destination
     is the same as before, otherwise "not tested yet", so a new address is always tested."""
     saved = _saved(private)
     if saved and all(saved.get(key, '') == value for key, value in destination.items()):
-        return {key: saved[key] for key in ('tested', 'answer') if key in saved}
+        return {key: saved[key] for key in ('tested', 'answer', 'seen') if key in saved}
     return {'tested': False}
 
 

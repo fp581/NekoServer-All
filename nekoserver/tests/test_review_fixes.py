@@ -1,6 +1,7 @@
 """Regression tests for the compose-path, Seerr UID and timezone fixes."""
 
 import hashlib
+import io
 import http.cookiejar
 import json
 import subprocess
@@ -315,6 +316,69 @@ class SourceWizardTests(unittest.TestCase):
         with mock.patch('builtins.print'):
             sources = self.wizard().collect({}, lambda _: next(replies))['sources']
         self.assertEqual([s['name'] for s in sources], ['Songs'])
+
+    def test_a_damaged_source_list_is_said_and_kept(self):
+        """A damaged media-sources.json was a JSONDecodeError traceback in the wizard (and
+        one whose "sources" was not a list was turned into a list of letters, or an
+        AttributeError in the import). Both now say what to do and write nothing."""
+        with tempfile.TemporaryDirectory() as d:
+            settings = Path(d) / 'settings.json'
+            settings.write_text(json.dumps({**json.loads((ROOT / 'config.json').read_text()), 'data_mount': d}))
+            target = Path(d) / 'media-sources.json'
+            for damaged in ('{"sources": [', '{"sources": "abc"}', '{"sources": ["abc"]}'):
+                target.write_text(damaged)
+                argv = ['source-wizard.py', '--config', str(settings), '--output', str(target)]
+                wizard = self.wizard()
+                with (
+                    mock.patch.object(sys, 'argv', argv),
+                    mock.patch('builtins.input', return_value='no'),
+                    mock.patch('builtins.print'),
+                    self.assertRaises(SystemExit) as stopped,
+                ):
+                    wizard.main()
+                self.assertIn('list of your media sources', str(stopped.exception.code))
+                self.assertEqual(target.read_text(), damaged)
+                import source_import
+
+                error = io.StringIO()
+                with mock.patch('sys.stderr', error):
+                    code = source_import.main(['--config', str(settings), '--sources', str(target), '--selected-only'])
+                self.assertEqual(code, 2)
+                self.assertIn('list of your media sources', error.getvalue())
+
+    def test_nothing_is_written_while_the_data_ssd_is_not_mounted(self):
+        """With the SSD away its folder is a plain one on the system disk: the wizard wrote
+        config/media-sources.json (and the kept answer) there. It now stops first."""
+        with tempfile.TemporaryDirectory() as d:
+            settings = Path(d) / 'settings.json'
+            settings.write_text(json.dumps({**json.loads((ROOT / 'config.json').read_text()), 'data_mount': d}))
+            wizard = self.wizard()
+            with (
+                mock.patch.object(sys, 'argv', ['source-wizard.py', '--config', str(settings)]),
+                mock.patch('builtins.input', return_value='no'),
+                mock.patch('builtins.print'),
+                self.assertRaises(SystemExit) as stopped,
+            ):
+                wizard.main()
+            self.assertIn('data SSD is not mounted', str(stopped.exception.code))
+            self.assertFalse((Path(d) / 'config').exists())
+
+
+class SourceListPathTests(unittest.TestCase):
+    def test_only_a_json_file_is_read_as_the_source_list(self):
+        """SonarCloud on PR 87 (path traversal from the command line): source_import read
+        any file named with --sources. Only a .json file is read, by its real path."""
+        import source_import
+
+        with tempfile.TemporaryDirectory() as d:
+            other = Path(d) / 'passwd'
+            other.write_text('{"sources": []}')
+            with self.assertRaises(ValueError) as caught:
+                source_import.source_list(other)
+            self.assertIn('must be a .json file', str(caught.exception))
+            listed = Path(d) / 'media-sources.json'
+            listed.write_text('{"sources": [{"name": "Films"}]}')
+            self.assertEqual(source_import.source_list(listed), [{'name': 'Films'}])
 
 
 class JellyfinLibraryLoginTests(unittest.TestCase):
@@ -683,6 +747,21 @@ class TvUserTests(unittest.TestCase):
             self.assertIsNone(tv.previous_user(config))
             self.assertIsNone(tv.previous_user({**config, 'data_mount': d + '/missing'}))
 
+    def test_an_account_that_does_not_exist_is_a_plain_message(self):
+        """A typo in tv.user, or the account the report names deleted since: what to
+        set, not Python's "getpwnam(): name not found" (a KeyError the step showed)."""
+        from modules import tv
+
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / 'reports').mkdir()
+            (Path(d) / tv.REPORT).write_text(json.dumps({'user': 'nekogone', 'checks': []}))
+            for config in ({'tv': {'user': 'nekotypo'}}, {'data_mount': d, 'tv': {'user': 'auto'}}):
+                with self.assertRaises(RuntimeError) as caught:
+                    tv.desktop_user(config)
+                self.assertIn('no account', str(caught.exception))
+                self.assertIn('"user" in "tv"', str(caught.exception))
+                self.assertNotIn('getpwnam', str(caught.exception))
+
 
 class SetupDownloadTests(unittest.TestCase):
     """A download setup needs (Immich's or Nextcloud's release, Immich's compose file)
@@ -704,30 +783,20 @@ class SetupDownloadTests(unittest.TestCase):
             'Finding the current Immich release: could not download .*Temporary failure.*connected to the internet',
         ):
             neko_common.fetch(api, 'Finding the current Immich release', 1000, opener=offline)
-        limited = self.failing(urllib.error.HTTPError(api, 403, 'rate limit exceeded', {}, None))
+        limited = self.failing(urllib.error.HTTPError(api, 403, 'rate limit exceeded', {}, io.BytesIO()))
         with self.assertRaisesRegex(RuntimeError, 'GitHub is limiting requests.*wait an hour'):
             neko_common.fetch(api, 'Finding the current Immich release', 1000, opener=limited)
         gone = 'https://github.com/immich-app/immich/releases/download/v9.9.9/docker-compose.yml'
-        missing = self.failing(urllib.error.HTTPError(gone, 404, 'Not Found', {}, None))
+        missing = self.failing(urllib.error.HTTPError(gone, 404, 'Not Found', {}, io.BytesIO()))
         with self.assertRaisesRegex(RuntimeError, 'answered HTTP 404'):
             neko_common.fetch(gone, 'Downloading Immich v9.9.9\'s compose file', 1000, opener=missing)
 
     def test_a_good_answer_is_returned_with_a_user_agent(self):
         seen = []
 
-        class Reply:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def read(self, limit):
-                return b'{"tag_name": "v1.2.3"}'
-
         def opener(request, timeout=0):
             seen.append(request.get_header('User-agent'))
-            return Reply()
+            return io.BytesIO(b'{"tag_name": "v1.2.3"}')  # read as a web answer is: once, then nothing
 
         self.assertEqual(
             neko_common.fetch('https://api.github.com/x', 'x', 100, opener=opener), b'{"tag_name": "v1.2.3"}'
@@ -1323,6 +1392,22 @@ class NextcloudImageTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 nextcloud.image_for_release(bad)
 
+    def test_an_answer_that_is_no_release_is_said_plainly(self):
+        # Deep check 175's stand-in answers for Nextcloud's lookup too: a list or null was
+        # a Python traceback, a web page "Expecting value: line 1 column 1 (char 0)".
+        from modules import nextcloud
+
+        for body in (b'[{"tag_name": "v32.0.3"}]', b'null', b'<html>sign in</html>', b''):
+            with (
+                self.subTest(body=body),
+                mock.patch.object(nextcloud, 'fetch', return_value=body),
+                self.assertRaises(RuntimeError) as said,
+            ):
+                nextcloud.resolve_image('auto')
+            self.assertEqual(
+                str(said.exception), 'GitHub did not answer with a stable Nextcloud release; run setup again later'
+            )
+
 
 class ModuleDependencyTests(unittest.TestCase):
     def test_monthly_updates_do_not_need_the_usb_drive(self):
@@ -1377,6 +1462,86 @@ class OnboardingCompletionTests(unittest.TestCase):
                 call.assert_not_called()  # no connector program for apps without connections
                 saved = json.loads((root / 'reports/onboarding.json').read_text())
                 self.assertNotIn('connector', json.dumps(saved))
+
+    def test_films_on_a_drive_of_their_own_are_looked_for_there(self):
+        """Deep check 174: films and shows placed on another drive. Jellyfin's libraries,
+        and Sonarr's and Radarr's root folders, were looked for on the media drive, where
+        their folders do not exist: "Expected HDD library folder is missing"."""
+        import onboard
+
+        with tempfile.TemporaryDirectory() as d:
+            root, media = Path(d) / 'ssd', Path(d) / 'hdd'
+            root.mkdir()
+            media.mkdir()
+            config = Path(d) / 'config.json'
+            settings = {
+                'data_mount': str(root),
+                'media_mount': str(media),
+                'media': {'services': list(onboard.APPS)},
+                'storage': {'films': {'uuid': '0f0f'}},
+                'locations': {'movies': 'films'},
+            }
+            config.write_text(json.dumps(settings))
+            with (
+                mock.patch.object(onboard, 'mount_ok', return_value=True),
+                mock.patch.object(onboard, 'report', return_value=[]),
+                mock.patch.object(onboard, 'run_program', return_value=0) as call,
+                mock.patch.object(onboard.media_readiness, 'check', return_value=[]),
+                mock.patch.object(onboard.media_libraries, 'configure', return_value=[]) as libraries,
+                mock.patch('existing_page.libraries'),
+                mock.patch('existing_page.music_libraries', return_value=[]),
+                mock.patch('builtins.print'),
+            ):
+                onboard.main(['--config', str(config), '--configure', '--libraries', '--apply'])
+            films = onboard.files_root(settings, 'movies')
+            self.assertNotEqual(films, media)
+            self.assertEqual(libraries.call_args.args[1], films)
+            connector = next(c.args[1] for c in call.call_args_list if c.args[0].name == 'media-connect.py')
+            self.assertIn('--root-folders', connector)
+            self.assertNotIn('--media-root', connector)  # it finds each drive itself
+
+    def test_apps_whose_group_is_off_are_not_checked_or_connected(self):
+        """A music-only server (Movies and shows off) keeps the full media.services list;
+        Jellyfin, Seerr, Sonarr and Radarr are stopped there. Onboarding checked them all
+        the same ("appdata:jellyfin" left to do, the step never finished) and asked the
+        connector to set up Sonarr's and Radarr's folders."""
+        import importlib.util
+
+        import onboard
+
+        with tempfile.TemporaryDirectory() as d:
+            root, media = Path(d) / 'ssd', Path(d) / 'hdd'
+            root.mkdir()
+            media.mkdir()
+            config = Path(d) / 'config.json'
+            settings = {
+                'data_mount': str(root),
+                'media_mount': str(media),
+                'media': {'services': list(onboard.APPS)},
+                'media_apps': {'photos': False, 'movies': False, 'music': True},
+            }
+            config.write_text(json.dumps(settings))
+            with (
+                mock.patch.object(onboard, 'mount_ok', return_value=True),
+                mock.patch.object(onboard, 'report', return_value=[]) as checked,
+                mock.patch.object(onboard, 'run_program', return_value=0) as call,
+                mock.patch.object(onboard.media_readiness, 'check', return_value=[]),
+                mock.patch('builtins.print'),
+            ):
+                onboard.main(['--config', str(config), '--configure', '--apply'])
+            self.assertEqual(checked.call_args.args[3], ('navidrome', 'lidarr', 'prowlarr', 'qbittorrent'))
+            connector = ROOT / 'media-connect.py'
+            spec = importlib.util.spec_from_file_location('media_connect_groups', connector)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            with (
+                mock.patch.object(module.os.path, 'ismount', return_value=True),
+                mock.patch.object(module, 'chosen_actions', return_value=[]) as chosen,
+                mock.patch('builtins.print'),
+                self.assertRaises(SystemExit),
+            ):
+                module.main(['--config', str(config), '--root-folders'])
+            self.assertEqual(chosen.call_args.args[3], ('lidarr',))
 
     def test_a_confirmed_playback_is_recorded_and_a_skipped_one_is_only_noted(self):
         import wizard
@@ -1919,6 +2084,24 @@ class ImportLayoutTests(unittest.TestCase):
             never = {'type': 'local', 'path': str(self.media / 'nowhere'), 'category': 'movies'}
             self.assertEqual(source_import.run(config, [never], apply=True), 1)
 
+    def test_a_full_drive_and_a_share_only_noted_say_why(self):
+        """Both were "Source inaccessible, unmounted, overlapping, changed, unsafe or
+        conflicting": a library drive without room for the source, and a network share
+        the wizard noted without a folder it is mounted on ("blank to defer")."""
+        import source_import
+
+        def reason(source):
+            return source_import.import_one(source, self.media, False, (None, None), None, {})['reason']
+
+        tiny = mock.Mock(free=4)
+        with mock.patch.object(source_import.shutil, 'disk_usage', return_value=tiny):
+            full = reason(self.entry)
+        self.assertIn('the library drive has 4 bytes free', full)
+        noted = reason({'type': 'remote', 'uri': 'nfs://nas/films', 'category': 'movies'})
+        self.assertIn('has no folder on this PC yet', noted)
+        for said in (full, noted):
+            self.assertNotIn(str(self.source), said)
+
 
 class ClockAndUsbPrivacyTests(unittest.TestCase):
     def test_exfat_backup_drives_are_mounted_for_root_only(self):
@@ -1930,6 +2113,19 @@ class ClockAndUsbPrivacyTests(unittest.TestCase):
         self.assertFalse(neko_common.private_mount_options(readable, 'exfat'))
         self.assertFalse(neko_common.private_mount_options('rw,uid=1000,gid=1000,fmask=0177,dmask=0077', 'exfat'))
         self.assertTrue(neko_common.private_mount_options('rw,relatime', 'ext4'))
+
+    def test_an_exfat_drive_is_mounted_with_linuxs_own_driver(self):
+        """Deep check plan 207: with Arch's fuse-exfat installed, "mount" used its FUSE
+        helper, whose mount options never show who may read the drive, so it was refused
+        as readable by everyone, every time."""
+        command = neko_common.usb_mount_command('exfat', False, '/dev/sdc1', Path('/mnt/usb'))
+        self.assertEqual(command[:4], ['mount', '-i', '-t', 'exfat'])
+        self.assertEqual(command[-2:], ['/dev/sdc1', '/mnt/usb'])
+        self.assertIn('fmask=0177', command[5])
+        self.assertEqual(
+            neko_common.usb_mount_command('ext4', True, 'UUID=u', '/mnt/usb'),
+            ['mount', '-o', 'rw,nosuid,nodev,noexec', 'UUID=u', '/mnt/usb'],
+        )
 
     def test_the_restore_helper_refuses_a_readable_exfat_mount(self):
         import recovery_wizard
@@ -2085,6 +2281,7 @@ class ConnectorRerunTests(unittest.TestCase):
         answers = {
             ('prowlarr', '/applications/schema'): [],
             ('prowlarr', '/applications'): existing,
+            ('prowlarr', '/applications/test'): {},
             ('sonarr', '/system/status'): {},
         }
         with (
@@ -2096,6 +2293,55 @@ class ConnectorRerunTests(unittest.TestCase):
         ):
             self.assertIsNone(connect.configure_applications(Path('/x'), True, apps=('sonarr',)))
         self.assertIn('existing connection fields verified', str(shown.call_args_list))
+
+    def test_a_link_whose_app_key_was_made_again_gets_the_current_key(self):
+        # Deep check 188: Sonarr's API key made again by hand (Settings, General). The
+        # link's addresses still matched, so it was "verified" while Prowlarr could no
+        # longer sign in to Sonarr: no indexer reached it.
+        connect = load_connector()
+        found = {
+            'id': 3,
+            'name': 'neko-sonarr',
+            'syncLevel': 'addOnly',
+            'fields': [
+                {'name': 'prowlarrUrl', 'value': 'http://prowlarr:9696'},
+                {'name': 'baseUrl', 'value': 'http://sonarr:8989'},
+                {'name': 'apiKey', 'value': '********'},
+            ],
+        }
+        sent = []
+        refused = {'/applications/test'}  # Prowlarr's test with the old key it stores
+
+        def request(app, key, endpoint, method='GET', payload=None, **more):
+            sent.append((method, endpoint, payload))
+            if endpoint in refused:
+                raise RuntimeError(f'prowlarr {endpoint}: HTTP 400')
+            answers = {'/applications/schema': [], '/applications': [found], '/system/status': {}}
+            return answers.get(endpoint, {})
+
+        def configure():
+            with (
+                mock.patch.object(connect, 'app_key', side_effect=lambda app, root: 'k-' + app),
+                mock.patch.object(connect, 'request', side_effect=request),
+                mock.patch('builtins.print') as shown,
+            ):
+                connect.configure_applications(Path('/x'), True, apps=('sonarr',))
+            return str(shown.call_args_list)
+
+        said = configure()
+        saved = [payload for method, endpoint, payload in sent if method == 'PUT']
+        self.assertEqual(len(saved), 1)
+        self.assertIn({'name': 'apiKey', 'value': 'k-sonarr'}, saved[0]['fields'])
+        self.assertIn('the current one is saved in it', said)
+        # Prowlarr refusing the current key too is said, and setup reports the link.
+        refused.add('/applications/3')
+        with mock.patch('builtins.print') as shown, self.assertRaisesRegex(RuntimeError, 'sonarr'):
+            with (
+                mock.patch.object(connect, 'app_key', side_effect=lambda app, root: 'k-' + app),
+                mock.patch.object(connect, 'request', side_effect=request),
+            ):
+                connect.configure_applications(Path('/x'), True, apps=('sonarr',))
+        self.assertIn('enter it in Prowlarr (Settings, Apps)', str(shown.call_args_list))
 
     def test_a_link_to_another_address_is_still_reported(self):
         connect = load_connector()
@@ -2750,7 +2996,7 @@ class NextcloudReinstalledLinuxTests(unittest.TestCase):
         cases = (
             ('ended with error 1', answering(code=1)),
             ('not a list of accounts', answering(out='PHP Fatal error: database is locked')),
-            ('not a list of accounts', answering(out='["alice"]')),
+            ('not a list of accounts', answering(out='"alice"')),
             ('did not answer within 2 minutes', timing_out),
         )
         for why, run in cases:
@@ -2762,6 +3008,42 @@ class NextcloudReinstalledLinuxTests(unittest.TestCase):
                     nextcloud.account_folders_given_back(['compose'], Path('/nonexistent'), said.append, run=run)
                 scanned.assert_not_called()
                 self.assertEqual(said, [])
+
+    def test_occ_answers_with_php_warnings_around_them_are_read(self):
+        """PHP prints its warnings on occ's output, before the JSON answer (with a
+        "{closure}" of their own) or after it: status() read no answer then, and setup
+        waited 15 minutes for Nextcloud to finish installing, then failed."""
+        from modules import nextcloud
+
+        warning = (
+            'PHP Deprecated:  Creation of dynamic property in {closure}() in '
+            '/var/www/html/lib/private/AppFramework/Utility/SimpleContainer.php on line 108\n'
+        )
+        answer = '{"installed":true,"version":"31.0.4.1","maintenance":false}'
+        for out in (
+            warning + answer + '\n',
+            answer + '\nPHP Warning:  Undefined array key "x" in /var/www/html/config/config.php on line 5\n',
+            warning + '  ' + answer + '\n' + warning,
+        ):
+            with self.subTest(out=out[:30]):
+                run = lambda argv, **kw: mock.Mock(returncode=0, stdout=out)  # noqa: E731
+                self.assertEqual(nextcloud.status(['compose'], run), json.loads(answer))
+        self.assertIsNone(nextcloud.status(['compose'], lambda argv, **kw: mock.Mock(returncode=0, stdout=warning)))
+
+    def test_accounts_named_only_with_digits_are_listed(self):
+        """occ user:list answers {name: display name}; PHP writes one whose names are
+        exactly "0", "1"... as a JSON list of the display names, which was read as no list
+        of accounts, so their folders were never made."""
+        from modules import nextcloud
+
+        for out, names in (
+            ('["Mary Smith","Bob"]\n', ['0', '1']),
+            ('{"1":"One","2":"Two"}\n', ['1', '2']),
+            ('PHP Notice:  in {closure}()\n{"alice":"Alice","0":"Zero"}\nPHP Warning:  x\n', ['alice', '0']),
+        ):
+            with self.subTest(out=out):
+                run = lambda argv, **kw: mock.Mock(returncode=0, stdout=out)  # noqa: E731
+                self.assertEqual(nextcloud.listed_accounts(['compose'], run), names)
 
     def test_the_refusal_names_what_differs(self):
         from modules import nextcloud
@@ -3030,7 +3312,7 @@ class RestoreTestWaitTests(unittest.TestCase):
                 if code is None:
                     raise OSError('refused')
                 if code != 200:
-                    raise urllib.error.HTTPError(url, code, 'x', {}, None)
+                    raise urllib.error.HTTPError(url, code, 'x', {}, io.BytesIO())
                 return Response(200)
 
         return Opener()

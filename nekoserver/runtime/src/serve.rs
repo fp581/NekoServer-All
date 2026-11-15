@@ -17,11 +17,11 @@ use crate::{
 };
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs,
     io::{BufRead, BufReader, Read, Write},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream},
-    os::unix::net::UnixStream,
+    os::unix::{io::AsRawFd, net::UnixStream},
     path::{Path, PathBuf},
     sync::{mpsc, Arc, Mutex},
     thread,
@@ -35,7 +35,9 @@ pub const ERRORS: &[(&str, u16, &str)] = &[
     ("E10", 503, "Readings not ready yet"),
     ("E11", 503, "Readings could not be read"),
     ("E20", 503, "Live readings unavailable"),
-    ("E21", 503, "Fan and light control unavailable"),
+    // Not "fan and light control" (its first job): the control service also unlocks the
+    // PIN for app restarts, updates and Ask Neko, where that title made no sense.
+    ("E21", 503, "The control service is not running"),
     ("E40", 404, "Page not found"),
     ("E41", 403, "Open the dashboard from its own address"),
     ("E42", 400, "Request not supported"),
@@ -501,26 +503,30 @@ fn merge_nvidia(value: &mut Value, status: &Value, now: f64) {
 /// queue is given only what is left (the audit of 0.46.2: queued slow connections each got
 /// a full 3 s once a worker took them, so a few hundred kept every worker busy).
 const REQUEST_TIME: Duration = Duration::from_secs(3);
-/// The request's head (up to its blank line), read until `start` + REQUEST_TIME; None when
-/// it didn't come in time, the connection closed, or it was too long (answered 431).
-fn read_head(stream: &mut TcpStream, start: Instant) -> Option<Vec<u8>> {
-    let mut buf = Vec::with_capacity(4096);
-    while start.elapsed() <= REQUEST_TIME {
-        if buf.len() >= 16384 {
+/// The longest request head taken (answered 431 above it).
+const HEAD_LIMIT: usize = 16384;
+/// The request's head (up to its blank line), going on from `buf` (what came in already),
+/// read until `start` + REQUEST_TIME; None when it didn't come in time, the connection
+/// closed, or it was too long (answered 431).
+fn read_head(stream: &mut TcpStream, start: Instant, mut buf: Vec<u8>) -> Option<Vec<u8>> {
+    loop {
+        if buf.windows(4).any(|b| b == b"\r\n\r\n") {
+            return Some(buf);
+        }
+        if buf.len() >= HEAD_LIMIT {
             reply(stream, 431, b"", "application/json", false);
             return None;
         }
+        if start.elapsed() > REQUEST_TIME {
+            return None;
+        }
         let mut chunk = [0u8; 2048];
-        let capacity = chunk.len().min(16384 - buf.len());
+        let capacity = chunk.len().min(HEAD_LIMIT - buf.len());
         match stream.read(&mut chunk[..capacity]) {
             Ok(0) | Err(_) => return None,
             Ok(n) => buf.extend_from_slice(&chunk[..n]),
         }
-        if buf.windows(4).any(|b| b == b"\r\n\r\n") {
-            return Some(buf);
-        }
     }
-    None
 }
 /// The body's length from Content-Length: none or 0, or for a POST up to MAX_BODY.
 fn body_length(given: &[&[u8]], post: bool) -> Option<usize> {
@@ -580,7 +586,9 @@ fn from_the_page(
 fn page_navigation(method: &str, path: &str, mode: &[&[u8]]) -> bool {
     method == "GET" && !path.starts_with("/api/") && mode == [b"navigate"]
 }
-fn handle(mut stream: TcpStream, server: &Server, accepted: Instant) {
+/// One request, on a worker. `first`: what of it the gatherer read already (all of it,
+/// normally).
+fn handle(mut stream: TcpStream, server: &Server, accepted: Instant, first: Vec<u8>) {
     if accepted.elapsed() >= REQUEST_TIME {
         return; // waited out its time in the queue: closed unanswered
     }
@@ -594,7 +602,7 @@ fn handle(mut stream: TcpStream, server: &Server, accepted: Instant) {
         return;
     }
     let start = accepted;
-    let Some(buf) = read_head(&mut stream, start) else {
+    let Some(buf) = read_head(&mut stream, start, first) else {
         return;
     };
     let mut headers = [httparse::EMPTY_HEADER; 64];
@@ -847,7 +855,7 @@ fn ask(
     token: Option<&str>,
 ) {
     let Some(turn) = assist::Turn::take() else {
-        let busy = json!({"ok": false, "error": "E47", "message": assist::BUSY});
+        let busy = json!({"ok": false, "error": "E47", "message": assist::busy()});
         return reply(
             stream,
             status_of("E47"),
@@ -956,16 +964,51 @@ pub fn run(a: &Args) -> Result<()> {
         live: Mutex::new(Live::default()),
         tables: CONNECTION_TABLES.iter().map(PathBuf::from).collect(),
     });
-    // Each connection holds a worker for at most about 4 s (a 3 s limit for the request,
-    // checked after reads that wait at most 1 s). With few workers, a few dozen slow
-    // connections kept every one busy and the page got no answer (the audit of 0.45.6).
-    let (tx, rx) = mpsc::sync_channel::<(TcpStream, Instant)>(QUEUE);
+    serve_on(listener, server)
+}
+
+/// Connections whose request is still coming in, at most: past it the one waiting longest
+/// is closed. Each costs a file descriptor of the gatherer's, never a worker.
+const PENDING: usize = 512;
+/// A connection whose request is still coming in, read by the gatherer.
+struct Pending {
+    stream: TcpStream,
+    buf: Vec<u8>,
+    accepted: Instant,
+}
+/// The request is in, as far as the gatherer is concerned: its head and the body its
+/// Content-Length names (up to MAX_BODY; any other is for the worker to refuse), or a head
+/// too long to be one (the worker answers 431).
+fn gathered(buf: &[u8]) -> bool {
+    let Some(end) = buf.windows(4).position(|b| b == b"\r\n\r\n") else {
+        return buf.len() >= HEAD_LIMIT;
+    };
+    let mut headers = [httparse::EMPTY_HEADER; 64];
+    let mut req = httparse::Request::new(&mut headers);
+    if !matches!(req.parse(buf), Ok(httparse::Status::Complete(_))) {
+        return true;
+    }
+    let length = req
+        .headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case("content-length"))
+        .and_then(|h| std::str::from_utf8(h.value).ok()?.parse::<usize>().ok())
+        .unwrap_or(0);
+    length > MAX_BODY || buf.len() >= end + 4 + length
+}
+/// The server's loop. One thread (the gatherer) watches every connection whose request is
+/// still coming in and hands a request to a worker only once it is in whole. Before, each
+/// connection took a worker straight away: 200 connections that each sent half a request,
+/// opened again as soon as they were closed, kept all 16 workers and the queue full, and the
+/// page got no answer at all for as long as they went on (deep check 238).
+fn serve_on(listener: TcpListener, server: Arc<Server>) -> Result<()> {
+    let (tx, rx) = mpsc::sync_channel::<(TcpStream, Instant, Vec<u8>)>(QUEUE);
     let rx = Arc::new(Mutex::new(rx));
     for _ in 0..WORKERS {
         let rx = rx.clone();
         let server = server.clone();
         thread::spawn(move || loop {
-            let (stream, accepted) = match rx.lock().unwrap().recv() {
+            let (stream, accepted, first) = match rx.lock().unwrap().recv() {
                 Ok(s) => s,
                 Err(_) => break,
             };
@@ -973,22 +1016,73 @@ pub fn run(a: &Args) -> Result<()> {
             // the server takes connections it never answers: exit, and systemd starts
             // a fresh one (Restart=always) within seconds.
             let served = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                handle(stream, &server, accepted)
+                handle(stream, &server, accepted, first)
             }));
             if served.is_err() {
                 std::process::exit(70);
             }
         });
     }
-    for stream in listener.incoming() {
-        match stream {
-            Ok(s) => {
-                let _ = tx.try_send((s, Instant::now()));
+    listener.set_nonblocking(true)?;
+    let mut pending: VecDeque<Pending> = VecDeque::new();
+    loop {
+        let mut watched: Vec<libc::pollfd> = std::iter::once(listener.as_raw_fd())
+            .chain(pending.iter().map(|p| p.stream.as_raw_fd()))
+            .map(|fd| libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            })
+            .collect();
+        // SAFETY: `watched` is a live array of pollfd of the length given.
+        unsafe { libc::poll(watched.as_mut_ptr(), watched.len() as libc::nfds_t, 100) };
+        // What came in on each (pending has not changed since `watched` was made).
+        let mut still = VecDeque::with_capacity(pending.len());
+        for (mut p, seen) in pending.drain(..).zip(watched.iter().skip(1)) {
+            if p.accepted.elapsed() >= REQUEST_TIME {
+                continue; // out of time: closed unanswered
             }
-            Err(_) => thread::sleep(Duration::from_millis(50)),
+            if seen.revents != 0 {
+                let mut chunk = [0u8; 4096];
+                match p.stream.read(&mut chunk) {
+                    Ok(0) => continue,
+                    Ok(n) => p.buf.extend_from_slice(&chunk[..n]),
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(_) => continue,
+                }
+            }
+            if gathered(&p.buf) {
+                let _ = p.stream.set_nonblocking(false);
+                let _ = tx.try_send((p.stream, p.accepted, p.buf));
+            } else {
+                still.push_back(p);
+            }
+        }
+        pending = still;
+        loop {
+            match listener.accept() {
+                Ok((stream, peer)) if peer.ip().is_loopback() => {
+                    if stream.set_nonblocking(true).is_err() {
+                        continue;
+                    }
+                    if pending.len() >= PENDING {
+                        pending.pop_front();
+                    }
+                    pending.push_back(Pending {
+                        stream,
+                        buf: Vec::new(),
+                        accepted: Instant::now(),
+                    });
+                }
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(_) => {
+                    thread::sleep(Duration::from_millis(50)); // out of file descriptors, say
+                    break;
+                }
+            }
         }
     }
-    Ok(())
 }
 
 /// `nekoserver-runtime hardware`: what the dashboard can read on this computer.
@@ -1110,6 +1204,14 @@ mod tests {
         assert_eq!(reason(409), "Conflict");
     }
     #[test]
+    fn the_control_service_away_is_not_said_as_fans_and_lights() {
+        // Seen on Ask Neko's PIN dialog with the control service stopped: "E21 · Fan and
+        // light control unavailable" while asking a question.
+        let (_, _, said) = error_entry("E21");
+        assert_eq!(said, "The control service is not running");
+        assert!(!said.to_lowercase().contains("fan"));
+    }
+    #[test]
     fn errors_are_short_coded_sentences() {
         for (code, status, message) in ERRORS {
             assert!(code.len() == 3 && code.starts_with('E'), "{code}");
@@ -1152,7 +1254,7 @@ mod tests {
         };
         thread::spawn(move || {
             for s in listener.incoming().flatten() {
-                handle(s, &server, Instant::now());
+                handle(s, &server, Instant::now(), Vec::new());
             }
         });
         port
@@ -1174,7 +1276,7 @@ mod tests {
             tables: vec![],
         };
         let started = Instant::now();
-        handle(accepted, &server, Instant::now() - REQUEST_TIME);
+        handle(accepted, &server, Instant::now() - REQUEST_TIME, Vec::new());
         assert!(
             started.elapsed() < Duration::from_millis(500),
             "no worker time spent on it"
@@ -1182,6 +1284,73 @@ mod tests {
         let mut answer = vec![];
         let _ = client.set_read_timeout(Some(Duration::from_secs(1)));
         assert_eq!(client.read_to_end(&mut answer).unwrap_or(0), 0);
+    }
+    /// Deep check 238: 200 connections that each sent half a request, opened again as soon as
+    /// they were closed, kept every worker and the queue full, and the page got no answer.
+    /// With the gatherer they cost a worker nothing: a request is answered meanwhile.
+    #[test]
+    fn slow_connections_do_not_keep_a_request_waiting() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let root = std::env::temp_dir().join(format!("neko-slow-{}", std::process::id()));
+        let server = Arc::new(Server {
+            assets: root.join("assets"),
+            status: root.join("status.json"),
+            control: root.join("control.sock"),
+            port,
+            public: None,
+            live: Mutex::new(Live::default()),
+            tables: vec![],
+        });
+        thread::spawn(move || serve_on(listener, server));
+        let half = format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-a: ");
+        let mut slow = vec![];
+        for _ in 0..200 {
+            let mut each = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            each.write_all(half.as_bytes()).unwrap();
+            slow.push(each);
+        }
+        thread::sleep(Duration::from_millis(500));
+        for _ in 0..3 {
+            let started = Instant::now();
+            let mut asked = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let _ = asked.set_read_timeout(Some(Duration::from_secs(5)));
+            asked
+                .write_all(
+                    format!("GET /api/none HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").as_bytes(),
+                )
+                .unwrap();
+            let mut answer = String::new();
+            let _ = asked.read_to_string(&mut answer);
+            assert!(answer.starts_with("HTTP/1.1 404"), "answered: {answer:?}");
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "{:?}",
+                started.elapsed()
+            );
+        }
+        // Each slow one is closed at its time limit, as before.
+        thread::sleep(REQUEST_TIME + Duration::from_millis(500));
+        let mut byte = [0u8; 1];
+        let _ = slow[0].set_read_timeout(Some(Duration::from_secs(2)));
+        assert_eq!(slow[0].read(&mut byte).unwrap_or(0), 0);
+    }
+    #[test]
+    fn a_request_is_gathered_with_its_body_and_no_more() {
+        assert!(!gathered(b"GET / HTTP/1.1\r\nHost: x"));
+        assert!(gathered(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"));
+        assert!(!gathered(
+            b"POST /a HTTP/1.1\r\nContent-Length: 4\r\n\r\nab"
+        ));
+        assert!(gathered(
+            b"POST /a HTTP/1.1\r\nContent-Length: 4\r\n\r\nabcd"
+        ));
+        // A length it refuses anyway, a broken head, a head too long: the worker says so.
+        assert!(gathered(
+            b"POST /a HTTP/1.1\r\nContent-Length: 999999\r\n\r\n"
+        ));
+        assert!(gathered(b"\x01\x02 nonsense\r\n\r\n"));
+        assert!(gathered(&vec![b'a'; HEAD_LIMIT]));
     }
     /// Requests against a real server on a free port, with a temporary snapshot.
     #[test]

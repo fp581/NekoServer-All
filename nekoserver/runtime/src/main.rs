@@ -14,6 +14,8 @@ mod host_snapshot;
 mod inventory;
 mod ledger;
 mod live;
+#[cfg(test)]
+mod lying_drive;
 mod maintenance;
 mod media;
 mod music_backup;
@@ -84,9 +86,17 @@ fn main() {
         std::process::exit(1)
     }
 }
+/// What runtime/build.py looks for in the binary it copies: the mark it gave this build
+/// (NEKOSERVER_BUILD_MARK), so a binary another build put in a shared build folder is
+/// never copied as this one (deep check plan 210). `--build-mark` shows it.
+const BUILD_MARK: Option<&str> = option_env!("NEKOSERVER_BUILD_MARK");
 fn entry() -> Result<()> {
     let mut argv = env::args().skip(1);
     let mode = argv.next().unwrap_or_default();
+    if mode == "--build-mark" {
+        println!("{}", BUILD_MARK.unwrap_or("none"));
+        return Ok(());
+    }
     if mode == "--version" {
         println!(
             "nekoserver-runtime {VERSION}{}",

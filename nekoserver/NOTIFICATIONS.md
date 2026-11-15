@@ -18,7 +18,7 @@ python3 installer.py --module notifications --check
 sudo bash install.sh --module notifications --apply
 ```
 
-Installation asks privately for the full topic URL, such as `https://ntfy.example.com/my_private_topic`, and an optional bearer access token. The token is kept in root-only `/etc/nekoserver-notifications/config.json`, outside the installer config, dashboard, service command arguments and copied installer release bundles. A rerun preserves the existing destination/token and refreshes timings. You can also put the topic URL in `notifications.endpoint` in `my-config.json`: setup then asks only for its token. To send alerts to another topic later, change `notifications.endpoint` and run `sudo bash install.sh --module notifications --apply` in a terminal: it asks you to confirm the switch and asks for the new topic's token (without a terminal, alerts keep going to the earlier topic). To change only the token, edit this private file locally as root; do not paste it into logs or support reports. Its permissions must remain `0600`, owned by root.
+Installation asks privately for the full topic URL, such as `https://ntfy.example.com/my_private_topic`, and an optional bearer access token. The token is kept in root-only `/etc/nekoserver-notifications/config.json`, outside the installer config, dashboard, service command arguments and copied installer release bundles. A rerun preserves the existing destination/token and refreshes timings. You can also put the topic URL in `notifications.endpoint` in `my-config.json`: setup then asks only for its token. To send alerts to another topic later, change `notifications.endpoint` and run `sudo bash install.sh --module notifications --apply` in a terminal: it asks you to confirm the switch and asks for the new topic's token (without a terminal, alerts keep going to the earlier topic). **Alerts stopped arriving?** The dashboard then says *Phone alerts are not being delivered*. Run `sudo bash install.sh` in a terminal: it sends a test message, and when the alert server refuses the saved address or access token (a token taken back in ntfy, say), it asks for both again and tests the new ones. A network problem is said as one, and the step waits for the next run. The private file itself must stay `0600`, owned by root; do not paste it into logs or support reports.
 
 If installation is noninteractive and no destination exists, the module returns `needs_setup` without enabling a new timer. It does not silently claim successful delivery. The new `full` sample profile includes notifications; older configured profiles are preserved, so use the explicit module command when upgrading. Delivery credentials/state are currently OS-local and need separate protected recovery after an OS replacement.
 
@@ -27,7 +27,7 @@ Only HTTPS URLs with a hostname/IP, optional port and a single topic path are ac
 ## Test on your phone
 
 ```bash
-sudo /usr/local/lib/nekoserver-notifications/v0.51.1/nekoserver-runtime notify \
+sudo /usr/local/lib/nekoserver-notifications/v0.51.2/nekoserver-runtime notify \
   --config /etc/nekoserver-notifications/config.json \
   --state /var/lib/nekoserver-notifications \
   --runtime /run/nekoserver-notifications \
@@ -36,7 +36,7 @@ systemctl status nekoserver-notifications.timer
 sudo journalctl -u nekoserver-notifications.service --no-pager
 ```
 
-The explicit test sends a labelled test message and records whether the provider accepted it. Check receipt on the subscribed phone with the dashboard closed. Provider acceptance is not proof of notification display, delivery latency or phone permissions. Test the actual phone/network/provider combination, including any ntfy requirements for iOS/self-hosted push.
+The explicit test sends a labelled test message and records whether the provider accepted it; it says in the terminal what happened and what to check. Check receipt on the subscribed phone with the dashboard closed. An alert server takes a message for a topic name with a typo in it just the same (ntfy.sh makes any topic it is sent to), so "accepted" does not prove the address is the one your phone follows. During setup, answering that the test did not arrive leaves the step waiting, and the next `sudo bash install.sh` asks for the address again. **To change the address later:** put the right one in `notifications.endpoint` in `my-config.json`, then run `sudo bash install.sh --module notifications --apply` in a terminal and answer yes. Provider acceptance is not proof of notification display, delivery latency or phone permissions. Test the actual phone/network/provider combination, including any ntfy requirements for iOS/self-hosted push.
 
 ## Alerts and grouping
 
@@ -59,7 +59,7 @@ HTTP failures, authentication rejection, rate limiting and network errors keep t
 
 The worker reads the sanitized collector snapshot and uses fixed approved alert labels. It sends no source paths, API keys, raw exception text, SQL, personal filenames or arbitrary snapshot titles. Native process errors stay generic. Temporary HTTPS configuration is root-only and removed after each completed send; a killed worker may leave it inside the private runtime directory until overwritten or reboot.
 
-The OS-local ledger is private under `/var/lib/nekoserver-notifications`; transient delivery status is under `/run/nekoserver-notifications`. This lets the worker run when the application SSD is missing. The service has a read-only system view, private state/runtime directories and no Docker socket access. The root collector publishes only sanitized delivery status to the unprivileged dashboard. The dashboard shows missing setup, inactive scheduling, stale status, failed delivery or last provider acceptance. Existing browser-local notifications remain a separate option.
+The OS-local ledger is private under `/var/lib/nekoserver-notifications`; transient delivery status is under `/run/nekoserver-notifications`. This lets the worker run when the application SSD is missing. If its record of sent alerts (`state.json` there) is ever damaged (a power cut while it was written, say), it is moved aside as `state.json.damaged-<date>`, the service log names both files, and alerts start fresh; a problem already sent may be sent once more. The service has a read-only system view, private state/runtime directories and no Docker socket access. The root collector publishes only sanitized delivery status to the unprivileged dashboard. The dashboard shows missing setup, inactive scheduling, stale status, failed delivery or last provider acceptance. Existing browser-local notifications remain a separate option.
 
 Notifications require the PC to be powered, the OS/service to function and outbound connectivity. A total PC outage cannot be reported by that same PC: for that, set up the outside heartbeat (HEARTBEAT.md), which an independent monitor watches. Backup snapshots can stop apps longer than the debounce on large datasets; adjust the schedule/debounce if maintenance alerts are unwanted.
 

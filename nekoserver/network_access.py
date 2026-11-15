@@ -64,26 +64,32 @@ def internal_interface(name):
     return name.startswith(INTERNAL_PREFIXES) or DOCKER_NETWORK_BRIDGE.fullmatch(name) is not None
 
 
-def candidates():
+def addresses(family):
+    """(interface, address info) for each global address of `family` ('inet', 'inet6')
+    on a connection that may be the home network."""
     try:
         rows = json.loads(command(['ip', '-j', 'address', 'show', 'up']))
     except (ValueError, RuntimeError):
-        return []
-    out = []
+        return
     for row in rows:
         name = row.get('ifname', '')
         if not re.fullmatch(r'[A-Za-z0-9_.-]+', name) or internal_interface(name):
             continue
         for info in row.get('addr_info', []):
-            if info.get('family') != 'inet' or info.get('scope') != 'global':
-                continue
-            try:
-                ip = private_ip(info.get('local'))
-                net = str(ipaddress.ip_network(ip + '/' + str(info['prefixlen']), strict=False))
-                lan({'gateway': {'lan_ip': ip, 'lan_cidr': net}})
-            except (RuntimeError, ValueError, KeyError):
-                continue
-            out.append({'interface': name, 'ip': ip, 'cidr': net})
+            if info.get('family') == family and info.get('scope') == 'global':
+                yield name, info
+
+
+def candidates():
+    out = []
+    for name, info in addresses('inet'):
+        try:
+            ip = private_ip(info.get('local'))
+            net = str(ipaddress.ip_network(ip + '/' + str(info['prefixlen']), strict=False))
+            lan({'gateway': {'lan_ip': ip, 'lan_cidr': net}})
+        except (RuntimeError, ValueError, KeyError):
+            continue
+        out.append({'interface': name, 'ip': ip, 'cidr': net})
     return out
 
 
@@ -138,6 +144,11 @@ NOT_CONNECTED = (
     'This PC is not connected to your home network. Plug in a network cable, or join Wi-Fi from this PC\'s '
     'own settings, then run setup again.'
 )
+IPV6_ONLY = (
+    'This PC is on your home network ({interface}), but only with an IPv6 address. Sharing on the home '
+    'network needs an IPv4 address (one like 192.168.1.20): turn on IPv4 (DHCP) in your router\'s settings, '
+    'then run setup again.'
+)
 
 
 def choose_lan(ctx, output=print):
@@ -151,6 +162,10 @@ def choose_lan(ctx, output=print):
     if keep_saved(ctx.config, opts, output):
         return True
     rows = candidates()
+    ipv6 = next((name for name, _ in addresses('inet6')), None)
+    if not rows and ipv6:
+        # Connected, but the advice to plug in a cable would be wrong.
+        raise RuntimeError(IPV6_ONLY.format(interface=ipv6))
     if not rows:
         raise RuntimeError(
             NOT_CONNECTED + ' (Setup found no home-network address on this PC; a VPN alone is not one. To name '

@@ -320,7 +320,8 @@ fn changed_paths(before: &[Value], after: &[Value], selected: &[Source]) -> Vec<
         .collect();
     changed.sort();
     changed.dedup();
-    changed
+    // Said in the run's reason: a name with a line break kept whole (common::printable).
+    changed.iter().map(|path| common::printable(path)).collect()
 }
 fn inventory(selected: &[Source]) -> Result<Inventory> {
     let mut files = vec![];
@@ -368,8 +369,9 @@ fn written(name: &str, files: &[Value], root: &Path, left_out: &[String]) -> Str
         (n + 1, b.saturating_add(r["size"].as_u64().unwrap_or(0)))
     });
     format!(
-        "Host snapshot {name} written to {}: {count} files, {:.1} MB, each copy's checksum recorded{}",
+        "Host snapshot {name} written to {}: {}, {:.1} MB, each copy's checksum recorded{}",
         root.display(),
+        common::plural(count, "file", "files"),
         bytes as f64 / 1_000_000.0,
         if left_out.is_empty() {
             String::new()

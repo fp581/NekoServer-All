@@ -115,8 +115,7 @@ fn mounted_and_answering(path: &Path) -> bool {
         common::findmnt("TARGET", "--mountpoint", path, 10),
         Ok(Some(_))
     );
-    let shown = path.to_string_lossy();
-    mounted && common::command(&["ls", "-1", "--", &shown], 30).is_ok_and(|(code, _)| code == 0)
+    mounted && common::answers(path, 30)
 }
 /// Every source listed: (rows sorted by path, files still being added).
 fn listing(sources: &[(String, PathBuf)]) -> Result<(Vec<serde_json::Value>, Vec<String>)> {
@@ -206,8 +205,9 @@ pub fn run(a: &Args) -> Result<()> {
         )?;
         if !waiting.is_empty() {
             println!(
-                "Music: {} files changed in the last 10 minutes (still being added?) wait for the next backup: {}",
-                waiting.len(),
+                "Music: {} changed in the last 10 minutes (still being added?) and {} for the next backup: {}",
+                common::plural(waiting.len(), "file", "files"),
+                if waiting.len() == 1 { "waits" } else { "wait" },
                 waiting.iter().take(10).cloned().collect::<Vec<_>>().join(", ")
             );
         }

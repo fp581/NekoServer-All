@@ -12,7 +12,7 @@ fn private(ip: u32) -> bool {
 fn mask(prefix: u32) -> u32 {
     u32::MAX << (32 - prefix)
 }
-fn lan(cfg: &Value, rows: &Value) -> Result<()> {
+pub(crate) fn lan(cfg: &Value, rows: &Value) -> Result<()> {
     let address = cfg["gateway"]["lan_ip"].as_str().unwrap_or("");
     let ip = u32::from(
         address
@@ -68,8 +68,11 @@ fn lan(cfg: &Value, rows: &Value) -> Result<()> {
             }
         }
     }
-    Err(Error::new("Configured LAN interface is not active"))
+    Err(Error::new(LAN_GONE))
 }
+/// The saved home-network address is on none of this PC's connections (a new router, or
+/// one that gave the PC another address): the dashboard says so (collect.rs home_network).
+pub(crate) const LAN_GONE: &str = "Configured LAN interface is not active";
 /// Interfaces that are never the home network: the loopback, Docker's (docker0, and
 /// br-<12 hex> for each Docker network), Podman's, libvirt's virtual networks, container
 /// veths, Tailscale and VPN tunnels. A bridge of your own that carries the home network

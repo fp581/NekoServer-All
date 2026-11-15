@@ -2,6 +2,7 @@
 empty folder tree in /var/lib/docker (the same test setup uses), and still refuses a
 default store with containers, images or volumes in it."""
 
+import hashlib
 import json
 import platform
 import sys
@@ -13,6 +14,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import recovery_tools  # noqa: E402
+
+VERIFY_BUNDLE = recovery_tools.verify_bundle  # as it is (the tests below stand it in)
 
 
 class ReattachDefaultStoreTests(unittest.TestCase):
@@ -103,6 +106,39 @@ class ReattachDefaultStoreTests(unittest.TestCase):
             self.assertRaisesRegex(RuntimeError, '27.0.0 or newer.*install-docker --apply'),
         ):
             self.preview()
+
+    def test_settings_of_another_server_are_refused_with_what_differs_and_what_to_use(self):
+        """Plan 149, run for real on two ext4 images with another server's settings: the
+        refusals said only "Recovery checkpoint storage differs", "Recovery media UID/GID
+        differs; no automatic ownership changes" and "Preserved installer storage
+        configuration differs", naming neither what differs nor which settings to use."""
+        kept = '/bundle/config.json'
+        other = {**self.config, 'storage': {'data_ssd': {'uuid': 'bbbb-2222'}}}
+        with self.assertRaises(RuntimeError) as drives:
+            recovery_tools.reattach(other, Path('/bundle'))
+        self.assertIn('the drives (storage) differ', str(drives.exception))
+        self.assertIn('--config ' + kept, str(drives.exception))
+        uid = {**self.config, 'media': {'uid': 1001, 'gid': 1001}}
+        with self.assertRaises(RuntimeError) as owners:
+            recovery_tools.reattach(uid, Path('/bundle'))
+        self.assertIn(
+            'media account 1001:1001, but the apps\' files on this SSD belong to 1000:1000', str(owners.exception)
+        )
+        self.assertIn('--config ' + kept, str(owners.exception))
+        # The settings kept with NekoServer's copy on the SSD, compared by verify_bundle.
+        bundle = self.data / 'installer/releases/v1'
+        bundle.mkdir(parents=True)
+        files = {name: b'x' for name in ('installer.py', 'neko_common.py', 'modules/docker.py')}
+        for name, body in files.items():
+            (bundle / name).parent.mkdir(exist_ok=True)
+            (bundle / name).write_bytes(body)
+        manifest = {'version': '1', 'sha256': {name: hashlib.sha256(b).hexdigest() for name, b in files.items()}}
+        (bundle / 'release-manifest.json').write_text(json.dumps(manifest))
+        (bundle / 'config.json').write_text(json.dumps(other))
+        with self.assertRaises(RuntimeError) as bundled:
+            VERIFY_BUNDLE(bundle, self.config)
+        self.assertIn('the drives (storage) differ', str(bundled.exception))
+        self.assertIn(f'--config {bundle}/config.json', str(bundled.exception))
 
     def test_dockers_failed_start_count_is_cleared_before_it_starts(self):
         calls = []

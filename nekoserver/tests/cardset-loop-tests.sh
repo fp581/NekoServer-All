@@ -113,6 +113,26 @@ for point in Begun IntentWritten PayloadStarted PayloadWritten Checked VerifiedW
   fi
 done
 
+# The card's bytes are changed in its image file, under the mounted filesystem, where
+# filefrag says the payload is: a card that kept other bytes than it was given.
+echo '== a card that does not keep the bytes written (changed under the filesystem)'
+export NEKO_LOOP_WORK="$BASE/work-lying"
+card lying 400
+NEKO_LOOP_CARDS="$CARD" NEKO_LOOP_IMAGE="$BASE/lying.img" run_test loop_a_card_that_does_not_keep_the_bytes_is_caught
+result 'A33 a card that does not keep the bytes: no copy committed' $?
+
+echo '== the weekly USB copy onto a drive that does not keep the bytes written'
+card usb-lying 64
+NEKO_LOOP_USB="$CARD" NEKO_LOOP_IMAGE="$BASE/usb-lying.img" "$BIN" --ignored --exact \
+  backup::tests::loop_a_usb_drive_that_does_not_keep_the_bytes_is_caught --test-threads 1 2>&1 | tail -20
+result 'A34 the USB copy onto a drive that does not keep the bytes: nothing published' "${PIPESTATUS[0]}"
+
+echo '== the monthly snapshot on an HDD that does not keep the bytes written'
+card hdd-lying 64
+NEKO_LOOP_HDD="$CARD" NEKO_LOOP_IMAGE="$BASE/hdd-lying.img" "$BIN" --ignored --exact \
+  maintenance::tests::loop_a_snapshot_the_drive_does_not_hold_fails_its_check --test-threads 1 2>&1 | tail -20
+result 'A35 a snapshot the HDD does not keep: its check fails' "${PIPESTATUS[0]}"
+
 echo '== the card unmounted while a file is written, then mounted again'
 export NEKO_LOOP_WORK="$BASE/work-pulled"
 card pulled 400

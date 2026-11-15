@@ -96,7 +96,7 @@ fn unclear(service: &str, count: usize) -> String {
     if count == 0 {
         format!("its container from before the backup is gone and no {service} container is there now; {start}")
     } else {
-        format!("its container from before the backup is gone and {count} {service} containers are there now, so it is not clear which one to start; remove the extra ones (sudo docker ps -a lists them) and {start}")
+        format!("its container from before the backup is gone and {} there now, so it is not clear which one to start; remove the extra ones (sudo docker ps -a lists them) and {start}", common::plural(count, &format!("{service} container is"), &format!("{service} containers are")))
     }
 }
 fn restart(service: &str, id: &str) -> Result<()> {
@@ -339,7 +339,7 @@ fn unchanged_since_listing(
             .iter()
             .zip(&again)
             .find(|(a, b)| strip(&[(*a).clone()])[0] != **b)
-            .map(|(a, _)| a["path"].as_str().unwrap_or("").to_string())
+            .map(|(a, _)| common::printable(a["path"].as_str().unwrap_or("")))
             .unwrap_or_else(|| "a file was added or removed".into());
         return Err(Error::new(&format!(
             "Application files changed while the snapshot was made ({changed}); it was not published and is retried next night"
@@ -354,15 +354,24 @@ fn verify_staged(payload: &Path, files: &[Value]) -> Result<()> {
         let path = payload.join(row["path"].as_str().unwrap_or(""));
         let size = fs::symlink_metadata(&path)?.len();
         if Some(size) != row["size"].as_u64()
-            || common::digest(&path)? != row["sha256"].as_str().unwrap_or("")
+            || common::digest_landed(&path)? != row["sha256"].as_str().unwrap_or("")
         {
             return Err(Error::new(&format!(
                 "Staged application snapshot does not match its manifest ({}); not published",
-                row["path"].as_str().unwrap_or("")
+                common::printable(row["path"].as_str().unwrap_or(""))
             )));
         }
     }
     Ok(())
+}
+/// Said when a file changed while the nightly (or host) snapshot copied it: which file,
+/// so the program still writing it can be found, and that nothing is lost. Without the
+/// name the dashboard said only "Application file changed during snapshot".
+fn changed_while_copied(source: &Path) -> String {
+    format!(
+        "{} changed while it was copied (something was still writing it), so this snapshot was not kept; the earlier ones stay and the next run tries again",
+        common::printable(&source.display().to_string())
+    )
 }
 pub(crate) fn copy_file(source: &Path, target: &Path) -> Result<String> {
     let mut input = common::file(source)?;
@@ -390,9 +399,9 @@ pub(crate) fn copy_file(source: &Path, target: &Path) -> Result<String> {
         before.mtime_nsec(),
     ) != (after.ino(), after.len(), after.mtime(), after.mtime_nsec())
     {
-        return Err(Error::new("Application file changed during snapshot"));
+        return Err(Error::new(&changed_while_copied(source)));
     }
-    let hash = common::digest(target)?;
+    let hash = common::digest_landed(target)?;
     if common::digest(source)? != hash {
         return Err(Error::new("Application file verification failed"));
     }
@@ -704,6 +713,46 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         dir(&root);
         root
+    }
+    /// Seen on loop drives (0.51.2 review, a writer left running in an app's folder): the
+    /// nightly backup failed with "Application file changed during snapshot", naming no
+    /// file and no next step.
+    #[test]
+    fn a_file_written_during_the_copy_is_named() {
+        let root = scratch("written");
+        let source = root.join("sonarr.db");
+        fs::write(&source, vec![7u8; 4 << 20]).unwrap();
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = {
+            let (done, source) = (done.clone(), source.clone());
+            std::thread::spawn(move || {
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    let mut file = fs::OpenOptions::new().append(true).open(&source).unwrap();
+                    file.write_all(b"row\n").unwrap();
+                    std::thread::sleep(std::time::Duration::from_micros(200));
+                }
+            })
+        };
+        // Each try copies while the writer appends; one that happened to see no write
+        // between its two looks is tried again.
+        let said = (0..50).find_map(|n| {
+            copy_file(&source, &root.join(format!("copy-{n}")))
+                .err()
+                .map(|e| e.to_string())
+        });
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().unwrap();
+        let said = said.expect("the writer changed the file during a copy");
+        assert!(said.contains(&source.display().to_string()), "{said}");
+        assert!(said.contains("the next run tries again"), "{said}");
+        // Deep check plan 204: a name with a line break is kept whole in the reason.
+        let odd = changed_while_copied(Path::new("/srv/nekoserver/appdata/x/two\nlines.db"));
+        let reason = common::sanitize(&odd);
+        assert!(
+            reason.starts_with("/srv/nekoserver/appdata/x/two\\nlines.db changed"),
+            "{reason}"
+        );
+        let _ = fs::remove_dir_all(&root);
     }
     #[test]
     fn an_app_set_up_again_is_started_instead_of_blocking_backups() {

@@ -61,6 +61,37 @@ class DashboardPageTests(unittest.TestCase):
         )
         self.assertIn('an update, an upgrade) need your PIN', (ROOT / 'dashboard/app.js').read_text())
 
+    def test_the_temperatures_badge_counts_the_temperatures_shown(self):
+        # Deep check 308: "6 found" above one temperature (the fans and voltages were
+        # counted too), and a probe with no reading was listed on the Fans page as is.
+        one = [{'kind': 'temperature', 'label': 'CPU', 'value': 45}]
+        said = page(
+            ('sensorBadge', {'live': {'generated_at': 1}, 'temps': one, 'fresh': True}),
+            ('temperatureName', {'label': 'AUXTIN', 'chip': 'nct6798', 'value': None}),
+            ('temperatureName', {'label': 'CPUTIN', 'chip': 'nct6798', 'value': 45.5}),
+        )
+        self.assertEqual(said[0], ['neutral', '1 found'])
+        self.assertEqual(said[1:], ['AUXTIN · nct6798 (no reading)', 'CPUTIN · nct6798'])
+        source = (ROOT / 'dashboard/app.js').read_text()
+        self.assertIn("sensorBadge({ live, temps, fresh: liveFresh() })", source)
+
+    def test_one_of_something_is_said_in_the_singular(self):
+        # Deep checks 158 and 168: readings a day old said "Showing readings from 1 days
+        # ago", and a board with one fan output "1 outputs".
+        now = time.time()
+        one = {'fans': {'inventory': {'outputs': [{'id': 'a'}]}}}
+        two = {'fans': {'inventory': {'outputs': [{'id': 'a'}, {'id': 'b'}]}}}
+        said = page(
+            ('ago', now - 86400 - 600),
+            ('ago', now - 3 * 86400),
+            ('outputsBadge', one),
+            ('outputsBadge', two),
+        )
+        self.assertEqual(said, ['1 day ago', '3 days ago', ['neutral', '1 output'], ['neutral', '2 outputs']])
+        source = (ROOT / 'dashboard/app.js').read_text()
+        for counted in ("' threads'", "' lights'"):
+            self.assertNotIn(counted, source)  # counted with plural() too
+
     def test_lists_of_words_are_shown_not_dropped(self):
         # Found in the lab (0.45.4): the restart's reason read "not known: ." and an
         # update that restarts Docker never said so. `list` keeps objects (rows) only,
@@ -567,6 +598,28 @@ class PhoneLayoutTests(unittest.TestCase):
         phone = css[css.index('@media (max-width: 700px)') :]
         self.assertNotIn('.chips { flex-wrap: nowrap', phone)
 
+    def test_a_greyed_out_menu_items_note_stays_readable(self):
+        # Measured in Lamplight: "App controls aren't reachable right now" under a greyed-out
+        # "Restart app" was 2.3:1, as every disabled button is half see-through. The note
+        # says what to do, so only the item's label is dimmed.
+        css = (ROOT / 'dashboard/style.css').read_text()
+
+        def rule(selector):
+            body = css[css.index('\n' + selector + ' {') :]
+            return body[: body.index('}')]
+
+        self.assertIn('opacity: 1;', rule('.menu-item:disabled'))
+        self.assertIn('opacity: 0.5;', rule('.menu-item:disabled > span'))
+
+    def test_a_long_address_in_an_alerts_title_wraps_on_a_phone(self):
+        # Seen at 390 px wide: "Your shared folder //nas-familyhome.local/Photos_and_Videos_
+        # Backup_2019-2024 does not answer" ran off the screen and the page scrolled sideways;
+        # the alert's detail below it wrapped. Titles and details wrap alike now.
+        css = (ROOT / 'dashboard/style.css').read_text()
+        for selector in ('.issue h3', '.issue p'):
+            rule = css[css.index('\n' + selector + ' {') :]
+            self.assertIn('overflow-wrap: anywhere;', rule[: rule.index('}')], selector)
+
     def test_the_fans_page_says_the_same_heat_rule_as_the_code_and_docs(self):
         # UP-15: five minutes above 95 °C (fans.rs EMERGENCY_C, HOT_FOR), 105 °C at once.
         page_text = (ROOT / 'dashboard/index.html').read_text()
@@ -901,6 +954,34 @@ class AskNekoPageTests(unittest.TestCase):
     # (dashboard_harness.mjs: askFlow, approveFlow, cutOffEntry, bugBoxCopy), instead of
     # looking for the lines in app.js.
 
+    def test_a_question_waiting_for_the_pin_stays_in_its_box(self):
+        # Deep check 165 (five wrong PINs, then Ask): the PIN dialog opened and the question
+        # box was already empty, so a question typed during the lockout was lost.
+        [flow] = page(('askSignedOut', 'Why did the weekly backup fail?'))
+        self.assertEqual(flow, {'box': 'Why did the weekly backup fail?', 'dialog': True, 'sent': []})
+        # Once it is sent (signed in), the box is emptied as before.
+        [asked] = page(('askFlow', {'typed': 'Why?', 'kept': 'Why?', 'answer': 'Because.'}))
+        self.assertEqual(asked['sent'][0], ['/api/control/ask', {'question': 'Why?'}])
+
+    def test_a_long_question_and_an_empty_one_are_said(self):
+        """The deep check: a pasted question over 500 characters was cut without a word (the
+        box's maxlength), and Ask with only spaces in the box did nothing and said nothing."""
+        long = 'Why did the backup fail? ' + 'x' * 600
+        [cut] = page(('askTyped', {'typed': long, 'limit': 500}))
+        self.assertIn(f'Your question is {len(long)} characters long. Neko reads only the first 500', cut['typing'])
+        self.assertEqual(cut['sent'][0], ['/api/control/ask', {'question': long}])  # the server cuts it
+        self.assertIn('Neko read only the start of this question.', cut['shown'])
+        self.assertEqual(cut['note'], '')  # sent: the box and its note are empty again
+        [blank] = page(('askTyped', {'typed': '   \n  ', 'limit': 500}))
+        self.assertEqual(blank['sent'], [])
+        self.assertIn('Type your question in the box first: it is empty, or holds only spaces.', blank['note'])
+        [fits] = page(('askTyped', {'typed': 'Why?', 'limit': 500}))
+        self.assertEqual((fits['typing'], fits['note']), ('', ''))
+        self.assertNotIn('only the start', fits['shown'])
+        # The box itself never cuts a paste short; the server's number is the one limit.
+        html = (ROOT / 'dashboard/index.html').read_text()
+        self.assertNotIn('maxlength', re.search(r'<textarea id="ask-input"[^>]*>', html).group(0))
+
     def test_the_page_keeps_and_shows_the_servers_copy_of_the_question(self):
         """Review of 0.49.0: a password typed into the question went into the bug report
         as typed. The page keeps the server's copy of the question (secrets removed)."""
@@ -977,6 +1058,53 @@ class AskNekoPageTests(unittest.TestCase):
         # The box says what is removed and asks the person to read it first.
         self.assertIn('Known passwords and keys are removed. Read it before you share it.', works['lines'])
         self.assertIn('Question: why?', works['lines'])
+
+
+@unittest.skipUnless(NODE, 'node is not installed')
+class WhatShouldIDoTests(unittest.TestCase):
+    """0.51.2 user check on a phone: each alert's "What should I do?" tapped, with a
+    reading that holds every kind of alert the collector raises."""
+
+    def test_each_alert_opens_the_guide_about_it(self):
+        """A setup step, Tailscale and a shared folder opened the general guide (missing
+        drives, stopped apps), and the update night's alert opened "Check a backup"."""
+        ids = {
+            'setup:photos': 'setup',
+            'setup:notifications': 'setup',
+            'setup:media': 'setup',
+            'tailscale:login': 'remote',
+            'tailscale:off': 'remote',
+            'tailscale:expiry': 'remote',
+            'share:music': 'storage',
+            'job:updates': 'updates',
+            'job:update_check': 'updates',
+            'job:upgrade': 'updates',
+            'job:maintenance': 'updates',
+            'job:archive': 'backup',
+            'mount:media_hdd': 'storage',
+            'notifications:delivery': 'notifications',
+        }
+        answers = page(*(('guideFor', i) for i in ids))
+        self.assertEqual(dict(zip(ids, answers)), ids)
+
+    def test_an_overdue_app_check_is_one_item(self):
+        """The server's "media-stale" alert and the page's own item for the same overdue
+        check were listed both."""
+        reading = status(
+            alerts=[{'id': 'media-stale', 'level': 'warning', 'title': 'App checks are out of date', 'detail': 'x'}],
+            media={'status': 'stale', 'checks': []},
+        )
+        (issues,) = page(('collectIssues', reading))
+        self.assertEqual([i['id'] for i in issues if 'media' in i['id']], ['media-stale'])
+
+    def test_help_named_in_a_guide_is_a_help_card(self):
+        """The general guide sent people to "Dashboard readings" in Help: no card had that name."""
+        source = (ROOT / 'dashboard' / 'app.js').read_text(encoding='utf-8')
+        cards = set(re.findall(r"^  \['[a-z]+', '([^']+)',", source, re.M))
+        named = re.findall(r'follow “([^”]+)” in Help', source)
+        self.assertTrue(named)
+        for title in named:
+            self.assertIn(title, cards)
 
 
 if __name__ == '__main__':

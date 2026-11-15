@@ -24,11 +24,16 @@ fn label(id: &str) -> Option<String> {
         "media-failure" => return Some("Media connection checks failed".into()),
         "backup-key" => return Some("Monthly backups keep the app passwords unencrypted".into()),
         "tailscale:login" => return Some("Phone access is signed out of Tailscale".into()),
+        "tailscale:off" => return Some("Phone access is off: Tailscale needs you".into()),
         "tailscale:expiry" => {
             return Some("Phone access stops soon: Tailscale sign-in runs out".into())
         }
         "heartbeat:delivery" => {
             return Some("Outage alerts: the outside monitor is not reached".into())
+        }
+        "battery" => return Some("The server is running on its battery".into()),
+        "home-network" => {
+            return Some("Home addresses stopped: this server's address at home changed".into())
         }
         "notifications:delivery" => {
             return Some("Phone alerts could not be delivered for a while".into())
@@ -299,6 +304,7 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
     .contains(&tailscale)
     {
         unknown.insert("tailscale:login".into());
+        unknown.insert("tailscale:off".into());
         unknown.insert("tailscale:expiry".into());
     } else if tailscale == "NeedsLogin" {
         unknown.insert("tailscale:expiry".into());
@@ -315,6 +321,10 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
     }
     if s["media"]["status"] != "current" {
         unknown.insert("media-failure".into());
+    }
+    // The home-network address: back only once the connections could be listed.
+    if s["home_network"]["status"] == "unknown" {
+        unknown.insert("home-network".into());
     }
     if !s["metrics"]["memory_percent"].is_number() {
         unknown.insert("memory-pressure".into());
@@ -436,6 +446,10 @@ fn plan(
         if !state["entries"][id].is_object() {
             state["entries"][id] = json!({"first_seen":now,"last_sent":null,"sent_level":null});
         }
+        // Back before its recovery was sent: the same problem, still the one sent.
+        if let Some(row) = state["entries"][id].as_object_mut() {
+            row.remove("cleared_at");
+        }
         let row = &state["entries"][id];
         let first = row["first_seen"]
             .as_f64()
@@ -466,7 +480,17 @@ fn plan(
         }
         if !active.contains_key(&id) && fresh && !unknown.contains(&id) {
             if state["entries"][&id]["last_sent"].is_number() {
-                events.push((id, true, "recovered".into()));
+                // A recovery is sent once it lasted as long as a problem must before it is
+                // sent: one that lasted a moment sent RECOVERED, then the alert again
+                // (deep check 306).
+                let cleared = state["entries"][&id]["cleared_at"]
+                    .as_f64()
+                    .filter(|t| t.is_finite() && *t <= now)
+                    .unwrap_or(now);
+                state["entries"][&id]["cleared_at"] = json!(cleared);
+                if now - cleared >= debounce as f64 {
+                    events.push((id, true, "recovered".into()));
+                }
             } else {
                 state["entries"].as_object_mut().unwrap().remove(&id);
             }
@@ -490,6 +514,60 @@ fn delivery_due(next_attempt: &Value, now: f64) -> bool {
     next_attempt
         .as_f64()
         .is_none_or(|t| t <= now || t > now + 3600.0)
+}
+/// The most the alert state file may hold (bytes).
+const STATE_LIMIT: usize = 256_000;
+/// What alerts were sent and when, from `path` (state.json). A file that is not valid JSON
+/// (cut short by a power cut, edited by hand) is set aside beside it, with the date in its
+/// name, and the alerts start fresh: before, every run failed with "Invalid JSON" for good,
+/// naming no file, and the dashboard showed the alerts only as stale.
+fn alert_state(path: &Path, now: f64) -> Result<Value> {
+    if !path.exists() {
+        return Ok(json!({}));
+    }
+    if let Ok(state) = serde_json::from_slice(&common::bytes(path, STATE_LIMIT)?) {
+        return Ok(state);
+    }
+    let stamp = chrono::DateTime::from_timestamp(now as i64, 0)
+        .map(|d| d.format("%Y%m%dT%H%M%SZ").to_string())
+        .unwrap_or_else(|| (now as i64).to_string());
+    let aside = path.with_file_name(format!("state.json.damaged-{stamp}"));
+    common::rename_noreplace(path, &aside)?;
+    eprintln!(
+        "The phone alert record {} was damaged (not valid JSON). It was moved to {} and alerts start fresh: a problem already sent may be sent once more. Nothing else to do.",
+        path.display(),
+        aside.display()
+    );
+    Ok(json!({}))
+}
+/// What `notify --test` says in the terminal. It said nothing when the test was taken,
+/// and only "Notification delivery failed" when it was not (0.51.2 user check): the
+/// person could not tell what happened, nor that a test the server took is not yet one
+/// that arrived (an alert server takes a topic name with a typo in it just the same).
+const TEST_TAKEN: &str = "The alert server accepted the test message. Look at your phone: a message from NekoServer saying \"NekoServer test\" should be there. If it is not, check that the ntfy app follows exactly the same address, and that the phone lets ntfy show notifications (NOTIFICATIONS.md says how to change the address).";
+const TEST_NOT_TAKEN: &str = "The test message was not sent: the alert server turned it down or could not be reached. Check that this server is connected to the internet, and the alert address and access token (NOTIFICATIONS.md says how to change them)";
+/// The test's outcome as the words to print, or the error that says what to check.
+fn test_said(sent: Result<()>) -> Result<&'static str> {
+    sent.map(|()| TEST_TAKEN)
+        .map_err(|_| Error::new(TEST_NOT_TAKEN))
+}
+/// The alert record after `notify --test`. A test the server took while alerts were
+/// failing proves it can be reached again: the alerts still waiting go at the next run
+/// (within a minute). Before, they waited out the retry delay (up to an hour after a long
+/// network outage) while the record already said "pass" (deep check 372).
+fn after_test(old: Value, taken: bool, now: f64) -> Value {
+    let mut state = if old.is_object() { old } else { json!({}) };
+    state["format"] = json!("neko-notifications-v1");
+    state["last_attempt"] = json!(now);
+    if taken && state["delivery_status"] == "fail" {
+        state["attempts"] = json!(0);
+        state["next_attempt"] = json!(now);
+    }
+    state["delivery_status"] = json!(if taken { "pass" } else { "fail" });
+    if taken {
+        state["last_success"] = json!(now);
+    }
+    state
 }
 pub fn run(a: &Args) -> Result<()> {
     common::require_root()?;
@@ -519,11 +597,7 @@ pub fn run(a: &Args) -> Result<()> {
     }
     let _lock = common::lock(&root.join("worker.lock"))?;
     let path = root.join("state.json");
-    let old = if path.exists() {
-        serde_json::from_slice(&common::bytes(&path, 256000)?)?
-    } else {
-        json!({})
-    };
+    let old = alert_state(&path, common::now())?;
     let destination = common::sha(format!("{}:{}", cfg["endpoint"], cfg["token"]).as_bytes());
     let old = if old["destination"] == destination {
         old
@@ -538,17 +612,11 @@ pub fn run(a: &Args) -> Result<()> {
             "NekoServer test: notification delivery is configured.",
             false,
         );
-        let mut state = if old.is_object() { old } else { json!({}) };
-        state["format"] = json!("neko-notifications-v1");
+        let mut state = after_test(old, result.is_ok(), now);
         state["destination"] = json!(destination);
-        state["last_attempt"] = json!(now);
-        state["delivery_status"] = json!(if result.is_ok() { "pass" } else { "fail" });
-        if result.is_ok() {
-            state["last_success"] = json!(now);
-        }
         common::atomic_json(&path, &state)?;
         report(&runtime, &state, now, 0)?;
-        return result;
+        return test_said(result).map(|said| println!("{said}"));
     }
     let snapshot = common::json(&a.path("snapshot")?, 2_000_000);
     let now = common::now();
@@ -615,6 +683,83 @@ pub fn run(a: &Args) -> Result<()> {
 }
 #[cfg(test)]
 mod tests {
+    /// Deep check 372 (a stand-in alert server stopped, then started again): a test the
+    /// server took left the waiting alert behind its retry delay, under "pass".
+    #[test]
+    fn a_test_taken_after_failures_lets_the_waiting_alerts_go_at_the_next_run() {
+        let failing = json!({"format":"neko-notifications-v1","entries":{},"attempts":7,
+            "delivery_status":"fail","next_attempt":4600.0});
+        let state = after_test(failing.clone(), true, 1000.0);
+        assert_eq!(state["delivery_status"], "pass");
+        assert_eq!(state["attempts"], 0);
+        assert!(delivery_due(&state["next_attempt"], 1000.0));
+        // Not taken: the retry delay stays.
+        let state = after_test(failing, false, 1000.0);
+        assert!(!delivery_due(&state["next_attempt"], 1000.0));
+        // After a delivery that worked, the pause between messages is kept.
+        let sent = json!({"delivery_status":"pass","next_attempt":1200.0,"attempts":0});
+        assert!(!delivery_due(
+            &after_test(sent, true, 1000.0)["next_attempt"],
+            1000.0
+        ));
+    }
+    /// Deep check 249: a home-network address that changed reaches the phone too, and is
+    /// not called recovered while the connections can't be listed.
+    #[test]
+    fn a_changed_home_address_is_sent_and_recovers_only_when_seen() {
+        assert!(label("home-network").is_some());
+        assert!(label("battery").is_some());
+        let mut s = json!({"format":"neko-dashboard-v1","generated_at":2000.0,
+            "alerts":[],"applications":[],"storage":[],"backups":[],"media":{"status":"current"},
+            "home_network":{"status":"unknown"}});
+        let (_, unknown, _) = observations(&s, 2000.);
+        assert!(unknown.contains("home-network"));
+        s["home_network"] = json!({"status": "ok"});
+        let (_, unknown, _) = observations(&s, 2000.);
+        assert!(!unknown.contains("home-network"));
+    }
+    /// 0.51.2 user check (a typo in the topic name, then the documented test command
+    /// against a local ntfy stand-in): a test the server took printed nothing, one it did
+    /// not take only "Notification delivery failed".
+    #[test]
+    fn the_test_command_says_what_happened_and_what_to_check() {
+        let taken = test_said(Ok(())).unwrap();
+        assert!(taken.contains("accepted the test message"));
+        assert!(taken.contains("Look at your phone"));
+        assert!(taken.contains("follows exactly the same address"));
+        let refused = test_said(Err(Error::new("Notification delivery failed")))
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("connected to the internet"), "{refused}");
+        assert!(
+            refused.contains("alert address and access token"),
+            "{refused}"
+        );
+        for said in [taken, refused.as_str()] {
+            assert!(said.contains("NOTIFICATIONS.md says how to change"));
+        }
+    }
+    /// Seen with `nekoserver-runtime notify` on 0.51.2: a state.json cut short failed
+    /// every run with "Invalid JSON", forever, naming no file.
+    #[test]
+    fn a_damaged_alert_state_is_set_aside_with_its_date_and_alerts_start_fresh() {
+        let dir = std::env::temp_dir().join(format!("neko-notify-state-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        fs::write(&path, b"{\"format\":\"neko-notif").unwrap();
+        let now = 1_800_000_000.0; // 2027-01-15 08:00:00 UTC
+        assert_eq!(alert_state(&path, now).unwrap(), json!({}));
+        assert!(!path.exists());
+        let aside = dir.join("state.json.damaged-20270115T080000Z");
+        assert_eq!(fs::read(&aside).unwrap(), b"{\"format\":\"neko-notif");
+        // A good file is read as it is; none at all is a fresh start.
+        fs::write(&path, br#"{"attempts":2}"#).unwrap();
+        assert_eq!(alert_state(&path, now).unwrap(), json!({"attempts": 2}));
+        fs::remove_file(&path).unwrap();
+        assert_eq!(alert_state(&path, now).unwrap(), json!({}));
+        fs::remove_dir_all(&dir).unwrap();
+    }
     #[test]
     fn a_retry_time_from_a_clock_that_was_ahead_never_holds_alerts_back() {
         let now = 1_800_000_000.0;
@@ -685,7 +830,8 @@ mod tests {
         // Whole again: the alert is gone and the array reports healthy -> recovered.
         let mut whole = snapshot(1500., json!([]));
         whole["arrays"] = json!([{"id":"md-md0","status":"healthy"}]);
-        let (_, events) = plan(&whole, &state, 1500., 180, 43200);
+        // (debounce 0: what is tested is the evidence; the wait has its own test)
+        let (_, events) = plan(&whole, &state, 1500., 0, 43200);
         assert_eq!(
             events,
             vec![(
@@ -738,7 +884,8 @@ mod tests {
             assert!(e.is_empty(), "{id}: {e:?}");
             assert!(state["entries"][id].is_object(), "{id}");
             s["tailscale"] = seen;
-            let (_, e) = plan(&s, &opened(id), 1000., 180, 43200);
+            // (debounce 0: what is tested is the evidence; the wait has its own test)
+            let (_, e) = plan(&s, &opened(id), 1000., 0, 43200);
             assert_eq!(ids(&e), [id]);
         }
         let mut s = snapshot(1000., json!([]));
@@ -749,7 +896,8 @@ mod tests {
             "{e:?}"
         );
         s["heartbeat"] = json!({"status":"pass","timer":{"installed":true}});
-        let (_, e) = plan(&s, &opened("heartbeat:delivery"), 1000., 180, 43200);
+        // (debounce 0: what is tested is the evidence; the wait has its own test)
+        let (_, e) = plan(&s, &opened("heartbeat:delivery"), 1000., 0, 43200);
         assert_eq!(ids(&e), ["heartbeat:delivery"]);
         // Switched off: dropped, nothing sent.
         s["heartbeat"] = json!({"status":"unknown","timer":{"installed":false}});
@@ -777,7 +925,8 @@ mod tests {
         let (_, e) = plan(&s, &opened, 1000., 180, 43200);
         assert!(e.is_empty(), "{e:?}");
         s["network_storage"]["targets"][0]["state"] = json!("connected");
-        let (_, e) = plan(&s, &opened, 1000., 180, 43200);
+        // (debounce 0: what is tested is the evidence; the wait has its own test)
+        let (_, e) = plan(&s, &opened, 1000., 0, 43200);
         assert_eq!(e[0].0, id);
         s["network_storage"] = Value::Null;
         let (state, e) = plan(&s, &opened, 1000., 180, 43200);
@@ -845,6 +994,23 @@ mod tests {
         let previous = json!({"format":"neko-notifications-v1","entries":{"app:sonarr":{"last_sent":1000,"first_seen":900,"sent_level":"warning"}}});
         let (_, e) = plan(&json!({}), &previous, 2000., 0, 43200);
         assert!(!e.iter().any(|(_, r, _)| *r));
+    }
+    #[test]
+    fn a_recovery_that_lasts_a_moment_sends_nothing() {
+        // Deep check 306: a problem that went away for one reading sent RECOVERED.
+        let sent = json!({"format":"neko-notifications-v1","entries":{"app:sonarr":{"last_sent":1000,"first_seen":900,"sent_level":"warning"}}});
+        let alert = json!([{"id":"app:sonarr","level":"warning"}]);
+        let (state, e) = plan(&snapshot(1100., json!([])), &sent, 1100., 180, 43200);
+        assert!(e.is_empty(), "{e:?}");
+        // Back a minute later: no RECOVERED, and no new alert (it was sent already).
+        let (state, e) = plan(&snapshot(1160., alert.clone()), &state, 1160., 180, 43200);
+        assert!(e.is_empty(), "{e:?}");
+        assert!(state["entries"]["app:sonarr"]["cleared_at"].is_null());
+        // Gone for good: RECOVERED once it has stayed away as long as the debounce.
+        let (state, e) = plan(&snapshot(1200., json!([])), &state, 1200., 180, 43200);
+        assert!(e.is_empty(), "{e:?}");
+        let (_, e) = plan(&snapshot(1380., json!([])), &state, 1380., 180, 43200);
+        assert_eq!(e, vec![("app:sonarr".into(), true, "recovered".into())]);
     }
     #[test]
     fn reported_problem_recovers_on_fresh_input() {
@@ -1036,7 +1202,11 @@ mod review_tests {
     #[test]
     fn every_collector_alert_can_reach_the_phone() {
         let mut both = vec![];
-        for days_left in [Value::Null, json!(3.0)] {
+        for (state, days_left) in [
+            ("NeedsLogin", Value::Null),
+            ("Running", json!(3.0)),
+            ("Stopped", Value::Null),
+        ] {
             let drives: Vec<Value> = ["os", "data_ssd", "media_hdd"]
                 .iter()
                 .flat_map(|id| {
@@ -1049,7 +1219,7 @@ mod review_tests {
             let s = json!({
                 "notifications": {"status": "fail"},
                 "heartbeat": {"status": "stale"},
-                "tailscale": {"state": if days_left.is_null() { "NeedsLogin" } else { "Running" }, "days_left": days_left},
+                "tailscale": {"state": state, "days_left": days_left},
                 "startup": crate::collect::STARTUP.iter().map(|(u, n)| json!({"unit": u, "name": n, "active": "failed", "enabled": false})).collect::<Vec<_>>(),
                 "storage": drives,
                 "metrics": {"memory_percent": 99.0, "temperature": 99.0},
@@ -1065,6 +1235,7 @@ mod review_tests {
         let ids: BTreeSet<&str> = both.iter().filter_map(|a| a["id"].as_str()).collect();
         for id in [
             "tailscale:login",
+            "tailscale:off",
             "tailscale:expiry",
             "backup-key",
             "heartbeat:delivery",

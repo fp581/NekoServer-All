@@ -4,12 +4,15 @@ Python, never trusting the card, never overwriting without a named approval (V2 
 12, A27, A32 to A35). The cards here are written by hand in archive format 1; the Rust
 tests run the same tool on cards the engine wrote."""
 
+import errno
 import hashlib
 import json
 import os
 import shutil
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -295,6 +298,33 @@ class RestoreTests(Base):
         leftovers = [p for p in self.dest.rglob('*') if p.name.startswith('.neko-restore-')]
         self.assertEqual(leftovers, [])
 
+    def test_two_restores_into_one_folder_at_once_both_end_well(self):
+        # Plan 369: a second restore started while the first writes the same file waited
+        # for nothing, removed the first one's half-written file (same name) and the first
+        # then failed it with "No such file or directory".
+        self.card.add(A_2001, SAND * 100000)
+        real = tool.write_checked
+        second, said = [], []
+
+        def run_second():
+            second.append(tool.main([CARD_FLAG, str(self.card.top), 'restore', str(self.dest)], say=said.append))
+
+        other = threading.Thread(target=run_second)
+
+        def first_writes(*args):
+            if not other.is_alive() and not second:
+                other.start()
+                time.sleep(0.5)  # the second restore reaches the same file meanwhile
+            return real(*args)
+
+        with mock.patch.object(tool, 'write_checked', first_writes):
+            self.assertEqual(self.run_tool('restore', str(self.dest)), 0)
+            other.join(10)
+        self.assertIn('restored    2001/a.jpg', said_text(self))
+        self.assertEqual(second, [0])
+        self.assertIn('same file   2001/a.jpg', '\n'.join(said))
+        self.assertEqual((self.dest / A_2001).read_bytes(), SAND * 100000)
+
     def test_a_damaged_file_leaves_no_output(self):
         # A33.
         rec = self.card.add('broken.jpg', b'original bytes')
@@ -349,6 +379,16 @@ class RestoreTests(Base):
         self.assertIn('restored    b.jpg -> b.jpg', said_text(self))
         self.assertEqual(os.stat(self.dest / A_JPG).st_mtime_ns, first, 'not copied again')
         self.assertEqual(len(progress_done(progress)), 2)
+
+    def test_a_file_being_written_when_the_restore_was_killed_is_restored_next_time(self):
+        # A restore killed (SIGKILL, a power cut) while writing a file leaves its
+        # half-written temporary file; the next run used to fail that file ("File exists").
+        rec = self.card.add(A_JPG, b'one')
+        (self.dest / ('.neko-restore-%s.part' % rec['record_id'])).write_bytes(b'o')
+        progress = self.tmp / 'progress.json'
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 0, said_text(self))
+        self.assertEqual((self.dest / A_JPG).read_bytes(), b'one')
+        self.assertEqual(sorted(os.listdir(self.dest)), [A_JPG])
 
     def test_the_report_names_every_file_and_where_it_went(self):
         self.card.add(X_A, b'a')
@@ -504,6 +544,24 @@ class ManyFilesTests(Base):
         self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 2)
         self.assertIn('not usable', said_text(self))
 
+    def test_a_restore_that_goes_on_after_a_cut_off_line_leaves_a_usable_progress_file(self):
+        """A stop or a power cut while a line was written, then a run that restores more
+        files: its lines were added to the cut-off one, which then sat in the middle of the
+        file, so the run after that refused the file ("has a line that is not usable")."""
+        self.card.add(A_JPG, b'one')
+        self.card.add('b.jpg', b'two')
+        self.card.add('c.jpg', b'three')
+        progress = self.tmp / 'progress.json'
+        self.assertEqual(self.run_tool('restore', str(self.dest), SEARCH, A_JPG, '--progress', str(progress)), 0)
+        with open(progress, 'a') as f:
+            f.write('{"version_id": "cut off')
+        self.assertEqual(self.run_tool('restore', str(self.dest), SEARCH, 'b.jpg', '--progress', str(progress)), 0)
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 0)
+        said = said_text(self)
+        self.assertIn('done before a.jpg', said)
+        self.assertIn('done before b.jpg', said)
+        self.assertEqual(len(progress_done(progress)), 3)
+
     def test_a_name_an_exfat_stick_cannot_hold_is_skipped_or_renamed(self):
         """Seen restoring onto exFAT (through FUSE): a name with ":" or "?" failed with "No
         such file or directory", --rename or not. exFAT through FUSE says ENOENT to such a
@@ -535,6 +593,18 @@ class ManyFilesTests(Base):
         self.assertIn('same file   DCIM/meeting 10:30.jpg -> _renamed/', said_text(self))
         self.assertEqual([p for p in self.dest.rglob('.neko-restore-*')], [])
 
+    def test_skipped_files_say_how_to_get_them_too(self):
+        """Seen restoring onto an exFAT stick: the run ended "restored 5, skipped 2" and
+        nothing said the two were still only on the card, or that --rename takes them."""
+        self.card.add(A_2001, b'card a')
+        (self.dest / '2001').mkdir()
+        (self.dest / A_2001).write_bytes(b'mine')
+        self.assertEqual(self.run_tool('restore', str(self.dest)), 1)
+        self.assertEqual(self.said[-1], tool.SKIPPED_HINT)
+        # With --rename nothing is skipped for its name, and nothing more is said.
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--rename'), 0)
+        self.assertNotIn(tool.SKIPPED_HINT, self.said)
+
     def test_a_file_already_restored_counts_as_done_without_a_progress_file(self):
         """Seen on the same stick: the same restore run again (no --progress) skipped every
         file it had restored, or with --rename made a second copy of each."""
@@ -547,6 +617,91 @@ class ManyFilesTests(Base):
         (self.dest / A_2001).write_bytes(b'card A')
         self.assertEqual(self.run_tool('restore', str(self.dest)), 1)
         self.assertIn('skipped     2001/a.jpg -> a file is there already', said_text(self))
+
+    def test_nothing_is_restored_onto_the_card_itself(self):
+        """Seen on an ext4 card image mounted read-write: `restore /mnt` (the card) and even
+        `restore /mnt/NekoBackup` restored every file onto the card, among its records."""
+        self.card.add(A_2001, b'card a')
+        before = sorted(str(p.relative_to(self.card.top)) for p in self.card.top.rglob('*'))
+        for dest in (self.card.top, self.card.nb, self.card.nb / 'records'):
+            with self.subTest(dest=dest.name):
+                self.assertEqual(self.run_tool('restore', str(dest)), 2)
+                self.assertIn('is on the card itself', said_text(self))
+        # Another name of the same folder (a link) is the card too.
+        link = self.tmp / 'link-to-card'
+        link.symlink_to(self.card.top)
+        self.assertEqual(self.run_tool('restore', str(link)), 2)
+        self.assertEqual(sorted(str(p.relative_to(self.card.top)) for p in self.card.top.rglob('*')), before)
+        self.assertEqual(self.run_tool('restore', str(self.dest)), 0)
+
+    def test_the_second_check_reads_the_drive_not_linuxs_copy(self):
+        """The review of 0.51.0: the restored file was read back from Linux's page cache, so a
+        USB stick that kept other bytes passed (shown on an ext4 image whose bytes were
+        changed under the filesystem: the old tool said "restored"). Each readback now
+        drops the file's cached pages first."""
+        self.card.add(A_2001, b'card a')
+        dropped = []
+        real = os.posix_fadvise
+
+        def watching(fd, offset, length, advice):
+            """posix_fadvise as it is, each call written down."""
+            dropped.append((offset, length, advice))
+            return real(fd, offset, length, advice)
+
+        with mock.patch.object(tool.os, 'posix_fadvise', side_effect=watching):
+            self.assertEqual(self.run_tool('restore', str(self.dest)), 0)
+        self.assertIn((0, 0, os.POSIX_FADV_DONTNEED), dropped)
+
+    def test_a_copy_missing_or_replaced_on_the_card_is_said_as_such(self):
+        """Seen on a hand-tampered card: restore said "No such file or directory (b/gone.jpg)"
+        (as if the destination were at fault) and "Too many levels of symbolic links", where
+        verify says missing and damaged."""
+        gone = self.card.add('b/gone.jpg', b'gone')
+        linked = self.card.add('f/link.jpg', b'link')
+        self.card.payload(gone).unlink()
+        self.card.payload(linked).unlink()
+        os.symlink('/etc/hostname', self.card.payload(linked))
+        self.assertEqual(self.run_tool('restore', str(self.dest)), 1)
+        said = said_text(self)
+        self.assertIn('failed      b/gone.jpg -> its copy is missing from the card', said)
+        self.assertIn('failed      f/link.jpg -> its copy on the card is damaged (not a plain file)', said)
+        self.assertNotIn('symbolic links', said)
+
+    def unplugged_after(self, files):
+        """Card.open_payload as it is for `files` files, then as on a card pulled out: the
+        card's folder answers nothing more (an empty folder in its place) and the read
+        fails as a FUSE card's does when its program is gone."""
+        real = tool.Card.open_payload
+        (self.tmp / 'nothing').mkdir(exist_ok=True)
+        nothing = os.open(self.tmp / 'nothing', os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, nothing)
+        opened = []
+
+        def payload(card, rec):
+            opened.append(rec['record_id'])
+            if len(opened) <= files:
+                return real(card, rec)
+            os.dup2(nothing, card.nb)
+            raise OSError(errno.ENOTCONN, 'Transport endpoint is not connected')
+
+        return mock.patch.object(tool.Card, 'open_payload', payload)
+
+    def test_a_card_unplugged_mid_run_is_said_as_such_not_as_damage(self):
+        """Plan 145, a card on exFAT (FUSE) whose program was killed after two files:
+        the old tool said "failed ... its copy on the card is damaged" for each of the four
+        others, and verify said them damaged, as if the card had gone bad."""
+        for n in range(4):
+            self.card.add('2021/f%d.jpg' % n, b'photo %d' % n)
+        with self.unplugged_after(2):
+            self.assertEqual(self.run_tool('restore', str(self.dest)), 2)
+        said = said_text(self)
+        self.assertIn('The card stopped answering', said)
+        self.assertNotIn('damaged', said)
+        self.assertEqual(sorted(os.listdir(self.dest / '2021')), ['f0.jpg', 'f1.jpg'], 'no part file left')
+        with self.unplugged_after(1):
+            self.assertEqual(self.run_tool('verify'), 2)
+        self.assertIn('The card stopped answering', said_text(self))
+        self.assertNotIn('damaged', said_text(self))
 
     def test_a_name_restored_earlier_in_the_same_run_still_clashes_by_case(self):
         self.card.add('DCIM/IMG_1.JPG', b'upper')
@@ -609,11 +764,62 @@ class WhereTests(Base):
         self.assertIn('2003/beach.jpg (5 bytes): Example set - 002 (in_use): committed', said_text(self))
         self.assertIn('a card written later may know more', said_text(self))
 
+    def test_a_search_finds_accented_names_however_they_are_written(self):
+        """Plan 146: a name from a Mac or a phone writes "ü" as u and an accent (two
+        characters); "München" typed on Linux is one. list, restore and where found nothing.
+        Characters a pattern would use are plain text."""
+        mac_name = 'Urlaub/München [1].jpg'
+        self.card.add(mac_name, b'photo')
+        self.snapshot([{'path': mac_name, 'byte_size': 5, 'copies': [{'volume_id': VOLUME, 'state': 'committed'}]}])
+        for typed in ('München', 'München', '[1]'):
+            with self.subTest(typed=typed):
+                self.assertEqual(self.run_tool('list', SEARCH, typed), 0)
+                self.assertIn('1 file(s)', said_text(self))
+                self.assertEqual(self.run_tool('where', typed), 0)
+                self.assertIn('(5 bytes)', said_text(self))
+        self.assertEqual(self.run_tool('list', SEARCH, '.*'), 0)
+        self.assertIn('0 file(s)', said_text(self))
+        self.assertEqual(self.run_tool('restore', str(self.dest), SEARCH, 'München'), 0)
+        self.assertEqual((self.dest / mac_name).read_bytes(), b'photo', 'restored under its own name')
+
     def test_a_tampered_inventory_is_refused(self):
         sid = self.snapshot([{'path': 'x.jpg', 'copies': []}])
         (self.card.nb / 'inventory' / (sid + VERSIONS)).write_bytes(b'{"path": "y.jpg"}\n')
         self.assertEqual(self.run_tool('where', 'x'), 1)
         self.assertIn('does not match its header', said_text(self))
+
+
+class GuardTests(Base):
+    """Deep check plan 288: changes to the tool that no test noticed (each check below
+    could be turned off, or turned round, and every other test still passed)."""
+
+    def test_only_the_records_named_are_restored(self):
+        self.card.add(A_2001, b'card a')
+        wanted = self.card.add('2001/b.jpg', b'card b')
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--record', wanted['record_id']), 0)
+        self.assertEqual(sorted(p.name for p in (self.dest / '2001').iterdir()), ['b.jpg'])
+
+    def test_a_file_the_drive_gives_back_otherwise_is_not_kept(self):
+        """A drive that keeps other bytes than it was given (a fake-capacity stick): the
+        read-back differs, so the file fails and nothing is left under its name."""
+        self.card.add(A_2001, b'card a')
+        real = tool.from_the_drive
+
+        def lying(fd):
+            real(fd)
+            Path(os.readlink(f'/proc/self/fd/{fd}')).write_bytes(b'card b')
+
+        with mock.patch.object(tool, 'from_the_drive', lying):
+            self.assertEqual(self.run_tool('restore', str(self.dest)), 1)
+        self.assertIn('failed      2001/a.jpg', said_text(self))
+        self.assertEqual([p for p in self.dest.rglob('*') if p.is_file()], [])
+
+    def test_a_card_copy_longer_than_its_record_is_damaged(self):
+        rec = self.card.add(A_JPG, b'one')
+        with self.card.payload(rec).open('ab') as grown:
+            grown.write(b' and more')
+        self.assertEqual(self.run_tool('verify'), 1)
+        self.assertIn('damaged  a.jpg', said_text(self))
 
 
 if __name__ == '__main__':

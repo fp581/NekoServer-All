@@ -814,10 +814,21 @@ main > section {
 .part-step .choice {
   justify-self: end;
 }
-/* the finishing page: a card for each app, with how it stands and its buttons */
+/* the finishing page: a card for each app, with how it stands and its buttons. Each grid
+   keeps to the window's width (minmax(0, 1fr)): an automatic column grows to the widest
+   line in it, and in a narrow window the states, the address and the test's buttons were
+   cut off at the right edge. */
+.finish-page,
+.finish-page .retry,
+.finish-test {
+  grid-template-columns: minmax(0, 1fr);
+}
 .finish-page {
   display: grid;
   gap: 10px;
+}
+.finish-test .row-inputs {
+  flex-wrap: wrap;
 }
 .finish-page[hidden] {
   display: none;

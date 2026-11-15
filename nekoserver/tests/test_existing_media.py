@@ -2,6 +2,7 @@
 checks T12 to T14). Everything here runs on folders of its own with stand-ins for
 findmnt, the apps' account, mount and the apps' APIs: no Docker, no network."""
 
+import io
 import os
 import sys
 import tempfile
@@ -213,6 +214,32 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(self.pc.check(folder=link)[0]['path'], str(self.pc.films))
         (self.pc.top / 'to-etc').symlink_to('/etc')
         self.assertEqual(self.refusal(folder=self.pc.top / 'to-etc').code, 'unsafe')
+
+    def test_a_drive_top_with_its_lost_and_found_folder_is_readable(self):
+        # Deep check 187, for real: a music drive's top holds root's lost+found (mode 700),
+        # listed before "music"; the whole folder was refused as "read Permission denied".
+        with tempfile.TemporaryDirectory() as d:
+            top = Path(d)
+            (top / 'lost+found').mkdir(mode=0o700)
+            (top / 'music/abba').mkdir(parents=True)
+            (top / 'music/abba/1.mp3').write_bytes(b'ID3')
+            (top / 'zz-loop').symlink_to(top)  # a link back up is never followed
+            if os.geteuid() == 0:
+                os.chown(top / 'lost+found', 0, 0)
+                user = (65534, 65534)  # the apps' account stands in: root may enter any folder
+                for folder in (top, top / 'music', top / 'music/abba'):
+                    os.chmod(folder, 0o755)
+            else:
+                (top / 'lost+found').chmod(0o000)
+                user = (os.getuid(), os.getgid())
+            self.assertEqual(existing_media.as_app(*user, top), '')
+            # A folder the apps cannot open at all is still said.
+            (top / 'music').chmod(0o000 if os.geteuid() else 0o700)
+            (top / 'zz-loop').unlink()
+            said = existing_media.as_app(*user, top / 'music')
+            for folder in (top / 'music', top / 'lost+found'):
+                folder.chmod(0o755)  # so the folder can be removed
+            self.assertEqual(said, 'read Permission denied')
 
     @unittest.skipUnless(os.geteuid() == 0, 'switching to the apps\' account needs root')
     def test_the_apps_account_really_tries_and_leaves_the_folder_as_it_was(self):
@@ -676,6 +703,36 @@ class CopyTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 'not_mounted')
 
 
+class ImportReadbackTests(unittest.TestCase):
+    """The import's check of its copy reads the drive, not Linux's memory."""
+
+    def test_the_copy_is_read_back_from_the_drive(self):
+        """The review of 0.51.0: the import read its copy back from Linux's memory of what
+        it had just written ("the copy on disk holds the same bytes"), so a drive that did
+        not keep them passed, and the originals could then be deleted. The copy is dropped
+        from memory first, as neko_common.copy_checked_into does."""
+        with tempfile.TemporaryDirectory() as tmp:
+            src, dst = Path(tmp) / 'film.mkv', Path(tmp) / 'copy.mkv'
+            src.write_bytes(b'a film' * 1000)
+            reader = os.open(src, os.O_RDONLY)
+            writer = os.open(dst, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+            dropped, real = [], os.posix_fadvise
+
+            def noted(fd, offset, length, advice):
+                """posix_fadvise as it is, each call written down."""
+                dropped.append((fd, offset, length, advice))
+                return real(fd, offset, length, advice)
+
+            try:
+                with mock.patch.object(source_import.os, 'posix_fadvise', side_effect=noted):
+                    source_import.copy_into(reader, writer, os.fstat(reader))
+            finally:
+                os.close(reader)
+                os.close(writer)
+            self.assertIn((writer, 0, 0, os.POSIX_FADV_DONTNEED), dropped)
+            self.assertEqual(dst.read_bytes(), src.read_bytes())
+
+
 class NewFilesTests(unittest.TestCase):
     """ "Save new ones here too": the place new films, shows and music are saved."""
 
@@ -904,10 +961,10 @@ class Navidrome:
         self.seen.append((asked.get_method(), path, body, asked.get_header('X-nd-authorization')))
         if path == '/auth/login':
             if body['password'] != 'right':
-                raise urllib.error.HTTPError(asked.full_url, 401, 'no', {}, None)
+                raise urllib.error.HTTPError(asked.full_url, 401, 'no', {}, io.BytesIO())
             return Answer({'token': 'tok', 'isAdmin': self.admin})
         if not self.libraries:
-            raise urllib.error.HTTPError(asked.full_url, 404, 'no', {}, None)
+            raise urllib.error.HTTPError(asked.full_url, 404, 'no', {}, io.BytesIO())
         if asked.get_method() == 'POST':
             self.have.append({'id': 2, **body})
         return Answer(self.have)

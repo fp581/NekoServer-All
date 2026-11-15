@@ -1,6 +1,8 @@
 """The shared nightly-snapshot verify/restore used by app-recovery.py and host-recovery.py."""
 
+import contextlib
 import hashlib
+import io
 import json
 import os
 import subprocess
@@ -12,8 +14,10 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import snapshot_restore as sr  # noqa: E402
+from roomy import roomy_drive  # noqa: E402
 
 
 def make(snapshot, kind, files, extra_rows=()):
@@ -43,6 +47,7 @@ def make(snapshot, kind, files, extra_rows=()):
 
 class SnapshotRestoreTests(unittest.TestCase):
     def setUp(self):
+        roomy_drive(self)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
@@ -59,6 +64,23 @@ class SnapshotRestoreTests(unittest.TestCase):
         (snap / 'payload/appdata/sonarr/config.xml').write_bytes(b'<y/>')
         with self.assertRaisesRegex(RuntimeError, 'checksum'):
             sr.verify(sr.APPS, snap)
+
+    def test_each_restored_file_is_checked_as_the_drive_holds_it(self):
+        """The review of 0.51.0: each restored file was hashed from Linux's memory of what
+        was just written, so a drive that did not keep the bytes passed. Its cached pages
+        are dropped before the check."""
+        snap = self.root / 'snap'
+        make(snap, sr.APPS, {'appdata/sonarr/config.xml': b'<x/>'})
+        dropped, real = [], sr.os.posix_fadvise
+
+        def noted(fd, offset, length, advice):
+            """posix_fadvise as it is, each call's advice written down."""
+            dropped.append((offset, length, advice))
+            return real(fd, offset, length, advice)
+
+        with mock.patch.object(sr.os, 'posix_fadvise', side_effect=noted):
+            sr.restore(sr.APPS, snap, self.root / 'new')
+        self.assertIn((0, 0, sr.os.POSIX_FADV_DONTNEED), dropped)
 
     def test_host_snapshot_keeps_links_as_text_and_rejects_foreign_roots(self):
         snap = self.root / 'snap'
@@ -242,6 +264,26 @@ class SnapshotRestoreTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, f'sudo mkdir -p "{parent}"'):
             sr.restore(sr.APPS, snap, parent / 'restored')
         self.assertFalse(parent.exists())
+
+    def test_a_restore_stopped_with_ctrl_c_says_so_and_what_is_left(self):
+        """Plan 152, app-recovery.py stopped with SIGINT while copying a 40 MB file: a
+        Python traceback ending in KeyboardInterrupt, and nothing said about the half
+        restored folder it left."""
+        snap = self.root / 'snap'
+        make(snap, sr.APPS, {'appdata/a/one.bin': b'1', 'appdata/b/two.bin': b'2'})
+        real, copied = sr.copy_row, []
+
+        def then_stopped(*args):
+            if copied:
+                raise KeyboardInterrupt
+            copied.append(real(*args))
+
+        err = io.StringIO()
+        with mock.patch.object(sr, 'copy_row', then_stopped), contextlib.redirect_stderr(err):
+            code = sr.main(sr.APPS, '', ['restore', '--snapshot', str(snap), '--destination', str(self.root / 'new')])
+        self.assertEqual(code, 1)
+        self.assertIn('Reason: stopped with Ctrl+C', err.getvalue())
+        self.assertIn(f'kept in {self.root / "new"} (incomplete)', err.getvalue())
 
     def test_command_line_tools_still_work(self):
         snap = self.root / 'snap'

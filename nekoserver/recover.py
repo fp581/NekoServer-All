@@ -4,6 +4,8 @@
 import argparse, json, sys, subprocess
 from pathlib import Path
 import recovery_tools as recovery
+from installer import InstallerError  # setup's check of the settings (loaded with recovery_tools anyway)
+import neko_common
 from neko_common import checked_settings, default_settings
 
 
@@ -13,6 +15,9 @@ def main(argv=None):
     sub = p.add_subparsers(dest='action', required=True)
     for name in ('check', 'checkpoint', 'reattach', 'snapshot', 'restore-test', 'resume', 'install-docker'):
         cmd = sub.add_parser(name)
+        # Also after the command ("check --config my.json"), the order people type it in:
+        # there it was not read, and the default's error said to name a file with --config.
+        cmd.add_argument('--config', type=checked_settings, default=argparse.SUPPRESS)
         if name not in ('check', 'resume'):
             cmd.add_argument('--apply', action='store_true')
         if name in ('check', 'reattach'):
@@ -26,8 +31,12 @@ def main(argv=None):
             cmd.add_argument('--workspace', required=True, type=Path)
             cmd.add_argument('--port', type=int, default=2284)
     a = p.parse_args(argv)
+    config, problem = read_settings(a.config)
+    if problem:
+        print('Recovery stopped: ' + problem, file=sys.stderr)
+        print(AFTER_FAILURE, file=sys.stderr)
+        return 2
     try:
-        config = json.loads(Path(a.config).read_text())
         result = run(a, config)
         print(json.dumps(result, indent=2))
         return 1 if result.get('status') == 'needs_setup' else 0
@@ -37,6 +46,7 @@ def main(argv=None):
         KeyError,
         TypeError,
         RuntimeError,
+        InstallerError,
         subprocess.SubprocessError,
         KeyboardInterrupt,
     ) as exc:
@@ -44,6 +54,14 @@ def main(argv=None):
         print('Recovery failed: ' + failure_text(exc), file=sys.stderr)
         print(AFTER_FAILURE, file=sys.stderr)
         return 2
+
+
+def read_settings(path):
+    """(the settings, None), or (None, what is wrong with the file, named)."""
+    try:
+        return neko_common.read_settings(path), None
+    except RuntimeError as exc:
+        return None, f'{exc}.'
 
 
 AFTER_FAILURE = (
@@ -57,7 +75,7 @@ def failure_text(exc):
     """What went wrong, in words, without the details that can hold secrets (a
     Compose error can include passwords, SQL personal data): our own messages, a file's
     name and the system's reason, or what kind of problem it was."""
-    if isinstance(exc, RuntimeError):
+    if isinstance(exc, (RuntimeError, InstallerError)):
         return str(exc)
     if isinstance(exc, KeyboardInterrupt):
         return 'stopped with Ctrl+C.'

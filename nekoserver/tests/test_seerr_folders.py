@@ -102,6 +102,21 @@ class FolderTests(unittest.TestCase):
         self.assertEqual(provider(seerr, OWN)['status'], 'pass')
         self.assertEqual(seerr.posted, [])
 
+    def test_an_api_key_made_again_in_the_app_is_said_with_where_to_paste_it(self):
+        # Deep check 188: Radarr's key made again by hand. Seerr's provider still holds
+        # the old one; setup said only "Existing standard providers/default routing differ".
+        seerr = Seerr([{**made('/data/movies'), 'apiKey': 'the-old-key'}])
+        for verify_only in (False, True):
+            with self.subTest(verify_only=verify_only), self.assertRaises(sp.SetupRequired) as stopped:
+                provider(seerr, apply=True, verify_only=verify_only)
+            self.assertIn("Radarr's API key was made again", str(stopped.exception))
+            self.assertIn('Settings, Services, Radarr', str(stopped.exception))
+        self.assertEqual(seerr.posted, [])
+        # Another address is still the general message.
+        seerr = Seerr([{**made('/data/movies'), 'hostname': 'elsewhere'}])
+        with self.assertRaisesRegex(sp.SetupRequired, 'routing differ'):
+            provider(seerr)
+
     def test_the_readiness_check_takes_either_folder_and_no_other(self):
         """It is not told the choice: the library's folder and a person's own both pass."""
         for folder in ('/data/movies', OWN, '/data/existing/movies-new'):

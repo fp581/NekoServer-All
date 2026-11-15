@@ -114,7 +114,7 @@ def portal_of(text):
     """'192.168.1.20' or 'nas.home:3260' as host:port, or None when it is neither."""
     host, _, port = str(text).strip().partition(':')
     port = port or str(PORT)
-    if not HOST.fullmatch(host) or not port.isdigit() or not 0 < int(port) < 65536:
+    if not HOST.fullmatch(host) or not port.isdecimal() or not 0 < int(port) < 65536:
         return None
     if re.fullmatch(r'[0-9.]+', host) and not all(0 <= int(p) <= 255 for p in host.split('.')):
         return None
@@ -378,7 +378,7 @@ def by_path_name(name):
         return None
     rest, _, lun = name[3:].rpartition('-lun-')
     portal, _, iqn = rest.partition('-iscsi-')
-    if not (portal and iqn and lun.isdigit()):
+    if not (portal and iqn and lun.isdecimal()):
         return None
     return {'portal': portal, 'iqn': iqn, 'lun': int(lun)}
 
@@ -507,7 +507,7 @@ def chosen_targets(found, saved, input_fn, out_fn):
         if not answer:
             break
         picks = [p.strip() for p in answer.split(',') if p.strip()]
-        if picks and all(p.isdigit() and 1 <= int(p) <= len(names) for p in picks):
+        if picks and all(p.isdecimal() and 1 <= int(p) <= len(names) for p in picks):
             return list(dict.fromkeys(names[int(p) - 1] for p in picks))
         out_fn(f'Type numbers from 1 to {len(names)}, such as 1,2.')
     raise RuntimeError('No iSCSI target was chosen; run setup again to choose them. Nothing was changed.')
@@ -534,6 +534,19 @@ def chap_kept(iqn, portal, roots=NODE_ROOTS):
     return 'node.session.auth.authmethod = CHAP' in text and 'node.session.auth.password = ' in text
 
 
+def login_needed(iqn, input_fn, out_fn):
+    """ "Does your NAS ask for a user name and password for this disk?": yes, or no (Enter
+    alone, as the question says). Any other answer is asked again: a typo ("yse") was
+    taken as no."""
+    while True:
+        answer = asked_plainly('nas_login_needed', input_fn, iqn=iqn).lower()
+        if answer in ('y', 'yes'):
+            return True
+        if answer in ('', 'n', 'no'):
+            return False
+        out_fn('Please type yes or no.')
+
+
 def asked_chap(iqn, portal, input_fn, out_fn, secret_fn, again=False):
     """A CHAP login for the target, when the NAS asks for one: True when one was saved.
     `again`: why it is asked once more ('missing', or 'refused' by the NAS)."""
@@ -541,10 +554,8 @@ def asked_chap(iqn, portal, input_fn, out_fn, secret_fn, again=False):
         out_fn(f'The NAS refused the login to {iqn}.')
     if again == 'missing':
         out_fn(f'The CHAP login of {iqn} is missing from its iSCSI settings; give it again.')
-    else:
-        answer = asked_plainly('nas_login_needed', input_fn, iqn=iqn).lower()
-        if answer not in ('y', 'yes'):
-            return False
+    elif not login_needed(iqn, input_fn, out_fn):
+        return False
     for _ in range(3):
         user = asked_plainly('nas_login_user', input_fn)
         try:
@@ -910,7 +921,7 @@ def asked_folder(words, names, input_fn, out_fn):
         answer = asked_plainly('nas_folder', input_fn, words=words)
         if not answer:
             return None
-        if answer.isdigit() and 1 <= int(answer) <= len(names):
+        if answer.isdecimal() and 1 <= int(answer) <= len(names):
             return names[int(answer) - 1]
         if nfs_exports.FOLDER.fullmatch(answer.rstrip('/')):
             return answer.rstrip('/')

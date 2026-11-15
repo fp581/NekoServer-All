@@ -28,7 +28,7 @@ const REPORT: &str = "reports/assistant.json";
 /// The collector's readings, which the summary is made from.
 pub const STATUS: &str = "/run/nekoserver-dashboard/status.json";
 /// The longest question taken, and the longest answer asked for.
-const QUESTION_CHARS: usize = 500;
+pub(crate) const QUESTION_CHARS: usize = 500;
 const ANSWER_TOKENS: u64 = 700;
 /// How many log lines of an attention item's service are read, and how much of them is kept.
 const LOG_LINES: &str = "40";
@@ -252,10 +252,20 @@ static PATTERNS: std::sync::LazyLock<Vec<(regex::Regex, &str)>> = std::sync::Laz
             // name=value, name: value and "name": "value" for names that say secret. Not
             // "Auth" or "Session" (log lines say "Auth: Auth-Success", "SessionManager:
             // Sending..."): their secret values are caught by Bearer, cookies, the
-            // random-string rule and NekoServer's own saved secrets.
+            // random-string rule and NekoServer's own saved secrets. A value in quotes is
+            // taken out up to its closing quote (or the line's end): a passphrase of several
+            // words ("password: \"correct horse battery\"") lost only its first word before.
             (
-                r#"(?i)\b([a-z0-9_.-]*(?:pass(?:word|wd|phrase)?|secret|token|api[_-]?key|private[_-]?key|access[_-]?key)[a-z0-9_.-]*)("?\s*[=:]\s*"?)[^\s",;&]+"#,
+                r#"(?i)\b([a-z0-9_.-]*(?:pass(?:word|wd|phrase)?|secret|token|api[_-]?key|private[_-]?key|access[_-]?key)[a-z0-9_.-]*)("?\s*[=:]\s*)(?:"[^"\n]*"?|'[^'\n]*'?|\x{201c}[^\x{201d}\n]*\x{201d}?|[^\s",;&]+)"#,
                 "$1$2<removed>",
+            ),
+            // A password named in another language (German, Spanish, French, Dutch,
+            // Portuguese, Hebrew with its joined "the"/"and" prefixes, Russian). After ":" or
+            // "=" any value goes; after the language's "is" only one with a digit or a symbol
+            // in it: an ordinary word there ("Mein Passwort ist falsch?") is a sentence.
+            (
+                r#"(?i)\b((?:pass|kenn)wort|contrase(?:ñ|n)a|mot de passe|wachtwoord|senha|[הוש]?סיסמ[הא]|пароль)(\s*[:=]\s*(?:"[^"\n]*"?|'[^'\n]*'?|[^\s",;&]+)|\s+(?:ist|es|est|is|é|היא|הוא|זה|это)\s+[^\s",;&]*[\p{N}\p{S}@#%*_\-][^\s",;&]*)"#,
+                "$1 <removed>",
             ),
             // E-mail addresses.
             (
@@ -279,9 +289,14 @@ static SECRET_NAME: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new
 });
 
 /// NekoServer's own secrets, to take out of anything the model sees: every saved app
-/// password and login, every secret value in an app's private Compose .env, and the settings
-/// that hold an address with a key in it (the phone alerts' topic, the outage monitor).
+/// password and login, every secret value in an app's private Compose .env, and the
+/// addresses with a key in them (the phone alerts' topic and token, the outage monitor).
 pub fn known_secrets(cfg: &Value, data: &Path) -> Vec<String> {
+    let private = ["notifications", "heartbeat"].map(|k| common::shared("private_settings", k));
+    known_secrets_with(cfg, data, &private.map(Path::new))
+}
+
+fn known_secrets_with(cfg: &Value, data: &Path, private: &[&Path]) -> Vec<String> {
     let mut found = vec![];
     let logins = common::json(&data.join("secrets/accounts/credentials.json"), 128_000);
     for entry in logins["apps"].as_object().into_iter().flatten() {
@@ -315,6 +330,17 @@ pub fn known_secrets(cfg: &Value, data: &Path) -> Vec<String> {
     ] {
         if let Some(v) = cfg[section][key].as_str() {
             found.push(v.to_string());
+        }
+    }
+    // Setup keeps the addresses it was given in root-only files of their own, not in the
+    // settings (which name one only while it is being switched). Read only; a file not
+    // there (alerts or the monitor never set up) has nothing to add.
+    for file in private {
+        let saved = common::json(file, 64000);
+        for key in ["endpoint", "token"] {
+            if let Some(v) = saved[key].as_str() {
+                found.push(v.to_string());
+            }
         }
     }
     found.retain(|v| v.chars().count() >= 6);
@@ -936,8 +962,15 @@ impl Drop for Turn {
     }
 }
 
-/// Said when a second question comes while Neko answers one.
-pub const BUSY: &str = "Neko is busy with another question; ask again once it has answered";
+/// Said when a second question comes while Neko answers one. The one under way is often
+/// the person's own, asked on a page they closed or reloaded (the only way to stop an
+/// answer): "ask again once it has answered" pointed to an answer nobody would see.
+pub fn busy() -> String {
+    format!(
+        "Neko is still answering another question; ask again in a moment (a question from a page that was closed or reloaded stops within {} seconds)",
+        LIMITS.abandon.as_secs()
+    )
+}
 /// How long an answer is kept for the page after it has ended.
 const KEEP_AFTER: Duration = Duration::from_secs(300);
 
@@ -1085,6 +1118,10 @@ enum Waited {
 /// One line from Ollama (as bytes: a line cut by a wake-up is kept whole), waiting at
 /// most `limit`, and giving up as soon as `keep` says the answer is not wanted any more.
 /// The connection's read time limit is short, so `keep` is asked about once a second.
+/// Read piece by piece, so the limit holds while bytes come without a line's end too:
+/// with read_until, an answer sent a byte at a time never let a read time out, and it
+/// kept "one question at a time" taken long after the page said it was stopped (seen
+/// with a stand-in assistant: every later question was "busy").
 fn next_line(
     reader: &mut BufReader<std::io::Take<TcpStream>>,
     line: &mut Vec<u8>,
@@ -1092,26 +1129,52 @@ fn next_line(
     keep: &dyn Fn() -> bool,
 ) -> std::result::Result<usize, Waited> {
     let start = Instant::now();
+    let mut asked = Instant::now();
+    let mut added = 0;
+    // After a read timed out, or about once a second while bytes keep coming.
+    let mut ask_now = false;
     loop {
-        match reader.read_until(b'\n', line) {
-            Ok(n) => return Ok(n),
+        if ask_now || asked.elapsed() >= KEEP_ASKED {
+            asked = Instant::now();
+            if !keep() {
+                return Err(Waited::NotWanted);
+            }
+        }
+        if start.elapsed() >= limit {
+            return Err(Waited::TooLong);
+        }
+        let piece = match reader.fill_buf() {
+            Ok(piece) => piece,
             Err(e)
                 if matches!(
                     e.kind(),
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                 ) =>
             {
-                if !keep() {
-                    return Err(Waited::NotWanted);
-                }
-                if start.elapsed() >= limit {
-                    return Err(Waited::TooLong);
-                }
+                ask_now = true;
+                continue;
             }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => return Err(Waited::Broken),
+        };
+        ask_now = false;
+        if piece.is_empty() {
+            return Ok(added); // the end: 0 when nothing more came
+        }
+        let (taken, ended) = match piece.iter().position(|b| *b == b'\n') {
+            Some(at) => (at + 1, true),
+            None => (piece.len(), false),
+        };
+        line.extend_from_slice(&piece[..taken]);
+        reader.consume(taken);
+        added += taken;
+        if ended {
+            return Ok(added);
         }
     }
 }
+/// How often `keep` is asked while a line is being read.
+const KEEP_ASKED: Duration = Duration::from_secs(1);
 
 /// Ask Ollama at `address` (OLLAMA, or a test's own) and hand each piece of the answer
 /// to `piece` as it comes. Returns the whole answer, or why there is none. When `keep`
@@ -1172,6 +1235,10 @@ pub fn stream(
 
 /// Said when an answer passes its time limit (Limits.total, or a pause too long).
 const TOO_LONG: &str = "the answer took too long, so it was stopped";
+/// Said when the assistant closes the connection without a word (it was restarting, or
+/// its runner ended).
+const HUNG_UP: &str =
+    "the AI assistant hung up without answering (it may be restarting); ask again in a minute";
 
 /// Why no line came, in words; `slow` is what to say when the wait was too long.
 fn why_none(why: Waited, slow: &str) -> String {
@@ -1208,7 +1275,8 @@ fn asked_ollama(
     let mut line = vec![];
     let slow_start = "the AI assistant took too long to start answering";
     match next_line(&mut reader, &mut line, limits.first, keep) {
-        Ok(0) => return Err(slow_start.into()),
+        // Hung up at once: not slow (seen with a stand-in assistant, it was said to be).
+        Ok(0) => return Err(HUNG_UP.into()),
         Ok(_) => {}
         Err(why) => return Err(why_none(why, slow_start)),
     }
@@ -1308,6 +1376,19 @@ pub fn suggested(answer: &str, offered: &[(String, String)]) -> Option<String> {
 mod tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[test]
+    fn busy_says_when_to_ask_again() {
+        // Seen on the dashboard: an answer stopped by reloading the page, then the next
+        // question was told to wait "once it has answered", for an answer nobody would see.
+        let said = busy();
+        assert!(!said.contains("once it has answered"), "{said}");
+        assert!(said.contains("ask again in a moment"), "{said}");
+        assert!(
+            said.contains(&format!("within {} seconds", LIMITS.abandon.as_secs())),
+            "{said}"
+        );
+    }
 
     /// The made-up secrets the tests plant. The ones shaped like a real key or token are
     /// put together here from pieces, so nothing in this file looks like one to a
@@ -1427,6 +1508,33 @@ mod tests {
 
     /// Review of the 0.50.0 fixes: the bug report said "passwords and keys removed", but
     /// a password written out in a sentence stayed in the question.
+    /// Deep check plan 39: the redaction knew only English words for a password, so
+    /// "Passwort: X" and "הסיסמה היא X" (Hebrew, "the password is X") reached the model.
+    #[test]
+    fn a_password_named_in_another_language_is_taken_out() {
+        // Made up here from pieces: not a saved login, not shaped like a key.
+        let word = ["Gelb", "-Katze-", "42"].concat();
+        for typed in [
+            format!("Passwort: {word}"),
+            format!("das Kennwort ist {word}"),
+            format!("la contraseña es {word}"),
+            format!("mot de passe = {word}"),
+            format!("het wachtwoord is {word}"),
+            format!("a senha é {word}"),
+            format!("הסיסמה היא {word}"),
+            format!("סיסמה: {word}"),
+            format!("пароль: {word}"),
+        ] {
+            let said = redact(&typed, &[]);
+            assert!(!said.contains(&word), "{typed} -> {said}");
+            assert!(said.contains("<removed>"), "{typed} -> {said}");
+        }
+        // The words alone, with nothing after them, stay.
+        assert_eq!(
+            redact("Mein Passwort ist falsch?", &[]),
+            "Mein Passwort ist falsch?"
+        );
+    }
     #[test]
     fn a_password_written_in_a_sentence_is_taken_out() {
         // Made up here from pieces: not a saved login, not shaped like a key.
@@ -1466,6 +1574,17 @@ mod tests {
                 format!("my passphrase is \"{phrase}\" and Immich refuses it"),
                 "my passphrase is <removed> and Immich refuses it".into(),
             ),
+            // The settings form with a passphrase in quotes: all of it goes, not only its
+            // first word (seen asking the real service: "<removed> pony staple" stayed).
+            (
+                format!("the admin password: \"{phrase}\" fails"),
+                "the admin password: <removed> fails".into(),
+            ),
+            (
+                format!("{{\"db_password\": \"{phrase}\", \"user\": \"neko\"}}"),
+                "{\"db_password\": <removed>, \"user\": \"neko\"}".into(),
+            ),
+            (format!("SMB_PASS='{phrase}'"), "SMB_PASS=<removed>".into()),
             (
                 format!("the password to plex is {word}"),
                 "the password to <removed>".into(),
@@ -1524,6 +1643,56 @@ mod tests {
     }
 
     #[test]
+    fn no_text_makes_the_redaction_panic() {
+        // Whatever a person types or a log holds (Hebrew, emoji, quotes left open, the
+        // words that start a value at the very end): the redaction never panics, and the
+        // value after "password is" never stays in.
+        let parts = [
+            "password",
+            "PIN",
+            "pin",
+            "is",
+            "was",
+            "to",
+            "for",
+            " ",
+            "\n",
+            "\"",
+            "'",
+            "\u{201c}",
+            "\u{201d}",
+            "שלום",
+            "🐈",
+            "é",
+            "x",
+            "Jellyfin",
+            "=",
+            ":",
+            "passphrase",
+            "now",
+            "set",
+            "the",
+            "סיסמה",
+        ];
+        let mut seed: u64 = 0x5eed;
+        for _ in 0..20_000 {
+            let mut text = String::new();
+            for _ in 0..(seed % 12) {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                text.push_str(parts[(seed >> 33) as usize % parts.len()]);
+                if seed & 1 == 0 {
+                    text.push(' ');
+                }
+            }
+            let _ = redact(&text, &[]);
+        }
+        let said = redact("my password is קטן🐈סוד and more", &[]);
+        assert!(!said.contains("קטן🐈סוד"), "{said}");
+    }
+
+    #[test]
     fn a_secret_that_holds_another_is_taken_out_whole() {
         // The review of 0.51.0: the shorter was replaced first and the longer's rest stayed.
         let known = ["Moss-Lark".to_string(), "Moss-Lark-Fern-Oak".to_string()];
@@ -1538,6 +1707,54 @@ mod tests {
         let shown =
             plain_log("\x1b[32m[Nest] 24  - \x1b[39m11/10/2026 \x1b[31mERROR\x1b[39m no space");
         assert_eq!(shown, "[Nest] 24  - 11/10/2026 ERROR no space");
+    }
+
+    /// The deep check: the ntfy address and the outage monitor's address were looked for in
+    /// the settings, where setup never keeps them, so Ask Neko could hand them to the model.
+    /// They are read from setup's root-only files; a file not there adds nothing.
+    #[test]
+    fn the_alert_and_heartbeat_addresses_are_read_from_their_own_files() {
+        let root = std::env::temp_dir().join(format!("neko-assist-private-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let alerts = root.join("notifications.json");
+        let monitor = root.join("heartbeat.json");
+        let token = ["tk_", "alerts0123456789"].concat();
+        std::fs::write(
+            &alerts,
+            json!({"endpoint": "https://ntfy.sh/kept-topic-42", "token": token, "debounce_seconds": 180})
+                .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            &monitor,
+            json!({"endpoint": "https://hc-ping.com/abcdef-uuid"}).to_string(),
+        )
+        .unwrap();
+        // The settings as setup leaves them: no address in them.
+        let cfg =
+            json!({"notifications": {"endpoint": ""}, "heartbeat": {"interval_seconds": 300}});
+        let known = known_secrets_with(&cfg, &root, &[&alerts, &monitor]);
+        for want in [
+            "https://ntfy.sh/kept-topic-42",
+            token.as_str(),
+            "https://hc-ping.com/abcdef-uuid",
+        ] {
+            assert!(known.iter().any(|k| k == want), "{want}: {known:?}");
+        }
+        // Alerts and the monitor never set up: nothing, and no failure.
+        let none = known_secrets_with(&cfg, &root, &[&root.join("gone.json"), &root.join("x/y")]);
+        assert!(none.is_empty(), "{none:?}");
+        // The real ones are the files setup writes.
+        assert_eq!(
+            common::shared("private_settings", "notifications"),
+            "/etc/nekoserver-notifications/config.json"
+        );
+        assert_eq!(
+            common::shared("private_settings", "heartbeat"),
+            "/etc/nekoserver-heartbeat/config.json"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -2312,6 +2529,47 @@ mod tests {
         let (address, _) = fake_ollama(None);
         let why = collect(&address, &quick()).0.unwrap_err();
         assert!(why.contains("too long"), "{why}");
+    }
+
+    /// Seen asking the real service with a stand-in assistant that sent its answer a byte
+    /// at a time with no line's end: no read ever timed out, so its time limit was never
+    /// looked at and the answer held "one question at a time" until the stand-in stopped.
+    #[test]
+    fn an_answer_that_never_ends_its_line_is_stopped_in_time() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let _ = s.read(&mut [0u8; 65536]);
+            let _ = s.write_all(b"HTTP/1.0 200 OK\r\n\r\n");
+            // A byte every 50 ms for 10 s: faster than any read's time limit.
+            for _ in 0..200 {
+                if s.write_all(b"x").is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let limits = Limits {
+            first: Duration::from_secs(1),
+            next: Duration::from_secs(1),
+            total: Duration::from_secs(2),
+            abandon: Duration::from_secs(60),
+        };
+        let start = Instant::now();
+        let result = stream(&address, "m", 1, &json!([]), &limits, &|| true, &mut |_| {});
+        let took = start.elapsed();
+        assert!(result.unwrap_err().contains("too long"), "took {took:?}");
+        assert!(took < Duration::from_secs(4), "{took:?}");
+    }
+
+    /// Seen with a stand-in assistant that closed the connection at once: Neko said it
+    /// "took too long to start answering", though it had answered nothing in no time.
+    #[test]
+    fn an_assistant_that_hangs_up_at_once_is_not_called_slow() {
+        let (address, _) = fake_ollama(Some(String::new()));
+        let why = collect(&address, &LIMITS).0.unwrap_err();
+        assert!(why.contains("hung up without answering"), "{why}");
     }
 
     /// The asks share one slot: these tests take it in turn.

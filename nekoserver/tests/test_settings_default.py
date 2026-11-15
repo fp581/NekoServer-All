@@ -60,6 +60,27 @@ class DefaultSettingsTests(unittest.TestCase):
             self.assertIn('checked_settings', line, name)
             self.assertNotIn("with_name('config.json')", line, name)
 
+    def test_acceptance_says_what_is_wrong_with_the_settings(self):
+        """Seen on a fresh Ubuntu 24.04: a broken, a missing and an unknown profile all came
+        out as "Configuration or selected dependency profile is invalid"."""
+        import acceptance
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / 'bad.json'
+            bad.write_text('not json {')
+            err = io.StringIO()
+            with (
+                mock.patch.object(acceptance.os, 'geteuid', return_value=0),
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(err),
+            ):
+                self.assertEqual(acceptance.main(['--config', str(bad)]), 2)
+            self.assertIn('is not valid JSON (line 1, column 1)', err.getvalue())
+        report = acceptance.inspect(json.loads((ROOT / 'config.json').read_text()), 'no-such-profile')
+        detail = next(c['detail'] for c in report['automatic'] if c['id'] == 'configuration')
+        self.assertIn('no profile "no-such-profile"', detail)
+        self.assertIn('full', detail)
+
     def test_acceptance_in_the_release_folder_uses_my_config(self):
         import acceptance
 
@@ -79,7 +100,7 @@ class DefaultSettingsTests(unittest.TestCase):
             with (
                 mock.patch.object(acceptance, 'ROOT', folder),
                 mock.patch.object(acceptance.os, 'geteuid', return_value=0),
-                mock.patch.object(acceptance, 'load_json', side_effect=lambda p: seen.append(str(p)) or {}),
+                mock.patch.object(acceptance.installer, 'read_json', side_effect=lambda p: seen.append(str(p)) or {}),
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):

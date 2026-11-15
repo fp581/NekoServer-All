@@ -15,11 +15,14 @@ import sys
 
 import native_runtime
 import outside_request
-from neko_common import VERSION, atomic_json, safe_path, check_units, write_units
+from neko_common import SHARED, VERSION, atomic_json, safe_path, check_units, write_units, whole_number
 
 DEPENDENCIES = ['dashboard']
 DESCRIPTION = 'Background ntfy alerts, grouped retries and recovery notices (Rust)'
-PRIVATE_CONFIG = '/etc/nekoserver-notifications/config.json'
+PRIVATE_CONFIG = SHARED['private_settings']['notifications']
+# What the alert worker last managed (notify.rs writes it): "fail" while alerts don't get
+# through, which the dashboard shows as "Phone alerts are not being delivered".
+DELIVERY = '/run/nekoserver-notifications/delivery.json'
 
 
 def options(config):
@@ -32,10 +35,7 @@ def options(config):
         ('repeat_seconds', 43200, 3600, 604800),
         ('minimum_interval_seconds', 300, 60, 3600),
     ):
-        value = opts.get(key, default)
-        if type(value) is not int or not low <= value <= high:
-            raise RuntimeError('Invalid notification timing')
-        result[key] = value
+        result[key] = whole_number(opts, 'notifications', key, default, low, high)
     return result
 
 
@@ -306,19 +306,28 @@ TEST_SAID = {
     'untrusted': "The alert server's security certificate could not be checked, so nothing was sent.",
     'not_sent': 'No test was sent: the address is not one NekoServer can send to.',
 }
+# Said when the person did not see the test arrive. The alert server takes a message for a
+# topic name with a typo in it just the same, and the address is hidden while it is typed,
+# so the next run asks for it again (run: outside_request.not_seen).
+NOT_ARRIVED = (
+    'The test message did not arrive on your phone, so alerts may be going to another address than the one '
+    'your phone follows (a typo in the address can\'t be seen, as it is hidden while you type). Check the '
+    'address in the ntfy app on your phone, and that the phone lets ntfy show notifications. Then run setup '
+    'again: it asks for the address again and sends a new test.'
+)
 OPEN_TOPIC = (
     'Anyone who knows this address can read your alerts without signing in. A long random name makes it hard to '
     'guess; it is not a lock.'
 )
 
 
-def test_alert(context, address, token, prompt=None):
+def test_alert(context, address, token, prompt=None, result=None):
     """One test message sent to the topic just saved, and what came of it: the server's
     answer (machine-checked), who may read the topic, and whether it arrived on the
     phone (the person's own word, kept apart). None when the server took it; a
     needs_setup result with the reason when it did not, so alerts are never shown as
-    working on the strength of a saved address."""
-    result = send_test(address, token)
+    working on the strength of a saved address. `result`: a test already sent."""
+    result = result or send_test(address, token)
     said = TEST_SAID.get(result['server'], TEST_SAID['not_sent'])
     context.log('Phone alerts test: ' + said)
     outside_request.mark_tested(safe_path(PRIVATE_CONFIG), result['server'])
@@ -331,12 +340,11 @@ def test_alert(context, address, token, prompt=None):
         context.log('Phone alerts: ' + OPEN_TOPIC)
     if guided_setup.interactive(context):
         seen = questions.yes_no('alert_arrived', prompt, said=said)
-        context.log(
-            'Phone alerts test: you saw it arrive on your phone'
-            if outside_request.observed(seen) == 'observed'
-            else 'Phone alerts test: not seen on a phone yet. Check that the ntfy app follows the same address, '
-            'and that the phone lets it show notifications'
-        )
+        outside_request.mark_seen(safe_path(PRIVATE_CONFIG), seen)
+        if outside_request.observed(seen) != outside_request.OBSERVED:
+            context.log('Phone alerts test: ' + NOT_ARRIVED)
+            return {'status': 'needs_setup', 'reason': NOT_ARRIVED}
+        context.log('Phone alerts test: you saw it arrive on your phone')
     return None
 
 
@@ -393,8 +401,13 @@ def run(context):
     address, token = chosen
     if not address:
         return typed_in(context)
-    if outside_request.wrong_address(private) and guided_setup.interactive(context):
-        return asked_again(context)
+    if guided_setup.interactive(context):
+        if outside_request.wrong_address(private):
+            return asked_again(context, 'the saved address was not found at the alert server')
+        if outside_request.not_seen(private):
+            return asked_again(context, 'the last test did not arrive on your phone')
+        if delivery_failing():
+            return not_delivered(context, address, token)
     return install(context, address, token) or tested_again(context, private, address, token)
 
 
@@ -422,9 +435,36 @@ def tested_again(context, private, address, token):
     return None
 
 
-def asked_again(context):
-    """The alert server had no topic at the saved address: the form again, then a test."""
-    context.log('Phone alerts: the saved address was not found at the alert server, so it is asked again.')
+def delivery_failing(path=None):
+    """The alert worker's last tries did not get through (its record says "fail")."""
+    try:
+        saved = json.loads(Path(path or DELIVERY).read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(saved, dict) and saved.get('format') == 'neko-delivery-v1' and saved.get('status') == 'fail'
+
+
+# The alert server's answers that mean the saved address or token is no longer right.
+REFUSED = ('wrong_token', 'not_allowed', 'wrong_address', 'redirected', 'not_sent')
+
+
+def not_delivered(context, address, token):
+    """Alerts stopped reaching the phone (deep check 250: the dashboard said "setup can
+    change them", and setup kept the address and token without a word). A test now: when
+    the alert server refuses the saved address or token, both are asked again; otherwise
+    the test is the usual one, with "did it arrive?"."""
+    result = send_test(address, token)
+    said = TEST_SAID.get(result['server'], TEST_SAID['not_sent'])
+    context.log('Phone alerts: the last alerts could not be delivered. A test now: ' + said)
+    if result['server'] in REFUSED:
+        return asked_again(context, 'the alert server refused the saved address or access token')
+    return install(context, address, token) or test_alert(context, address, token, result=result)
+
+
+def asked_again(context, why):
+    """The alert server had no topic at the saved address, or the person did not see the
+    test arrive: the form again, then a test."""
+    context.log(f'Phone alerts: {why}, so the address is asked again.')
     address, token = alerts_form(context)
     if not address:
         return set_up_later()

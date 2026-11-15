@@ -203,8 +203,7 @@ impl Allowance {
 fn wait_words(wait: Duration) -> String {
     let minutes = wait.as_secs().div_ceil(60).max(1);
     match minutes {
-        1 => "1 minute".to_string(),
-        m if m < 120 => format!("{m} minutes"),
+        m if m < 120 => common::plural(m, "minute", "minutes"),
         m => format!("about {} hours", m.div_ceil(60)),
     }
 }
@@ -1122,11 +1121,33 @@ fn start_upgrade(config: &Path, tag: &str) -> Value {
     if let Some(job) = apps::unfinished_job(&apps::journals()) {
         return refuse("E47", &format!("{job} is still waiting to be finished; NekoServer finishes it on its own. Try again after that."));
     }
+    if let Some(drive) = upgrade_drive_missing(&cfg, Path::new("/dev/disk/by-uuid")) {
+        return refuse("E47", &format!("The {drive} is not connected, so NekoServer can't be upgraded now: the upgrade needs every drive. Nothing was changed. Connect it, then press Upgrade again."));
+    }
     let unit = format!("nekoserver-upgrade@{tag}.service");
     match common::probe(&["systemctl", "start", "--no-block", &unit], 30) {
         (0, _) => json!({"ok": true, "message": format!("Upgrading NekoServer to {tag}. It goes on if you close this page; the Updates page shows how far it is.")}),
         _ => refuse("E47", "The upgrade could not be started. Is an update or a backup running? Backups shows which one."),
     }
+}
+/// The drive the upgrade needs that is not connected, as the page names it, if any. The
+/// upgrade's service needs the SSD and the HDD mounted (RequiresMountsFor), and so does
+/// the setup it runs: with one unplugged, systemd never started the service, and the
+/// page said "Upgrading" and then nothing (deep check 352). A folder a NAS shares, or a
+/// folder of the system disk, has no disk to look for.
+fn upgrade_drive_missing(cfg: &Value, by_uuid: &Path) -> Option<&'static str> {
+    [("data_ssd", "application SSD"), ("media_hdd", "media HDD")]
+        .into_iter()
+        .find(|(key, _)| {
+            let record = &cfg["storage"][*key];
+            let uuid = record["uuid"].as_str().unwrap_or("");
+            let own_disk = record["folder"].is_null()
+                && !uuid.is_empty()
+                && !uuid.contains('/')
+                && !common::is_nfs_identity(uuid);
+            own_disk && !by_uuid.join(uuid).exists()
+        })
+        .map(|(_, name)| name)
 }
 /// "Update now" for one app, to the version `sig` shown on the page
 /// (nekoserver-update-now@<app>:<sig>: the same snapshot, update, checks and undo as on
@@ -1157,13 +1178,19 @@ fn start_update_job(config: &Path, op: &str, app: &str, sig: &str) -> Value {
     if let Some(job) = apps::unfinished_job(&apps::journals()) {
         return refuse("E47", &format!("{job} is still waiting to be finished; NekoServer finishes it on its own. Try again after that."));
     }
-    match common::probe(&["systemctl", "start", "--no-block", &unit], 30) {
-        (0, _) => json!({"ok": true, "message": if op == "app_update_check" {
-            "Looking for new versions now. The Updates page shows what it finds.".to_string()
-        } else {
-            format!("{app}: updating now, with a snapshot first. It goes on if you close this page; the Updates page shows how far it is.")
-        }}),
-        _ => refuse("E47", "The update could not be started. Is another update or backup running? Backups shows which one."),
+    let started = common::probe(&["systemctl", "start", "--no-block", &unit], 30).0 == 0;
+    update_job_answer(op, app, started)
+}
+/// What "Update now" and "Check for updates" answer: the app by its name ("Jellyfin",
+/// not "jellyfin"), and a check that could not start called a check, not an update
+/// (deep check 309).
+fn update_job_answer(op: &str, app: &str, started: bool) -> Value {
+    let check = op == "app_update_check";
+    match (check, started) {
+        (true, true) => json!({"ok": true, "message": "Looking for new versions now. The Updates page shows what it finds."}),
+        (false, true) => json!({"ok": true, "message": format!("{}: updating now, with a snapshot first. It goes on if you close this page; the Updates page shows how far it is.", apps::app_name(app))}),
+        (true, false) => refuse("E47", "The check for updates could not be started. Is an update or a backup running? Backups shows which one."),
+        (false, false) => refuse("E47", &format!("The update of {} could not be started. Is another update or backup running? Backups shows which one.", apps::app_name(app))),
     }
 }
 /// The temperatures detection watches: every sensor that can be read when it starts.
@@ -1634,6 +1661,49 @@ pub fn run(a: &Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn update_answers_name_the_app_and_say_what_did_not_start() {
+        // Deep check 309: "jellyfin: updating now", and a check that could not start
+        // said "The update could not be started".
+        let said = |op: &str, started: bool| {
+            update_job_answer(op, "jellyfin", started)["message"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert!(said("app_update_run", true).starts_with("Jellyfin: updating now"));
+        assert!(said("app_update_run", false)
+            .starts_with("The update of Jellyfin could not be started"));
+        assert!(said("app_update_check", false)
+            .starts_with("The check for updates could not be started"));
+        assert!(said("app_update_check", true).starts_with("Looking for new versions now"));
+    }
+
+    #[test]
+    fn an_upgrade_is_refused_while_a_drive_is_unplugged() {
+        // Deep check 352: the page said "Upgrading" and the service never started.
+        let by_uuid =
+            std::env::temp_dir().join(format!("neko-upgrade-drives-{}", std::process::id()));
+        fs::create_dir_all(&by_uuid).unwrap();
+        fs::write(by_uuid.join("ssd-1"), "").unwrap();
+        let cfg =
+            json!({"storage": {"data_ssd": {"uuid": "ssd-1"}, "media_hdd": {"uuid": "hdd-1"}}});
+        assert_eq!(upgrade_drive_missing(&cfg, &by_uuid), Some("media HDD"));
+        fs::write(by_uuid.join("hdd-1"), "").unwrap();
+        assert_eq!(upgrade_drive_missing(&cfg, &by_uuid), None);
+        // A folder a NAS shares, or one of the system disk, has no disk to look for.
+        let shared = json!({"storage": {"data_ssd": {"uuid": "ssd-1"},
+            "media_hdd": {"uuid": "nfs-0123456789abcdef", "network": {"transport": "nfs"}}}});
+        assert_eq!(upgrade_drive_missing(&shared, &by_uuid), None);
+        let folder = json!({"storage": {"data_ssd": {"uuid": "gone", "folder": "/var/lib/nekoserver/apps"},
+            "media_hdd": {"uuid": "hdd-1"}}});
+        assert_eq!(upgrade_drive_missing(&folder, &by_uuid), None);
+        fs::remove_dir_all(&by_uuid).unwrap();
+        // Asked before the service is started.
+        let source = include_str!("control.rs");
+        let start = &source[source.find("fn start_upgrade(").unwrap()..];
+        assert!(start.find("upgrade_drive_missing(").unwrap() < start.find("systemctl").unwrap());
+    }
 
     fn service(board: &fans::tests::Board, pin: Option<&str>, port: u16) -> Arc<Service> {
         let config = board.0.join("config");

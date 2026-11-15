@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 import setup_progress
 
@@ -30,10 +31,13 @@ from neko_common import (
     safe_path,
     ensure_directory,
     settings_path,
+    read_settings,
     pending_maintenance,
     default_settings,
     NO_SETTINGS,
     BUNDLE_MANIFEST,
+    MEDIA_APPS,
+    readable_output,
 )
 
 # The installer's own log lines (a step's status), as against a step's own words.
@@ -108,13 +112,13 @@ def merged(before, after, now):
 
 
 def read_json(path):
-    """A settings or state file (.json): absolute, no '..', no symlinks along the way."""
+    """A settings or state file (.json): absolute, no '..', no symlinks along the way.
+    Named, with what is wrong: Python's own words ("Expecting value: line 1 column 1",
+    "[Errno 2] No such file or directory") were all setup said before."""
     try:
-        checked = settings_path(path)
+        return read_settings(path)
     except RuntimeError as exc:
         raise InstallerError(str(exc)) from None
-    with checked.open(encoding='utf-8') as f:
-        return json.load(f)
 
 
 def load_modules(directory):
@@ -158,6 +162,28 @@ def ordered(modules, selected):
     return result
 
 
+# Errors of setup's own code: their text alone ("'data_ssd'" from a KeyError) tells a
+# person nothing, so the reason says what happened and what to do (deep check 291).
+CODE_ERRORS = (LookupError, TypeError, AttributeError, NameError, AssertionError, ArithmeticError, RecursionError)
+
+
+def code_error_reason(exc, log_path=None):
+    """Plain words for a slip in setup's own code, with the raw detail (and where it
+    happened) kept in brackets for a bug report."""
+    detail = type(exc).__name__ + (f' {exc}' if str(exc) else '')
+    frames = traceback.extract_tb(exc.__traceback__) if exc.__traceback__ else []
+    if frames:
+        where = Path(frames[-1].filename)
+        here = Path(__file__).resolve().parent
+        shown = where.relative_to(here) if where.is_relative_to(here) else where.name
+        detail += f' in {shown}, line {frames[-1].lineno}'
+    log = f'the setup log ({log_path})' if log_path else 'the setup log'
+    return (
+        f'Setup stopped on an unexpected problem in its own code ({detail}). Run setup again: '
+        f'it starts this step over. If it stops here again, send {log} with a bug report.'
+    )
+
+
 def failure_reason(exc):
     """What a failed step says. An error with no words of its own (Ctrl+D at a
     question, say) still gets a reason."""
@@ -188,9 +214,24 @@ def stopped_by_hand(states, name, state_path, log):
     log(f'STOPPED {name}: Ctrl+C')
 
 
+# Every setup run adds to its log (each upgrade and "Run setup again" too), so it grew for
+# good. Past this size it becomes <log>.1 (replacing the one before): the last runs stay.
+LOG_LIMIT = 2 * 1024 * 1024
+
+
+def roll_log(log_path, limit=LOG_LIMIT):
+    """Start a new log when `log_path` has grown past `limit`; the old one is kept as .1."""
+    try:
+        if log_path.stat().st_size > limit:
+            os.replace(log_path, safe_path(log_path.with_name(log_path.name + '.1')))
+    except FileNotFoundError:
+        pass
+
+
 def move_log(old_log, log_path):
     """The log kept before the SSD was mounted goes on to the SSD's log: moved, not
     copied, or a later run would copy the same lines again."""
+    roll_log(log_path)
     if old_log != log_path and old_log.exists():
         with safe_path(log_path).open('a') as stream:
             os.fchmod(stream.fileno(), 0o600)
@@ -216,7 +257,7 @@ def require_settings(config):
     """The settings every installation needs are there, or which one is missing and how
     to get it back."""
     if not isinstance(config, dict):
-        raise InstallerError('Configuration must be an object')
+        raise InstallerError('The settings file holds no settings (it must be one JSON object, {...})')
     missing = next((key for key in REQUIRED if not isinstance(config.get(key), str) or not config[key]), None)
     if missing:
         raise InstallerError(
@@ -367,15 +408,30 @@ def validate_config(config):
     managed = media / 'photos' / 'immich-library'
     if archive == managed or archive in managed.parents or managed in archive.parents:
         raise InstallerError('Photo archive must be separate from the Immich upload tree')
-    selected = config.get('media', {}).get('services', [])
-    allowed = {'jellyfin', 'navidrome', 'sonarr', 'radarr', 'lidarr', 'prowlarr', 'seerr', 'qbittorrent'}
-    if (
-        not isinstance(selected, list)
-        or not selected
-        or len(selected) != len(set(selected))
-        or not set(selected) <= allowed
-    ):
-        raise InstallerError('media.services must contain unique known services')
+    problem = services_problem(config.get('media', {}).get('services'))
+    if problem:
+        raise InstallerError(
+            f'"services" under "media" in the settings file {problem}. It lists the media apps by name: '
+            + ', '.join(MEDIA_APPS)
+            + '. Fix that line, or copy it from config.json in this folder'
+        )
+
+
+def services_problem(selected):
+    """What is wrong with the media apps a settings file lists (`media.services`), in
+    words, or None. Named, so that a name mistyped by hand is found (plan 96: setup only
+    said "must contain unique known services")."""
+    if selected is None:
+        return 'is missing'
+    if not isinstance(selected, list) or not selected:
+        return 'must be a list of at least one app, like ["jellyfin"]'
+    unknown = [name for name in selected if name not in MEDIA_APPS]
+    if unknown:
+        return 'names an app NekoServer does not have: ' + ', '.join(str(name) for name in unknown)
+    twice = sorted({name for name in selected if selected.count(name) > 1})
+    if twice:
+        return 'names an app twice: ' + ', '.join(twice)
+    return None
 
 
 def template_steps(config):
@@ -478,6 +534,12 @@ def _execute(args, root=ROOT):
     from config_checks import validate
 
     validate(config, plan)
+    from config_checks import unknown_settings
+
+    mistyped = unknown_settings(config, template_settings(ROOT), Path(args.config).name)
+    if args.check or args.dry_run:
+        for line in mistyped:
+            print(line)
     if args.apply and set(plan) & {
         'docker',
         'server_os',
@@ -516,6 +578,7 @@ def _execute(args, root=ROOT):
     if not args.apply:
         state_path = safe_path(state_dir / 'inspection-state.json')
     log_path = safe_path(state_dir / ('install.log' if args.apply else 'inspection.log'))
+    roll_log(log_path)
     states = dict(previous) if args.apply else {}
     complete_status = 'success' if args.apply else 'inspected'
     failures = []  # the steps not done: failed, waiting for you, or held up by one of those
@@ -534,6 +597,8 @@ def _execute(args, root=ROOT):
 
     if args.apply and not (args.module or args.retry_failed or getattr(args, 'retry_step', None)):
         record_profile(safe_path(state_dir / PROFILE_FILE), args.profile, plan, previous, log)
+    for line in mistyped:
+        log(line)
     ctx = Context(config, log, apply=args.apply, config_path=args.config, saved=as_read)
     ctx.plan = plan  # the steps of this run (the drives step asks the backup times only when one writes a timer)
     ctx.only = args.module  # the one step asked for by name (install.sh --module), or None
@@ -569,7 +634,7 @@ def _execute(args, root=ROOT):
                 stopped_by_hand(states, name, state_path, log)
                 raise
             except Exception as exc:
-                reason = failure_reason(exc)
+                reason = code_error_reason(exc, log_path) if isinstance(exc, CODE_ERRORS) else failure_reason(exc)
                 states[name] = {'status': 'failed', 'reason': reason}
                 log(f'FAILED {name}: {reason}')
                 # Avoid tracebacks from providers that may contain sensitive arguments.
@@ -902,6 +967,7 @@ def finish_update():
 
 
 def main(argv=None):
+    readable_output()
     # Named as people run it (install.sh hands its options on), not as this file.
     parser = argparse.ArgumentParser(
         prog='sudo bash install.sh',

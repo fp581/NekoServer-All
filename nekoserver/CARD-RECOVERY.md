@@ -71,6 +71,9 @@ python3 NekoBackup/tools/neko-restore.py restore ~/restored
 python3 NekoBackup/tools/neko-restore.py restore ~/restored --search 2021/beach
 ```
 
+Restore onto another drive or folder, never onto the card: the tool refuses a folder
+on the card itself, since the card is your backup.
+
 Each file goes back into its own folders below `~/restored`, with its modification time.
 Before a file gets its name it is checked twice: the card's bytes while they are copied,
 and the restored file read back afterwards. A file that does not match is **not** restored
@@ -139,6 +142,9 @@ python3 neko_restore.py --card /mnt/card info
 
 - Exit status: 0 everything was fine; 1 something was damaged, missing, skipped or not
   restored (the lines above say what); 2 the card or the command could not be used.
+- A card unplugged in the middle (or a reader that fails) stops the tool with "The card
+  stopped answering". The files restored until then are complete: plug the card in again
+  and run the same line.
 - The checksums find accidental damage. They cannot prove that nobody changed a card on
   purpose.
 - Old cards of an earlier NekoServer stay readable with this tool: the format of the cards

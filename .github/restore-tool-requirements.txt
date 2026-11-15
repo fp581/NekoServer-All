@@ -1,0 +1,4 @@
+# For the restore tool's job only (pip --require-hashes): uv fetches the oldest Python
+# neko_restore.py promises to run on (3.8), which the runners no longer offer.
+uv==0.11.32 \
+    --hash=sha256:3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4

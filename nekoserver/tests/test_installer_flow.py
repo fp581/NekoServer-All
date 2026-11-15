@@ -2,6 +2,7 @@
 the log kept from before the SSD was mounted; the boot-time drive lines."""
 
 import argparse
+import copy
 import json
 import sys
 import tempfile
@@ -149,6 +150,22 @@ class InstallerFlowTests(unittest.TestCase):
             self.assertEqual(installer.main(['--recover', '--config', str(self.config)]), 130)
         self.assertIn('sudo bash install.sh --recover', printed[-1])
 
+    def test_a_slip_in_setups_own_code_says_what_to_do(self):
+        """Deep check 291: a KeyError recorded only "'data_ssd'", shown as is on the
+        finishing screen and the dashboard."""
+        (self.root / 'modules' / 'slip.py').write_text("DEPENDENCIES = []\ndef run(ctx):\n    return {}['data_ssd']\n")
+        with (
+            mock.patch('config_checks.validate'),
+            mock.patch('builtins.print'),
+            mock.patch.object(installer, 'retry_now', return_value=False),
+        ):
+            installer._execute(self.args(module='slip'), self.root)
+        reason = json.loads((self.state / 'state.json').read_text())['slip']['reason']
+        self.assertIn('unexpected problem', reason)
+        self.assertIn("KeyError 'data_ssd' in slip.py, line 3", reason)  # kept for a bug report
+        self.assertIn('Run setup again', reason)
+        self.assertIn(str(self.state / 'install.log'), reason)
+
     def test_the_exit_code_tells_a_failed_step_from_one_that_waits_for_you(self):
         """The upgrade reads it (upgrade.setup_problem): until 0.48.1 both ended with 1, so
         a step that failed passed for one that only waits for you."""
@@ -184,6 +201,23 @@ class InstallerFlowTests(unittest.TestCase):
         with self.assertRaisesRegex(installer.InstallerError, '"media_mount" .where the media HDD is mounted.'):
             installer.validate_config(config)
 
+    def test_a_media_app_mistyped_by_hand_is_named(self):
+        # Plan 96: only "media.services must contain unique known services" was said.
+        config = json.loads(self.config.read_text())
+        for services, said in (
+            (['jellyfin', 'jelyfin'], 'names an app NekoServer does not have: jelyfin'),
+            (['sonarr', 'sonarr'], 'names an app twice: sonarr'),
+            (None, '"services" under "media" in the settings file is missing'),
+            ([], 'must be a list of at least one app'),
+        ):
+            config['media']['services'] = services
+            if services is None:
+                del config['media']['services']
+            with self.assertRaises(installer.InstallerError) as caught:
+                installer.validate_config(copy.deepcopy(config))
+            self.assertIn(said, str(caught.exception))
+            self.assertIn('jellyfin, seerr, navidrome', str(caught.exception))
+
     def test_the_first_log_moves_to_the_ssd_once(self):
         STEP_OK = 'DEPENDENCIES = []\ndef run(ctx):\n    ctx.log("hello from the step")\n'
         (self.root / 'modules' / 'storage.py').write_text(STEP_OK)
@@ -200,6 +234,23 @@ class InstallerFlowTests(unittest.TestCase):
         log = (data / 'installer/state/install.log').read_text()
         self.assertEqual(log.count('START storage'), 2, log)
         self.assertFalse((default / 'install.log').exists())
+
+    def test_the_setup_log_starts_anew_past_its_size_and_keeps_the_one_before(self):
+        """Deep check 212: install.log took every run's lines for good (each upgrade and
+        "Run setup again" adds a run), with no size limit."""
+        STEP_OK = 'DEPENDENCIES = []\ndef run(ctx):\n    ctx.log("hello from the step")\n'
+        (self.root / 'modules' / 'storage.py').write_text(STEP_OK)
+        self.state.mkdir(mode=0o700)
+        log = self.state / 'install.log'
+        log.write_text('[old run] line\n' * 200_000)  # 3 MB: years of runs
+        with mock.patch('config_checks.validate'), mock.patch('builtins.print'):
+            installer._execute(self.args(module='storage'), self.root)
+            self.assertLess(log.stat().st_size, 10_000)
+            self.assertIn('START storage', log.read_text())
+            self.assertTrue((self.state / 'install.log.1').read_text().startswith('[old run] line'))
+            # A small log is added to, as before.
+            installer._execute(self.args(module='storage'), self.root)
+        self.assertEqual(log.read_text().count('START storage'), 2)
 
     def test_backup_counts_at_an_earlier_default_are_never_lowered_without_asking(self):
         # v0.30.0 keeps 7 nightly backups and 4 weekly database copies (3 monthly, as
@@ -277,6 +328,26 @@ class InstallerFlowTests(unittest.TestCase):
 
 SPECS = [('data_ssd', 'aaa', 'ext4', '/srv/nekoserver', None), ('media_hdd', 'bbb', 'ext4', '/srv/media', None)]
 OLD = 'UUID=aaa /srv/nekoserver ext4 defaults,nofail,x-systemd.device-timeout=15s 0 2\n'
+
+
+class SettingsFileTests(unittest.TestCase):
+    """Seen on a fresh Ubuntu 24.04: `install.sh --check --config <file>` said only
+    "ERROR: Expecting value: line 1 column 1 (char 0)" for a file that was not JSON, and
+    "[Errno 2] No such file or directory" for one that was not there."""
+
+    def test_an_unreadable_settings_file_is_named_with_what_is_wrong(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad, missing = Path(tmp) / 'bad.json', Path(tmp) / 'missing.json'
+            bad.write_text('not json {')
+            for path, said in ((bad, 'is not valid JSON (line 1, column 1)'), (missing, 'is not there')):
+                with self.assertRaises(installer.InstallerError) as caught:
+                    installer.read_json(path)
+                self.assertIn(str(path.resolve()), str(caught.exception))
+                self.assertIn(said, str(caught.exception))
+                self.assertIn('--config', str(caught.exception))
+            with self.assertRaises(installer.InstallerError) as caught:
+                installer.require_settings([1, 2])
+            self.assertIn('holds no settings', str(caught.exception))
 
 
 class FstabTests(unittest.TestCase):

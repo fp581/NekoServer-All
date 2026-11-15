@@ -87,7 +87,8 @@ class LostGroupDriveTests(unittest.TestCase):
 
     def test_once_approved_nothing_in_the_settings_names_the_lost_drive(self):
         storage.give_up_placed(self.config, 'd3')
-        self.assertNotIn('d3', json.dumps(self.config))
+        # Quoted: the name as a key or value, never "d3" inside a temporary folder's name.
+        self.assertNotIn('"d3"', json.dumps(self.config))
         self.assertNotIn('d3', self.config['storage'])
         self.assertEqual((self.config['locations'], self.config['install']), ({}, {}))
         self.assertEqual(placement.table(self.config)['music'], {'install': 'ssd', 'data': 'ssd'})

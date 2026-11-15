@@ -13,6 +13,7 @@ import string
 import setup_progress
 import questions
 from neko_common import (
+    nextcloud_enabled,
     APPS as CATALOG,
     atomic_json,
     atomic_write,
@@ -40,6 +41,9 @@ EMAIL_LOGINS = {'immich', 'seerr'}
 STATES = {'planned', 'started', 'verified', 'needs_setup'}
 # Secrets of the server itself, chosen on the accounts page with the app logins (0.50.0):
 # made for you, or typed, and shown again with "Show login". {key: what it is}.
+# smbpasswd -s reads each line into 255 bytes: a longer password is cut, the two halves
+# differ, and it says only "Mismatch - password unchanged" (tried with Samba 4.19).
+SAMBA_LONGEST = 254
 OTHERS = {'dashboard_pin': 'Dashboard PIN', 'shared_folders': 'Shared folders password'}
 # The accounts page asked before the one approval (ask_ahead), for the steps of the same
 # run: {'mode', 'apps': {app: entry}, 'others': {key: value}}. Written to the store once
@@ -150,6 +154,8 @@ def validate_other(key, value):
         return
     if not isinstance(value, str) or not 12 <= len(value) <= 128 or control(value):
         raise ValueError('Password must contain 12-128 characters and no control characters')
+    if key == 'shared_folders' and len(value.encode()) > SAMBA_LONGEST:
+        raise ValueError('That password is too long for Samba: use fewer letters with accents or emoji')
 
 
 def other(config, key):
@@ -309,7 +315,7 @@ def selected(config, plan):
             result.insert(result.index('navidrome') + 1, 'navidrome_listener')
     if 'photos' in plan and immich_wanted(config):
         result.append('immich')
-    if 'nextcloud' in plan and config.get('nextcloud', {}).get('enabled', True):
+    if 'nextcloud' in plan and nextcloud_enabled(config):
         result.append('nextcloud')
     return [app for app in APPS if app in result]
 

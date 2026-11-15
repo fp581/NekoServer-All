@@ -51,7 +51,12 @@ retrying() {
     attempt=$((attempt + 1))
   done
   if ((code == 0)) && grep -qE "$stale_pattern" "$output"; then
-    echo 'Some package sources could not be reached (the lines above say which); going on with their lists from before.'
+    # apt says "Hit:" or "Get:" for each source that answered: with none, none did.
+    if grep -qE '^(Hit|Get):' "$output"; then
+      echo 'Some package sources could not be reached (the lines above say which); going on with their lists from before.'
+    else
+      echo 'None of the package sources could be reached (the lines above say why); going on with the lists from before, which may be out of date. If installing fails next, check that this PC is online, then run setup again.'
+    fi
   fi
   if grep -qiE "$clock_pattern" "$output"; then
     echo "This PC's clock looks wrong (check the date and time with  timedatectl): let the network set it (sudo timedatectl set-ntp true), wait a minute, then run  sudo bash install.sh  again." >&2
@@ -115,6 +120,7 @@ readonly_mode=false
 recover=false
 finish=false
 full=false
+help=false
 previous=''
 for arg in "$@"; do
   case "$arg" in
@@ -131,7 +137,11 @@ for arg in "$@"; do
       apply=true
       finish=true
       ;;
-    --check | --dry-run | --help | -h) readonly_mode=true ;;
+    --check | --dry-run) readonly_mode=true ;;
+    --help | -h)
+      readonly_mode=true
+      help=true
+      ;;
   esac
   [[ "$previous" == --profile && "$arg" == full ]] && full=true
   [[ "$arg" == --profile=full ]] && full=true
@@ -141,15 +151,40 @@ if "$apply" && "$readonly_mode"; then
   echo 'Use --apply separately from --check, --dry-run, or --help.' >&2
   exit 2
 fi
+# The processor first, for --check too: it said "Configuration ... valid" on an ARM
+# board that setup itself then refused (deep check 297).
+machine=$(uname -m)
+if ! "$help" && [[ "$machine" != x86_64 ]]; then
+  # What kind of computer that is, in words (i686 is an older 32-bit PC, not an ARM board).
+  case "$machine" in
+    arm* | aarch64) kind=' (a Raspberry Pi or another ARM board, say)' ;;
+    i?86) kind=', a 32-bit PC' ;;
+    *) kind='' ;;
+  esac
+  echo "NekoServer runs on 64-bit Intel or AMD PCs (x86_64); this one is $machine$kind." >&2
+  exit 1
+fi
 
 if "$apply"; then
+  # doas (used instead of sudo on some PCs) names the account that started it in
+  # DOAS_USER; setup reads SUDO_USER to know whose account the server is for.
+  if [[ -n "${DOAS_USER:-}" && -z "${SUDO_USER:-}" ]]; then
+    export SUDO_USER="$DOAS_USER"
+  fi
   if ((EUID != 0)); then
     if command -v sudo >/dev/null; then
       echo 'Run it with sudo:  sudo bash install.sh' >&2
+    elif command -v doas >/dev/null; then
+      echo 'Run it with doas:  doas bash install.sh' >&2
     else
       # Debian set up with a root password has no sudo at first.
       echo 'Setup needs administrator rights, and this PC has no sudo yet. Become root with  su -  (it asks for the root password), then either:' >&2
-      echo "  install sudo:  apt install sudo  and  usermod -aG sudo $(id -un)  then log out, log in again and run  sudo bash install.sh  here, or" >&2
+      if command -v apt-get >/dev/null; then
+        echo "  install sudo:  apt install sudo  and  usermod -aG sudo $(id -un)  then log out, log in again and run  sudo bash install.sh  here, or" >&2
+      else
+        # (apt is Debian's: Arch, say, installs sudo with pacman and lets the wheel group use it.)
+        echo "  install sudo with your Linux's package manager and let your account use it, then log out, log in again and run  sudo bash install.sh  here, or" >&2
+      fi
       echo "  run it as root with your account named:  cd $ROOT && SUDO_USER=$(id -un) bash install.sh" >&2
     fi
     exit 1
@@ -180,6 +215,16 @@ if "$apply"; then
   fi
   . /etc/os-release
   distro=" ${ID:-} ${ID_LIKE:-} "
+  # Image-based systems (Fedora Silverblue and Kinoite, SteamOS) name their family but
+  # keep the system files read-only: the package manager would fail halfway through.
+  # Checked before the family: one may come without its package manager (no dnf, say).
+  usr_options=$(findmnt -n -o OPTIONS --target /usr 2>/dev/null || true)
+  if [[ -e /run/ostree-booted || ",$usr_options," == *,ro,* ]]; then
+    echo "${PRETTY_NAME:-This system} keeps its system files read-only (an image-based system), so" >&2
+    echo 'NekoServer cannot install the packages it needs. Install it on Arch Linux, Debian, Ubuntu,' >&2
+    echo 'Fedora Workstation or Server, or openSUSE Leap or Tumbleweed instead.' >&2
+    exit 1
+  fi
   if [[ "$distro" == *' arch '* || "$distro" == *' nyarch '* ]] && command -v pacman >/dev/null; then
     family=arch
     clean_hint='sudo pacman -Sc'
@@ -250,22 +295,9 @@ if "$apply"; then
     echo 'Automatic setup supports Arch Linux / Nyarch (with pacman), Debian / Ubuntu (with apt), Fedora and RHEL / Rocky / AlmaLinux (with dnf), and openSUSE (with zypper).' >&2
     exit 1
   fi
-  if [[ "$(uname -m)" != x86_64 ]]; then
-    echo "NekoServer runs on 64-bit Intel or AMD PCs (x86_64); this one is $(uname -m) (a Raspberry Pi or another ARM board, say)." >&2
-    exit 1
-  fi
   if ! command -v systemctl >/dev/null; then
     echo 'NekoServer needs a Linux that starts with systemd, and this one does not (no systemctl).' >&2
     echo 'Under WSL, turn systemd on in /etc/wsl.conf ([boot] systemd=true), restart WSL, then run  sudo bash install.sh  again.' >&2
-    exit 1
-  fi
-  # Image-based systems (Fedora Silverblue and Kinoite, SteamOS) name their family but
-  # keep the system files read-only: the package manager would fail halfway through.
-  usr_options=$(findmnt -n -o OPTIONS --target /usr 2>/dev/null || true)
-  if [[ -e /run/ostree-booted || ",$usr_options," == *,ro,* ]]; then
-    echo "${PRETTY_NAME:-This system} keeps its system files read-only (an image-based system), so" >&2
-    echo 'NekoServer cannot install the packages it needs. Install it on Arch Linux, Debian, Ubuntu,' >&2
-    echo 'Fedora Workstation or Server, or openSUSE Leap or Tumbleweed instead.' >&2
     exit 1
   fi
   if [[ "$family" == debian && -e /run/reboot-required ]]; then
@@ -300,6 +332,20 @@ if "$apply"; then
   # setup started by hand meanwhile could start apps on a drive half switched.
   if [[ -e /etc/nekoserver-backups/migrate.json && -z "${NEKOSERVER_KEEP_SYSTEM:-}" ]]; then
     echo "A drive move is not finished (/etc/nekoserver-backups/migrate.json). Finish it with  sudo python3 migrate.py resume  (it runs setup itself)." >&2
+    exit 1
+  fi
+  # The same for a NekoServer upgrade at work (runtime/src/shared.json recovery.upgrade
+  # and operation_lock): it runs setup itself, with NEKOSERVER_KEEP_SYSTEM, and holds the
+  # operation lock from start to end (so does the service that puts a cut-off one right
+  # at boot). A setup started by hand meanwhile would take the setup lock from the
+  # upgrade's own run, so it could neither set up the new release nor put the old one back.
+  # A record with nothing at work is one the upgrade left to you (its way back did not
+  # pass: it says to run setup), or whose resume could not start (a drive missing): setup
+  # by hand is the way on, and closes the record once the server passes its check
+  # (upgrade.settle_after_setup). It stopped here too, so that advice led nowhere.
+  if ! "$recover" && [[ -e /etc/nekoserver-backups/upgrade.json && -z "${NEKOSERVER_KEEP_SYSTEM:-}" ]] &&
+    ! flock -n /run/nekoserver-operation.lock true; then
+    echo 'A NekoServer upgrade is at work (the Updates page of the dashboard shows how far it is). Let it finish, then run  sudo bash install.sh  again.' >&2
     exit 1
   fi
   if ! "$recover" && [[ -e /etc/nekoserver-backups/maintenance-resume.json ]]; then

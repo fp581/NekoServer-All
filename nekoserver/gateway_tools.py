@@ -10,6 +10,7 @@ import recovery_tools
 from network_access import lan, verify_lan, choose_lan, save_settings
 import host
 from neko_common import (
+    nextcloud_enabled,
     SHARED,
     VERSION,
     safe_path,
@@ -174,7 +175,7 @@ DEFAULT_SERVICES = ('jellyfin', 'seerr', 'immich', 'navidrome', 'nextcloud')
 
 def installed(config, app):
     if app == 'nextcloud':
-        return bool(config.get('nextcloud', {}).get('enabled'))
+        return nextcloud_enabled(config)
     if app == 'immich':
         return immich_wanted(config)
     return app in media_services(config)
@@ -482,7 +483,13 @@ def unit(config, code, state):
     media = config['media_mount']
     guard = str(code / 'nekoserver-runtime') + ' gateway-guard'
     return (
-        '[Unit]\nDescription=NekoServer LAN HTTPS gateway\nWants=network-online.target\nAfter=network-online.target\nRequiresMountsFor='
+        '[Unit]\nDescription=NekoServer LAN HTTPS gateway\nWants=network-online.target\nAfter=network-online.target\n'
+        # A refusal of the start check (ExecStartPre) is a failure Restart= retries, and
+        # RestartPreventExitStatus= looks only at the main process: every 10 s it stayed
+        # under systemd's own limit (5 in 10 s) and retried for ever. Six tries, about a
+        # minute, then it shows as failed on the dashboard (Starts by itself). Drive return,
+        # the NAS check and setup start it again.
+        'StartLimitIntervalSec=10min\nStartLimitBurst=6\nRequiresMountsFor='
         + data
         + ' '
         + media
@@ -775,11 +782,38 @@ def serve_state():
     return canonical(json.loads(command(['tailscale', 'serve', 'status', '--json'])))
 
 
+TAILNODE_NOT_READY = 'Authenticate Tailscale and enable tailnet HTTPS/MagicDNS first'
+# Where MagicDNS and HTTPS certificates are switched on for the Tailscale account.
+DNS_PAGE = 'https://login.tailscale.com/admin/dns'
+# Said when setup runs without anyone to answer (the dashboard's Run setup again, an
+# upgrade) and they are off: tailscale serve would only wait for them to be switched on.
+HTTPS_OFF = (
+    'The apps\' private addresses need MagicDNS and HTTPS certificates, and one of them is off in your '
+    f'Tailscale account. Open {DNS_PAGE} , turn on MagicDNS, scroll to "HTTPS Certificates" and choose '
+    '"Enable HTTPS", then run  sudo bash install.sh  again'
+)
+
+
+def own_device(status):
+    """The "Self" part of `tailscale status --json`, or {} when it is missing or not an
+    object: Tailscale writes "Self": null while it is still starting or signed out."""
+    own = status.get('Self') if isinstance(status, dict) else None
+    return own if isinstance(own, dict) else {}
+
+
 def tailnode():
-    v = json.loads(command(['tailscale', 'status', '--json']))
-    name = v.get('Self', {}).get('DNSName', '').rstrip('.')
-    if v.get('BackendState') != 'Running' or not re.fullmatch(r'[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+\.ts\.net', name):
-        raise RuntimeError('Authenticate Tailscale and enable tailnet HTTPS/MagicDNS first')
+    """This server's Tailscale name. An answer that is not what a signed-in Tailscale
+    writes (not signed in, still starting, no MagicDNS name, not JSON) is the same
+    RuntimeError, never a Python error: callers catch RuntimeError to wait and try again."""
+    try:
+        v = json.loads(command(['tailscale', 'status', '--json']))
+    except ValueError:
+        raise RuntimeError(TAILNODE_NOT_READY) from None
+    name = own_device(v).get('DNSName')
+    name = name.rstrip('.') if isinstance(name, str) else ''
+    running = isinstance(v, dict) and v.get('BackendState') == 'Running'
+    if not running or not re.fullmatch(r'[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+\.ts\.net', name):
+        raise RuntimeError(TAILNODE_NOT_READY)
     return name
 
 
@@ -840,7 +874,8 @@ def tailscale_status():
 
 def tailscale_address(status):
     """This PC's Tailscale address (IPv4 first), or None."""
-    found = [ip for ip in (status.get('Self') or {}).get('TailscaleIPs') or [] if isinstance(ip, str)]
+    listed = own_device(status).get('TailscaleIPs')
+    found = [ip for ip in listed if isinstance(ip, str)] if isinstance(listed, list) else []
     return next((ip for ip in found if '.' in ip), found[0] if found else None)
 
 
@@ -1193,7 +1228,7 @@ def listed(value):
         return [], 0
     if isinstance(value, list):
         return list(value), len(value)
-    if isinstance(value, dict) and all(str(k).isdigit() for k in value):
+    if isinstance(value, dict) and all(str(k).isdecimal() for k in value):
         return list(value.values()), max((int(k) for k in value), default=-1) + 1
     return None, 0
 

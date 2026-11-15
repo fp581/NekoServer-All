@@ -19,7 +19,7 @@ from neko_common import (
     write_units,
     job_times,
 )
-from neko_common import MAINTENANCE_JOURNAL, RECOVERY, maintenance_running
+from neko_common import MAINTENANCE_JOURNAL, RECOVERY, maintenance_running, whole_number
 
 # No photo_backup: since v0.21.1 the monthly snapshot stays on the HDD, so a missing
 # or unconfigured USB drive must not block monthly updates.
@@ -58,9 +58,7 @@ def options(config):
         # How many days a new app version waits before the weekly update installs it.
         ('settle_days', 7, 1, 30),
     ):
-        value = opts.get(key, default)
-        if type(value) is not int or not low <= value <= high:
-            raise RuntimeError('Invalid maintenance.' + key)
+        whole_number(opts, 'maintenance', key, default, low, high)
     # Major versions are installed only when you approve them (see MONTHLY-MAINTENANCE.md).
     for key, pattern in (('immich_major_update', r'(v\d+(\.\d+\.\d+)?)?'), ('nextcloud_major_update', r'(\d{1,3})?')):
         value = opts.get(key, '')

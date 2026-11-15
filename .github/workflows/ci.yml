@@ -60,6 +60,27 @@ jobs:
       - name: Unit tests
         run: python -m unittest discover -s tests -v
 
+  restore-tool:
+    # neko_restore.py is copied onto every card to be run on whatever PC the card ends up
+    # in, so it promises Python 3.8 or newer: its own tests run on 3.8 here, so a newer
+    # feature slipping into it fails CI rather than a restore years later.
+    name: Restore tool (Python 3.8)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: ${{ env.RELEASE_DIR }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.13"
+      - name: Python 3.8
+        run: |
+          python3 -m pip install --only-binary :all: --require-hashes -r ../.github/restore-tool-requirements.txt
+          python3 -m uv python install 3.8
+      - name: The restore tool's tests on Python 3.8
+        run: $(python3 -m uv python find 3.8) -m unittest discover -s tests -p test_neko_restore.py -v
+
   compose:
     name: Compose files
     runs-on: ubuntu-24.04

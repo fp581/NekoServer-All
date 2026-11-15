@@ -13,7 +13,7 @@ that someone put there by hand is left as it is.
 import os
 from pathlib import Path
 
-from neko_common import atomic_write
+from neko_common import atomic_write_at, open_folder_below
 
 HERE = Path(__file__).resolve().parent
 SHIPPED = HERE / 'prowlarr-definitions'
@@ -43,6 +43,23 @@ def shipped_text(name):
     return MARK + (SHIPPED / name).read_text(encoding='utf-8')
 
 
+# Prowlarr's custom folder below the app SSD. Prowlarr's account owns these folders, so
+# root reaches them from the SSD one by one, never through a link (open_folder_below).
+CUSTOM_PARTS = ('appdata', 'prowlarr', 'Definitions', 'Custom')
+
+
+def read_in(folder, name):
+    """The text of `name` in the open folder, None when it is not there (never a link)."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=folder)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RuntimeError(f'Refusing symlink definition: {name} ({exc.strerror})') from None
+    with os.fdopen(fd, encoding='utf-8', errors='replace') as stream:
+        return stream.read()
+
+
 def ours(path):
     """The file there is one NekoServer wrote (it starts with the mark)."""
     try:
@@ -52,43 +69,42 @@ def ours(path):
         return False
 
 
-def to_write(target, name, wanted, log):
-    """The definition is to be written: it is not there, or it is NekoServer's and differs.
-    One someone else put there is left as it is, and said."""
-    if not target.exists():
+def to_write(found, target, name, wanted, log):
+    """The definition is to be written: it is not there (`found` None), or it is
+    NekoServer's and differs. One someone else put there is left as it is, and said."""
+    if found is None:
         return True
-    if not ours(target):
+    if not found.startswith(MARK):
         log(f"Prowlarr: {target} was put there by someone else; NekoServer's {name} is not installed")
         return False
-    return target.read_text(encoding='utf-8') != wanted
-
-
-def made_for(folder, uid, gid):
-    """The custom folder and its parent, made for Prowlarr's account when they are not there."""
-    for part in (folder.parent, folder):
-        if not part.exists():
-            part.mkdir(mode=0o755)
-            os.chown(part, uid, gid, follow_symlinks=False)
+    return found != wanted
 
 
 def install(data_root, uid, gid, log=print):
     """Copy every shipped definition into Prowlarr's custom folder, owned by the account
     Prowlarr runs as. Returns the names written (new or changed): Prowlarr reads the folder
     only when it starts, so it must be restarted when this is not empty."""
-    folder = custom_folder(data_root)
+    shown = custom_folder(data_root)
+    try:
+        folder = open_folder_below(data_root, CUSTOM_PARTS, make=2, owner=(uid, gid))
+    except OSError as exc:
+        raise RuntimeError(
+            f"Prowlarr's custom definitions folder {shown}, or a folder above it, is a link or not a folder now "
+            f'({exc.strerror}), so nothing was written there: NekoServer never writes through a link. '
+            'Put it back as a plain folder (or remove it), then run setup again.'
+        ) from None
     written = []
-    for name in DEFINITIONS:
-        target = folder / name
-        if target.is_symlink():
-            raise RuntimeError(f'Refusing symlink definition: {target}')
-        wanted = shipped_text(name)
-        if not to_write(target, name, wanted, log):
-            continue
-        made_for(folder, uid, gid)
-        atomic_write(target, wanted, 0o644)
-        os.chown(target, uid, gid, follow_symlinks=False)
-        written.append(name)
-        log(f"Prowlarr: the download source {DEFINITIONS[name][0]} added to its catalogue ({target})")
+    try:
+        for name in DEFINITIONS:
+            target = shown / name
+            wanted = shipped_text(name)
+            if not to_write(read_in(folder, name), target, name, wanted, log):
+                continue
+            atomic_write_at(folder, name, wanted, 0o644, owner=(uid, gid))
+            written.append(name)
+            log(f"Prowlarr: the download source {DEFINITIONS[name][0]} added to its catalogue ({target})")
+    finally:
+        os.close(folder)
     return written
 
 
@@ -106,9 +122,15 @@ def remove(data_root, log=print):
     Returns the paths removed."""
     removed = []
     for path in installed(data_root):
-        path.unlink()
-        removed.append(path)
-        log(f'Removed {path}')
+        # Removed from the folder opened without links, not by path (see install).
+        folder = open_folder_below(data_root, CUSTOM_PARTS)
+        try:
+            if (read_in(folder, path.name) or '').startswith(MARK):
+                os.unlink(path.name, dir_fd=folder)
+                removed.append(path)
+                log(f'Removed {path}')
+        finally:
+            os.close(folder)
     return removed
 
 

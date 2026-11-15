@@ -42,13 +42,35 @@ const CALLS = new Set([
   'shownAnswer',
   'bugReport',
   'copied',
-  'askIntro'
+  'askIntro',
+  'ago',
+  'outputsBadge',
+  'sensorBadge',
+  'temperatureName'
 ]);
 /* Calls answered from another function's result, with more of it; the last four run a
    piece of Ask Neko on a page that keeps what is put on it (ASK_PAGE below). */
-const DETAILED = new Set(['issueDetails', 'askFlow', 'approveFlow', 'bugBoxCopy', 'cutOffEntry']);
-/* What those four need of the page script besides the functions above. */
-const ASK_PAGE = ['ASK', 'state', 'askNeko', 'approveRepair', 'askProgress', 'askEntry', 'bugBox'];
+const DETAILED = new Set([
+  'issueDetails',
+  'askFlow',
+  'approveFlow',
+  'bugBoxCopy',
+  'cutOffEntry',
+  'askSignedOut',
+  'askTyped'
+]);
+/* What those need of the page script besides the functions above. */
+const ASK_PAGE = [
+  'ASK',
+  'state',
+  'askNeko',
+  'approveRepair',
+  'askProgress',
+  'askEntry',
+  'bugBox',
+  'sendQuestion',
+  'askNote'
+];
 const calls = JSON.parse(process.argv[2]);
 
 /* Anything the page touches: every property is another stand-in, every call returns one. */
@@ -157,6 +179,11 @@ const SPECIAL = {
   catFile: argument => app.catFile(argument.mood, argument.small),
   appSpec: argument => app.appSpec(argument.id, argument.app),
   pinRefusal: argument => app.pinRefusal(argument.answer, argument.now),
+  // The Fans page's count, with its readings answered (this stand-in page reached none).
+  outputsBadge: argument => {
+    app.state.controlError = null;
+    return app.outputsBadge(argument);
+  },
   waitingWhen: argument => argument.waiting.map(w => app.waitingWhen(w, argument.waiting, argument.now)),
   releaseNotes: argument => app.releaseNotes(argument.app, argument.version),
   // The apps Home offers (this stand-in page is the server's own, 127.0.0.1).
@@ -218,6 +245,15 @@ function keptPage() {
       },
       select() {
         node.selected = true;
+      },
+      showModal() {
+        node.open = true; // the PIN dialog
+      },
+      setAttribute(name, value) {
+        node[name] = value;
+      },
+      focus() {
+        /* nothing to move */
       }
     };
     return node;
@@ -349,7 +385,38 @@ SPECIAL.cutOffEntry = async argument => {
   return { sent, repair: entry.repair ?? null, shown: shown(app.askEntry(entry)), report: app.bugReport(entry) };
 };
 
-/* One call after the other: the four above each bring their own page and server. */
+// A question typed and sent (Ask pressed) on a device not signed in: what is left in the
+// question box, whether the PIN dialog opened, and what was sent. argument: the question.
+SPECIAL.askSignedOut = async argument => {
+  const byId = keptPage();
+  app.state.control = { access: { signed_in: false, pin_set: true } };
+  const sent = server(() => ({ ok: false, error: 'E45', message: 'Too many wrong PINs' }));
+  byId('ask-input').value = argument;
+  app.sendQuestion();
+  await Promise.resolve();
+  return { box: byId('ask-input').value, dialog: byId('dialog').open === true, sent };
+};
+
+// A question typed (each key runs the box's input listener, askNote) and Ask pressed,
+// signed in, on a server whose Neko reads `limit` characters: what the note under the
+// box said while typing, what was sent, and the history.
+// argument: {typed, limit}.
+SPECIAL.askTyped = async argument => {
+  const byId = keptPage();
+  app.state.status = { assistant: { set_up: true, model: 'small', question_chars: argument.limit } };
+  const sent = server(path => {
+    if (path === '/api/control/ask') return { ok: true, id: 'abc', question: argument.typed.trim(), excerpt: '' };
+    return { text: 'Because.', done: true, failed: null, repair: null };
+  });
+  byId('ask-input').value = argument.typed;
+  app.askNote();
+  const typing = byId('ask-note').textContent;
+  app.sendQuestion();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  return { typing, note: byId('ask-note').textContent, sent, shown: shown(byId('ask-log')) };
+};
+
+/* One call after the other: the ones above each bring their own page and server. */
 function called([name, argument]) {
   if (!CALLS.has(name) && !DETAILED.has(name)) throw new Error('Not a function the harness offers: ' + name);
   return (SPECIAL[name] ?? app[name])(argument);

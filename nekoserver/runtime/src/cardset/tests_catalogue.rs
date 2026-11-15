@@ -185,6 +185,13 @@ fn the_export_is_a_consistent_copy_and_never_overwrites() {
     assert_eq!(copy.epoch().unwrap(), store.epoch().unwrap());
     let err = store.export(&target).unwrap_err();
     assert_eq!(err.kind, super::error::Kind::Exists);
+    // The review of 0.51.0: the export, the paths of the person's files, was left as the
+    // umask made it (0644): readable by every user of the server, for the host backup.
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
 }
 
 #[test]

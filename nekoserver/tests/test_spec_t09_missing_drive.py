@@ -135,13 +135,15 @@ class MissingDriveTests(unittest.TestCase):
 
     def test_the_usb_copy_checks_its_drive_before_and_holds_it_while_copying(self):
         body = self.functions[('backup', 'copy_to_usb')]
-        first_copy = body.find('mirror(')
+        first_copy = re.search(r'mirror(_on)?\(', body).start()  # mirror_on: onto exFAT too
         for check in ('require_private_mount(dest', 'run.drives()', 'common::expect_drive(dest)'):
             self.assertTrue(0 <= body.find(check) < first_copy, check)
 
     def test_the_check_covers_both_drives_and_every_share_in_use(self):
         guard = self.functions[GUARD]
-        main = self.functions[('backup', 'main_drives')]
+        # main_drives hands the real drive check to main_drives_with (tests give their own).
+        self.assertIn('main_drives_with(c, data, media, &checked_drive)', self.functions[('backup', 'main_drives')])
+        main = self.functions[('backup', 'main_drives_with')]
         self.assertIn('[("data_ssd", data), ("media_hdd", media)]', main)
         self.assertIn('checked_drive(c, key, path)?', main)
         for body in (guard, self.functions[PRESENT]):

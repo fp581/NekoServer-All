@@ -129,10 +129,34 @@ class LanChoiceTests(unittest.TestCase):
         self.assertNotIn('questions.ask', source)
         self.assertNotIn('def pick(', source)
 
+    def test_a_pc_on_an_ipv6_only_home_network_is_not_told_to_plug_in_a_cable(self):
+        # Deep check 171, with the address list of an IPv6-only LAN (a stand-in for ip -j).
+        import json
+
+        rows = [
+            {'ifname': 'lo', 'addr_info': [{'family': 'inet', 'scope': 'host', 'local': '127.0.0.1', 'prefixlen': 8}]},
+            {
+                'ifname': 'enp3s0',
+                'addr_info': [
+                    {'family': 'inet6', 'scope': 'global', 'local': 'fd12:3456:789a::20', 'prefixlen': 64},
+                    {'family': 'inet6', 'scope': 'link', 'local': 'fe80::20', 'prefixlen': 64},
+                ],
+            },
+        ]
+        ctx, _ = self.ctx(lan_ip='auto', lan_cidr='auto')
+        with (
+            mock.patch.object(network_access, 'command', return_value=json.dumps(rows)),
+            self.assertRaises(RuntimeError) as said,
+        ):
+            network_access.choose_lan(ctx, output=lambda *_: None)
+        self.assertIn('on your home network (enp3s0), but only with an IPv6 address', str(said.exception))
+        self.assertIn('turn on IPv4 (DHCP) in your router', str(said.exception))
+        self.assertNotIn('Plug in a network cable', str(said.exception))
+
     def test_a_pc_that_is_not_connected_is_told_so_plainly(self):
         ctx, _ = self.ctx(lan_ip='auto', lan_cidr='auto')
         with (
-            mock.patch.object(network_access, 'candidates', return_value=[]),
+            mock.patch.object(network_access, 'command', return_value='[]'),
             self.assertRaisesRegex(
                 RuntimeError, 'This PC is not connected to your home network. Plug in a network cable'
             ),
@@ -370,6 +394,25 @@ class SambaPasswordTests(unittest.TestCase):
         done = samba.samba_password('neko', run=run, ask=lambda prompt: next(typed), output=said.append)
         self.assertFalse(done)
         self.assertEqual(said, ['Samba did not take that password: smbpasswd gave no answer within a minute'])
+
+    def test_a_password_too_long_for_smbpasswd_is_said_before_it_runs(self):
+        # Deep check 172 with the real smbpasswd: 254 bytes are taken, 255 (or 128
+        # letters with accents) end in "Mismatch - password unchanged".
+        import account_store
+
+        fits = 'a' * 254
+        done, calls, _ = self.password([fits, fits])
+        self.assertTrue(done)
+        for long in ('a' * 255, 'é' * 128):
+            with self.subTest(len(long.encode())):
+                done, calls, said = self.password([long, long])
+                self.assertFalse(done)
+                self.assertEqual(calls, [])
+                self.assertIn('too long', said[-1])
+        # The accounts page refuses it at once (128 letters, but 256 bytes).
+        with self.assertRaisesRegex(ValueError, 'too long for Samba'):
+            account_store.validate_other('shared_folders', 'é' * 128)
+        account_store.validate_other('shared_folders', 'é' * 127)
 
     def test_a_password_samba_refuses_is_said_and_sets_nothing(self):
         done, calls, said = self.password(['same', 'same'], code=1)

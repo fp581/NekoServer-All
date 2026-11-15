@@ -213,7 +213,13 @@ def guarded(context, step):
         return step(context)
 
 
-BUSY = 'A NekoServer backup or monthly update is running right now. Wait for it to finish (usually under an hour), then run  sudo bash install.sh  again.'
+# Said by every program that takes the lock (setup, account-setup.py, the recovery menu,
+# reattach), so it names no one command: "run install.sh again" sent the person who had
+# run account-setup.py or the recovery menu to the wrong one.
+BUSY = (
+    'A NekoServer backup or monthly update is running right now (the Backups page of the dashboard shows '
+    'which one). Wait for it to finish (usually under an hour), then run the same command again.'
+)
 
 
 def wait_for(stream, patient, limit=1800, sleep=None):
@@ -305,10 +311,23 @@ def verify_bundle(bundle, config):
         if digest(bundle / rel) != expected:
             raise RuntimeError('Preserved installer checksum mismatch')
     saved = json.loads(safe_path(bundle / CONFIG_NAME).read_text())
-    for key in ('data_mount', 'media_mount', 'storage'):
-        if saved.get(key) != config.get(key):
-            raise RuntimeError('Preserved installer storage configuration differs')
+    differ = differing(saved, config, ('data_mount', 'media_mount', 'storage'))
+    if differ:
+        raise RuntimeError(
+            f'the settings you named do not name the same drives as the settings kept with NekoServer on the SSD '
+            f'({bundle / CONFIG_NAME}): {differ} differ. They may be another server\'s settings, or older ones. '
+            f'Nothing was changed. Run the same command with  --config {bundle / CONFIG_NAME}'
+        )
     return manifest['version']
+
+
+def differing(saved, config, keys):
+    """The settings among `keys` whose values differ between `saved` and `config`, named
+    for a person ("storage" is the drives), or ''. Said in the refusals that compare the
+    settings with what the SSD keeps: "Preserved installer storage configuration differs"
+    said neither what nor what to do, as with the drives of another server."""
+    words = {'storage': 'the drives (storage)', 'data_mount': 'data_mount', 'media_mount': 'media_mount'}
+    return ', '.join(words.get(key, key) for key in keys if saved.get(key) != config.get(key))
 
 
 def docker_release(text):
@@ -433,20 +452,42 @@ def reattach(config, bundle, apply=False, confirm=''):
     problem = runtime_problem(bundle)
     if problem:
         raise RuntimeError(problem)
-    saved = json.loads(safe_path(Path(config['data_mount']) / 'installer/host-checkpoint.json').read_text())
+    record = Path(config['data_mount']) / 'installer/host-checkpoint.json'
+    # The drive's folder comes from the settings, a file: the record is read only as a .json
+    # file, by its real path (as source_import reads the source list).
+    real = os.path.realpath(safe_path(record))
+    if not (real.startswith(os.sep) and real.endswith('.json')):
+        raise RuntimeError(f'the record on the SSD ({record}) is not a .json file. Nothing was changed.')
+    with open(real, encoding='utf-8') as handle:
+        saved = json.loads(handle.read())
+    kept = Path(bundle) / CONFIG_NAME
     if (
         saved.get('format') != 'neko-host-checkpoint-v1'
         or saved.get('architecture') != platform.machine()
         or saved.get('driver') != 'overlay2'
     ):
-        raise RuntimeError('Host checkpoint is incompatible')
-    for key in ('storage', 'data_mount', 'media_mount'):
-        if saved.get(key) != config.get(key):
-            raise RuntimeError('Recovery checkpoint storage differs')
-    if saved.get('uid') != config.get('media', {}).get('uid', 1000) or saved.get('gid') != config.get('media', {}).get(
-        'gid', 1000
-    ):
-        raise RuntimeError('Recovery media UID/GID differs; no automatic ownership changes')
+        raise RuntimeError(
+            f'the record on the SSD ({record}) is not one this tool can use: it was made on another kind of PC '
+            f'({saved.get("architecture") or "unknown"}, this one is {platform.machine()}) or for another kind of '
+            'Docker store. Reattaching works only on the same kind (RECOVERY.md, "Replace the OS and reattach the '
+            'existing store"). Nothing was changed. Set the apps up again with  sudo bash install.sh  and get your '
+            'things back with  sudo bash install.sh --recover .'
+        )
+    differ = differing(saved, config, ('storage', 'data_mount', 'media_mount'))
+    if differ:
+        raise RuntimeError(
+            f'the record on the SSD ({record}) was made for other drives than your settings name: {differ} differ. '
+            'These may be another server\'s drives, or the settings older ones. Nothing was changed. Use the '
+            f'settings of the server these drives come from:  --config {kept}'
+        )
+    media = config.get('media', {})
+    named, recorded = (media.get('uid', 1000), media.get('gid', 1000)), (saved.get('uid'), saved.get('gid'))
+    if named != recorded:
+        raise RuntimeError(
+            f'your settings name the media account {named[0]}:{named[1]}, but the apps\' files on this SSD belong '
+            f'to {recorded[0]}:{recorded[1]} (the record {record}). Reattaching never changes who owns files. '
+            f'Nothing was changed. Use the settings of the server these drives come from:  --config {kept}'
+        )
     target = Path(config['data_mount']) / 'docker-engine'
     if saved.get('docker_root') != str(target) or not target.is_dir() or not any(target.iterdir()):
         raise RuntimeError('Expected persistent Docker store is missing or empty')

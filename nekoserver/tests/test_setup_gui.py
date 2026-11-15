@@ -350,7 +350,14 @@ class WindowTests(unittest.TestCase):
     def cookie_browser():
         import http.cookiejar
 
-        return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        class Origin(urllib.request.BaseHandler):
+            # As a browser does: a POST from the page says the page's origin.
+            def http_request(self, request):
+                if request.get_method() == 'POST':
+                    request.add_unredirected_header('Origin', 'http://' + request.host)
+                return request
+
+        return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()), Origin())
 
     def get(self, route, token=None, browser=None):
         url = self.window.url.replace(self.window.token, token or self.window.token) + route
@@ -369,6 +376,18 @@ class WindowTests(unittest.TestCase):
 
     def state(self):
         return json.loads(self.get('api/state')[2])
+
+    def test_a_stop_at_the_storage_page_is_shown_in_the_window_too(self):
+        # Seen on a PC with one disk and too little room on it: the terminal said why and
+        # what to do, the window only "Setup has ended".
+        problem = 'No drive here can be the app SSD (your apps). Then run  sudo bash install.sh  again.'
+        with mock.patch('modules.storage.choose_ahead', side_effect=RuntimeError(problem)):
+            self.assertIsNone(wizard.choose_storage(self.settings, lambda line: None))
+        state = self.state()
+        self.assertEqual((state['phase'], state['stopped'], state['complete']), ('finished', True, False))
+        self.assertEqual(state['title'], setup_gui.STOPPED_TITLE)
+        self.assertEqual(state['finish'][0], problem)
+        self.assertTrue(self.window.delivered.is_set())  # what run() waits for before the window goes
 
     def test_the_page_its_files_and_the_token(self):
         status, kind, body = self.get('')
@@ -860,6 +879,63 @@ class WindowTests(unittest.TestCase):
                 self.browser.open(request, timeout=5)
             self.assertEqual(caught.exception.code, code)
 
+    def test_a_connection_that_stops_halfway_is_closed_and_others_are_served(self):
+        """Deep check 238: a connection that sent half a request held a thread of setup's
+        own process for good (seen: 300 of them, all still there after 20 s)."""
+        import socket
+
+        with mock.patch.object(setup_gui, 'REQUEST_WAIT', 1):
+            fresh = setup_gui.Window(self.settings, self.config, wizard.STEPS, self.config['profiles']['full'])
+        self.addCleanup(fresh.stop)
+        port = fresh.server.server_address[1]
+        slow = [socket.create_connection(('127.0.0.1', port), timeout=10) for _ in range(20)]
+        for each in slow:
+            self.addCleanup(each.close)
+            each.sendall(b'GET /t/' + fresh.token.encode() + b'/ HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nX-a: ' % port)
+        browser = self.cookie_browser()
+        with browser.open(fresh.url, timeout=5) as response:
+            self.assertEqual(response.status, 200)  # served meanwhile
+        for each in slow:
+            self.assertEqual(each.recv(100), b'')  # closed by the window within its wait
+
+    def test_a_change_from_another_page_on_this_pc_is_refused(self):
+        """Deep check 236: a page on another port of this PC (the same site, so the browser
+        sends the window's cookie with it) pressed the window's buttons: a POST with the
+        cookie and another Origin was taken."""
+        import http.client
+
+        jar = next(h.cookiejar for h in self.browser.handlers if hasattr(h, 'cookiejar'))
+        cookie = next(iter(jar))
+        port = self.window.server.server_address[1]
+        own = 'http://127.0.0.1:%d' % port
+        for origin, host in (
+            (['http://127.0.0.1:1'], True),
+            (['http://elsewhere.example'], True),
+            ([], True),
+            ([own, own], True),
+            ([own], False),  # no Host header: refused, not an error inside the window
+        ):
+            connection = http.client.HTTPConnection('127.0.0.1', port, timeout=5)
+            connection.putrequest('POST', '/t/' + self.window.token + '/api/choose', skip_host=True)
+            if host:
+                connection.putheader('Host', '127.0.0.1:%d' % port)
+            connection.putheader('Cookie', f'{cookie.name}={cookie.value}')
+            for value in origin:
+                connection.putheader('Origin', value)
+            connection.putheader('Content-Length', '13')
+            connection.endheaders(b'{"tv": false}')
+            with self.subTest(origin=origin):
+                answer = connection.getresponse()
+                if not host:  # refused (the address is not this window's), not an error
+                    self.assertIn(answer.status, (403, 404))
+                    answer.read()
+                    connection.close()
+                    continue
+                self.assertEqual(answer.status, 403)
+                self.assertIn(b'Only the setup window can change setup', answer.read())
+            connection.close()
+        self.assertEqual(self.post('api/choose', {'tv': False}), {'ok': True})
+
     def test_without_the_cookie_only_the_page_itself_opens_and_only_for_its_account(self):
         # Another account on this PC can read the address from the browser's command
         # line; once the window has opened it, the address alone lets nobody in but the
@@ -1023,7 +1099,7 @@ class MenuWindowTests(unittest.TestCase):
         with (
             mock.patch.object(recovery_wizard.os, 'geteuid', return_value=0),
             mock.patch.object(recovery_wizard, 'stop_on_sigterm'),
-            mock.patch.object(recovery_wizard, 'settings', return_value={}),
+            mock.patch.object(recovery_wizard, 'settings', return_value={'storage': {'media_hdd': {'uuid': 'hdd'}}}),
             mock.patch.object(recovery_wizard, 'menu_loop', return_value=0) as loop,
             mock.patch.object(setup_gui, 'session', session),
         ):

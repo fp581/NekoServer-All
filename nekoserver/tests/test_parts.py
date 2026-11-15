@@ -83,6 +83,18 @@ class PartTests(unittest.TestCase):
                     'Kept for the next run of setup. Still to do: The first thing; The second thing; The third thing.',
                 )
 
+    def test_ctrl_d_at_show_a_login_keeps_the_part_for_the_next_run(self):
+        # Plan 92: the EOFError of "Show a login now?" escaped the part, so the phone
+        # step failed ("Stopped at a question") instead of waiting for the next run.
+        person = Person([EOFError])
+        login = [{'id': 'jellyfin', 'title': 'Jellyfin', 'username': 'neko_1'}]
+        with mock.patch.object(guided_setup, 'saved_logins', return_value=login):
+            self.assertEqual(person.part(done=['two']), {'two'})
+        self.assertEqual(person.asked, ['Show a login now? Type its number (Enter alone: go on): '])
+        self.assertEqual(
+            person.shown[-1], 'Kept for the next run of setup. Still to do: The first thing; The third thing.'
+        )
+
     def test_what_was_done_in_an_earlier_run_is_not_asked_for_again(self):
         person = Person(['yes'])
         self.assertEqual(person.part(done=['one']), {'one', 'two', 'three'})

@@ -235,7 +235,7 @@ fn copy_verified_with(
             return Err(Error::new("Source changed during the copy; not published"));
         }
         // Re-open the copy from disk: what actually landed, not what was sent.
-        let landed = common::digest(&temp)?;
+        let landed = common::digest_landed(&temp)?;
         let original = common::digest(source)?;
         if !same(&before, &fs::metadata(source)?) {
             return Err(Error::new("Source changed during the copy; not published"));
@@ -367,6 +367,38 @@ fn version_name(target: &Path, stamp: &str) -> PathBuf {
     let name = target.file_name().unwrap_or_default().to_string_lossy();
     let (stem, ext) = version_parts(&name);
     target.with_file_name(format!("{stem}.neko-{stamp}{ext}"))
+}
+/// Longest path Linux opens, in bytes (PATH_MAX counts the closing zero).
+const PATH_MAX: usize = libc::PATH_MAX as usize - 1;
+/// Whether a backup can keep `target`: its path, the partial copy written beside it first
+/// and a later dated version all stay within PATH_MAX. A file deep in folders with long
+/// names (synced from Windows, say) fitted where it is, but not in the backup's folder
+/// or not with the partial copy's longer name beside it: copying it failed with "File
+/// name too long" and stopped the whole run, so no file after it was ever backed up.
+fn path_fits(target: &Path) -> bool {
+    let folder = target.parent().map_or(0, |p| p.as_os_str().len());
+    let name = target.file_name().map_or(0, |n| n.len());
+    let longest = (name + VERSION_TAG)
+        .min(NAME_MAX)
+        .max(partial_name("").len());
+    folder + 1 + longest <= PATH_MAX
+}
+/// What the job says about files left out by `path_fits` (`what`: "photos and videos").
+fn too_long_said(what: &str, files: &[String]) -> String {
+    let mut shown = files
+        .iter()
+        .take(10)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if files.len() > 10 {
+        shown += &format!(" and {} more", files.len() - 10);
+    }
+    format!(
+        "{} {what} were not backed up because the folders they are in have such long names that their full path in the backup would be longer than Linux allows ({} bytes). Move them into a folder with a shorter path, or shorten the folder names; the next run copies them: {shown}",
+        files.len(),
+        PATH_MAX + 1
+    )
 }
 /// Write down the full name behind a shortened version stem (in the folder's NAMES), so
 /// a restore puts the file back under its own name.
@@ -714,13 +746,22 @@ const QUARANTINE: &str = "neko-damaged";
 /// the monthly check finds it again and the monthly snapshot and updates wait. The
 /// action comes first, before the list of files: the reason is cut at 300 characters
 /// where it is shown (the job report, the dashboard, the alerts, the journal), and the
-/// advice used to come last and was cut off.
-pub(crate) const SETTLE: &str = "To settle it, run  sudo bash install.sh --recover  and choose \"Repair damaged backup copies\"";
+/// advice used to come last and was cut off. The choice is named as the recovery menu
+/// shows it (shared.json "recovery_menu"): 0.50.0 renamed it in the menu, and this kept
+/// naming a choice that was no longer there.
+pub(crate) fn settle_advice() -> String {
+    format!(
+        "{SETTLE_START} sudo bash install.sh --recover  and choose \"{}\"",
+        common::shared("recovery_menu", "fix_copies")
+    )
+}
+/// How the repair advice begins: a saved reason that holds it is found by these words.
+pub(crate) const SETTLE_START: &str = "To settle it, run ";
 /// The rest of the advice, after the files.
 const SETTLE_MORE: &str = "The repair takes each file from a copy that still matches; when no good copy is left it offers \"accept that this saved copy is lost\" (the copy is kept in neko-damaged, never deleted). Until then the monthly check finds it again, and the monthly snapshot and updates wait";
 /// What was found, with how to settle it first.
 fn settle(found: &str) -> String {
-    format!("{SETTLE}. {found}. {SETTLE_MORE}")
+    format!("{}. {found}. {SETTLE_MORE}", settle_advice())
 }
 /// What the checksum checks of one backup tree found.
 #[derive(Debug, Default, PartialEq)]
@@ -749,6 +790,11 @@ pub struct Integrity {
     /// The list of the files you had at this run could not be written: the run is
     /// incomplete ("as of the last backup" would miss its files), not a success.
     pub list_problem: Option<String>,
+    /// Left out of a copy onto an exFAT drive: a name exFAT refuses, or one that differs
+    /// from another only in upper/lower case (see `exfat_refuses`).
+    pub unstorable: Vec<String>,
+    /// Left out because their path in the backup would be too long (`path_fits`).
+    pub too_long: Vec<String>,
 }
 impl Integrity {
     /// Text for a failed job when a copy is damaged, with how to settle it; None when
@@ -780,49 +826,74 @@ impl Integrity {
         }
         if !self.both_damaged.is_empty() {
             parts.push(format!(
-                "CRITICAL: {} files match their recorded checksum in no copy; every copy is kept untouched: {}",
-                self.both_damaged.len(),
+                "CRITICAL: {} recorded checksum in no copy; every copy is kept untouched: {}",
+                common::plural(
+                    self.both_damaged.len(),
+                    "file matches its",
+                    "files match their"
+                ),
                 list(&self.both_damaged)
             ));
         }
         if !self.missing.is_empty() {
             parts.push(format!(
-                "{} {what} files that were backed up and verified are missing: {}",
-                self.missing.len(),
+                "{} that {} backed up and verified {} missing: {}",
+                common::plural(
+                    self.missing.len(),
+                    &format!("{what} file"),
+                    &format!("{what} files")
+                ),
+                if self.missing.len() == 1 {
+                    "was"
+                } else {
+                    "were"
+                },
+                if self.missing.len() == 1 { "is" } else { "are" },
                 list(&self.missing)
             ));
         }
         if !self.disagree.is_empty() {
             parts.push(format!(
-                "{} files differ between the HDD and the USB drive, with no recorded checksum (or two different ones) to tell which is right; both are kept untouched: {}",
-                self.disagree.len(),
+                "{} between the HDD and the USB drive, with no recorded checksum (or two different ones) to tell which is right; both are kept untouched: {}",
+                common::plural(self.disagree.len(), "file differs", "files differ"),
                 list(&self.disagree)
             ));
         }
         (!parts.is_empty()).then(|| parts.join(". "))
     }
     fn print(&self, what: &str) {
+        for line in self.counts(what) {
+            println!("{line}");
+        }
+    }
+    /// The log lines with this run's counts (none for a count of 0).
+    fn counts(&self, what: &str) -> Vec<String> {
+        let mut lines = vec![];
         if self.newly_verified > 0 {
-            println!("{what}: {} checksums recorded", self.newly_verified);
+            lines.push(format!(
+                "{what}: {} recorded",
+                common::plural(self.newly_verified, "checksum", "checksums")
+            ));
         }
         if self.repaired > 0 {
-            println!(
-                "{what}: {} damaged copies replaced from a verified copy (the damaged ones are kept in {QUARANTINE}/)",
-                self.repaired
-            );
+            lines.push(format!(
+                "{what}: {} replaced from a verified copy (the damaged ones are kept in {QUARANTINE}/)",
+                common::plural(self.repaired, "damaged copy", "damaged copies")
+            ));
         }
         if self.unverified > 0 {
-            println!(
-                "{what}: {} files have no recorded checksum yet (unverified until a second copy agrees)",
-                self.unverified
-            );
+            lines.push(format!(
+                "{what}: {} no recorded checksum yet (unverified until a second copy agrees)",
+                common::plural(self.unverified, "file has", "files have")
+            ));
         }
         if self.usb_only > 0 {
-            println!(
-                "{what}: {} files are on the USB drive only (saved before this HDD archive was begun); a restore from the USB drive has them",
-                self.usb_only
-            );
+            lines.push(format!(
+                "{what}: {} on the USB drive only (saved before this HDD archive was begun); a restore from the USB drive has them",
+                common::plural(self.usb_only, "file is", "files are")
+            ));
         }
+        lines
     }
 }
 /// Save one tree's check results in `reports/integrity.json` (read by the dashboard and
@@ -1012,8 +1083,8 @@ fn clear_partials(root: &Path) -> Result<usize> {
     }
     if !found.is_empty() {
         println!(
-            "Backup: removed {} partial copies left by a run that was cut off in {}",
-            found.len(),
+            "Backup: removed {} left by a run that was cut off in {}",
+            common::plural(found.len(), "partial copy", "partial copies"),
             root.display()
         );
     }
@@ -1043,13 +1114,13 @@ fn save_inventory(root: &Path, live: &Inventory, ledger: &Ledger, what: &str) ->
     });
     match result {
         Ok((path, true)) => println!(
-            "{what}: noted the {} files you have now ({})",
-            live.len(),
+            "{what}: noted the {} you have now ({})",
+            common::plural(live.len(), "file", "files"),
             path.display()
         ),
         Ok((path, false)) => println!(
-            "{what}: the {} files you have now are the same as in the last list ({}), so no new one was written",
-            live.len(),
+            "{what}: the {} you have now the same as in the last list ({}), so no new one was written",
+            common::plural(live.len(), "file is", "files are"),
             path.display()
         ),
         Err(_) => println!("{what}: {}", problem.as_deref().unwrap_or_default()),
@@ -1167,6 +1238,12 @@ fn archive_with(
                 live.add(&target, &archive);
                 return Ok(());
             }
+            if !path_fits(&target) {
+                // Left out and named; its earlier copy (if any) stays in the inventory.
+                report.too_long.push(relative.to_string_lossy().to_string());
+                live.add(&target, &archive);
+                return Ok(());
+            }
             // A saved file where one of its folders must go, or a saved folder where it
             // must go: moved aside (kept, never deleted), or the archive could never
             // copy this file again.
@@ -1242,16 +1319,30 @@ fn archive_with(
     }
     report.print("Archive");
     if versions > 0 {
-        println!("Archive: {versions} changed files kept as dated versions");
+        println!(
+            "Archive: {} kept as dated versions",
+            common::plural(versions, "changed file", "changed files")
+        );
+    }
+    if !report.too_long.is_empty() {
+        println!(
+            "Archive: {}",
+            too_long_said("photos and videos", &report.too_long)
+        );
     }
     if replaced > 0 {
-        println!("Archive: {replaced} saved files were in the way of a file that became a folder (or a folder that became a file); they are kept in {REPLACED}/{when} at the archive's top");
+        println!("Archive: {} in the way of a file that became a folder (or a folder that became a file); kept in {REPLACED}/{when} at the archive's top", common::plural(replaced, "saved file was", "saved files were"));
     }
     if waiting > 0 {
-        println!("Archive: {waiting} files changed in the last {} seconds wait for the next run (they may still be being written)", settle.unwrap_or(0));
+        let (changed, wait) = if waiting == 1 {
+            ("file", "waits")
+        } else {
+            ("files", "wait")
+        };
+        println!("Archive: {waiting} {changed} changed in the last {} {wait} for the next run (they may still be being written)", common::plural(settle.unwrap_or(0), "second", "seconds"));
     }
     if in_use > 0 {
-        println!("Archive: {in_use} files changed, moved or were deleted while being copied; the next run copies them if they are still there");
+        println!("Archive: {} changed, moved or deleted while being copied; the next run copies them if they are still there", common::plural(in_use, "file was", "files were"));
     }
     println!(
         "Archive: {copied} new verified originals{}",
@@ -1275,6 +1366,11 @@ fn archive_birth(source: &Path) -> Option<f64> {
 /// by `histories_apart`): never taken back into the HDD archive's ledger, which would
 /// then expect the file on the HDD.
 const USB_ONLY: &str = "usb";
+/// The weekly copy's USB drive (found by its UUID) is not there. It said only "External
+/// drive missing" (0.51.2 user check: a failed USB drive replaced by a new one), so the
+/// person whose new drive was plugged in was not told how to choose it (STORAGE.md,
+/// "Another USB drive"). Its first words stay: known_fixes.py matches them.
+pub(crate) const USB_MISSING: &str = "External drive missing: the USB backup drive chosen at setup is not plugged in. Plug it in. Replaced it with a new one? Remove \"external_backup_uuid\" under \"photos\" in my-config.json, then run  sudo bash install.sh  to choose it";
 /// Whether the USB ledger records a dated version of `key` (`name.neko-<stamp>.ext` in
 /// the same folder) with this checksum.
 fn holds_version(theirs: &Ledger, key: &str, sha256: &str) -> bool {
@@ -1385,6 +1481,53 @@ pub fn copy_tree(source: &Path, dest: &Path, apply: bool, check: Check) -> Resul
 /// archive's checksum ledger (a first big archive run can take hours).
 const LEDGER_WAIT: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
 pub fn mirror(source: &Path, dest: &Path, apply: bool, check: Check) -> Result<(u64, Integrity)> {
+    mirror_on(source, dest, apply, check, false)
+}
+/// The names already on `dest` (an exFAT drive), so a new name that differs from one of
+/// them only in case is left out too (`case_clash`, `remember_kept`).
+fn names_on(dest: &Path) -> Result<std::collections::HashMap<String, String>> {
+    let mut seen = std::collections::HashMap::new();
+    walk(dest, &mut |path| {
+        if let Some(rest) = path.strip_prefix(dest).ok().and_then(Path::to_str) {
+            remember_kept(rest, &mut seen);
+        }
+        Ok(())
+    })?;
+    Ok(seen)
+}
+/// exFAT can't store `key` beside the names in `seen`: a name it refuses (`fat_safe`) or
+/// one that differs from another only in case. Without this check the weekly photo copy
+/// to an exFAT drive stopped at the first such name, and two photos named alike
+/// (`IMG_1.JPG`, `img_1.jpg`) shared one file there: the second was never copied, or
+/// each week one was "repaired" over the other.
+fn exfat_refuses(key: &str, seen: &mut std::collections::HashMap<String, String>) -> bool {
+    !fat_safe(Path::new(key)) || case_clash(key, seen).is_some()
+}
+/// The photos an exFAT USB drive can't hold, kept on it (shared.json "left_out"): its
+/// checksum list and lists of files still name them, as the HDD's do, so a restore from
+/// the drive called them missing copies and offered to repair them, though they are safe
+/// on the HDD (deep check plan 191). On any other drive there is such a list only for
+/// photos whose path would be too long there (`path_fits`).
+fn note_left_out(dest: &Path, exfat: bool, left: &[String]) -> Result<()> {
+    let path = dest.join(common::shared("left_out", "file"));
+    if !exfat {
+        if fs::symlink_metadata(&path).is_ok() {
+            fs::remove_file(&path)?;
+        }
+        return Ok(());
+    }
+    let note = json!({"format": common::shared("left_out", "format"), "files": left});
+    common::atomic(&path, &serde_json::to_vec(&note)?, 0o600)
+}
+/// `mirror` onto a drive that is exFAT or not (`exfat`): there, files whose names it
+/// can't store are left out and listed (`Integrity::unstorable`).
+fn mirror_on(
+    source: &Path,
+    dest: &Path,
+    apply: bool,
+    check: Check,
+    exfat: bool,
+) -> Result<(u64, Integrity)> {
     let (source, dest) = separate(source, dest)?;
     let mut ledger = if apply {
         Ledger::open_waiting(&source, LEDGER_WAIT)?
@@ -1406,7 +1549,7 @@ pub fn mirror(source: &Path, dest: &Path, apply: bool, check: Check) -> Result<(
     // here first, so they never stand in the way of what took their place.
     let followed = follow_moves(&source, &dest, &files, &ledger, apply)?;
     if followed > 0 {
-        println!("Backup: {followed} saved files the HDD archive kept aside (in {REPLACED}/) were moved the same way on the USB drive");
+        println!("Backup: {} the HDD archive kept aside (in {REPLACED}/) moved the same way on the USB drive", common::plural(followed, "saved file", "saved files"));
     }
     // The USB copy's own ledger: its records stay, also when the HDD's ledger was lost
     // or is incomplete (they say which copy is good), and the HDD's ledger takes back
@@ -1481,8 +1624,21 @@ pub fn mirror(source: &Path, dest: &Path, apply: bool, check: Check) -> Result<(
         Ok(())
     })?;
     let mut copied = 0;
+    let mut seen = if exfat && dest.is_dir() {
+        names_on(&dest)?
+    } else {
+        Default::default()
+    };
     for (key, path) in &files {
+        if exfat && exfat_refuses(key, &mut seen) {
+            report.unstorable.push(key.clone());
+            continue;
+        }
         let target = dest.join(key);
+        if !path_fits(&target) {
+            report.too_long.push(key.clone());
+            continue;
+        }
         if conflicting.contains(key) {
             let apart = match usb_ledger.as_mut() {
                 Some(theirs) => histories_apart(
@@ -1604,14 +1760,37 @@ pub fn mirror(source: &Path, dest: &Path, apply: bool, check: Check) -> Result<(
         // keeps every record it already had.
         ledger.save()?;
         ledger.publish_copy(&dest, usb_ledger.as_ref())?;
+        // Photos too deep for this drive are left out the same way: a restore from it
+        // must not take them for lost copies.
+        let left: Vec<String> = report
+            .unstorable
+            .iter()
+            .chain(&report.too_long)
+            .cloned()
+            .collect();
+        note_left_out(&dest, exfat || !report.too_long.is_empty(), &left)?;
         // Only now is this copy's run complete (see inventory::begin).
         if report.list_problem.is_none() {
             inventory::finish_mirror(&source, &dest)?;
         }
     }
     report.print("Backup");
+    if !report.too_long.is_empty() {
+        println!(
+            "Backup: {}",
+            too_long_said("photos and videos", &report.too_long)
+        );
+    }
+    if !report.unstorable.is_empty() {
+        println!(
+            "Backup: {} not copied because the USB drive (exFAT) cannot store their names (a character exFAT refuses, or the same name as another file but for upper/lower case); they stay safe on the HDD, and a USB drive formatted as ext4 takes them all: {}",
+            common::plural(report.unstorable.len(), "file", "files"),
+            report.unstorable.iter().take(20).cloned().collect::<Vec<_>>().join(", ")
+        );
+    }
     println!(
-        "Backup: {copied} new verified files{}",
+        "Backup: {}{}",
+        common::plural(copied, "new verified file", "new verified files"),
         if apply { "" } else { " identified (dry run)" }
     );
     Ok((copied, report))
@@ -1875,6 +2054,7 @@ pub fn copy_cloud(
     let mut refused = vec![];
     let mut clashes = vec![];
     let mut unreadable = vec![];
+    let mut too_long = vec![];
     let mut seen = std::collections::HashMap::new();
     let mut skipped_files = vec![];
     // The USB copy keeps its own ledger: the Nextcloud files are not on the HDD.
@@ -1966,6 +2146,13 @@ pub fn copy_cloud(
             }
             let user_files = root.join(&user).join("files");
             let target = user_files.join(relative);
+            if !path_fits(&target) {
+                // Left out and named; its earlier copy (if any) stays in the inventory.
+                too_long.push(shown.clone());
+                refused.push(shown);
+                live.add(&target, &root);
+                return Ok(());
+            }
             let in_way = in_the_way(&user_files, relative);
             if !in_way.is_empty() {
                 if !apply {
@@ -2030,22 +2217,32 @@ pub fn copy_cloud(
             save_inventory(&root, &live, &ledger, "Nextcloud").or(report.list_problem.take());
     }
     report.print("Nextcloud");
-    println!("Nextcloud: {copied} new files, {versions} changed files kept as dated versions, {skipped} skipped while in use");
+    println!(
+        "Nextcloud: {}, {} kept as dated versions, {skipped} skipped while in use",
+        common::plural(copied, "new file", "new files"),
+        common::plural(versions, "changed file", "changed files")
+    );
     if replaced > 0 {
-        println!("Nextcloud: {replaced} saved files were in the way of a file that became a folder (or a folder that became a file); they are kept in {REPLACED}/{when} beside the user's files");
+        println!("Nextcloud: {} in the way of a file that became a folder (or a folder that became a file); kept in {REPLACED}/{when} beside the user's files", common::plural(replaced, "saved file was", "saved files were"));
     }
     if !unreadable.is_empty() {
         println!(
-            "Nextcloud: {} files not copied because their names are not valid text (UTF-8), so the backup cannot record them; rename them: {}",
-            unreadable.len(),
+            "Nextcloud: {} not copied because their names are not valid text (UTF-8), so the backup cannot record them; rename them: {}",
+            common::plural(unreadable.len(), "file", "files"),
             unreadable.iter().take(20).cloned().collect::<Vec<_>>().join(", ")
         );
     }
-    let exfat: Vec<&String> = refused.iter().filter(|r| !unreadable.contains(r)).collect();
+    if !too_long.is_empty() {
+        println!("Nextcloud: {}", too_long_said("files", &too_long));
+    }
+    let exfat: Vec<&String> = refused
+        .iter()
+        .filter(|r| !unreadable.contains(r) && !too_long.contains(r))
+        .collect();
     if !exfat.is_empty() {
         println!(
-            "Nextcloud: {} files not copied because the USB drive (exFAT) cannot store their names; rename them or use an ext4 USB drive: {}",
-            exfat.len(),
+            "Nextcloud: {} not copied because the USB drive (exFAT) cannot store their names; rename them or use an ext4 USB drive: {}",
+            common::plural(exfat.len(), "file", "files"),
             exfat.iter().take(20).map(|r| r.as_str()).collect::<Vec<_>>().join(", ")
         );
     }
@@ -2211,8 +2408,8 @@ fn copy_newest_of(kind: &DumpKind, hdd_dumps: &Path, usb: &Path) -> Result<Optio
         // Kept on the HDD (and never pruned): made while the clock was wrong, so their
         // names cannot say when. The newest copy with a believable date goes to the USB.
         problems.push(format!(
-            "{} {label} database copies are dated in the future ({}); they were made while the server's clock was wrong (check it with timedatectl) and are kept, but the newest copy with a believable date was used",
-            future.len(),
+            "{} dated in the future ({}); made while the server's clock was wrong (check it with timedatectl), kept, but the newest copy with a believable date was used",
+            common::plural(future.len(), &format!("{label} database copy is"), &format!("{label} database copies are")),
             future.join(", ")
         ));
     }
@@ -2437,7 +2634,7 @@ fn intact(folder: &Path, manifest: &Value) -> bool {
 const MONTHLY_SNAPSHOTS: &str = "backups/monthly";
 const PASSWORD_LISTS: &str = "backups/password-lists";
 /// Said when the HDD has no password list yet: the week's USB copy is then incomplete.
-const NO_PASSWORD_LIST: &str = "the HDD holds no password list yet, so the USB drive has no copy of the app passwords: setup makes one once the backup password is set (run  sudo bash install.sh  again)";
+pub(crate) const NO_PASSWORD_LIST: &str ="the HDD holds no password list yet, so the USB drive has no copy of the app passwords: setup makes one once the backup password is set (run  sudo bash install.sh  again)";
 /// The password list to the USB drive: the newest list in `sources` (the monthly
 /// snapshots, the lists setup made) whose files each match the manifest's checksum on the
 /// HDD, checked again once copied, into `passwords/<run>/` with the manifest; the newest
@@ -2633,7 +2830,7 @@ fn disks_of(device: &str) -> Option<std::collections::BTreeSet<String>> {
         common::command(&["lsblk", "-s", "-n", "-r", "-o", "NAME,TYPE", device], 10).ok()?;
     (code == 0).then(|| parse_disks(&out))
 }
-fn parse_disks(lsblk: &str) -> std::collections::BTreeSet<String> {
+pub(crate) fn parse_disks(lsblk: &str) -> std::collections::BTreeSet<String> {
     lsblk
         .lines()
         .filter_map(|line| {
@@ -2708,6 +2905,15 @@ fn own_disk(device: &Path, data: &Path, media: &Path) -> Result<()> {
 /// options alone decide who can read the files. The backup holds private copies
 /// (Nextcloud files, database dumps), so an exFAT drive is mounted for root only.
 const PRIVATE_EXFAT: &str = "uid=0,gid=0,fmask=0177,dmask=0077";
+/// How the mount program is told to use Linux's own exFAT driver (shared.json).
+fn exfat_mount_arguments() -> Vec<&'static str> {
+    common::SHARED["exfat_mount"]["arguments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect()
+}
 fn usb_mount_options(fstype: &str) -> String {
     if fstype == "exfat" {
         format!("rw,nosuid,nodev,noexec,{PRIVATE_EXFAT}")
@@ -2743,6 +2949,13 @@ fn private_options(options: &str, fstype: &str) -> bool {
         && hidden("dmask")
 }
 fn require_private_mount(dest: &Path, fstype: &str) -> Result<()> {
+    let found = common::findmnt("FSTYPE", "--mountpoint", dest, 10)?.unwrap_or_default();
+    if fstype == "exfat" && found.trim() == "fuseblk" {
+        return Err(Error::new(&format!(
+            "The USB drive is mounted through FUSE (the exfat-fuse program), so who may read it can't be checked. {}",
+            fuse_advice(dest)
+        )));
+    }
     let options = common::findmnt("OPTIONS", "--mountpoint", dest, 10)?.unwrap_or_default();
     if !private_options(&options, fstype) {
         return Err(Error::new(
@@ -2806,19 +3019,20 @@ fn execute_keeping<F: FnOnce() -> Result<Outcome>>(
     let Some(data) = data else {
         return operation().map(|_| ());
     };
+    drives_take_writes(cfg)?;
     common::safe(data)?;
     guard_data(cfg, data)?;
     if !common::mounted(data) {
         return Err(Error::new("Application SSD missing"));
     }
     let path = data.join(format!("reports/jobs/{name}.json"));
-    let old = common::json(&path, 64000);
+    let old = common::json(&path, common::REPORT_LIMIT);
     let now = common::now();
     let mut row = running_row(name, now, &old);
     common::atomic_json(&path, &row)?;
     let result = operation();
     row["finished_at"] = json!(common::now());
-    let row = settled_report(row, &old, &result, keeps);
+    let row = report_that_fits(settled_report(row, &old, &result, keeps));
     // The report lives on the SSD: with the SSD gone it cannot be written, and the job's
     // own error still comes first.
     let reported = (|| {
@@ -2869,6 +3083,53 @@ fn settled_report(
     }
     row
 }
+/// A report that fits in what is read back (common::REPORT_LIMIT): a partial run's list
+/// of what was left out (50 long Nextcloud paths, say) could pass it, and the next run
+/// read the report as empty and lost `last_success` (deep check 304). The list is
+/// shortened, its texts first, then its length; its count words stay.
+fn report_that_fits(mut row: Value) -> Value {
+    let size = |v: &Value| serde_json::to_vec(v).map_or(usize::MAX, |b| b.len());
+    if size(&row) <= common::REPORT_LIMIT {
+        return row;
+    }
+    shorten_texts(&mut row["missing"], 300);
+    while size(&row) > common::REPORT_LIMIT && halve_lists(&mut row["missing"]) {}
+    if size(&row) > common::REPORT_LIMIT {
+        row["missing"] =
+            json!(["What was left out is too long to keep here; the job's log lists it"]);
+    }
+    row
+}
+fn shorten_texts(v: &mut Value, most: usize) {
+    match v {
+        Value::String(s) if s.chars().count() > most => {
+            *s = s.chars().take(most).collect::<String>() + "…";
+        }
+        Value::Array(rows) => rows.iter_mut().for_each(|r| shorten_texts(r, most)),
+        Value::Object(map) => map.values_mut().for_each(|r| shorten_texts(r, most)),
+        _ => {}
+    }
+}
+/// Every list in `v` cut to half its length; false when none had anything left to cut.
+fn halve_lists(v: &mut Value) -> bool {
+    match v {
+        Value::Array(rows) if rows.len() > 1 => {
+            rows.truncate(rows.len() / 2);
+            true
+        }
+        Value::Array(rows) => halve_each(rows.iter_mut()),
+        Value::Object(map) => halve_each(map.values_mut()),
+        _ => false,
+    }
+}
+/// halve_lists on every one of `rows` (each, not up to the first that had a list).
+fn halve_each<'a>(rows: impl Iterator<Item = &'a mut Value>) -> bool {
+    let mut cut = false;
+    for row in rows {
+        cut |= halve_lists(row);
+    }
+    cut
+}
 /// A job that gave way did not fail: to setup (`common::postponed`), or the weekly USB
 /// copy to the monthly run (`yielded`). Nothing is recorded against it, and it runs
 /// again at its next time.
@@ -2899,12 +3160,12 @@ pub(crate) fn note_failed_report(
 ) -> Result<()> {
     guard_data(cfg, data)?;
     let path = data.join(format!("reports/jobs/{name}.json"));
-    let mut row = common::json(&path, 64000);
+    let mut row = common::json(&path, common::REPORT_LIMIT);
     if row["status"] != "fail" {
         return Ok(());
     }
     row[key] = value;
-    common::atomic_json(&path, &row)
+    common::atomic_json(&path, &report_that_fits(row))
 }
 /// A job's report as it starts. The last success is kept as saved: one saved while the
 /// clock was ahead is still the last success after the clock is put back (the dashboard
@@ -2936,8 +3197,8 @@ pub fn open_job(a: &crate::Args, limit: usize) -> Result<Job> {
     common::require_root()?;
     let cfgpath = a.path("config")?;
     let cfg = common::json(&cfgpath, limit);
-    let data = common::mount_path(cfg["data_mount"].as_str().unwrap_or(""))?;
-    let media = common::mount_path(cfg["media_mount"].as_str().unwrap_or(""))?;
+    let data = drive_mount(&cfg, "data_ssd", "data_mount")?;
+    let media = drive_mount(&cfg, "media_hdd", "media_mount")?;
     guard(&cfgpath, &data, &media)?;
     Ok(Job {
         cfgpath,
@@ -2945,6 +3206,64 @@ pub fn open_job(a: &crate::Args, limit: usize) -> Result<Job> {
         data,
         media,
     })
+}
+/// Where the settings say the drive `key` is mounted (`mount_key`). A drive Linux shut
+/// down after errors is said so: the look at its folder failed with only "Input/output
+/// error (os error 5)", for every job and Docker's start guard (deep check plan 208).
+fn drive_mount(cfg: &Value, key: &str, mount_key: &str) -> Result<PathBuf> {
+    let folder = cfg[mount_key].as_str().unwrap_or("");
+    common::mount_path(folder).map_err(|e| {
+        no_writes(key, Path::new(folder), true)
+            .map(|why| Error::new(&why))
+            .unwrap_or(e)
+    })
+}
+/// Why the drive `key` mounted at `path` takes no new files, in words for the person, or
+/// None. `shut_down_only`: only a drive Linux shut down (nothing on it can be read either),
+/// for the checks that must still reach a read-only drive (the recovery menu checks it).
+fn no_writes(key: &str, path: &Path, shut_down_only: bool) -> Option<String> {
+    let shut_down = common::shut_down(&fs::symlink_metadata(path));
+    let read_only = !shut_down_only
+        && common::filesystem_read_only(
+            &fs::read_to_string("/proc/self/mountinfo").unwrap_or_default(),
+            path,
+        );
+    no_writes_said(key, path, shut_down, read_only)
+}
+fn no_writes_said(key: &str, path: &Path, shut_down: bool, read_only: bool) -> Option<String> {
+    let what = if shut_down {
+        "stopped answering: Linux shut it down after errors, so nothing on it can be read or written until the PC restarts"
+    } else if read_only {
+        "takes no new files: Linux turned it read-only after write errors (a loose cable, a failing drive)"
+    } else {
+        return None;
+    };
+    Some(format!(
+        "The {} ({}) {what}. Check it: sudo bash install.sh --recover, and choose {}",
+        drive_called(key),
+        path.display(),
+        crate::collect::check_drive_choice()
+    ))
+}
+/// Before a job writes anything: every drive it may write takes new files (the SSD, the
+/// HDD and each drive something is placed on). A drive Linux turned read-only made the
+/// job fail part-way with only "Read-only file system (os error 30)" (deep check plan 192).
+fn drives_take_writes(cfgpath: &Path) -> Result<()> {
+    let cfg = common::json(cfgpath, 64000);
+    let mut drives = vec![];
+    for (key, mount_key) in [("data_ssd", "data_mount"), ("media_hdd", "media_mount")] {
+        drives.push((key.to_string(), drive_mount(&cfg, key, mount_key)?));
+    }
+    for name in common::drives_in_use(&cfg) {
+        drives.push((name.clone(), placed_folder(&cfg, &name)?));
+    }
+    match drives
+        .iter()
+        .find_map(|(key, path)| no_writes(key, path, false))
+    {
+        Some(why) => Err(Error::new(&why)),
+        None => Ok(()),
+    }
 }
 /// A job interrupted while running is recorded as failed.
 /// A cut-off snapshot left something to finish: its resume journal, or a report still
@@ -2976,6 +3295,16 @@ pub struct Stage {
     pub name: String,
     pub dir: PathBuf,
     pub payload: PathBuf,
+}
+/// A snapshot that failed is removed as the run ends: it is as big as a whole snapshot,
+/// and it stayed on the drive until the next night's run (deep check plan 203). A
+/// published one was renamed away; one cut off by a power cut is cleared by the next run.
+impl Drop for Stage {
+    fn drop(&mut self) {
+        if fs::symlink_metadata(&self.dir).is_ok_and(|m| m.is_dir()) {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
 }
 /// Called with the job's lock held: what an earlier run that failed or was cut off left
 /// half-made (each as big as a whole snapshot) is removed first, or a full drive would
@@ -3076,12 +3405,14 @@ pub fn short_history(root: &Path, removed: &[String], keep: u64) -> Result<Optio
     if removed.is_empty() || left as u64 >= keep {
         return Ok(None);
     }
-    let count = match removed.len() {
-        1 => "1 older application snapshot was".to_string(),
-        n => format!("{n} older application snapshots were"),
-    };
+    let count = common::plural(
+        removed.len(),
+        "older application snapshot was",
+        "older application snapshots were",
+    );
     Ok(Some(json!([format!(
-        "the HDD was short of space, so {count} removed to make room for tonight's snapshot; {left} of the {keep} snapshots the settings keep (app_backup.keep_snapshots) remain"
+        "the HDD was short of space, so {count} removed to make room for tonight's snapshot; {left} of the {} the settings keep (app_backup.keep_snapshots) remain",
+        common::plural(keep, "snapshot", "snapshots")
     )])))
 }
 /// Check the drives, take the lock monthly maintenance and the other jobs hold, then
@@ -3122,9 +3453,18 @@ fn no_unfinished_update_at(journal: &Path) -> Result<()> {
 /// a job that is still waiting for setup after the 3 hours is postponed, not failed.
 pub fn coordinate(cfgpath: &Path, data: &Path, media: &Path) -> Result<fs::File> {
     guard(cfgpath, data, media)?;
+    ssd_takes_writes(data)?;
     let held = recovery_lock(data)?;
     guard(cfgpath, data, media)?;
     Ok(held)
+}
+/// The jobs' lock is a file on the SSD: on an SSD turned read-only it can't be made, and
+/// every job waited 3 hours "for another NekoServer job" (deep check plan 192).
+fn ssd_takes_writes(data: &Path) -> Result<()> {
+    match no_writes("data_ssd", data, false) {
+        Some(why) => Err(Error::new(&why)),
+        None => Ok(()),
+    }
 }
 fn recovery_lock(data: &Path) -> Result<fs::File> {
     let wait = std::time::Duration::from_secs(3 * 3600);
@@ -3135,6 +3475,7 @@ fn recovery_lock(data: &Path) -> Result<fs::File> {
 /// reason a weekly run failed part-way) must not keep Immich stopped until next week.
 fn coordinate_data(cfgpath: &Path, data: &Path) -> Result<fs::File> {
     guard_data(cfgpath, data)?;
+    ssd_takes_writes(data)?;
     let held = recovery_lock(data)?;
     guard_data(cfgpath, data)?;
     Ok(held)
@@ -3151,10 +3492,43 @@ pub(crate) fn subvolume_of(source: &str) -> &str {
 /// What the drive check expected at `path` and what findmnt found there ("UUID FSTYPE
 /// SOURCE", empty when nothing is mounted), so a wrong or missing drive is named. Worded
 /// for every caller: the backups, Docker's start check and drive-return share it.
-fn identity_mismatch(key: &str, path: &Path, uuid: &str, fstype: &str, found: &str) -> String {
-    let drive = if key == "data_ssd" { "SSD" } else { "HDD" };
+/// What the drive under `key` in the settings is called in a message: every drive that
+/// was not the SSD was called "the HDD", also the USB backup drive and a drive of its own
+/// for a group's files or apps (seen in 0.51.1: "/mnt/nekoserver-drives/d3 should be the
+/// HDD"). An extra drive is named as the dashboard names it ("Drive d3").
+fn drive_called(key: &str) -> String {
+    match key {
+        "data_ssd" => "SSD".to_string(),
+        "media_hdd" => "HDD".to_string(),
+        "usb" => "USB backup drive".to_string(),
+        name => format!("drive {name}"),
+    }
+}
+/// `other`: the drive of the settings (its key) whose filesystem was found instead.
+fn identity_mismatch(
+    key: &str,
+    path: &Path,
+    (uuid, fstype): (&str, &str),
+    found: &str,
+    other: Option<&str>,
+) -> String {
+    let drive = drive_called(key);
+    let seen: Vec<&str> = found.split_whitespace().collect();
     let found = match found.trim() {
         "" => "nothing is mounted there".to_string(),
+        // Another drive of these settings, out of its place (the SSD mounted at the HDD's
+        // folder): "If the drive was replaced, run install.sh" sent the person to set up a
+        // drive that was never replaced (deep check plan 194).
+        shown if other.is_some() => format!(
+            "found the {} there ({shown}). Restart the PC (its /etc/fstab mounts each drive in its own place), or unmount it with  sudo umount {}",
+            drive_called(other.unwrap_or_default()),
+            path.display()
+        ),
+        // The right exFAT drive, mounted through FUSE (Arch's fuse-exfat): who may read it
+        // can't be told there (deep check plan 207).
+        _ if fstype == "exfat" && seen.first() == Some(&uuid) && seen.get(1) == Some(&"fuseblk") => {
+            format!("found it mounted through FUSE (exfat-fuse), so who may read it can't be checked. {}", fuse_advice(path))
+        }
         // A folder the NAS shares (NFS) that is not mounted: only systemd's automount
         // holds its place, and mounts it at the next use once the NAS answers.
         waiting if common::waits_for_first_use(waiting) => {
@@ -3190,7 +3564,7 @@ pub fn check_drives(a: &crate::Args) -> Result<()> {
         };
         let path = match common::drive_folder(&cfg, key).filter(|_| mount.is_empty()) {
             Some(extra) => extra,
-            None => common::mount_path(cfg[mount].as_str().unwrap_or(""))?,
+            None => drive_mount(&cfg, key, mount)?,
         };
         let uuid = if *key == "usb" {
             checked_drive(&usb_spec(&cfg), "usb", &path)?
@@ -3200,16 +3574,23 @@ pub fn check_drives(a: &crate::Args) -> Result<()> {
         let shared = seen
             .iter()
             .find(|(other, id)| *id == uuid && !may_share(&cfg, other, key));
-        if shared.is_some() {
-            return Err(Error::new(
-                "The SSD and the HDD must be two different filesystems",
-            ));
+        if let Some((other, _)) = shared {
+            return Err(Error::new(&one_filesystem(other, key, &uuid)));
         }
         seen.push((key, uuid));
     }
     crate::startup::copies_of(&cfg, &keys)?;
     println!("ok");
     Ok(())
+}
+/// Two drives of the settings found to be one filesystem, named: it was "The SSD and the
+/// HDD must be two different filesystems" for any two, the USB drive too (deep check plan 195).
+fn one_filesystem(a: &str, b: &str, uuid: &str) -> String {
+    format!(
+        "The {} and the {} are one filesystem (UUID {uuid}): each must be a drive of its own. Run  sudo bash install.sh  to choose them again",
+        drive_called(a),
+        drive_called(b)
+    )
 }
 /// Two drives of the settings may be one filesystem: the apps' and the media's, when
 /// the settings keep each as a folder of it on purpose (common::roles_share_one_filesystem:
@@ -3230,6 +3611,9 @@ fn usb_spec(cfg: &Value) -> Value {
 /// The drive the settings (`c`) name under `key` is the one mounted at `path`: its UUID,
 /// filesystem type and Btrfs subvolume. Returns its UUID.
 pub(crate) fn checked_drive(c: &Value, key: &str, path: &Path) -> Result<String> {
+    if let Some(why) = no_writes(key, path, true) {
+        return Err(Error::new(&why));
+    }
     let found = match common::drive_at(path, 10) {
         Ok(found) => found.unwrap_or_default(),
         // findmnt killed after its 10 s on a drive a copy keeps busy (it reads the
@@ -3279,21 +3663,79 @@ fn drive_check(c: &Value, key: &str, path: &Path, found: &str) -> Result<String>
     }
     let fields = found.split_whitespace().collect::<Vec<_>>();
     if fields.len() < 3 || fields[..2] != [uuid, fstype] {
+        let other = fields.first().and_then(|seen| drive_with_uuid(c, seen));
         return Err(Error::new(&identity_mismatch(
-            key, path, uuid, fstype, found,
+            key,
+            path,
+            (uuid, fstype),
+            found,
+            other.as_deref().filter(|other| *other != key),
         )));
     }
     // A Btrfs drive used with a subvolume must be mounted with that one: the same
     // filesystem mounted with another holds a different tree.
     let wanted = c["storage"][key]["subvolume"].as_str().unwrap_or("");
-    if subvolume_of(fields[2]) != wanted.trim_end_matches('/') {
-        return Err(Error::new(&format!(
-            "Drive check failed: {} is mounted with another Btrfs subvolume than the settings name ({})",
-            path.display(),
-            if wanted.is_empty() { "the top level" } else { wanted }
-        )));
+    let found_part = subvolume_of(fields[2]);
+    if found_part != wanted.trim_end_matches('/') {
+        return Err(Error::new(&other_part(path, fstype, found_part, wanted)));
     }
     Ok(uuid.to_string())
+}
+/// The drive of the settings `c` (its key: data_ssd, media_hdd, usb or a drive of its
+/// own) whose filesystem has UUID `uuid`, if any.
+fn drive_with_uuid(c: &Value, uuid: &str) -> Option<String> {
+    let storage = c["storage"].as_object()?;
+    storage
+        .iter()
+        .find(|(_, record)| record["uuid"].as_str() == Some(uuid))
+        .map(|(key, _)| key.clone())
+        .or_else(|| {
+            (c["photos"]["external_backup_uuid"].as_str() == Some(uuid)).then(|| "usb".into())
+        })
+}
+/// What to do about an exFAT backup drive mounted through FUSE.
+fn fuse_advice(dest: &Path) -> String {
+    format!(
+        "Unmount it with  sudo umount {}: the backup then mounts it itself, privately, with Linux's own driver",
+        dest.display()
+    )
+}
+/// What Btrfs shows (findmnt's source "/dev/sdb1[/@media//deleted]") for a subvolume
+/// that was deleted while it stayed mounted.
+const DELETED_SUBVOLUME: &str = "//deleted";
+/// Why the right drive mounted at `path` is refused: another part of it than the settings
+/// name (`wanted`; `found` is the part mounted, "" for the top level). On Btrfs a part is
+/// a subvolume; on any other filesystem a folder of the drive (a bind mount, or a role
+/// kept in a folder of one drive, which the settings name the same way). Seen in 0.51.2:
+/// a folder of an ext4 HDD bind-mounted in its place was called "another Btrfs
+/// subvolume", and a deleted subvolume was told to restart the PC, as if nothing was lost.
+fn other_part(path: &Path, fstype: &str, found: &str, wanted: &str) -> String {
+    const RESTART: &str =
+        "Restart the PC (its /etc/fstab line mounts the right one), or run  sudo bash install.sh";
+    let top_or = |part: &str| {
+        if part.is_empty() {
+            "the top level".to_string()
+        } else {
+            part.to_string()
+        }
+    };
+    let shown = path.display();
+    if fstype != "btrfs" {
+        return format!(
+            "Drive check failed: {shown} is mounted from another folder of the drive ({}) than the settings name ({}). {RESTART}",
+            top_or(found),
+            top_or(wanted)
+        );
+    }
+    if let Some(deleted) = found.strip_suffix(DELETED_SUBVOLUME) {
+        return format!(
+            "Drive check failed: the Btrfs subvolume mounted at {shown} ({deleted}) was deleted, with the files in it, so nothing is read from it or written to it. Bring your files back from a backup (sudo bash install.sh --recover), or run  sudo bash install.sh  to set this drive up again"
+        );
+    }
+    format!(
+        "Drive check failed: {shown} is mounted with another Btrfs subvolume than the settings name ({}). {RESTART}",
+        top_or(wanted)
+    )
 }
 pub fn guard(cfgpath: &Path, data: &Path, media: &Path) -> Result<()> {
     let c = common::json(cfgpath, 64000);
@@ -3329,6 +3771,15 @@ pub(crate) fn guard_present(cfgpath: &Path, data: &Path, media: &Path) -> Result
 }
 /// The SSD and the HDD the settings name, mounted where they say: their identities.
 fn main_drives(c: &Value, data: &Path, media: &Path) -> Result<Vec<String>> {
+    main_drives_with(c, data, media, &checked_drive)
+}
+/// `main_drives` with the drive check given (tests give one that needs no mounted drive).
+fn main_drives_with(
+    c: &Value,
+    data: &Path,
+    media: &Path,
+    checked_drive: &dyn Fn(&Value, &str, &Path) -> Result<String>,
+) -> Result<Vec<String>> {
     if c["data_mount"].as_str() != data.to_str() || c["media_mount"].as_str() != media.to_str() {
         return Err(Error::new("Backup paths must match verified configuration"));
     }
@@ -3382,6 +3833,38 @@ const DUMP_SCRIPT: &str = "if command -v timeout >/dev/null 2>&1; then exec time
 pub fn database(compose: &Path, env: &Path, dest: &Path, apply: bool) -> Result<Option<PathBuf>> {
     database_of("immich", compose, env, dest, apply)
 }
+/// The last line a program wrote to `stream` (read on a thread of its own, so a full pipe
+/// never holds the program up).
+fn last_line_of(mut stream: impl Read + Send + 'static) -> thread::JoinHandle<String> {
+    thread::spawn(move || {
+        let mut text = Vec::new();
+        let _ = stream.read_to_end(&mut text);
+        let text = String::from_utf8_lossy(&text);
+        let last = text.lines().map(str::trim).rfind(|l| !l.is_empty());
+        last.unwrap_or("").to_string()
+    })
+}
+/// How much of what Docker or pg_dump said goes into the failed copy's message.
+const DUMP_WHY_ROOM: usize = 80;
+/// Said when `app`'s database copy failed, with what Docker or pg_dump said (`why`). It
+/// said only "Database dump failed or too small", also for an Immich that was stopped
+/// (Docker: service "database" is not running), which needs only to be started.
+fn dump_failed(app: &str, why: &str) -> String {
+    // Short enough that the advice after it survives the reports' 300-character cut.
+    let why: String = why.chars().take(DUMP_WHY_ROOM).collect();
+    let said = if why.is_empty() {
+        String::new()
+    } else {
+        format!(" ({why})")
+    };
+    let name = [&IMMICH_DUMPS, &NEXTCLOUD_DUMPS]
+        .iter()
+        .find(|kind| kind.app == app)
+        .map_or(app, |kind| kind.label);
+    format!(
+        "Database dump failed or too small{said}. The {name} database copy needs {name} running: if it is stopped, restart the PC or run  sudo bash install.sh  again, and the copy is made at the next run"
+    )
+}
 /// A logical copy (pg_dump) of `app`'s database, from the `database` service of its
 /// Compose project neko-<app>, as `<dest>/<app>-<UTC stamp>.sql`.
 fn database_of(
@@ -3432,7 +3915,7 @@ fn database_of(
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::from(output.try_clone()?))
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
         unsafe {
             cmd.pre_exec(|| {
                 if libc::setsid() < 0 {
@@ -3443,6 +3926,7 @@ fn database_of(
         }
         let mut child = cmd.spawn()?;
         let pid = child.id() as i32;
+        let errors = child.stderr.take().map(last_line_of);
         let start = Instant::now();
         let status = loop {
             if let Some(status) = child.try_wait()? {
@@ -3462,7 +3946,8 @@ fn database_of(
         }
         output.sync_all()?;
         if !status.success() || output.metadata()?.len() < 100 {
-            return Err(Error::new("Database dump failed or too small"));
+            let why = errors.and_then(|e| e.join().ok()).unwrap_or_default();
+            return Err(Error::new(&dump_failed(app, &why)));
         }
         // A disk that fills up mid-dump can leave a cut-off file even when every
         // program reports success. pg_dump ends a finished dump with this line.
@@ -3634,7 +4119,14 @@ fn archive_result(data: &Path, checks: &Integrity, check: Check) -> Result<Optio
     if let Some(problem) = checks.problem("HDD archive") {
         return Err(Error::new(&problem));
     }
-    Ok(checks.list_problem.clone())
+    // Files left out make the run incomplete, as a list of files that could not be written does.
+    let too_long =
+        (!checks.too_long.is_empty()).then(|| too_long_said("photos and videos", &checks.too_long));
+    Ok(joined(
+        [checks.list_problem.clone(), too_long]
+            .into_iter()
+            .flatten(),
+    ))
 }
 impl Integrity {
     /// Add what a later pass over the same tree found (each file listed once).
@@ -3644,6 +4136,7 @@ impl Integrity {
         // The later pass looked at every file again: its count is the one that stands.
         self.unverified = later.unverified;
         self.list_problem = later.list_problem.or(self.list_problem.take());
+        self.too_long = later.too_long;
         for (mine, theirs) in [
             (&mut self.damaged, later.damaged),
             (&mut self.both_damaged, later.both_damaged),
@@ -3873,9 +4366,9 @@ fn resume_app(app: &Paused, ctl: &dyn Containers, journal: &Path) -> Result<()> 
     }
     if let Some(at) = saved["stopped_at"].as_f64() {
         println!(
-            "{}: started again; it was paused for {:.0} seconds for its weekly backup",
+            "{}: started again; it was paused for {} for its weekly backup",
             app.name,
-            (common::now() - at).max(0.0)
+            common::plural((common::now() - at).max(0.0).round(), "second", "seconds")
         );
     }
     finish_journal(journal)
@@ -4137,9 +4630,40 @@ fn joined(problems: impl Iterator<Item = String>) -> Option<String> {
     let all: Vec<String> = problems.collect();
     (!all.is_empty()).then(|| all.join("; "))
 }
+/// The keys of an incomplete weekly USB copy's report that say a problem in words: a
+/// database copy, a source that could not be copied, the password list. The dashboard
+/// shows each one (collect::partial_reason); it once missed the password list's and said
+/// only "Incomplete; see the job's report".
+pub(crate) const INCOMPLETE_PARTS: [&str; 3] = ["database", "source", "passwords"];
+/// The files part of an incomplete report when no file was left out.
+fn none_left_out() -> Value {
+    json!({"in_use":0,"unsupported_names":0,"files":[]})
+}
+/// What the weekly copy left out (`files`: the Nextcloud files', as CloudCopy::missing
+/// says them) with the photos the exFAT drive could not store added, counted as names
+/// the USB drive cannot store (the dashboard says how many; the report lists up to 50).
+fn with_unstorable_photos(files: Option<Value>, unstorable: &[String]) -> Option<Value> {
+    if unstorable.is_empty() {
+        return files;
+    }
+    let cloud = files.is_some();
+    let mut out = files.unwrap_or_else(none_left_out);
+    let count = out["unsupported_names"].as_u64().unwrap_or(0) + unstorable.len() as u64;
+    out["unsupported_names"] = json!(count);
+    if let Some(list) = out["files"].as_array_mut() {
+        let room = 50usize.saturating_sub(list.len());
+        list.extend(unstorable.iter().take(room).map(|key| json!(key)));
+    }
+    out["reason"] = json!(if cloud {
+        "Photos and Nextcloud files not copied to the USB drive this week"
+    } else {
+        "Photos not copied to the USB drive this week"
+    });
+    Some(out)
+}
 /// One "incomplete" report for the weekly USB copy: Nextcloud files left out and/or a
 /// database copy, source list or password list problem.
-fn incomplete(
+pub(crate) fn incomplete(
     files: Option<Value>,
     database: Option<String>,
     source: Option<String>,
@@ -4148,12 +4672,11 @@ fn incomplete(
     if files.is_none() && database.is_none() && source.is_none() && passwords.is_none() {
         return None;
     }
-    let mut out = files.unwrap_or_else(|| json!({"in_use":0,"unsupported_names":0,"files":[]}));
-    for (key, problem) in [
-        ("database", database),
-        ("source", source),
-        ("passwords", passwords),
-    ] {
+    let mut out = files.unwrap_or_else(none_left_out);
+    for (key, problem) in INCOMPLETE_PARTS
+        .into_iter()
+        .zip([database, source, passwords])
+    {
         if let Some(problem) = problem {
             out[key] = json!(problem);
             out["reason"] = json!("The USB backup is incomplete");
@@ -4167,8 +4690,9 @@ const CLOUD_MISSING: &str = "the Nextcloud files folder is missing, so Nextcloud
 /// Nextcloud's server-side encryption keeps each file encrypted in the files folder and
 /// its keys in `files_encryption` folders (the server's at the top, each user's in their
 /// own folder). The weekly copy takes only the files, so it couldn't be decrypted after
-/// losing the server: the backup is reported as incomplete, never as a good one.
-const CLOUD_ENCRYPTED: &str = "Nextcloud's server-side encryption is on, and this backup copies the encrypted files without the keys needed to read them, so it can't restore them on its own. Keep the files readable (Nextcloud: Administration → Security → turn encryption off and decrypt), or keep your own backup of the whole Nextcloud data folder";
+/// losing the server: the backup is reported as incomplete, never as a good one. Under
+/// 300 characters, so the dashboard shows the advice whole.
+pub(crate) const CLOUD_ENCRYPTED: &str = "Nextcloud's server-side encryption is on, and this backup copies the encrypted files without the keys to read them, so it can't restore them on its own. Turn encryption off and decrypt the files (Nextcloud: Administration → Security), or keep your own backup of the whole Nextcloud data folder";
 /// Whether Nextcloud's server-side encryption is (or was) in use in this files folder.
 fn cloud_encrypted(cloud: &Path) -> bool {
     let keys =
@@ -4328,6 +4852,9 @@ fn monthly_admission(state: &dyn Fn(&str) -> String, journal: &Path) -> Result<(
 /// takes and lets go of the same lock before it stops any app: a copy already at work
 /// is waited for, and any later one sees the monthly run and does not start.
 pub(crate) const USB_LOCK: &str = "/run/nekoserver-photo-backup.lock";
+/// How long the USB drive's folder may take to list before it counts as not answering
+/// (as the music backup waits for a share of the person's own music).
+const ANSWER_WAIT: u64 = 30;
 pub fn no_weekly_copy() -> Result<()> {
     no_weekly_copy_at(
         Path::new(USB_LOCK),
@@ -4421,7 +4948,9 @@ impl UsbRun {
         Ok(UsbRun {
             cfg,
             data: common::mount_path(a.get("data")?)?,
-            dest: common::mount_path(a.get("dest")?)?,
+            // Not looked at yet: a drive mounted there that stopped answering would hold
+            // this look for good (`answering` asks it first, then looks).
+            dest: common::unlooked_mount_path(a.get("dest")?)?,
             media,
             uuid,
             fstype,
@@ -4442,6 +4971,25 @@ impl UsbRun {
         self.drives()
     }
     /// What must hold before the USB drive is even looked at.
+    /// What is mounted at the drive's folder, if anything, answers a listing in time.
+    /// Seen with a frozen exFAT FUSE mount standing in for a NAS folder whose NAS went
+    /// away (0.51.2 review): the weekly copy hung before its report said it was running.
+    fn answering(&self) -> Result<()> {
+        self.answering_with(common::mount_table_entry(&self.dest).is_some(), &|path| {
+            common::answers(path, ANSWER_WAIT)
+        })
+    }
+    /// `answering`, told whether something is mounted there and how to ask it (tests).
+    fn answering_with(&self, mounted: bool, answers: &dyn Fn(&Path) -> bool) -> Result<()> {
+        if !mounted || answers(&self.dest) {
+            // Now it can be looked at: no link anywhere on the way (`mount_path`).
+            return common::safe(&self.dest).map(drop);
+        }
+        Err(Error::new(&format!(
+            "The USB backup drive at {} is mounted but does not answer (a NAS that is off or away, or a hung drive), so nothing was copied. Check the NAS, or unplug the drive and plug it back in; the copy runs again next week",
+            self.dest.display()
+        )))
+    }
     fn admissible(&self) -> Result<()> {
         self.drives()?;
         let identity = common::json(&self.cfg, 64000);
@@ -4510,7 +5058,7 @@ impl UsbRun {
     fn own_disk_of_the_saved_type(&self) -> Result<()> {
         let device = Path::new("/dev/disk/by-uuid").join(&self.uuid);
         if !device.exists() {
-            return Err(Error::new("External drive missing"));
+            return Err(Error::new(USB_MISSING));
         }
         own_disk(&device, &self.data, &self.media)?;
         let (code, s) = common::command(
@@ -4552,19 +5100,17 @@ impl UsbRun {
             return self.mount_shared_folder(export);
         }
         let device = fs::canonicalize(Path::new("/dev/disk/by-uuid").join(&self.uuid))
-            .map_err(|_| Error::new("External drive missing"))?;
+            .map_err(|_| Error::new(USB_MISSING))?;
         let device = device.to_string_lossy().to_string();
         self.same_nas_disk(&device)?;
-        success(
-            &[
-                "mount",
-                "-o",
-                &usb_mount_options(&self.fstype),
-                &device,
-                &self.dest.to_string_lossy(),
-            ],
-            30,
-        )
+        let options = usb_mount_options(&self.fstype);
+        let dest = self.dest.to_string_lossy();
+        let mut argv = vec!["mount"];
+        if self.fstype == "exfat" {
+            argv.extend(exfat_mount_arguments());
+        }
+        argv.extend(["-o", &options, &device, &dest]);
+        success(&argv, 30)
     }
 }
 /// The backup drive named on the job's command line can be one: a filesystem UUID with
@@ -4584,13 +5130,6 @@ fn external_identity_ok(uuid: &str, fstype: &str, export: Option<&str>) -> bool 
 fn usb_copy(a: &Args, check: Check, weekly: bool) -> Result<()> {
     common::require_root()?;
     let run = UsbRun::from_args(a, check, weekly)?;
-    run.admissible()?;
-    // A weekly copy, the monthly check of the same drive and a restore from it (the
-    // recovery menu holds this lock while it reads the drive) wait for each other.
-    let _lock = common::lock_wait(
-        Path::new(USB_LOCK),
-        std::time::Duration::from_secs(8 * 3600),
-    )?;
     // The monthly check is a copy of the drive like the weekly one, so what it finds is
     // the weekly job's result too: a pass, files left out, or damage. A problem the
     // monthly run tolerates (a full drive, one that would not mount) is said in the
@@ -4600,6 +5139,18 @@ fn usb_copy(a: &Args, check: Check, weekly: bool) -> Result<()> {
     } else {
         &monthly_check_keeps
     };
+    // Before anything looks at the drive's folder: one mounted there that stopped
+    // answering holds every look, and the job hung for good without a word.
+    if let Err(e) = run.answering() {
+        return execute_keeping(Some(&run.data), "external", &run.cfg, keeps, || Err(e));
+    }
+    run.admissible()?;
+    // A weekly copy, the monthly check of the same drive and a restore from it (the
+    // recovery menu holds this lock while it reads the drive) wait for each other.
+    let _lock = common::lock_wait(
+        Path::new(USB_LOCK),
+        std::time::Duration::from_secs(8 * 3600),
+    )?;
     execute_keeping(Some(&run.data), "external", &run.cfg, keeps, || {
         // A monthly run may have started while this waited for the drive (the shared
         // lock was let go after the first check): checked again, now that it is held.
@@ -4652,7 +5203,7 @@ fn copy_to_usb(run: &UsbRun) -> Result<Option<Value>> {
     let mut photos = None;
     if let Some(source) = &run.source {
         common::stage("copying photos and videos to the USB drive");
-        photos = Some(mirror(source, dest, true, run.check)?.1);
+        photos = Some(mirror_on(source, dest, true, run.check, run.fstype == "exfat")?.1);
         run.still()?;
     }
     let mut database_problem: Option<String> = None;
@@ -4705,10 +5256,19 @@ fn copy_to_usb(run: &UsbRun) -> Result<Option<Value>> {
             settle(&damage.join(". "))
         )));
     }
+    let unstorable = photos
+        .as_ref()
+        .map(|p| p.unstorable.clone())
+        .unwrap_or_default();
+    let too_long = photos
+        .as_ref()
+        .filter(|p| !p.too_long.is_empty())
+        .map(|p| too_long_said("photos and videos", &p.too_long));
     // A list of files that could not be written makes the backup incomplete too.
     let source_problem = joined(
         [
             cloud.problem,
+            too_long,
             photos.and_then(|p| p.list_problem),
             cloud_copy
                 .as_ref()
@@ -4718,7 +5278,7 @@ fn copy_to_usb(run: &UsbRun) -> Result<Option<Value>> {
         .flatten(),
     );
     Ok(incomplete(
-        cloud_copy.and_then(|c| c.missing()),
+        with_unstorable_photos(cloud_copy.and_then(|c| c.missing()), &unstorable),
         database_problem,
         source_problem,
         passwords_problem,
@@ -4792,6 +5352,68 @@ fn cloud_to_usb(run: &UsbRun, cloud: &Path) -> Result<CloudPart> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn one_file_is_counted_as_one_file() {
+        // Deep check 300: the log said "1 files have no recorded checksum yet".
+        let one = |rows: &[&str]| rows.iter().map(|r| r.to_string()).collect::<Vec<_>>();
+        let report = super::Integrity {
+            unverified: 1,
+            repaired: 1,
+            usb_only: 1,
+            newly_verified: 1,
+            disagree: one(&["a.jpg"]),
+            missing: one(&["b.jpg"]),
+            both_damaged: one(&["c.jpg"]),
+            ..Default::default()
+        };
+        let said = report.counts("Archive").join("\n") + &report.findings("photo").unwrap();
+        for words in [
+            "Archive: 1 checksum recorded",
+            "Archive: 1 damaged copy replaced",
+            "Archive: 1 file has no recorded checksum yet",
+            "Archive: 1 file is on the USB drive only",
+            "1 file differs between the HDD and the USB drive",
+            "1 photo file that was backed up and verified is missing",
+            "CRITICAL: 1 file matches its recorded checksum in no copy",
+        ] {
+            assert!(said.contains(words), "{words} not in {said}");
+        }
+        assert!(!said.contains("1 files"), "{said}");
+        let many = super::Integrity {
+            unverified: 3,
+            disagree: one(&["a", "b"]),
+            ..Default::default()
+        };
+        let said = many.counts("Archive").join("\n") + &many.findings("photo").unwrap();
+        assert!(
+            said.contains("3 files have no recorded checksum yet"),
+            "{said}"
+        );
+        assert!(said.contains("2 files differ"), "{said}");
+    }
+    /// 0.51.2 user check: the USB drive failed and a new one is plugged in. The weekly
+    /// copy, which looks for the old drive's UUID, said only "External drive missing".
+    #[test]
+    fn a_missing_usb_drive_says_how_to_choose_a_new_one() {
+        let run = UsbRun {
+            cfg: PathBuf::from("/nonexistent/storage.json"),
+            data: PathBuf::from("/srv/nekoserver"),
+            media: PathBuf::from("/mnt/nekoserver-media"),
+            dest: PathBuf::from("/mnt/nekoserver-photos"),
+            uuid: "0000dead-0000-4000-8000-00000000beef".into(),
+            fstype: "ext4".into(),
+            check: Check::Quick,
+            source: None,
+            cloud: None,
+            weekly: true,
+            export: None,
+        };
+        let said = run.own_disk_of_the_saved_type().unwrap_err().to_string();
+        assert_eq!(said, USB_MISSING);
+        assert!(said.starts_with("External drive missing")); // known_fixes.py
+        assert!(said.contains("Replaced it with a new one? Remove \"external_backup_uuid\""));
+        assert!(said.contains("sudo bash install.sh"));
+    }
+    #[test]
     fn the_subvolume_is_checked_the_same_with_or_without_findmnt() {
         // The review of 0.47.10: when findmnt timed out, the kernel's table gave the source
         // without its subvolume, so a drive on /@data was refused and one on another
@@ -4823,6 +5445,48 @@ mod tests {
         let err = drive_check(&settings(""), "data_ssd", at, &entry("/mnt/other")).unwrap_err();
         assert!(err.to_string().contains("another Btrfs subvolume"), "{err}");
         let _ = fs::remove_dir_all(root);
+    }
+    /// Deep check plan 288: changes to the drive check that no test noticed. findmnt's
+    /// answer without a source (a filesystem with no UUID shifts its columns) passed, then
+    /// crashed on the missing column; a subvolume written with a closing slash ("/@data/")
+    /// is the one mounted ("/@data").
+    #[test]
+    fn a_drive_check_takes_only_a_whole_answer_and_a_subvolume_as_written() {
+        let at = Path::new("/mnt/data");
+        let c = json!({"storage": {"data_ssd": {"uuid": "ab-cd", "fstype": "btrfs", "subvolume": "/@data/"}}});
+        assert_eq!(
+            drive_check(&c, "data_ssd", at, "ab-cd btrfs /dev/sdb1[/@data]").unwrap(),
+            "ab-cd"
+        );
+        let plain = json!({"storage": {"data_ssd": {"uuid": "ab-cd", "fstype": "ext4"}}});
+        assert!(drive_check(&plain, "data_ssd", at, "ab-cd ext4").is_err());
+    }
+    /// Deep check plan 288: the SSD and the HDD must be two drives (unless the settings
+    /// keep both as folders of one on purpose), at the settings' own paths, and every other
+    /// drive is one of its own: each of these could be taken out unnoticed.
+    #[test]
+    fn the_guard_wants_two_drives_at_the_settings_paths() {
+        let (data, media) = (
+            Path::new("/srv/nekoserver"),
+            Path::new("/mnt/nekoserver-media"),
+        );
+        let mut c = json!({"data_mount": "/srv/nekoserver", "media_mount": "/mnt/nekoserver-media",
+            "storage": {"data_ssd": {"uuid": "one"}, "media_hdd": {"uuid": "two"}}});
+        let by_settings = |c: &Value, key: &str, _: &Path| -> Result<String> {
+            Ok(c["storage"][key]["uuid"].as_str().unwrap().to_string())
+        };
+        assert_eq!(
+            main_drives_with(&c, data, media, &by_settings).unwrap(),
+            ["one", "two"]
+        );
+        assert!(main_drives_with(&c, data, Path::new("/mnt/other"), &by_settings).is_err());
+        c["storage"]["media_hdd"]["uuid"] = json!("one");
+        let same = main_drives_with(&c, data, media, &by_settings).unwrap_err();
+        assert!(same.to_string().contains("Distinct"), "{same}");
+        let mut ids = vec!["one".to_string(), "two".to_string()];
+        assert!(distinct(&mut ids, "two".into()).is_err());
+        distinct(&mut ids, "three".into()).unwrap();
+        assert_eq!(ids, ["one", "two", "three"]);
     }
     /// The 0.46.0 review, H04: with Nextcloud's files on the SSD, the USB copy refused its
     /// own folder ("outside media mount") and copied nothing, photos included. The folder
@@ -5119,9 +5783,9 @@ mod tests {
         let wrong = identity_mismatch(
             "data_ssd",
             data,
-            "aaaa-1111",
-            "ext4",
+            ("aaaa-1111", "ext4"),
             "bbbb-2222 ext4 /dev/sdc1\n",
+            None,
         );
         assert_eq!(
             wrong,
@@ -5130,8 +5794,60 @@ mod tests {
              so every service learns the new one"
         );
         let media = Path::new("/mnt/nekoserver-media");
-        assert!(identity_mismatch("media_hdd", media, "cccc", "xfs", "")
-            .ends_with("should be the HDD (UUID cccc, xfs); nothing is mounted there"));
+        assert!(
+            identity_mismatch("media_hdd", media, ("cccc", "xfs"), "", None)
+                .ends_with("should be the HDD (UUID cccc, xfs); nothing is mounted there")
+        );
+        // Not every other drive is the HDD: the USB backup and a drive of its own.
+        let extra = Path::new("/mnt/nekoserver-drives/d3");
+        assert!(identity_mismatch("d3", extra, ("dddd", "ext4"), "", None)
+            .ends_with("should be the drive d3 (UUID dddd, ext4); nothing is mounted there"));
+        let usb = Path::new("/mnt/nekoserver-photos");
+        assert!(identity_mismatch("usb", usb, ("eeee", "ext4"), "", None)
+            .contains("should be the USB backup drive (UUID eeee"));
+    }
+    /// Deep check plans 194, 195 and 207, seen on loop drives: the SSD mounted at the HDD's
+    /// folder was told "If the drive was replaced, run install.sh"; the USB drive given the
+    /// HDD's filesystem was told "The SSD and the HDD must be two different filesystems";
+    /// the exFAT USB drive mounted through FUSE (fuseblk) was told to run install.sh too.
+    #[test]
+    fn a_drive_out_of_its_place_or_mounted_through_fuse_is_said_so() {
+        let cfg = json!({"storage": {
+            "data_ssd": {"uuid": "aaaa-1111", "fstype": "ext4"},
+            "media_hdd": {"uuid": "bbbb-2222", "fstype": "xfs"}},
+            "photos": {"external_backup_uuid": "CCCC-3333"}});
+        let media = Path::new("/mnt/nekoserver-media");
+        let said = drive_check(&cfg, "media_hdd", media, "aaaa-1111 ext4 /dev/sdb1")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            said.contains("found the SSD there (aaaa-1111 ext4 /dev/sdb1)"),
+            "{said}"
+        );
+        assert!(said.contains("sudo umount /mnt/nekoserver-media"), "{said}");
+        assert!(!said.contains("replaced"), "{said}");
+        assert_eq!(drive_with_uuid(&cfg, "CCCC-3333").as_deref(), Some("usb"));
+        assert_eq!(drive_with_uuid(&cfg, "dddd"), None);
+        // The USB drive's filesystem through FUSE.
+        let usb = json!({"storage": {"usb": {"uuid": "CCCC-3333", "fstype": "exfat"}}});
+        let at = Path::new("/mnt/nekoserver-photos");
+        let said = drive_check(&usb, "usb", at, "CCCC-3333 fuseblk /dev/loop2")
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("mounted through FUSE"), "{said}");
+        assert!(
+            said.contains("sudo umount /mnt/nekoserver-photos"),
+            "{said}"
+        );
+        assert!(!said.contains("install.sh"), "{said}");
+        // Two drives that are one filesystem are named.
+        let said = one_filesystem("media_hdd", "usb", "bbbb-2222");
+        assert!(
+            said.starts_with("The HDD and the USB backup drive are one filesystem"),
+            "{said}"
+        );
+        // The weekly copy mounts an exFAT drive with Linux's own driver, never a FUSE helper.
+        assert_eq!(exfat_mount_arguments(), ["-i", "-t", "exfat"]);
     }
     #[test]
     fn a_read_only_usb_mount_is_told_apart() {
@@ -5729,6 +6445,71 @@ mod tests {
     /// The review of 0.47.0: with two LUNs of one filesystem UUID, the UUID's link names
     /// only one of them, so the weekly copy checked that one and then mounted by "UUID=" (or
     /// used one mounted by hand), which could be the copy.
+    /// Seen with a frozen exFAT FUSE mount standing in for a NAS folder whose NAS went
+    /// away (0.51.2 review): the weekly copy looked at the folder first (the overlap check)
+    /// and hung there for good, before its report said anything.
+    /// Seen with the real Immich database job and a stand-in Docker (0.51.2 review): with
+    /// Immich stopped, the copy failed with "Database dump failed or too small" alone.
+    #[test]
+    fn a_failed_database_copy_says_what_docker_said_and_what_to_do() {
+        let mut child = Command::new("sh")
+            .args([
+                "-c",
+                "echo progress >&2; echo 'service \"database\" is not running' >&2; exit 1",
+            ])
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let errors = last_line_of(child.stderr.take().unwrap());
+        assert!(!child.wait().unwrap().success());
+        let said = dump_failed("immich", &errors.join().unwrap());
+        assert!(
+            said.starts_with(
+                "Database dump failed or too small (service \"database\" is not running). The Immich database copy needs Immich running"
+            ),
+            "{said}"
+        );
+        // However long what Docker said, the advice survives the reports' cut.
+        let long = dump_failed("nextcloud", &"x".repeat(500));
+        assert!(common::sanitize(&long).ends_with("the copy is made at the next run"));
+        assert!(dump_failed("immich", "").starts_with("Database dump failed or too small. The"));
+    }
+    #[test]
+    fn a_usb_folder_that_does_not_answer_is_said_before_anything_looks_at_it() {
+        let run = UsbRun {
+            cfg: PathBuf::from("/etc/neko.json"),
+            data: PathBuf::from("/srv/nekoserver"),
+            media: PathBuf::from("/mnt/media"),
+            dest: PathBuf::from("/mnt/nekoserver-usb"),
+            uuid: "u1".into(),
+            fstype: "nfs4".into(),
+            check: Check::Quick,
+            source: Some(PathBuf::from("/mnt/media/photos/archive")),
+            cloud: None,
+            weekly: true,
+            export: Some("nas:/backup".into()),
+        };
+        let said = run
+            .answering_with(true, &|_| false)
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("/mnt/nekoserver-usb is mounted but does not answer"));
+        assert!(said.ends_with("the copy runs again next week"), "{said}");
+        assert!(common::sanitize(&said).len() < 300, "{said}");
+        assert!(run.answering_with(true, &|_| true).is_ok());
+        // Nothing mounted there: nothing to ask (mounting comes later).
+        assert!(run.answering_with(false, &|_| panic!("not asked")).is_ok());
+        // Asked before the first look at the folder (admissible's overlap check), and its
+        // failure is reported as the job's.
+        let source = include_str!("backup.rs");
+        let start = source.find("fn usb_copy(a: &Args").unwrap();
+        let body = &source[start..start + source[start..].find("\n}\n").unwrap()];
+        let asked = body.find("run.answering()").expect("asked");
+        assert!(asked < body.find("run.admissible()").unwrap());
+        assert!(body[asked..].starts_with(
+            "run.answering() {\n        return execute_keeping(Some(&run.data), \"external\""
+        ));
+    }
     #[test]
     fn the_usb_drive_checked_on_a_nas_is_the_device_mounted() {
         let source = include_str!("backup.rs");
@@ -5739,7 +6520,8 @@ mod tests {
         let mount = body("    fn mount(&self) -> Result<()> {");
         assert!(!mount.contains("UUID={}"), "{mount}");
         assert!(
-            mount.find("self.same_nas_disk(&device)").unwrap() < mount.find("\"mount\",").unwrap()
+            mount.find("self.same_nas_disk(&device)").unwrap()
+                < mount.find("vec![\"mount\"]").unwrap()
         );
         let ready = body("    fn usb_ready(&self) -> Result<bool> {");
         let mounted = ready
@@ -6811,6 +7593,57 @@ mod tests {
         assert!(usb.join("nextcloud/bob/files/todo.txt").exists());
         fs::remove_dir_all(root).unwrap();
     }
+    /// Seen with the real weekly copy onto an exFAT loop drive (0.51.2 review): a photo
+    /// named `colon:a.jpg` stopped the whole copy ("No such file or directory"), and of
+    /// `IMG_0001.JPG` and `img_0001.jpg` one was never copied (same size: reported as
+    /// fine) or each week "repaired" the other into neko-damaged/.
+    #[test]
+    fn photos_exfat_cannot_name_are_left_out_and_listed() {
+        let root = scratch("exfat-photos");
+        let (src, hdd, usb) = (root.join("src"), root.join("hdd"), root.join("usb"));
+        for (n, name) in ["IMG_0001.JPG", "img_0001.jpg", "colon:a.jpg", "café.jpg"]
+            .iter()
+            .enumerate()
+        {
+            write(&src.join(n.to_string()), name.as_bytes());
+            keep(
+                &src.join(n.to_string()),
+                &hdd,
+                &format!("library/u1/{name}"),
+            );
+        }
+        // On the drive from an earlier week, under another case than the HDD's file now.
+        write(&src.join("old"), b"old");
+        keep(&src.join("old"), &hdd, "library/u1/Old.jpg");
+        write(&usb.join("library/u1/old.jpg"), b"old");
+        let (copied, report) = mirror_on(&hdd, &usb, true, Check::Quick, true).unwrap();
+        assert_eq!(copied, 2);
+        assert_eq!(
+            report.unstorable,
+            [
+                "library/u1/Old.jpg",
+                "library/u1/colon:a.jpg",
+                "library/u1/img_0001.jpg"
+            ]
+        );
+        assert!(!usb.join("library/u1/img_0001.jpg").exists());
+        // Listed on the drive for a restore from it (deep check plan 191).
+        let note: Value =
+            serde_json::from_slice(&fs::read(usb.join(".neko-left-out.json")).unwrap()).unwrap();
+        assert_eq!(note["format"], "neko-left-out-v1");
+        assert_eq!(note["files"], json!(report.unstorable));
+        assert_eq!(report.problem("HDD archive"), None);
+        assert_eq!(report.repaired, 0);
+        // The weekly report counts them as names the drive cannot store.
+        let left = with_unstorable_photos(None, &report.unstorable).unwrap();
+        assert_eq!(left["unsupported_names"], 3);
+        assert_eq!(left["files"][2], "library/u1/img_0001.jpg");
+        // Not exFAT: every name is copied, as before.
+        let ext4 = root.join("ext4");
+        let (copied, report) = mirror(&hdd, &ext4, true, Check::Quick).unwrap();
+        assert_eq!((copied, report.unstorable.len()), (5, 0));
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn exfat_unsafe_names_are_skipped_not_fatal() {
         assert!(fat_safe(Path::new("Docs/Report 2026.docx")));
@@ -7261,6 +8094,31 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
     #[test]
+    #[ignore = "needs root and a loop drive: run cardset-loop-tests.sh (NEKO_LOOP_USB, NEKO_LOOP_IMAGE)"]
+    fn loop_a_usb_drive_that_does_not_keep_the_bytes_is_caught() {
+        // The review of 0.51.0: the weekly USB copy read its copy back from Linux's page
+        // cache ("from disk: what actually landed"), so a drive that kept other bytes
+        // passed. Here the drive's bytes are changed under its mounted ext4 between the
+        // write and the readback: nothing may be published.
+        let usb = std::path::PathBuf::from(std::env::var("NEKO_LOOP_USB").unwrap());
+        let image = std::env::var("NEKO_LOOP_IMAGE").unwrap();
+        let root = scratch("lying-usb");
+        let src = root.join("IMG_0001.jpg");
+        write(&src, &vec![7u8; 300_000]);
+        let target = usb.join("photos/IMG_0001.jpg");
+        let partial = usb.join("photos").join(partial_name("IMG_0001.jpg"));
+        let error = copy_verified_with(&src, &target, true, 0o644, &|| {
+            crate::lying_drive::change_on_disk(&image, &partial);
+        })
+        .expect_err("a copy the drive does not hold was published");
+        assert!(
+            error.to_string().contains("Copy verification failed"),
+            "{error}"
+        );
+        assert!(!target.exists(), "nothing published");
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
     fn a_partial_file_that_is_not_a_file_is_refused() {
         let root = scratch("partial");
         write(&root.join("a.mov"), b"video");
@@ -7339,7 +8197,11 @@ mod tests {
         };
         let text = report.problem("USB Nextcloud").unwrap();
         assert!(!text.contains("other copy"), "{text}");
-        assert!(text.contains("Repair damaged backup copies"), "{text}");
+        // The choice the recovery menu really shows (0.50.0 renamed it there).
+        assert!(
+            text.contains("choose \"Fix damaged backup copies\""),
+            "{text}"
+        );
         assert!(
             text.contains("accept that this saved copy is lost"),
             "{text}"
@@ -7348,7 +8210,9 @@ mod tests {
         report.missing = vec!["alice/files/gone.txt".into()];
         let text = report.problem("USB Nextcloud").unwrap();
         assert!(
-            text.contains("are missing") && text.starts_with(SETTLE) && text.ends_with(SETTLE_MORE),
+            text.contains("1 USB Nextcloud file that was backed up and verified is missing")
+                && text.starts_with(&settle_advice())
+                && text.ends_with(SETTLE_MORE),
             "{text}"
         );
     }
@@ -7373,13 +8237,13 @@ mod tests {
             assert!(shown.chars().count() <= 300, "{shown}");
             assert!(
                 shown.contains(
-                    "sudo bash install.sh --recover  and choose \"Repair damaged backup copies\""
+                    "sudo bash install.sh --recover  and choose \"Fix damaged backup copies\""
                 ),
                 "{shown}"
             );
         }
         // The dashboard prefixes the stage ("Failed while …: "); still well inside.
-        assert!(INTEGRITY.len() + SETTLE.len() < 160);
+        assert!(INTEGRITY.len() + settle_advice().len() < 160);
     }
     #[test]
     fn backup_bookkeeping_is_not_part_of_the_tree() {
@@ -7467,6 +8331,69 @@ mod tests {
             add_only_copy(&src, &dst, true, 0o644, Check::Quick).unwrap(),
             Added::Version
         );
+        let _ = fs::remove_dir_all(root);
+    }
+    /// `base`/eee.../fff (folders of 200 bytes, then one to make up the rest): a folder
+    /// whose path is `len` bytes long, as a deep folder tree synced from Windows can be.
+    fn deep_folder(base: &Path, len: usize) -> PathBuf {
+        let mut folder = base.to_path_buf();
+        while folder.as_os_str().len() + 201 + 1 < len {
+            folder.push("e".repeat(200));
+        }
+        let rest = len - folder.as_os_str().len() - 1;
+        folder.push("f".repeat(rest));
+        fs::create_dir_all(&folder).unwrap();
+        folder
+    }
+    /// Deep check plan 337: a file that fits where it is but whose copy (or the partial
+    /// copy beside it) would be longer than Linux allows stopped the whole run with "File
+    /// name too long", so nothing after it was ever backed up. It is left out and named.
+    #[test]
+    fn a_file_too_deep_for_the_backup_is_named_and_the_rest_is_copied() {
+        let root = scratch("too-deep");
+        // Nextcloud: the USB drive's folder is longer than the files' own.
+        let (cloud, usb) = (root.join("c"), root.join("usb-drive"));
+        fs::create_dir_all(&usb).unwrap();
+        let files = cloud.join("alice/files");
+        let deep = deep_folder(&files.join("Deep"), 4070);
+        write(&deep.join("a.txt"), b"deep");
+        write(&files.join("later.txt"), b"later");
+        let made = copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        assert!(usb.join("nextcloud/alice/files/later.txt").is_file());
+        assert_eq!(made.refused.len(), 1);
+        assert!(made.refused[0].ends_with("/a.txt"));
+        assert!(!made.complete());
+        // The photo archive: its folder is longer than Immich's.
+        let (immich, archive) = (root.join("i"), root.join("photo-archive"));
+        let deep = deep_folder(&immich.join("library/admin"), 4070);
+        write(&deep.join("a.jpg"), b"deep");
+        write(&immich.join("upload/u/later.jpg"), b"later");
+        dated(&deep.join("a.jpg"), std::time::SystemTime::now() - DAY);
+        dated(
+            &immich.join("upload/u/later.jpg"),
+            std::time::SystemTime::now() - DAY,
+        );
+        let (copied, report) = archive_checked(&immich, &archive, true, 600, Check::Quick).unwrap();
+        assert_eq!(copied, 1);
+        assert_eq!(report.too_long.len(), 1);
+        assert!(report.too_long[0].ends_with("/a.jpg"));
+        let data = root.join("ssd");
+        fs::create_dir_all(&data).unwrap();
+        let said = archive_result(&data, &report, Check::Quick)
+            .unwrap()
+            .unwrap();
+        assert!(
+            said.contains("1 photos and videos were not backed up"),
+            "{said}"
+        );
+        // The USB copy of the archive, onto a drive whose folder is longer still.
+        let deep = deep_folder(&archive.join("library/admin"), 4070);
+        write(&deep.join("b.jpg"), b"deep");
+        let usb = root.join("usb-drive-with-a-longer-name");
+        fs::create_dir_all(&usb).unwrap();
+        let (_, report) = mirror(&archive, &usb, true, Check::Quick).unwrap();
+        assert!(usb.join("upload/u/later.jpg").is_file());
+        assert_eq!(report.too_long.len(), 1);
         let _ = fs::remove_dir_all(root);
     }
     #[test]
@@ -7590,6 +8517,33 @@ mod tests {
     }
     /// The wizard specification's T20: older backups are removed only once a new one is
     /// finished and published, and the last usable one never goes.
+    #[test]
+    fn a_snapshot_that_failed_leaves_nothing_behind() {
+        let root = scratch("failed-stage");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let stage = stage_snapshot(&root).unwrap();
+        fs::write(stage.payload.join("big.db"), vec![0u8; 4096]).unwrap();
+        let half_made = stage.dir.clone();
+        let failed = publish_snapshot(
+            &root,
+            &stage,
+            &[],
+            || Err(Error::new("no")),
+            &json!({}),
+            1,
+            None,
+        );
+        assert!(failed.is_err());
+        drop(stage); // the run ends
+        assert!(!half_made.exists());
+        // A published one stays.
+        let stage = stage_snapshot(&root).unwrap();
+        publish_snapshot(&root, &stage, &[], || Ok(()), &json!({}), 1, None).unwrap();
+        let name = stage.name.clone();
+        drop(stage);
+        assert!(root.join(&name).join("manifest.json").is_file());
+        fs::remove_dir_all(&root).unwrap();
+    }
     #[test]
     fn older_snapshots_go_only_after_a_new_one_is_published_and_never_the_last_one() {
         let root = scratch("prune-after");
@@ -7812,6 +8766,46 @@ mod tests {
         ] {
             assert_eq!(service_busy(state), busy, "{state}");
         }
+    }
+    #[test]
+    fn a_long_list_of_what_was_left_out_never_loses_the_last_success() {
+        // Deep check 304: 50 long Nextcloud paths made a report over the read limit;
+        // the next run read it as {} and its last success was gone.
+        let root = scratch("long-report");
+        let data = root.join("ssd");
+        let path = data.join("reports/jobs/external.json");
+        let long = |n: usize| format!("alice/files/{}/{n}.jpg", "Holiday photos 2024 ".repeat(80));
+        let missing = CloudCopy {
+            skipped: 50,
+            skipped_files: (0..50).map(long).collect(),
+            ..Default::default()
+        }
+        .missing()
+        .unwrap();
+        let old = json!({"job":"external","status":"pass","last_success":160.0});
+        let row = running_row("external", 200.0, &old);
+        let result: Result<Outcome> = Ok(Outcome {
+            partial: Some(missing.clone()),
+        });
+        let unfitted = settled_report(row.clone(), &old, &result, &gave_way);
+        assert!(serde_json::to_vec(&unfitted).unwrap().len() > common::REPORT_LIMIT);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            serde_json::to_vec(&report_that_fits(unfitted)).unwrap(),
+        )
+        .unwrap();
+        let read = common::json(&path, common::REPORT_LIMIT);
+        assert_eq!(read["last_success"], 160.0);
+        assert_eq!(read["status"], "partial");
+        assert_eq!(read["missing"]["in_use"], 50);
+        assert!(!read["missing"]["files"].as_array().unwrap().is_empty());
+        // A short one is kept as it is.
+        let short = settled_report(row, &old, &result, &gave_way);
+        let mut small = short.clone();
+        small["missing"]["files"] = json!(["a.jpg"]);
+        assert_eq!(report_that_fits(small.clone()), small);
+        let _ = fs::remove_dir_all(root);
     }
     #[test]
     fn a_clock_put_back_keeps_the_last_success() {
@@ -8780,8 +9774,45 @@ mod tests {
         let other = if subvolume.is_empty() { "/@data" } else { "" };
         fs::write(&cfg, settings(other)).unwrap();
         let wrong = guard_data(&cfg, &ssd).unwrap_err().to_string();
-        assert!(wrong.contains("another Btrfs subvolume"), "{wrong}");
+        // Named as the drive's filesystem has it (other_part).
+        let part = if fstype == "btrfs" {
+            "another Btrfs subvolume"
+        } else {
+            "another folder of the drive"
+        };
+        assert!(wrong.contains(part), "{wrong}");
         let _ = fs::remove_dir_all(root);
+    }
+    /// Seen in 0.51.2 on loop drives: a folder of an ext4 HDD bind-mounted at the HDD's
+    /// folder was refused as "another Btrfs subvolume", and a Btrfs subvolume deleted
+    /// while mounted ("[/@media//deleted]") was told to restart the PC.
+    #[test]
+    fn the_wrong_part_of_a_drive_is_named_as_that_filesystem_has_it() {
+        let hdd = Path::new("/mnt/nekoserver-media");
+        let refused = |fstype: &str, subvolume: &str, found: &str| {
+            let c = json!({"storage": {"media_hdd": {"uuid": "aaaa", "fstype": fstype, "subvolume": subvolume}}});
+            drive_check(&c, "media_hdd", hdd, found)
+                .unwrap_err()
+                .to_string()
+        };
+        let folder = refused("ext4", "", "aaaa ext4 /dev/sdb1[/media]");
+        assert!(!folder.contains("Btrfs"), "{folder}");
+        assert!(
+            folder.contains(
+                "another folder of the drive (/media) than the settings name (the top level)"
+            ),
+            "{folder}"
+        );
+        assert!(folder.contains("Restart the PC"), "{folder}");
+        let deleted = refused("btrfs", "/@media", "aaaa btrfs /dev/sdb1[/@media//deleted]");
+        assert!(deleted.contains("(/@media) was deleted"), "{deleted}");
+        assert!(!deleted.contains("Restart the PC"), "{deleted}");
+        // Another Btrfs subvolume is still said as before.
+        let other = refused("btrfs", "/@media", "aaaa btrfs /dev/sdb1[/@home]");
+        assert!(
+            other.contains("another Btrfs subvolume than the settings name (/@media)"),
+            "{other}"
+        );
     }
     /// NP-1: the SSD-only check (Immich's resume, the job reports) checks the Btrfs
     /// subvolume as the full check does: the drive's top level, or another subvolume,
@@ -8804,6 +9835,8 @@ mod tests {
                 said.contains("another Btrfs subvolume than the settings name (/@data)"),
                 "{said}"
             );
+            // Said with what to do, as the other drive checks are (deep check plan 14).
+            assert!(said.contains("Restart the PC"), "{said}");
         }
         // Another drive, or nothing mounted: refused as before.
         assert!(drive_check(&c, "data_ssd", ssd, "bbbb btrfs /dev/sdc1[/@data]").is_err());
@@ -8821,7 +9854,10 @@ mod tests {
             let from = &source[source.find(start).unwrap()..];
             from[..from.find("\n}\n").unwrap()].to_string()
         };
-        assert!(body("fn main_drives(").contains("checked_drive(c, key, path)"));
+        assert!(
+            body("fn main_drives(").contains("main_drives_with(c, data, media, &checked_drive)")
+        );
+        assert!(body("fn main_drives_with(").contains("checked_drive(c, key, path)"));
         assert!(body("pub fn guard(").contains("main_drives(&c, data, media)?"));
         assert!(body("pub(crate) fn guard_present(").contains("main_drives(&c, data, media)?"));
     }
@@ -8899,5 +9935,42 @@ mod tests {
             at("if weekly {") < at("&gave_way") && at("&gave_way") < at("&monthly_check_keeps")
         );
         assert!(at("&monthly_check_keeps") < at("execute_keeping("));
+    }
+    /// Deep check plans 192 and 208, seen with the nightly music backup on loop drives: an
+    /// ext4 HDD remounted read-only failed it with only "Read-only file system (os error
+    /// 30)", and an XFS HDD Linux shut down failed it, check-drives and Docker's start
+    /// guard with only "Input/output error (os error 5)".
+    #[test]
+    fn a_drive_that_takes_no_writes_is_said_so_before_a_job_writes() {
+        let hdd = Path::new("/mnt/nekoserver-media");
+        let shut = no_writes_said("media_hdd", hdd, true, false).unwrap();
+        assert!(
+            shut.starts_with("The HDD (/mnt/nekoserver-media) stopped answering"),
+            "{shut}"
+        );
+        for said in [
+            shut,
+            no_writes_said("data_ssd", Path::new("/srv/nekoserver"), false, true).unwrap(),
+        ] {
+            assert!(said.contains("sudo bash install.sh --recover"), "{said}");
+            assert!(said.contains(common::shared("recovery_menu", "check_drive")));
+        }
+        let ro = no_writes_said("d3", Path::new("/mnt/nekoserver-drives/d3"), false, true).unwrap();
+        assert!(ro.starts_with("The drive d3 (/mnt/nekoserver-drives/d3) takes no new files"));
+        assert_eq!(no_writes_said("media_hdd", hdd, false, false), None);
+        assert_eq!(no_writes("media_hdd", &std::env::temp_dir(), false), None);
+        // Before a job writes its report, and in the drive check every job, setup and
+        // Docker's start guard make (that one only for a drive shut down: the recovery
+        // menu must still reach a read-only drive to check it).
+        let source = include_str!("backup.rs");
+        let body = &source[source.find("fn execute_keeping<").unwrap()..];
+        assert!(
+            body.find("drives_take_writes(cfg)?").unwrap() < body.find("running_row(").unwrap()
+        );
+        let checked = &source[source.find("pub(crate) fn checked_drive(").unwrap()..];
+        assert!(
+            checked.find("no_writes(key, path, true)").unwrap()
+                < checked.find("drive_at(").unwrap()
+        );
     }
 }

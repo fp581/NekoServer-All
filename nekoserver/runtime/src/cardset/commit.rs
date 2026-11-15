@@ -238,7 +238,7 @@ fn write_partial(
 /// Read the payload back, hash every byte, and require the source to be unchanged.
 fn check(vol: &Volume, intent: &Intent, opened: &Opened, checksum: &str, size: u64) -> Res<()> {
     let tx = &intent.txn.transaction_id;
-    let (again, n) = source::hash_reader(vol.staging.open_file(&partial_name(tx))?)?;
+    let (again, n) = source::hash_reader(vol.staging.open_from_card(&partial_name(tx))?)?;
     if again != checksum || n != size {
         return Err(CardError::new(
             Kind::VerifyFailed,

@@ -177,7 +177,7 @@ class ReadTests(unittest.TestCase):
                 json.dumps({'data_mount': str(ssd), 'storage': {'data_ssd': {'uuid': 'ssd-0001', 'fstype': 'ext4'}}})
             )
             with (
-                mock.patch.object(s, 'settings_path', lambda p: Path(p)),
+                mock.patch.object(s, 'read_settings', lambda p: json.loads(Path(p).read_text())),
                 mock.patch.object(s, 'mount_path', lambda p: Path(p)),
                 mock.patch.object(s, 'status', return_value={'count': 0}),
                 self.assertRaisesRegex(RuntimeError, r'Drive check failed: the SSD; nothing is mounted there\.$'),
@@ -190,7 +190,7 @@ class ReadTests(unittest.TestCase):
                 mock.patch.object(sys, 'argv', ['system_updates.py', 'check', '--config', str(settings)]),
                 mock.patch.object(s, 'checked_settings', lambda v: v),
                 mock.patch.object(s.os, 'geteuid', return_value=0),
-                mock.patch.object(s, 'settings_path', lambda p: Path(p)),
+                mock.patch.object(s, 'read_settings', lambda p: json.loads(Path(p).read_text())),
                 mock.patch.object(s, 'mount_path', lambda p: Path(p)),
                 mock.patch.object(sys, 'stderr', err),
             ):

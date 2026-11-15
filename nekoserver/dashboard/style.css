@@ -230,6 +230,8 @@ main {
 }
 .topbar {
   display: flex;
+  /* The buttons go under a title they would cover (Processes at 320 px wide). */
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -1076,6 +1078,8 @@ details.more summary span {
 }
 .issue h3 {
   margin: 0 0 4px;
+  /* A title can hold an address with no spaces (a shared folder's //nas/Photos_2019-2024). */
+  overflow-wrap: anywhere;
 }
 .issue p {
   font-size: 14px;
@@ -1817,6 +1821,14 @@ body.tv {
   font-size: 14px;
   font-weight: 600;
 }
+/* A greyed-out item's note says why and what to do ("run setup again"): only its label is
+ * dimmed, so the note stays readable (dimmed with it, it measured 2.3:1 in Lamplight). */
+.menu-item:disabled {
+  opacity: 1;
+}
+.menu-item:disabled > span {
+  opacity: 0.5;
+}
 .menu-item:hover:not(:disabled),
 .menu-item:focus-visible {
   background: var(--raised);
@@ -2279,6 +2291,41 @@ body.tv {
   .glance,
   .summary-strip {
     grid-template-columns: 1fr;
+  }
+}
+/* A phone at 200% zoom (about 195 px): a page's cat goes above its title and a card's
+ * badge under the card's title, so no words are pushed out sideways (deep check 170: the
+ * page scrolled sideways, up to 281 px wide). */
+@media (max-width: 300px) {
+  .section-head.with-cat,
+  .section-head.with-cat[data-cat='processes'],
+  .section-head.with-cat:is([data-cat='apps'], [data-cat='help']) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .section-head.with-cat > .cat-box.panel-cat,
+  .section-head.with-cat[data-cat='processes'] > .cat-box.panel-cat,
+  .section-head.with-cat:is([data-cat='apps'], [data-cat='help']) > .cat-box.panel-cat {
+    grid-column: 1;
+    grid-row: 1;
+    justify-self: start;
+  }
+  .section-head.with-cat > div,
+  .section-head.with-cat:is([data-cat='apps'], [data-cat='help']) > div {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .section-head.with-cat > :is(a, button, .badge),
+  .section-head.with-cat:is([data-cat='apps'], [data-cat='help']) > :is(a, button, .badge) {
+    grid-row: 3;
+  }
+  .card-heading,
+  .row {
+    flex-wrap: wrap;
+  }
+  .badge,
+  .row > .badge {
+    flex-shrink: 1;
+    white-space: normal;
   }
 }
 @media (prefers-reduced-motion: no-preference) {

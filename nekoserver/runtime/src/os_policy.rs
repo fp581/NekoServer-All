@@ -202,10 +202,21 @@ pub fn run(a: &Args) -> Result<()> {
     let timer = standby(&cfg)?;
     for disk in timed {
         let shown = disk.to_string_lossy();
-        let code = common::command(&["hdparm", "-S", &timer.to_string(), &shown], 20)?.0;
-        println!("{}", applied(&shown, timer, code, &common::last_stderr()));
+        let line = match common::command(&["hdparm", "-S", &timer.to_string(), &shown], 20) {
+            Ok((code, _)) => applied(&shown, timer, code, &common::last_stderr()),
+            Err(_) => no_answer(&shown),
+        };
+        println!("{line}");
     }
     Ok(())
+}
+/// The line for a disk that did not answer hdparm within its 20 seconds: like a refusal,
+/// the drive keeps its own settings. The service failed for it with only "Command timeout
+/// or oversized output", at every start (deep check plan 197).
+fn no_answer(disk: &str) -> String {
+    left_to_drive(&format!(
+        "it did not answer the standby timer within 20 seconds ({disk}). It keeps its own power settings; if this happens at every start, look at its health on the dashboard"
+    ))
 }
 /// The line for one disk once hdparm has run: what was set, or, when the drive (or its
 /// controller) refused the standby timer, that it keeps its own power settings, with
@@ -293,6 +304,12 @@ mod tests {
         );
         let source = include_str!("os_policy.rs");
         assert!(!source.contains(&["HDD standby command ", "refused"].concat()));
+        // A drive that does not answer in time is said so, and the service does not fail.
+        let late = no_answer("/dev/sdb");
+        assert!(late
+            .starts_with("Drive power settings: left to the drive itself, as it did not answer"));
+        assert!(late.contains("(/dev/sdb)"), "{late}");
+        assert!(source.contains("Err(_) => no_answer(&shown),"));
     }
     #[test]
     fn device_paths_are_narrow() {

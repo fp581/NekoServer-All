@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 import os
 import subprocess
@@ -104,6 +105,38 @@ class InstallTest(unittest.TestCase):
         lock = mock.patch.object(host.Arch, 'root', Path(self.tmp.name))
         lock.start()
         self.addCleanup(lock.stop)
+
+    def test_amd_video_decoding_is_found_in_mesa(self):
+        # Deep check 265: Arch merged libva-mesa-driver into mesa (1:24.2.7); pacman -Si
+        # finds only real package names, so AMD's video driver was left out as "not offered".
+        pacman = FakePacman(offered={'mesa', 'libva-utils', 'intel-media-driver'})
+        family = host.Arch(pacman)
+        with mock.patch.object(host, 'current', return_value=family):
+            from modules import hardware_video
+
+            said = []
+            hardware_video.install_drivers('amd', said.append)
+        self.assertIn(['pacman', '-S', '--needed', '--noconfirm', 'mesa', 'libva-utils'], pacman.calls)
+        self.assertEqual(said, ['Video drivers for the AMD graphics chip: libva-mesa-driver, libva-utils'])
+
+    def test_a_video_driver_not_offered_is_named_not_called_built_in(self):
+        # Deep check 307: Fedora without RPM Fusion has no intel-media-driver, and the log
+        # said the drivers were "built into the system".
+        from modules import hardware_video
+
+        for offered, words in (
+            ({'libva-utils'}, 'Video drivers for the INTEL graphics chip: libva-utils; not in this system'),
+            (set(), 'Video drivers for the INTEL graphics chip: none installed; not in this system'),
+        ):
+            family = mock.Mock(available=lambda p, offered=offered: p in offered)
+            family.name = 'fedora'
+            with mock.patch.object(host, 'current', return_value=family):
+                said = []
+                hardware_video.install_drivers('intel', said.append)
+            self.assertTrue(said[0].startswith(words), said)
+            self.assertIn("package sources: intel-media-driver", said[0])
+            self.assertIn('RPM Fusion', said[0])
+            self.assertNotIn('built into the system', said[0])
 
     def test_waits_while_another_pacman_works(self):
         pacman = FakePacman(offered={'b'})
@@ -1309,7 +1342,11 @@ class CapabilitiesTest(unittest.TestCase):
     def test_each_firewall_gets_its_own_command(self):
         self.assertIn('sudo ufw allow', capabilities.firewall_hint(['ufw']))
         nft = capabilities.firewall_hint(['nftables'])
-        self.assertIn('sudo nft add rule inet filter input', nft)
+        # Inserted, not added: added after the reject line that ends Arch's ruleset, it let
+        # nothing through (deep check 178, in a network namespace with that ruleset).
+        self.assertIn('sudo nft insert rule inet filter input', nft)
+        self.assertNotIn('nft add rule', nft)
+        self.assertIn('above its reject line', nft)
         self.assertNotIn('ufw', nft)
         self.assertIn('/etc/nftables.conf', nft)
         self.assertIn('from a phone on your home Wi-Fi', nft)
@@ -1372,6 +1409,24 @@ class CapabilitiesTest(unittest.TestCase):
                 self.assertNotIn('Clock', ' '.join(capabilities.missing(rows)))
             self.assertEqual(capabilities.value(self.rows(tmp), 'clock'), 'unknown')  # no timedatectl
 
+    def test_a_date_before_this_release_existed_stops_setup_with_how_to_fix_it(self):
+        """Deep check plan 2, on a fresh Ubuntu with the clock in 2015: the package lists'
+        signatures failed and setup said "Some package sources could not be reached",
+        then failed further on. A date this release can't have been made before is
+        certainly wrong: setup stops first, and says how to set it."""
+        import datetime as dt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            release(tmp, 'ID=arch\n')
+            for when, ok in (('2015-01-01', False), ('2026-11-14', True)):
+                now = dt.datetime.fromisoformat(when + 'T12:00:00+00:00').timestamp()
+                rows = capabilities.detect(self.fake(), root=tmp, machine='x86_64', python=(3, 13), now=now)
+                date = next(row for row in rows if row['name'] == 'date')
+                self.assertEqual((date['ok'], date['required']), (ok, True), when)
+                said = ' '.join(capabilities.missing(rows))
+                self.assertEqual('2015-01-01' in said, not ok)
+                self.assertEqual('sudo timedatectl set-ntp true' in said, not ok)
+
     def test_a_download_refused_for_a_wrong_clock_says_so(self):
         import ssl
         import urllib.error
@@ -1418,7 +1473,7 @@ class RepositoryKeyErrorTests(unittest.TestCase):
         import urllib.error
 
         def missing(url):
-            raise urllib.error.HTTPError(url, 404, 'Not Found', {}, None)
+            raise urllib.error.HTTPError(url, 404, 'Not Found', {}, io.BytesIO())
 
         family = self.family(missing)
         with self.assertRaisesRegex(
@@ -1437,8 +1492,22 @@ class RepositoryKeyErrorTests(unittest.TestCase):
         with self.assertRaisesRegex(
             RuntimeError,
             r'Could not reach download\.docker\.com \(Docker.s site\) .*after 3 tries '
-            r'\(Temporary failure in name resolution\)\. Likely causes',
+            r'\(Temporary failure in name resolution\)\. Likely causes.*offline right now\. Here no name server '
+            r'\(DNS\) answered.*systemd-resolved',
         ):
+            family.fetch_key(host.DOCKER, 'ubuntu', 'resolute')
+
+    def test_a_site_a_filter_does_not_know_keeps_the_usual_causes(self):
+        # Deep check 266: only "no name server answered" is the name service; a filter that
+        # blocks one site answers that it does not know it.
+        import urllib.error
+
+        def unknown(url):
+            raise urllib.error.URLError('[Errno -2] Name or service not known')
+
+        family = self.family(unknown)
+        family.say, family.sleep = (lambda text: None), (lambda seconds: None)
+        with self.assertRaisesRegex(RuntimeError, r'Name or service not known\)\. Likely causes'):
             family.fetch_key(host.DOCKER, 'ubuntu', 'resolute')
 
 
@@ -1596,7 +1665,7 @@ class FedoraTest(unittest.TestCase):
 
     def test_a_fedora_release_docker_does_not_package_yet_is_named(self):
         def missing(url):
-            raise host.urllib.error.HTTPError(url, 404, 'Not Found', {}, None)
+            raise host.urllib.error.HTTPError(url, 404, 'Not Found', {}, io.BytesIO())
 
         family = self.family(fetch=missing)
         with self.assertRaisesRegex(RuntimeError, 'Docker does not offer packages for Fedora 44 yet'):
@@ -1727,7 +1796,7 @@ class RhelTest(unittest.TestCase):
 
     def test_a_release_docker_does_not_package_yet_is_named(self):
         def missing(url):
-            raise host.urllib.error.HTTPError(url, 404, 'Not Found', {}, None)
+            raise host.urllib.error.HTTPError(url, 404, 'Not Found', {}, io.BytesIO())
 
         future = dict(self.ALMA, VERSION_ID='11.0')
         family = self.family(release=future, fetch=missing)
@@ -1984,6 +2053,41 @@ class RetryTest(unittest.TestCase):
             family.install(['caddy'])
         self.assertEqual(self.slept, [host.RETRY_PAUSE, host.RETRY_PAUSE])
         self.assertEqual(pacman.failed, host.RETRIES)
+
+    def test_a_source_that_never_answers_is_said_as_such_not_with_apts_own_advice(self):
+        """Seen with no network on a fresh Ubuntu: setup ended with apt's last line, "E: Unable
+        to fetch some archives, maybe run apt-get update or try with --fix-missing?", which
+        names neither the cause nor anything that helps. The line naming the cause is said,
+        with what to do."""
+        said = (
+            'Err:1 http://archive.ubuntu.com/ubuntu noble/main amd64 gcc amd64 4:13.2.0-7ubuntu1\n'
+            '  Could not connect to 127.0.0.1:9 (127.0.0.1). - connect (111: Connection refused)\n'
+            'E: Failed to fetch http://archive.ubuntu.com/ubuntu/pool/main/g/gcc.deb  '
+            'Could not connect to 127.0.0.1:9 (127.0.0.1). - connect (111: Connection refused)\n'
+            'E: Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?'
+        )
+        reason = host._reason(subprocess.CompletedProcess([], 100, '', said))
+        self.assertNotIn('--fix-missing', reason)
+        self.assertIn('could not be reached', reason)
+        self.assertIn('Connection refused', reason)
+        self.assertIn('Check the internet connection', reason)
+        # Any other failure is said as before: its last line.
+        other = subprocess.CompletedProcess([], 100, '', 'E: Unable to locate package nekocat')
+        self.assertEqual(host._reason(other), 'E: Unable to locate package nekocat')
+        # Also when a source that has nothing to do with it failed on the way.
+        warned = 'W: Failed to fetch http://ppa.example/InRelease  Connection refused\n' + other.stderr
+        mixed = subprocess.CompletedProcess([], 100, '', warned)
+        self.assertEqual(host._reason(mixed), 'E: Unable to locate package nekocat')
+
+    def test_an_automatic_update_cut_off_earlier_is_said_with_the_command_that_finishes_it(self):
+        """Deep check 184, in a copy of Ubuntu 24.04 with a dpkg journal left behind (an
+        automatic update cut off): apt-get install says only the line below, whose own
+        advice leaves out sudo."""
+        said = "E: dpkg was interrupted, you must manually run 'dpkg --configure -a' to correct the problem."
+        reason = host._reason(subprocess.CompletedProcess([], 100, '', said))
+        self.assertIn('cut off before it finished', reason)
+        self.assertIn('sudo dpkg --configure -a', reason)
+        self.assertIn('sudo bash install.sh', reason)
 
     def test_what_counts_as_a_source_not_answering(self):
         for text in (
@@ -2253,6 +2357,7 @@ class PackageReviewTest(unittest.TestCase):
 
     def test_a_source_apt_only_warned_about_is_tried_again(self):
         warned = (
+            'Hit:1 http://archive.ubuntu.com/ubuntu noble InRelease\n'
             'W: Failed to fetch https://download.docker.com/linux/ubuntu/dists/noble/InRelease  Could not '
             'resolve download.docker.com\nW: Some index files failed to download. They have been ignored, '
             'or old ones used instead.'
@@ -2271,6 +2376,25 @@ class PackageReviewTest(unittest.TestCase):
             'Some package sources could not be reached (Failed to fetch https://download.docker.com', family.said[-1]
         )
         self.assertTrue(family.refreshed)
+
+    def test_no_source_answering_is_not_called_some(self):
+        """Deep check 296: apt-get update with every source failing (as a real one said it in an
+        Ubuntu 24.04 chroot with its proxy refused) still exits 0, and setup said "Some"."""
+        none = (
+            'Err:1 http://archive.ubuntu.com/ubuntu noble InRelease\n'
+            '  Could not connect to 127.0.0.1:48101 (127.0.0.1). - connect (111: Connection refused)\n'
+            'Err:2 http://archive.ubuntu.com/ubuntu noble-updates InRelease\n'
+            '  Unable to connect to 127.0.0.1:48101:\n'
+            'Reading package lists...\n'
+            'W: Failed to fetch http://archive.ubuntu.com/ubuntu/dists/noble/InRelease  Could not connect to '
+            '127.0.0.1:48101 (127.0.0.1). - connect (111: Connection refused)\n'
+            'W: Some index files failed to download. They have been ignored, or old ones used instead.\n'
+        )
+        apt = Answers(FakeApt(offered={'samba'}), is_update, [(0, none)] * 3)
+        family = self.quiet(self.family(apt))
+        family.refresh()
+        self.assertTrue(family.said[-1].startswith('None of the package sources could be reached'), family.said[-1])
+        self.assertIn('check that this PC is online', family.said[-1])
 
     def test_a_damaged_key_file_is_downloaded_again(self):
         family = self.family()

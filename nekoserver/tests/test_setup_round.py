@@ -108,7 +108,7 @@ class DownloadTests(unittest.TestCase):
 
     def test_not_found_and_a_wrong_clock_are_not_asked_again(self):
         for error in (
-            urllib.error.HTTPError('u', 404, 'Not Found', {}, None),
+            urllib.error.HTTPError('u', 404, 'Not Found', {}, io.BytesIO()),
             urllib.error.URLError('certificate verify failed: certificate is not yet valid'),
         ):
             with self.subTest(error=error):
@@ -119,7 +119,7 @@ class DownloadTests(unittest.TestCase):
                 self.assertEqual(len(calls), 1)
 
     def test_an_error_of_the_site_itself_is_asked_again_then_said_plainly(self):
-        calls, fetch = self.failing(urllib.error.HTTPError('u', 503, 'Unavailable', {}, None))
+        calls, fetch = self.failing(urllib.error.HTTPError('u', 503, 'Unavailable', {}, io.BytesIO()))
         family = ubuntu(fetch)
         with self.assertRaisesRegex(
             RuntimeError,

@@ -594,6 +594,66 @@ class InstallScriptTests(unittest.TestCase):
             result, _ = self.run_script(self.root)
         self.assertNotIn('Started as root', result.stdout)
 
+    def test_another_processor_is_named_in_words(self):
+        # Deep check 272: a 32-bit PC (i686) was called "a Raspberry Pi or another ARM board".
+        uname = self.root / 'bin/uname'
+        for machine, words in (
+            ('i686', 'this one is i686, a 32-bit PC.'),
+            ('aarch64', 'this one is aarch64 (a Raspberry Pi or another ARM board, say).'),
+            ('riscv64', 'this one is riscv64.'),
+        ):
+            with self.subTest(machine):
+                uname.write_text(f'#!/bin/sh\nif [ "$1" = -m ]; then echo {machine}; else /bin/uname "$@"; fi\n')
+                result, log = self.run_script(self.root)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('NekoServer runs on 64-bit Intel or AMD PCs (x86_64); ' + words, result.stderr)
+                self.assertNotIn('PACMAN', log)
+                # Deep check 297: --check said the configuration was valid there.
+                result, log = self.run_script(self.root, args=['--check'])
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('NekoServer runs on 64-bit Intel or AMD PCs (x86_64); ' + words, result.stderr)
+                self.assertNotIn('START', log)
+        result, log = self.run_script(self.root, args=['--help'])  # help is still shown
+        self.assertIn('START --help', log)
+
+    def test_without_sudo_on_a_pc_without_apt_apt_is_not_named(self):
+        # Deep check 270: an Arch PC without sudo was told to run  apt install sudo .
+        no_sudo_no_apt = (
+            ('if ((EUID != 0)); then\n    if command -v sudo', 'if ((1 != 0)); then\n    if command -v no-such-sudo'),
+            ('command -v doas', 'command -v no-such-doas'),
+            (
+                'if command -v apt-get >/dev/null; then\n        echo "  install sudo',
+                'if false; then\n        echo "  install sudo',
+            ),
+        )
+        result, log = self.run_script(self.root, replace=no_sudo_no_apt)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('this PC has no sudo yet', result.stderr)
+        self.assertNotIn('apt install', result.stderr)
+        self.assertIn("install sudo with your Linux's package manager", result.stderr)
+        self.assertIn('SUDO_USER=', result.stderr)
+
+    def test_doas_names_the_account_as_sudo_does(self):
+        # Deep check 270: started with  doas bash install.sh  setup said "Started as root, not
+        # with sudo" and did not know whose account the server was for (doas sets DOAS_USER).
+        started = ('exec python3 "$ROOT/installer.py" "$@"', 'echo "START $* for=${SUDO_USER:-}" >> "$LOG"')
+        with mock.patch.dict(os.environ, {'SUDO_USER': '', 'DOAS_USER': 'neko'}):
+            result, log = self.run_script(self.root, replace=(started,))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('Started as root', result.stdout)
+        self.assertIn('START --wizard for=neko', log)
+        # Without root, on a PC with doas and no sudo: doas is the way named.
+        doas = self.root / 'bin/doas'
+        doas.write_text('#!/bin/sh\nexit 0\n')
+        doas.chmod(0o755)
+        no_sudo = (
+            ('if ((EUID != 0)); then\n    if command -v sudo', 'if ((1 != 0)); then\n    if command -v no-such-sudo'),
+        )
+        result, log = self.run_script(self.root, replace=no_sudo)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Run it with doas:  doas bash install.sh', result.stderr)
+        self.assertNotIn('START', log)
+
     def test_suse_goes_on_when_only_a_repository_was_skipped(self):
         # One third-party repository that does not answer (a Packman mirror, say) used to stop
         # setup before it started; a refresh where no repository answered still stops it.
@@ -722,6 +782,7 @@ class InstallScriptTests(unittest.TestCase):
         (self.root / 'bin/apt-get').write_text(
             '#!/bin/sh\necho "APT-GET $*" >> "$LOG"\nn=$(cat "$APT_WARNINGS")\n'
             'case "$*" in *update) if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$APT_WARNINGS"; '
+            'echo "Hit:1 http://archive.ubuntu.com/ubuntu noble InRelease"; '
             'echo "W: Failed to fetch https://download.docker.com/linux/ubuntu/dists/noble/InRelease  Could not resolve"; '
             'echo "W: Some index files failed to download. They have been ignored, or old ones used instead."; fi;; esac\nexit 0\n'
         )
@@ -739,6 +800,21 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(log.count('update'), 3)
         self.assertIn('Some package sources could not be reached', result.stdout)
         self.assertIn('START --wizard', log)
+
+    def test_no_source_answering_is_not_called_some(self):
+        """Deep check 296: every source failing (apt still exits 0) said "Some package sources"."""
+        self.use_debian()
+        (self.root / 'bin/apt-get').write_text(
+            '#!/bin/sh\necho "APT-GET $*" >> "$LOG"\n'
+            'case "$*" in *update) echo "Err:1 http://archive.ubuntu.com/ubuntu noble InRelease"; '
+            'echo "W: Failed to fetch http://archive.ubuntu.com/ubuntu/dists/noble/InRelease  Unable to connect"; '
+            'echo "W: Some index files failed to download. They have been ignored, or old ones used instead.";; esac\n'
+            'exit 0\n'
+        )
+        result, log = self.run_script(self.root, replace=[('sleep 20', 'sleep 0')])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('None of the package sources could be reached', result.stdout)
+        self.assertNotIn('Some package sources', result.stdout)
 
     def test_a_lock_another_program_holds_is_waited_out(self):
         self.use_debian()
@@ -771,6 +847,13 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn('Fedora Linux 44 (Silverblue) keeps its system files read-only', result.stderr)
         self.assertEqual(log, '')
+        # Deep check 269: one without dnf was told "Automatic setup supports ... Fedora (with
+        # dnf)", as if Fedora were not what it runs.
+        (self.root / 'bin/dnf').unlink()
+        result, log = self.run_script(self.root)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Fedora Linux 44 (Silverblue) keeps its system files read-only', result.stderr)
+        self.assertNotIn('Automatic setup supports', result.stderr)
         # SteamOS: Arch by name, pacman present, the system mounted read-only.
         (self.root / 'ostree-booted').unlink()
         (self.root / 'etc/os-release').write_text('ID=steamos\nID_LIKE=arch\nPRETTY_NAME="SteamOS"\n')
@@ -1010,7 +1093,7 @@ class NextcloudOffTests(unittest.TestCase):
             self.assertEqual(calls[0][-1], 'stop')
             self.assertIn('neko-nextcloud', calls[0])
             self.assertNotIn('down', calls[0])  # containers stopped, never removed with their data
-            self.assertTrue(any('files and database are kept' in m for m in ctx.logs))
+            self.assertTrue(any('Kept: your files' in m for m in ctx.logs))
 
     def test_it_is_stopped_only_under_the_maintenance_lock(self):
         from contextlib import contextmanager
@@ -1116,6 +1199,7 @@ class InterruptedSetupTests(unittest.TestCase):
         class Response:
             def __init__(self, request):
                 urls.append(getattr(request, 'full_url', request))
+                self.left = InterruptedSetupTests.MANIFEST
 
             def __enter__(self):
                 return self
@@ -1123,8 +1207,9 @@ class InterruptedSetupTests(unittest.TestCase):
             def __exit__(self, *a):
                 return False
 
-            def read(self, n):
-                return InterruptedSetupTests.MANIFEST
+            def read(self, n):  # as a web answer is read: once, then nothing
+                said, self.left = self.left[:n], self.left[n:]
+                return said
 
         writes = []
         real = photos.atomic_write
@@ -1236,6 +1321,22 @@ class InterruptedSetupTests(unittest.TestCase):
             stack.enter_context(mock.patch.object(nextcloud, 'atomic_json', side_effect=track(real_json)))
             nextcloud.run(self.Ctx(cfg))
         return calls, writes
+
+    def test_nextcloud_over_another_installs_data_says_which_folder_and_what_to_do(self):
+        # Deep check 186: the HDD's cloud/files (or the SSD's database) from another
+        # install. Setup said only "Existing Nextcloud data preserved; explicit recovery required".
+        for leftover in ('hdd/cloud/files/alice/files/photo.jpg', 'ssd/appdata/nextcloud/postgres/PG_VERSION'):
+            with self.subTest(leftover), tempfile.TemporaryDirectory() as d:
+                data = Path(d)
+                (data / leftover).parent.mkdir(parents=True)
+                (data / leftover).write_text('kept')
+                with self.assertRaises(RuntimeError) as stopped:
+                    self.nextcloud(data)
+                folder = str(data / '/'.join(leftover.split('/')[: 3 if leftover.startswith('hdd') else 4]))
+                self.assertIn(f'{folder} already holds files', str(stopped.exception))
+                self.assertIn(f'sudo mv {folder} {folder}.before', str(stopped.exception))
+                self.assertEqual((data / leftover).read_text(), 'kept')
+                self.assertFalse((data / 'ssd/compose/nextcloud/compose.yaml').exists())
 
     def test_nextcloud_finishes_after_stopping_while_writing_its_settings(self):
         for stop_at in ('managed.json', 'compose.yaml'):

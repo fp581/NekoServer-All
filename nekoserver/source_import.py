@@ -44,6 +44,19 @@ class NotMountedYet(SourceGone):
     not connect when the import opened it (the NAS off or asleep, say)."""
 
 
+def size_words(count):
+    """A number of bytes as people say it: "1.5 GB"."""
+    for unit, size in (('TB', 1000**4), ('GB', 1000**3), ('MB', 1000**2), ('kB', 1000)):
+        if count >= size:
+            return f'{count / size:.1f} {unit}'
+    return f'{count} bytes'
+
+
+class Said(RuntimeError):
+    """Why a source was not copied, in words for the person and with no folder of theirs
+    in it: the report keeps them as they are (other errors get one general reason)."""
+
+
 class SourceChanged(RuntimeError):
     """A file changed while it was copied (still being written, say); names the file."""
 
@@ -51,6 +64,27 @@ class SourceChanged(RuntimeError):
 # The kernel's names for SMB and NFS mounts: a share mounted with `mount -t smb3` (or
 # smb3 in /etc/fstab) shows as smb3, not cifs.
 NETWORK_TYPES = ('cifs', 'smb3', 'nfs', 'nfs4')
+
+
+def source_list(path):
+    """The sources in the source list file (config/media-sources.json, which the source
+    wizard writes). A file that is not such a list (damaged, or changed by hand) is
+    ValueError in words, never a traceback, and nothing is written over it."""
+    fix = f'fix the file {path} or move it away, then run setup again'
+    # The path comes from the command line or the settings: checked where it is read.
+    # Only a .json file is read, by its real path, never through a link.
+    real = os.path.realpath(safe_path(path))
+    if not (real.startswith(os.sep) and real.endswith('.json')) or '\x00' in real:
+        raise ValueError(f'The list of your media sources must be a .json file; {path} is not one')
+    try:
+        with open(real, encoding='utf-8') as handle:
+            value = json.loads(handle.read())
+    except ValueError:
+        raise ValueError(f'The list of your media sources is damaged (it is not valid JSON); {fix}') from None
+    sources = value.get('sources', []) if isinstance(value, dict) else None
+    if not isinstance(sources, list) or not all(isinstance(source, dict) for source in sources):
+        raise ValueError(f'The list of your media sources is not in the form setup writes; {fix}')
+    return sources
 
 
 def source_key(source):
@@ -65,7 +99,10 @@ def source_folder(source):
     if source.get('type') == 'remote':
         value = source.get('mounted_path')
         if not value:
-            raise RuntimeError('Remote source needs an already mounted local folder')
+            raise Said(
+                'This network share is only noted: it has no folder on this PC yet. Mount it here, then add it '
+                'again in the source wizard with the folder it is mounted on'
+            )
         path = safe_path(value)
         kind = share_type(path)
         if kind == 'autofs':
@@ -112,6 +149,8 @@ def stable_inodes(path):
 
 # Files still being written by another program; never imported.
 TEMPORARY = ('.neko-part', '.part', '.tmp', '.crdownload', '.!qB')
+# How to copy what is new in a source copied before (it is skipped otherwise).
+AGAIN = 'sudo python3 source_import.py --config my-config.json --again --apply'
 
 
 class DriveGone(Exception):
@@ -306,6 +345,9 @@ def copy_into(reader, writer, stat):
     while chunk := os.read(reader, 1024 * 1024):
         write_all(writer, chunk)
     os.fsync(writer)
+    # Dropped from memory, so the copy is read back from the drive: read from memory, a
+    # drive that did not keep the bytes passed (as neko_common.copy_checked_into does).
+    os.posix_fadvise(writer, 0, 0, os.POSIX_FADV_DONTNEED)
     after = os.fstat(reader)
     if after.st_size != stat.st_size or after.st_mtime_ns != stat.st_mtime_ns or fd_digest(writer) != fd_digest(reader):
         raise SourceChanged('Source changed during import')
@@ -397,7 +439,7 @@ def import_target(folder, media, category):
     managed = target.resolve()
     here = folder.resolve()
     if here == managed or managed in here.parents or here in managed.parents:
-        raise RuntimeError('Source and destination overlap')
+        raise Said('This folder is inside the NekoServer library (or holds it), so it cannot be copied into it')
     return target
 
 
@@ -441,14 +483,23 @@ def already_copied(current, dest, apply=False):
     return True
 
 
-def planned_copies(folder, target, apply=False, conflicts=None):
+def planned_copies(folder, target, apply=False, conflicts=None, downloading=None):
     """[(file, where it goes, its stat)] for every file not imported yet. Strict listing:
     a folder that cannot be read makes this source incomplete (nothing is copied),
     instead of silently leaving an album out. A different file already at a file's place
     in the library (another source's `folder.jpg`, one Sonarr replaced) is kept and the
-    file left out: its path, relative to the source, goes into `conflicts`."""
+    file left out: its path, relative to the source, goes into `conflicts`. A file still
+    being downloaded (TEMPORARY) is left out too, its path in `downloading`."""
+
+    def unfinished(here, name):
+        if not name.endswith(TEMPORARY):
+            return False
+        if downloading is not None:
+            downloading.append(shown_name((Path(here) / name).relative_to(folder)))
+        return True
+
     try:
-        found = strict_files(folder, lambda here, name: name.endswith(TEMPORARY))
+        found = strict_files(folder, unfinished)
     except UnreadableEntries as exc:
         raise IncompleteSource(
             [Path(p).relative_to(folder).as_posix() if Path(p).is_relative_to(folder) else '.' for p, _ in exc.problems]
@@ -510,11 +561,15 @@ def copy_source(source, media, apply=False, uid=None, gid=None, guard=None):
     left = move_legacy(folder, media, category, guard) if apply else []
     if left:
         return legacy_left(left, folder, media, category)
-    conflicts = []
-    entries = planned_copies(folder, target, apply, conflicts)
+    conflicts, downloading = [], []
+    entries = planned_copies(folder, target, apply, conflicts, downloading)
     required = sum(stat.st_size for _, _, stat in entries)
-    if required > shutil.disk_usage(media).free:
-        raise RuntimeError('Not enough free space on target library filesystem')
+    free = shutil.disk_usage(media).free
+    if required > free:
+        raise Said(
+            f'Nothing was copied: it needs {size_words(required)} and the library drive has {size_words(free)} free. '
+            'Free some room or take this folder out of the source list'
+        )
     skipped = copy_entries(entries, folder, uid, gid, guard) if apply else []
     copied = len(entries) - len(skipped) if apply else 0
     result = {
@@ -524,7 +579,7 @@ def copy_source(source, media, apply=False, uid=None, gid=None, guard=None):
         'bytes': required,
         'destination': str(target),
     }
-    return with_skipped(with_conflicts(result, conflicts), skipped)
+    return with_downloading(with_skipped(with_conflicts(result, conflicts), skipped), downloading)
 
 
 def shown_name(path):
@@ -556,6 +611,21 @@ def with_skipped(result, skipped):
         said = (
             f'{len(skipped)} files were not copied because their names could not be used (rename them, then '
             'copy again with --again): ' + ', '.join(skipped[:10])
+        )
+        result['reason'] = result['reason'] + '. ' + said if result.get('reason') else said
+    return result
+
+
+def with_downloading(result, downloading):
+    """The report row, naming the files left out because they were still being downloaded:
+    the source counts as imported, so without this the finished download was never copied
+    and nothing said so."""
+    if downloading:
+        result['still_downloading'] = len(downloading)
+        said = (
+            f'{len(downloading)} files were still being downloaded (or written) and were not copied: '
+            + ', '.join(downloading[:10])
+            + f'. When they have finished, copy them with  {AGAIN}  (in the NekoServer folder)'
         )
         result['reason'] = result['reason'] + '. ' + said if result.get('reason') else said
     return result
@@ -640,7 +710,7 @@ def import_one(source, root, apply, owner, guard, finished, again=False):
         return {
             'status': 'imported_earlier',
             'copied': 0,
-            'reason': 'Copied before; not copied again (to copy what is new in it, in the NekoServer folder: sudo python3 source_import.py --config my-config.json --again --apply)',
+            'reason': f'Copied before; not copied again (to copy what is new in it, in the NekoServer folder: {AGAIN})',
         }
     try:
         result = copy_source(source, root, apply, *owner, guard)
@@ -654,6 +724,8 @@ def import_one(source, root, apply, owner, guard, finished, again=False):
             'reason': 'A file changed while it was being copied (another program may still be '
             'writing it): ' + str(exc) + '. The files before it were copied; run setup again when it is finished',
         }
+    except Said as exc:
+        return {'status': 'needs_setup', 'reason': str(exc)}
     except IncompleteSource as exc:
         # Only paths inside the source are reported, never the source's own location.
         return {
@@ -727,7 +799,7 @@ def main(argv=None):
         if args.media_root:
             config['media_mount'] = args.media_root
         inventory = safe_path(args.sources or str(Path(config['data_mount']) / 'config' / 'media-sources.json'))
-        sources = json.loads(inventory.read_text()).get('sources', [])
+        sources = source_list(inventory)
         if args.selected_only:
             sources = [s for s in sources if s.get('copy_to_library') is True]
         if args.apply:
@@ -755,9 +827,19 @@ def main(argv=None):
             file=sys.stderr,
         )
         return 2
-    except (OSError, RuntimeError, ValueError, KeyError):
-        print('Source import unavailable; check configured mounts and source inventory', file=sys.stderr)
+    except (OSError, RuntimeError, ValueError, KeyError) as exc:
+        print('Source import stopped: ' + stop_reason(exc) + '. Nothing was copied.', file=sys.stderr)
         return 2
+
+
+def stop_reason(exc):
+    """Why the import could not run, in words: a missing setting named as one (str() of a
+    KeyError is the key alone), a system error with the file it was about."""
+    if isinstance(exc, KeyError):
+        return f'the setting {exc} is missing'
+    if isinstance(exc, OSError) and exc.strerror:
+        return exc.strerror + (f' ({exc.filename})' if exc.filename else '')
+    return str(exc) or type(exc).__name__
 
 
 if __name__ == '__main__':

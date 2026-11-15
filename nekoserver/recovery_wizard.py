@@ -35,7 +35,9 @@ import zlib
 
 import guided_setup
 import nfs_exports
+from neko_restore import read_at_most
 from neko_common import (
+    nextcloud_enabled,
     OPERATION_LOCK,
     SHARED,
     hold_operation,
@@ -57,13 +59,14 @@ from neko_common import (
     ensure_room,
     findmnt,
     identity_matches,
+    is_mount_point,
     mounted_identity,
     read_ledger,
     record_ledger,
     settings_path,
     sha256_file,
     valid_ledger_path,
-    usb_mount_options,
+    usb_mount_command,
     private_mount_options,
     latest_note,
     saved_names,
@@ -77,10 +80,15 @@ RESTORE = 'The restore'  # how the room check names a restore in its message
 SNAPSHOT = re.compile(r'^snapshot-(\d+)-\d+$')
 MONTHLY = re.compile(r'^(\d+)-\d+$')
 
+# The menu's choices that messages name (the runtime's too): one wording, in shared.json.
+DRIVE_SECTION = SHARED['recovery_menu']['drive_section']
+CHECK_NAME = SHARED['recovery_menu']['check_drive']
+FIX_NAME = SHARED['recovery_menu']['fix_copies']
+
 # The recovery menu's two parts (its first question).
 SECTIONS = [
     ('restore', 'Restore something from a backup'),
-    ('drive', 'Check or repair a drive'),
+    ('drive', DRIVE_SECTION),
 ]
 
 # Section 1: what can be restored.
@@ -95,9 +103,9 @@ MENU = [
 
 # Section 3: a check and a repair are different actions, and so is fixing backup copies.
 DRIVE_MENU = [
-    ('check', 'Check a drive that stopped taking new files. A check only looks: it changes nothing on the drive'),
+    ('check', f'{CHECK_NAME}. A check only looks: it changes nothing on the drive'),
     ('repair', 'Repair a drive. A repair changes the drive, and damaged files can be lost'),
-    ('copies', 'Fix damaged backup copies (files on the backup drives that the checksum checks found damaged)'),
+    ('copies', f'{FIX_NAME} (files on the backup drives that the checksum checks found damaged)'),
 ]
 
 
@@ -107,8 +115,8 @@ def menu(config):
     media apps too?" answered no), the two items that only hold their backups (Immich's
     photo archive, the nightly app snapshots) are offered only while such a backup is
     there to restore: a server that had the apps keeps everything it had, its backups
-    too. Nextcloud switched off is not offered (as modules/nextcloud.py runs it: on
-    unless "enabled" is false)."""
+    too. Nextcloud switched off is offered only when it was set up before (as
+    modules/nextcloud.py runs it: on unless "enabled" is false)."""
     media = Path(config['media_mount'])
     # Whether the apps an item restores are part of this server (the groups of 0.50.0).
     on = {
@@ -124,15 +132,24 @@ def menu(config):
     def offered(key):
         if on.get(key, True):
             return True
+        if key == 'cloud':
+            # Switched off after it was set up: its copies on the USB drive stay, and so
+            # does the way to get them back (deep check 246).
+            return nextcloud_set_up(config)
         return key in held and has_entries(held[key])
 
     return [(key, words) for key, words in MENU if offered(key)]
 
 
 def nextcloud_on(config):
-    """Nextcloud is part of this server: on unless its "enabled" is false."""
-    section = config.get('nextcloud')
-    return not (isinstance(section, dict) and section.get('enabled') is False)
+    """Nextcloud is part of this server (neko_common.nextcloud_enabled)."""
+    return nextcloud_enabled(config)
+
+
+def nextcloud_set_up(config):
+    """Nextcloud was installed on this server (its Compose file is on the SSD), whether it
+    is switched on now or not."""
+    return bool(config.get('data_mount')) and (Path(config['data_mount']) / 'compose/nextcloud/compose.yaml').is_file()
 
 
 def has_entries(folder):
@@ -155,12 +172,23 @@ def say(output, *lines):
         output(line)
 
 
+# How many questions were answered yes in this run of the menu: only after one can
+# anything have been restored, repaired or stopped (menu_loop says so when stopped).
+APPROVALS = [0]
+
+
+def approved(answer):
+    if answer:
+        APPROVALS[0] += 1
+    return answer
+
+
 def ask(question, prompt=input, output=print):
     """yes -> True, no -> False; Ctrl+D or Ctrl+C stops the recovery menu."""
     answer = guided_setup.yes_no(question, prompt, output)
     if answer is None:
         raise EOFError
-    return answer
+    return approved(answer)
 
 
 def asked(key, prompt=input, output=print, **values):
@@ -170,7 +198,7 @@ def asked(key, prompt=input, output=print, **values):
     answer = questions.yes_no(key, prompt, output, **values)
     if answer is None:
         raise EOFError
-    return answer
+    return approved(answer)
 
 
 def choose(title, options, prompt=input, output=print, leave='Back'):
@@ -189,7 +217,7 @@ def choose(title, options, prompt=input, output=print, leave='Back'):
             return options[best - 1][0]
         if answer == '0':
             return None
-        if answer.isdigit() and 1 <= int(answer) <= len(options):
+        if answer.isdecimal() and 1 <= int(answer) <= len(options):
             return options[int(answer) - 1][0]
         output('Please type one of the numbers shown.')
 
@@ -378,6 +406,22 @@ DAMAGED_AS_IS = 'damaged-as-is'
 NOT_RESTORED = 'NOT-RESTORED.txt'
 
 
+LEFT_OUT = SHARED['left_out']
+
+
+def left_out(root):
+    """The saved copies the weekly copy left off this (exFAT) USB drive, as its names can't
+    be stored there (backup.rs note_left_out): they are on the HDD, never missing here."""
+    try:
+        value = json.loads((Path(root) / LEFT_OUT['file']).read_text())
+        files = value.get('files') if value.get('format') == LEFT_OUT['format'] else None
+    except (OSError, ValueError, AttributeError):
+        return set()
+    return (
+        {key for key in files if isinstance(key, str) and valid_ledger_path(key)} if isinstance(files, list) else set()
+    )
+
+
 def retired_copies(root):
     """{path in the backup: why} for the saved copies accepted as lost in the repair menu
     (the ledger's "retired" part, written by neko_common.record_ledger)."""
@@ -413,6 +457,9 @@ class Checked:
             # A checksum list the drive lost mid-write: the files are restored unchecked.
             self.sums, self.ledger_problem = {}, str(exc)
         self.lost = retired_copies(self.root) if self.root else {}
+        # Photos the exFAT USB drive can't hold (names it can't store): safe on the HDD.
+        self.left_out = left_out(self.root) if self.root else set()
+        self.kept_off = []  # those of them a restore would have looked for
         # The restore folder, opened once (begin) and written only through that open
         # folder: its (device, inode) is checked again before every write (Destination).
         self.destination = None
@@ -513,7 +560,24 @@ class Checked:
                 else set()
             )
             missing += sorted(k for k in self.sums if k.startswith(prefix) and k not in here)
-        return missing
+        return self.not_left_out(missing)
+
+    def not_left_out(self, missing):
+        """`missing` without the photos left off this USB drive on purpose (left_out): those
+        are named apart (`kept_off`), never offered to the repair."""
+        self.kept_off = sorted({*self.kept_off, *(k for k in missing if k in self.left_out)})
+        return [k for k in missing if k not in self.left_out]
+
+    def kept_off_note(self):
+        """The review's note about the photos this USB drive can't hold, or None."""
+        kept_off = self.kept_off
+        if not kept_off:
+            return None
+        return (
+            f'{file_count(len(kept_off))} (for example {", ".join(kept_off[:3])}) {"is" if len(kept_off) == 1 else "are"} '
+            'not on this USB drive: its filesystem (exFAT) can\'t store their names. They are safe on the HDD: '
+            'restore them from the HDD\'s weekly copy.'
+        )
 
     def where_else(self):
         """What to do about files this backup can't give back."""
@@ -526,9 +590,10 @@ class Checked:
     def summary(self, destination=None):
         text = f'Checksums matched for {file_count(self.verified)}'
         if self.unverified:
+            it, it_was = ('it', 'it was') if self.unverified == 1 else ('them', 'they were')
             text += (
-                f'; {file_count(self.unverified)} had no recorded checksum yet (the backup that copied it did '
-                'not finish, or it was backed up before checksums were kept) and could not be checked'
+                f'; {file_count(self.unverified)} had no recorded checksum yet (the backup that copied {it} did '
+                f'not finish, or {it_was} backed up before checksums were kept) and could not be checked'
             )
         text += '.'
         if self.ledger_problem:
@@ -596,9 +661,19 @@ def copy_new(sources, destination, checked=None, files=None):
     files = every_file(sources) if files is None else files
     ensure_room(destination.parent, sum(p.stat().st_size for _, _, p in files), RESTORE)
     checked.begin(destination)
-    for done, (name, source, path) in enumerate(files):
+    return copy_each(
+        checked, destination, [(path, Path(name) / path.relative_to(source), None) for name, source, path in files]
+    )
+
+
+def copy_each(checked, destination, files):
+    """Copy each (saved copy, path in the restore, checksum or None) into the begun
+    restore; returns how many. A drive that fills up meanwhile is said as out_of_room,
+    whichever versions were chosen (only "every version" said it; the newest-version and
+    as-of restores, the recommended ones, said "[Errno 28] No space left on device")."""
+    for done, (path, target, expected) in enumerate(files):
         try:
-            checked.copy(path, destination / name / path.relative_to(source))
+            checked.copy(path, destination / target, expected)
         except OSError as exc:
             if exc.errno != errno.ENOSPC:
                 raise
@@ -735,8 +810,7 @@ def copy_latest(sources, destination, output=print, checked=None, chosen=None):
     chosen = latest_versions(sources) if chosen is None else chosen
     ensure_room(destination.parent, sum(p.stat().st_size for p, _, _, _ in chosen), RESTORE)
     checked.begin(destination)
-    for path, target, _, _ in chosen:
-        checked.copy(path, destination / target)
+    copy_each(checked, destination, [(path, target, None) for path, target, _, _ in chosen])
     several = [(t, when, n) for _, t, when, n in chosen if n > 1]
     if several:
         output(f'{len(several)} files had more than one version; you get the newest of each:')
@@ -818,7 +892,7 @@ def read_inventory(path):
     restored from it). A v2 list's entries all have a checksum; a v1 list's have none."""
     try:
         with gzip.open(path, 'rb') as stream:
-            raw = stream.read(INVENTORY_LIMIT + 1)
+            raw = read_at_most(stream, INVENTORY_LIMIT)
         value = json.loads(raw) if len(raw) <= INVENTORY_LIMIT else None
     except (OSError, EOFError, ValueError, zlib.error):
         return None
@@ -946,9 +1020,7 @@ def copy_listed(chosen, destination, checked):
     checksum the list recorded (when it has one)."""
     ensure_room(destination.parent, sum(p.stat().st_size for p, _, _ in chosen), RESTORE)
     checked.begin(destination)
-    for path, target, sha in chosen:
-        checked.copy(path, destination / target, sha)
-    return len(chosen)
+    return copy_each(checked, destination, chosen)
 
 
 NO_INVENTORY = (
@@ -1026,7 +1098,7 @@ COPYING = 'Copying... this can take a while for a big backup.'
 # which only root can open (the restore runs as root).
 PASSWORDS_HOME = Path('/root')
 # What the recovery menu calls the repair of backup copies (DRIVE_MENU), where a message names it.
-FIX_COPIES = '"Fix damaged backup copies" (in the recovery menu, under "Check or repair a drive")'
+FIX_COPIES = f'"{FIX_NAME}" (in the recovery menu, under "{DRIVE_SECTION}")'
 
 
 def recorded_copy(key, copy, sha, sums):
@@ -1113,8 +1185,9 @@ class Files:
         if checked.uncertain:
             some = ', '.join(checked.uncertain[:5])
             self.notes.append(f'Left out ({file_count(len(checked.uncertain))}, for example {some}): {UNCERTAIN_WHY}')
-        checked.missing = accepted_check(missing, checked, files, self.notes.append)
+        checked.missing = accepted_check(checked.not_left_out(missing), checked, files, self.notes.append)
         self.lost = missing_copies(checked.missing, files, checked.sums)
+        self.notes += [checked.kept_off_note()] if checked.kept_off_note() else []
         return True
 
     def everything(self, latest):
@@ -1122,6 +1195,7 @@ class Files:
         checked = self.checked
         checked.missing = checked.require_present(self.sources)
         self.lost = {key: checked.sums[key] for key in checked.missing}
+        self.notes += [checked.kept_off_note()] if checked.kept_off_note() else []
         self.latest = latest
         self.picked = latest_versions(self.sources) if latest else every_file(self.sources)
 
@@ -1165,6 +1239,10 @@ class Files:
 
     def copy(self, target, output):
         """The copying itself, after the approval. Returns how many files came back whole."""
+        with part_way(target, output):
+            return self.copy_all(target, output)
+
+    def copy_all(self, target, output):
         checked = self.checked
         if self.date is not None:
             output(f'Restoring the {file_count(len(self.picked))} you had at the backup of {self.date}. {COPYING}')
@@ -1407,10 +1485,9 @@ class Usb:
             device = os.path.realpath(link)
             self.same_nas_disk(device)  # before it is mounted: the very device mounted next
             self.mount.mkdir(parents=True, exist_ok=True)
-            options = usb_mount_options(self.fstype, self.writable)
             if (
                 subprocess.run(
-                    ['mount', '-o', options, device, str(self.mount)],
+                    usb_mount_command(self.fstype, self.writable, device, self.mount),
                     capture_output=True,
                     timeout=60,
                     check=False,
@@ -1446,6 +1523,25 @@ class Usb:
 def tool(name, *args):
     """Run one of NekoServer's restore tools; True on success."""
     return subprocess.run([sys.executable, str(ROOT / name), *args], check=False).returncode == 0
+
+
+PART_WAY = (
+    '\nThe restore was stopped part-way: {target} holds only some of it (incomplete). Delete that folder '
+    '(sudo rm -r "{target}") and run the restore again; it goes into a new folder. Nothing else was changed.'
+)
+
+
+@contextlib.contextmanager
+def part_way(target, output):
+    """Around a restore's writing: stopped there (Ctrl+C, a closed terminal), the folder it
+    was writing is named as incomplete. The menu said only "what was already restored
+    stays as it is", and a folder with some of the files read as a finished restore."""
+    try:
+        yield
+    except KeyboardInterrupt:
+        if os.path.lexists(target):
+            output(PART_WAY.format(target=target))
+        raise
 
 
 def restore_photos(config, prompt, output):
@@ -1566,7 +1662,7 @@ def owner(config):
     """Whose restored photos and files these are: the account that ran sudo, else the
     account the settings name for media (media.uid and media.gid)."""
     uid, gid = os.environ.get('SUDO_UID', ''), os.environ.get('SUDO_GID', '')
-    if uid.isdigit() and gid.isdigit() and int(uid) != 0:
+    if uid.isdecimal() and gid.isdecimal() and int(uid) != 0:
         return int(uid), int(gid)
     media = config.get('media', {})
     return int(media.get('uid', 1000)), int(media.get('gid', 1000))
@@ -1603,12 +1699,24 @@ def reachable(path, uid, gid):
 
 
 def account(uid):
-    """(name, home folder) of account `uid`."""
+    """(name, home folder) of account `uid`, or None when this PC has no such account."""
     try:
         found = pwd.getpwuid(uid)
         return found.pw_name, found.pw_dir
     except KeyError:
-        return str(uid), '/home'
+        return None
+
+
+def no_such_account(uid, target):
+    """The lines for files whose account is gone (the settings' media account was removed,
+    or this PC was set up again with other accounts): they stay root's. Given to the
+    account number, they were said to be "yours" but no account could open them."""
+    return [
+        f'This PC has no account number {uid} any more (the account the settings name for your files), so the '
+        'restored files stay root\'s for now. To give them to your own account, run this with the name you log '
+        'in with (whoami shows it) in place of YOU:',
+        f'  sudo chown -R YOU: "{target}"',
+    ]
 
 
 def handed_over(config, target, checked=None):
@@ -1619,7 +1727,6 @@ def handed_over(config, target, checked=None):
     `checked`: the restore (Checked), whose open folder is walked, and only while it is
     still the folder the restore was made in."""
     uid, gid = owner(config)
-    name, home = account(uid)
     held = checked.target if checked is not None else None
     if held is not None and not held.same():
         return [
@@ -1628,6 +1735,9 @@ def handed_over(config, target, checked=None):
                 'changed), so nothing in it was handed over to your account.'
             )
         ]
+    if account(uid) is None:
+        return no_such_account(uid, target)
+    name, home = account(uid)
     try:
         give_to(target, uid, gid, held.fd if held is not None else None)
         if Path(target).parent == Path(config['media_mount']) / 'restored':
@@ -1721,14 +1831,29 @@ def restore_cloud(config, prompt, output):
 
 
 def encrypted_by_nextcloud(folder, sample=200):
-    """Nextcloud's server-side encryption starts each file with an "HBEGIN:" header."""
-    for path in sorted(p for p in Path(folder).rglob('*') if p.is_file() and not p.is_symlink())[:sample]:
-        try:
-            with path.open('rb') as stream:
-                if stream.read(7) == b'HBEGIN:':
-                    return True
-        except OSError:
-            continue
+    """Nextcloud's server-side encryption starts each file with an "HBEGIN:" header. The
+    first `sample` files are read through their open folders (os.fwalk), as the restore
+    wrote them: by its whole path, a file deep in long folder names is longer than Linux
+    opens (4096 bytes), and the menu stopped with a traceback after the restore."""
+    seen = 0
+    for _, dirs, names, folder_fd in os.fwalk(folder, follow_symlinks=False):
+        dirs.sort()
+        for name in sorted(names):
+            if seen >= sample:
+                return False
+            try:
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=folder_fd)
+            except OSError:
+                continue  # a symlink, or not readable
+            try:
+                if stat.S_ISREG(os.fstat(fd).st_mode):
+                    seen += 1
+                    if os.read(fd, 7) == b'HBEGIN:':
+                        return True
+            except OSError:
+                continue
+            finally:
+                os.close(fd)
     return False
 
 
@@ -1844,33 +1969,39 @@ def restore_password_list(config, runs, prompt, output):
             output(problem + ' Nothing was restored. Use another monthly snapshot.')
             return
         target.mkdir(mode=0o700)
-        result = subprocess.run(
-            [
-                'tar',
-                '--extract',
-                '--file',
-                str(run / 'data.tar'),
-                '--directory',
-                str(target),
-                '--no-same-owner',
-                'secrets/accounts',
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        with part_way(target, output):
+            result = subprocess.run(
+                [
+                    'tar',
+                    '--extract',
+                    '--file',
+                    str(run / 'data.tar'),
+                    '--directory',
+                    str(target),
+                    '--no-same-owner',
+                    'secrets/accounts',
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
         if result.returncode:
             output('Could not take the password list out of that snapshot: ' + (result.stderr.strip() or 'tar failed'))
             return
         say(output, f'\nDone. Open it with:  sudo cat {target}/secrets/accounts/APP-CREDENTIALS.txt')
         return
-    if tool('backup_secrets.py', '--restore', str(run), '--to', str(target)):
-        say(
-            output,
-            f'\nDone. Open it with:  sudo cat {target}/secrets/accounts/APP-CREDENTIALS.txt',
-            f'The apps\' own password files are there too: {target}/compose/<app>/.env and',
-            f'{target}/appdata/nextcloud/html/config/config.php (for rebuilding from a monthly snapshot).',
-        )
+    import backup_secrets
+
+    # Asked here, not by backup_secrets.py run as a program of its own: its password
+    # question went to the terminal only, and the setup window waited with no question.
+    with part_way(target, output):
+        backup_secrets.asked_restore(run, target, out=output)
+    say(
+        output,
+        f'\nDone. Open it with:  sudo cat {target}/secrets/accounts/APP-CREDENTIALS.txt',
+        f'The apps\' own password files are there too: {target}/compose/<app>/.env and',
+        f'{target}/appdata/nextcloud/html/config/config.php (for rebuilding from a monthly snapshot).',
+    )
 
 
 def restore_nightly(config, kind, prompt, output):
@@ -1910,7 +2041,9 @@ def restore_nightly(config, kind, prompt, output):
         return
     make_home(config, target)
     # With their owners and permissions, so a file copied back works for its app.
-    if tool(script, 'restore', '--snapshot', str(run), '--destination', str(target), '--preserve-owners'):
+    with part_way(target, output):
+        done = tool(script, 'restore', '--snapshot', str(run), '--destination', str(target), '--preserve-owners')
+    if done:
         say(
             output,
             f'\nDone: restored into {target} (checksums verified), with each file\'s owner and permissions.',
@@ -1968,7 +2101,9 @@ def restore_monthly(config, prompt, output):
         return
     make_home(config, target)
     args = ['--snapshot', str(run), '--stage', str(target)] + (['--load-images'] if images else [])
-    if tool('monthly-recovery.py', *args):
+    with part_way(target, output):
+        done = tool('monthly-recovery.py', *args)
+    if done:
         try:
             sealed = json.loads((Path(run) / MANIFEST).read_text()).get('password_files') != 'unencrypted_in_data_tar'
         except (OSError, ValueError, AttributeError):
@@ -2737,6 +2872,28 @@ SHARED_FOLDER = (
 )
 
 
+def first_up(name):
+    """A drive's name at the start of a sentence: "the application SSD" -> "The application
+    SSD" (str.capitalize would make it "The application ssd")."""
+    return name[:1].upper() + name[1:]
+
+
+def nothing_to_do(rows, action, output):
+    """No mounted drive needs a check or repair: said for each drive, as it is. A drive
+    that is not mounted is named, never counted as one that takes new files."""
+    away = [(name, folder) for name, folder, _ in rows if not is_mount_point(folder)]
+    for name, folder in away:
+        output(
+            f'{first_up(name)} ({folder}) is not mounted, so it cannot be checked here. Connect it, '
+            'then run  sudo bash install.sh : it mounts the drives and says if one is not the one chosen.'
+        )
+    if not away:
+        output(f'Both drives take new files and Linux counted no errors on them: nothing to {action}.')
+    elif len(away) < len(rows):
+        here = next(name for name, folder, _ in rows if is_mount_point(folder))
+        output(f'{first_up(here)} takes new files and Linux counted no errors on it: nothing to {action}.')
+
+
 def checked_drive(config, prompt, output, run, writes, errors, action=CHECK):
     """Section 3, for a drive Linux stopped writing to after errors (a NAS away for over
     ten minutes, a loose cable). Two separate actions, each with its own approval, asked
@@ -2745,9 +2902,10 @@ def checked_drive(config, prompt, output, run, writes, errors, action=CHECK):
     a repair (REPAIR) changes the drive (e2fsck -p) and is approved by typing its name.
     For either, the apps are stopped and the drive is unmounted (never by force); a drive
     that is still mounted anywhere is never touched, and a shared folder never at all."""
-    failing = [(n, f, r) for n, f, r in drive_rows(config) if os.path.ismount(f) and (not writes(f) or errors(f))]
+    rows = drive_rows(config)
+    failing = [(n, f, r) for n, f, r in rows if is_mount_point(f) and (not writes(f) or errors(f))]
     if not failing:
-        output(f'Both drives take new files and Linux counted no errors on them: nothing to {action}.')
+        nothing_to_do(rows, action, output)
         return
     name, folder, record = failing[0]
     export = nfs_exports.export_of(record)
@@ -2756,7 +2914,7 @@ def checked_drive(config, prompt, output, run, writes, errors, action=CHECK):
     if export or found[1] in SHARES:
         say(
             output,
-            f'\n{name.capitalize()} ({folder}) is a folder the NAS shares ({export or found[0]}), and it does not '
+            f'\n{first_up(name)} ({folder}) is a folder the NAS shares ({export or found[0]}), and it does not '
             'take new files.',
             SHARED_FOLDER,
             'On the NAS, check that its disks are healthy, that the volume is not full or read-only,',
@@ -2885,43 +3043,81 @@ def unmounted(folder, run):
         )
 
 
+FSCK_HOURS = 6  # the longest a check or repair is waited for
+
+# A check or repair given up after FSCK_HOURS, said with what is left as it is.
+FSCK_TIMED_OUT = (
+    'the {program} did not finish within {hours} hours, so it was stopped. {state} The apps stay stopped; '
+    'run  sudo bash install.sh  to connect the drive again and start them. A drive this slow is often failing: '
+    'copy what you can\'t lose from it first.'
+)
+
+
+def fsck(argv, program, state, run):
+    """e2fsck run on the unmounted drive, its output kept. Its input is closed: its words
+    are not shown while it runs, so a question it asked (an unusual e2fsck, a drive
+    mounted meanwhile) waited unseen for an answer typed at the terminal, for hours. Given
+    up after FSCK_HOURS, said in words (it was Python's "Command [...] timed out")."""
+    try:
+        return run(
+            argv, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=FSCK_HOURS * 3600, check=False
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(FSCK_TIMED_OUT.format(program=program, hours=FSCK_HOURS, state=state)) from None
+
+
 def looked_at(device, output, run):
     """The unmounted ext4 drive only looked at (e2fsck -n opens it read-only and answers
     "no" to every fix): True when it found damage, False when it found none."""
     output('Checking, without changing anything (on a large drive this takes a few minutes)...')
-    fsck = run(['e2fsck', '-f', '-n', device], capture_output=True, text=True, timeout=6 * 3600, check=False)
-    output((fsck.stdout or '').strip()[-1500:])
+    fsck_run = fsck(['e2fsck', '-f', '-n', device], 'check', 'Nothing on the drive was changed.', run)
+    output((fsck_run.stdout or '').strip()[-1500:])
     # 0: no damage. 4: damage found and, as asked, left as it is. Anything else (8 and up:
     # the check itself could not run; a negative code: it was stopped) is not an answer.
-    if fsck.returncode not in (0, 4):
+    if fsck_run.returncode not in (0, 4):
         raise RuntimeError(
-            f'the check could not be done (the checking program, e2fsck, stopped with code {fsck.returncode}). '
+            f'the check could not be done (the checking program, e2fsck, stopped with code {fsck_run.returncode}). '
             'Nothing on the drive was changed. The apps stay stopped; run  sudo bash install.sh  to connect the '
             'drive again and start them.'
         )
-    return fsck.returncode == 4
+    return fsck_run.returncode == 4
 
 
 def repaired(device, output, run):
     """The unmounted ext4 drive repaired (e2fsck -p: the fixes it makes without asking).
     Returns False (no damage is left) once it finished."""
     output('Repairing (on a large drive this takes a few minutes)...')
-    fsck = run(['e2fsck', '-f', '-p', device], capture_output=True, text=True, timeout=6 * 3600, check=False)
-    output((fsck.stdout or '').strip()[-1500:])
+    state = 'The drive may be repaired in part only, and it stays disconnected.'
+    fsck_run = fsck(['e2fsck', '-f', '-p', device], 'repair', state, run)
+    output((fsck_run.stdout or '').strip()[-1500:])
     # 0: clean, 1: repaired, 2: repaired, restart advised. Anything else, also a negative
     # code (e2fsck killed part-way, the review of 0.46.1), is not a finished repair.
-    if fsck.returncode not in (0, 1, 2):
+    code = fsck_run.returncode
+    if code not in (0, 1, 2):
+        raise RuntimeError(repair_failed(code, device))
+    return False
+
+
+def repair_failed(code, device):
+    """What a repair that did not finish means, by e2fsck's exit code: 4 is damage it
+    leaves for a person to approve; 8 and up is e2fsck unable to work on the drive at all
+    (a damaged start of the filesystem, a device that does not answer). Both were said as
+    "found problems it does not fix without asking"."""
+    after = 'Then run  sudo bash install.sh  to connect the drive again and start the apps.'
+    if code < 0 or 4 <= code < 8:
         what = (
             'was stopped before it finished'
-            if fsck.returncode < 0
-            else f'found problems it does not fix without asking (exit {fsck.returncode})'
+            if code < 0
+            else f'found problems it does not fix without asking (exit {code})'
         )
-        raise RuntimeError(
-            f'the repair program (e2fsck) {what}. The drive is not repaired, and it stays disconnected with the apps '
-            f'stopped. Run  sudo e2fsck -f {device}  yourself: it asks before each change. Then run  sudo bash '
-            'install.sh  to connect the drive again and start the apps.'
+        then = f'Run  sudo e2fsck -f {device}  yourself: it asks before each change.'
+    else:
+        what = f'could not work on the drive at all (exit {code}; its words are above)'
+        then = (
+            'The drive may be failing or not answering, or the start of its filing system is damaged. Copy what you '
+            'can from it if it still mounts, and ask for help with the words above (SUPPORT.md).'
         )
-    return False
+    return f'the repair program (e2fsck) {what}. The drive is not repaired, and it stays disconnected with the apps stopped. {then} {after}'
 
 
 def mounted_again(folder, run, writes):
@@ -3006,7 +3202,7 @@ def repair_backups(config, prompt, output):
     }
     say(
         output,
-        '\nFix damaged backup copies',
+        '\n' + FIX_NAME,
         'The last checks found backup copies that are damaged or missing:',
         *(f'  {file_count(count)} in {place}' for place, count in counts.items() if count),
         'Each one is compared with the checksum recorded when it was backed up (its fingerprint), and',
@@ -3090,12 +3286,34 @@ def stop_on_sigterm():
     signal.signal(signal.SIGHUP, stop)
 
 
+NO_SETTINGS = (
+    'No settings of a server set up on this PC were found: there is no my-config.json next to install.sh, and '
+    'no copy of it on the SSD (on a new Linux the SSD is not mounted yet). Without them this menu does not know '
+    'your drives, so it cannot find their backups. Put your saved settings file next to install.sh as '
+    'my-config.json, or take setup\'s copy from the SSD as RECOVERY.md says ("Replace the OS and reattach the '
+    'existing store", "If you did not save the settings file"), then run  sudo bash install.sh --recover  again.'
+)
+
+
+def names_drives(config):
+    """Whether the settings name any drive: the release's own config.json names none (its
+    UUIDs are empty) until setup has chosen them."""
+    storage = config.get('storage') if isinstance(config.get('storage'), dict) else {}
+    drives = [storage.get('data_ssd'), storage.get('media_hdd')]
+    return any(isinstance(drive, dict) and drive.get('uuid') for drive in drives)
+
+
 def run(prompt=input, output=print, config_path=None):
     if os.geteuid() != 0:
         output('Run it with sudo:  sudo bash install.sh --recover')
         return 2
     stop_on_sigterm()
     config = settings(config_path, output)
+    if not names_drives(config):
+        # A fresh download: the release's own settings, which name no drive. The menu
+        # then said "The HDD is not mounted ... Connect it", of a drive plugged in.
+        output(NO_SETTINGS)
+        return 2
     if prompt is not builtins.input:
         return menu_loop(config, prompt, output)  # asked by a test, or another program: no window
     import setup_gui
@@ -3121,6 +3339,25 @@ DRIVE_ACTIONS = {
 }
 
 
+# The restores whose backups the HDD keeps, and those of them the USB drive may hold too.
+# Without the HDD, "no backup found" would read as "no backup was ever made".
+KEPT_ON_HDD = {'photos', 'passwords', 'apps', 'host', 'monthly'}
+ALSO_ON_USB = {'photos', 'passwords'}
+HDD_AWAY = (
+    'The HDD is not mounted at {mount} (or another drive is there), so the backups NekoServer keeps '
+    'on it cannot be seen. Connect it (or restart the PC), then choose this again.'
+)
+
+
+# Films, shows and music have no backup (README.md, "Backups"). Said where the list is,
+# so someone who deleted a film is not left looking for a line that is never there.
+NO_MEDIA_BACKUP = (
+    'Films, shows and music are not backed up, so they are not in this list. A film or show',
+    'deleted by mistake: search for it again in Radarr or Sonarr (if you use them), or copy it',
+    'again from where you got it. Jellyfin\'s own settings (what you watched) are under "App settings".',
+)
+
+
 def restore_section(config, prompt, output):
     """Sections 1 and 2: what to restore is chosen here; each restore then asks for its
     backup, date, files and folder, shows the review, and writes only once approved."""
@@ -3131,9 +3368,16 @@ def restore_section(config, prompt, output):
         'it once. Nothing is written before that.',
         'A restore brings back files, settings and databases. It does not reinstall Linux or the apps.',
     )
+    if media_group(config, 'movies') or media_group(config, 'music'):
+        say(output, *NO_MEDIA_BACKUP)
     pick = choose('What would you like to restore?', menu(config), prompt, output)
-    if pick is not None:
-        RESTORES[pick](config, prompt, output)
+    if pick is None:
+        return
+    if pick in KEPT_ON_HDD and not hdd_ready(config):
+        output(HDD_AWAY.format(mount=config['media_mount']))
+        if pick not in ALSO_ON_USB:
+            return  # nowhere else to look
+    RESTORES[pick](config, prompt, output)
 
 
 def drive_section(config, prompt, output):
@@ -3144,9 +3388,27 @@ def drive_section(config, prompt, output):
         'so it has a warning and an approval of its own. Neither is started by choosing it here: each',
         'first shows the exact drive and asks.',
     )
-    pick = choose('Check or repair a drive', DRIVE_MENU, prompt, output)
+    pick = choose(DRIVE_SECTION, DRIVE_MENU, prompt, output)
     if pick is not None:
         DRIVE_ACTIONS[pick](config, prompt, output)
+
+
+# What to do about the system errors a restore or a check meets most (after their words).
+SYSTEM_ERROR_ADVICE = {
+    errno.EROFS: f'The drive takes no new files: choose a folder on another drive, or check it with "{CHECK_NAME}".',
+    errno.ENOSPC: 'The drive is full. Free some space there, or choose a folder on another drive.',
+}
+
+
+def went_wrong(exc):
+    """Why something in the menu did not go through, in words: a system error as its own
+    description with the file it was about and, where there is one, what to do (Python's
+    "[Errno 30] Read-only file system: '/mnt/usb'" said neither plainly)."""
+    if isinstance(exc, OSError) and exc.strerror:
+        where = f' ({exc.filename})' if exc.filename else ''
+        advice = SYSTEM_ERROR_ADVICE.get(exc.errno)
+        return exc.strerror + where + ('. ' + advice if advice else '')
+    return str(exc)
 
 
 def menu_loop(config, prompt, output):
@@ -3158,18 +3420,20 @@ def menu_loop(config, prompt, output):
         'and asked. Pressing Enter alone never approves anything.',
     )
     sections = {'restore': restore_section, 'drive': drive_section}
-    started = False
+    # Something may have changed only once a question was answered yes: after only
+    # looking around, "what was already restored or repaired stays" named work never
+    # done (deep check plan 200).
+    before = APPROVALS[0]
     try:
         while True:
             pick = choose('What do you need to do?', SECTIONS, prompt, output, leave='Quit')
             if pick is None:
                 output('Done.')
                 return 0
-            started = True
             try:
                 sections[pick](config, prompt, output)
             except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
-                output(f'That did not go through: {exc}')
+                output('That did not go through: ' + went_wrong(exc))
     except (EOFError, KeyboardInterrupt):
         # Restores and repairs finished before this stay as they are.
         output(
@@ -3178,7 +3442,7 @@ def menu_loop(config, prompt, output):
                 'Nothing more was changed; what was already restored or repaired stays as it is. If a drive '
                 'check or repair was under way, the apps may still be stopped: run  sudo bash install.sh  to '
                 'connect the drives and start them.'
-                if started
+                if APPROVALS[0] > before
                 else 'Nothing was changed.'
             )
         )

@@ -167,6 +167,8 @@ EXTRAS = (
         'part': 'extras',
         'on_default': True,
         'new_default': False,
+        # The TV mode opens Jellyfin: the TV step leaves it out without Movies and shows.
+        'needs': ('media_movies',),
         'step': 'tv',
         'title': 'A TV connected to this PC',
         'explanation': 'Play games from your gaming PC and watch YouTube on the TV this PC is plugged into: Steam Big '
@@ -323,12 +325,14 @@ def apps_to_install(config, now):
     import neko_common
 
     apps = []
-    if now['media_photos'] and config.get('photos', {}).get('deploy_immich', True) is True:
-        apps.append('Immich: your photos, with a backup from your phone')
     wanted = {**config, 'media_apps': {**_section(config, 'media_apps')}}
     for extra in EXTRAS:
         if extra.get('group'):
             wanted['media_apps'][extra['key']] = now[extra['id']] and offered(config, extra)
+    # The photos step's own rule: a settings file without "deploy_immich" (taken out by
+    # hand) sets no Immich up, so the review does not promise one (plan 96).
+    if neko_common.immich_wanted(wanted):
+        apps.append('Immich: your photos, with a backup from your phone')
     for app in neko_common.media_services(wanted):
         name, role, _port = neko_common.APPS[app]
         apps.append(f'{name}: {role[0].lower()}{role[1:]}')
@@ -346,7 +350,11 @@ def review(config):
     apps = apps_to_install(config, now)
     # A server set up already (an update, gate run D): its apps are there, its PIN chosen.
     again = neko_common.server_exists(config)
-    extras = [extra['title'] for extra in EXTRAS if extra['part'] in ('extras', 'storage') and now[extra['id']]]
+    extras = [
+        extra['title']
+        for extra in EXTRAS
+        if extra['part'] in ('extras', 'storage') and now[extra['id']] and offered(config, extra)
+    ]
     left_out = left_out_titles(now)
     asked = [words for key, words in ASKED_DURING.items() if key not in now or now[key]]
     if neko_common.media_group(config, 'downloads'):

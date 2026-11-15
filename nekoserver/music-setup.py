@@ -3,13 +3,20 @@
 
 import argparse
 import getpass
-import json
 import os
 from pathlib import Path
 import sys
 
 import music_client
-from neko_common import atomic_json, verify_storage, checked_settings, default_settings, media_services, music_library
+from neko_common import (
+    read_settings,
+    atomic_json,
+    verify_storage,
+    checked_settings,
+    default_settings,
+    media_services,
+    music_library,
+)
 
 
 def main(argv=None):
@@ -21,8 +28,12 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if os.geteuid() != 0:
         parser.error('Run as root to protect the monitor token')
-    config = json.loads(args.config.read_text())
-    verify_storage(config)
+    try:
+        config = read_settings(args.config)
+        verify_storage(config)
+    except RuntimeError as exc:  # a drive not connected, or the runtime not built yet
+        print(f'Music setup stopped: {exc}. Nothing was changed.', file=sys.stderr)
+        return 2
     if 'navidrome' not in media_services(config):
         parser.error('Select navidrome in media.services first (and the Music group: "music" under "media_apps")')
     if args.configure:

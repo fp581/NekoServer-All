@@ -11,11 +11,11 @@ import sys
 
 import native_runtime
 import outside_request
-from neko_common import VERSION, atomic_json, safe_path, check_units, write_units
+from neko_common import SHARED, VERSION, atomic_json, safe_path, check_units, write_units
 
 DEPENDENCIES = ['system', 'recovery']
 DESCRIPTION = 'Rust HTTPS heartbeat for independent missing-server alerts'
-PRIVATE = '/etc/nekoserver-heartbeat/config.json'
+PRIVATE = SHARED['private_settings']['heartbeat']
 
 
 def endpoint(value):

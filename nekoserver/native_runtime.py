@@ -11,6 +11,10 @@ NAME = 'nekoserver-runtime'
 SOURCES = ('Cargo.toml', 'Cargo.lock', 'build.py', 'src/shared.json')
 
 
+# The record of the runtime's build next to its sources (build.py writes it).
+BUILD_RECORD = 'build.json'
+
+
 def expected_sources(root):
     # Every Rust source, those in folders of their own too (src/cardset/, 0.51.0).
     return {*SOURCES, *[str(p.relative_to(root)) for p in (root / 'src').rglob('*.rs')]}
@@ -32,7 +36,7 @@ def build_needed(project, run=subprocess.run):
     written), or one that does not run here (install.sh then builds it)."""
     root = Path(project) / 'runtime'
     try:
-        manifest = json.loads((root / 'build.json').read_text())
+        manifest = json.loads((root / BUILD_RECORD).read_text())
         hashes = manifest.get('source_sha256', {})
         if not (root / 'bin' / NAME).is_file() or set(hashes) != expected_sources(root):
             return True
@@ -62,12 +66,19 @@ def backend(config):
     return 'rust'
 
 
+# How to get a runtime built from this release's sources: said wherever there is none yet,
+# or one built from other sources.
+BUILD_IT = 'run  sudo bash install.sh  (it builds the runtime), or  python3 runtime/build.py'
+
+
 def payload(project, config):
     backend(config)
     if platform.system() != 'Linux' or platform.machine() != 'x86_64':
         raise RuntimeError('The bundled Rust runtime requires x86_64 Linux')
     root = safe_path(Path(project) / 'runtime')
-    manifest = json.loads(safe_path(root / 'build.json').read_text())
+    if not (root / BUILD_RECORD).is_file() or not (root / 'bin' / NAME).is_file():
+        raise RuntimeError('The runtime is not built yet in ' + str(root) + ': ' + BUILD_IT)
+    manifest = json.loads(safe_path(root / BUILD_RECORD).read_text())
     if manifest.get('version') != VERSION or manifest.get('target') not in TARGETS:
         raise RuntimeError('Native build identity does not match this release')
     binary = safe_path(root / 'bin' / NAME).read_bytes()
@@ -79,9 +90,7 @@ def payload(project, config):
         raise RuntimeError('Native build source manifest is incomplete')
     for rel in expected:
         if hashlib.sha256(safe_path(root / rel).read_bytes()).hexdigest() != hashes[rel]:
-            raise RuntimeError(
-                'The runtime was built from other sources than these; run  sudo bash install.sh  again (it builds the runtime), or python3 runtime/build.py'
-            )
+            raise RuntimeError('The runtime was built from other sources than these: ' + BUILD_IT)
     return binary
 
 
@@ -164,7 +173,7 @@ KEEP_BUNDLES = 2  # release bundles (installer/releases/vX) kept on the SSD: thi
 def release_number(name):
     """(0, 28, 10) from "v0.28.11"; None for any other folder name."""
     parts = name[1:].split('.') if name.startswith('v') else []
-    return tuple(int(p) for p in parts) if parts and all(p.isdigit() for p in parts) else None
+    return tuple(int(p) for p in parts) if parts and all(p.isdecimal() for p in parts) else None
 
 
 def in_use(folder, units=SYSTEMD_UNITS):

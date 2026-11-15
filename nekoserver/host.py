@@ -240,11 +240,49 @@ def _up_to(seconds):
     return '(up to ' + str(seconds // 60) + ' minutes)...'
 
 
+def _last_line(result):
+    return ((result.stderr or result.stdout or '').strip().splitlines()[-1:] or ['no details'])[0]
+
+
+def _gave_up_fetching(result):
+    """The package manager stopped because downloads failed (said by its last line)."""
+    last = _last_line(result)
+    return bool(TRANSIENT.search(last) or GAVE_UP_FETCHING.search(last))
+
+
+def _cause(result):
+    """The line that says what went wrong: for downloads that failed, the one naming why
+    (apt's own last line then, "Unable to fetch some archives, maybe … --fix-missing?",
+    names nothing); otherwise the last line the package manager printed."""
+    if _gave_up_fetching(result):
+        lines = _output(result).splitlines()
+        return next((line.strip() for line in lines if TRANSIENT.search(line)), _last_line(result))[-300:]
+    return _last_line(result)
+
+
+# apt's words when an earlier installation (an automatic update, say) was cut off: it
+# then installs nothing, and its own advice leaves out sudo.
+DPKG_INTERRUPTED = re.compile(r'dpkg was interrupted', re.IGNORECASE)
+INTERRUPTED_UPDATE = (
+    'an earlier installation or system update was cut off before it finished (the PC turned off during '
+    'an automatic update, say), and nothing can be installed until it is finished. Finish it with  '
+    'sudo dpkg --configure -a  , then run  sudo bash install.sh  again'
+)
+
+
 def _reason(result):
-    """The last line a package manager printed, for error messages (with a word on the
-    clock when that is what went wrong)."""
-    last = ((result.stderr or result.stdout or '').strip().splitlines()[-1:] or ['no details'])[0]
-    return last + clock_hint(_output(result))
+    """Why the package manager failed, for the error setup stops with: its cause (with a
+    word on the clock when that is what went wrong), and for a package source that was
+    never reached, what to do."""
+    said, cause = _output(result), _cause(result)
+    if DPKG_INTERRUPTED.search(said):
+        return INTERRUPTED_UPDATE
+    if _gave_up_fetching(result):
+        return (
+            f'the package source could not be reached ({cause}). Check the internet connection '
+            '(and the proxy, if this network uses one), then run  sudo bash install.sh  again' + clock_hint(said)
+        )
+    return cause + clock_hint(said)
 
 
 # A package source that did not answer: a mirror hiccup, a download cut off, the network
@@ -258,6 +296,8 @@ TRANSIENT = re.compile(
     re.IGNORECASE,
 )
 RETRIES = 3  # attempts in all
+# apt's last line when the downloads failed: it says only that, and advice that does not help.
+GAVE_UP_FETCHING = re.compile(r'unable to fetch some archives', re.IGNORECASE)
 RETRY_PAUSE = 20  # seconds between them
 
 
@@ -289,6 +329,12 @@ STALE_LISTS = re.compile(r'^W: (Failed to fetch|Some index files failed to downl
 
 def stale_lists(result):
     return bool(STALE_LISTS.search(_output(result)))
+
+
+def no_source_answered(result):
+    """apt says "Hit:" or "Get:" for each source that answered: none means none did
+    (deep check 296: that was still "Some package sources could not be reached")."""
+    return not re.search(r'^(Hit|Get):', _output(result), re.MULTILINE)
 
 
 def environment():
@@ -389,6 +435,15 @@ def _why(exc):
 # What a proxy or firewall that refused the connection makes a download say (a filter
 # that answers in its place says 403 through the proxy's tunnel).
 REFUSED = re.compile(r'tunnel connection failed|proxy|403|forbidden', re.IGNORECASE)
+# No name server answered at all (EAI_AGAIN), as with systemd-resolved switched off while
+# /etc/resolv.conf still points to it (deep check 266). A filter that blocks one site
+# answers "Name or service not known" instead, which stays with the causes above.
+NO_NAME_SERVICE = re.compile(r'temporary failure in name resolution', re.IGNORECASE)
+NO_NAME_SERVICE_WORDS = (
+    ' Here no name server (DNS) answered when the site\'s name was looked up: if the PC is connected '
+    'but no site opens in a browser, its network settings name no working DNS server; on Ubuntu, '
+    'systemd-resolved may be switched off (sudo systemctl enable --now systemd-resolved starts it).'
+)
 
 
 def unreachable(maker, url, what, reason, tries):
@@ -407,6 +462,9 @@ def unreachable(maker, url, what, reason, tries):
             ' Likely causes: something on your network blocks that site (a proxy, a router or parental filter, '
             'an ad-blocker such as Pi-hole, a VPN), the site is down for a while, or this PC is offline right now.'
         )
+        if NO_NAME_SERVICE.search(reason):
+            # (An offline PC says the same: the causes above stay.)
+            causes += NO_NAME_SERVICE_WORDS
     return (
         f'Could not reach {site} ({maker}\'s site) to download {what}{tried} ({reason}).{causes} Check that '
         f'https://{site} opens in a browser on this PC, then run  sudo bash install.sh  again.' + clock_hint(reason)
@@ -463,7 +521,7 @@ class Family:
                 return result
             self.say(
                 'The package source did not answer ('
-                + _reason(result)
+                + _cause(result)
                 + '); trying again in '
                 + str(RETRY_PAUSE)
                 + ' seconds ('
@@ -756,6 +814,13 @@ class Arch(Family):
     manager = 'pacman'
     ids = ('arch', 'nyarch')
     like = ('arch',)
+    packages = MappingProxyType(
+        {
+            # AMD's video decoding comes with mesa itself since 24.2.7: libva-mesa-driver is
+            # only a name mesa provides, which  pacman -Si  does not find.
+            'libva-mesa-driver': 'mesa',
+        }
+    )
     services = MappingProxyType({'samba': SAMBA_UNIT, 'tailscale': TAILSCALE_UNIT, 'iscsi-login': ISCSI_LOGIN_UNIT})
     settings = ('/etc/pacman.conf', '/etc/pacman.d/mirrorlist')
     wait = 600  # seconds to wait for another pacman to finish
@@ -1138,10 +1203,17 @@ class Debian(PackageLock, Family):
             raise RuntimeError('Refreshing the package lists failed: ' + _reason(result))
         if stale_lists(result):
             line = next(line for line in _output(result).splitlines() if STALE_LISTS.match(line))
-            self.say(
-                'Some package sources could not be reached (' + line[3:].strip() + '); going on with their '
-                'lists from before' + clock_hint(_output(result)) + '.'
-            )
+            if no_source_answered(result):
+                self.say(
+                    'None of the package sources could be reached (' + line[3:].strip() + '); going on with the '
+                    'lists from before, which may be out of date' + clock_hint(_output(result)) + '. If installing '
+                    'fails next, check that this PC is online, then run setup again.'
+                )
+            else:
+                self.say(
+                    'Some package sources could not be reached (' + line[3:].strip() + '); going on with their '
+                    'lists from before' + clock_hint(_output(result)) + '.'
+                )
         self.refreshed = True
 
     def _wait_for_lists(self):
@@ -1758,7 +1830,7 @@ class Rhel(Fedora):
         if set(_words(release, 'ID')) & set(cls.ids):
             return True
         major = (release.get('VERSION_ID') or '').split('.')[0]
-        return not ('fedora' in _words(release, 'ID_LIKE') and major.isdigit() and int(major) >= 30)
+        return not ('fedora' in _words(release, 'ID_LIKE') and major.isdecimal() and int(major) >= 30)
 
     def __init__(self, run=run_command, release=None, fetch=_fetch):
         super().__init__(run, release, fetch)

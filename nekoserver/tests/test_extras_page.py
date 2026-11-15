@@ -23,6 +23,17 @@ SMALL, MEDIUM, LARGE = (model for model, *_ in assistant.MODELS)
 GB = 1000**3
 
 
+class ModelNamesTests(unittest.TestCase):
+    """Setup's names for the assistant's models match the models there are."""
+
+    def test_every_model_has_its_plain_name(self):
+        """The review of 0.51.0: the names were paired with assistant.MODELS by zip(), so a
+        model added to that list without a name here was silently never offered."""
+        self.assertEqual(len(extras_page.PLAIN_NAMES), len(extras_page.assistant.MODELS))
+        sizes = [model[1] for model in extras_page.assistant.MODELS]
+        self.assertEqual(sizes, sorted(sizes), 'smallest first, as the names say')
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -177,8 +188,32 @@ class FakeLinux:
 
 
 class TvPlanTests(Base):
-    def plan(self, family=None, has_desktop=True, vendors=('intel',), has_browser=True):
-        return extras_page.tv_plan(self.config, family or FakeLinux(), has_desktop, list(vendors), has_browser)
+    def plan(self, family=None, has_desktop=True, vendors=('intel',), has_browser=True, flatpak=False):
+        return extras_page.tv_plan(self.config, family or FakeLinux(), has_desktop, list(vendors), has_browser, flatpak)
+
+    def test_a_flatpak_steam_already_here_is_used_not_a_second_one(self):
+        """Deep check 310: the TV step installed the distribution's Steam beside a Flatpak
+        Steam the PC already had (and asked for its repository first)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            home, system = Path(tmp) / 'home', Path(tmp) / 'flatpak'
+            which = lambda name, path=None: '/usr/bin/flatpak' if name == 'flatpak' and path is None else None
+            self.assertIsNone(tv.flatpak_steam(home, which, system))
+            (home / '.local/share/flatpak/app' / tv.FLATPAK_STEAM / 'current').mkdir(parents=True)
+            command = tv.flatpak_steam(home, which, system)
+            self.assertEqual(command, '/usr/bin/flatpak run com.valvesoftware.Steam')
+            self.assertIn(
+                'Exec=/usr/bin/flatpak run com.valvesoftware.Steam -gamepadui',
+                tv.launchers(command)['nekoserver-steam.desktop'],
+            )
+            # Installed for everyone counts too; without the flatpak program it does not.
+            (system / 'app' / tv.FLATPAK_STEAM / 'current').mkdir(parents=True)
+            self.assertIsNotNone(tv.flatpak_steam(Path(tmp) / 'other', which, system))
+            self.assertIsNone(tv.flatpak_steam(home, lambda name, path=None: None, system))
+        self.assertNotIn('steam', tv.wanted_packages({}, ['intel'], True, flatpak=True))
+        found = self.plan(family=FakeLinux(offered=False), flatpak=True)
+        self.assertNotIn('steam', found['packages'])
+        self.assertEqual(found['needs_first'], '')
+        self.assertIn('Flatpak Steam already on this PC', found['installs'][0])
 
     def test_it_lists_what_is_installed_in_plain_words_and_the_packages_apart(self):
         found = self.plan()

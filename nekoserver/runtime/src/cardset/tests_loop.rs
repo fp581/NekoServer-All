@@ -269,3 +269,39 @@ fn loop_card_returns() {
     assert!(!rec.retry.is_empty() || !rec.finished.is_empty(), "{rec:?}");
     assert_whole(&card_path, &src, 2);
 }
+
+#[test]
+#[ignore = "needs root and a loop card: run cardset-loop-tests.sh (NEKO_LOOP_IMAGE)"]
+fn loop_a_card_that_does_not_keep_the_bytes_is_caught() {
+    // The review of 0.51.0: the readback after D3 read the kernel's page cache, not the
+    // card, so a fake-capacity or failing card that keeps other bytes passed the check
+    // and the copy was committed. Here the card's bytes are changed under the mounted
+    // filesystem (in the image file) at each PayloadWritten: no copy may be committed.
+    let card_path = cards()[0].clone();
+    let image = env("NEKO_LOOP_IMAGE");
+    let src = source("lying", 1, 2);
+    let vol = card(&card_path, 1);
+    let mut cat = catalogue();
+    let staging = card_path.join(format::ROOT).join(format::STAGING);
+    let mut corrupted = 0;
+    let mut hook = |point: Point| -> Res<()> {
+        if point == Point::PayloadWritten {
+            let partial = fs::read_dir(&staging)
+                .unwrap()
+                .flatten()
+                .map(|e| e.path())
+                .find(|p| p.extension().is_some_and(|x| x == "partial"))
+                .expect("the payload in staging");
+            crate::lying_drive::change_on_disk(&image, &partial);
+            corrupted += 1;
+        }
+        Ok(())
+    };
+    let r = go(&vol, &mut cat, &src, &mut hook);
+    assert!(corrupted > 0, "the payload was written");
+    assert!(
+        r.committed.is_empty(),
+        "a copy the card does not hold was committed: {r:?}"
+    );
+    assert!(records(&card_path).is_empty(), "no record on the card");
+}

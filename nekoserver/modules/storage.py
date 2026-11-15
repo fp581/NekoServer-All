@@ -12,6 +12,7 @@ import sys
 import types
 from pathlib import Path
 from neko_common import (
+    nextcloud_enabled,
     atomic_json,
     atomic_write,
     drives_in_use,
@@ -1921,7 +1922,7 @@ def asked_install(context, what, others):
             named = next((row for row in others if str(row['number']) == window_row(answer)), None)
             if named is not None:
                 return named
-        elif answer.isdigit() and 2 <= int(answer) < 2 + len(others):
+        elif answer.isdecimal() and 2 <= int(answer) < 2 + len(others):
             return others[int(answer) - 2]
         context.log(f'Type a number from 1 to {1 + len(others)}, or press Enter.')
     return None
@@ -2006,17 +2007,24 @@ def free_on(row):
 
 
 PLACE_SAID = {'ssd': 'on the drive of NekoServer and your apps', 'media': 'on the drive of the backups'}
+ONE_PLACE_SAID = 'on the one drive of this server, with the apps and the backups'
 
 
 def place_line(config, what, words, place):
     """Where one kind of files is kept, as the review says it."""
     import drive_table
 
-    if isinstance(place, str):
+    one = isinstance(place, str) and one_place(config)
+    if one:
+        # "The SSD" and "the media drive" are one drive here: the page offered it as the
+        # drive with the apps, and the review called it "the drive of the backups" (deep
+        # check plan 199). Their backup is on it too, whichever folder they are in.
+        said = ONE_PLACE_SAID
+    elif isinstance(place, str):
         said = PLACE_SAID[place]
     else:
         said = 'on ' + drive_table.brief(place) + ', a drive of their own'
-    if place == 'media' and what in backed_up_beside(config):
+    if (place == 'media' or one) and what in backed_up_beside(config):
         said += '. ' + SAME_DRIVE_AS_BACKUP
     return f'{words[0].upper()}{words[1:]}: {said}'
 
@@ -2327,7 +2335,7 @@ def raid_note(target, sys_block=None):
         return None
     return (
         f'{target}: the RAID array {name} has lost a drive ({lost}), so your data there has one copy fewer. '
-        "Replace the failed drive and let the array rebuild; the dashboard's Drives page shows the state."
+        "Replace the failed drive and let the array rebuild; the dashboard's Server health → Drives shows the state."
     )
 
 
@@ -2460,7 +2468,7 @@ def asked_where(config, what):
         return apps_to_connect(config)  # Jellyfin's library, or the download apps' folders
     if what == 'music':
         return media_group(config, 'music')
-    return config.get('nextcloud', {}).get('enabled', True) is True
+    return nextcloud_enabled(config)
 
 
 def recommended(ssd_gb, threshold):
@@ -2770,7 +2778,7 @@ def place_asked(context, offered, input_fn, key):
     options, others = offered
     for _ in range(3):
         answer = drive_table.field(key or 'place', input_fn or input, 'Number (Enter for the recommended one): ')
-        if len(options) == 1 and answer.isdigit() and int(answer) >= 2:
+        if len(options) == 1 and answer.isdecimal() and int(answer) >= 2:
             # Numbered from 2 here: the place_answered numbers count two drives first.
             answer = str(int(answer) + 1)
         place = place_answered(answer, options, others)
@@ -2790,7 +2798,7 @@ def place_answered(answer, options, others):
         return next((row for row in others if str(row['number']) == window_row(answer)), None)
     if answer in ('', '1', '2'):
         return options[int(answer) - 1] if answer else options[0]
-    if answer.isdigit() and 3 <= int(answer) < 3 + len(others):
+    if answer.isdecimal() and 3 <= int(answer) < 3 + len(others):
         return others[int(answer) - 3]
     return None
 

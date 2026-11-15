@@ -20,7 +20,7 @@ import os
 import re
 from pathlib import Path
 
-from neko_common import MY_SETTINGS, RECOVERY, SETTINGS_TEMPLATE, SYSTEMD_UNITS, VERSION, mount_path
+from neko_common import OPTIONAL_STEPS, MY_SETTINGS, RECOVERY, SETTINGS_TEMPLATE, SYSTEMD_UNITS, VERSION, mount_path
 
 ROOT = Path(__file__).resolve().parent
 
@@ -288,13 +288,8 @@ def look(root=ROOT, settings=None, units=SYSTEMD_UNITS, default_state=None, jour
 
 
 def optional_steps():
-    """The steps a finished server does not wait for (wizard.OPTIONAL)."""
-    try:
-        from wizard import OPTIONAL
-
-        return set(OPTIONAL)
-    except ImportError:
-        return {'assistant'}
+    """The steps a finished server does not wait for (neko_common.OPTIONAL_STEPS)."""
+    return set(OPTIONAL_STEPS)
 
 
 def steps_left(seen):

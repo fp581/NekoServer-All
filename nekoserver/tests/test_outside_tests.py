@@ -676,6 +676,32 @@ class FinishRetryTests(unittest.TestCase):
         self.assertEqual(server.only.full_url, new_ping)
         self.assertEqual(state['status'], 'complete')
 
+    def test_a_test_that_did_not_arrive_asks_for_the_address_again(self):
+        """0.51.2 user check: a typo in the topic name (typed hidden) went through. The
+        alert server takes any topic name, the person answered "no, it did not arrive",
+        and the step was done: setup again never asked for the address again."""
+        alerts = self.files[notifications.PRIVATE_CONFIG]
+        typo = self.topic[:-1] + ('x' if self.topic[-1] != 'x' else 'y')
+        notifications.guided_setup.interactive.return_value = True
+        self.save(notifications.PRIVATE_CONFIG, {'endpoint': typo, 'token': '', 'tested': False})
+        with mock.patch.object(notifications.questions, 'yes_no', return_value=False):
+            state, server = self.retry(notifications, 200)
+        self.assertEqual(server.only.full_url, typo)
+        self.assertEqual(state['status'], 'needs_setup')
+        self.assertEqual(state['reason'], notifications.NOT_ARRIVED)
+        self.assertTrue(outside_request.not_seen(alerts))
+        # Setup again: the address is asked for, the right one tested and seen.
+        with (
+            mock.patch.object(notifications, 'alerts_form', return_value=(self.topic, '')) as form,
+            mock.patch.object(notifications.questions, 'yes_no', return_value=True),
+        ):
+            state, server = self.retry(notifications, 200)
+        form.assert_called_once()
+        self.assertEqual(server.only.full_url, self.topic)
+        self.assertEqual(state['status'], 'complete')
+        self.assertFalse(outside_request.not_seen(alerts))
+        self.assertEqual(json.loads(alerts.read_text())['endpoint'], self.topic)
+
 
 if __name__ == '__main__':
     unittest.main()

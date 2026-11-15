@@ -132,7 +132,7 @@ function ago(at) {
   if (d < 86400) {
     return Math.floor(d / 3600) + ' h ago';
   }
-  return Math.floor(d / 86400) + ' days ago';
+  return plural(Math.floor(d / 86400), 'day') + ' ago'; // not "1 days ago"
 }
 function duration(s) {
   if (!numeric(s) || s < 0) {
@@ -259,7 +259,10 @@ const ERRORS = {
   E11: ['Readings could not be read', 'Usually fixes itself within a minute. If not, run setup again.'],
   E12: ['Readings are out of date', 'The reading service stopped. Help shows the command to check it.'],
   E20: ['Live readings unavailable', 'Hardware readings come back by themselves. If not, restart the dashboard.'],
-  E21: ['Fan and light control unavailable', 'The control service is not running. Help shows the command to check it.'],
+  E21: [
+    'The control service is not running',
+    'It handles the PIN, fans and lights, app restarts and Ask Neko. Help shows the command to check it.'
+  ],
   E40: ['Page not found', 'Use the menu to go back.'],
   E41: ['Open the dashboard from its own address', 'Use the address setup gave you (this computer or Tailscale).'],
   E42: ['Request not supported', 'Reload the page.'],
@@ -267,7 +270,10 @@ const ERRORS = {
     'Enter your PIN to change this',
     'Fans and lights need it on other devices; restarting or closing apps on all of them.'
   ],
-  E44: ['Wrong PIN', 'Check the PIN and try again.'],
+  E44: [
+    'Wrong PIN',
+    'Check the PIN and try again. Forgot it? DASHBOARD.md, “Your PIN”, says how to find it or choose a new one.'
+  ],
   E45: [
     'Too many tries; wait a while',
     'Five wrong PINs lock out this device for 5 minutes, then twice as long each time. Other devices count apart.'
@@ -575,20 +581,31 @@ function keyed(node, key) {
   node.dataset.focus = key;
   return node;
 }
+/* What a control is called for withFocus: its stable name (keyed), else its kind and what
+ * a screen reader says for it. */
+function focusName(n) {
+  return n.dataset?.focus || n.tagName + ':' + (n.getAttribute('aria-label') || n.textContent || '').trim();
+}
+const FOCUSABLE = 'a[href], button, input, select, textarea, [tabindex], [data-focus]';
+/* Redraw, and give keyboard focus back to the same control when it was rebuilt: the one
+ * with the same name (the first of several alike, the same one of them). Only keyed
+ * controls came back before, so a keyboard user on an app's ⋯ or an update's button was
+ * sent back to the top of the page at every refresh (deep check 156). */
 function withFocus(draw) {
-  const key = document.activeElement?.dataset?.focus;
-  draw();
-  if (!key) {
+  const was = document.activeElement;
+  if (!was || was === document.body) {
+    draw();
     return;
   }
-  let again = null;
-  for (const n of document.querySelectorAll('[data-focus]')) {
-    if (n.dataset.focus === key) {
-      again = n;
-      break;
-    }
+  const name = focusName(was);
+  const alike = () => [...document.querySelectorAll(FOCUSABLE)].filter(n => focusName(n) === name);
+  const which = alike().indexOf(was);
+  draw();
+  if (was.isConnected) {
+    return; // not rebuilt: focus is still there
   }
-  again?.focus({ preventScroll: true });
+  const again = alike();
+  (again[which] || again[0])?.focus({ preventScroll: true });
 }
 function empty(message) {
   return el('p', 'empty', message);
@@ -647,11 +664,18 @@ function serverApps(s) {
 const severity = urgent => (urgent ? 'critical' : 'warning');
 /* Alerts about a drive: its guide, and the drives panel's cat. */
 const STORAGE_ISSUE = /^(mount|space|smart|nas|array-[a-z]+):/;
-/* Which guide explains an alert, by its id. */
+/* The jobs that update (the monthly run: backup, then updates; the update night, the
+ * daily check, a NekoServer upgrade): their guide is about updates, not backups. */
+const UPDATE_JOBS = new Set(['job:maintenance', 'job:updates', 'job:update_check', 'job:upgrade']);
+/* Which guide explains an alert, by its id. A step of setup that did not finish, a
+ * shared folder that does not answer and Tailscale have guides of their own: the general
+ * one (missing drives, stopped apps) did not help with those. */
 const ALERT_GUIDES = [
-  [id => id === 'job:maintenance', 'updates'], // the monthly run: backup, then updates
+  [id => UPDATE_JOBS.has(id), 'updates'],
+  [id => id.startsWith('setup:'), 'setup'],
+  [id => id.startsWith('tailscale:'), 'remote'],
   [id => id.startsWith('integrity:'), 'integrity'],
-  [id => STORAGE_ISSUE.test(id), 'storage'],
+  [id => STORAGE_ISSUE.test(id) || id.startsWith('share:'), 'storage'],
   [id => id.startsWith('job:') || id === 'backup-key', 'backup'],
   [id => id.startsWith('startup:'), 'startup'],
   [id => id.includes('heartbeat'), 'heartbeat'],
@@ -750,7 +774,7 @@ function arrayShown(a) {
 function arrayIssues(s, add) {
   for (const a of list(s.arrays)) {
     const shown = arrayShown(a),
-      reason = text(a.reason, 'Review the Drives page.');
+      reason = text(a.reason, 'Look at Server health → Drives.');
     if (a.status === 'degraded' || a.status === 'rebuilding') {
       add(
         'array-lost:' + a.id,
@@ -795,7 +819,7 @@ function driveIssues(s, add) {
       add(
         'mount:' + disk.id,
         name + ' turned read-only',
-        'Linux stopped writing to it after errors; the apps that write there are stopped. Check it with  sudo bash install.sh --recover  ("Check a drive that turned read-only").',
+        'Linux stopped writing to it after errors; the apps that write there are stopped. Check it with  sudo bash install.sh --recover  ("Check or repair a drive", then "Check a drive that stopped taking new files").',
         'storage',
         'critical'
       );
@@ -921,9 +945,11 @@ function otherIssues(s, add) {
     );
   }
   acceptanceIssue(s.acceptance, add);
+  // The id of the server's own alert for it (collect.rs "media-stale"): one item, not
+  // the server's and the page's both, for one overdue check.
   if (s.media?.status === 'stale') {
     add(
-      'media-report',
+      'media-stale',
       'App checks are out of date',
       s.media.reason || 'The last detailed app check is overdue.',
       'apps'
@@ -1815,6 +1841,9 @@ function bugReport(entry) {
 function askEntry(entry) {
   const box = el('article', 'ask-entry');
   box.append(el('p', 'ask-question', entry.question));
+  if (entry.cut) {
+    box.append(el('p', 'hint', entry.cut));
+  }
   const said = shownAnswer(entry.answer);
   if (said || (!entry.error && ASK.busy && entry === ASK.log.at(-1))) {
     box.append(longText('ask-answer', said || 'Thinking…'));
@@ -1906,12 +1935,55 @@ function askUnlock(
   }
   unlockDialog(then, 'ASK NEKO', why);
 }
+/* Neko reads at most the first question_chars characters of a question (the server's
+ * number, in the status): a longer one is said, not cut without a word (the box's
+ * maxlength used to cut a pasted question silently). Empty when the question fits. */
+function askTooLong(question, s = state.status) {
+  const limit = Number(object(s?.assistant).question_chars),
+    length = [...question].length;
+  if (!(limit > 0) || length <= limit) {
+    return '';
+  }
+  return (
+    'Your question is ' +
+    length +
+    ' characters long. Neko reads only the first ' +
+    limit +
+    ', so the rest is left out: shorten it to keep what matters.'
+  );
+}
+/* Ask pressed with nothing but spaces in the box: before, nothing happened and nothing was said. */
+const ASK_EMPTY = 'Type your question in the box first: it is empty, or holds only spaces.';
+function askNote() {
+  $('ask-note').textContent = askTooLong($('ask-input').value.trim());
+}
+/* Ask pressed: the question in the box, about the attention item chosen (if any). */
+function sendQuestion() {
+  const question = $('ask-input').value.trim();
+  if (ASK.busy) {
+    return;
+  }
+  if (!question) {
+    $('ask-note').textContent = ASK_EMPTY;
+    return;
+  }
+  const item = ASK.item;
+  ASK.item = null;
+  void askNeko(question, item);
+}
 async function askNeko(question, item) {
   if (!signedIn()) {
     askUnlock(() => askNeko(question, item));
     return;
   }
-  const entry = { question, answer: '' };
+  // Emptied only now that it is sent: emptied at once, a question typed while the PIN
+  // was locked out (wrong PINs) was lost when the PIN dialog was closed (deep check 165).
+  if ($('ask-input').value.trim() === question) {
+    $('ask-input').value = '';
+    $('ask-note').textContent = '';
+  }
+  // Said with the question in the history too: the box (and its note) is emptied now.
+  const entry = { question, answer: '', cut: askTooLong(question) ? 'Neko read only the start of this question.' : '' };
   ASK.log.push(entry);
   ASK.busy = true;
   renderAsk();
@@ -2299,7 +2371,7 @@ function renderBackups() {
 /* ---------- hardware ---------- */
 function processorCard(cpu) {
   const clock = numeric(cpu.clock_mhz) ? (cpu.clock_mhz / 1000).toFixed(1) + ' GHz' : '';
-  const threads = numeric(cpu.logical_cpus) ? cpu.logical_cpus + ' threads' : '';
+  const threads = numeric(cpu.logical_cpus) ? plural(cpu.logical_cpus, 'thread') : '';
   return stat(
     'Processor',
     pct(cpu.percent),
@@ -2495,11 +2567,13 @@ function voltageRow(v) {
   row.append(el('span', '', text(v.label) + ' · ' + text(v.chip)), el('strong', '', v.value.toFixed(2) + ' V'));
   return row;
 }
-function sensorBadge(live, sensors) {
+/* The badge sits on the Temperatures card: it counts the temperatures shown there, not
+ * every fan and voltage reading too ("6 found" above one sensor, deep check 308). */
+function sensorBadge({ live, temps, fresh }) {
   if (!live) {
     return ['unknown', state.liveError || 'Waiting'];
   }
-  return liveFresh() ? ['neutral', sensors.length + ' found'] : ['warning', 'Last reading ' + ago(live.generated_at)];
+  return fresh ? ['neutral', temps.length + ' found'] : ['warning', 'Last reading ' + ago(live.generated_at)];
 }
 /* Hard drive temperatures come from the collector's SMART check (every 30 minutes,
  * never waking a sleeping drive): reading them live could keep a drive awake. */
@@ -2518,13 +2592,13 @@ function renderSensors() {
   const live = state.live,
     sensors = list(live?.sensors);
   const of = kind => sensors.filter(s => s.kind === kind);
-  setBadge('sensor-count', ...sensorBadge(live, sensors));
+  const temps = [...of('temperature'), ...driveTemperatures()],
+    groups = [...new Set(temps.map(t => t.group))];
+  setBadge('sensor-count', ...sensorBadge({ live, temps, fresh: liveFresh() }));
   if (!live) {
     put('temperatures', [empty(state.liveError ? codeLine(state.liveError) : 'Looking for sensors…')]);
     return;
   }
-  const temps = [...of('temperature'), ...driveTemperatures()],
-    groups = [...new Set(temps.map(t => t.group))];
   put(
     'temperatures',
     groups.length
@@ -2887,7 +2961,7 @@ function fanName(fan) {
   return text(fan.label).replace(/^fan/, 'Fan ');
 }
 function temperatureName(t) {
-  return text(t.label) + ' · ' + text(t.chip);
+  return text(t.label) + ' · ' + text(t.chip) + (numeric(t.value) ? '' : ' (no reading)');
 }
 function draftFrom(setting, temps) {
   const s = object(setting);
@@ -2900,7 +2974,7 @@ function draftFrom(setting, temps) {
       'auto'
     ),
     fixed: numeric(s.fixed) ? Math.max(20, s.fixed) : 60, // never below the 20 % floor
-    sensor: text(s.sensor, temps[0]?.id || ''),
+    sensor: text(s.sensor, (temps.find(t => numeric(t.value)) || temps[0])?.id || ''),
     points: list(s.points).length ? s.points.map(p => [...p]) : PRESETS.Balanced.map(p => [...p]),
     min: numeric(s.min) ? s.min : 20,
     name: text(s.name),
@@ -3260,7 +3334,7 @@ function outputsBadge(c) {
     return ['neutral', 'Switched off'];
   }
   const outputs = list(c.fans?.inventory?.outputs);
-  return outputs.length ? ['neutral', outputs.length + ' outputs'] : ['unknown', 'None found'];
+  return outputs.length ? ['neutral', plural(outputs.length, 'output')] : ['unknown', 'None found'];
 }
 function renderOutputs(c) {
   const outputs = list(c.fans?.inventory?.outputs);
@@ -3382,7 +3456,7 @@ function lightCard(d) {
   const own = hint('This effect makes its own colours, so colour and brightness don’t apply to it.');
   root.append(
     head,
-    el('p', 'hint', joined([text(d.kind), d.leds ? d.leds + ' lights' : '', text(d.location)])),
+    el('p', 'hint', joined([text(d.kind), d.leds ? plural(d.leds, 'light') : '', text(d.location)])),
     colorWrap,
     brightness,
     effect,
@@ -3596,7 +3670,8 @@ function renderProcesses() {
   setBadge(
     'process-count',
     state.processError ? 'warning' : 'neutral',
-    state.processError || (state.processes ? rows.length + ' running' : 'Waiting')
+    // All running, also past the 5000 listed (the server counts every one).
+    state.processError || (state.processes ? (numeric(p.count) ? p.count : rows.length) + ' running' : 'Waiting')
   );
   const page = shown.slice(state.processPage * 50, (state.processPage + 1) * 50);
   put('process-rows', page.length ? page.map(processRow) : [noProcessesRow()]);
@@ -3607,7 +3682,7 @@ function renderProcesses() {
     '100% processor = one full core, so busy programs can go above 100%. ' +
     MENU_HOW +
     ' a program to restart its app or close a desktop app.' +
-    (p.truncated ? ' Only the first 5000 are listed.' : '');
+    (p.truncated ? ' Only the 5000 busiest are listed.' : '');
 }
 
 /* ---------- app controls ----------
@@ -4047,7 +4122,7 @@ function driveCard(disk, old, arrays) {
     card.append(
       hint(
         'It does not take writes: Linux turned it read-only after errors. The apps that write there are stopped. ' +
-          'Check it with  sudo bash install.sh --recover  ("Check a drive that turned read-only").'
+          'Check it with  sudo bash install.sh --recover  ("Check or repair a drive", then "Check a drive that stopped taking new files").'
       )
     );
   } else if (disk.waiting === true) {
@@ -4520,7 +4595,7 @@ const GUIDES = {
     steps: [
       'Check whether a backup or monthly update is running: short app downtime during those is normal.',
       'Open Server health for missing drives, full storage or stopped apps.',
-      'If readings are old, follow “Dashboard readings” in Help.'
+      'If readings are old, follow “Readings are old or missing” in Help.'
     ],
     unit: 'nekoserver-dashboard-collect.service'
   },
@@ -4591,7 +4666,7 @@ const GUIDES = {
     intro: 'A checksum warning needs a copy that still matches. Never delete the other copies.',
     steps: [
       'Connect the USB backup drive if you have one, so both copies are checked.',
-      'Start the recovery helper below and choose “Repair damaged backup copies”.',
+      'Start the recovery helper below and choose “Check or repair a drive”, then “Fix damaged backup copies”.',
       'If no copy matches any more, the helper asks whether to keep it as it is for now or accept that this saved copy is lost (it is kept aside in neko-damaged). Until you decide, the monthly snapshot and updates wait.'
     ],
     recover: true
@@ -4688,6 +4763,19 @@ const GUIDES = {
       'Some devices aren’t supported by OpenRGB yet: its website lists the ones that are.'
     ],
     unit: 'nekoserver-openrgb.service'
+  },
+  /* Deep check 256 ("The PC got slow"): Help had no guide for it, and Processes alone
+   * does not say what is normal. */
+  slow: {
+    title: 'The server is slow',
+    intro: 'Usually one app is busy for a while, and that is normal. Processes shows which one.',
+    steps: [
+      'Open Processes and sort by processor, then by memory: the top lines are what keeps the server busy.',
+      'Normal for a while: Immich looking at new photos (its machine learning), Jellyfin converting a video for a device, and the backups and the monthly check at night (Backups shows a job that runs). Let it finish.',
+      'Memory nearly full on Hardware? With less than 8 GB, apps slow down or are stopped when they need more: close desktop apps you don’t use, or add memory.',
+      'One app at the top for hours, with nothing to do? On Processes or Your apps, right-click it (on a phone, tap ⋯) and choose Restart app. Its database keeps running.',
+      'With the assistant set up, Ask Neko what a reading means.'
+    ]
   },
   sensors: {
     title: 'Why a sensor is missing',
@@ -4809,7 +4897,8 @@ const HELP_CARDS = [
   ['fans', 'Fans don’t change', 'Find your fans and check fan control.'],
   ['lights', 'Lights don’t change', 'Check OpenRGB and the i2c driver.'],
   ['acceptance', 'Check it really works', 'Playback, backups and a test restore.'],
-  ['updates', 'About updates', 'Weekly app updates, the monthly check, big versions.']
+  ['updates', 'About updates', 'Weekly app updates, the monthly check, big versions.'],
+  ['slow', 'The server is slow', 'What keeps it busy, and what is normal.']
 ];
 function helpCard([id, title, description]) {
   const card = el('article', 'card');
@@ -5267,15 +5356,9 @@ $('theme-toggle').addEventListener('click', toggleTheme);
 $('more').addEventListener('click', moreMenu);
 $('ask-form').addEventListener('submit', e => {
   e.preventDefault();
-  const question = $('ask-input').value.trim();
-  if (!question || ASK.busy) {
-    return;
-  }
-  $('ask-input').value = '';
-  const item = ASK.item;
-  ASK.item = null;
-  void askNeko(question, item);
+  sendQuestion();
 });
+$('ask-input').addEventListener('input', askNote);
 $('export').addEventListener('click', diagnostics);
 $('close-dialog').addEventListener('click', () => $('dialog').close());
 $('dialog').addEventListener('close', () => {

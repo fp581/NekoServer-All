@@ -36,5 +36,26 @@ class NoAppsTests(unittest.TestCase):
         self.assertFalse(gateway_tools.no_apps({**NONE, 'gateway': {'services': ['jellyfin']}}))
 
 
+class GatewayRestartTests(unittest.TestCase):
+    def test_a_refused_start_check_stops_the_restarts(self):
+        """The deep check: with its start check refusing (the home address gone, say), the
+        gateway was started again every 10 s for ever, under systemd's default limit of 5
+        starts in 10 s. Its own limit now ends the tries (seen under systemd 255: failed
+        after 6 tries, where the old unit was still retrying after 20)."""
+        text = gateway_tools.unit({'data_mount': '/srv/n', 'media_mount': '/mnt/m'}, Path('/opt/x'), Path('/s'))
+        fields = dict(line.split('=', 1) for line in text.splitlines() if '=' in line)
+        seconds = {'s': 1, 'min': 60}
+
+        def length(value):
+            number = value.rstrip('mins')
+            return int(number) * seconds[value[len(number) :]]
+
+        self.assertEqual(fields['Restart'], 'on-failure')  # a crash is still started again
+        tries = int(fields['StartLimitBurst'])
+        self.assertLess(tries * length(fields['RestartSec']), length(fields['StartLimitIntervalSec']))
+        self.assertLessEqual(tries, 10)
+        self.assertLess(text.index('StartLimitBurst='), text.index('[Service]'))  # read only in [Unit]
+
+
 if __name__ == '__main__':
     unittest.main()

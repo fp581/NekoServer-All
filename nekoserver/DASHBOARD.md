@@ -93,7 +93,15 @@ To leave fans and lights completely alone, set `"fan_control": false` under `"da
 
 Five wrong PINs lock out that device for 5 minutes (each further five, twice as long). Other devices, and the server itself, are not locked out. The PIN box says how many tries are left, and when a device is locked out, how long it must wait and until what time (on that device's clock).
 
-**Forgot it, or want a new one?** In a terminal on the server, run these two lines. The first deletes only the old PIN (nothing else); the second is the normal setup, which then asks for a new PIN:
+**Forgot it?** If setup made it for you, or you typed it on setup's passwords page, it is kept with your app logins. In a terminal on the server (`/srv/nekoserver` is your SSD's folder):
+
+```bash
+sudo grep -A1 'Dashboard PIN' /srv/nekoserver/secrets/accounts/APP-CREDENTIALS.txt
+```
+
+The number after `Secret:` is your PIN. Nothing shown, or the PIN is refused? Then choose a new one.
+
+**Want a new one?** In a terminal on the server, run these two lines. The first deletes only the old PIN (nothing else); the second is the normal setup, which then gives you a new PIN on its passwords page: it asks you to type one, or, if setup makes your passwords for you, makes one (*Show login* on the finishing screen shows it, and so does the line above):
 
 ```bash
 sudo rm /etc/nekoserver-control/pin.json
@@ -126,12 +134,12 @@ When something goes wrong, the dashboard shows a short code at the top of the pa
 | E11 | Readings could not be read | Usually fixes itself within a minute. If not, run setup again. |
 | E12 | Readings are out of date | No new reading for two collection intervals plus 30 seconds (150 s at the default 60 s): Help → *Readings are old or missing*. |
 | E20 | Live readings unavailable | They come back by themselves. If not: `sudo systemctl restart nekoserver-dashboard.service`. Until then, older live readings are dimmed and marked with their time. |
-| E21 | Fan and light control unavailable | The control service isn't running: Help → *Fans don't change*. |
+| E21 | The control service is not running | It handles the PIN, fans and lights, app restarts and Ask Neko: Help → *Fans don't change* shows the command to check it. |
 | E40 | Page not found | Use the menu to go back. |
 | E41 | Open the dashboard from its own address | Use 127.0.0.1:8787 on the server, or the Tailscale address. |
 | E42 | Request not supported | Reload the page. (For a fan or light change, the message says what was wrong.) |
 | E43 | Enter your PIN to change this | Phones, tablets and other computers need the PIN chosen during setup for fans and lights; restarting or closing apps needs it on every device. Press *Unlock changes* (the page asks by itself for app controls). |
-| E44 | Wrong PIN | Check the PIN and try again. The message says how many tries this device has left; after the last one, how long it must wait. |
+| E44 | Wrong PIN | Check the PIN and try again. The message says how many tries this device has left; after the last one, how long it must wait. Forgot it? "Your PIN" above says how to find it or choose a new one. |
 | E45 | Too many tries; wait a while | The message says how long, and until what time. Five wrong PINs lock out that device for 5 minutes; each further five, twice as long. Other devices and the server itself are not locked out. When the message says *other devices together* typed too many wrong PINs, phones and tablets get one more try every two hours; on the server itself you can still unlock. |
 | E46 | The change could not be saved | Nothing was changed, because it wouldn't survive a restart. The server's system drive may be full or failing. |
 | E47 | Not now: something else is using it | A backup, the monthly update or another app restart is running (or a cut-off one still has to be finished). Try again when it has. The message says which. |
@@ -180,7 +188,7 @@ There is nothing to configure. The dashboard reads what Linux reports:
 To see everything the dashboard can read on this computer:
 
 ```bash
-/usr/local/lib/nekoserver-dashboard/v0.51.1/nekoserver-runtime hardware
+/usr/local/lib/nekoserver-dashboard/v0.51.2/nekoserver-runtime hardware
 ```
 
 ### Fan control in detail
@@ -212,7 +220,8 @@ After a restart (or a power cut):
 
 - the drives mount, then **Docker** starts (it waits for both drives) and starts every app again;
 - **Tailscale** reconnects, with its phone addresses;
-- the **dashboard** starts, takes its first readings 15 seconds after boot and every minute after that, and restarts itself if it ever stops.
+- the **dashboard** starts, takes its first readings 15 seconds after boot and every minute after that, and restarts itself if it ever stops;
+- the **home network gateway** (the HTTPS addresses at home) starts once the drives and the network are there. If its start check refuses (the PC's home address changed, say), it tries six times, about a minute, then stops and shows as stopped with an error; run setup again (`sudo bash install.sh`) to choose the home address again.
 
 Server health → *Starts by itself* shows each of these: whether it starts at boot and whether it is working now. A service that stopped with an error is never shown green, even when it starts at boot; Needs attention lists it (urgent for Docker, Tailscale, the dashboard and Samba), together with anything switched off.
 
@@ -224,7 +233,7 @@ The dashboard is part of the normal setup (the full profile installs it). To ins
 sudo bash install.sh --profile dashboard --apply
 ```
 
-Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.51.1` (one folder per release, and when a setup run has finished, the folders of earlier releases that no service uses any more are removed; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
+Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.51.2` (one folder per release, and when a setup run has finished, the folders of earlier releases that no service uses any more are removed; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
 
 ### What runs, and what it can see
 

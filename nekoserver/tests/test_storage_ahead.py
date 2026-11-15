@@ -158,6 +158,25 @@ class AskedAheadTests(unittest.TestCase):
             ],
         )
 
+    def test_on_one_drive_the_review_names_that_drive_not_the_drive_of_the_backups(self):
+        """Deep check plan 199: with the apps and the backups on one drive, the page offered
+        the photos "the drive of this server, with the apps", and the review said "on the
+        drive of the backups"."""
+        config = settings(
+            storage={
+                key: {'uuid': 'one-1', 'fstype': 'ext4', 'folder': storage.SHARED_FOLDERS[key]}
+                for key in ('data_ssd', 'media_hdd')
+            }
+        )
+        self.assertTrue(storage.one_place(config))
+        for place in ('ssd', 'media'):
+            with self.subTest(place=place):
+                lines = storage.ahead_lines(config, {'blockdevices': []}, {'photos': place})
+                line = next(line for line in lines if line.startswith("Immich's"))
+                self.assertEqual(
+                    line, "Immich's photos and videos: " + storage.ONE_PLACE_SAID + '. ' + storage.SAME_DRIVE_AS_BACKUP
+                )
+
     def test_the_review_says_what_happens_to_folders_of_the_persons_own(self):
         own = {'path': '/mnt/tank/films', 'holds': 'movies', 'use': 'in_place', 'new_files': True}
         new = {'path': '/mnt/big/shows', 'holds': 'tv', 'use': 'new_files', 'new_files': True}

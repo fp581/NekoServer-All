@@ -1,7 +1,7 @@
 /// Every monitored app (shared.json); notify.rs names an alert for each (checked by a test).
 pub(crate) use crate::common::APPS;
 use crate::{
-    common::{self, num, probe, round, Error, Result},
+    common::{self, num, probe, round, turned_read_only, Error, Result},
     Args, VERSION,
 };
 use regex::Regex;
@@ -286,21 +286,36 @@ fn mount_info(path: &Path, expected: Option<&str>, fstype: &str) -> Value {
         // missing, and every backup blocked, each time a copy kept the drive busy).
         Err(_) => common::mount_table_entry(path).unwrap_or_default(),
     };
-    let v = s.split_whitespace().collect::<Vec<_>>();
-    if v.len() < 3 {
+    mount_status(&s, expected, fstype)
+}
+/// A drive's status from findmnt's "UUID FSTYPE SOURCE" line for its folder (`found`,
+/// empty when nothing is mounted there).
+fn mount_status(found: &str, expected: Option<&str>, fstype: &str) -> Value {
+    let Some((uuid, found_fstype, source)) = mount_fields(found) else {
         return json!({"status":"missing"});
-    }
-    if expected
-        .map(|u| u != v[0] || fstype != v[1])
-        .unwrap_or(false)
-    {
+    };
+    if expected.is_some_and(|u| u != uuid || fstype != found_fstype) {
         return json!({"status":"wrong_drive"});
     }
-    json!({"status":"mounted","source":v[2].split('[').next().unwrap_or("")})
+    json!({"status":"mounted","source":source.split('[').next().unwrap_or("")})
+}
+/// findmnt's "UUID FSTYPE SOURCE" line as (uuid, fstype, source). A filesystem without a
+/// UUID (a ZFS root, an overlay or tmpfs root, a disk no udev link names) leaves the first
+/// column blank, so the line has two words: its UUID is "" then. Before 0.51.2 such a
+/// root counted as missing, and the dashboard said "OS SSD unavailable" on a working PC.
+fn mount_fields(found: &str) -> Option<(&str, &str, &str)> {
+    match found.split_whitespace().collect::<Vec<_>>()[..] {
+        [fstype, source] => Some(("", fstype, source)),
+        [uuid, fstype, source, ..] => Some((uuid, fstype, source)),
+        _ => None,
+    }
 }
 fn device(source: &str) -> Option<String> {
     let partition =
         Regex::new(r"^/dev/(sd[a-z]+[0-9]*|nvme[0-9]+n[0-9]+(?:p[0-9]+)?|vd[a-z]+[0-9]*)$").ok()?;
+    if mapped(source) {
+        return disk_under(&probe(&["lsblk", "-s", "-n", "-r", "-o", "NAME,TYPE", source], 8).1);
+    }
     if !partition.is_match(source) {
         return None;
     }
@@ -316,6 +331,28 @@ fn device(source: &str) -> Option<String> {
         .is_match(&value)
         .then_some(value)
 }
+/// A device-mapper device: an encrypted (LUKS) or LVM volume.
+fn mapped(source: &str) -> bool {
+    Regex::new(r"^/dev/(mapper/[A-Za-z0-9_.+-]+|dm-[0-9]+)$")
+        .is_ok_and(|plain| plain.is_match(source))
+}
+/// The one disk under an encrypted or LVM volume, from lsblk's list of what it lies on
+/// (-s: the volume, then its partition, then its disk). It said "Physical disk mapping
+/// unavailable" for good, and no SMART check was made (deep check plan 193). A volume
+/// over several disks has no one disk: None.
+fn disk_under(lsblk: &str) -> Option<String> {
+    let disks = crate::backup::parse_disks(lsblk);
+    let [disk] = disks.iter().collect::<Vec<_>>()[..] else {
+        return None;
+    };
+    let disk = format!("/dev/{disk}");
+    Regex::new(r"^/dev/(sd[a-z]+|nvme[0-9]+n[0-9]+|vd[a-z]+)$")
+        .ok()?
+        .is_match(&disk)
+        .then_some(disk)
+}
+/// Why a drive's health can't be read, when no one disk is found under it.
+const NO_ONE_DISK: &str = "Its health (SMART) is not read: no one disk was found under it (a volume over several disks, or a device this PC does not name as a disk)";
 fn smart_summary(v: &Value, code: i32) -> Value {
     let mut r = json!({"status":"unknown","temperature":null,"wear_percent":null,"reason":"SMART unavailable or drive sleeping; no wake requested"});
     if let Some(pass) = v["smart_status"]["passed"].as_bool() {
@@ -367,9 +404,24 @@ fn smart_summary(v: &Value, code: i32) -> Value {
     }
     r
 }
+/// SMART readings kept from the last collection, one per drive.
+const SMART_KEPT: usize = 20;
+/// The `keep` newest SMART readings (by when each drive was checked). Taking the ones
+/// that sort last by name kept a drive long gone and dropped a drive in use, which was
+/// then asked again on every collection (deep check 303).
+fn smart_kept(saved: &Value, keep: usize) -> Value {
+    let mut rows: Vec<(&String, &Value)> = saved.as_object().into_iter().flatten().collect();
+    let checked = |row: &Value| row["checked_at"].as_f64().unwrap_or(0.0);
+    rows.sort_by(|a, b| checked(b.1).total_cmp(&checked(a.1)));
+    json!(rows
+        .into_iter()
+        .take(keep)
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect::<serde_json::Map<_, _>>())
+}
 fn smart(source: &str, identity: &str, cache: &mut Value, now: f64, interval: f64) -> Value {
     let Some(dev) = device(source) else {
-        return json!({"status":"unknown","reason":"Physical disk mapping unavailable","checked_at":null});
+        return json!({"status":"unknown","reason":NO_ONE_DISK,"checked_at":null});
     };
     let key = format!("{identity}|{dev}");
     let old = &cache[&key];
@@ -455,27 +507,8 @@ fn statvfs_usage(path: &Path) -> Option<(u64, u64, bool)> {
     let stat = unsafe { stat.assume_init() };
     let (total, used) = space(stat.f_blocks, stat.f_bfree, stat.f_bavail, stat.f_frsize)?;
     let mounts = fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
-    Some((total, used, filesystem_read_only(&mounts, path)))
-}
-/// Whether the filesystem mounted at `path` is itself read-only, from a mountinfo list:
-/// the filesystem's own options (after the " - ", its type and its source), never the
-/// mount's (the sixth field). This collector runs with ProtectSystem=strict, so in its
-/// own view every drive is a read-only mount, and statvfs (ST_RDONLY) says so too: every
-/// server with a drive of its own showed "turned read-only" for the SSD and the HDD, as
-/// critical alerts (seen on the rig, 0.46.2 and 0.46.3). What Linux does after write
-/// errors is turn the filesystem read-only, which shows here. The last line for the
-/// folder counts (a later mount covers an earlier one).
-fn filesystem_read_only(mountinfo: &str, path: &Path) -> bool {
-    let wanted = path.to_string_lossy();
-    mountinfo
-        .lines()
-        .filter_map(|line| {
-            let (mount, filesystem) = line.split_once(" - ")?;
-            (mount.split(' ').nth(4)? == wanted).then_some(filesystem)
-        })
-        .next_back()
-        .and_then(|filesystem| filesystem.split(' ').nth(2))
-        .is_some_and(|options| options.split(',').any(|o| o == "ro"))
+    let look = fs::symlink_metadata(path);
+    Some((total, used, turned_read_only(&mounts, path, &look)))
 }
 /// (space the apps can use, used), as `df` counts them: the part of the drive kept for
 /// the system (5% on ext4 unless changed) is not free for the apps, so a drive they
@@ -499,14 +532,26 @@ fn on_nas(cfg: &Value, key: &str) -> bool {
 /// older than three minutes says nothing. Linux still shows an aborted ext4 as mounted
 /// "rw" (statvfs says so too, seen in the lab): only a write tells.
 fn nas_drive(r: &mut Value, key: &str, now: f64) {
+    let seen = common::json(Path::new(*crate::nas_watch::STATE), 64000);
+    nas_drive_as_seen(r, &seen, nas_verdict(&seen, key, now, nas_check_busy));
+}
+/// `nas_drive` with the NAS check's record (`seen`) and its verdict for this drive. A
+/// drive mounted where it should be whose space got no answer (UNANSWERED) is, on a NAS,
+/// what a NAS that stopped answering looks like (a shared folder's space is asked of the
+/// NAS itself): with the check's "waits" it is the drive waiting, not a drive gone. It was
+/// "unavailable", said as not connected with its apps stopped (seen in 0.51.1).
+fn nas_drive_as_seen(r: &mut Value, seen: &Value, verdict: Option<&str>) {
     r["network"] = json!(true);
-    if r["status"] != "mounted" {
+    let unanswered = r["status"] == UNANSWERED;
+    if r["status"] != "mounted" && !unanswered {
         return;
     }
-    let seen = common::json(Path::new(*crate::nas_watch::STATE), 64000);
-    match nas_verdict(&seen, key, now, nas_check_busy) {
+    match verdict {
         Some("fails") => r["read_only"] = json!(true),
-        Some("waits") => r["waiting"] = json!(true),
+        Some("waits") => {
+            r["waiting"] = json!(true);
+            r["status"] = json!("mounted");
+        }
         _ => {}
     }
     if seen["held"] == true {
@@ -587,6 +632,8 @@ fn network_storage(cfg: &Value, sessions: &Path) -> Value {
         .collect();
     json!({"portal": chars(text(&cfg["network_storage"]["portal"]), 80), "targets": targets})
 }
+/// The status of a drive mounted where it should be whose space got no answer in time.
+const UNANSWERED: &str = "unavailable";
 /// A mounted drive's row filled in: its size and use, read-only, filesystem errors and
 /// health. `drive`: (id, folder, device, filesystem type, expected UUID).
 fn mounted_details(
@@ -606,7 +653,7 @@ fn mounted_details(
                 r["read_only"] = json!(true);
             }
         }
-        _ => r["status"] = json!("unavailable"),
+        _ => r["status"] = json!(UNANSWERED),
     }
     // Errors Linux met on the filesystem (a cable, a NAS away for long): it may have
     // turned read-only, or may still hold half-written changes.
@@ -669,14 +716,14 @@ fn storage_rows(cfg: &Value) -> Result<Vec<DriveCard>> {
         (
             "data_ssd".to_string(),
             "Application SSD".to_string(),
-            common::mount_path(text(&cfg["data_mount"]))?,
+            common::unlooked_mount_path(text(&cfg["data_mount"]))?,
             Some(saved("data_ssd", "uuid")),
             saved("data_ssd", "fstype"),
         ),
         (
             "media_hdd".to_string(),
             "Media HDD".to_string(),
-            common::mount_path(text(&cfg["media_mount"]))?,
+            common::unlooked_mount_path(text(&cfg["media_mount"]))?,
             Some(saved("media_hdd", "uuid")),
             saved("media_hdd", "fstype"),
         ),
@@ -709,14 +756,17 @@ fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, Vec<Value
             mounted_details(&mut r, cfg, cache, now, (key, &path, source, fs, expected));
             mounted.push(json!({"id":key,"name":name,"source":source,"mount":path,"fstype":fs,"uuid":expected.unwrap_or("")}));
         }
+        // Only a drive that answered is read any further: a NAS drive waiting for its NAS
+        // holds every read.
+        let answered = r["status"] == "mounted";
         if on_nas(cfg, key) {
             nas_drive(&mut r, key, now);
         }
         if key == "data_ssd" {
-            data_ok = r["status"] == "mounted";
+            data_ok = answered;
         }
         if key == "media_hdd" {
-            media_ok = r["status"] == "mounted";
+            media_ok = answered;
         }
         disks.push(r)
     }
@@ -1081,15 +1131,13 @@ fn assistant(cfg: &Value, data: Option<&Path>) -> Value {
     };
     let report = common::json(&d.join("reports/assistant.json"), 64000);
     match report["model"].as_str() {
+        // question_chars: how much of a question Neko reads, so the page can say so.
         Some(model) if chosen => json!({"set_up": true, "model": chars(model, 64),
             "memory": chars(report["memory"].as_str().unwrap_or(""), 16),
-            "cpus": chars(report["cpus"].as_str().unwrap_or(""), 8)}),
+            "cpus": chars(report["cpus"].as_str().unwrap_or(""), 8),
+            "question_chars": crate::assist::QUESTION_CHARS}),
         _ => json!({"set_up": false}),
     }
-}
-/// "1 file", "3 files".
-fn plural(n: u64, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
 }
 /// Setup writes an app's Compose file last, once its settings are in place (media.py,
 /// photos.py, nextcloud.py): without one, setup has not set the app up yet.
@@ -1141,6 +1189,10 @@ pub(crate) const STARTUP: &[(&str, &str)] = &[
     ("smb.service", "Shared folders (Samba)"),
     ("smbd.service", "Shared folders (Samba)"),
     ("nekoserver-hdd-policy.service", "Drive power settings"),
+    (
+        "nekoserver-gateway-lan.service",
+        "Home network gateway (HTTPS)",
+    ),
     (
         "nekoserver-app-resume.service",
         "Restart apps after an interrupted backup",
@@ -1226,6 +1278,16 @@ fn parse_startup(out: &str) -> Vec<Value> {
             Some(json!({"unit": id, "name": label, "enabled": enabled, "active": active}))
         })
         .collect()
+}
+/// What to do about a service that failed. The home gateway gives up after six tries
+/// (gateway_tools.unit: StartLimitBurst) and then stays stopped until a drive comes
+/// back, the NAS check or setup starts it: said, with the command that starts it now
+/// (deep check 301).
+fn failed_advice(unit: &str) -> &'static str {
+    match unit {
+        "nekoserver-gateway-lan.service" => "It gave up after several failed starts and stays stopped until a drive comes back, the NAS check runs or setup runs. Once the drives are connected, start it now: sudo systemctl start nekoserver-gateway-lan.service (if it stops again, sudo journalctl -u nekoserver-gateway-lan.service says why). Until then the apps' home addresses don't answer; the Tailscale addresses keep working.",
+        _ => "Its last start or run failed. The guide shows how to read its log; setup can start it again.",
+    }
 }
 /// Why a job is intentionally not part of this server now (its app or backup switched
 /// off), or None when its schedule is expected.
@@ -1377,7 +1439,7 @@ fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
             common::json(
                 &Path::new(text(&cfg["data_mount"]))
                     .join(format!("reports/jobs/{report_key}.json")),
-                64000,
+                common::REPORT_LIMIT,
             )
         } else {
             empty()
@@ -1448,7 +1510,7 @@ fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
         } else if let Some(why) = stopped {
             Some(why)
         } else if status == "fail" {
-            Some(failure_reason(&saved))
+            Some(with_full_usb_advice(key, failure_reason(&saved)))
         } else if undone {
             Some(undone_reason(&saved))
         } else if status == "partial" {
@@ -1630,17 +1692,32 @@ fn full_stop(said: &str) -> String {
         said.to_string()
     }
 }
-/// How the repair advice (backup::SETTLE) begins, and the part of it to keep whole when
-/// the reason it ends was cut: what to run, and that the monthly run waits until then.
-const SETTLE_START: &str = "To settle it, run";
-const SETTLE_SHORT: &str = "To settle it, run  sudo bash install.sh --recover  and choose \"Repair damaged backup copies\". Until then the monthly snapshot and updates wait.";
+/// The recovery menu's check of a drive, as the menu names it (shared.json "recovery_menu"):
+/// 0.50.0 renamed it in the menu, and the alerts kept naming a choice no longer there.
+pub(crate) fn check_drive_choice() -> String {
+    format!(
+        "\"{}\", then \"{}\"",
+        common::shared("recovery_menu", "drive_section"),
+        common::shared("recovery_menu", "check_drive")
+    )
+}
+/// The part of the repair advice (backup::settle_advice) to keep whole when the reason it
+/// ends was cut: what to run, and that the monthly run waits until then.
+fn settle_short() -> String {
+    format!(
+        "{}. Until then the monthly snapshot and updates wait.",
+        crate::backup::settle_advice()
+    )
+}
 /// A saved reason as the page shows it: cut only at a whole sentence or word, with the
 /// repair advice kept (in short) however long the rest is.
 fn readable(said: &str) -> String {
-    match said.find(SETTLE_START) {
+    match said.find(crate::backup::SETTLE_START) {
         Some(at) => {
             let before = full_stop(&whole(said[..at].trim_end(), 300));
-            format!("{before} {SETTLE_SHORT}").trim_start().to_string()
+            format!("{before} {}", settle_short())
+                .trim_start()
+                .to_string()
         }
         None => full_stop(&whole(said, 300)),
     }
@@ -1656,6 +1733,17 @@ fn failure_reason(saved: &Value) -> String {
         (false, false) => format!("Failed while {stage}: {reason}"),
     }
 }
+/// Said after a USB copy that stopped because the drive is full. Making room by deleting
+/// copies on it does not help (the next run copies them again, and a Nextcloud file whose
+/// only copy it was is then lost): a bigger drive does (deep check 242).
+pub(crate) const USB_FULL: &str = "The USB drive is full. Don't delete anything on it to make room: the next copy puts it back, and the USB drive holds the only copy of older Nextcloud files. Use a bigger USB drive instead (STORAGE.md, \"Another USB drive\"), and keep this one as an older copy.";
+fn with_full_usb_advice(key: &str, said: String) -> String {
+    if key == "external" && said.contains("No space left on device") {
+        format!("{said} {USB_FULL}")
+    } else {
+        said
+    }
+}
 /// "3 files were not copied (2 in use, 1 with a name the USB drive cannot store; …)".
 fn partial_reason(missing: &Value) -> String {
     // The monthly run says what it left for later as a list of sentences ("USB check:
@@ -1665,7 +1753,7 @@ fn partial_reason(missing: &Value) -> String {
             .iter()
             .filter_map(|v| v.as_str())
             .filter(|s| !s.trim().is_empty())
-            .map(|s| capitalised(&chars(s, 300)))
+            .map(|s| capitalised(&whole(s, 300)))
             .collect();
         if !said.is_empty() {
             let mut text = said.iter().take(5).cloned().collect::<Vec<_>>().join(". ");
@@ -1685,13 +1773,14 @@ fn partial_reason(missing: &Value) -> String {
         parts.push(format!(
             "{} not copied ({in_use} in use, {names} with names the USB drive cannot store; \
              their names are in the backup's report, reports/jobs on the application SSD)",
-            plural(in_use + names, "file was", "files were")
+            common::plural(in_use + names, "file was", "files were")
         ));
     }
     // The USB copy of the Immich database (missing, stale or without its version note),
-    // and a source that could not be copied at all (the Nextcloud folder missing).
-    for key in ["database", "source"] {
-        let problem = capitalised(&chars(text(&missing[key]), 300));
+    // a source that could not be copied at all (the Nextcloud folder missing), and the
+    // password list (none on the HDD yet, or a damaged one).
+    for key in crate::backup::INCOMPLETE_PARTS {
+        let problem = capitalised(&whole(text(&missing[key]), 300));
         if !problem.is_empty() {
             parts.push(problem);
         }
@@ -1727,9 +1816,16 @@ fn heartbeat_late(attempt: Option<f64>, now: f64, interval: u64, uptime: Option<
         None => uptime.is_none_or(|up| up > 180.0),
     }
 }
+/// The last check-in's time as the collector counts it: one dated ahead of the clock (made
+/// while the clock was ahead, then put right) counts as now, like its last success. Left
+/// out, it read as no check-in at all, so a working heartbeat was "stale" (a phone alert)
+/// until the next one (deep check 167, the clock a day ahead then right again).
+fn heartbeat_attempt(row: &Value, now: f64) -> Value {
+    common::shown_time(&row["last_attempt"], now)
+}
 fn heartbeat(cfg: &Value, now: f64) -> Value {
     let row = common::json(Path::new("/run/nekoserver-heartbeat/status.json"), 64000);
-    let attempt = num(&row["last_attempt"], 0.0, now + 30.0);
+    let attempt = heartbeat_attempt(&row, now);
     let (code, text) = probe(
         &[
             "systemctl",
@@ -2158,7 +2254,9 @@ fn space_advice(id: &str, full: bool) -> &'static str {
         ("media_hdd", true) => "Downloads, the nightly backups and the monthly snapshot stop when it is full. Delete what you no longer watch, or old downloads, or add a bigger drive.",
         ("data_ssd", true) => "The apps keep their data, the music and their images here and can stop working when it is full. Free up space there, or move to a bigger SSD.",
         (_, true) => "Backups and uploads stop when it is full. Free up space there.",
-        _ => "Review free space before uploads or backups.",
+        ("media_hdd", false) => "90% or more used. Downloads, the nightly backups and the monthly snapshot stop once it is full: delete what you no longer watch, or old downloads, before then.",
+        ("data_ssd", false) => "90% or more used. The apps keep their data, the music and their images here and can stop working once it is full: free up space there before then.",
+        _ => "90% or more used. Backups and uploads stop once it is full: free up space there before then.",
     }
 }
 /// backup_secrets.py's key: without it every monthly snapshot holds the app password
@@ -2180,11 +2278,21 @@ fn tailscale_login(now: f64) -> Value {
     }
     login_state(&serde_json::from_str(&out).unwrap_or(Value::Null), now)
 }
+/// How many days before Tailscale's sign-in runs out the dashboard starts to warn.
+const EXPIRY_WARNING_DAYS: f64 = 14.0;
+/// Tailscale's sign-in time is already over while it still says "Running" (it can lag
+/// behind its key's expiry): the server is signed out, not "running out soon".
+fn signed_in_until_past(tailscale: &Value) -> bool {
+    tailscale["days_left"].as_f64().is_some_and(|d| d < 0.0)
+}
 fn login_state(status: &Value, now: f64) -> Value {
     let state = chars(status["BackendState"].as_str().unwrap_or("unknown"), 40);
+    // Go writes a time that was never set as its zero time, "0001-01-01T00:00:00Z": that
+    // is no expiry (key expiry switched off), not a sign-in that ran out 2000 years ago.
     let days_left = status["Self"]["KeyExpiry"]
         .as_str()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .filter(|t| t.timestamp() > 0)
         .map(|t| ((t.timestamp() as f64 - now) / 86400.0).floor());
     // A server signed in before keeps its Tailscale name and addresses when the sign-in
     // runs out; one never signed in has neither.
@@ -2397,7 +2505,55 @@ fn backup_place(cfg: &Value) -> Value {
 }
 /// Said for as long as the backups are on the drive they copy and no copy goes anywhere
 /// else (the placement design's standing item; setup said it once, before choosing it).
+/// This PC's time zone changed since setup wrote the schedules in its zone (the settings'
+/// "timezone": "auto"): (the zone they still run in, this PC's now). Their night is then
+/// the old zone's: the backups and the monthly update could stop the apps in the day,
+/// and nothing said why (deep check 216). None while they agree, or can't be told.
+fn zone_moved(cfg: &Value, localtime: &Path, etc_timezone: &Path) -> Option<(String, String)> {
+    let saved = &cfg["timezone"];
+    let zone = saved["zone"]
+        .as_str()
+        .filter(|_| saved["follows_this_pc"] == true)?;
+    let now = this_pc_zone(localtime, etc_timezone)?;
+    // Two names of one zone ("UTC", "Etc/UTC") have the same rules file: not a change.
+    let rules = |name: &str| fs::read(Path::new("/usr/share/zoneinfo").join(name)).ok();
+    let same = now == zone || rules(&now).is_some_and(|r| Some(r) == rules(zone));
+    (!same).then(|| (zone.to_string(), now))
+}
+/// This PC's time zone, read as setup reads it (neko_common.local_timezone): the
+/// /etc/localtime link, else /etc/timezone.
+fn this_pc_zone(localtime: &Path, etc_timezone: &Path) -> Option<String> {
+    let linked = fs::read_link(localtime).ok().and_then(|link| {
+        let link = link.to_string_lossy().into_owned();
+        link.split_once("zoneinfo/")
+            .map(|(_, name)| name.to_string())
+    });
+    let name =
+        linked.or_else(|| Some(fs::read_to_string(etc_timezone).ok()?.trim().to_string()))?;
+    let plain = !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/_+-".contains(&b));
+    plain.then_some(name)
+}
 const SAME_DRIVE: &str = "One drive holds the apps, your files and their backups. The backups protect you from a mistake (a file deleted or changed), not from losing that drive. Add a second drive for the backups, or a USB drive for the weekly copy, and run setup again.";
+/// What a drive's "unavailable" alert says, by its status. `stopped`: the apps it
+/// stopped, named first so the page shows them before "Show more" ("" for none).
+/// A drive whose status is "wrong_drive" is connected and mounted, but is not the one
+/// setup chose: a reformat gives a drive a new identity, a replaced drive has another,
+/// or another part of the drive is mounted there. "Reconnect it" could not help there;
+/// running setup (after a reformat or replacement on purpose) does (seen in 0.51.2 with a
+/// reformatted HDD: the dashboard said to reconnect a drive that was connected).
+fn unavailable_detail(status: &str, stopped: &str) -> String {
+    const WRONG_DRIVE_STEPS: &str = "If you reformatted or replaced this drive on purpose, run  sudo bash install.sh  so NekoServer learns the new one. Otherwise connect the drive chosen at setup and restart the PC.";
+    match (status == "wrong_drive", stopped.is_empty()) {
+        (true, true) => format!("Another drive is mounted in its place, or this one was reformatted or replaced, so the apps on it are stopped and nothing is written there. {WRONG_DRIVE_STEPS}"),
+        (true, false) => format!("Not the drive chosen at setup (another drive, or this one reformatted or replaced). Stopped so nothing is written there: {stopped}. {WRONG_DRIVE_STEPS}"),
+        (false, true) => "The drive is not connected, or is not the one chosen at setup; the apps on it are stopped so nothing is written in its place. Reconnect it: once it is back, the apps start again by themselves within a minute. If they do not, restart the PC.".to_string(),
+        (false, false) => format!("Not connected, or not the drive chosen at setup. Stopped until it is back, so nothing is written in its place: {stopped}. Reconnect it: the apps then start again by themselves within a minute. If they do not, restart the PC."),
+    }
+}
 pub(crate) fn alerts(s: &Value) -> Value {
     let mut out = vec![];
     let mut add = |id: String, level: &str, title: String, detail: &str| {
@@ -2405,6 +2561,17 @@ pub(crate) fn alerts(s: &Value) -> Value {
     };
     for (id, title, detail) in share_alerts(s) {
         add(id, "critical", title, &detail);
+    }
+    if let (Some(zone), Some(now)) = (
+        s["time_zone"]["schedules"].as_str(),
+        s["time_zone"]["this_pc"].as_str(),
+    ) {
+        add(
+            "timezone:changed".into(),
+            "warning",
+            "This PC's time zone changed since setup".into(),
+            &format!("This PC now uses {now} time, but the backups and app updates still run at night on {zone} time, as setup set them, so they may now run, and stop the apps, in your day. Run  sudo bash install.sh  again: it moves them to {now} time."),
+        );
     }
     if s["backup_place"]["same_drive"] == true && s["backup_place"]["offline"] != true {
         add(
@@ -2429,7 +2596,30 @@ pub(crate) fn alerts(s: &Value) -> Value {
             "notifications:delivery".into(),
             "warning",
             "Phone alerts are not being delivered".into(),
-            "The last alerts could not be sent to your ntfy topic: check its address and access token (setup can change them).",
+            "The last alerts could not be sent to your ntfy topic. Run  sudo bash install.sh  again: it sends a test message, and asks for the topic's address and access token again when the alert server refuses them.",
+        );
+    }
+    if s["battery"]["discharging"] == true {
+        let left = s["battery"]["percent"]
+            .as_f64()
+            .map(|p| format!(" ({p:.0}% left)"))
+            .unwrap_or_default();
+        add(
+            "battery".into(),
+            "warning",
+            format!("The server is running on its battery{left}"),
+            "Its charger is unplugged, or the power is off. When the battery runs out, the PC goes off at once, in the middle of whatever it is doing (a backup, say). Plug the charger in; for a power cut, shut the PC down before the battery runs out:  sudo poweroff",
+        );
+    }
+    if s["home_network"]["status"] == "moved" {
+        add(
+            "home-network".into(),
+            "warning",
+            "Home addresses stopped: this server's address at home changed".into(),
+            &format!(
+                "This server no longer has the address {} on your home network (a new router, or the router gave it another one), so the apps' home addresses and the shared folders don't answer. Run  sudo bash install.sh  again: it finds the new address and moves them to it. Then reserve that address for this server in your router (\"DHCP reservation\"), so it stays. The Tailscale addresses keep working.",
+                text(&s["home_network"]["address"])
+            ),
         );
     }
     if ["fail", "stale"].contains(&text(&s["heartbeat"]["status"])) {
@@ -2449,16 +2639,30 @@ pub(crate) fn alerts(s: &Value) -> Value {
             "Phone access is not set up yet".into(),
             "This server is not signed in to Tailscale yet, so your phone can't reach the apps away from home. Run  sudo bash install.sh  again: it walks you through it (or run  sudo tailscale up  and open the link it prints).",
         );
-    } else if s["tailscale"]["state"] == "NeedsLogin" {
+    } else if s["tailscale"]["state"] == "NeedsLogin" || signed_in_until_past(&s["tailscale"]) {
         add(
             "tailscale:login".into(),
             "critical",
             "Phone access is signed out of Tailscale".into(),
             "This server's Tailscale sign-in ran out, so the app addresses on your phone stop working. Sign in again: sudo tailscale up, then in the Tailscale admin console choose Disable key expiry for this server.",
         );
+    } else if s["tailscale"]["state"] == "NeedsMachineAuth" {
+        add(
+            "tailscale:off".into(),
+            "warning",
+            "Phone access waits: approve this server in Tailscale".into(),
+            "This server signed in to Tailscale, and your Tailscale account still has to approve it before your phone can reach the apps. In the Tailscale admin console (Machines), find this server and choose Approve.",
+        );
+    } else if s["tailscale"]["state"] == "Stopped" {
+        add(
+            "tailscale:off".into(),
+            "warning",
+            "Phone access is off: Tailscale is switched off".into(),
+            "Tailscale is switched off on this server, so your phone can't reach the apps away from home. Switch it on again: sudo tailscale up",
+        );
     } else if s["tailscale"]["days_left"]
         .as_f64()
-        .is_some_and(|d| d <= 14.0)
+        .is_some_and(|d| d <= EXPIRY_WARNING_DAYS)
     {
         add(
             "tailscale:expiry".into(),
@@ -2479,7 +2683,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
                 format!("startup:{name}:failed"),
                 if core { "critical" } else { "warning" },
                 format!("{} has stopped with an error", text(&unit["name"])),
-                "Its last start or run failed. The guide shows how to read its log; setup can start it again.",
+                failed_advice(name),
             );
         } else if stays_running(name) && unit["active"] == "inactive" {
             // Not failed, yet not running: Docker waiting for a drive that never
@@ -2509,12 +2713,13 @@ pub(crate) fn alerts(s: &Value) -> Value {
             let id = text(&d["id"]);
             let name = text(&d["name"]);
             if d["status"] != "mounted" {
-                let mut detail = "The drive is not connected, or is not the one chosen at setup; the apps on it are stopped so nothing is written in its place. Reconnect it: once it is back, the apps start again by themselves within a minute. If they do not, restart the PC.".to_string();
-                if id != "os" && !named && !held.is_empty() {
-                    // Said first, so the page shows it before "Show more".
+                let stopped = if id != "os" && !named && !held.is_empty() {
                     named = true;
-                    detail = format!("Not connected, or not the drive chosen at setup. Stopped until it is back, so nothing is written in its place: {}. Reconnect it: the apps then start again by themselves within a minute. If they do not, restart the PC.", held.join(", "));
-                }
+                    held.join(", ")
+                } else {
+                    String::new()
+                };
+                let detail = unavailable_detail(text(&d["status"]), &stopped);
                 add(
                     format!("mount:{id}"),
                     "critical",
@@ -2526,7 +2731,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
                     format!("mount:{id}"),
                     "critical",
                     format!("{name} has filesystem errors"),
-                    "Linux met errors writing to it (a loose cable, the network storage box away for long, a failing drive), so some changes may be missing and the drive may have turned read-only. Check it: sudo bash install.sh --recover, and choose \"Check a drive that turned read-only\" (it checks and repairs the filesystem, with your yes).",
+                    &format!("Linux met errors writing to it (a loose cable, the network storage box away for long, a failing drive), so some changes may be missing and the drive may have turned read-only. Check it: sudo bash install.sh --recover, and choose {} (a check changes nothing; a repair is a choice of its own there, with your yes).", check_drive_choice()),
                 );
             } else if d["waiting"] == true {
                 add(
@@ -2540,10 +2745,10 @@ pub(crate) fn alerts(s: &Value) -> Value {
                     format!("mount:{id}"),
                     "critical",
                     format!("{name} turned read-only"),
-                    if d["network"] == true {
-                        "Linux stopped writing to it after errors (the connection to the network storage box was lost for a while, most likely), so the apps' changes fail. Nothing more is written; do not restart the apps yet. Check the NAS and the network, then in a terminal: sudo bash install.sh --recover, and choose \"Check a drive that turned read-only\"."
+                    &if d["network"] == true {
+                        format!("Linux stopped writing to it after errors (the connection to the network storage box was lost for a while, most likely), so the apps' changes fail. Nothing more is written; do not restart the apps yet. Check the NAS and the network, then in a terminal: sudo bash install.sh --recover, and choose {}.", check_drive_choice())
                     } else {
-                        "Linux stopped writing to it after errors, so the apps' changes fail. Check its cable and health, then in a terminal: sudo bash install.sh --recover, and choose \"Check a drive that turned read-only\"."
+                        format!("Linux stopped writing to it after errors, so the apps' changes fail. Check its cable and health, then in a terminal: sudo bash install.sh --recover, and choose {}.", check_drive_choice())
                     },
                 );
             } else if d["used_percent"].as_f64().unwrap_or(0.0) >= 90.0 {
@@ -2634,7 +2839,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
                     format!("array-rebuild:{id}"),
                     "warning",
                     format!("{shown} is rebuilding{done}"),
-                    "Keep the computer on and every drive connected until it finishes; the Drives page shows the progress.",
+                    "Keep the computer on and every drive connected until it finishes; Server health → Drives shows the progress.",
                 );
             }
             "failing" => add(
@@ -2663,7 +2868,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
             "memory-pressure".into(),
             if used >= 97.0 { "critical" } else { "warning" },
             "Available RAM is low".into(),
-            "Inspect application memory usage and swap; cached memory alone is normal.",
+            "Almost all of the memory is in use, so apps slow down or are stopped. Processes shows what uses the most; restart that app on Your apps, or restart the PC. If it keeps happening, the PC needs more memory or fewer apps.",
         );
     }
     if let Some(level) = cpu_heat(s) {
@@ -2671,7 +2876,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
             "temperature".into(),
             level,
             "CPU temperature is high".into(),
-            "Check cooling and current workload.",
+            "Check that the fans turn and the air vents are not blocked or dusty (Fans & lights shows the fans). A long video conversion also warms it up for a while.",
         );
     }
     if nas_held(s) {
@@ -2775,9 +2980,13 @@ pub(crate) fn alerts(s: &Value) -> Value {
                     format!(
                         "{}: {} damaged or missing",
                         text(&c["name"]),
-                        plural(bad, "file is", "files are")
+                        common::plural(bad, "file is", "files are")
                     ),
-                    "Run  sudo bash install.sh --recover  and choose \"Repair damaged backup copies\"; it lists the files.",
+                    &format!(
+                        "Run  sudo bash install.sh --recover  and choose \"{}\", then \"{}\"; it lists the files.",
+                        common::shared("recovery_menu", "drive_section"),
+                        common::shared("recovery_menu", "fix_copies")
+                    ),
                 );
             }
         }
@@ -2802,7 +3011,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
             "media-stale".into(),
             "warning",
             "Media checks are stale".into(),
-            "Reapply media_monitor or inspect its scheduled job.",
+            "The app checks have not run for a while, so the dashboard can't say whether the apps work. Server health → Checks & monitoring says why. If it stays so, run  sudo bash install.sh  again in the NekoServer folder: it sets the checks up again.",
         );
     }
     if s["media"]["counts"]["fail"].as_u64().unwrap_or(0) > 0 {
@@ -2810,7 +3019,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
             "media-failure".into(),
             "warning",
             "Media connection check failed".into(),
-            "Open the media checks below and inspect the relevant service.",
+            "An app failed its check. Server health → Checks & monitoring names it: open that app, and if it doesn't work, restart it on Your apps (on a phone, tap ⋯ on it).",
         );
     }
     json!(out)
@@ -2851,6 +3060,53 @@ fn notification_status(now: f64) -> Value {
         status = "stale";
     }
     json!({"status":status,"timer":timer,"last_success":common::shown_time(&saved["last_success"],now),"last_attempt":num(&saved["last_attempt"],0.0,now+30.0),"pending":num(&saved["pending"],0.0,100.0)})
+}
+/// A laptop running on its battery (the charger unplugged, or a power cut): when it runs
+/// out the PC goes off at once, in the middle of a backup if it comes to that, and nothing
+/// said so (deep check 260). Batteries of a mouse or a keyboard (scope "Device") don't count.
+fn battery(root: &Path) -> Value {
+    let mut found = json!({"discharging": false});
+    for entry in fs::read_dir(root).into_iter().flatten().flatten().take(32) {
+        let path = entry.path();
+        let read = |name: &str| {
+            fs::read_to_string(path.join(name))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default()
+        };
+        if read("type") == "Battery" && read("scope") != "Device" && read("status") == "Discharging"
+        {
+            let percent = read("capacity")
+                .parse::<f64>()
+                .ok()
+                .filter(|v| (0.0..=100.0).contains(v));
+            found = json!({"discharging": true, "percent": percent});
+        }
+    }
+    found
+}
+/// Whether this PC still has the home-network address that the apps' home addresses and
+/// the shared folders use ("lan_ip" under "gateway"). With a new router, or one that gave
+/// the PC another address, both stop answering while every service still runs, so nothing
+/// else on the page said so (deep check 249).
+fn home_network(cfg: &Value) -> Value {
+    let address = text(&cfg["gateway"]["lan_ip"]);
+    if address.is_empty() || address == "auto" {
+        return json!({"status": "none"});
+    }
+    let (code, out) = probe(&["ip", "-j", "address", "show", "up"], 8);
+    let rows = (code == 0)
+        .then(|| serde_json::from_str::<Value>(&out).ok())
+        .flatten();
+    json!({"status": home_network_status(cfg, rows.as_ref()), "address": chars(address, 40)})
+}
+/// "ok", "moved" (the address is on none of the connections) or "unknown" (the
+/// connections could not be listed, or the settings name no usable address).
+fn home_network_status(cfg: &Value, rows: Option<&Value>) -> &'static str {
+    match rows.map(|rows| crate::startup::lan(cfg, rows)) {
+        Some(Ok(())) => "ok",
+        Some(Err(e)) if e.to_string() == crate::startup::LAN_GONE => "moved",
+        _ => "unknown",
+    }
 }
 /// The drive the backups wait for, when one is missing.
 fn away_drive(data_ok: bool, media_ok: bool) -> Option<&'static str> {
@@ -2902,8 +3158,11 @@ pub fn run(a: &Args) -> Result<()> {
         &a.value("output", "/run/nekoserver-dashboard/status.json"),
     ))?;
     let internal = common::safe(&a.path("state")?)?;
+    // Checked without a look at the folders themselves: a drive on a NAS that stopped
+    // answering holds every look at its folder, and the whole page stopped with it (seen
+    // in 0.51.1). Each drive's own reading below has a time limit.
     for key in ["data_mount", "media_mount", "external_backup_mount"] {
-        common::mount_path(text(&cfg[key]))?;
+        common::unlooked_mount_path(text(&cfg[key]))?;
     }
     if internal != Path::new(text(&cfg["data_mount"])).join("dashboard-state") {
         return Err(Error::new("Collector state must use application SSD"));
@@ -2926,17 +3185,7 @@ pub fn run(a: &Args) -> Result<()> {
     } else {
         empty()
     };
-    let mut cache = previous["smart"]
-        .as_object()
-        .map(|m| {
-            json!(m
-                .iter()
-                .rev()
-                .take(20)
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect::<serde_json::Map<_, _>>())
-        })
-        .unwrap_or_else(empty);
+    let mut cache = smart_kept(&previous["smart"], SMART_KEPT);
     let (disks, mounted, ok, media_ok) = storage(&cfg, &mut cache, now)?;
     let arrays = arrays_section(
         &mounted,
@@ -3012,8 +3261,14 @@ pub fn run(a: &Args) -> Result<()> {
     result["integrity"] = integrity(data, ok, away, text(&cfg["photos"]["external_backup_uuid"]));
     result["backup_key"] = json!(backup_key_ready());
     result["backup_place"] = backup_place(&cfg);
+    let (localtime, etc_timezone) = (Path::new("/etc/localtime"), Path::new("/etc/timezone"));
+    if let Some((zone, now)) = zone_moved(&cfg, localtime, etc_timezone) {
+        result["time_zone"] = json!({"schedules": zone, "this_pc": now});
+    }
     result["shared_folders"] = shared_folders(data, ok);
     result["tailscale"] = tailscale_login(now);
+    result["home_network"] = home_network(&cfg);
+    result["battery"] = battery(Path::new("/sys/class/power_supply"));
     result["network_storage"] = network_storage(&cfg, Path::new("/sys/class/iscsi_session"));
     result["arrays"] = arrays;
     mark_held(&mut result);
@@ -3050,11 +3305,22 @@ fn save_state(internal: &Path, state: &Value) -> Result<()> {
     fs::set_permissions(internal, fs::Permissions::from_mode(0o700))?;
     common::atomic_json(&internal.join("collector.json"), state)
 }
-/// The app SSD is mounted but can't be written: raised as its drive alert.
+/// The app SSD's own alerts that already say why it can't be written: turned read-only
+/// (mount:), full (space:), failing (smart:).
+const SSD_CAUSES: [&str; 3] = ["mount:data_ssd", "space:data_ssd", "smart:data_ssd"];
+/// The app SSD is mounted but can't be written: raised as its drive alert, unless the
+/// drive already has an urgent one of SSD_CAUSES, which names the cause and how to fix
+/// it better than the failed write does.
 fn unwritable(result: &mut Value, why: &str) {
     let alert = json!({"id":"mount:data_ssd","level":"critical","title":"App SSD can't be written",
         "detail":format!("The apps can't save anything on it ({}). It may be full or failing: check it, then restart the PC.", chars(why, 160))});
     if let Some(list) = result["alerts"].as_array_mut() {
+        let urgent_already = list
+            .iter()
+            .any(|a| SSD_CAUSES.contains(&text(&a["id"])) && a["level"] == "critical");
+        if urgent_already {
+            return;
+        }
         list.retain(|a| a["id"] != "mount:data_ssd");
         list.insert(0, alert);
     }
@@ -3063,6 +3329,120 @@ fn unwritable(result: &mut Value, why: &str) {
 #[cfg(test)]
 mod os_tests {
     use super::*;
+    /// Deep check 216: the time zone changed with timedatectl after setup. The schedules
+    /// keep the zone setup wrote in them, so the nights moved into the day, said nowhere.
+    #[test]
+    fn a_time_zone_changed_since_setup_is_said_with_what_to_do() {
+        let dir = std::env::temp_dir().join(format!("neko-zone-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (link, file) = (dir.join("localtime"), dir.join("timezone"));
+        std::os::unix::fs::symlink("/usr/share/zoneinfo/Asia/Tokyo", &link).unwrap();
+        let saved =
+            |zone: &str, own: bool| json!({"timezone": {"zone": zone, "follows_this_pc": own}});
+        let moved = zone_moved(&saved("Europe/London", true), &link, &file);
+        assert_eq!(moved, Some(("Europe/London".into(), "Asia/Tokyo".into())));
+        // The same zone, one chosen in the settings, or settings from before: nothing.
+        assert_eq!(zone_moved(&saved("Asia/Tokyo", true), &link, &file), None);
+        if Path::new("/usr/share/zoneinfo/UTC").is_file() {
+            // Another name of the same zone: setup's fallback "UTC", the PC's "Etc/UTC".
+            let utc = dir.join("utc");
+            std::os::unix::fs::symlink("/usr/share/zoneinfo/Etc/UTC", &utc).unwrap();
+            assert_eq!(zone_moved(&saved("UTC", true), &utc, &file), None);
+        }
+        assert_eq!(
+            zone_moved(&saved("Europe/London", false), &link, &file),
+            None
+        );
+        assert_eq!(zone_moved(&json!({}), &link, &file), None);
+        // /etc/localtime copied, not linked: /etc/timezone says it.
+        fs::remove_file(&link).unwrap();
+        fs::write(&file, "America/New_York\n").unwrap();
+        let moved = zone_moved(&saved("Europe/London", true), &link, &file);
+        assert_eq!(
+            moved,
+            Some(("Europe/London".into(), "America/New_York".into()))
+        );
+        let said =
+            alerts(&json!({"time_zone": {"schedules": "Europe/London", "this_pc": "Asia/Tokyo"}}));
+        let alert = said
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["id"] == "timezone:changed")
+            .unwrap();
+        let detail = alert["detail"].as_str().unwrap();
+        assert!(detail.contains("now uses Asia/Tokyo time"), "{detail}");
+        assert!(detail.contains("on Europe/London time"), "{detail}");
+        assert!(detail.contains("sudo bash install.sh"), "{detail}");
+        assert!(alerts(&json!({}))
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|a| a["id"] != "timezone:changed"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+    /// Seen with the media HDD filled to 96%: "filling up" said only "Review free space
+    /// before uploads or backups". A warning says, like the urgent one, what stops when
+    /// the drive is full and what to do before then.
+    #[test]
+    fn a_drive_filling_up_says_what_stops_and_what_to_do() {
+        for (id, stops) in [
+            ("media_hdd", "the nightly backups"),
+            ("data_ssd", "can stop working"),
+            ("d3", "Backups and uploads stop"),
+        ] {
+            let warning = space_advice(id, false);
+            assert!(warning.contains(stops), "{id}: {warning}");
+            assert!(warning.contains("before then"), "{id}: {warning}");
+        }
+    }
+    /// Seen on an SSD remounted read-only, then on one filled to the last byte: the
+    /// collector's own state could not be saved, and "App SSD can't be written ...
+    /// restart the PC" replaced the drive's "turned read-only" alert, or stood beside
+    /// its "almost full" one. The drive's own urgent alert names the cause and the fix.
+    #[test]
+    fn a_failed_state_write_keeps_the_ssds_own_urgent_alert() {
+        // The titles of the SSD's alerts after the failed write.
+        let titles_after = |extra: Value| -> Vec<String> {
+            let mut ssd = json!({"id": "data_ssd", "name": "Application SSD", "status": "mounted"});
+            ssd.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let mut result = json!({"storage": [ssd]});
+            result["alerts"] = alerts(&result);
+            unwritable(&mut result, "Filesystem or process operation failed");
+            result["alerts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|a| text(&a["id"]).ends_with(":data_ssd"))
+                .map(|a| text(&a["title"]).to_string())
+                .collect()
+        };
+        let cant = "App SSD can't be written";
+        assert_eq!(
+            titles_after(json!({"read_only": true})),
+            ["Application SSD turned read-only"]
+        );
+        assert_eq!(
+            titles_after(json!({"used_percent": 100.0})),
+            ["Application SSD is almost full"]
+        );
+        assert_eq!(
+            titles_after(json!({"smart": {"status": "fail", "reason": "reallocated sectors"}}))
+                .len(),
+            1,
+            "the failing drive's own alert alone"
+        );
+        // Nothing more specific to say: the write failure itself is the alert.
+        assert_eq!(titles_after(json!({})), [cant]);
+        // A warning (filling up) is not enough for a drive the apps can't write to.
+        assert_eq!(
+            titles_after(json!({"used_percent": 91.0})),
+            [cant, "Application SSD is filling up"]
+        );
+    }
     /// Gate run C8: the share of your films does not answer: the page names it, the
     /// folder and the apps stopped for it, and counts those as stopped on purpose.
     #[test]
@@ -3184,6 +3564,42 @@ mod os_tests {
         );
         assert_eq!(nas_verdict(&seen, "media_hdd", 1600.0, || false), None);
     }
+    /// Seen in 0.51.1 (a share whose server stopped answering, in a test system): the
+    /// drive's space got no answer, so it was "unavailable" and said as not connected
+    /// with its apps stopped, while the NAS check said it waits (and stopped nothing).
+    #[test]
+    fn a_nas_drive_that_does_not_answer_is_waiting_not_gone() {
+        let row = |status: &str| {
+            drive_row(
+                "media_hdd",
+                "Media HDD",
+                Path::new("/mnt/nekoserver-media"),
+                &json!(status),
+            )
+        };
+        let seen = json!({"drives": {"media_hdd": "waits"}});
+        let mut r = row(UNANSWERED);
+        nas_drive_as_seen(&mut r, &seen, Some("waits"));
+        assert_eq!(
+            (r["status"].as_str(), r["waiting"].as_bool()),
+            (Some("mounted"), Some(true))
+        );
+        let raised = alerts(&json!({"storage": [r]}));
+        let titles: Vec<&str> = raised
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| text(&a["title"]))
+            .collect();
+        assert_eq!(titles, ["Media HDD is waiting for the network storage box"]);
+        // Not mounted, or no word from the NAS check: as before.
+        for (status, verdict) in [("missing", Some("waits")), (UNANSWERED, None)] {
+            let mut r = row(status);
+            nas_drive_as_seen(&mut r, &seen, verdict);
+            assert_eq!(r["status"], status);
+            assert!(r["waiting"].is_null());
+        }
+    }
     #[test]
     fn only_the_apps_the_gateway_publishes_get_a_phone_link() {
         // The audit of 0.45.6: a phone got an "Open" link for every app with a Tailscale
@@ -3269,6 +3685,53 @@ mod os_tests {
             );
         }
     }
+    /// 0.51.2 user check: the advice of the memory, heat, app check and rebuild alerts
+    /// said "Reapply media_monitor", "the media checks below" (they are on another page)
+    /// and "the Drives page" (the dashboard has none): advice a beginner can't follow.
+    /// Each page named is one of the dashboard's menu, each "→" part one of its headings.
+    #[test]
+    fn alert_advice_names_only_what_the_dashboard_has() {
+        let page = include_str!("../../dashboard/index.html").replace("&amp;", "&");
+        let now = 1_800_000_000.0;
+        let shown = alerts(&json!({
+            "generated_at": now,
+            "metrics": {"memory_percent": 98.0, "temperature": 106.0},
+            "media": {"status": "stale", "counts": {"fail": 1}},
+            "arrays": [{"id": "md-md0", "name": "RAID md0", "status": "rebuilding", "reason": "r"}],
+        }));
+        let details: Vec<&str> = shown
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["detail"].as_str().unwrap())
+            .collect();
+        assert_eq!(details.len(), 6, "{details:?}");
+        for detail in details {
+            for jargon in [
+                "media_monitor",
+                "below",
+                "Drives page",
+                "Inspect",
+                "workload",
+            ] {
+                assert!(!detail.contains(jargon), "{detail}");
+            }
+            for menu in ["Server health", "Your apps", "Processes", "Fans & lights"] {
+                if detail.contains(menu) {
+                    assert!(page.contains(&format!("nav-text\">{menu}<")), "{menu}");
+                }
+            }
+            let headings: Vec<&str> = page
+                .split("<h2>")
+                .skip(1)
+                .filter_map(|rest| rest.split_once("</h2>").map(|(h, _)| h))
+                .collect();
+            for (at, arrow) in detail.match_indices("→ ") {
+                let after = &detail[at + arrow.len()..];
+                assert!(headings.iter().any(|h| after.starts_with(h)), "{after}");
+            }
+        }
+    }
     #[test]
     fn failing_alert_delivery_is_said_on_the_page() {
         let shown =
@@ -3284,6 +3747,32 @@ mod os_tests {
             alerts(&json!({"notifications":{"status":"pass"},"heartbeat":{"status":"unknown"}})),
             json!([])
         );
+    }
+    /// An expiry already past while Tailscale still says "Running" is a server signed out
+    /// (it was told "runs out soon"); Go's zero time is no expiry at all (it was told the
+    /// same, 2000 years late); a Tailscale switched off or waiting for your approval was
+    /// told nothing, though the phone can't reach the apps.
+    #[test]
+    fn a_tailscale_that_cannot_be_reached_says_what_to_do() {
+        let now = 1_792_900_000.0;
+        let shown = |status: Value| alerts(&json!({"tailscale": login_state(&status, now)}));
+        let past = shown(json!({"BackendState":"Running",
+            "Self":{"KeyExpiry":"2026-10-01T00:00:00Z","DNSName":"neko.tail1.ts.net."}}));
+        assert_eq!(
+            (past[0]["id"].as_str(), past[0]["level"].as_str()),
+            (Some("tailscale:login"), Some("critical"))
+        );
+        let zero = json!({"BackendState":"Running","Self":{"KeyExpiry":"0001-01-01T00:00:00Z"}});
+        assert_eq!(login_state(&zero, now)["days_left"], Value::Null);
+        assert_eq!(shown(zero), json!([]));
+        for (state, says) in [
+            ("Stopped", "sudo tailscale up"),
+            ("NeedsMachineAuth", "Approve"),
+        ] {
+            let off = shown(json!({"BackendState":state,"Self":{"DNSName":"neko.tail1.ts.net."}}));
+            assert_eq!(off[0]["id"], "tailscale:off", "{state}");
+            assert!(text(&off[0]["detail"]).contains(says), "{state}: {off}");
+        }
     }
     #[test]
     fn a_tailscale_sign_in_that_runs_out_is_told() {
@@ -3671,6 +4160,37 @@ mod os_tests {
             "Shared folders (Samba) has stopped with an error"
         );
     }
+    /// The deep check: the home network gateway starts by itself (drive return starts it
+    /// with Docker and Samba) but was not in Starts by itself, so one that gave up after a
+    /// refused start check was nowhere on the dashboard.
+    #[test]
+    fn every_service_kept_on_the_drives_is_in_starts_by_itself() {
+        for unit in crate::drive_return::SERVICES {
+            assert!(STARTUP.iter().any(|(u, _)| *u == unit), "{unit}");
+        }
+        let failed = parse_startup("Id=nekoserver-gateway-lan.service\nLoadState=loaded\nUnitFileState=enabled\nActiveState=failed");
+        let shown = alerts(&json!({ "startup": failed }));
+        assert_eq!(
+            shown[0]["id"],
+            "startup:nekoserver-gateway-lan.service:failed"
+        );
+        assert_eq!(
+            shown[0]["title"],
+            "Home network gateway (HTTPS) has stopped with an error"
+        );
+        // Deep check 301: it stays stopped after giving up; the alert says so and how
+        // to start it.
+        let said = shown[0]["detail"].as_str().unwrap_or_default().to_string()
+            + shown[0]["action"].as_str().unwrap_or_default();
+        assert!(
+            said.contains("stays stopped until a drive comes back"),
+            "{said}"
+        );
+        assert!(
+            said.contains("sudo systemctl start nekoserver-gateway-lan.service"),
+            "{said}"
+        );
+    }
     #[test]
     fn a_missing_backup_key_is_an_alert_once_the_monthly_schedule_exists() {
         let monthly = |installed: bool| json!([{"id":"maintenance","name":"Monthly maintenance","status":"pass","timer":{"installed":installed}}]);
@@ -3740,7 +4260,8 @@ mod os_tests {
         assert_eq!(shown.len(), 1);
         assert_eq!(shown[0]["level"], "critical");
         assert!(!shown[0].to_string().contains("b.jpg"), "{}", shown[0]);
-        assert!(text(&shown[0]["detail"]).contains("Repair damaged backup copies"));
+        assert!(text(&shown[0]["detail"])
+            .contains("choose \"Check or repair a drive\", then \"Fix damaged backup copies\""));
         let _ = std::fs::remove_dir_all(data);
     }
     #[test]
@@ -3763,6 +4284,20 @@ mod os_tests {
         assert!(text(&shown[0]["title"]).contains("Nextcloud 32 is available"));
         assert_eq!(updates(&cfg, false), json!([]));
         let _ = fs::remove_dir_all(root);
+    }
+    /// The weekly copy's missing USB drive, said whole on the dashboard: what to do if
+    /// the drive was replaced is its last sentence.
+    #[test]
+    fn a_missing_usb_drive_is_shown_whole() {
+        let saved =
+            json!({"stage": "checking the USB drive", "reason": crate::backup::USB_MISSING});
+        assert_eq!(
+            failure_reason(&saved),
+            format!(
+                "Failed while checking the USB drive: {}.",
+                crate::backup::USB_MISSING
+            )
+        );
     }
     #[test]
     fn failed_job_says_why_and_where() {
@@ -3803,6 +4338,134 @@ mod os_tests {
         );
         assert_eq!(shown[0]["level"], "warning");
         assert!(!text(&shown[0]["detail"]).contains("bob/a:b.txt"));
+    }
+    /// Deep check 249 ("I changed my router"): the PC got another address at home, the
+    /// home gateway and the shared folders stopped answering, and the page was all green.
+    #[test]
+    fn a_home_network_address_the_pc_no_longer_has_is_said() {
+        let cfg = json!({"gateway": {"lan_ip": "192.168.1.20", "lan_cidr": "192.168.1.0/24"}});
+        let on = |ip: &str| {
+            json!([{"ifname": "enp3s0", "addr_info": [
+                {"family": "inet", "scope": "global", "local": ip, "prefixlen": 24}
+            ]}])
+        };
+        assert_eq!(home_network_status(&cfg, Some(&on("192.168.1.20"))), "ok");
+        assert_eq!(
+            home_network_status(&cfg, Some(&on("192.168.0.57"))),
+            "moved"
+        );
+        assert_eq!(home_network_status(&cfg, None), "unknown");
+        assert_eq!(home_network(&json!({})), json!({"status": "none"}));
+        let shown =
+            alerts(&json!({"home_network": {"status": "moved", "address": "192.168.1.20"}}));
+        assert_eq!(shown[0]["id"], "home-network");
+        let detail = text(&shown[0]["detail"]);
+        assert!(detail.contains("192.168.1.20"), "{detail}");
+        assert!(detail.contains("sudo bash install.sh"), "{detail}");
+        for fine in ["ok", "unknown", "none"] {
+            assert_eq!(
+                alerts(&json!({"home_network": {"status": fine}})),
+                json!([])
+            );
+        }
+    }
+    /// Deep check 260 (a laptop as the server): unplugged, it ran on its battery until
+    /// it went off, and nothing said so.
+    #[test]
+    fn a_laptop_on_its_battery_is_said() {
+        let dir = std::env::temp_dir().join(format!("neko-battery-{}", std::process::id()));
+        let supply = |name: &str, fields: &[(&str, &str)]| {
+            let folder = dir.join(name);
+            fs::create_dir_all(&folder).unwrap();
+            for (field, value) in fields {
+                fs::write(folder.join(field), format!("{value}\n")).unwrap();
+            }
+        };
+        supply("AC", &[("type", "Mains"), ("online", "1")]);
+        supply(
+            "BAT0",
+            &[
+                ("type", "Battery"),
+                ("status", "Charging"),
+                ("capacity", "80"),
+            ],
+        );
+        supply(
+            "hid-mouse",
+            &[
+                ("type", "Battery"),
+                ("scope", "Device"),
+                ("status", "Discharging"),
+            ],
+        );
+        assert_eq!(battery(&dir), json!({"discharging": false}));
+        supply("BAT0", &[("status", "Discharging"), ("capacity", "41")]);
+        let found = battery(&dir);
+        assert_eq!(found, json!({"discharging": true, "percent": 41.0}));
+        let shown = alerts(&json!({ "battery": found }));
+        assert_eq!(
+            shown[0]["title"],
+            "The server is running on its battery (41% left)"
+        );
+        assert!(text(&shown[0]["detail"]).contains("Plug the charger in"));
+        assert_eq!(battery(&dir.join("none")), json!({"discharging": false}));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+    /// Deep check 242 ("My USB drive is full"): the page said only "No space left on
+    /// device", and the guide's "free space" invited deleting copies on the backup.
+    #[test]
+    fn a_full_usb_drive_says_to_use_a_bigger_one() {
+        let full = failure_reason(
+            &json!({"stage": "copying photos and videos to the USB drive",
+            "reason": "cp exited with 1 (No space left on device)"}),
+        );
+        let said = with_full_usb_advice("external", full.clone());
+        assert!(said.starts_with(&full), "{said}");
+        assert!(said.ends_with(USB_FULL), "{said}");
+        // Another job, or another reason, is left as it was.
+        assert_eq!(with_full_usb_advice("applications", full.clone()), full);
+        assert_eq!(
+            with_full_usb_advice("external", "Failed: External drive missing".into()),
+            "Failed: External drive missing"
+        );
+    }
+    /// Deep check 250: "setup can change them" was not true; setup now tests and asks.
+    #[test]
+    fn alerts_that_are_not_delivered_say_to_run_setup() {
+        let shown = alerts(&json!({"notifications": {"status": "fail"}}));
+        let detail = text(&shown[0]["detail"]);
+        assert!(detail.contains("sudo bash install.sh"), "{detail}");
+    }
+    /// Seen with the real weekly copy and `serve` (0.51.2 review): a USB copy whose only
+    /// gap was the password list showed "Incomplete; see the job's report", a file only
+    /// root can read, instead of what to do.
+    #[test]
+    fn a_usb_copy_without_the_password_list_says_so_on_the_page() {
+        let said = crate::backup::NO_PASSWORD_LIST.to_string();
+        let alone = crate::backup::incomplete(None, None, None, Some(said.clone())).unwrap();
+        assert_eq!(partial_reason(&alone), capitalised(&said));
+        let with_database = crate::backup::incomplete(
+            None,
+            Some("no Immich database copy was found".into()),
+            None,
+            Some(said),
+        )
+        .unwrap();
+        let shown = partial_reason(&with_database);
+        assert!(shown.starts_with("No Immich database copy"), "{shown}");
+        assert!(shown.contains("sudo bash install.sh"), "{shown}");
+    }
+    /// Deep check plan 276: what a backup left out was cut at exactly 300 characters, in
+    /// the middle of a word. The Nextcloud encryption advice (316) read "or keep your own
+    /// backup of the whole Nextcl" on the dashboard.
+    #[test]
+    fn what_a_backup_left_out_is_never_cut_mid_word() {
+        let said = crate::backup::CLOUD_ENCRYPTED.to_string();
+        let cloud = crate::backup::incomplete(None, None, Some(said.clone()), None).unwrap();
+        assert_eq!(partial_reason(&cloud), capitalised(&said));
+        let long = format!("USB check: {}", "the drive would not mount ".repeat(20));
+        let shown = partial_reason(&json!([long]));
+        assert!(shown.ends_with("mount…"), "{shown}");
     }
     #[test]
     fn a_monthly_run_done_in_part_says_why() {
@@ -3929,6 +4592,29 @@ mod integrity_tests {
 }
 
 #[cfg(test)]
+mod smart_cache_tests {
+    use serde_json::json;
+    #[test]
+    fn the_newest_readings_are_kept_not_the_last_by_name() {
+        // Deep check 303: "z-old" (checked long ago) stayed, "a-new" was dropped.
+        let mut saved = serde_json::Map::new();
+        for n in 0..25 {
+            saved.insert(
+                format!("z-old-{n:02}|/dev/sdz"),
+                json!({"checked_at": 1000.0 + n as f64}),
+            );
+        }
+        saved.insert("a-new|/dev/sda".into(), json!({"checked_at": 9000.0}));
+        let kept = super::smart_kept(&json!(saved), super::SMART_KEPT);
+        let kept = kept.as_object().unwrap();
+        assert_eq!(kept.len(), 20);
+        assert!(kept.contains_key("a-new|/dev/sda"));
+        assert!(!kept.contains_key("z-old-00|/dev/sdz"));
+        assert!(kept.contains_key("z-old-24|/dev/sdz"));
+        assert_eq!(super::smart_kept(&json!(null), 20), json!({}));
+    }
+}
+#[cfg(test)]
 mod heat_tests {
     use super::*;
     fn level(
@@ -3986,6 +4672,20 @@ mod heartbeat_tests {
         assert!(heartbeat_late(None, 1000.0, 300, None));
         assert!(!heartbeat_late(Some(900.0), 1000.0, 300, Some(60.0)));
         assert!(heartbeat_late(Some(500.0), 1000.0, 300, Some(6000.0)));
+    }
+    /// Deep check 167: a check-in made while the clock was a day ahead, read once the
+    /// clock is right, is a recent one, not a missed one.
+    #[test]
+    fn a_check_in_from_a_clock_that_was_ahead_is_not_a_missed_one() {
+        let now = 1_800_000_000.0;
+        let attempt = heartbeat_attempt(&json!({"last_attempt": now + 86400.0}), now);
+        assert_eq!(attempt, json!(now));
+        assert!(!heartbeat_late(attempt.as_f64(), now, 300, Some(6000.0)));
+        assert_eq!(
+            heartbeat_attempt(&json!({"last_attempt": now - 60.0}), now),
+            json!(now - 60.0)
+        );
+        assert!(heartbeat_attempt(&json!({"last_attempt": "x"}), now).is_null());
     }
 }
 
@@ -4072,7 +4772,8 @@ mod user_panel_tests {
         .unwrap();
         assert_eq!(
             assistant(&yes, Some(&root)),
-            json!({"set_up": true, "model": "qwen3.5:4b", "memory": "5g", "cpus": "2"})
+            // How much of a question Neko reads: the page says when one is longer.
+            json!({"set_up": true, "model": "qwen3.5:4b", "memory": "5g", "cpus": "2", "question_chars": 500})
         );
         assert_eq!(
             assistant(&json!({"assistant": {"wanted": false}}), Some(&root)),
@@ -4135,6 +4836,36 @@ mod user_panel_tests {
             .collect();
         assert!(ids.contains(&"app:jellyfin".to_string()), "{ids:?}");
         assert!(ids.contains(&"backup:archive".to_string()), "{ids:?}");
+    }
+    /// Seen in 0.51.2 (a loop drive reformatted, so its UUID changed): the drive was
+    /// connected and mounted, yet its alert said "Reconnect it". A drive that is not the
+    /// one chosen is told the step that helps: setup, after a reformat or replacement on
+    /// purpose, else the right drive back.
+    #[test]
+    fn a_reformatted_or_replaced_drive_is_told_to_run_setup_not_to_reconnect() {
+        let storage = |status: &str| {
+            json!([{"id": "os", "name": "OS SSD", "status": "mounted"},
+                   {"id": "media_hdd", "name": "Media HDD", "status": status}])
+        };
+        let detail = |s: &Value| text(&alerts(s)[0]["detail"]).to_string();
+        let wrong = detail(&json!({"storage": storage("wrong_drive")}));
+        assert!(wrong.contains("reformatted or replaced"), "{wrong}");
+        assert!(wrong.contains("sudo bash install.sh"), "{wrong}");
+        assert!(!wrong.contains("Reconnect"), "{wrong}");
+        // With apps it stopped, those are still named first.
+        let apps = json!([{"id": "jellyfin", "name": "Jellyfin", "state": "exited"}]);
+        let held = detail(&json!({"storage": storage("wrong_drive"), "applications": apps}));
+        assert!(
+            held.contains("Stopped so nothing is written there: Jellyfin."),
+            "{held}"
+        );
+        assert!(
+            held.contains("sudo bash install.sh") && !held.contains("Reconnect"),
+            "{held}"
+        );
+        // A drive that is away is still told to reconnect it.
+        let away = detail(&json!({"storage": storage("missing")}));
+        assert!(away.contains("Reconnect it"), "{away}");
     }
     #[test]
     fn a_new_usb_drive_inherits_no_checksum_result_from_the_old_one() {
@@ -4199,6 +4930,27 @@ mod user_panel_tests {
             app_drive(&json!({}), "os", Path::new("/nonexistent-neko"), None, "")["status"],
             "missing"
         );
+    }
+    /// The disk Linux runs from has no identity to check, and some have no UUID at all
+    /// (a ZFS root, an overlay root): findmnt then leaves its UUID column blank, and the
+    /// row is still a mounted drive. A drive that must have a UUID is not the chosen one
+    /// when something without one is mounted in its place.
+    #[test]
+    fn a_root_without_a_uuid_is_mounted_not_missing() {
+        let root = |found: &str| mount_status(found, None, "")["status"].clone();
+        assert_eq!(root("     ext4   /dev/vda"), "mounted");
+        assert_eq!(root("  zfs rpool/ROOT/ubuntu"), "mounted");
+        assert_eq!(root("1234-ab ext4 /dev/sda2"), "mounted");
+        assert_eq!(root(""), "missing");
+        assert_eq!(
+            mount_status("  zfs rpool/ROOT/ubuntu", None, "")["source"],
+            "rpool/ROOT/ubuntu"
+        );
+        let chosen = |found: &str| mount_status(found, Some("u1"), "ext4")["status"].clone();
+        assert_eq!(chosen("u1 ext4 /dev/sdb1[/@]"), "mounted");
+        assert_eq!(chosen("   ext4 /dev/sdb1"), "wrong_drive");
+        assert_eq!(chosen("u2 ext4 /dev/sdb1"), "wrong_drive");
+        assert_eq!(chosen(""), "missing");
     }
     /// A drive beyond the two (0.50.0: a group's files, or its apps, on a drive of
     /// their own) has a card like the two, named by what it holds; a server with
@@ -4368,14 +5120,14 @@ mod user_panel_tests {
     /// and the repair advice that was cut off is kept, in short.
     #[test]
     fn long_reasons_are_cut_at_a_sentence_and_keep_the_repair_advice() {
-        let full = format!("Backup copies failed their checksum check: 1 Nextcloud file no longer matches its recorded checksum (kept as it is): rivka/files/Clients/2024/Contract-Levi.pdf. {}", crate::backup::SETTLE);
+        let full = format!("Backup copies failed their checksum check: 1 Nextcloud file no longer matches its recorded checksum (kept as it is): rivka/files/Clients/2024/Contract-Levi.pdf. {}", crate::backup::settle_advice());
         let saved = json!({"stage": "checking every copy on the USB drive by checksum",
             "reason": common::sanitize(&full)});
         // The report keeps at most 300 characters, cut at a sentence or word since 0.40.2.
         assert!(text(&saved["reason"]).chars().count() <= 300);
         let shown = failure_reason(&saved);
-        assert_eq!(shown, format!("Failed while checking every copy on the USB drive by checksum: Backup copies failed their checksum check: 1 Nextcloud file no longer matches its recorded checksum (kept as it is): rivka/files/Clients/2024/Contract-Levi.pdf. {SETTLE_SHORT}"));
-        assert!(crate::backup::SETTLE.starts_with(SETTLE_START));
+        assert_eq!(shown, format!("Failed while checking every copy on the USB drive by checksum: Backup copies failed their checksum check: 1 Nextcloud file no longer matches its recorded checksum (kept as it is): rivka/files/Clients/2024/Contract-Levi.pdf. {}", settle_short()));
+        assert!(crate::backup::settle_advice().starts_with(crate::backup::SETTLE_START));
         // Without the advice: the last whole sentence, or the last whole word and "…".
         let words = "word ".repeat(70);
         assert_eq!(whole(&words, 300).chars().last(), Some('…'));
@@ -4412,6 +5164,7 @@ mod user_panel_tests {
 #[cfg(test)]
 mod round_two_tests {
     use super::*;
+    use crate::common::filesystem_read_only;
     /// QA after 0.40.2: a whole sentence keeps its full stop (common::sanitize takes the
     /// last one off, and a cut after a sentence reads "sentence.…"); a reason cut mid-
     /// sentence keeps "…", and a command or file name at the end gets nothing added.
@@ -4519,6 +5272,9 @@ mod round_two_tests {
         // After write errors Linux turns the filesystem itself read-only.
         let failed = "36 25 8:80 / /mnt/nekoserver-media rw,relatime shared:2 - ext4 /dev/sdf ro,errors=remount-ro\n";
         assert!(filesystem_read_only(failed, hdd));
+        // Linux 6.12 and later: still "rw", with "emergency_ro" (read as in a test system).
+        let emergency = "126 85 7:7 / /mnt/nekoserver-media rw,relatime - ext4 /dev/loop7 rw,errors=remount-ro,emergency_ro\n";
+        assert!(filesystem_read_only(emergency, hdd));
         // A later mount on the same folder covers the earlier one; a folder that is not
         // a mount point, or a list that could not be read, says nothing.
         let covered = format!("{failed}90 25 8:96 / /mnt/nekoserver-media rw - ext4 /dev/sdg rw\n");
@@ -4531,6 +5287,25 @@ mod round_two_tests {
         // "ro" only as a whole option.
         let named = "36 25 8:80 / /mnt/x rw - ext4 /dev/sdf rw,rootcontext=robot\n";
         assert!(!filesystem_read_only(named, Path::new("/mnt/x")));
+    }
+    /// Seen in 0.51.2: an XFS HDD that Linux shut down after errors (xfs_io shutdown on a
+    /// loop drive) stays "rw" in the mount table and answers statvfs, but a look at its
+    /// top folder fails with EIO. The dashboard showed it healthy while every job failed.
+    #[test]
+    fn an_xfs_drive_shut_down_after_errors_counts_as_read_only() {
+        let xfs =
+            "170 98 7:8 / /mnt/nekoserver-media rw,relatime - xfs /dev/loop8 rw,inode64,noquota\n";
+        let hdd = Path::new("/mnt/nekoserver-media");
+        let shut_down = Err(std::io::Error::from_raw_os_error(libc::EIO));
+        assert!(turned_read_only(xfs, hdd, &shut_down));
+        // A drive that answers is read-only only by its mount table.
+        let fine = fs::symlink_metadata("/");
+        assert!(!turned_read_only(xfs, hdd, &fine));
+        let marked = xfs.replace("rw,inode64", "ro,inode64");
+        assert!(turned_read_only(&marked, hdd, &fine));
+        // Another failure of the look (a folder taken away) is not a shut-down drive.
+        let gone = Err(std::io::Error::from_raw_os_error(libc::ENOENT));
+        assert!(!turned_read_only(xfs, hdd, &gone));
     }
     /// 0.46.0: drives on a network storage box. The NAS connection is shown from Linux's
     /// iSCSI sessions; a drive that turned read-only or waits for the NAS gets an alert;
@@ -4582,7 +5357,7 @@ mod round_two_tests {
             .iter()
             .find(|a| a["title"] == "Media HDD turned read-only")
             .unwrap();
-        assert!(text(&read_only["detail"]).contains("Check a drive that turned read-only"));
+        assert!(text(&read_only["detail"]).contains("choose \"Check or repair a drive\", then \"Check a drive that stopped taking new files\""));
         assert!(raised
             .as_array()
             .unwrap()
@@ -4616,7 +5391,7 @@ mod round_two_tests {
         );
         let alert = &shown.as_array().unwrap()[0];
         assert_eq!(alert["title"], "Media HDD has filesystem errors");
-        assert!(text(&alert["detail"]).contains("Check a drive that turned read-only"));
+        assert!(text(&alert["detail"]).contains("choose \"Check or repair a drive\", then \"Check a drive that stopped taking new files\""));
         let _ = fs::remove_dir_all(root);
     }
     /// QA after 0.40.2: "1 file", never "1 files".
@@ -4667,5 +5442,38 @@ mod round_two_tests {
         );
         assert_eq!(tv(&off, None), json!({"set_up": false}));
         let _ = fs::remove_dir_all(data);
+    }
+    /// Deep check plan 193: a HDD under LVM or LUKS said "Physical disk mapping
+    /// unavailable" for good, with no SMART check, though its one disk is known.
+    #[test]
+    fn the_disk_under_an_encrypted_or_lvm_volume_is_found() {
+        // lsblk -s -n -r -o NAME,TYPE /dev/mapper/media (LVM on LUKS on a partition).
+        let one = "vg-media lvm\nluks-1234 crypt\nsdb1 part\nsdb disk\n";
+        assert_eq!(disk_under(one).as_deref(), Some("/dev/sdb"));
+        // The same disk listed twice (two partitions of it under one volume) is one.
+        let twice = "vg-media lvm\nsdb1 part\nsdb disk\nsdb2 part\nsdb disk\n";
+        assert_eq!(disk_under(twice).as_deref(), Some("/dev/sdb"));
+        assert_eq!(
+            disk_under("vg-media lvm\nsdb1 part\nsdb disk\nsdc1 part\nsdc disk\n"),
+            None
+        );
+        assert_eq!(disk_under(""), None);
+        assert_eq!(disk_under("loop0 disk\n"), None);
+        for source in ["/dev/mapper/vg-media", "/dev/mapper/luks-1234", "/dev/dm-3"] {
+            assert!(mapped(source), "{source}");
+        }
+        for source in ["/dev/sdb1", "/dev/mapper/../sda", "/dev/mapper/a b"] {
+            assert!(!mapped(source), "{source}");
+        }
+        assert!(!NO_ONE_DISK.contains("mapping"));
+    }
+    /// Deep check plan 209: a drive at exactly 90.0% got the alert (>= 90) saying "Over
+    /// 90% used".
+    #[test]
+    fn a_drive_at_ninety_percent_is_not_said_to_be_over_it() {
+        for id in ["media_hdd", "data_ssd", "d3"] {
+            let said = space_advice(id, false);
+            assert!(said.starts_with("90% or more used."), "{said}");
+        }
     }
 }

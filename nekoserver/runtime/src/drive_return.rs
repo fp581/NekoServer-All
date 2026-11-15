@@ -181,7 +181,7 @@ fn pool_lacks_a_drive(shown: &str) -> bool {
 /// fewer until the missing drive is replaced (RECOVERY.md shows how).
 fn degraded_notice(path: &str) -> String {
     format!(
-        "Drive return: a drive of the Btrfs pool for {path} is missing, so the pool was mounted on the drives left (degraded). Your data there has one copy fewer until the drive is replaced; the dashboard's Drives page shows the pool, and RECOVERY.md how to replace the drive"
+        "Drive return: a drive of the Btrfs pool for {path} is missing, so the pool was mounted on the drives left (degraded). Your data there has one copy fewer until the drive is replaced; the dashboard's Server health → Drives shows the pool, and RECOVERY.md how to replace the drive"
     )
 }
 
@@ -495,6 +495,23 @@ fn start_services(who: &str, systemctl: &dyn Fn(&[&str], u64) -> Result<i32>) ->
     }
     failed
 }
+/// How long the apps' services wait for a job holding the jobs' lock before they start
+/// anyway. Bounded: a job stuck on the dead mount the drive left behind may never let go.
+const JOBS_WAIT: Duration = Duration::from_secs(30 * 60);
+
+/// The jobs' shared lock (installer/recovery.lock on the SSD), waited for at most `max`.
+/// None when it was not taken in time (or could not be made): said, and the apps start
+/// anyway, since apps left down for good are worse than a start during a stuck job.
+fn wait_for_jobs(lock: &Path, max: Duration, who: &str) -> Option<std::fs::File> {
+    match common::shared_lock_wait(lock, max, max) {
+        Ok(held) => Some(held),
+        Err(e) => {
+            println!("{who}: {e}; starting the apps anyway. If that job is stuck, the dashboard's Needs attention or  sudo journalctl -u 'nekoserver-*' -n 50  shows which one");
+            None
+        }
+    }
+}
+
 /// The services NekoServer keeps on its drives started again (those switched on), their
 /// views of the drives refreshed, then each job a missing drive cut off finished. Only
 /// with both drives in place and the right ones. `who` begins each line said.
@@ -503,6 +520,9 @@ pub(crate) fn start_again(cfgpath: &Path, data: &Path, media: &Path, who: &str) 
     for name in backup::guard_present(cfgpath, data, media)? {
         println!("{who}: the drive {name} is not connected; the apps with files there stay stopped until it is back");
     }
+    // Docker, Samba and the gateway wait for a job that holds the jobs' lock (a monthly
+    // update rolling back, a backup), so they are not started in the middle of it.
+    let held = wait_for_jobs(&data.join("installer/recovery.lock"), JOBS_WAIT, who);
     let failed = start_services(who, &|args, wait| {
         common::command(args, wait).map(|(code, _)| code)
     });
@@ -526,6 +546,8 @@ pub(crate) fn start_again(cfgpath: &Path, data: &Path, media: &Path, who: &str) 
             Err(e) => println!("{who}: {e}"),
         }
     }
+    // Let go before the jobs' own recovery services run: each takes the lock itself.
+    drop(held);
     let resumed = finish_interrupted_jobs(installed, |unit| {
         run_ok(&["systemctl", "start", unit], 3 * 3600).map(|_| ())
     });
@@ -560,6 +582,38 @@ fn finish_interrupted_jobs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The deep check: drive return took no lock, so it could start Docker in the middle of
+    /// a monthly update's rollback or a backup. It now waits for the jobs' lock, but only so
+    /// long: a job stuck on the dead mount must not keep the apps down for good.
+    #[test]
+    fn the_apps_wait_for_a_running_job_but_not_without_end() {
+        let root =
+            std::env::temp_dir().join(format!("nk-drive-return-lock-{}", std::process::id()));
+        let lock = root.join("installer/recovery.lock");
+        let job = common::lock(&lock).unwrap(); // a job runs
+        let started = Instant::now();
+        assert!(wait_for_jobs(&lock, Duration::from_secs(1), "Drive return").is_none());
+        assert!(started.elapsed() >= Duration::from_secs(1));
+        drop(job); // the job finished
+        let held = wait_for_jobs(&lock, Duration::from_secs(1), "Drive return");
+        assert!(held.is_some());
+        // While drive return holds it, a job waits (never two at once).
+        assert!(common::lock(&lock).is_err());
+        drop(held);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+    /// Held while Docker, Samba and the gateway start, let go before the jobs' recovery
+    /// services run (each of them takes the lock: held here, they would wait on it).
+    #[test]
+    fn the_lock_covers_the_starts_and_not_the_recovery_services() {
+        let source = include_str!("drive_return.rs");
+        let body = &source[source.find("pub(crate) fn start_again(").unwrap()..];
+        let taken = body.find("let held = wait_for_jobs(").unwrap();
+        let started = body.find("start_services(who").unwrap();
+        let released = body.find("drop(held);").unwrap();
+        let resumed = body.find("finish_interrupted_jobs(installed").unwrap();
+        assert!(taken < started && started < released && released < resumed);
+    }
     /// Gate run C9: with the Music group's drive away, Docker could not start Navidrome
     /// and Lidarr (their folders there are missing, and never made in its place). Once
     /// the drive is back, exactly those are started; never one stopped on purpose.

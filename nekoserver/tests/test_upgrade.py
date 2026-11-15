@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 import tarfile
+import types
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import upgrade  # noqa: E402
-from neko_common import VERSION  # noqa: E402
+from neko_common import VERSION, hold_operation  # noqa: E402
 
 NEWER = 'v{}.{}.{}Beta'.format(*[int(n) + (1 if i == 1 else 0) for i, n in enumerate(VERSION.split('.'))])
 FINISHED = 'Finished: 2 of 3 steps done; 1 failed, waiting or unfinished'  # the installer's last line
@@ -597,6 +598,70 @@ class UpgradeTests(unittest.TestCase):
             bundle.addfile(info)
         self.assertEqual(self.upgrade(self.setup(), payload=bad.getvalue()), 1)
 
+    def test_a_python_without_extraction_filters_unpacks_and_refuses_the_same(self):
+        # Deep check 273: Python 3.11.0 to 3.11.3 (Debian 12 has 3.11.2) has no tarfile
+        # filters; the upgrade from the dashboard stopped there with "AttributeError: module
+        # 'tarfile' has no attribute 'FilterError'". Such a Python, stood in for here.
+        plain = tarfile.TarFile.extractall
+
+        def without_filter(bundle, path='.', members=None, *, numeric_owner=False, **more):
+            if more:
+                raise TypeError(f"TarFile.extractall() got an unexpected keyword argument '{next(iter(more))}'")
+            return plain(bundle, path, members, numeric_owner=numeric_owner)
+
+        # The filters are hidden from upgrade.py's view of tarfile only: tarfile itself uses
+        # data_filter by default from Python 3.14, so taking it out of the module breaks it.
+        old_tarfile = types.ModuleType('tarfile')
+        old_tarfile.__dict__.update(
+            {name: value for name, value in vars(tarfile).items() if name not in ('data_filter', 'FilterError')}
+        )
+        with (
+            mock.patch.object(upgrade, 'tarfile', old_tarfile),
+            mock.patch.object(tarfile.TarFile, 'extractall', without_filter),
+        ):
+            self.assertEqual(self.upgrade(self.setup(1)), 0)
+            self.assertIn(f'NekoServer {NEWER} is installed and checked', self.said)
+            for name, kind, link in (
+                ('NekoServer-All-x/escape', tarfile.SYMTYPE, '/etc/passwd'),
+                ('NekoServer-All-x/../outside', tarfile.REGTYPE, ''),
+                ('/NekoServer-All-x/absolute', tarfile.REGTYPE, ''),
+                ('NekoServer-All-x/device', tarfile.CHRTYPE, ''),
+            ):
+                with self.subTest(name):
+                    bad = io.BytesIO()
+                    with tarfile.open(fileobj=bad, mode='w:gz') as bundle:
+                        info = tarfile.TarInfo(name)
+                        info.type, info.linkname = kind, link
+                        bundle.addfile(info)
+                    self.said.clear()
+                    self.assertEqual(self.upgrade(self.setup(), payload=bad.getvalue()), 1)
+                    self.assertIn('not a NekoServer release', ' '.join(self.said))
+                    self.assertEqual(list(self.dir.rglob('outside')), [])
+
+    def test_a_cut_off_or_damaged_download_is_said_in_plain_words(self):
+        # Deep check 181/183, a stand-in server closing the connection half-way: the
+        # dashboard showed tarfile's "file could not be opened successfully: - method gz:
+        # ReadError(...)" list, or "IncompleteRead(21699 bytes read)".
+        import http.client
+
+        whole = release(NEWER)
+
+        def closed(*args, **kwargs):
+            raise http.client.IncompleteRead(whole[:100])
+
+        for name, get in (
+            ('half', lambda *a, **k: whole[: len(whole) // 2]),
+            ('html', lambda *a, **k: b'<html>Not here</html>'),
+            ('empty', lambda *a, **k: b''),
+            ('closed', closed),
+        ):
+            with self.subTest(name):
+                with self.assertRaises(RuntimeError) as said:
+                    upgrade.download(NEWER, self.dir / 'work', get)
+                self.assertIn('was cut off or is damaged', str(said.exception))
+                self.assertNotIn('ReadError', str(said.exception))
+                self.assertNotIn('\n', str(said.exception))
+
     def test_nothing_starts_while_something_else_is_at_work_or_for_an_older_release(self):
         self.journal.parent.mkdir(parents=True)
         self.journal.write_text('{}')
@@ -690,7 +755,7 @@ class UpgradeTests(unittest.TestCase):
 
     def test_a_cut_off_upgrade_is_put_right_at_the_next_start(self):
         upgrade.record('downloading', self.journal, to=NEWER, previous=str(self.previous))
-        self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(), self.journal), 0)
+        self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(), self.journal), 1)
         self.assertFalse(self.journal.exists())
         upgrade.record('installing', self.journal, to=NEWER, previous=str(self.previous), before=['storage'])
         self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(0), self.journal), 1)
@@ -746,6 +811,42 @@ class UpgradeTests(unittest.TestCase):
         self.back_problem = 'the dashboard does not answer'
         self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(0), self.journal), 2)
         self.assertEqual(self.ran[-1][0], 'v0.1.0')
+
+    def test_a_failed_upgrade_whose_way_back_was_cut_off_is_put_back_at_the_next_start(self):
+        """The upgrade's setup failed on a step new in its release, and the way back was cut
+        off (a power cut) before the older setup rewrote the resume service, so the next
+        start ran the resume from the new release's copy. The check looks only at the steps
+        done before the upgrade: it passed, and the record was closed on the release that
+        failed ("passed its check"). Now the release the server had is put back."""
+        older = self.data / 'installer/releases/v0.1.0'
+        older.mkdir()
+        (older / 'install.sh').write_text('#!/bin/bash\n')
+        upgrade.record('failed', self.journal, to='v' + VERSION, previous=str(older), before=['storage'])
+        upgrade.record('going_back', self.journal, problem='FAILED shows: the new step could not start')
+        self.state({'storage': 'success', 'photos': 'success', 'new_step': 'failed'})
+        self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(0), self.journal), 1)
+        self.assertEqual(self.ran[-1][0], 'v0.1.0')
+        self.assertFalse(any('passed its check. App updates' in line for line in self.said), self.said)
+        self.assertIn('The upgrade to v' + VERSION + ' did not pass: FAILED shows', self.said[-1])
+        # Cut off part-way through a step (left "running"): the same.
+        upgrade.record('installing', self.journal, to='v' + VERSION, previous=str(older), before=['storage'])
+        self.state({'storage': 'success', 'new_step': 'running'})
+        self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(0), self.journal), 1)
+        self.assertEqual(self.ran[-1][0], 'v0.1.0')
+        # Cut off while it was checked, after its setup had ended: a step that was failing
+        # before the upgrade (an optional one waiting for the person) puts nothing back.
+        upgrade.record('verifying', self.journal, to='v' + VERSION, previous=str(older), before=['storage'])
+        self.state({'storage': 'success', 'tv': 'failed'})
+        ran = len(self.ran)
+        self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(), self.journal), 0)
+        self.assertEqual(len(self.ran), ran, 'nothing was put back')
+        # A person's own setup run that just ended closes it all the same (settle_after_setup).
+        upgrade.record('going_back', self.journal, to='v' + VERSION, previous=str(older), before=['storage'])
+        self.state({'storage': 'success', 'new_step': 'failed'})
+        with mock.patch.object(upgrade, 'keep_report'):
+            self.assertTrue(
+                upgrade.settle_after_setup(json.loads(self.settings.read_text()), self.said.append, self.journal)
+            )
 
     def hidden_by_a_cut_off_way_back(self, linked):
         """What a way back to an older release leaves when it is cut off while the older
@@ -925,6 +1026,30 @@ class UpgradeReportTests(unittest.TestCase):
         self.assertEqual(upgrade.service_code(2, self.journal), 2)
         self.assertIn('return service_code(reported(', (ROOT / 'upgrade.py').read_text())
 
+    def test_an_upgrade_cut_off_while_it_downloaded_is_not_reported_as_passed(self):
+        """Deep check 316, under systemd: a record left at "downloading" (a restart during
+        the download), then nekoserver-upgrade-resume at the next start. The report said
+        "pass" with a new last success, and the dashboard showed the upgrade as done while
+        the server still ran the release it had."""
+        earlier = self.report(0, 'NekoServer is installed and checked')
+        upgrade.record('downloading', self.journal, to=NEWER)
+        row = upgrade.reported(
+            self.config,
+            upgrade.RESUME_UNIT,
+            lambda out: upgrade.resume_held(None, out, None, self.journal),
+            journal=self.journal,
+            now=self.now,
+            out=lambda line: None,
+        )
+        self.assertEqual(row, 1)
+        report = json.loads(self.path.read_text())
+        self.assertEqual(report['status'], 'partial')
+        self.assertEqual(report['last_success'], earlier['last_success'])
+        self.assertIn(f'The upgrade to {NEWER} was cut off while it downloaded', report['missing'][0])
+        self.assertIn(f'still runs {VERSION}', report['missing'][0])
+        # Its service still ends well: nothing needs you.
+        self.assertEqual(upgrade.service_code(row, self.journal), 0)
+
     def test_an_error_still_ends_the_report(self):
         self.journal.write_text('{}')
 
@@ -941,6 +1066,55 @@ class UpgradeReportTests(unittest.TestCase):
         self.config['data_mount'] = str(self.dir / 'gone')
         self.assertEqual(upgrade.reported(self.config, 'x', lambda out: 0, journal=self.journal, now=self.now), 0)
         self.assertFalse((self.dir / 'gone').exists())
+
+
+class SetupByHandDuringAnUpgrade(unittest.TestCase):
+    """install.sh run by hand while an upgrade is at work or cut off stops before it
+    touches anything (plan 94: it went on to the system update and took the setup lock
+    the upgrade's own run then could not get, so neither the new release nor the way
+    back could be set up). The upgrade's own runs pass NEKOSERVER_KEEP_SYSTEM."""
+
+    FACTS = json.loads((ROOT / 'runtime/src/shared.json').read_text())
+    SHARED = FACTS['recovery']['upgrade']
+
+    def guard(self):
+        """install.sh's check of the upgrade record, as it stands in the script."""
+        lines = (ROOT / 'install.sh').read_text().splitlines()
+        start = next(i for i, line in enumerate(lines) if 'upgrade.json' in line and line.lstrip().startswith('if '))
+        end = next(i for i in range(start, len(lines)) if lines[i].strip() == 'fi')
+        return '\n'.join(lines[start : end + 1])
+
+    def run_guard(self, journal, lock, **env):
+        guard = self.guard().replace(self.SHARED['journal'], str(journal))
+        guard = guard.replace(self.FACTS['operation_lock'], str(lock))
+        script = 'recover=false\n' + guard + '\necho went-on\n'
+        return subprocess.run(
+            ['bash', '-c', script], capture_output=True, text=True, env={'PATH': '/usr/bin:/bin', **env}, check=False
+        )
+
+    def test_a_setup_by_hand_stops_while_an_upgrade_is_at_work(self):
+        with tempfile.TemporaryDirectory() as folder:
+            journal, lock = Path(folder) / 'upgrade.json', Path(folder) / 'operation.lock'
+            self.assertIn('went-on', self.run_guard(journal, lock).stdout)
+            journal.write_text('{"format": "neko-upgrade-v1", "phase": "installing"}')
+            # The upgrade (or the service putting a cut-off one right) holds the operation lock.
+            with hold_operation(lock):
+                stopped = self.run_guard(journal, lock)
+                self.assertEqual(stopped.returncode, 1)
+                self.assertNotIn('went-on', stopped.stdout)
+                self.assertIn('upgrade is at work', stopped.stderr)
+                # The upgrade's own setup (and its way back) goes on.
+                self.assertIn('went-on', self.run_guard(journal, lock, NEKOSERVER_KEEP_SYSTEM='1').stdout)
+
+    def test_a_setup_by_hand_goes_on_when_the_upgrade_left_the_server_to_you(self):
+        """A way back that did not pass says "Run  sudo bash install.sh  in <release>", and
+        settle_after_setup closes the record after it. install.sh stopped that run and sent
+        the person to the resume service, which tried the same way back again: the record
+        could never go (deep check 354). Nothing holds the lock then."""
+        with tempfile.TemporaryDirectory() as folder:
+            journal, lock = Path(folder) / 'upgrade.json', Path(folder) / 'operation.lock'
+            journal.write_text('{"format": "neko-upgrade-v1", "phase": "going_back", "problem": "x"}')
+            self.assertIn('went-on', self.run_guard(journal, lock).stdout)
 
 
 if __name__ == '__main__':

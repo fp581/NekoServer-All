@@ -44,6 +44,13 @@ class AskedTests(unittest.TestCase):
         entry, _ = asked('music', ON_SHARE, ['1', '2'])
         self.assertIs(entry['backup'], False)
 
+    def test_an_answer_that_is_not_1_or_2_is_asked_again_not_taken_as_the_first(self):
+        # A beginner answering "Back this up too?" with "no" got it backed up; "copy" to
+        # "How should this server use your music?" left it where it was.
+        entry, keys = asked('music', ON_SHARE, ['copy', '3', '1', 'no', '2'])
+        self.assertEqual(keys, ['existing_use'] * 3 + ['existing_backup'] * 2)
+        self.assertIs(entry['backup'], False)
+
     def test_a_local_folder_and_films_are_not_asked(self):
         entry, keys = asked('music', LOCAL, ['1'])
         self.assertEqual(keys, ['existing_use'])

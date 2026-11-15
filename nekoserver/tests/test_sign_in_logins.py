@@ -195,7 +195,8 @@ class WindowTests(unittest.TestCase):
         request = urllib.request.Request(
             self.window.url + route,
             data=json.dumps(payload).encode(),
-            headers={'Content-Type': 'application/json'},
+            # As the window's page sends it: its own origin with every POST.
+            headers={'Content-Type': 'application/json', 'Origin': self.window.url.split('/t/')[0]},
             method='POST',
         )
         try:

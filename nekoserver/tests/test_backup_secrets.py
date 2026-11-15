@@ -188,6 +188,22 @@ class BackupSecretsTests(unittest.TestCase):
             backup_secrets.restore(snap, self.root / 'out', 'correct horse')
         self.assertFalse((self.root / 'out').exists())
 
+    def test_a_backup_from_before_the_key_was_made_again_says_so(self):
+        """Seen on loop drives (0.51.2 review): after the backup key was made again with a
+        new password, an older list said "Wrong password for this backup" to the new one."""
+        self.make_key()
+        snap = self.seal_snapshot()
+        backup_secrets.create_key('new battery staple', self.keys)
+        with self.assertRaisesRegex(RuntimeError, 'earlier backup key'):
+            backup_secrets.restore(snap, self.root / 'out-new', 'new battery staple', key_dir=self.keys)
+        self.assertFalse((self.root / 'out-new').exists())
+        # Neither password: still a wrong password.
+        with self.assertRaisesRegex(RuntimeError, 'Wrong password'):
+            backup_secrets.restore(snap, self.root / 'out-neither', 'nope', key_dir=self.keys)
+        # The password it was made with opens it, with its own key copy.
+        out = backup_secrets.restore(snap, self.root / 'out', 'correct horse', key_dir=self.keys)
+        self.assertEqual((out / 'secrets/accounts/APP-CREDENTIALS.txt').read_bytes(), SECRET)
+
     def test_a_damaged_key_copy_is_never_called_a_wrong_password(self):
         self.make_key()
         snap = self.seal_snapshot()
@@ -252,6 +268,26 @@ class BackupSecretsTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'Not a monthly snapshot'):
             backup_secrets.restore(snap, out, 'correct horse')
         self.assertFalse((self.root / 'out').exists())
+
+    def test_a_folder_on_a_read_only_drive_is_said_in_plain_words_not_a_traceback(self):
+        """Seen through the recovery menu: the password list restored into a folder on a
+        read-only drive ended in a Python traceback."""
+        out = self.root / 'out'
+        read_only = OSError(30, 'Read-only file system', str(out))
+        argv = ['backup_secrets.py', '--restore', str(self.root / 'snap'), '--to', str(out)]
+        with (
+            mock.patch.object(sys, 'argv', argv),
+            mock.patch.object(backup_secrets.os, 'geteuid', return_value=0),
+            mock.patch.object(backup_secrets.getpass, 'getpass', return_value='correct horse'),
+            mock.patch.object(backup_secrets, 'restore', side_effect=read_only),
+            self.assertRaises(SystemExit) as stopped,
+        ):
+            backup_secrets.main()
+        self.assertEqual(
+            stopped.exception.code,
+            f'Nothing was restored: Read-only file system ({out}). Choose a folder on a drive you can write '
+            'to, with free space.',
+        )
 
     def test_password_never_on_command_line(self):
         seen = []

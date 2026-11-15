@@ -426,14 +426,18 @@ fn volumes_ours(name: &str, model: &Value) -> Result<()> {
         }
         let inspected: Value = serde_json::from_str(&docker(&["volume", "inspect", &volume])?)?;
         if !volume_is_ours(name, key, &inspected[0]) {
-            return Err(Error::new(&format!(
-                "The Docker volume {volume} was not made by NekoServer for {name} (or has storage options): \
-                 Compose would use it as it is. Look at it with `sudo docker volume inspect {volume}`; \
-                 if it is not needed, remove it (`sudo docker volume rm {volume}`) and run setup again"
-            )));
+            return Err(foreign_volume(&volume, name));
         }
     }
     Ok(())
+}
+/// The volume's name twice, not three times, so the reason stays within its 300 characters.
+fn foreign_volume(volume: &str, name: &str) -> Error {
+    Error::new(&format!(
+        "The Docker volume {volume} is not the one NekoServer made for {name} (or it has storage \
+         options), and Compose would use it as it is. If you don't need what it holds, run \
+         `sudo docker volume rm {volume}`, then run setup again"
+    ))
 }
 /// One volume as `docker volume inspect` shows it: Compose's own for this app's `key`.
 fn volume_is_ours(name: &str, key: &str, v: &Value) -> bool {
@@ -1161,7 +1165,10 @@ pub(crate) fn verify(snapshot: &Path) -> Result<Value> {
     }
     for key in ["data", "media", "images"] {
         let archive = snapshot.join(format!("{key}.tar"));
-        if common::digest(&archive)? != manifest["sha256"][key].as_str().unwrap_or("") {
+        // Read from the drive, not from Linux's memory: the check right after the snapshot
+        // was made read the archives tar had just written, so a damaged copy on the HDD
+        // passed and showed up only at a restore.
+        if common::digest_landed(&archive)? != manifest["sha256"][key].as_str().unwrap_or("") {
             return Err(Error::new("Snapshot archive checksum mismatch"));
         }
     }
@@ -1171,7 +1178,7 @@ pub(crate) fn verify(snapshot: &Path) -> Result<Value> {
         ("secrets_cert", SECRETS_CERT, "backup certificate"),
     ] {
         if let Some(expected) = manifest["sha256"][key].as_str() {
-            if common::digest(&snapshot.join(name))? != expected {
+            if common::digest_landed(&snapshot.join(name))? != expected {
                 return Err(Error::new(&format!("Snapshot {what} checksum mismatch")));
             }
         }
@@ -1537,7 +1544,7 @@ fn health(
                 still_working(file, project, service, &mut seen)
             }) {
                 if !said {
-                    println!("Monthly update: {name} is still starting after {} minutes and keeps working (a new release may be updating its database); waiting for it up to {} minutes in all", wait / 60, MIGRATION_WAIT.max(wait) / 60);
+                    println!("Monthly update: {name} is still starting after {} and keeps working (a new release may be updating its database); waiting for it up to {} in all", common::plural(wait / 60, "minute", "minutes"), common::plural(MIGRATION_WAIT.max(wait) / 60, "minute", "minutes"));
                     said = true;
                 }
                 thread::sleep(Duration::from_secs(5));
@@ -1545,8 +1552,8 @@ fn health(
             }
             return attempt.map_err(|e| {
                 Error::new(&format!(
-                    "{name} was not ready after {} minutes ({e}). If it was still updating its database, raise \"health_wait_seconds\" under \"maintenance\" (up to 1800) and run  sudo bash install.sh  again; the next monthly update then waits longer",
-                    elapsed / 60
+                    "{name} was not ready after {} ({e}). If it was still updating its database, raise \"health_wait_seconds\" under \"maintenance\" (up to 1800) and run  sudo bash install.sh  again; the next monthly update then waits longer",
+                    common::plural(elapsed / 60, "minute", "minutes")
                 ))
             });
         }
@@ -2498,41 +2505,23 @@ fn release_fetch_once(url: &str) -> Result<String> {
         70,
     )
 }
-fn immich_candidate(cfg: &Value, snapshot: &Path, work: &Path) -> Result<Option<PathBuf>> {
-    let original = Path::new(string(cfg, "data_mount")?).join("compose/immich");
-    let env = String::from_utf8(common::bytes(&original.join(".env"), 64000)?)
-        .map_err(|_| Error::new("Invalid Immich environment"))?;
-    let current = env
-        .lines()
-        .find_map(|line| line.strip_prefix("IMMICH_VERSION="))
-        .ok_or_else(|| Error::new("Pinned Immich release missing"))?;
+/// What GitHub's latest Immich release means for the one installed.
+#[derive(Debug, PartialEq)]
+enum ImmichNext {
+    /// Not newer than the one installed: nothing to do.
+    Nothing,
+    /// A newer major, not approved yet: noted for the dashboard, never installed.
+    MajorWaits(String),
+    /// A newer release to install.
+    Install(String),
+}
+/// The latest release (`release`, GitHub's answer) against the installed `current` tag,
+/// `wanted` being the approved major (maintenance.immich_major_update). Whether it is
+/// newer is asked first: GitHub's "latest" can be an older major (a fix published for
+/// it after the new major), which was noted before as a "manual major upgrade
+/// required" to that older release.
+fn immich_next(current: &str, release: &Value, wanted: &str) -> Result<ImmichNext> {
     let version = regex::Regex::new(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)$").unwrap();
-    let before = version
-        .captures(current)
-        .ok_or_else(|| Error::new("Invalid installed Immich version"))?;
-    let release: Value = serde_json::from_str(&release_fetch(
-        "https://api.github.com/repos/immich-app/immich/releases/latest",
-    )?)?;
-    let tag = string(&release, "tag_name")?;
-    let next = version
-        .captures(tag)
-        .ok_or_else(|| Error::new("Invalid stable Immich release"))?;
-    if release["prerelease"] == true || release["draft"] == true {
-        return Err(Error::new("Unstable Immich release refused"));
-    }
-    // A different major is installed only when you approved exactly this release.
-    let wanted = cfg["maintenance"]["immich_major_update"]
-        .as_str()
-        .unwrap_or("")
-        .trim();
-    let approved = immich_major_approved(wanted, tag, &next[1]);
-    if before[1] != next[1] && !approved {
-        common::atomic_json(
-            &snapshot.join("immich-major-pending.json"),
-            &json!({"status":"manual_major_upgrade_required","current":current,"available":tag}),
-        )?;
-        return Ok(None);
-    }
     let parts = |c: &regex::Captures<'_>| -> Result<Vec<u64>> {
         (1..=3)
             .map(|i| {
@@ -2541,9 +2530,51 @@ fn immich_candidate(cfg: &Value, snapshot: &Path, work: &Path) -> Result<Option<
             })
             .collect()
     };
-    if parts(&next)? <= parts(&before)? {
-        return Ok(None);
+    let before = version
+        .captures(current)
+        .ok_or_else(|| Error::new("Invalid installed Immich version"))?;
+    let tag = string(release, "tag_name")?;
+    let next = version
+        .captures(tag)
+        .ok_or_else(|| Error::new("Invalid stable Immich release"))?;
+    if release["prerelease"] == true || release["draft"] == true {
+        return Err(Error::new("Unstable Immich release refused"));
     }
+    if parts(&next)? <= parts(&before)? {
+        return Ok(ImmichNext::Nothing);
+    }
+    // A different major is installed only when you approved exactly this release.
+    if before[1] != next[1] && !immich_major_approved(wanted, tag, &next[1]) {
+        return Ok(ImmichNext::MajorWaits(tag.to_string()));
+    }
+    Ok(ImmichNext::Install(tag.to_string()))
+}
+fn immich_candidate(cfg: &Value, snapshot: &Path, work: &Path) -> Result<Option<PathBuf>> {
+    let original = Path::new(string(cfg, "data_mount")?).join("compose/immich");
+    let env = String::from_utf8(common::bytes(&original.join(".env"), 64000)?)
+        .map_err(|_| Error::new("Invalid Immich environment"))?;
+    let current = env
+        .lines()
+        .find_map(|line| line.strip_prefix("IMMICH_VERSION="))
+        .ok_or_else(|| Error::new("Pinned Immich release missing"))?;
+    let release: Value = serde_json::from_str(&release_fetch(
+        "https://api.github.com/repos/immich-app/immich/releases/latest",
+    )?)?;
+    let wanted = cfg["maintenance"]["immich_major_update"]
+        .as_str()
+        .unwrap_or("")
+        .trim();
+    let tag = match immich_next(current, &release, wanted)? {
+        ImmichNext::Nothing => return Ok(None),
+        ImmichNext::MajorWaits(tag) => {
+            common::atomic_json(
+                &snapshot.join("immich-major-pending.json"),
+                &json!({"status":"manual_major_upgrade_required","current":current,"available":tag}),
+            )?;
+            return Ok(None);
+        }
+        ImmichNext::Install(tag) => tag,
+    };
     let manifest = release_fetch(&format!(
         "https://github.com/immich-app/immich/releases/download/{tag}/docker-compose.yml"
     ))?;
@@ -3461,7 +3492,8 @@ fn usb_damage(e: &Error) -> bool {
 }
 /// Said when the night ended before the apps were stopped even with the checksum check
 /// postponed: no monthly snapshot can be taken until the night is longer.
-const NIGHT_TOO_SHORT: &str = "The monthly run cannot fit into the night: it ended before the apps could be stopped, even with the checksum check left for another month, so no monthly snapshot was taken. Start it earlier (the monthly backup time setup asks for: backup_times.monthly) or let it run longer (maintenance.night_end_hour, up to 7)";
+/// Short enough, with the hour it ends now, to stay whole in the 300-character reason.
+const NIGHT_TOO_SHORT: &str = "The monthly run cannot fit into the night: it ended before the apps could be stopped, even with the checksum check left for next month, so no snapshot was taken. Start it earlier (setup's monthly backup time, backup_times.monthly) or let it run longer";
 /// Kept on the SSD when a month's night ran out before the apps were stopped.
 const NIGHT_MARKER: &str = "reports/jobs/maintenance-night-ran-out.json";
 fn night_ran_out(data: &Path) -> bool {
@@ -3525,13 +3557,15 @@ fn retry_transient<T>(
     loop {
         match attempt() {
             Ok(value) => return Ok(value),
-            Err(e) => match left.next() {
-                Some(&wait) if transient(&e.to_string()) => {
-                    println!("Monthly update: a download was refused for now ({e}); trying again in {wait} seconds");
-                    sleep(wait);
+            Err(e) => {
+                match left.next() {
+                    Some(&wait) if transient(&e.to_string()) => {
+                        println!("Monthly update: a download was refused for now ({e}); trying again in {}", common::plural(wait, "second", "seconds"));
+                        sleep(wait);
+                    }
+                    _ => return Err(e),
                 }
-                _ => return Err(e),
-            },
+            }
         }
     }
 }
@@ -3664,6 +3698,8 @@ fn transaction(cfgpath: &Path, cfg: &Value, plan: &Plan) -> Result<Vec<String>> 
     if audit {
         common::stage("waiting for a weekly USB copy at work to finish");
         backup::no_weekly_copy()?;
+        // Waited: a later failure is not said to be "while waiting" (deep check 314).
+        common::stage("");
     }
     mounts(cfgpath, cfg, false)?;
     let data = Path::new(string(cfg, "data_mount")?);
@@ -3849,6 +3885,9 @@ fn room(
     paths: &(Vec<String>, Vec<String>),
     audit: bool,
 ) -> Result<Value> {
+    // Before measuring: a folder du can't read was reported under the step before
+    // ("while waiting for a weekly USB copy at work to finish", deep check 314).
+    common::stage("checking free space");
     let data = Path::new(string(cfg, "data_mount")?);
     let media = Path::new(string(cfg, "media_mount")?);
     let setting = cfg["maintenance"]["minimum_free_gb"]
@@ -3857,7 +3896,6 @@ fn room(
         .saturating_mul(1 << 30);
     let app_bytes = size(data, &paths.0)?;
     let media_bytes = size(media, &paths.1)?;
-    common::stage("checking free space");
     let mut retention = if audit {
         prune_monthly(data, media, keep_snapshots(cfg), None)?
     } else {
@@ -3977,7 +4015,7 @@ fn running_models(cfg: &Value, names: &[String], snapshot: &Path) -> Result<(Val
 fn night_ended(cfg: &Value, postponed: bool, audit: bool, data_root: &Path) -> Error {
     if postponed {
         return Error::new(&format!(
-            "{NIGHT_TOO_SHORT} (maintenance.night_end_hour is {})",
+            "{NIGHT_TOO_SHORT} (maintenance.night_end_hour is {}, up to 7)",
             cfg["maintenance"]["night_end_hour"].as_i64().unwrap_or(6)
         ));
     }
@@ -4118,7 +4156,7 @@ fn clean_images(
         println!("App update: could not note the replaced images for the next clean-up ({e})");
     }
     if !removed.is_empty() {
-        println!("App update: removed {} app image(s) from two updates ago that nothing uses (each kept snapshot still has its own in images.tar)", removed.len());
+        println!("App update: removed {} from two updates ago that nothing uses (each kept snapshot still has its own in images.tar)", common::plural(removed.len(), "app image", "app images"));
     }
     Ok(removed)
 }
@@ -4196,7 +4234,7 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
     // Read before the run writes its own report: how many nights running it failed.
     let tried = retries_made(&common::json(
         &data.join("reports/jobs/maintenance.json"),
-        64000,
+        common::REPORT_LIMIT,
     ));
     let undone = std::cell::Cell::new(false);
     let result = backup::execute_with(Some(&data), "maintenance", &cfgpath, || {
@@ -4570,7 +4608,7 @@ fn look_for_updates(cfg: &Value, data: &Path, media: &Path) -> Result<Vec<String
             common::now(),
             settle,
         )? {
-            println!("{name}: {version} found; it is installed on an update night once it has waited {settle} days, or at the next one if you choose \"Install at the next update night\" on the dashboard");
+            println!("{name}: {version} found; it is installed on an update night once it has waited {}, or at the next one if you choose \"Install at the next update night\" on the dashboard", common::plural(settle, "day", "days"));
         }
     }
     crate::updates::save_pending(data, &pending)?;
@@ -4841,6 +4879,7 @@ pub fn update_apps(a: &Args) -> Result<()> {
         || common::lock(&data.join("installer/recovery.lock")),
         || job_lock(&data),
     )?;
+    common::stage("");
     // Anything a cut-off run left is finished first (or undone).
     resume(&cfgpath, &cfg)?;
     if only.is_none() && !night(&cfg) {
@@ -6147,6 +6186,27 @@ mod tests {
         let (archive, usb) = copies_to_check(&off, cfgpath);
         assert!(archive.is_none() && usb.is_none());
     }
+    #[test]
+    fn a_folder_that_cannot_be_measured_is_said_under_checking_free_space() {
+        // Deep check 314, under systemd: the monthly run's `du` failed on a missing app
+        // folder, and the journal and the dashboard said "failed while waiting for a
+        // weekly USB copy at work to finish", the step before, long done.
+        let root = scratch("stage");
+        let cfg = json!({"data_mount": root.join("ssd"), "media_mount": root.join("hdd"),
+            "maintenance": {"keep_snapshots": 3}});
+        let paths = (vec!["compose/nextcloud".to_string()], vec![]);
+        common::stage("waiting for a weekly USB copy at work to finish");
+        let folder = root.join("hdd/backups/monthly");
+        let failed = room(&cfg, &folder, &["nextcloud".to_string()], &paths, true);
+        let stage = common::current_stage();
+        let _ = fs::remove_dir_all(&root);
+        assert!(failed.is_err());
+        assert_eq!(stage, "checking free space");
+        // Once the wait is over its stage is cleared, in both runs that wait.
+        let source = include_str!("maintenance.rs");
+        assert!(source.contains("backup::no_weekly_copy()?;\n        // Waited: a later failure is not said to be \"while waiting\" (deep check 314).\n        common::stage(\"\");"));
+        assert!(source.contains("|| job_lock(&data),\n    )?;\n    common::stage(\"\");"));
+    }
     use std::os::unix::fs::DirBuilderExt;
     fn scratch(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("neko-prune-{name}-{}", std::process::id()));
@@ -6803,6 +6863,26 @@ mod tests {
         assert_eq!(reserve_for(2 * gib, 0), 0);
     }
     #[test]
+    #[ignore = "needs root and a loop drive: run cardset-loop-tests.sh (NEKO_LOOP_HDD, NEKO_LOOP_IMAGE)"]
+    fn loop_a_snapshot_the_drive_does_not_hold_fails_its_check() {
+        // The review of 0.51.0: the check after a snapshot was made read its archives from
+        // Linux's page cache, so an archive the HDD did not keep passed it. The archive's
+        // bytes are changed under the mounted ext4 here: the check must fail.
+        let root = std::path::PathBuf::from(std::env::var("NEKO_LOOP_HDD").unwrap());
+        let image = std::env::var("NEKO_LOOP_IMAGE").unwrap();
+        fs::create_dir_all(root.join("hdd/backups/monthly")).unwrap();
+        snapshot(&root, "hdd", "100-1", true);
+        let dir = root.join("hdd/backups/monthly/100-1");
+        let archive = dir.join("data.tar");
+        fs::File::open(&archive).unwrap().sync_all().unwrap();
+        assert!(verify(&dir).is_ok(), "the snapshot as made");
+        crate::lying_drive::change_on_disk(&image, &archive);
+        let e = verify(&dir)
+            .expect_err("an archive the drive does not hold passed")
+            .to_string();
+        assert!(e.contains("checksum mismatch"), "{e}");
+    }
+    #[test]
     fn a_damaged_backup_key_copy_fails_the_snapshot_check() {
         let root = scratch("key");
         let dir = root.join("hdd/backups/monthly/100-1");
@@ -7180,6 +7260,39 @@ mod tests {
     #[test]
     fn nextcloud_major_notice_waits_for_early_fixes() {
         assert!(immich_major_approved("v3", "v3.0.2", "3"));
+    }
+    /// GitHub's "latest" as the API answers it: an older major's fix published after the
+    /// new major. It was noted as a "manual major upgrade required" to that older release.
+    #[test]
+    fn an_older_major_marked_latest_is_no_upgrade_notice() {
+        let latest = |tag: &str| {
+            json!({"tag_name": tag, "name": tag, "draft": false, "prerelease": false,
+                "published_at": "2026-11-02T10:00:00Z",
+                "html_url": format!("https://github.com/immich-app/immich/releases/tag/{tag}")})
+        };
+        assert_eq!(
+            immich_next("v3.0.2", &latest("v2.7.6"), "").unwrap(),
+            ImmichNext::Nothing
+        );
+        assert_eq!(
+            immich_next("v3.0.2", &latest("v3.0.2"), "").unwrap(),
+            ImmichNext::Nothing
+        );
+        assert_eq!(
+            immich_next("v3.0.2", &latest("v3.1.0"), "").unwrap(),
+            ImmichNext::Install("v3.1.0".into())
+        );
+        assert_eq!(
+            immich_next("v2.7.6", &latest("v3.0.2"), "").unwrap(),
+            ImmichNext::MajorWaits("v3.0.2".into())
+        );
+        assert_eq!(
+            immich_next("v2.7.6", &latest("v3.0.2"), "v3").unwrap(),
+            ImmichNext::Install("v3.0.2".into())
+        );
+        let mut beta = latest("v3.1.0");
+        beta["prerelease"] = json!(true);
+        assert!(immich_next("v3.0.2", &beta, "").is_err());
         assert!(immich_major_approved("v3.0.2", "v3.0.2", "3"));
         assert!(!immich_major_approved("v3.0.1", "v3.0.2", "3"));
         assert!(!immich_major_approved("v2", "v3.0.2", "3"));
@@ -8208,6 +8321,30 @@ mod tests {
         )));
     }
 
+    /// Deep check plan 276: a failed job's reason is cut at 300 characters (common::
+    /// sanitize) for its report and the dashboard. The night's message was 345, so it
+    /// read "or let it run longer (maintenance.night_end_hour…": the limit, "up to 7",
+    /// and the hour it is now were cut off.
+    #[test]
+    fn a_night_too_short_keeps_its_advice_whole() {
+        for hour in [5, 7] {
+            let cfg = json!({"maintenance": {"night_end_hour": hour}});
+            let said = night_ended(&cfg, true, false, Path::new("/nonexistent")).to_string();
+            assert_eq!(common::sanitize(&said), said, "{} characters", said.len());
+            assert!(said.contains("up to 7") && said.contains(&format!("is {hour}")));
+        }
+    }
+    /// Deep check plan 276: the reason for a volume Compose would take over as it is was
+    /// over 300 characters with a real volume name, so the cut dropped the command that
+    /// removes it and "run setup again".
+    #[test]
+    fn a_foreign_volume_keeps_its_advice_whole() {
+        for (app, key) in [("immich", "model-cache"), ("nextcloud", "nextcloud-db")] {
+            let said = foreign_volume(&format!("neko-{app}_{key}"), app).to_string();
+            assert_eq!(common::sanitize(&said), said, "{} characters", said.len());
+            assert!(said.contains(&format!("sudo docker volume rm neko-{app}_{key}")));
+        }
+    }
     #[test]
     fn a_night_that_ran_out_lets_the_next_month_take_its_snapshot() {
         // On a big library the checksum check could use up every night, so no monthly

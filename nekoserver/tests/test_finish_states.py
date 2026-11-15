@@ -5,6 +5,7 @@ a reason and a named next action. Wizard checks T26 (an empty library is neither
 nor a passed playback test), T37 (no single "all passed" over what nobody tested) and T38
 (a task put off leaves the server ready and stays in the list)."""
 
+import io
 import json
 import sys
 import tempfile
@@ -232,7 +233,7 @@ class Opener:
         if isinstance(answer, Exception):
             raise answer
         if answer >= 400:
-            raise urllib.error.HTTPError(url, answer, 'no', {}, None)
+            raise urllib.error.HTTPError(url, answer, 'no', {}, io.BytesIO())
         return self
 
     def __enter__(self):
@@ -291,6 +292,24 @@ class CollectTests(unittest.TestCase):
         self.assertNotIn(PLANTED, json.dumps(found))
         self.assertNotIn(PLANTED, json.dumps(finish_states.summary(found)))
 
+    def test_a_yes_in_the_tv_step_counts_as_tried(self):
+        """The TV step asks the person to try Steam, the controller, picture and sound and
+        keeps their yes (tv-setup.json). The finishing page listed all four TV tests as
+        "nobody has tried this yet" right after that; a "no" said on the page still wins."""
+        checks = [{'check': 'tv:packages', 'status': 'pass'}, {'check': 'tv:controller', 'status': 'needs_setup'}]
+        checks += [
+            {'check': 'tv:' + c, 'status': 'user_confirmed'}
+            for c in ('display_audio_playback', 'steam_login_remote_play')
+        ]
+        self.write(('reports', 'tv-setup.json'), {'user': 'neko', 'checks': checks})
+        self.write(('installer', 'state', 'state.json'), {'tv': {'status': 'success'}})
+        found = finish_states.collect(self.config, PLAN, self.read)
+        tv = {row['id']: row['state'] for row in finish_states.summary(found)['tv']}
+        self.assertEqual(tv, {'tv_picture': DONE, 'tv_sound': DONE, 'tv_controller': NOT_TESTED, 'tv_steam': DONE})
+        finish_states.record_test(self.config, 'tv_sound', NOT_WORKING)
+        found = finish_states.collect(self.config, PLAN, self.read)
+        self.assertEqual({row['id']: row['state'] for row in finish_states.summary(found)['tv']}['tv_sound'], FAILED)
+
     def test_what_a_person_said_is_kept_and_read_back(self):
         kept = finish_states.record_test(self.config, 'play_video', SEEN, now=123.0)
         self.assertEqual(kept, {'said': SEEN, 'at': 123.0})
@@ -341,6 +360,19 @@ class CollectTests(unittest.TestCase):
 
         account_store.load = refused
         self.assertEqual(finish_states.login_states(self.config), {})
+
+
+class OneListOfOptionalStepsTests(unittest.TestCase):
+    def test_the_window_and_the_terminal_agree_on_what_a_finished_server_waits_for(self):
+        """Deep check 293: a failed TV, phone alerts or heartbeat step needed you in the
+        terminal (wizard.OPTIONAL: the assistant alone) but was optional in the window."""
+        import wizard
+
+        for step in ('tv', 'notifications', 'heartbeat', 'assistant', 'media'):
+            attention, pending = finish_states.step_items({'plan': [step], 'steps': {step: 'failed'}})
+            self.assertEqual(bool(pending), step in wizard.OPTIONAL, step)
+            self.assertEqual(bool(attention), step not in wizard.OPTIONAL, step)
+        self.assertEqual(wizard.OPTIONAL, {'assistant'})
 
 
 if __name__ == '__main__':

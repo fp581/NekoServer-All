@@ -2,6 +2,8 @@
 The old drive is only ever read; a copy that does not match, file for file by checksum,
 stops the move with the apps back on the old drive."""
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -41,6 +43,58 @@ CONFIG = {
         'media_hdd': {'uuid': 'hdd-0001', 'fstype': 'ext4'},
     },
 }
+
+
+class CommandLineTests(unittest.TestCase):
+    """Seen on a fresh Ubuntu 24.04: `migrate.py move --drive media_hdd --to ../../etc` said
+    "move needs --drive and --to", though both were given."""
+
+    def said(self, *argv):
+        """What migrate.py says to these words on its command line (it must refuse them)."""
+        err = io.StringIO()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        settings = Path(tmp.name) / 'my-config.json'
+        settings.write_text('{}')
+        with (
+            mock.patch.object(migrate.sys, 'argv', ['migrate.py', *argv, '--config', str(settings)]),
+            mock.patch.object(migrate.os, 'geteuid', return_value=0),
+            mock.patch.object(migrate.shutil, 'which', return_value='/usr/bin/rsync'),
+            mock.patch.object(migrate, 'move', side_effect=AssertionError('moved')),
+            contextlib.redirect_stderr(err),
+            self.assertRaises(SystemExit) as caught,
+        ):
+            migrate.main()
+        self.assertEqual(caught.exception.code, 2)
+        return err.getvalue()
+
+    def test_a_to_that_is_no_uuid_is_named(self):
+        said = self.said('move', '--drive', 'media_hdd', '--to', '../../etc')
+        self.assertIn('--to ../../etc is not a filesystem UUID', said)
+        self.assertIn('migrate.py list', said)
+
+    def test_a_missing_option_is_still_said_as_missing(self):
+        self.assertIn('move needs --drive and --to', self.said('move', '--to', '1234abcd-0000'))
+
+
+class DamagedRecordTests(unittest.TestCase):
+    def test_a_folder_in_the_record_is_never_taken_as_an_option_of_mount(self):
+        """SonarCloud on PR 87 (argument injection from a file): the folder of a move cut off
+        in its switch comes from the record, and was handed to mount as it was, so a damaged
+        record saying "--all" ran  mount --all. Such a folder reaches no command now."""
+        ran = []
+        saved = {'mount': '--all', 'old': {'uuid': 'aaaa-bbbb', 'fstype': 'ext4'}}
+        looked = []
+        with (
+            mock.patch.object(migrate, 'mounted_identity', side_effect=lambda folder: looked.append(folder)),
+            mock.patch.object(migrate, 'run', side_effect=lambda argv, *a, **k: ran.append(argv)),
+        ):
+            said = migrate.drive_not_back(saved)
+            self.assertEqual((ran, looked), ([], []))  # no command saw it
+            self.assertIn('the record of the drive move is damaged', said)
+            self.assertIn('the apps were not started', said)
+            migrate.drive_not_back({**saved, 'mount': '/mnt/nekoserver-media'})
+        self.assertEqual(ran, [['mount', '--', '/mnt/nekoserver-media']])
 
 
 class TargetTests(unittest.TestCase):
@@ -133,11 +187,26 @@ class StopTests(unittest.TestCase):
 
     def test_a_backup_at_work_stops_the_move_instead_of_being_cut_off(self):
         self.units['activating'] = ['nekoserver-app-backup.service']  # a oneshot job running
+        waits = []
         with self.assertRaisesRegex(RuntimeError, 'nekoserver-app-backup.service is at work'):
-            migrate.stop_writers(self.journal)
+            migrate.stop_writers(self.journal, out=lambda line: None, sleep=waits.append)
         self.assertNotIn(['systemctl', 'stop', 'nekoserver-app-backup.service'], self.calls)
         # The timers it stopped are noted, so they start again.
         self.assertEqual(migrate.read(self.journal)['stopped'], ['nekoserver-app-backup.timer'])
+        self.assertEqual(sum(waits), migrate.SHORT_JOBS_WAIT)  # a few minutes, not for ever
+
+    def test_a_short_job_at_work_is_waited_for_not_a_reason_to_stop_the_move(self):
+        # Plan 370: the dashboard's collector runs every minute for a few seconds; caught at
+        # work when the timers stopped, it ended a move after hours of copying.
+        self.units['activating'] = ['nekoserver-dashboard-collect.service']
+        said = []
+
+        def collector_ends(seconds):
+            self.units['activating'] = []
+
+        stopped = migrate.stop_writers(self.journal, out=said.append, sleep=collector_ends)
+        self.assertEqual(stopped, ['nekoserver-app-backup.timer', 'nekoserver-dashboard.service'])
+        self.assertIn('Waiting for nekoserver-dashboard-collect.service to finish', said[0])
 
     def test_a_timer_that_does_not_stop_stops_the_move(self):
         """The review of 0.47.9: a timer whose stop failed was passed over (the final check
@@ -259,6 +328,18 @@ class CopyTests(unittest.TestCase):
         migrate.copy(self.old, self.new, final=True, out=lambda _: None)
         self.assertFalse((self.new / 'stale').exists())
 
+    def test_a_copy_started_again_puts_right_a_file_the_comparison_found_different(self):
+        """Seen in 0.51.1 (a real move): a file on the new drive with other bytes but the
+        same size and time was found by the comparison, but never copied again by the
+        next attempt (rsync's quick check passes it), so every attempt stopped on it."""
+        migrate.copy(self.old, self.new, out=lambda _: None)
+        stamp = os.stat(self.new / 'secret')
+        (self.new / 'secret').write_text('y')
+        os.utime(self.new / 'secret', ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        migrate.copy(self.old, self.new, out=lambda _: None, again=True)
+        migrate.copy(self.old, self.new, final=True, out=lambda _: None)
+        self.assertEqual(migrate.differences(self.old, self.new), [])
+
 
 class MoveTests(unittest.TestCase):
     def setUp(self):
@@ -275,7 +356,7 @@ class MoveTests(unittest.TestCase):
         self.settings.write_text(json.dumps(CONFIG))
         self.staging = self.dir / 'staging'
         self.staging.mkdir()
-        self.calls, self.said = [], []
+        self.calls, self.said, self.again = [], [], []
         # What findmnt says is mounted where (the tests change it to unplug a drive).
         self.mounted = {
             '/mnt/nekoserver-media': ('hdd-0001', 'ext4', ''),
@@ -294,8 +375,8 @@ class MoveTests(unittest.TestCase):
             ('mount_path', lambda p: Path(p)),
             ('nothing_at_work', lambda **kwargs: self.busy),
             ('targets', lambda config, drive: ([('newbig-0001', 'ext4', 8000 * GB, '/dev/sdc1')], [])),
-            ('mount_staging', lambda uuid, fstype, staging: staging),
-            ('copy', lambda source, target, final=False, out=print: self.calls.append(('copy', final))),
+            ('mount_staging', self.mount_new),
+            ('copy', self.copied),
             ('stop_writers', self.stop),
             ('start_again', self.start),
             ('run', self.command),
@@ -308,9 +389,21 @@ class MoveTests(unittest.TestCase):
         ismount.start()
         self.addCleanup(ismount.stop)
 
+    def copied(self, source, target, final=False, out=print, again=False):
+        """A stand-in for one pass of the copy; whether it checked an earlier copy is noted."""
+        self.calls.append(('copy', final))
+        self.again.append(again)
+
+    def mount_new(self, uuid, fstype, staging):
+        """A stand-in for mounting the new drive at the staging folder."""
+        self.calls.append(('mount_staging', str(staging)))
+        self.mounted[str(staging)] = (uuid, fstype, '')
+        return staging
+
     def command(self, argv, *args, **kwargs):
         """A stand-in for commands: `mount <folder>` mounts what /etc/fstab's active line
         names, as Linux would; `umount` unmounts."""
+        argv = [a for a in argv if a != '--']  # "--" only ends mount's options
         self.calls.append(tuple(argv))
         if argv[0] == 'umount':
             self.mounted.pop(argv[1], None)
@@ -337,13 +430,33 @@ class MoveTests(unittest.TestCase):
             self.settings, 'media_hdd', 'newbig-0001', self.said.append, self.journal, self.staging, self.fstab
         )
 
+    def test_the_comparison_reads_the_new_drive_mounted_again(self):
+        """The review of 0.51.0: the comparison after the last copy read the new drive's
+        files from Linux's memory of what was just copied, so a new drive that kept other
+        bytes passed. It is unmounted and mounted again first."""
+        compared = []
+
+        def no_differences(old, new):
+            """The comparison finds nothing; when it ran is written down."""
+            compared.append(len(self.calls))
+            return []
+
+        with mock.patch.object(migrate, 'differences', side_effect=no_differences):
+            self.assertEqual(self.move(), 0)
+        before = self.calls[: compared[0]]
+        last_copy = before.index(('copy', True))
+        again = before[last_copy:]
+        self.assertIn(('umount', str(self.staging)), again)
+        self.assertLess(again.index(('umount', str(self.staging))), again.index(('mount_staging', str(self.staging))))
+
     def test_a_good_copy_switches_to_the_new_drive_and_keeps_the_old_one(self):
         with mock.patch.object(migrate, 'differences', return_value=[]):
             self.assertEqual(self.move(), 0)
-        kinds = [c[0] for c in self.calls]
+        calls = [c for c in self.calls if c[0] != 'mount_staging']
+        kinds = [c[0] for c in calls]
         self.assertEqual(kinds.index('copy'), 0)  # the first pass while the apps run
-        self.assertLess(kinds.index('stop'), self.calls.index(('copy', True)))
-        self.assertLess(self.calls.index(('copy', True)), kinds.index('setup'))
+        self.assertLess(kinds.index('stop'), calls.index(('copy', True)))
+        self.assertLess(calls.index(('copy', True)), kinds.index('setup'))
         fstab = self.fstab.read_text()
         self.assertIn('UUID=newbig-0001 /mnt/nekoserver-media ext4 defaults,nofail', fstab)
         self.assertNotIn('UUID=hdd-0001', fstab)
@@ -605,6 +718,69 @@ class MoveTests(unittest.TestCase):
             self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 0)
         self.assertIn('UUID=newbig-0001', self.fstab.read_text())
 
+    def test_a_move_cut_off_just_after_unmounting_the_old_drive_mounts_it_before_the_apps_start(self):
+        """Seen in 0.51.1 (a real move in a test system, killed in its switch): the old
+        drive was unmounted, something ran again, and resume started the apps with the
+        drive's folder an empty one on the system disk, saying they "run as before"."""
+        cut_off = {
+            'drive': 'media_hdd',
+            'mount': '/mnt/nekoserver-media',
+            'old': {'uuid': 'hdd-0001', 'fstype': 'ext4'},
+            'new': {'uuid': 'newbig-0001', 'fstype': 'ext4'},
+            'stopped': ['docker.service'],
+        }
+        ran_again = mock.patch.object(migrate, 'active', return_value=['docker.service'])
+        migrate.record(self.journal, phase='switching', **cut_off)
+        del self.mounted['/mnt/nekoserver-media']
+        with ran_again:
+            self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 1)
+        self.assertEqual(self.mounted['/mnt/nekoserver-media'], ('hdd-0001', 'ext4', ''))
+        self.assertLess(
+            self.calls.index(('mount', '/mnt/nekoserver-media')), self.calls.index(('start', ('docker.service',)))
+        )
+        self.assertIn('The media HDD is the old drive, unchanged', self.said[-1])
+        # The old drive can't be mounted (unplugged meanwhile): the apps are not started,
+        # and the record stays for resume.
+        self.calls.clear()
+        migrate.record(self.journal, phase='switching', **cut_off)
+        del self.mounted['/mnt/nekoserver-media']
+        self.fstab.write_text('UUID=os-0001 / ext4 defaults 0 1\n')
+        with ran_again:
+            self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 2)
+        self.assertFalse([c for c in self.calls if c[0] == 'start'])
+        self.assertIn('so the apps were not started', self.said[-1])
+        self.assertEqual(migrate.read(self.journal)['phase'], 'restart_failed')
+
+    def test_going_back_cut_off_says_the_drive_is_still_the_one_moved_to(self):
+        """`back` cut off before its switch said "the drive is the old drive", which was
+        the wrong one: nothing changed, so it is still the drive it was moved to."""
+        migrate.record(
+            self.journal,
+            phase='stopped',
+            direction='back',
+            drive='media_hdd',
+            mount='/mnt/nekoserver-media',
+            old={'uuid': 'hdd-0001', 'fstype': 'ext4'},
+            new={'uuid': 'oldhdd-0001', 'fstype': 'ext4'},
+            stopped=['docker.service'],
+        )
+        self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 1)
+        self.assertIn('Going back stopped', self.said[-1])
+        self.assertIn('The media HDD is still the drive it was moved to, unchanged', self.said[-1])
+
+    def test_an_fstab_line_the_switch_could_not_rewrite_stops_the_move_before_anything_changes(self):
+        """Seen in 0.51.1: with the drive's line written as /dev/disk/by-uuid/..., the
+        move copied, stopped the apps and unmounted the old drive before the switch
+        refused the line, and resume refused it again: the server stayed down."""
+        self.fstab.write_text(
+            'UUID=os-0001 / ext4 defaults 0 1\n/dev/disk/by-uuid/hdd-0001 /mnt/nekoserver-media ext4 defaults 0 2\n'
+        )
+        with mock.patch.object(migrate, 'differences', return_value=[]):
+            self.assertEqual(self.move(), 2)
+        self.assertEqual(self.calls, [])
+        self.assertIn('exactly one line that mounts /mnt/nekoserver-media, starting with UUID=hdd-0001', self.said[-1])
+        self.assertFalse(self.journal.exists())
+
     def test_apps_that_ran_and_were_stopped_again_still_mean_starting_over(self):
         """0.45.8: after a restart the apps ran on the old drive, then were stopped (for a
         recovery, say); nothing ran when resume looked, so it switched to the new drive's
@@ -683,6 +859,8 @@ class MoveTests(unittest.TestCase):
             self.assertEqual(self.move(), 0, self.said)
         self.assertIn('UUID=newbig-0001', self.fstab.read_text())
         self.assertFalse(migrate.copy_note(self.journal).exists())  # done: the note goes
+        # Its first pass checks the earlier copy by checksum (see CopyTests).
+        self.assertEqual(self.again, [True, False])
 
     def test_a_copy_made_by_a_move_is_noted_for_a_retry(self):
         def fails(*args, **kwargs):

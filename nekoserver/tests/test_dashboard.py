@@ -1021,6 +1021,26 @@ class TvChoiceTests(unittest.TestCase):
         self.assertEqual(dashboard.collector_settings(dict(cfg, tv={'wanted': False}), 1800)['tv'], {'wanted': False})
         self.assertEqual(dashboard.collector_settings(cfg, 1800)['tv'], {'wanted': None})
 
+    def test_the_collector_settings_say_the_schedules_zone_and_whether_it_is_this_pcs(self):
+        """Deep check 216: the collector says when this PC's zone was changed since setup
+        (collect.rs zone_moved), which it can only tell from the zone setup used."""
+        from modules import dashboard
+
+        cfg = {'data_mount': '/srv/n', 'media_mount': '/mnt/m', 'external_backup_mount': '/mnt/u', 'storage': {}}
+        with mock.patch.object(dashboard, 'host_timezone', side_effect=lambda c: c.get('timezone', 'Europe/Paris')):
+            for given, own in (('auto', True), (None, True), ('Asia/Tokyo', False)):
+                settings = dict(cfg) if given is None else dict(cfg, timezone=given)
+                zone = dashboard.collector_settings(settings, 1800)['timezone']
+                self.assertEqual(zone['follows_this_pc'], own, given)
+            self.assertEqual(zone['zone'], 'Asia/Tokyo')
+        # The older keys name a zone too.
+        self.assertIs(
+            dashboard.collector_settings(dict(cfg, media={'services': [], 'timezone': 'UTC'}), 1800)['timezone'][
+                'follows_this_pc'
+            ],
+            False,
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

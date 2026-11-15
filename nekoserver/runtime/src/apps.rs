@@ -148,7 +148,7 @@ pub fn installed(cfg: &Value) -> Vec<&'static str> {
         })
         .collect()
 }
-fn app_name(app: &str) -> &'static str {
+pub(crate) fn app_name(app: &str) -> &'static str {
     APPS.iter().find(|a| a.0 == app).map_or("The app", |a| a.1)
 }
 
@@ -330,11 +330,8 @@ pub fn start_container(id: &str) -> bool {
 }
 /// One container of the app: its Compose service and ID.
 fn containers(app: &str) -> Result<BTreeMap<String, String>> {
-    let (code, out) = common::command(
+    let (code, out) = docker_run(
         &[
-            "docker",
-            "--host",
-            "unix:///var/run/docker.sock",
             "ps",
             "-a",
             "--filter",
@@ -361,10 +358,21 @@ fn containers(app: &str) -> Result<BTreeMap<String, String>> {
     }
     Ok(found)
 }
-fn docker(args: &[&str], timeout: u64) -> Result<String> {
-    let mut all = vec!["docker", "--host", "unix:///var/run/docker.sock"];
+/// Said when the docker program could not be run at all (not installed, not executable)
+/// or hung past its time: a restart said "Filesystem or process operation failed:
+/// Permission denied (os error 13)" before (deep check 161, Docker away).
+const NO_DOCKER: &str = "Docker can't be run on this server or did not answer in time. Check Server health → Starts by itself, or run setup again (it installs Docker)";
+/// The docker program with `args`: its exit code and output.
+fn docker_run(args: &[&str], timeout: u64) -> Result<(i32, String)> {
+    docker_with("docker", args, timeout)
+}
+fn docker_with(program: &str, args: &[&str], timeout: u64) -> Result<(i32, String)> {
+    let mut all = vec![program, "--host", "unix:///var/run/docker.sock"];
     all.extend_from_slice(args);
-    match common::command(&all, timeout)? {
+    common::command(&all, timeout).map_err(|_| Error::new(NO_DOCKER))
+}
+fn docker(args: &[&str], timeout: u64) -> Result<String> {
+    match docker_run(args, timeout)? {
         (0, out) => Ok(out),
         _ => Err(Error::new("Docker refused the request. Check Server health → Starts by itself, or run setup again")),
     }
@@ -643,6 +651,24 @@ impl Close<'_> {
 
 #[cfg(test)]
 mod tests {
+    /// Deep check 161 (Docker's program not runnable, the dashboard's Restart pressed): the
+    /// result said "Filesystem or process operation failed: Permission denied (os error 13)".
+    #[test]
+    fn docker_that_cant_be_run_is_said_in_plain_words() {
+        let dir = std::env::temp_dir().join(format!("neko-no-docker-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let unusable = dir.join("docker");
+        std::fs::write(&unusable, "").unwrap(); // there, but not a program
+        for program in [unusable.to_str().unwrap(), "/nonexistent/docker"] {
+            let said = docker_with(program, &["ps"], 5).unwrap_err().to_string();
+            assert!(
+                said.starts_with("Docker can't be run on this server"),
+                "{said}"
+            );
+            assert!(!said.contains("os error"), "{said}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     #[test]
     fn the_media_apps_left_out_are_not_among_the_apps() {
         let mut cfg = serde_json::json!({"media": {"services": ["jellyfin", "sonarr"]},

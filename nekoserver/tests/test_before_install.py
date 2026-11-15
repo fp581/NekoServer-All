@@ -8,13 +8,16 @@ before_install.check(config, look) only looks. Every case here stands in for thi
 
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import before_install  # noqa: E402
+import capabilities  # noqa: E402
 from modules import assistant, capacity  # noqa: E402
 
 GB = 1024**3
@@ -253,6 +256,35 @@ class CheckTests(unittest.TestCase):
             problems(found['blocking']), ['ghcr.io does not answer. Setup downloads the rest of the apps from there.']
         )
 
+    def test_only_the_name_lookup_down_does_not_blame_the_cable(self):
+        """Deep check 295: with DNS down (a route out, no name looked up) it said "Check the
+        network cable or Wi-Fi". The real Look, with the system's lookup and routes stood in for."""
+        import socket
+
+        look = before_install.Look()
+        config = settings()
+        with (
+            mock.patch('socket.getaddrinfo', side_effect=socket.gaierror(-3, 'Temporary failure in name resolution')),
+            mock.patch.object(before_install.Look, 'connected', return_value=True),
+        ):
+            said = before_install.download_findings(config, look)[0]
+        self.assertIn('cannot look up the names', said['problem'])
+        self.assertNotIn('cable', said['do'])
+        self.assertIn('DNS server', said['do'])
+        # No way out at all: the cable or Wi-Fi it is.
+        with (
+            mock.patch('socket.getaddrinfo', side_effect=socket.gaierror(-3, 'Temporary failure in name resolution')),
+            mock.patch.object(before_install.Look, 'connected', return_value=False),
+        ):
+            self.assertIn('network cable or Wi-Fi', before_install.download_findings(config, look)[0]['do'])
+
+    def test_a_default_route_is_a_way_out(self):
+        table = 'Iface\tDestination\tGateway\nlo\t00000000\t0\neth0\t000200C0\t0\n'
+        with mock.patch.object(Path, 'read_text', side_effect=[table, '']):
+            self.assertFalse(before_install.Look().connected())
+        with mock.patch.object(Path, 'read_text', side_effect=[table + 'eth0\t00000000\t010200C0\n', '']):
+            self.assertTrue(before_install.Look().connected())
+
     # ---- memory
 
     def test_little_memory_warns_and_never_blocks(self):
@@ -262,6 +294,28 @@ class CheckTests(unittest.TestCase):
         self.assertIn('with less than 8 GB those can be stopped', found['warnings'][0]['problem'])
         self.assertEqual(self.check(memory=7.6)['warnings'], [])
         self.assertEqual(self.check(memory=0)['warnings'], [])  # not readable: nothing is made up
+
+    def test_less_memory_than_the_apps_need_idle_does_not_say_go_on(self):
+        """Deep check 294: 1 GB said "You can go on", though the apps use about 2 GB idle."""
+        said = self.check(memory=1.0)['warnings'][0]
+        self.assertIn(
+            'This PC has 1.0 GB of memory the apps may use, less than they need even when idle.', said['problem']
+        )
+        self.assertNotIn('You can go on', said['do'])
+        self.assertIn('Add memory (4 GB at the very least', said['do'])
+        self.assertIn('keep being stopped', capabilities.memory_note(1.0))
+
+    def test_a_container_memory_limit_counts_not_the_hosts_memory(self):
+        """Deep check 294: MemTotal in a container is the host's; its limit is what the apps get."""
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / 'proc').mkdir()
+            (Path(root) / 'proc/meminfo').write_text('MemTotal:       67108864 kB\nMemFree: 1 kB\n')
+            self.assertEqual(capabilities.memory_gib(root), 64)
+            (Path(root) / 'sys/fs/cgroup').mkdir(parents=True)
+            (Path(root) / 'sys/fs/cgroup/memory.max').write_text('max\n')
+            self.assertEqual(capabilities.memory_gib(root), 64)
+            (Path(root) / 'sys/fs/cgroup/memory.max').write_text(str(2**30) + '\n')
+            self.assertEqual(capabilities.memory_gib(root), 1)
 
     def test_the_ai_assistant_says_when_no_model_fits_in_memory(self):
         chosen = settings(assistant={'wanted': True, 'model': 'auto'})

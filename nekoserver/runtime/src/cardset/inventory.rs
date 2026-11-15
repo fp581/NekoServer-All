@@ -27,6 +27,8 @@ pub const MAX_LINES: u64 = 5_000_000;
 const MAX_COPIES: usize = 16;
 const MAX_SOURCES: usize = 32;
 const MAX_VOLUMES: usize = 9999;
+/// The most records one volume's entry may count.
+const MAX_RECORDS: u64 = 1_000_000;
 const VERSIONS_SUFFIX: &str = ".versions.jsonl";
 const HEADER_SUFFIX: &str = ".json";
 
@@ -215,6 +217,28 @@ fn publish(vol: &Volume, inventory: &Dir, temp: &str, name: &str, bytes: &[u8]) 
     vol.staging.sync()
 }
 
+/// A snapshot within the bounds `read` takes, before anything is written: one past them
+/// was written in full and then refused by every reader, on every later checkpoint too.
+fn within_reading_bounds(lines: u64, volumes: &[Value], sources: usize) -> Res<()> {
+    let records = volumes
+        .iter()
+        .map(|v| v["record_count"].as_u64().unwrap_or(u64::MAX))
+        .max()
+        .unwrap_or(0);
+    let what = if lines > MAX_LINES {
+        "the set has more versions than an inventory can list"
+    } else if volumes.len() > MAX_VOLUMES {
+        "the set has more cards than an inventory can list"
+    } else if sources > MAX_SOURCES {
+        "the set has more sources than an inventory can list"
+    } else if records > MAX_RECORDS {
+        "a card holds more records than an inventory can count"
+    } else {
+        return Ok(());
+    };
+    Err(CardError::new(Kind::Unsupported, what))
+}
+
 /// Write a new snapshot of what `store` knows onto the attached card. Returns its ID.
 /// `through`: every record committed up to this time is in the catalogue.
 pub fn write(vol: &Volume, store: &mut Store, through: &str) -> Res<String> {
@@ -229,6 +253,7 @@ pub fn write(vol: &Volume, store: &mut Store, through: &str) -> Res<String> {
                    "created_at": s.created_at, "retired_at": s.retired_at})
         })
         .collect();
+    within_reading_bounds(lines, &volumes, sources.len())?;
     let room = vol.room()?;
     let needed = versions.len() as u64 + HEADER_LIMIT;
     if room.free < needed.saturating_add(room.unit.saturating_mul(2)) {
@@ -342,7 +367,7 @@ fn volume_entry(m: &Map<String, Value>) -> Res<VolumeEntry> {
         last_seen_at: opt_time(&f, "last_seen_at")?,
         last_recheck_at: opt_time(&f, "last_recheck_at")?,
         last_recheck_result: result,
-        record_count: f.int("record_count", 0, 1_000_000)?,
+        record_count: f.int("record_count", 0, MAX_RECORDS)?,
         payload_bytes: f.bytes("payload_bytes")?,
         filesystem_type: fs_type.to_string(),
         capacity_bytes: f.bytes("capacity_bytes")?,
@@ -528,5 +553,26 @@ pub fn each_version(
         }
         line.pop();
         each(version_line(&line)?)?;
+    }
+}
+
+#[cfg(test)]
+mod bounds {
+    use super::*;
+
+    #[test]
+    fn a_snapshot_past_what_a_reader_takes_is_not_written() {
+        // The review of 0.51.0: the writer checked none of the bounds the reader keeps.
+        let card = |records: u64| json!({ "record_count": records });
+        assert!(within_reading_bounds(MAX_LINES, &[card(MAX_RECORDS)], MAX_SOURCES).is_ok());
+        for (lines, volumes, sources) in [
+            (MAX_LINES + 1, vec![card(1)], 1),
+            (1, vec![card(MAX_RECORDS + 1)], 1),
+            (1, vec![card(1); MAX_VOLUMES + 1], 1),
+            (1, vec![card(1)], MAX_SOURCES + 1),
+        ] {
+            let e = within_reading_bounds(lines, &volumes, sources).unwrap_err();
+            assert_eq!(e.kind, Kind::Unsupported, "{}", e.what);
+        }
     }
 }

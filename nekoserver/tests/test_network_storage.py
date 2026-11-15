@@ -5,6 +5,7 @@ import contextlib
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -189,6 +190,22 @@ class ConnectionTests(unittest.TestCase):
         calls.clear()
         nas.known_at(IQN, PORTAL, lambda argv, **k: calls.append(argv) or done())
         self.assertEqual(len(calls), 1)  # already there
+
+    def test_a_typo_to_does_the_nas_ask_for_a_login_is_asked_again_not_taken_as_no(self):
+        answers = iter(['yse', 'y e s', 'YES', 'neko'])
+        said = []
+        with (
+            mock.patch.object(nas, 'set_chap') as saved,
+            mock.patch.object(nas.questions, 'shown', return_value=contextlib.nullcontext()),
+        ):
+            got = nas.asked_chap(IQN, PORTAL, lambda q: next(answers), said.append, lambda q: 'a-long-secret-1')
+        self.assertTrue(got)
+        self.assertEqual(said.count('Please type yes or no.'), 2)
+        saved.assert_called_once()
+        # Enter alone, and no, are no (the question says so).
+        for answer in ('', 'no', ' N '):
+            with mock.patch.object(nas.questions, 'shown', return_value=contextlib.nullcontext()):
+                self.assertFalse(nas.asked_chap(IQN, PORTAL, lambda q: answer, said.append, None))
 
     def test_a_chap_password_is_written_in_the_targets_settings_never_on_a_command_line(self):
         with tempfile.TemporaryDirectory() as d:
@@ -780,6 +797,7 @@ class ReadOnlyCheckTests(unittest.TestCase):
         typed = iter(answers)
         with (
             mock.patch.object(self.wizard.os.path, 'ismount', return_value=True),
+            mock.patch.object(self.wizard, 'is_mount_point', return_value=True),
             mock.patch.object(
                 self.wizard, 'start_apps', side_effect=lambda run, out, config: self.calls.append(['apps'])
             ),
@@ -821,6 +839,35 @@ class ReadOnlyCheckTests(unittest.TestCase):
         # The old promise is gone: a repair can lose files.
         self.assertNotIn('only what is broken', said)
 
+    def test_an_e2fsck_that_fails_hangs_or_asks_is_said_in_plain_words(self):
+        """Plan 150, with stand-in e2fsck programs. One that cannot work on the drive (exit
+        8, "Bad magic number in super-block") was said to have found problems it does not
+        fix without asking; one that hangs ended in Python's "Command [...] timed out after
+        21600 seconds"; one that asks a question waited for an answer at the terminal while
+        its question was captured, unseen."""
+        device = '/dev/disk/by-uuid/nas-0001'
+        seen = []
+
+        def failing(argv, **kwargs):
+            seen.append(kwargs)
+            return mock.Mock(returncode=8, stdout='e2fsck: Bad magic number in super-block\n', stderr='')
+
+        with self.assertRaises(RuntimeError) as failed:
+            self.wizard.repaired(device, self.said.append, failing)
+        self.assertIn('could not work on the drive at all (exit 8', str(failed.exception))
+        self.assertNotIn('does not fix without asking', str(failed.exception))
+        self.assertIs(seen[0].get('stdin'), subprocess.DEVNULL, 'no question waits unseen for an answer')
+
+        def hanging(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, kwargs['timeout'])
+
+        for step in (self.wizard.looked_at, self.wizard.repaired):
+            with self.subTest(step=step.__name__), self.assertRaises(RuntimeError) as hung:
+                step(device, self.said.append, hanging)
+            self.assertIn('did not finish within 6 hours', str(hung.exception))
+            self.assertIn('The apps stay stopped', str(hung.exception))
+            self.assertNotIn('timed out after', str(hung.exception))
+
     def test_enter_alone_or_a_yes_never_approves_a_repair(self):
         for typed in ('', 'yes', 'y', 'sdb', '/dev/sdb1 x'):
             with self.subTest(typed=typed):
@@ -840,6 +887,7 @@ class ReadOnlyCheckTests(unittest.TestCase):
 
         with (
             mock.patch.object(self.wizard.os.path, 'ismount', return_value=True),
+            mock.patch.object(self.wizard, 'is_mount_point', return_value=True),
             mock.patch.object(self.wizard, 'repair_blocked', return_value=None),
         ):
             self.wizard.check_read_only(

@@ -213,7 +213,7 @@ impl Recovery<'_> {
         let file = self
             .vol
             .staging
-            .open_file(&commit::partial_name(&meta.txn.transaction_id))?;
+            .open_from_card(&commit::partial_name(&meta.txn.transaction_id))?;
         let (sum, n) = hash_reader(file)?;
         Ok(sum == meta.checksum && n == meta.byte_size)
     }

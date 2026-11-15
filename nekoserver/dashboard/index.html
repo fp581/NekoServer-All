@@ -174,9 +174,10 @@
           <div id="ask-log" class="ask-log" aria-live="polite"></div>
           <form id="ask-form" class="ask-form">
             <label class="field" for="ask-input">Your question</label>
-            <textarea id="ask-input" maxlength="500" rows="3" required></textarea>
+            <textarea id="ask-input" rows="3"></textarea>
             <button class="button" type="submit" id="ask-send">Ask</button>
           </form>
+          <p class="hint" id="ask-note" aria-live="polite"></p>
           <p class="hint">
             Neko answers from this server only: nothing you ask leaves your home, and passwords and keys are taken out
             of what it reads. Nothing is kept: reloading or closing this page clears it. It changes nothing by itself; a

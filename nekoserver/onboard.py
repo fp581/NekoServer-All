@@ -5,7 +5,6 @@ Runs locally, never exports secrets, and distinguishes configuration from valida
 """
 
 import argparse
-import json
 import os
 import sys
 import time
@@ -19,9 +18,11 @@ import media_readiness
 import seerr_providers
 from setup_progress import run_program
 from neko_common import (
+    read_settings,
     LOCATIONS,
     MEDIA_APPS,
     app_ports,
+    app_wanted,
     atomic_json,
     checked_settings,
     default_settings,
@@ -159,10 +160,13 @@ def main(argv=None):
         p.error('--report-only cannot configure libraries or request providers')
     if a.indexers and not a.configure:
         p.error('--indexers requires --configure')
-    config = json.loads(Path(a.config).read_text())
-    apps = tuple(config.get('media', {}).get('services', APPS))
-    if not set(apps) <= set(APPS):
+    config = read_settings(a.config)
+    listed = tuple(config.get('media', {}).get('services', APPS))
+    if not set(listed) <= set(APPS):
         p.error('Unknown media service in config')
+    # The apps set up: one whose group is switched off (Movies and shows on a music-only
+    # server, say) is stopped by the media step, so it is never checked or connected here.
+    apps = tuple(app for app in listed if app_wanted(config, app))
     if not 0 <= a.wait <= 600:
         p.error('--wait must be 0..600')
     root = safe_path(a.data_root or config['data_mount'])
@@ -219,7 +223,7 @@ def main(argv=None):
         import existing_page
 
         library_results = media_libraries.configure(
-            root, media, a.apply, apps, more=existing_page.libraries(config, a.apply)
+            root, films, a.apply, apps, more=existing_page.libraries(config, a.apply)
         )
         # Navidrome's library for the person's own music folder, used where it is.
         library_results += existing_page.music_libraries(config, a.apply)
@@ -259,7 +263,10 @@ def main(argv=None):
     cmd = ['--config', str(Path(a.config).resolve()), '--data-root', str(root)]
     managers = {'sonarr', 'radarr', 'lidarr'} & set(apps)
     if managers:
-        cmd += ['--root-folders', '--media-root', str(media)]
+        cmd.append('--root-folders')
+        if a.media_root:
+            # Otherwise the connector finds each library on the drive it is placed on.
+            cmd += ['--media-root', str(media)]
     if managers and 'prowlarr' in apps:
         cmd.append('--applications')
     if managers and 'qbittorrent' in apps:
