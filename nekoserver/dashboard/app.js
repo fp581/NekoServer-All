@@ -2160,6 +2160,11 @@ const RESTORE_NAMES = {
   app_restore: 'apps',
   host_restore: 'host & user files'
 };
+/* How a restore test is tried and recorded. "Try each once" said neither, and a restore
+ * done with the recovery menu left the page at "Not yet": it counts only once recorded
+ * (deep check 500/501). */
+const RESTORE_HOW =
+  ' Try one with the recovery menu (sudo bash install.sh --recover; RECOVERY.md), look at what came back, then record it: in the NekoServer folder, sudo python3 acceptance.py --profile full --save --manual, and answer yes for that test.';
 /* Restore confidence for the backups this server actually makes: each kind of data
  * needs its own witnessed restore test, and "Yes" only once every one has passed. */
 function restoreTried(s) {
@@ -2191,12 +2196,12 @@ function restoreTried(s) {
   if (!tested.length) {
     return {
       result: ['needs_setup', 'Not yet'],
-      words: 'Not tested yet: ' + names(untested) + '. Try each once, so you know it works.'
+      words: 'Not tested yet: ' + names(untested) + '.' + RESTORE_HOW
     };
   }
   return {
     result: ['warning', tested.length + ' of ' + needed.length],
-    words: 'Tested: ' + names(tested) + '. Not yet: ' + names(untested) + '.'
+    words: 'Tested: ' + names(tested) + '. Not yet: ' + names(untested) + '.' + RESTORE_HOW
   };
 }
 function renderProtection(s, fresh) {
