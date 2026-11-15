@@ -38,8 +38,9 @@ fn compose(file: &Path, project: &str, args: &[&str]) -> Result<String> {
     all.extend_from_slice(args);
     docker(&all)
 }
+/// A JSON file that must be there; a missing or damaged one is named.
 fn load(path: &Path) -> Result<Value> {
-    Ok(serde_json::from_slice(&common::bytes(path, 2_000_000)?)?)
+    common::json_from(path, 2_000_000)
 }
 fn string<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
     v[key]
@@ -57,7 +58,8 @@ fn state_owner() -> u32 {
     unsafe { libc::geteuid() }
 }
 fn private(path: &Path) -> Result<()> {
-    let m = fs::metadata(common::safe(path)?)?;
+    let safe = common::safe(path)?;
+    let m = fs::metadata(&safe).map_err(|e| common::at(e, &safe))?;
     if m.uid() != state_owner() || m.mode() & 0o077 != 0 {
         return Err(Error::new("Private root-owned maintenance state required"));
     }
@@ -1127,7 +1129,8 @@ pub(crate) fn encrypt_secrets_with(
         .args(&members)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .spawn()?;
+        .spawn()
+        .map_err(|e| common::not_started(e, "tar"))?;
     let stream = archive
         .stdout
         .take()
@@ -1141,7 +1144,8 @@ pub(crate) fn encrypt_secrets_with(
         .stdin(stream)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()?;
+        .status()
+        .map_err(|e| common::not_started(e, "openssl"))?;
     let archived = archive.wait()?;
     if !archived.success() || !sealed.success() {
         let _ = fs::remove_file(&output);
@@ -2299,7 +2303,7 @@ fn scrub_snapshot(snapshot: &Path) -> Result<()> {
         if !model || !fs::symlink_metadata(&path)?.is_file() {
             continue;
         }
-        let mut value: Value = serde_json::from_slice(&common::bytes(&path, 50_000_000)?)?;
+        let mut value = common::json_from(&path, 50_000_000)?;
         let before = value.clone();
         redact(&mut value);
         if value != before {
@@ -4477,7 +4481,7 @@ fn version_of(app: &str, model: &Value, release: Option<&str>, step: Option<(u64
 pub fn check_compose(a: &Args) -> Result<()> {
     if let (Ok(upload), Ok(database)) = (a.path("upload"), a.path("database")) {
         // A snapshot's Immich file (setup's recovery_tools.validate_model asks this).
-        let model: Value = serde_json::from_slice(&common::bytes(&a.path("model")?, 4_000_000)?)?;
+        let model = common::json_from(&a.path("model")?, 4_000_000)?;
         snapshot_ok(&model, &upload, &database)?;
         println!("ok");
         return Ok(());
@@ -4487,7 +4491,7 @@ pub fn check_compose(a: &Args) -> Result<()> {
     if !["immich", "nextcloud"].contains(&app) && !MEDIA.contains(&app) {
         return Err(Error::new("Unknown app"));
     }
-    let model: Value = serde_json::from_slice(&common::bytes(&a.path("model")?, 4_000_000)?)?;
+    let model = common::json_from(&a.path("model")?, 4_000_000)?;
     let data = common::mount_path(string(&cfg, "data_mount")?)?;
     let media = common::mount_path(string(&cfg, "media_mount")?)?;
     valid_model(&model, app, &data, &media, &cfg)?;

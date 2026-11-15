@@ -142,7 +142,8 @@ fn compressed(text: &Text) -> Result<Vec<u8>> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn()?;
+        .spawn()
+        .map_err(|e| common::not_started(e, "gzip"))?;
     let stdin = child
         .stdin
         .take()

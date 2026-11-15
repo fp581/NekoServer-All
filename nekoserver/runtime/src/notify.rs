@@ -569,15 +569,17 @@ fn after_test(old: Value, taken: bool, now: f64) -> Value {
     }
     state
 }
+/// How the notifications' settings file is called when it is missing or damaged.
+const WHOSE: &str = "The notifications'";
 pub fn run(a: &Args) -> Result<()> {
     common::require_root()?;
     let config_path = a.path("config")?;
     use std::os::unix::fs::MetadataExt;
-    let metadata = fs::metadata(common::safe(&config_path)?)?;
+    let metadata = common::settings_there(&common::safe(&config_path)?, WHOSE)?;
     if metadata.uid() != 0 || metadata.mode() & 0o077 != 0 {
         return Err(Error::new("Private root-owned delivery config required"));
     }
-    let cfg: Value = serde_json::from_slice(&common::bytes(&config_path, 64000)?)?;
+    let cfg = common::settings_json(&config_path, WHOSE, 64000)?;
     if !endpoint(cfg["endpoint"].as_str().unwrap_or("")) {
         return Err(Error::new("Notification destination requires setup"));
     }

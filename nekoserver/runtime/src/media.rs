@@ -389,7 +389,7 @@ fn music_catalogue(data: &Path) -> Result<&'static str> {
     if m.uid() != 0 || m.mode() & 0o077 != 0 {
         return Err(Error::new("Private music credential required"));
     }
-    let value: Value = serde_json::from_slice(&common::bytes(&path, 64000)?)?;
+    let value = common::json_from(&path, 64000)?;
     let user = text(&value["user"]);
     let salt = text(&value["salt"]);
     let token = text(&value["token"]);

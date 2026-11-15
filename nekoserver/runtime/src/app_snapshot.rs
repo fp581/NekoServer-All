@@ -46,7 +46,7 @@ fn resume() -> Result<()> {
     if !path.exists() {
         return Ok(());
     }
-    let v: Value = serde_json::from_slice(&common::bytes(path, 64000)?)?;
+    let v = common::json_from(path, 64000)?;
     if v["format"] != "neko-app-resume-v1" {
         return Err(Error::new("Invalid resume journal"));
     }

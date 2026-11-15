@@ -21,10 +21,12 @@ fn inventory(
     waiting: &mut Vec<String>,
 ) -> Result<()> {
     common::safe(current)?;
-    for entry in fs::read_dir(current)? {
-        let path = entry?.path();
+    // Named: a music folder that is gone (the library moved, a folder removed while it
+    // was listed) failed the backup with "No such file or directory" and no name.
+    for entry in fs::read_dir(current).map_err(|e| common::at(e, current))? {
+        let path = entry.map_err(|e| common::at(e, current))?.path();
         common::safe(&path)?;
-        let meta = fs::symlink_metadata(&path)?;
+        let meta = fs::symlink_metadata(&path).map_err(|e| common::at(e, &path))?;
         if meta.is_dir() {
             inventory(root, &path, rows, waiting)?;
         } else if meta.is_file() {

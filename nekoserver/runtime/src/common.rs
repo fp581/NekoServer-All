@@ -49,9 +49,59 @@ impl From<std::io::Error> for Error {
     }
 }
 impl From<serde_json::Error> for Error {
-    fn from(_: serde_json::Error) -> Self {
-        Self::new("Invalid JSON")
+    // The parser's own reason is kept ("expected value at line 1 column 1"); what is read
+    // from a file goes through json_from or settings_json, which name the file too.
+    fn from(e: serde_json::Error) -> Self {
+        Self(format!("Invalid JSON ({e})"))
     }
+}
+/// An I/O error with the file or folder it was about. Without it a job failed with only
+/// "Filesystem or process operation failed: No such file or directory (os error 2)",
+/// and nobody could tell which file (deep check, D3).
+pub fn at(e: std::io::Error, path: &Path) -> Error {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        return Error(format!("{} is missing ({e})", path.display()));
+    }
+    Error(format!("{}, at {}", Error::from(e), path.display()))
+}
+/// The error of a program that could not be started, with its name: a program that is
+/// not installed gave the same "No such file or directory" as a missing file.
+pub fn not_started(e: std::io::Error, program: &str) -> Error {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        return Error(format!(
+            "The program {program} is not installed, so it could not be started ({e}). Run  sudo bash install.sh  again: it installs what NekoServer needs"
+        ));
+    }
+    Error(format!("The program {program} could not be started: {e}"))
+}
+/// What to do about a settings file of NekoServer's own that is missing or damaged.
+const WRITE_ANEW: &str = "Run  sudo bash install.sh  again: it writes the file anew";
+/// A settings file setup wrote is there (`whose`: "The heartbeat's"): its details, or
+/// that it is missing, by name, with what to do.
+pub fn settings_there(path: &Path, whose: &str) -> Result<fs::Metadata> {
+    fs::metadata(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => Error(format!(
+            "{whose} settings file {} is missing. {WRITE_ANEW}",
+            path.display()
+        )),
+        _ => at(e, path),
+    })
+}
+/// A settings file setup wrote, read whole; a missing or damaged one is named.
+pub fn settings_json(path: &Path, whose: &str, limit: usize) -> Result<Value> {
+    settings_there(path, whose)?;
+    serde_json::from_slice(&bytes(path, limit)?).map_err(|e| {
+        Error(format!(
+            "{whose} settings file {} is not valid JSON ({e}): it was changed by hand or is damaged. {WRITE_ANEW}",
+            path.display()
+        ))
+    })
+}
+/// The JSON a file holds, for a file that must hold it; one that does not is named
+/// (a bare "Invalid JSON" said neither which file nor what was wrong with it).
+pub fn json_from(path: &Path, limit: usize) -> Result<Value> {
+    serde_json::from_slice(&bytes(path, limit)?)
+        .map_err(|e| Error(format!("{} is not valid JSON ({e})", path.display())))
 }
 pub type Result<T> = std::result::Result<T, Error>;
 /// The most of a job's report (reports/jobs) that is read back. It is written to fit
@@ -720,7 +770,10 @@ pub fn free_bytes(path: &Path) -> Result<u128> {
 }
 pub fn file(path: &Path) -> Result<File> {
     safe(path)?;
-    if !fs::symlink_metadata(path)?.is_file() {
+    if !fs::symlink_metadata(path)
+        .map_err(|e| at(e, path))?
+        .is_file()
+    {
         return Err(Error::new("Regular file required"));
     }
     let f = open_read_no_links(path)?;
@@ -767,7 +820,7 @@ fn open_read_no_links(path: &Path) -> Result<File> {
             "Symlink path refused: a part of {} became a link",
             path.display()
         ))),
-        _ => Err(err.into()),
+        _ => Err(at(err, path)),
     }
 }
 pub fn bytes(path: &Path, limit: usize) -> Result<Vec<u8>> {
@@ -1256,7 +1309,7 @@ pub fn command(args: &[&str], timeout: u64) -> Result<(i32, String)> {
             Ok(())
         });
     }
-    let mut child = cmd.spawn()?;
+    let mut child = cmd.spawn().map_err(|e| not_started(e, args[0]))?;
     let pid = child.id() as i32;
     let stdout = child
         .stdout
@@ -2229,6 +2282,75 @@ mod lock_tests {
         assert_eq!(mount_in_effect(0, "\n"), None);
     }
 
+    /// D3: the music backup, the heartbeat and the notifications failed with only
+    /// "Filesystem or process operation failed: No such file or directory (os error 2)",
+    /// and a damaged file with a bare "Invalid JSON": which file, nobody could tell.
+    #[test]
+    fn a_missing_or_damaged_file_and_a_missing_program_are_named() {
+        let root = scratch("named-files");
+        let gone = root.join("heartbeat.json");
+        let shown = gone.display().to_string();
+        for said in [
+            file(&gone).unwrap_err().to_string(),
+            bytes(&gone, 100).unwrap_err().to_string(),
+            digest(&gone).unwrap_err().to_string(),
+            json_from(&gone, 100).unwrap_err().to_string(),
+        ] {
+            assert!(
+                said.contains(&shown) && said.contains("is missing"),
+                "{said}"
+            );
+            assert!(!said.starts_with("Filesystem or process"), "{said}");
+        }
+        let said = settings_json(&gone, "The heartbeat's", 100)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            said.starts_with(&format!(
+                "The heartbeat's settings file {shown} is missing."
+            )),
+            "{said}"
+        );
+        assert!(said.contains("sudo bash install.sh"), "{said}");
+        // Damaged: the file and the parser's reason, not a bare "Invalid JSON".
+        fs::write(&gone, b"{\"endpoint\": ").unwrap();
+        for said in [
+            settings_json(&gone, "The heartbeat's", 100)
+                .unwrap_err()
+                .to_string(),
+            json_from(&gone, 100).unwrap_err().to_string(),
+        ] {
+            assert!(
+                said.contains(&shown) && said.contains("is not valid JSON ("),
+                "{said}"
+            );
+            assert!(said.contains("line 1"), "{said}");
+        }
+        fs::write(&gone, b"{}").unwrap();
+        assert!(settings_json(&gone, "The heartbeat's", 100).is_ok());
+        // Any other error keeps its reason and gets the path.
+        let other = at(std::io::Error::from_raw_os_error(libc::EACCES), &gone).to_string();
+        assert!(
+            other.contains("Permission denied") && other.ends_with(&shown),
+            "{other}"
+        );
+        // A program that is not installed is named, with what to do.
+        let said = command(&["neko-no-such-program", "x"], 5)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            said.contains("neko-no-such-program is not installed")
+                && said.contains("sudo bash install.sh"),
+            "{said}"
+        );
+        // JSON that came from no file keeps the parser's reason.
+        let bare = Error::from(serde_json::from_str::<Value>("{").unwrap_err()).to_string();
+        assert!(
+            bare.starts_with("Invalid JSON (") && bare.contains("line 1"),
+            "{bare}"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
     #[test]
     fn scheduled_jobs_wait_for_the_lock_then_proceed() {
         let path = std::env::temp_dir().join(format!("neko-lock-{}", std::process::id()));
