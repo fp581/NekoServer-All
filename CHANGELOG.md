@@ -31,6 +31,13 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 - **Immich follows a time zone changed after its first setup**, as every other schedule and app already did.
 - **A dashboard PIN asked again and left empty is no longer shown by "Show login".**
 
+### Fixed: the phones, TVs and PCs people use
+- **Seerr's "Play on Jellyfin" buttons and alert links open on a phone**: they led to Jellyfin's address inside Docker. Setup now gives Seerr the gateway's Jellyfin address (the Tailscale one first), and keeps one you typed.
+- **Setup and README say how to open the shared folders** from Windows, a Mac, Linux and a Chromebook (Windows never lists them under Network by itself), with the login.
+- **GATEWAY.md has a part for TVs**: most TVs have no Tailscale app, casting from the phone does not reach the server, and Jellyfin's Quick Connect saves typing the password with the remote.
+- **The Immich phone steps say to keep the app open for the first backup**, and which background settings let it go on (iPhones run it rarely in the background; battery-saving Androids never).
+- **NEXTCLOUD.md no longer says a reapplied gateway changes Nextcloud's address** (it has not since 0.21.1).
+
 ### Fixed: the apps' and systems' new releases
 - **Radarr 7 (and Sonarr 5) with "Disabled for Localhost" sign-in keeps its login**: setup said the saved login was wrong at every run, and the weekly update lost its login check.
 - **Ubuntu 26.04 with AMD graphics gets its video decoding**: the driver is now part of `mesa-libgallium`, and setup said it was not available.
