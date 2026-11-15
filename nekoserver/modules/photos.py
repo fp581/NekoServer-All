@@ -87,6 +87,21 @@ def checked_env(env, upload, db):
     return content
 
 
+def follow_timezone(env, content, zone, log):
+    """Immich's time zone (TZ in its .env, which its containers are started with) brought
+    to the one the rest of the server uses now. It was written once, at the first setup:
+    after this PC's zone was set right (or "timezone" changed in the settings) the media
+    apps and every schedule followed, and Immich kept the old one, which it uses for the
+    time of photos that carry none of their own. Only that line is changed; the next
+    start (compose up) gives it to the containers. True when it changed."""
+    if env_value(content, 'TZ') == zone:
+        return False
+    lines = [line for line in content.splitlines() if not line.startswith('TZ=')]
+    atomic_write(env, '\n'.join([*lines, 'TZ=' + zone]) + '\n', 0o600)
+    log(f'Immich: its time zone is now {zone}, as the rest of the server (it was set when Immich was first set up)')
+    return True
+
+
 def localize_manifest(content):
     """Accept only the known 2283 mapping, regardless of YAML quoting style."""
     text = content.decode('utf-8') if isinstance(content, bytes) else content
@@ -293,7 +308,7 @@ def _run(ctx):
         # Written last: a compose.yaml means this step finished writing its settings.
         atomic_write(compose, text, 0o640)
     else:
-        checked_env(env, upload, db)
+        follow_timezone(env, checked_env(env, upload, db), host_timezone(cfg), ctx.log)
     ensure_directory(db, 0o700)
     for target in (upload, archive, inbox):
         ensure_directory(target, 0o755)

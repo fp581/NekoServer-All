@@ -1183,7 +1183,7 @@ class InterruptedSetupTests(unittest.TestCase):
 
     MANIFEST = b'services:\n  immich-server:\n    ports:\n      - 2283:2283\n# DB_DATA_LOCATION\n'
 
-    def immich(self, data, interrupt=False):
+    def immich(self, data, interrupt=False, zone='UTC'):
         from contextlib import ExitStack
         from unittest import mock
         from modules import photos
@@ -1191,7 +1191,7 @@ class InterruptedSetupTests(unittest.TestCase):
         cfg = {
             'data_mount': str(data / 'ssd'),
             'media_mount': str(data / 'hdd'),
-            'timezone': 'UTC',
+            'timezone': zone,
             'photos': {'deploy_immich': True, 'immich_version': 'v1.2.3'},
         }
         urls, calls = [], []
@@ -1263,6 +1263,28 @@ class InterruptedSetupTests(unittest.TestCase):
                 password, [x for x in (folder / '.env').read_text().splitlines() if x.startswith('DB_PASSWORD=')]
             )
             self.assertEqual(calls[-1][-2:], ['up', '-d'])
+
+    def test_immich_follows_a_time_zone_changed_after_its_first_setup(self):
+        """Deep check 398: the PC's zone set right (or "timezone" changed) after the first
+        setup. The media apps and the schedules followed; Immich kept the zone written into
+        its .env at the first setup, which it uses for photos that carry no zone."""
+        with tempfile.TemporaryDirectory() as d:
+            data = Path(d)
+            self.immich(data)
+            env = data / 'ssd/compose/immich/.env'
+            first = env.read_text().splitlines()
+            self.assertIn('TZ=UTC', first)
+            _, calls, _ = self.immich(data, zone='Europe/Berlin')
+            now = env.read_text().splitlines()
+            self.assertIn('TZ=Europe/Berlin', now)
+            # Nothing else in the file changed: the database password above all.
+            self.assertEqual(sorted(set(first) - {'TZ=UTC'}), sorted(set(now) - {'TZ=Europe/Berlin'}))
+            self.assertEqual(env.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(calls[-1][-2:], ['up', '-d'])  # started with it
+            # The same zone again writes nothing.
+            before = env.stat().st_mtime_ns
+            self.immich(data, zone='Europe/Berlin')
+            self.assertEqual(env.stat().st_mtime_ns, before)
 
     def test_immich_left_by_an_older_release_with_only_compose_yaml(self):
         with tempfile.TemporaryDirectory() as d:
