@@ -597,6 +597,44 @@ class UpgradeTests(unittest.TestCase):
             bundle.addfile(info)
         self.assertEqual(self.upgrade(self.setup(), payload=bad.getvalue()), 1)
 
+    def test_a_python_without_extraction_filters_unpacks_and_refuses_the_same(self):
+        # Deep check 273: Python 3.11.0 to 3.11.3 (Debian 12 has 3.11.2) has no tarfile
+        # filters; the upgrade from the dashboard stopped there with "AttributeError: module
+        # 'tarfile' has no attribute 'FilterError'". Such a Python, stood in for here.
+        plain = tarfile.TarFile.extractall
+
+        def without_filter(bundle, path='.', members=None, *, numeric_owner=False, **more):
+            if more:
+                raise TypeError(f"TarFile.extractall() got an unexpected keyword argument '{next(iter(more))}'")
+            return plain(bundle, path, members, numeric_owner=numeric_owner)
+
+        kept = {name: getattr(tarfile, name) for name in ('data_filter', 'FilterError') if hasattr(tarfile, name)}
+        for name in kept:
+            delattr(tarfile, name)
+        try:
+            with mock.patch.object(tarfile.TarFile, 'extractall', without_filter):
+                self.assertEqual(self.upgrade(self.setup(1)), 0)
+                self.assertIn(f'NekoServer {NEWER} is installed and checked', self.said)
+                for name, kind, link in (
+                    ('NekoServer-All-x/escape', tarfile.SYMTYPE, '/etc/passwd'),
+                    ('NekoServer-All-x/../outside', tarfile.REGTYPE, ''),
+                    ('/NekoServer-All-x/absolute', tarfile.REGTYPE, ''),
+                    ('NekoServer-All-x/device', tarfile.CHRTYPE, ''),
+                ):
+                    with self.subTest(name):
+                        bad = io.BytesIO()
+                        with tarfile.open(fileobj=bad, mode='w:gz') as bundle:
+                            info = tarfile.TarInfo(name)
+                            info.type, info.linkname = kind, link
+                            bundle.addfile(info)
+                        self.said.clear()
+                        self.assertEqual(self.upgrade(self.setup(), payload=bad.getvalue()), 1)
+                        self.assertIn('not a NekoServer release', ' '.join(self.said))
+                        self.assertEqual(list(self.dir.rglob('outside')), [])
+        finally:
+            for name, value in kept.items():
+                setattr(tarfile, name, value)
+
     def test_a_cut_off_or_damaged_download_is_said_in_plain_words(self):
         # Deep check 181/183, a stand-in server closing the connection half-way: the
         # dashboard showed tarfile's "file could not be opened successfully: - method gz:

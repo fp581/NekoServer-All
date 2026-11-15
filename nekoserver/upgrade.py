@@ -32,7 +32,7 @@ import sys
 import tarfile
 import time
 import zlib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from neko_common import (
     read_settings,
@@ -128,6 +128,29 @@ def owner(config):
     return samba.previous_account() or tv.previous_user(config)
 
 
+def unpack(bundle, target, tag):
+    """The release's files into `target`, refusing links, devices, absolute paths and paths
+    out of the folder: tarfile's 'data' filter, done by hand on Python 3.11.0 to 3.11.3,
+    which lack it (Debian 12 has 3.11.2: the upgrade stopped there with an AttributeError)."""
+    refused = RuntimeError(f'The download of {tag} is not a NekoServer release; nothing was changed')
+    if hasattr(tarfile, 'data_filter'):
+        try:
+            bundle.extractall(target, filter='data')
+        except tarfile.FilterError:
+            raise refused from None
+        return
+    members = bundle.getmembers()
+    for member in members:
+        if not (member.isfile() or member.isdir()) or member.name.startswith('/'):
+            raise refused
+        if '..' in PurePosixPath(member.name).parts:
+            raise refused
+        # As the filter does: owned by whoever unpacks it, no set-user-ID or group/other write bits.
+        member.uid, member.gid, member.uname, member.gname = os.getuid(), os.getgid(), '', ''
+        member.mode &= 0o755
+    bundle.extractall(target, members=members)
+
+
 def download(tag, work, get=fetch):
     """The release, unpacked into `work`/<tag>, checked to name that version (not signed:
     see the top of this file): returns its nekoserver folder."""
@@ -148,10 +171,7 @@ def download(tag, work, get=fetch):
     ensure_directory(target, 0o700)
     try:
         with tarfile.open(archive) as bundle:
-            # The 'data' filter refuses links out of the folder, devices and absolute paths.
-            bundle.extractall(target, filter='data')
-    except tarfile.FilterError:
-        raise RuntimeError(f'The download of {tag} is not a NekoServer release; nothing was changed') from None
+            unpack(bundle, target, tag)
     except (tarfile.TarError, EOFError, zlib.error):
         # A short or damaged archive: tarfile's own words list every format it tried.
         raise RuntimeError(CUT_OFF.format(tag=tag)) from None
