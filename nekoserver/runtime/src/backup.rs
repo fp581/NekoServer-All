@@ -1961,6 +1961,48 @@ fn case_clash(path: &str, seen: &mut std::collections::HashMap<String, String>) 
     }
     None
 }
+/// `shown` (`<user>/<path>`) as the drive spells it: each folder and file name as the
+/// first one kept there wrote it (`seen`), for a name that differs from it only in case.
+fn stored_spelling(shown: &str, seen: &std::collections::HashMap<String, String>) -> String {
+    let mut stored = String::new();
+    for part in shown.split('/') {
+        let here = if stored.is_empty() {
+            part.to_string()
+        } else {
+            format!("{stored}/{part}")
+        };
+        stored = seen.get(&here.to_lowercase()).cloned().unwrap_or(here);
+    }
+    stored
+}
+/// A live file `shown` that clashes on exFAT with the kept name `earlier` is that file
+/// renamed only in upper/lower case when `earlier` is no longer among the live files
+/// (`files`, the user's folder): then its path as the drive spells it (below
+/// `<user>/`), where its copy goes on being kept. None when both names are live (two
+/// files exFAT would merge), also two live names that would share one kept file
+/// (`renamed`: the kept path, lower case -> the live name that took it).
+/// Before, such a file was left out every week, and a restore "as of the last backup"
+/// brought back neither name though its content was on the drive (deep check, D8).
+fn renamed_in_case(
+    files: &Path,
+    shown: &str,
+    earlier: &str,
+    seen: &std::collections::HashMap<String, String>,
+    renamed: &mut std::collections::HashMap<String, String>,
+) -> Option<PathBuf> {
+    let below_user = |path: &str| path.split_once('/').map(|(_, rest)| rest.to_string());
+    if fs::symlink_metadata(files.join(below_user(earlier)?)).is_ok() {
+        return None;
+    }
+    let stored = stored_spelling(shown, seen);
+    let taken = renamed
+        .entry(stored.to_lowercase())
+        .or_insert_with(|| shown.to_string());
+    if taken != shown {
+        return None;
+    }
+    below_user(&stored).map(PathBuf::from)
+}
 /// Names already kept on the USB drive (its files, and those its ledger lists) take
 /// their place in the exFAT check before this week's files: an old `Documents/report.pdf`
 /// that stays on the backup still clashes with a new `documents/report.pdf`.
@@ -2083,7 +2125,11 @@ fn no_room_said(files: &[String], free: Option<u128>) -> String {
         shown += &format!(" and {} more", files.len() - 10);
     }
     let left = free.map_or(String::new(), |bytes| {
-        format!(" ({:.1} GB is free there)", bytes as f64 / 1e9)
+        if bytes < 1_000_000_000 {
+            format!(" ({} MB is free there)", bytes / 1_000_000)
+        } else {
+            format!(" ({:.1} GB is free there)", bytes as f64 / 1e9)
+        }
     });
     format!(
         "{} not copied because the USB drive has too little room left{left}; every other file was copied. Make room on the drive or use a bigger one, and the next run copies {}: {shown}",
@@ -2111,6 +2157,7 @@ fn copy_cloud_with(
     // Files the drive has no room for: left out and named, like the too-long paths. One
     // such file used to stop the copy, and every file after it was never copied (D11).
     let mut no_room = vec![];
+    let mut renamed = std::collections::HashMap::new();
     let mut seen = std::collections::HashMap::new();
     let mut skipped_files = vec![];
     // The USB copy keeps its own ledger: the Nextcloud files are not on the HDD.
@@ -2193,20 +2240,30 @@ fn copy_cloud_with(
                 return Ok(());
             }
             let shown = format!("{user}/{}", relative.display());
+            let user_files = root.join(&user).join("files");
+            // What the file is called now, and where the drive keeps it: the same,
+            // but for a file renamed only in upper/lower case (renamed_in_case).
+            let named = user_files.join(relative);
+            let mut kept_as = relative.to_path_buf();
             if fat_names {
                 if let Some(earlier) = case_clash(&shown, &mut seen) {
-                    clashes.push(format!("{shown} (same as {earlier} on exFAT)"));
-                    refused.push(shown);
-                    return Ok(());
+                    match renamed_in_case(&files, &shown, &earlier, &seen, &mut renamed) {
+                        Some(stored) => kept_as = stored,
+                        None => {
+                            clashes.push(format!("{shown} (same as {earlier} on exFAT)"));
+                            refused.push(shown);
+                            return Ok(());
+                        }
+                    }
                 }
             }
-            let user_files = root.join(&user).join("files");
+            let relative = kept_as.as_path();
             let target = user_files.join(relative);
             if !path_fits(&target) {
                 // Left out and named; its earlier copy (if any) stays in the inventory.
                 too_long.push(shown.clone());
                 refused.push(shown);
-                live.add(&target, &root);
+                live.add_as(&named, &target, &root);
                 return Ok(());
             }
             let in_way = in_the_way(&user_files, relative);
@@ -2234,7 +2291,7 @@ fn copy_cloud_with(
                 Err(std::io::Error::from_raw_os_error(libc::ENOSPC).into())
             };
             if result.is_ok() || path.exists() {
-                live.add(&target, &root);
+                live.add_as(&named, &target, &root);
             }
             match result {
                 Ok(kept) => {
@@ -2303,6 +2360,9 @@ fn copy_cloud_with(
     }
     if !no_room.is_empty() {
         println!("Nextcloud: {}", no_room_said(&no_room, free(&root).ok()));
+    }
+    if !renamed.is_empty() {
+        println!("Nextcloud: {} renamed only in upper/lower case since the USB drive (exFAT) first saved {}; the drive keeps the earlier spelling, and a restore gives the name of today", common::plural(renamed.len(), "file or folder name was", "file or folder names were"), if renamed.len() == 1 { "it" } else { "them" });
     }
     let exfat: Vec<&String> = refused
         .iter()
@@ -7074,6 +7134,66 @@ mod tests {
         assert_eq!(missing["unsupported_names"], 1);
         assert_eq!(missing["files"], json!(["alice/open.docx", "bob/a:b.txt"]));
     }
+    /// D8: Photo.jpg renamed to photo.jpg in Nextcloud. exFAT takes both for one name, so
+    /// the renamed file was left out every week as a clash with its own saved copy, and
+    /// the list of that backup named neither: "as of the last backup" restored nothing
+    /// for it, though its content was on the drive.
+    #[test]
+    fn a_file_renamed_only_in_case_stays_backed_up_on_exfat() {
+        let root = scratch("cloud-case-rename");
+        // On a real exFAT drive when NEKO_EXFAT_USB names one (mounted, empty).
+        let usb = std::env::var_os("NEKO_EXFAT_USB").map_or(root.join("usb"), PathBuf::from);
+        let cloud = root.join("cloud");
+        let files = cloud.join("alice/files");
+        write(&files.join("Photo.jpg"), b"photo");
+        write(&files.join("Trips/Rome.txt"), b"rome");
+        let run = || copy_cloud(&cloud, &usb, true, true, Check::Quick, None).unwrap();
+        assert_eq!(run().copied, 2);
+        fs::rename(files.join("Photo.jpg"), files.join("photo.jpg")).unwrap();
+        fs::rename(files.join("Trips"), files.join("trips")).unwrap();
+        let copy = run();
+        assert!(copy.refused.is_empty(), "{:?}", copy.refused);
+        assert!(copy.complete());
+        assert_eq!(copy.copied, 0, "its content is on the drive already");
+        // The drive keeps the earlier spelling, once; the list names the files as
+        // they are called now, each with the checksum of its saved copy.
+        let saved = usb.join("nextcloud/alice/files");
+        assert_eq!(fs::read(saved.join("Photo.jpg")).unwrap(), b"photo");
+        let mut kept: Vec<String> = fs::read_dir(&saved)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        kept.sort();
+        assert_eq!(kept, ["Photo.jpg", "Trips"]);
+        let listed = newest_inventory(&usb.join("nextcloud"));
+        let names: Vec<&String> = listed["files"].as_object().unwrap().keys().collect();
+        assert_eq!(
+            names,
+            ["alice/files/photo.jpg", "alice/files/trips/Rome.txt"]
+        );
+        let row = &listed["files"]["alice/files/photo.jpg"];
+        assert_eq!(row["copy"], "Photo.jpg");
+        assert_eq!(row["sha256"], common::sha(b"photo"));
+        assert_eq!(
+            listed["files"]["alice/files/trips/Rome.txt"]["sha256"],
+            common::sha(b"rome")
+        );
+        // Edited under its new name: saved as a version of the kept file.
+        write(&files.join("photo.jpg"), b"photo, edited");
+        let copy = copy_cloud(&cloud, &usb, true, true, Check::Full, None).unwrap();
+        assert_eq!((copy.versions, copy.refused.len()), (1, 0));
+        let listed = newest_inventory(&usb.join("nextcloud"));
+        assert_eq!(
+            listed["files"]["alice/files/photo.jpg"]["sha256"],
+            common::sha(b"photo, edited")
+        );
+        // Two live files that differ only in case are still two files exFAT would merge.
+        write(&files.join("PHOTO.jpg"), b"another");
+        let copy = run();
+        assert_eq!(copy.refused, ["alice/photo.jpg"]);
+        assert_eq!(copy.copied, 0);
+        let _ = fs::remove_dir_all(root);
+    }
     /// D11: a file bigger than the room left on the USB drive stopped the weekly
     /// Nextcloud copy with "the drive is full", and every file sorting after it was
     /// never copied. That one file is left out and named; the rest is copied.
@@ -7111,10 +7231,22 @@ mod tests {
         let copy = copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
         assert_eq!((copy.copied, copy.no_room.len()), (1, 0));
         assert_eq!(fs::read(saved.join("film.mkv")).unwrap().len(), 5000);
+        // On a real drive when NEKO_SMALL_USB names one (mounted, a few MB free): the
+        // drive's own free room decides, and a file that does not fit is left out.
+        if let Some(drive) = std::env::var_os("NEKO_SMALL_USB").map(PathBuf::from) {
+            let free = common::free_bytes(&drive).unwrap() as usize;
+            write(&cloud.join("alice/files/huge.bin"), &vec![1u8; free + 4096]);
+            let copy = copy_cloud(&cloud, &drive, true, false, Check::Quick, None).unwrap();
+            assert_eq!(copy.no_room, ["alice/huge.bin"]);
+            assert_eq!(copy.copied, 3, "the files before and after it are copied");
+            let there = drive.join("nextcloud/alice/files");
+            assert!(there.join("z-letter.txt").is_file() && !there.join("huge.bin").exists());
+        }
         // The drive filling up while a file is written (the system's own error) leaves
         // that file out too.
         let full = Error::from(std::io::Error::from_raw_os_error(libc::ENOSPC));
         assert!(common::drive_full(&full), "{full}");
+        assert!(no_room_said(&copy.no_room, Some(3_000_000)).contains("(3 MB is free there)"));
         assert!(!common::drive_full(&Error::new(
             "Source changed during the copy"
         )));

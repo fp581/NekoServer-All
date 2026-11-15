@@ -84,22 +84,37 @@ pub(crate) fn oldest_first(names: &mut [String]) {
 #[derive(Default)]
 pub(crate) struct Inventory {
     files: BTreeMap<String, String>,
+    /// For a file the tree keeps under another spelling than the one it has now (see
+    /// `add_as`): its name now -> its saved copy's path in the tree.
+    stored: BTreeMap<String, String>,
 }
 impl Inventory {
     /// Note that the live file backed up at `target` (its own name in the tree under
     /// `root`) is current. Nothing is noted when the tree has no copy of it yet.
     pub(crate) fn add(&mut self, target: &Path, root: &Path) {
-        let Some(key) = target
-            .strip_prefix(root)
-            .ok()
-            .and_then(|p| p.to_str())
-            .filter(|k| crate::ledger::valid_path(k))
-        else {
+        self.add_as(target, target, root)
+    }
+    /// `add` for a live file that is now called `named` (a path in the tree) while the
+    /// tree keeps it at `target`: one renamed only in upper/lower case, on a drive that
+    /// takes both spellings for one name (exFAT). The list names it as it is called
+    /// now, so a restore "as of the last backup" brings it back under that name.
+    pub(crate) fn add_as(&mut self, named: &Path, target: &Path, root: &Path) {
+        let key_of = |path: &Path| {
+            path.strip_prefix(root)
+                .ok()
+                .and_then(|p| p.to_str())
+                .filter(|k| crate::ledger::valid_path(k))
+                .map(str::to_string)
+        };
+        let (Some(key), Some(copy)) = (key_of(named), current_copy(target)) else {
             return;
         };
-        if let Some(copy) = current_copy(target) {
-            self.files.insert(key.to_string(), copy);
+        if named != target {
+            if let Some(saved) = key_of(&target.with_file_name(&copy)) {
+                self.stored.insert(key.clone(), saved);
+            }
         }
+        self.files.insert(key, copy);
     }
     pub(crate) fn len(&self) -> usize {
         self.files.len()
@@ -251,9 +266,10 @@ impl<'de> Visitor<'de> for SameRows<'_> {
 fn with_checksums<'a>(root: &Path, inventory: &'a Inventory, ledger: &'a Ledger) -> Listed<'a> {
     let mut out = Listed::new();
     for (key, copy) in &inventory.files {
-        let saved = match key.rsplit_once('/') {
-            Some((folder, _)) => format!("{folder}/{copy}"),
-            None => copy.clone(),
+        let saved = match (inventory.stored.get(key), key.rsplit_once('/')) {
+            (Some(stored), _) => stored.clone(),
+            (None, Some((folder, _))) => format!("{folder}/{copy}"),
+            (None, None) => copy.clone(),
         };
         let sum = ledger
             .get(&saved)
