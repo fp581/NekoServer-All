@@ -289,9 +289,14 @@ static SECRET_NAME: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new
 });
 
 /// NekoServer's own secrets, to take out of anything the model sees: every saved app
-/// password and login, every secret value in an app's private Compose .env, and the settings
-/// that hold an address with a key in it (the phone alerts' topic, the outage monitor).
+/// password and login, every secret value in an app's private Compose .env, and the
+/// addresses with a key in them (the phone alerts' topic and token, the outage monitor).
 pub fn known_secrets(cfg: &Value, data: &Path) -> Vec<String> {
+    let private = ["notifications", "heartbeat"].map(|k| common::shared("private_settings", k));
+    known_secrets_with(cfg, data, &private.map(Path::new))
+}
+
+fn known_secrets_with(cfg: &Value, data: &Path, private: &[&Path]) -> Vec<String> {
     let mut found = vec![];
     let logins = common::json(&data.join("secrets/accounts/credentials.json"), 128_000);
     for entry in logins["apps"].as_object().into_iter().flatten() {
@@ -325,6 +330,17 @@ pub fn known_secrets(cfg: &Value, data: &Path) -> Vec<String> {
     ] {
         if let Some(v) = cfg[section][key].as_str() {
             found.push(v.to_string());
+        }
+    }
+    // Setup keeps the addresses it was given in root-only files of their own, not in the
+    // settings (which name one only while it is being switched). Read only; a file not
+    // there (alerts or the monitor never set up) has nothing to add.
+    for file in private {
+        let saved = common::json(file, 64000);
+        for key in ["endpoint", "token"] {
+            if let Some(v) = saved[key].as_str() {
+                found.push(v.to_string());
+            }
         }
     }
     found.retain(|v| v.chars().count() >= 6);
@@ -1691,6 +1707,54 @@ mod tests {
         let shown =
             plain_log("\x1b[32m[Nest] 24  - \x1b[39m11/10/2026 \x1b[31mERROR\x1b[39m no space");
         assert_eq!(shown, "[Nest] 24  - 11/10/2026 ERROR no space");
+    }
+
+    /// The deep check: the ntfy address and the outage monitor's address were looked for in
+    /// the settings, where setup never keeps them, so Ask Neko could hand them to the model.
+    /// They are read from setup's root-only files; a file not there adds nothing.
+    #[test]
+    fn the_alert_and_heartbeat_addresses_are_read_from_their_own_files() {
+        let root = std::env::temp_dir().join(format!("neko-assist-private-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let alerts = root.join("notifications.json");
+        let monitor = root.join("heartbeat.json");
+        let token = ["tk_", "alerts0123456789"].concat();
+        std::fs::write(
+            &alerts,
+            json!({"endpoint": "https://ntfy.sh/kept-topic-42", "token": token, "debounce_seconds": 180})
+                .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            &monitor,
+            json!({"endpoint": "https://hc-ping.com/abcdef-uuid"}).to_string(),
+        )
+        .unwrap();
+        // The settings as setup leaves them: no address in them.
+        let cfg =
+            json!({"notifications": {"endpoint": ""}, "heartbeat": {"interval_seconds": 300}});
+        let known = known_secrets_with(&cfg, &root, &[&alerts, &monitor]);
+        for want in [
+            "https://ntfy.sh/kept-topic-42",
+            token.as_str(),
+            "https://hc-ping.com/abcdef-uuid",
+        ] {
+            assert!(known.iter().any(|k| k == want), "{want}: {known:?}");
+        }
+        // Alerts and the monitor never set up: nothing, and no failure.
+        let none = known_secrets_with(&cfg, &root, &[&root.join("gone.json"), &root.join("x/y")]);
+        assert!(none.is_empty(), "{none:?}");
+        // The real ones are the files setup writes.
+        assert_eq!(
+            common::shared("private_settings", "notifications"),
+            "/etc/nekoserver-notifications/config.json"
+        );
+        assert_eq!(
+            common::shared("private_settings", "heartbeat"),
+            "/etc/nekoserver-heartbeat/config.json"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

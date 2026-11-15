@@ -22,6 +22,11 @@
       ]
     }
   },
+  "private_settings": {
+    "_about": "Root-only files setup writes the outside addresses to (they hold a key): the phone alerts' ntfy address and access token, and the outage monitor's address. Read by Ask Neko to take them out of what the model sees (assist.rs known_secrets).",
+    "notifications": "/etc/nekoserver-notifications/config.json",
+    "heartbeat": "/etc/nekoserver-heartbeat/config.json"
+  },
   "nas_watch": {
     "state": "/run/nekoserver-nas-watch.json",
     "lock": "/run/nekoserver-nas-watch.lock",

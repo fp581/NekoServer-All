@@ -15,11 +15,11 @@ import sys
 
 import native_runtime
 import outside_request
-from neko_common import VERSION, atomic_json, safe_path, check_units, write_units
+from neko_common import SHARED, VERSION, atomic_json, safe_path, check_units, write_units
 
 DEPENDENCIES = ['dashboard']
 DESCRIPTION = 'Background ntfy alerts, grouped retries and recovery notices (Rust)'
-PRIVATE_CONFIG = '/etc/nekoserver-notifications/config.json'
+PRIVATE_CONFIG = SHARED['private_settings']['notifications']
 # What the alert worker last managed (notify.rs writes it): "fail" while alerts don't get
 # through, which the dashboard shows as "Phone alerts are not being delivered".
 DELIVERY = '/run/nekoserver-notifications/delivery.json'
