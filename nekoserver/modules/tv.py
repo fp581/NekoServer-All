@@ -388,11 +388,27 @@ def not_possible(ctx):
     return None
 
 
-def wanted_packages(opts, vendors, has_browser):
-    """The packages the TV step installs: Steam and its controller rules, the Vulkan
-    driver for Intel or AMD graphics (`vendors`: gpu.graphics), Firefox when the PC has
-    no browser yet, and Bluetooth unless tv.bluetooth is false."""
-    packages = ['steam', 'steam-devices', *vulkan_packages(vendors)]
+FLATPAK_STEAM = 'com.valvesoftware.Steam'
+SYSTEM_FLATPAKS = Path('/var/lib/flatpak')
+
+
+def flatpak_steam(home, which=shutil.which, system=SYSTEM_FLATPAKS):
+    """The command that starts a Flatpak Steam already on this PC (for everyone, or in
+    the TV user's own Flatpaks), or None. The TV step uses it rather than installing a
+    second Steam from the distribution beside it (deep check 310)."""
+    flatpak = find_program('flatpak', which)
+    folders = (Path(system), Path(home) / '.local/share/flatpak')
+    if flatpak and any((folder / 'app' / FLATPAK_STEAM / 'current').exists() for folder in folders):
+        return f'{flatpak} run {FLATPAK_STEAM}'
+    return None
+
+
+def wanted_packages(opts, vendors, has_browser, flatpak=False):
+    """The packages the TV step installs: Steam (unless a Flatpak Steam is there:
+    `flatpak`) and its controller rules, the Vulkan driver for Intel or AMD graphics
+    (`vendors`: gpu.graphics), Firefox when the PC has no browser yet, and Bluetooth
+    unless tv.bluetooth is false."""
+    packages = [*([] if flatpak else ['steam']), 'steam-devices', *vulkan_packages(vendors)]
     if not has_browser:
         packages.append('firefox')
     if opts.get('bluetooth', True):
@@ -436,7 +452,16 @@ def run(ctx):
         raise RuntimeError('Mounted application SSD required for the TV report')
     desktop = desktop_folder(user, home) if opts.get('desktop_shortcuts', True) else None
     # The browser already here opens YouTube; Firefox is installed only where there is none.
-    steam_program = find_program('steam') or ('/usr/games/steam' if family.name == 'debian' else '/usr/bin/steam')
+    flatpak = flatpak_steam(home)
+    if flatpak:
+        ctx.log(
+            'TV: Steam from Flatpak ('
+            + FLATPAK_STEAM
+            + ') is already on this PC; the TV uses it, no second Steam is installed'
+        )
+    steam_program = (
+        flatpak or find_program('steam') or ('/usr/games/steam' if family.name == 'debian' else '/usr/bin/steam')
+    )
     browser_program = browser() or (
         '/usr/bin/firefox-esr' if family.name == 'debian' and not family.ubuntu() else '/usr/bin/firefox'
     )
@@ -458,9 +483,18 @@ def run(ctx):
             + (" (NVIDIA needs its maker's driver, installed your Linux's own way)" if 'nvidia' in vendors else '')
             + '; installing Steam without a Vulkan driver package'
         )
-    packages = wanted_packages(opts, vendors, bool(browser()))
+    packages = wanted_packages(opts, vendors, bool(browser()), flatpak=bool(flatpak))
     missing = [p for p in packages if not family.installed(p)]
     unavailable = [p for p in missing if not family.available(p) or (p == 'steam' and not steam_ready(family))]
+    if flatpak and 'steam-devices' in unavailable:
+        # Flatpak Steam runs without it; only some controllers need its rules.
+        ctx.log(
+            'TV: steam-devices (controller rules) is not offered here; most controllers work in Flatpak Steam '
+            'without it. If yours is not seen, ' + steam_source(family) + ', then run setup again.'
+        )
+        packages = [p for p in packages if p != 'steam-devices']
+        missing = [p for p in missing if p != 'steam-devices']
+        unavailable = [p for p in unavailable if p != 'steam-devices']
     if unavailable:
         ctx.log(
             'TV packages not offered by the repositories switched on here: '
@@ -483,9 +517,9 @@ def run(ctx):
             ) from None
     if not all(family.installed(p) for p in packages):
         raise RuntimeError('TV package installation was not retained')
-    steam_program = find_program('steam') or steam_program
+    steam_program = flatpak or find_program('steam') or steam_program
     browser_program = browser() or browser_program
-    for binary in (steam_program, browser_program):
+    for binary in (steam_program.split()[0], browser_program):
         if not Path(binary).is_file():
             raise RuntimeError('Required TV launcher executable missing: ' + binary)
     files = launchers(steam_program, browser_program)

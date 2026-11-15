@@ -195,9 +195,13 @@ NOT_TESTED, WORKED, DID_NOT_WORK = 'not_tested', 'worked', 'did_not_work'
 EARLIER_TV_CHECKS = {'tv:' + handoff: tests for handoff, tests in tv.HANDOFF_TESTS.items()}
 
 
-def tv_installs(opts, vendors, has_browser):
+def tv_installs(opts, vendors, has_browser, flatpak=False):
     """What the TV extra installs on this PC, in plain lines."""
-    lines = ['Steam, with its Big Picture mode for a TV and a controller.']
+    lines = [
+        'Nothing for Steam: the Flatpak Steam already on this PC opens in Big Picture mode on the TV.'
+        if flatpak
+        else 'Steam, with its Big Picture mode for a TV and a controller.'
+    ]
     if tv.vulkan_packages(vendors):
         lines.append('The graphics driver part games need (Vulkan) for this PC\'s graphics.')
     if not has_browser:
@@ -212,10 +216,10 @@ def tv_installs(opts, vendors, has_browser):
     return lines
 
 
-def tv_plan(config, family=None, has_desktop=None, vendors=None, has_browser=None):
+def tv_plan(config, family=None, has_desktop=None, vendors=None, has_browser=None, flatpak=None):
     """What the TV extra will install on this PC, and what it cannot set up by itself.
 
-    The PC is looked at when the last four are left out (tests give them).
+    The PC is looked at when the last five are left out (tests give them).
     Returns {'possible': True | False, 'reason': why not ('' when possible),
              'installs': [plain lines], 'packages': [package names, for small print],
              'needs_first': '' or what the person must switch on before Steam can be installed,
@@ -245,12 +249,17 @@ def tv_plan(config, family=None, has_desktop=None, vendors=None, has_browser=Non
         return plan
     vendors = tv.graphics() if vendors is None else vendors
     has_browser = bool(tv.browser()) if has_browser is None else has_browser
+    if flatpak is None:
+        try:
+            flatpak = bool(tv.flatpak_steam(tv.desktop_user(config)[1]))
+        except (RuntimeError, KeyError, OSError):
+            flatpak = False  # no desktop user to look in yet: the step looks again
     plan['possible'] = True
-    plan['packages'] = tv.wanted_packages(opts, vendors, has_browser)
-    plan['installs'] = tv_installs(opts, vendors, has_browser)
+    plan['packages'] = tv.wanted_packages(opts, vendors, has_browser, flatpak=flatpak)
+    plan['installs'] = tv_installs(opts, vendors, has_browser, flatpak)
     if not tv.vulkan_packages(vendors) and 'nvidia' in vendors:
         plan['not_automatic'].append("NVIDIA graphics: its maker's driver, installed your Linux's own way.")
-    if not tv.steam_ready(family) or not family.available('steam'):
+    if not flatpak and (not tv.steam_ready(family) or not family.available('steam')):
         plan['needs_first'] = (
             'Steam is not offered by the software sources switched on here. To get it, '
             + tv.steam_source(family)
