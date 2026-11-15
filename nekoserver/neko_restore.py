@@ -529,8 +529,13 @@ def check_copy(card, rec):
 def holds_text(path, text):
     """Whether `path` holds `text`, as plain text (no pattern), with accented letters
     compared as letters: "é" typed on Linux is one character, the same "é" in a name from
-    a Mac or a phone is two (e and an accent), and the search found nothing."""
-    return unicodedata.normalize('NFC', text) in unicodedata.normalize('NFC', path)
+    a Mac or a phone is two (e and an accent), and the search found nothing. Upper and
+    lower case are alike too: "beach" finds "2021/Beach Trip" (deep check 488)."""
+
+    def plain(words):
+        return unicodedata.normalize('NFC', words).casefold()
+
+    return plain(text) in plain(path)
 
 
 def selected(card, search=None, record_ids=None):
@@ -1425,11 +1430,11 @@ def main(argv=None, say=print):
     sub.add_parser('info', help='what this card is')
     for name, helptext in (('list', 'the files on this card'), ('verify', 'check every file against its record')):
         p = sub.add_parser(name, help=helptext)
-        p.add_argument('--search', help='only paths that contain this text')
+        p.add_argument('--search', help='only paths that contain this text (upper and lower case alike)')
         p.add_argument('--record', action='append', help='only this record ID (may be repeated)')
     p = sub.add_parser('restore', help='restore files into a folder')
     p.add_argument('destination', help='an existing folder')
-    p.add_argument('--search', help='only paths that contain this text')
+    p.add_argument('--search', help='only paths that contain this text (upper and lower case alike)')
     p.add_argument('--record', action='append', help='only this record ID (may be repeated)')
     p.add_argument('--rename', action='store_true', help='a file whose place is taken goes under _renamed/')
     p.add_argument('--overwrite', action='append', help='overwrite this one file (its original path); may be repeated')

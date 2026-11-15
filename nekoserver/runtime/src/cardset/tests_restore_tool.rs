@@ -241,7 +241,14 @@ fn a_damaged_file_is_never_restored_and_a_taken_place_never_overwritten() {
             "2001/beach.jpg",
         ],
     );
-    assert!(out.status.success(), "{}", text(&out));
+    // The search ignores case (deep check 488), so its twin 2001/Beach.JPG comes along
+    // and is skipped: on this folder it would take beach.jpg's place.
+    assert!(
+        text(&out).contains("restored    2001/beach.jpg -> 2001/beach.jpg")
+            && text(&out).contains("skipped     2001/Beach.JPG"),
+        "{}",
+        text(&out)
+    );
     assert_eq!(
         fs::read(w.dest.join("2001/beach.jpg")).unwrap(),
         fs::read(w.src.root.join("2001/beach.jpg")).unwrap()
