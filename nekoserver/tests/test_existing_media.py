@@ -626,7 +626,8 @@ class Jellyfin:
         if method == 'GET':
             return self.libraries
         query = {name: values[0] for name, values in urllib.parse.parse_qs(endpoint.split('?')[1]).items()}
-        self.libraries.append({'Name': query['name'], 'Locations': [query['paths']], 'ItemId': '9'})
+        made = {'Name': query['name'], 'Locations': [query['paths']], 'ItemId': '9'}
+        self.libraries.append({**made, 'CollectionType': query['collectionType']})
         return {}
 
 
@@ -653,6 +654,20 @@ class LibraryTests(unittest.TestCase):
         client.calls.clear()
         self.assertEqual(self.libraries(client)[0]['status'], 'pass')
         self.assertEqual([method for method, _ in client.calls], ['GET'])
+
+    def test_the_folder_in_a_library_of_another_kind_is_not_passed(self):
+        """Review of 0.51.2: the folder of films in a music library passed, on its path."""
+        for kind, said in (('music', 'which is for music, not for movies'), (None, 'which is for mixed content')):
+            mine = {'Name': 'Mine', 'Locations': ['/data/existing/movies/'], 'CollectionType': kind, 'ItemId': '4'}
+            client = Jellyfin([mine])
+            (row,) = self.libraries(client)
+            self.assertEqual(row['status'], 'needs_setup', kind)
+            self.assertIn(said, row['reason'])
+            self.assertIn('remove "Mine" (this deletes no files)', row['reason'])
+            self.assertEqual(client.libraries, [mine])  # theirs: left as it is
+        # Of the right kind (the person's own library for films): passed as before.
+        client = Jellyfin([{**mine, 'CollectionType': 'movies'}])
+        self.assertEqual(self.libraries(client), [{'check': 'jellyfin:existing:movies', 'status': 'pass'}])
 
     def test_a_preview_and_a_share_that_is_away_make_nothing(self):
         client = Jellyfin()

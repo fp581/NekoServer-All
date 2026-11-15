@@ -817,6 +817,11 @@ def guard(config, category, **how):
 
 
 NAME_TAKEN = '{app} already has a library called "{name}" for another folder; rename it in {app}, then run setup again'
+WRONG_KIND = (
+    'Jellyfin has your folder {path} in the library "{name}", which is for {has}, not for {what}: they would not '
+    'be shown properly. In Jellyfin open Dashboard, Libraries and remove "{name}" (this deletes no files), then '
+    'run setup again; it makes the right library'
+)
 API_FAILED = 'Library API/path check failed; existing settings preserved'
 NAVIDROME_LIBRARIES = '/api/library'  # Navidrome's list of libraries, read and added to
 TOO_OLD = (
@@ -857,11 +862,27 @@ def jellyfin_library(client, config, entry, kind, apply, how):
     ready_row(config, entry, how)
     path = container_path(entry['holds'], entry['use'])
 
-    def there():
-        return any(path in [str(p).rstrip('/') for p in x['Locations']] for x in media_libraries.folders(client))
+    def there(values):
+        """A library has the folder. Of the right kind, or said: Jellyfin reads films
+        as films only in a library for films (review of 0.51.2: a folder of films in a
+        music library passed, on its path alone)."""
+        found = [x for x in values if path in [str(p).rstrip('/') for p in x['Locations']]]
+        wrong = next((x for x in found if str(x.get('CollectionType') or '').casefold() != kind), None)
+        if wrong:
+            raise media_libraries.SetupRequired(
+                WRONG_KIND.format(
+                    path=entry['path'],
+                    name=wrong.get('Name', ''),
+                    has={'tvshows': 'shows'}.get(
+                        wrong.get('CollectionType'), wrong.get('CollectionType') or 'mixed content'
+                    ),
+                    what=WHAT[entry['holds']],
+                )
+            )
+        return bool(found)
 
     values = media_libraries.folders(client)
-    if any(path in [str(p).rstrip('/') for p in x['Locations']] for x in values):
+    if there(values):
         return media_libraries.row(check_name, 'pass')
     if any(str(x.get('Name', '')).casefold() == name.casefold() for x in values):
         raise media_libraries.SetupRequired(NAME_TAKEN.format(app='Jellyfin', name=name))
@@ -869,7 +890,7 @@ def jellyfin_library(client, config, entry, kind, apply, how):
         return media_libraries.row(check_name, 'needs_setup', 'Preview: library would be created')
     asked = {'name': name, 'collectionType': kind, 'paths': path, 'refreshLibrary': 'true'}
     client.call('/Library/VirtualFolders?' + urllib.parse.urlencode(asked), 'POST', {})
-    if not there():
+    if not there(media_libraries.folders(client)):
         raise RuntimeError('Library creation was not retained')
     return media_libraries.row(check_name, 'pass')
 
