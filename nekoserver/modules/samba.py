@@ -499,6 +499,35 @@ def run(context):
         # (shares of your own use it) is never on this list, and stays.
         remember_account(user)
     context.log(f'Samba configured for {mode}, authenticated user {user}; existing password preserved')
+    for line in how_to_open(mode, settings.get('lan_ip'), user, settings['shares']):
+        context.log(line)
+
+
+def how_to_open(mode, ip, user, shares):
+    """What to type on another computer to open the shares. They never show up by
+    themselves under "Network": Windows finds servers there with WS-Discovery and the
+    old NetBIOS browsing, which this Samba does not offer (disable netbios), and a Mac
+    lists one only when its name is announced. Typing the address always works."""
+    where = ip if mode == 'lan' else '100.x.y.z'
+    first = next(iter(shares))
+    lines = [
+        'Shared folders: to open them from another computer, type their address; they do not show up '
+        'by themselves under "Network". '
+        + ('' if mode == 'lan' else 'Tailscale must be on there. ')
+        + 'Shares: '
+        + ', '.join(shares)
+        + '.',
+        f'  Windows: in File Explorer\'s address bar type  \\\\{where}\\{first}  (to keep it, right-click '
+        '"This PC", "Map network drive").',
+        f'  Mac: in Finder choose Go, "Connect to Server", type  smb://{where}/{first}  and choose "Registered User".',
+        f'  Linux: in the file manager press Ctrl+L and type  smb://{where}/{first}',
+        f'  Sign in as {user} with the shared folders\' password chosen in setup.',
+    ]
+    if mode != 'lan':
+        lines.append(
+            "  Put the server's Tailscale address in place of 100.x.y.z: on the server,  tailscale ip -4  shows it."
+        )
+    return lines
 
 
 # Whether Samba was switched on before NekoServer switched it on: the uninstaller then

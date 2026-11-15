@@ -476,6 +476,69 @@ class SambaSharesTests(unittest.TestCase):
         self.assertEqual(samba.wanted_shares(config), {'Media': 'library', 'Photos': 'my-pictures'})
 
 
+class SambaHowToOpenTests(unittest.TestCase):
+    """Deep check 558-560: the shares never show up under "Network" by themselves
+    (Windows finds servers there through WS-Discovery or NetBIOS, both of which this Samba
+    leaves out), and no guide or line of setup said what to type instead, on Windows, a
+    Mac or Linux: a person who looked under Network found nothing."""
+
+    def run_to_the_end(self, mode='lan'):
+        logged = []
+        with tempfile.TemporaryDirectory() as d:
+            media = Path(d, 'media')
+            (media / 'library').mkdir(parents=True)
+            ctx = SimpleNamespace(
+                config={
+                    'media_mount': str(media),
+                    'gateway': {'lan_ip': '192.168.1.20', 'lan_cidr': '192.168.1.0/24'},
+                    'networking': {'share_mode': mode, 'tailnet_only': True, 'shares': {'Media': 'library'}},
+                    'photos': {'deploy_immich': False},
+                    'media_groups': {'movies': True},
+                },
+                log=logged.append,
+                apply=True,
+            )
+            pdbedit = mock.Mock(returncode=0, stdout='neko:1000:\n')
+            with (
+                mock.patch.object(samba.os, 'geteuid', return_value=0),
+                mock.patch.object(samba.host, 'current'),
+                mock.patch.object(samba.network_access, 'choose_lan', return_value=True),
+                mock.patch.object(samba.network_access, 'verify_lan'),
+                mock.patch.object(samba, 'samba_account', return_value='neko'),
+                mock.patch.object(samba.pwd, 'getpwnam'),
+                mock.patch.object(samba, 'findmnt', return_value=str(media)),
+                mock.patch.object(samba.shutil, 'which', return_value='/usr/bin/x'),
+                # Samba's own files (under /etc) go to the temporary folder.
+                mock.patch.object(
+                    samba, 'safe_path', lambda p: Path(d, str(p).lstrip('/')) if str(p).startswith('/etc') else Path(p)
+                ),
+                mock.patch.object(samba, 'SYSTEMD_UNITS', Path(d, 'units')),
+                mock.patch.object(samba, 'remember_service'),
+                mock.patch.object(samba, 'switch_off_unused', return_value=[]),
+                mock.patch.object(samba, 'call', return_value='mnt-media.mount'),
+                mock.patch.object(samba.subprocess, 'run', return_value=pdbedit),
+            ):
+                self.assertIsNone(samba.run(ctx))
+        return '\n'.join(logged)
+
+    def test_setup_says_what_to_type_on_each_computer(self):
+        said = self.run_to_the_end()
+        self.assertIn('do not show up by themselves under "Network"', said)
+        self.assertIn('\\\\192.168.1.20\\Media', said)  # Windows
+        self.assertEqual(said.count('smb://192.168.1.20/Media'), 2)  # Mac, Linux
+        self.assertIn('Sign in as neko', said)
+
+    def test_over_tailscale_it_names_the_address_to_use(self):
+        lines = samba.how_to_open('tailnet', None, 'neko', {'Media': 'library'})
+        self.assertIn('Tailscale must be on there', lines[0])
+        self.assertIn('tailscale ip -4', lines[-1])
+
+    def test_the_readme_says_it_too(self):
+        text = (ROOT / 'README.md').read_text()
+        for typed in ('\\\\192.168.1.20\\Media', 'smb://192.168.1.20/Media', 'Connect to Server', 'Map network drive'):
+            self.assertIn(typed, text)
+
+
 if __name__ == '__main__':
     unittest.main()
 
