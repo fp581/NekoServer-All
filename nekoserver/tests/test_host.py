@@ -106,6 +106,19 @@ class InstallTest(unittest.TestCase):
         lock.start()
         self.addCleanup(lock.stop)
 
+    def test_amd_video_decoding_is_found_in_mesa(self):
+        # Deep check 265: Arch merged libva-mesa-driver into mesa (1:24.2.7); pacman -Si
+        # finds only real package names, so AMD's video driver was left out as "not offered".
+        pacman = FakePacman(offered={'mesa', 'libva-utils', 'intel-media-driver'})
+        family = host.Arch(pacman)
+        with mock.patch.object(host, 'current', return_value=family):
+            from modules import hardware_video
+
+            said = []
+            hardware_video.install_drivers('amd', said.append)
+        self.assertIn(['pacman', '-S', '--needed', '--noconfirm', 'mesa', 'libva-utils'], pacman.calls)
+        self.assertEqual(said, ['Video drivers for the AMD graphics chip: libva-mesa-driver, libva-utils'])
+
     def test_waits_while_another_pacman_works(self):
         pacman = FakePacman(offered={'b'})
         family = host.Arch(pacman)

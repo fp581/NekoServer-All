@@ -796,6 +796,13 @@ class Arch(Family):
     manager = 'pacman'
     ids = ('arch', 'nyarch')
     like = ('arch',)
+    packages = MappingProxyType(
+        {
+            # AMD's video decoding comes with mesa itself since 24.2.7: libva-mesa-driver is
+            # only a name mesa provides, which  pacman -Si  does not find.
+            'libva-mesa-driver': 'mesa',
+        }
+    )
     services = MappingProxyType({'samba': SAMBA_UNIT, 'tailscale': TAILSCALE_UNIT, 'iscsi-login': ISCSI_LOGIN_UNIT})
     settings = ('/etc/pacman.conf', '/etc/pacman.d/mirrorlist')
     wait = 600  # seconds to wait for another pacman to finish
