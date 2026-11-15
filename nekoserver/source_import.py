@@ -149,6 +149,10 @@ def stable_inodes(path):
 
 # Files still being written by another program; never imported.
 TEMPORARY = ('.neko-part', '.part', '.tmp', '.crdownload', '.!qB')
+# What a download program leaves beside its downloads for its own use, never media and
+# never finished: qBittorrent's ".<torrent>.parts" (pieces of the files you did not
+# choose). They were copied into the library as films or music.
+LEFTOVERS = ('.parts',)
 # How to copy what is new in a source copied before (it is skipped otherwise).
 AGAIN = 'sudo python3 source_import.py --config my-config.json --again --apply'
 
@@ -507,19 +511,21 @@ def already_copied(current, dest, apply=False):
     return True
 
 
-def planned_copies(folder, target, apply=False, conflicts=None, downloading=None):
+def planned_copies(folder, target, apply=False, conflicts=None, downloading=None, leftovers=None):
     """[(file, where it goes, its stat)] for every file not imported yet. Strict listing:
     a folder that cannot be read makes this source incomplete (nothing is copied),
     instead of silently leaving an album out. A different file already at a file's place
     in the library (another source's `folder.jpg`, one Sonarr replaced) is kept and the
     file left out: its path, relative to the source, goes into `conflicts`. A file still
-    being downloaded (TEMPORARY) is left out too, its path in `downloading`."""
+    being downloaded (TEMPORARY) is left out too, its path in `downloading`; a download
+    program's own leftover (LEFTOVERS) likewise, its path in `leftovers`."""
 
     def unfinished(here, name):
-        if not name.endswith(TEMPORARY):
+        noted = leftovers if name.endswith(LEFTOVERS) else downloading if name.endswith(TEMPORARY) else None
+        if not name.endswith(LEFTOVERS + TEMPORARY):
             return False
-        if downloading is not None:
-            downloading.append(shown_name((Path(here) / name).relative_to(folder)))
+        if noted is not None:
+            noted.append(shown_name((Path(here) / name).relative_to(folder)))
         return True
 
     try:
@@ -585,8 +591,8 @@ def copy_source(source, media, apply=False, uid=None, gid=None, guard=None):
     left = move_legacy(folder, media, category, guard) if apply else []
     if left:
         return legacy_left(left, folder, media, category)
-    conflicts, downloading = [], []
-    entries = planned_copies(folder, target, apply, conflicts, downloading)
+    conflicts, downloading, leftovers = [], [], []
+    entries = planned_copies(folder, target, apply, conflicts, downloading, leftovers)
     required = sum(stat.st_size for _, _, stat in entries)
     free = shutil.disk_usage(media).free
     if required > free:
@@ -603,7 +609,8 @@ def copy_source(source, media, apply=False, uid=None, gid=None, guard=None):
         'bytes': required,
         'destination': str(target),
     }
-    return with_downloading(with_skipped(with_conflicts(result, conflicts), skipped), downloading)
+    result = with_downloading(with_skipped(with_conflicts(result, conflicts), skipped), downloading)
+    return with_leftovers(result, leftovers)
 
 
 def shown_name(path):
@@ -650,6 +657,19 @@ def with_downloading(result, downloading):
             f'{len(downloading)} files were still being downloaded (or written) and were not copied: '
             + ', '.join(downloading[:10])
             + f'. When they have finished, copy them with  {AGAIN}  (in the NekoServer folder)'
+        )
+        result['reason'] = result['reason'] + '. ' + said if result.get('reason') else said
+    return result
+
+
+def with_leftovers(result, leftovers):
+    """The report row, naming a download program's own files that were left out: they
+    are no media, and there is nothing to do about them."""
+    if leftovers:
+        result['download_leftovers'] = len(leftovers)
+        said = (
+            f'{len(leftovers)} files that a download program keeps for itself (qBittorrent\'s .parts) were left '
+            'out, since they are no films, shows or music: ' + ', '.join(leftovers[:10])
         )
         result['reason'] = result['reason'] + '. ' + said if result.get('reason') else said
     return result

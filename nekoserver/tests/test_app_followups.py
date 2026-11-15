@@ -158,6 +158,24 @@ class SymlinkSafeImportTests(unittest.TestCase):
         self.assertIn(source_import.AGAIN, result['reason'])
         self.assertFalse((self.media / 'library/music/Album/track2.flac.!qB').exists())
 
+    def test_a_download_programs_own_leftover_is_not_imported_as_media(self):
+        # D7: qBittorrent keeps the pieces of files you did not choose in a hidden
+        # ".<torrent>.parts" file beside the download. It was copied into the library.
+        leftover = 'Album/.0123456789abcdef0123456789abcdef01234567.parts'
+        (self.source / leftover).write_bytes(b'pieces')
+        for apply in (False, True):
+            result = source_import.copy_source(self.entry, self.media, apply=apply)
+            self.assertEqual(result['new_files'], 1, 'only the track is planned')
+            self.assertEqual(result['bytes'], 5)
+            self.assertEqual(result['download_leftovers'], 1)
+            self.assertIn(leftover, result['reason'])
+            # Not "still being downloaded": it never finishes, and nothing is left to do.
+            self.assertNotIn('still_downloading', result)
+            self.assertNotIn(source_import.AGAIN, result['reason'])
+        self.assertEqual(result['copied'], 1)
+        self.assertEqual(self.copied(), [b'track'])
+        self.assertEqual(result['status'], 'copied')
+
 
 class FakeArr:
     """Prowlarr and the Arr apps' API, as media-connect.py's request() sees it."""
