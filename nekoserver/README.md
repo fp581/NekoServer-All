@@ -202,6 +202,8 @@ Keep a copy somewhere safe, such as a password manager.
 
 These addresses are **private**: they work only on devices signed in to your Tailscale account. Nothing is opened to the public internet, and your router needs no changes.
 
+**On a TV** Tailscale runs on Android TV, Google TV and Apple TV, but not on LG, Samsung or Roku TVs, and casting from the phone does not work: [GATEWAY.md](GATEWAY.md#on-a-tv) says what to do on each.
+
 **On other devices at home** you can also use your server's home address.
 
 > **First, in your router, reserve that address for the server** (the setting is usually called "DHCP reservation" or "static lease"). Otherwise it can change after a restart (or with a new router) and the home addresses and shared folders stop working; the dashboard then says *Home addresses stopped*. Run `sudo bash install.sh` again: it finds the new address by itself and moves them to it.

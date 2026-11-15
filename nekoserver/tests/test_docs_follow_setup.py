@@ -472,6 +472,21 @@ class GatewayGuideTests(unittest.TestCase):
     def test_the_home_network_is_not_selected_by_hand(self):
         self.assertNotIn('Select the physical home interface', doc('GATEWAY.md'))
 
+    def test_a_tv_is_sent_only_where_it_can_go(self):
+        """Deep check 553-555: "if an app refuses the certificate, use its Tailscale address"
+        sent an LG, Samsung or Roku TV owner to a Tailscale app those TVs don't have (their
+        Jellyfin apps can't take the server's certificate either), and casting from the
+        phone, which fails on both addresses, was not mentioned."""
+        text = doc('GATEWAY.md')
+        self.assertLess(text.index('## On a TV'), text.index('## For administrators'))
+        part = text.split('## On a TV')[1].split('\n## ')[0]
+        for tv in ('LG', 'Samsung', 'Roku', 'Android TV', 'Apple TV', 'Fire TV'):
+            self.assertIn(tv, part)
+        self.assertIn('no Tailscale app', part)
+        self.assertIn('HDMI', part)
+        self.assertIn('Casting from the phone', part)
+        self.assertIn('(GATEWAY.md#on-a-tv)', doc('README.md'))
+
 
 class ToolHelpTests(unittest.TestCase):
     """Deep check plan 388: --help of the tools the guides tell a person to run. recover.py
