@@ -39,6 +39,11 @@ FILESYSTEMS = ('nfs4', 'nfs')
 # A shared folder as the NAS names it: /volume1/media. No spaces (a line of /etc/fstab
 # cannot hold one plainly) and no "..".
 FOLDER = re.compile(r'(/[A-Za-z0-9_+@~-][A-Za-z0-9_.+@~-]*)+')
+# The same, in words for a person whose folder is called otherwise ("My Films", "Música").
+FOLDER_RULE = (
+    'NekoServer can use only a shared folder whose name has no spaces and only the letters A to Z, digits and '
+    '. _ - + @ ~ (it goes into /etc/fstab as it is)'
+)
 HOST = re.compile(r'(\d{1,3}(\.\d{1,3}){3}|[A-Za-z0-9][A-Za-z0-9.-]{0,252})')
 
 WHAT_FOR = (
@@ -170,22 +175,25 @@ def this_pc(host, port=PORT):
         return ''
 
 
-def shared_folders(host, run=subprocess.run):
+def shared_folders(host, run=subprocess.run, left_out=None):
     """The folders the NAS says it shares: [(folder, who may use it)], from `showmount -e`.
     Empty when it gives no list: a NAS that speaks only NFS version 4 has none to give,
-    and the folder is then typed as the NAS's own page shows it."""
+    and the folder is then typed as the NAS's own page shows it. `left_out` (a list)
+    gets the folders it shares that NekoServer cannot use (see `listed`)."""
     try:
         done = run_tool(['showmount', '-e', '--no-headers', host], 30, run)
     except (OSError, subprocess.SubprocessError):
         return []
     if done.returncode:
         return []
-    return listed(done.stdout)
+    return listed(done.stdout, left_out)
 
 
-def listed(text):
+def listed(text, left_out=None):
     """showmount's lines ("/volume1/media 192.168.1.0/24,192.168.1.30") as [(folder,
-    who)]; a folder NekoServer could not name in /etc/fstab (a space in it) is left out."""
+    who)]; a folder NekoServer could not name in /etc/fstab (a space in it, a letter
+    other than A to Z) is left out, and added to `left_out` when given, so setup can say
+    why it is not offered (deep check 478: "/volume1/My Films" was silently missing)."""
     found = []
     for line in text.splitlines():
         # The folder, then who may use it (one word, the last on the line).
@@ -193,6 +201,8 @@ def listed(text):
         folder = folder.strip().rstrip('/')
         if FOLDER.fullmatch(folder):
             found.append((folder, who))
+        elif folder and left_out is not None:
+            left_out.append(folder)
     return found
 
 

@@ -866,7 +866,9 @@ def shared_folders(context, options, interactive, input_fn=None):
     if not any(saved.get(role) for role in FOLDER_ROLES):
         if not interactive:
             raise RuntimeError('No shared folder is chosen yet; run  sudo bash install.sh  in a terminal')
-        asked_folders(config, saved, nfs_exports.shared_folders(host), input_fn, log)
+        left_out = []
+        found = nfs_exports.shared_folders(host, left_out=left_out)
+        asked_folders(config, saved, found, input_fn, log, left_out)
     exports = {role: nfs_exports.address(host, saved[role]) for role in FOLDER_ROLES if saved.get(role)}
     apart(exports)
     media = config.get('media', {})
@@ -889,17 +891,27 @@ def shared_folders(context, options, interactive, input_fn=None):
     return None
 
 
-def asked_folders(config, saved, found, input_fn, out_fn):
+def asked_folders(config, saved, found, input_fn, out_fn, left_out=()):
     """Which shared folder is the media drive and which the backup drive, each by its
     number in the NAS's list or typed as the NAS names it; Enter alone leaves that drive
-    to one connected to this PC."""
+    to one connected to this PC. `left_out`: folders the NAS shares that cannot be used,
+    named with the reason, so a person looking for theirs knows why it is not offered."""
+    import nfs_exports
     from modules.storage import DRIVES, drive_label
+    from neko_common import printable
 
     if found:
         out_fn(f'The NAS at {saved["server"]} shares these folders over NFS:')
         for n, (folder, who) in enumerate(found, 1):
             out_fn(f'  {n}) {folder}  (for: {who})')
-    else:
+    if left_out:
+        out_fn(
+            'Not offered: '
+            + ', '.join(printable(folder) for folder in left_out)
+            + f'. {nfs_exports.FOLDER_RULE}. To use one of them, rename it on the NAS (or share another folder), '
+            'then run setup again.'
+        )
+    if not found:
         out_fn(
             f'The NAS at {saved["server"]} answers NFS but gives no list of its shared folders (one that speaks '
             "only NFS version 4 has none). Type each folder as the NAS's own page names it, such as /volume1/media."
@@ -925,11 +937,26 @@ def asked_folder(words, names, input_fn, out_fn):
             return names[int(answer) - 1]
         if nfs_exports.FOLDER.fullmatch(answer.rstrip('/')):
             return answer.rstrip('/')
-        out_fn(
+        out_fn(folder_refused(answer))
+    raise RuntimeError('No usable shared folder was typed; run setup again. Nothing was changed.')
+
+
+def folder_refused(answer):
+    """What to say about a typed folder that cannot be used: a number or a name without
+    its starting / is asked again as before; a name with a space or an accent is told
+    why, as "without spaces" alone misled for "/volume1/Música" (deep check 478)."""
+    import nfs_exports
+    from neko_common import printable
+
+    if not answer.startswith('/'):
+        return (
             'Type a number from the list, or the folder as the NAS names it, starting with / and without spaces '
             '(such as /volume1/media).'
         )
-    raise RuntimeError('No usable shared folder was typed; run setup again. Nothing was changed.')
+    return (
+        f'{nfs_exports.FOLDER_RULE}, and "{printable(answer)}" is not one. Rename the folder on the NAS (or share '
+        'another folder) and type that name, or press Enter alone to use a drive on this PC instead.'
+    )
 
 
 def apart(exports):

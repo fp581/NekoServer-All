@@ -380,8 +380,14 @@ class StepTests(unittest.TestCase):
 
     LISTED = [('/volume1/media', '192.168.1.0/24'), ('/volume1/backup', '192.168.1.0/24')]
 
-    def step(self, config, typed=(), listed=None, tried=None, interactive=True, answers=True):
+    def step(self, config, typed=(), listed=None, tried=None, interactive=True, answers=True, shown=None):
+        """`shown`: showmount's own output, read as setup reads it, in place of `listed`."""
         ctx = Ctx(config)
+        found = (
+            {'side_effect': lambda host, run=None, **kw: nfs.listed(shown, **kw)}
+            if shown is not None
+            else {'return_value': self.LISTED if listed is None else listed}
+        )
         answers_typed = iter(typed)
         tried = tried or (lambda export, uid, gid: {'fstype': 'nfs4', 'size': 2000 * GB, 'free': 1500 * GB})
         with (
@@ -393,7 +399,7 @@ class StepTests(unittest.TestCase):
             mock.patch.object(nas, 'wait_for_network') as waited,
             mock.patch.object(nas, 'answers', return_value=False),
             mock.patch.object(nas, 'nfs_answers', return_value=answers),
-            mock.patch.object(nfs, 'shared_folders', return_value=self.LISTED if listed is None else listed),
+            mock.patch.object(nfs, 'shared_folders', **found),
             mock.patch.object(nfs, 'tried', side_effect=tried) as tried_out,
         ):
             result = nas.run(ctx)
@@ -452,6 +458,20 @@ class StepTests(unittest.TestCase):
         said = '\n'.join(ctx.lines)
         self.assertIn('gives no list of its shared folders', said)
         self.assertIn('starting with / and without spaces', said)  # "media" was not a folder's name
+
+    def test_a_folder_named_with_a_space_or_an_accent_is_said_not_left_out_silently(self):
+        """Deep check 478: "/volume1/My Films" was missing from the list with no word why,
+        and "/volume1/Música" typed was told "without spaces", which it was."""
+        config = {'network_storage': {'wanted': True}}
+        shown = '/volume1/media *\n/volume1/My Films *\n/volume1/Música *\n'
+        ctx, _, _ = self.step(config, [NAS, '/volume1/Música', '1', ''], shown=shown)
+        self.assertEqual(config['network_storage']['nfs']['media'], '/volume1/media')
+        said = '\n'.join(ctx.lines)
+        self.assertIn('  1) /volume1/media  (for: *)', said)
+        self.assertIn('Not offered: /volume1/My Films, /volume1/Música. NekoServer can use only a shared folder', said)
+        self.assertIn('rename it on the NAS (or share another folder)', said)
+        self.assertIn('"/volume1/Música" is not one. Rename the folder on the NAS', said)
+        self.assertNotIn('without spaces', said)
 
     def test_no_folder_chosen_changes_nothing(self):
         config = {'network_storage': {'wanted': True}}
