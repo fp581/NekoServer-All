@@ -810,7 +810,9 @@ class BackupWordingTests(unittest.TestCase):
 
         self.assertIn('newest 3', app_backup.retention(app_backup.keep_snapshots({})))
         self.assertIn('deleted', app_backup.retention(14))
-        self.assertIn('none are deleted', app_backup.retention(0))
+        self.assertIn('none is deleted to keep to a number', app_backup.retention(0))
+        # A full HDD removes the oldest whatever the count: said with both (deep check 411).
+        self.assertIn('One exception: when the HDD is too full', app_backup.retention(0))
         self.assertNotIn('No automatic backup deletion', (Path(app_backup.__file__)).read_text())
 
 
