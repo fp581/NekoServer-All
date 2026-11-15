@@ -183,6 +183,22 @@ class RestoreAsOfTests(Restoring):
         _, out = self.restore('1', '1', '1', '1', 'yes')
         self.assertIn('did not finish', out)
 
+    def test_a_damaged_newest_list_is_said_as_damaged_not_as_an_empty_backup(self):
+        """Review of 0.51.2 (P2): a list cut short by a power cut was read as "lists no
+        files: the folder was empty then", and an older list was recommended, which leaves
+        out the newest backup's files."""
+        self.write(self.tree / 'alice/files/later.txt', b'later')
+        newest = sorted((self.tree / '.neko-inventory').glob('2026*.json.gz'))[-1]
+        newest.write_bytes(newest.read_bytes()[:20])  # cut short
+        got, out = self.restore('1', '1', '1', '1', 'yes')
+        self.assertIn('is damaged and cannot be read', out)
+        self.assertNotIn('lists no files', out)
+        self.assertIn('1. Everything ever kept, also files you deleted or renamed (recommended', out)
+        self.assertEqual(got['later.txt'], b'later')
+        # The older list is still offered, by its date.
+        _, out = self.restore('1', '2', '1', 'yes')
+        self.assertIn('Restoring the', out)
+
     def test_a_newest_backup_whose_list_failed_is_not_offered_as_the_last_backup(self):
         # The newest run copied later.txt, then its list could not be written.
         self.write(self.tree / 'alice/files/later.txt', b'later')
@@ -275,7 +291,8 @@ class RestoreAsOfTests(Restoring):
         for path in (self.tree / '.neko-inventory').iterdir():
             path.write_bytes(b'not gzip')
         got, out = self.restore('1', '1', '1', '1', 'yes')
-        self.assertIn('could not be read, so everything ever kept is offered', out)
+        self.assertIn('is damaged and cannot be read', out)
+        self.assertIn('1. Everything ever kept, also files you deleted or renamed (recommended', out)
         self.assertEqual(len(got), 4)
 
     def test_a_backup_without_lists_behaves_as_before_and_says_so(self):

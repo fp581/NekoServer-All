@@ -19,6 +19,8 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 - **A folder in a Jellyfin library of the wrong kind no longer passes** (films set up as a music library): the kind is checked with the folder, and setup names the library to remove.
 - **The app check fails an app whose own data folder is read-only** (Immich's photos and database, Jellyfin's settings, Navidrome's database), not only a wrong path.
 - **An app switched off gets no desktop shortcut**, though its files are kept (Nextcloud, and Immich with only its own switch off); a shortcut setup made for it earlier is taken away.
+- **A damaged list of the newest backup's files is said as damaged**, not as "lists no files: the folder was empty then". The recovery menu then recommended an older list, which leaves out the newest backup's files; it now recommends everything ever kept, which has them.
+- **A file whose name starts or ends with a space gets its newest version back.** The note naming the current version was trimmed, so after an edit undone since, an older version was restored.
 - **A kind of media whose folders could not be used is asked about again**, as "Run setup again to give one" said (the question was saved as answered), and films, shows or music switched on later get the question too.
 
 ### Fixed: backups and getting files back

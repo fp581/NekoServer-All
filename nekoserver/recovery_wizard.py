@@ -783,7 +783,10 @@ def noted_latest(folder, original):
     """The saved copy the weekly backup last saw as current (from its note), or None.
     Backups made before 0.24.3 have no notes; then the newest date wins."""
     try:
-        name = (folder / latest_note(original)).read_text(encoding='utf-8').strip()
+        # The note holds the name exactly as the runtime wrote it (backup.rs mark_latest, no
+        # newline): taken as it is, so a name that starts or ends with a space stays itself
+        # (review of 0.51.2: trimmed, it named another version, or none).
+        name = (folder / latest_note(original)).read_text(encoding='utf-8')
     except (OSError, UnicodeDecodeError):
         return None
     return name if name and '/' not in name else None
@@ -1055,6 +1058,27 @@ def stale_list_options(listed, newest_run, output):
         'restart), or its list of the files you had then could not be written. So it has no such list. '
         f'The newest complete list is from {listed[0][1]} and leaves out every file backed up after it.'
     )
+    return recommend_everything(listed)
+
+
+def damaged_list_options(listed, output):
+    """The choices when the newest backup's list is damaged (a power cut or a failing
+    drive while it was written): said as damaged, not as an empty backup (review of
+    0.51.2), with everything ever kept first, as it has that backup's files."""
+    output(
+        f'\nThe list of files of the newest backup ({listed[0][1]}) is damaged and cannot be read '
+        '(a power cut or a drive error while it was written). Your files from that backup are still '
+        'kept; only the list of which ones you had then is lost. The next weekly copy writes a new one.'
+    )
+    older = next(((path, date) for path, date in listed[1:] if read_inventory(path) is not None), None)
+    options = recommend_everything(listed)[:1]
+    if older:
+        options.append(('older', f'As of {older[1]} (an older list: files backed up after it are left out)'))
+    return options, older
+
+
+def recommend_everything(listed):
+    """Everything ever kept first, as it has the newest backup's files; then the newest list."""
     return [
         (
             'everything',
@@ -1073,9 +1097,13 @@ def restore_scope(listed, prompt, output, newest_run=None):
     if not listed:
         output(NO_INVENTORY)
         return 'everything', None, None
-    earlier = newest_with_files(listed) if not newest_run else None
+    damaged = not newest_run and read_inventory(listed[0][0]) is None
+    earlier = newest_with_files(listed) if not (newest_run or damaged) else None
+    older = None
     if newest_run:
         options = stale_list_options(listed, newest_run, output)
+    elif damaged:
+        options, older = damaged_list_options(listed, output)
     elif earlier:
         output(
             f'The last backup ({listed[0][1]}) lists no files: the folder was empty then, as after a new '
@@ -1089,9 +1117,11 @@ def restore_scope(listed, prompt, output, newest_run=None):
         options = [('last', f'As of the last backup ({listed[0][1]}): only the files you had then (recommended)')]
     if len(listed) > 1:
         options.append(('date', 'As of an earlier backup: choose the date'))
-    if not newest_run:
+    if not (newest_run or damaged):
         options.append(('everything', 'Everything ever kept, also files you deleted or renamed'))
     pick = choose('Which files?', options, prompt, output)
+    if pick == 'older' and older:
+        return 'as_of', older[0], older[1]
     if pick == 'date':
         path = choose('As of which backup?', listed[1:], prompt, output)
         return None if path is None else ('as_of', path, dict(listed)[path])

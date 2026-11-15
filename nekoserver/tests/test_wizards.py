@@ -1128,6 +1128,22 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertEqual((restored / 'report.txt').read_bytes(), b'edit')
         self.assertEqual((restored / 'report.neko-20261022T120000Z.txt').read_bytes(), b'a file of its own')
 
+    def test_a_name_that_starts_with_a_space_keeps_its_note(self):
+        """Review of 0.51.2 (P2): the current-version note was trimmed, so for " song.mp3"
+        it named no saved copy and an edit undone since (A -> B -> A) restored B."""
+        files = 'usb/nextcloud/alice/files/'
+        self.write(files + ' song.mp3', b'first take')
+        self.write(files + ' song.neko-20261022T130000Z.mp3', b'second take')
+        self.write(files + '. song.mp3.neko-latest', b' song.mp3')
+        self.write(
+            files + '.neko-names.json',
+            json.dumps(
+                {'format': 'neko-names-v1', 'names': {}, 'versions': {' song.neko-20261022T130000Z.mp3': ' song.mp3'}}
+            ).encode(),
+        )
+        restored = self.restore_newest()
+        self.assertEqual((restored / ' song.mp3').read_bytes(), b'first take')
+
     def test_an_undone_edit_restores_the_content_the_backup_last_saw(self):
         # AAAA -> BBBB -> AAAA: the backup kept BBBB as a dated version and noted that
         # the original is current again; "newest only" must restore AAAA.
