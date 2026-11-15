@@ -81,6 +81,23 @@
     "_about": "How an exFAT backup drive is mounted: with Linux's own exFAT driver (-i: no mount.exfat helper). Arch's fuse-exfat installs one, and through FUSE the drive's options no longer show who may read it, so every backup refused it as readable by everyone (deep check plan 207). The runtime (backup.rs) and setup (neko_common) take it from here.",
     "arguments": ["-i", "-t", "exfat"]
   },
+  "media_folders": {
+    "_about": "The dashboard's Media folders page (DASHBOARD.md, \"Media folders\"). The control service (control.rs) checks a change, writes it to `request` in `folder` and starts `unit`, which runs media_locations.py as root: the same code setup uses (existing_media.py). It writes `result`, which the control service hands to the page. `browse_roots`: where the page may look for a folder to pick (drives and shares mounted there), at most `browse_limit` names at a time.",
+    "unit": "nekoserver-media-folders.service",
+    "folder": "/run/nekoserver-control/media-folders",
+    "request": "request.json",
+    "result": "result.json",
+    "lock": "lock",
+    "format": "neko-media-folders-v1",
+    "kinds": ["movies", "tv", "music"],
+    "changes": ["look", "add", "remove", "target"],
+    "how": ["in_place", "copy"],
+    "uses": ["in_place", "new_files"],
+    "targets": ["library", "in_place", "new_files"],
+    "browse_roots": ["/mnt", "/media", "/run/media", "/srv"],
+    "browse_limit": 200,
+    "busy": "Already working on a change to your media folders. Wait until it has finished (this page shows it), then try again."
+  },
   "setup_lock": "/run/nekoserver-setup.lock",
   "operation_lock": "/run/nekoserver-operation.lock",
   "recovery_menu": {
