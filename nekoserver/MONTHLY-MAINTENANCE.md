@@ -8,7 +8,7 @@ Since 0.42.0 app updates no longer wait for the monthly run. Three jobs share th
 | **Weekly app updates** (`nekoserver-updates.timer`) | Wednesday nights at the monthly time setup asked for (`backup_times.monthly`, 02:30 unless you said otherwise), never on the 1st | Installs each version that has settled, one app at a time (see below). | Only the app being updated, for a few minutes |
 | **Monthly check** (`nekoserver-maintenance.timer`) | The 1st of each month at the monthly time (`backup_times.monthly`) | Compares every backup copy with its checksum, takes a snapshot of every app and tests that it restores. It updates nothing. | Every app, while the snapshot is written |
 
-All three use your configured `timezone` (default Asia/Jerusalem), daylight saving included. The update nights and the monthly check never catch up a missed night in the daytime. They check the night window (`maintenance.night_end_hour`) before stopping anything and again before installing. They share one lock with the backups and setup, so no two of them ever run at once. A run that is cut off (a power cut) is finished or undone by `nekoserver-maintenance-resume.service`, from the same journal.
+All three use your configured `timezone` (this PC's own unless you set one: `"auto"`), daylight saving included. The update nights and the monthly check never catch up a missed night in the daytime. They check the night window (`maintenance.night_end_hour`) before stopping anything and again before installing. They share one lock with the backups and setup, so no two of them ever run at once. A run that is cut off (a power cut) is finished or undone by `nekoserver-maintenance-resume.service`, from the same journal.
 
 These are timers installed on the server. They run without the dashboard or a chat session.
 
@@ -84,7 +84,7 @@ The monthly snapshot is the software side of the server, taken just before updat
 
 It does **not** contain the Immich photo library or Nextcloud files. Updates change the databases, not your photos or files, so rollback does not need them, and they already have their own add-only weekly copies: photos/videos on the HDD and USB drive, Nextcloud user files on the USB drive (see STORAGE.md). To rebuild Immich or Nextcloud after losing a drive, restore the database/app state from a monthly snapshot and the photos or files from those weekly copies.
 
-Each snapshot's encrypted password list (with the key copy and certificate that open it) also goes to the USB drive at the next weekly copy, into `passwords/<run>/`, the newest three kept: with the SSD and the HDD both gone, the recovery menu's **App password list** still has it. Releases before v0.21.1 wrote whole snapshots to the USB drive; those are no longer listed or handled. If an old drive still holds a `backups/monthly` folder, look through it and remove it by hand.
+Each snapshot's encrypted password list (with the key copy and certificate that open it) also goes to the USB drive at the next weekly copy, into `passwords/<run>/`, the newest three kept: with the SSD and the HDD both gone, the recovery menu's **The list of app passwords** still has it. Releases before v0.21.1 wrote whole snapshots to the USB drive; those are no longer listed or handled. If an old drive still holds a `backups/monthly` folder, look through it and remove it by hand.
 
 ## Transaction and live tests
 

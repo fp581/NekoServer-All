@@ -189,6 +189,20 @@ class MessageReferenceTests(unittest.TestCase):
         self.assertIn('STORAGE.md, "Where each app keeps your files"', said)
         self.assertNotIn('described in the prior release', doc('STORAGE.md'))
 
+    def test_the_password_list_is_named_as_the_recovery_menu_shows_it(self):
+        """The weekly USB copy's log and two guides sent the reader to the recovery menu's
+        "App password list"; the menu has "The list of app passwords"."""
+        import recovery_wizard
+        from neko_common import SHARED
+
+        name = SHARED['recovery_menu']['password_list']
+        self.assertTrue(dict(recovery_wizard.MENU)['passwords'].startswith(name))
+        self.assertIn('common::shared("recovery_menu", "password_list")', (ROOT / 'runtime/src/backup.rs').read_text())
+        for path in [*GUIDES, *MESSAGES]:
+            self.assertNotIn('App password list', path.read_text(), path.name)
+        for guide in ('STORAGE.md', 'MONTHLY-MAINTENANCE.md', 'RECOVERY.md'):
+            self.assertIn(f'**{name}**', doc(guide))
+
 
 class StorageGuideTests(unittest.TestCase):
     """Deep check plan 378: STORAGE.md read against setup."""

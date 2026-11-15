@@ -82,6 +82,7 @@
     "_about": "Choices of the recovery menu (sudo bash install.sh --recover) that messages tell you to pick, as the menu shows them: the menu and every message take them from here.",
     "drive_section": "Check or repair a drive",
     "check_drive": "Check a drive that stopped taking new files",
+    "password_list": "The list of app passwords",
     "fix_copies": "Fix damaged backup copies"
   },
   "release_tag": "v?([0-9]{1,6})\\.([0-9]{1,6})\\.([0-9]{1,6})(-?[Bb]eta)?",

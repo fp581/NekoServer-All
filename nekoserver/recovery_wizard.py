@@ -84,6 +84,7 @@ MONTHLY = re.compile(r'^(\d+)-\d+$')
 DRIVE_SECTION = SHARED['recovery_menu']['drive_section']
 CHECK_NAME = SHARED['recovery_menu']['check_drive']
 FIX_NAME = SHARED['recovery_menu']['fix_copies']
+PASSWORD_LIST = SHARED['recovery_menu']['password_list']
 
 # The recovery menu's two parts (its first question).
 SECTIONS = [
@@ -95,7 +96,7 @@ SECTIONS = [
 MENU = [
     ('photos', 'Photos and videos (Immich)'),
     ('cloud', 'Nextcloud files'),
-    ('passwords', 'The list of app passwords (and the apps\' own password files)'),
+    ('passwords', f"{PASSWORD_LIST} (and the apps' own password files)"),
     ('apps', 'App settings, from a nightly backup'),
     ('host', 'Steam and Samba settings, from a nightly backup'),
     ('monthly', 'The settings and databases of every app, from a monthly snapshot (for rebuilding a server)'),

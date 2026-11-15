@@ -2716,7 +2716,10 @@ fn copy_newest_secrets(sources: &[PathBuf], usb: &Path) -> Result<Option<String>
     let date = chrono::DateTime::from_timestamp_micros(snapshot_stamp(&run).unwrap_or(0) as i64)
         .map(|d| d.format("%Y-%m-%d").to_string())
         .unwrap_or_else(|| run.clone());
-    println!("USB: password list of {date} (encrypted; the recovery menu's \"App password list\" opens it with the backup password)");
+    println!(
+        "USB: password list of {date} (encrypted; the recovery menu's \"{}\" opens it with the backup password)",
+        common::shared("recovery_menu", "password_list")
+    );
     Ok(skipped)
 }
 /// Setup's own password list on the HDD, sealed for the backup key like the monthly
