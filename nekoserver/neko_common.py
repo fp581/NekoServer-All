@@ -1713,11 +1713,15 @@ def last_words(output, limit=500):
 def atomic_write(path, payload, mode=0o600):
     path = safe_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Written only where its real path is the path asked for: a link on the way is refused.
+    real = os.path.realpath(path)
+    if not real.startswith(os.sep) or real != os.path.abspath(path):
+        raise RuntimeError(f'Refusing symlink path: {path}')
     # The folder is opened once (never through a link) and the file made and renamed in
     # it, not by path again: a folder swapped for a link after the check is not followed.
-    folder = os.open(path.parent, FOLDER_FLAGS)
+    folder = os.open(os.path.dirname(real), FOLDER_FLAGS)
     try:
-        atomic_write_at(folder, path.name, payload, mode)
+        atomic_write_at(folder, os.path.basename(real), payload, mode)
     finally:
         os.close(folder)
 
