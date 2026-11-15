@@ -42,7 +42,9 @@ fn inventory(
                 waiting.push(name.to_string());
                 continue;
             }
-            rows.push(json!({"path":name,"size":meta.len(),"sha256":common::digest(&path)?}));
+            // With its date (whole seconds), so a restore gives it back: the music came
+            // back dated the day of the restore (deep check 675), as "recently added".
+            rows.push(json!({"path":name,"size":meta.len(),"sha256":common::digest(&path)?,"mtime":meta.mtime()}));
         } else {
             return Err(Error::new("Music symlink or special file refused"));
         }
@@ -331,6 +333,11 @@ mod tests {
         names.sort();
         assert_eq!(names, ["Album/ahead.flac", "Album/old.flac"]);
         assert_eq!(waiting, ["Album/new.flac"]);
+        // Each file's date is listed, for the restore to give back.
+        let old = fs::metadata(root.join("Album/old.flac")).unwrap().mtime();
+        assert!(rows
+            .iter()
+            .any(|r| r["path"] == "Album/old.flac" && r["mtime"] == old));
         rows.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
         // It settles during the run: not counted as a change.
         set("Album/new.flac", now - day);

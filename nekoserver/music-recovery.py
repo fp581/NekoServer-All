@@ -48,7 +48,11 @@ def restore(root, snapshot, destination=None):
         with source.open('rb') as stream:
             if source.stat().st_size != row['size'] or hashlib.file_digest(stream, 'sha256').hexdigest() != checksum:
                 raise RuntimeError('Music backup checksum mismatch')
-        verified.append((source, rel, checksum))
+        # The file's date, in lists made since 0.51.3 (older ones restore with today's).
+        mtime = row.get('mtime')
+        if mtime is not None and type(mtime) is not int:
+            raise RuntimeError('Invalid music date')
+        verified.append((source, rel, checksum, mtime))
     if destination is not None:
         dest = safe_path(Path(destination))
         if not dest.is_absolute() or dest.exists() or dest == root or root in dest.parents or dest in root.parents:
@@ -62,9 +66,9 @@ def restore(root, snapshot, destination=None):
         folder = os.open(dest, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         refused = []
         try:
-            for source, rel, checksum in verified:
+            for source, rel, checksum, mtime in verified:
                 try:
-                    write_copy(folder, source, rel, checksum)
+                    write_copy(folder, source, rel, checksum, mtime)
                 except OSError as exc:
                     if exc.errno not in NAME_REFUSED:
                         raise
@@ -95,10 +99,10 @@ def names_refused(refused, total, dest):
     )
 
 
-def write_copy(folder, source, rel, checksum):
+def write_copy(folder, source, rel, checksum, mtime=None):
     """One music file copied to `rel` under the open `folder` (its descriptor): its
     subfolders made, the file created there, read back from the drive and compared with
-    its checksum."""
+    its checksum, and given back its date `mtime` (seconds) when the list has it."""
     for parent in reversed(rel.parents):
         if str(parent) != '.':
             try:
@@ -112,6 +116,8 @@ def write_copy(folder, source, rel, checksum):
         if copy_checked_into(inp, folder, str(rel), what=str(rel)) != checksum:
             os.unlink(str(rel), dir_fd=folder)
             raise RuntimeError('Restored music checksum mismatch')
+    if mtime is not None:
+        os.utime(str(rel), (mtime, mtime), dir_fd=folder, follow_symlinks=False)
 
 
 def main(argv=None):

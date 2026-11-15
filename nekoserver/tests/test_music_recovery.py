@@ -54,6 +54,21 @@ class RestoreTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'new, separate restore directory'):
             music.restore(self.backup, self.snapshot, out)
 
+    def test_each_file_gets_back_the_date_its_list_recorded(self):
+        """Deep check 675: restored music was dated the day of the restore; the runtime's
+        lists record each file's date since 0.51.3 (music_backup.rs), and a list without
+        dates (an older one) still restores."""
+        value = json.loads(self.snapshot.read_text())
+        value['files'][0]['mtime'] = 1_600_000_000
+        self.snapshot.write_text(json.dumps(value))
+        out = self.dir / 'restored'
+        music.restore(self.backup, self.snapshot, out)
+        self.assertEqual(int((out / value['files'][0]['path']).stat().st_mtime), 1_600_000_000)
+        value['files'][0]['mtime'] = '2020-09-13'
+        self.snapshot.write_text(json.dumps(value))
+        with self.assertRaisesRegex(RuntimeError, 'Invalid music date'):
+            music.restore(self.backup, self.snapshot)
+
     def test_a_folder_swapped_in_between_two_files_is_a_failure_not_a_count(self):
         """The review of 0.47.9: each file was written through a fresh lookup of its path,
         so a folder swapped in mid-restore (its parent may be writable by others) got the
