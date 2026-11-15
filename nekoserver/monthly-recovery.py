@@ -176,6 +176,9 @@ def written_in(folder, name, text):
     os.fsync(folder)
 
 
+DOCKER_ANSWERS = 60  # seconds for `docker info`; it answers at once when Docker is running
+
+
 def load_images(snapshot, manifest):
     """Docker loads the saved images from a private, checked copy (private_copy), made in a
     new root-only folder beside the snapshot and removed afterwards."""
@@ -183,12 +186,20 @@ def load_images(snapshot, manifest):
 
     snapshot = safe_path(snapshot)
     images = safe_path(snapshot / IMAGES)
-    docker_root = subprocess.run(
-        ['docker', '--host', 'unix:///var/run/docker.sock', 'info', '--format', '{{.DockerRootDir}}'],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
+    try:
+        docker_root = subprocess.run(
+            ['docker', '--host', 'unix:///var/run/docker.sock', 'info', '--format', '{{.DockerRootDir}}'],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=DOCKER_ANSWERS,
+        ).stdout.strip()
+    except subprocess.TimeoutExpired:
+        # A stuck Docker would otherwise hold the recovery for good, saying nothing.
+        raise RuntimeError(
+            f'Docker did not answer within {DOCKER_ANSWERS} seconds, so the saved app versions were not '
+            'loaded. Nothing was changed. Restart it with  sudo systemctl restart docker  and try again.'
+        ) from None
     ensure_room(docker_root, images.stat().st_size, 'Loading the saved app versions')
     ensure_room(snapshot.parent, images.stat().st_size, 'Checking the saved app versions')
     work = tempfile.mkdtemp(prefix='.neko-images-', dir=snapshot.parent)

@@ -152,6 +152,22 @@ class StageTests(unittest.TestCase):
         self.assertEqual(len(seen), 1)
         self.assertEqual([p.name for p in self.dir.iterdir() if p.name.startswith('.neko-images-')], [])
 
+    def test_a_docker_that_does_not_answer_is_said_and_not_waited_for(self):
+        """Deep check 280: `docker info` had no time limit, so a stuck Docker held the
+        monthly recovery for good with nothing said."""
+        images = self.snapshot / 'images.tar'
+        images.write_bytes(b'images')
+        manifest = {'sha256': {'images': hashlib.sha256(b'images').hexdigest()}}
+
+        def docker(argv, **kwargs):
+            self.assertIn('timeout', kwargs)
+            raise subprocess.TimeoutExpired(argv, kwargs['timeout'])
+
+        with mock.patch.object(monthly.subprocess, 'run', docker):
+            with self.assertRaisesRegex(RuntimeError, 'Docker did not answer') as caught:
+                monthly.load_images(self.snapshot, manifest)
+        self.assertIn('sudo systemctl restart docker', str(caught.exception))
+
     def test_a_copy_that_fails_part_way_leaves_nothing_behind_and_keeps_its_own_error(self):
         """The review of 0.47.9: a read error from the backup drive left the partial copy in
         the hidden work folder, so removing the folder failed with "Directory not empty" and
