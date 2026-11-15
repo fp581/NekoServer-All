@@ -642,27 +642,115 @@ def valid_ledger_path(rel):
     )
 
 
+_JSON_GAP = re.compile(r'[ \t\n\r]*')
+
+
+class _JsonMembers:
+    """The members of the JSON object in a file, one at a time, read a piece at a time:
+    a ledger of a million photos read whole took 829 MB and 6.8 s in the recovery menu
+    (deep check 302); the runtime reads it row by row too (ledger.rs)."""
+
+    PIECE = 1 << 20
+
+    def __init__(self, handle):
+        import json.scanner
+
+        self.handle, self.text, self.at, self.done = handle, '', 0, False
+        self.scan = json.scanner.make_scanner(json.JSONDecoder())  # one JSON value at a place
+
+    def _more(self):
+        piece = self.handle.read(self.PIECE)
+        self.done = not piece
+        self.text, self.at = self.text[self.at :] + piece, 0
+
+    def _char(self):
+        """The next character that is not white space (consumed), '' at the end."""
+        while True:
+            at = _JSON_GAP.match(self.text, self.at).end()
+            if at < len(self.text):
+                self.at = at + 1
+                return self.text[at]
+            if self.done:
+                return ''
+            self._more()
+
+    def value(self):
+        """The next whole JSON value."""
+        while True:
+            self.at = _JSON_GAP.match(self.text, self.at).end()
+            try:
+                value, end = self.scan(self.text, self.at)
+            except (StopIteration, ValueError):
+                end = None
+            # Cut at the piece's end (or not whole yet): read on and take it again.
+            if end is None or (end == len(self.text) and not self.done):
+                if self.done:
+                    raise ValueError('cut short')
+                self._more()
+                continue
+            self.at = end
+            return value
+
+    def at_end(self):
+        """Only white space is left (nothing after the object)."""
+        return self._char() == ''
+
+    def members(self):
+        """The key of each member of the object that comes next; the caller takes the
+        member's value with value(), or its own members with members()."""
+        if self._char() != '{':
+            raise ValueError('not an object')
+        sign = self._char()
+        while sign != '}':
+            if sign != '"':
+                raise ValueError('no key')
+            self.at -= 1
+            key = self.value()
+            if self._char() != ':':
+                raise ValueError('no colon')
+            yield key
+            sign = self._char()
+            if sign == ',':
+                sign = self._char()
+            elif sign != '}':
+                raise ValueError('no comma')
+
+
 def read_ledger(root):
     """{relative path: sha256} recorded for a backup tree, or {} if it has no ledger yet.
-    A ledger with any unsafe path or malformed entry is not trusted at all."""
+    A ledger with any unsafe path or malformed entry is not trusted at all. Read row by
+    row, keeping only each row's checksum (_JsonMembers)."""
     path = Path(root) / LEDGER_NAME
     if not path.exists():
         return {}
     if path.is_symlink() or not path.is_file():
         raise RuntimeError(f'The checksum ledger {path} is not a regular file')
+    out, entries, ledger_format, invalid = {}, False, None, False
     try:
-        value = json.loads(path.read_text())
-        entries = value['entries'] if value.get('format') == 'neko-ledger-v1' else None
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        entries = None
-    if not isinstance(entries, dict):
+        with path.open(encoding='utf-8') as handle:
+            reader = _JsonMembers(handle)
+            for key in reader.members():
+                if key != 'entries':
+                    value = reader.value()
+                    ledger_format = value if key == 'format' else ledger_format
+                    continue
+                entries = True
+                for rel in reader.members():
+                    row = reader.value()
+                    sha = row.get('sha256') if isinstance(row, dict) else None
+                    if not valid_ledger_path(rel) or not (isinstance(sha, str) and re.fullmatch(r'[0-9a-f]{64}', sha)):
+                        invalid = True
+                    else:
+                        out[rel] = sha
+            if not reader.at_end():
+                raise ValueError('more after the ledger')
+    except (OSError, ValueError):
+        entries = False
+    # The format comes after the entries in the file: judged once it is all read.
+    if not entries or ledger_format != 'neko-ledger-v1':
         raise RuntimeError(f'The checksum ledger {path} is unreadable')
-    out = {}
-    for rel, row in entries.items():
-        sha = row.get('sha256') if isinstance(row, dict) else None
-        if not valid_ledger_path(rel) or not (isinstance(sha, str) and re.fullmatch(r'[0-9a-f]{64}', sha)):
-            raise RuntimeError(f'The checksum ledger {path} has an invalid entry; it is not trusted')
-        out[rel] = sha
+    if invalid:
+        raise RuntimeError(f'The checksum ledger {path} has an invalid entry; it is not trusted')
     return out
 
 
