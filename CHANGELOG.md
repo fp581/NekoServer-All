@@ -31,6 +31,10 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 - **Immich follows a time zone changed after its first setup**, as every other schedule and app already did.
 - **A dashboard PIN asked again and left empty is no longer shown by "Show login".**
 
+### Fixed: the apps' and systems' new releases
+- **Radarr 7 (and Sonarr 5) with "Disabled for Localhost" sign-in keeps its login**: setup said the saved login was wrong at every run, and the weekly update lost its login check.
+- **Ubuntu 26.04 with AMD graphics gets its video decoding**: the driver is now part of `mesa-libgallium`, and setup said it was not available.
+
 ### Fixed: things that happen to hardware
 - **A USB drive that drops out at the start of the weekly copy no longer gets the photos copied onto the system disk.** The copy checked the drive, then held it; a drive gone in between left it copying into the empty folder on the system disk, and every later weekly copy failed. It now holds the drive before it checks it.
 - **A USB drive unplugged mid-copy is said as gone**, not as a raw "….neko-part is missing", and without an extra "not mounted" line.
