@@ -433,6 +433,10 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(result.stdout.count('trying again'), 2)
         self.assertEqual(log.count('update'), 3)
         self.assertNotIn('START', log)
+        # It ended on apt's own lines alone: now it says what to do (seen in the Ubuntu lab
+        # behind a network that refused the archive).
+        self.assertIn('still did not answer after 3 tries, so setup stopped here', result.stderr)
+        self.assertIn('Check that this PC is online', result.stderr)
 
     def test_any_other_apt_failure_stops_at_once(self):
         self.use_debian()
@@ -443,6 +447,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 100)
         self.assertNotIn('trying again', result.stdout)
         self.assertEqual(log.count('update'), 1)
+        self.assertNotIn('did not answer', result.stderr)  # not a source that did not answer
 
     def test_the_runtime_is_built_on_this_pc_when_the_release_has_none(self):
         self.use_debian()

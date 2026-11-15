@@ -60,6 +60,11 @@ retrying() {
   fi
   if grep -qiE "$clock_pattern" "$output"; then
     echo "This PC's clock looks wrong (check the date and time with  timedatectl): let the network set it (sudo timedatectl set-ntp true), wait a minute, then run  sudo bash install.sh  again." >&2
+  elif ((code != 0)) && [[ "$1" != env ]] && worth_retrying "$code" "$output"; then
+    # Three tries and the source still did not answer: setup ended on the package
+    # manager's own lines alone (apt's say "Failed to fetch"), with nothing on what to do.
+    # (zypper runs as env ...: zypper_run judges its codes and says them itself.)
+    echo 'The package source still did not answer after 3 tries, so setup stopped here. Check that this PC is online, and that its network does not block the site named above, then run  sudo bash install.sh  again.' >&2
   fi
   rm -f -- "$output"
   return "$code"
