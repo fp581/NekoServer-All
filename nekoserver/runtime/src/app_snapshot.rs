@@ -21,9 +21,26 @@ fn docker(args: &[&str]) -> Result<String> {
     command.extend_from_slice(args);
     let (code, output) = common::command(&command, 120)?;
     if code != 0 {
-        return Err(Error::new("Application Docker operation failed"));
+        return Err(Error::new(&docker_failed(&common::last_stderr())));
     }
     Ok(output)
+}
+/// Why a Docker command of the backup failed, from what Docker said (`said`, its error
+/// output). The card said only "Application Docker operation failed" after a night with
+/// Docker stopped, with nothing to go on (deep check 613).
+fn docker_failed(said: &str) -> String {
+    if said.contains("Cannot connect to the Docker daemon") {
+        return "Docker, which runs the apps, was not running, so the apps' settings were not copied. Start it:  sudo systemctl start docker  (or restart the PC); the next night's backup copies them".to_string();
+    }
+    let said = said.trim().lines().last().unwrap_or("").trim();
+    if said.is_empty() {
+        "Application Docker operation failed".to_string()
+    } else {
+        format!(
+            "Application Docker operation failed: {}",
+            common::sanitize(said)
+        )
+    }
 }
 fn inspect(id: &str) -> Result<Value> {
     if id.len() != 64 || !id.bytes().all(|c| c.is_ascii_hexdigit()) {
@@ -722,6 +739,23 @@ fn snapshot(
 mod tests {
     use super::*;
     use std::os::unix::fs::DirBuilderExt;
+    #[test]
+    fn a_night_with_docker_stopped_says_so_and_what_to_do() {
+        // Deep check 613: the real app-snapshot run with Docker stopped left only
+        // "Application Docker operation failed" on the Backups card.
+        let said = docker_failed("Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n");
+        assert!(
+            said.starts_with("Docker, which runs the apps, was not running"),
+            "{said}"
+        );
+        assert!(said.contains("sudo systemctl start docker"), "{said}");
+        // Anything else Docker says is kept after the old words.
+        assert_eq!(
+            docker_failed("Error response from daemon: No such container: 0123\n"),
+            "Application Docker operation failed: Error response from daemon: No such container: 0123"
+        );
+        assert_eq!(docker_failed(""), "Application Docker operation failed");
+    }
     fn dir(path: &Path) {
         fs::DirBuilder::new()
             .recursive(true)
