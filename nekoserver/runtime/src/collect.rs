@@ -1779,12 +1779,19 @@ fn partial_reason(missing: &Value) -> String {
     // Counts only: the status file can be read by every account on the server, so the
     // names of the files stay in the job's root-only report (reports/jobs on the SSD).
     let listed = missing["files"].as_array().is_some_and(|a| !a.is_empty());
+    // Files the USB drive has no room for (said only when there are some).
+    let no_room = missing["no_room"].as_u64().unwrap_or(0);
+    let too_big = if no_room > 0 {
+        format!(", {no_room} too big for the room left on the USB drive: make room on it or use a bigger one")
+    } else {
+        String::new()
+    };
     let mut parts = vec![];
-    if in_use + names > 0 || listed {
+    if in_use + names + no_room > 0 || listed {
         parts.push(format!(
-            "{} not copied ({in_use} in use, {names} with names the USB drive cannot store; \
+            "{} not copied ({in_use} in use, {names} with names the USB drive cannot store{too_big}; \
              their names are in the backup's report, reports/jobs on the application SSD)",
-            common::plural(in_use + names, "file was", "files were")
+            common::plural(in_use + names + no_room, "file was", "files were")
         ));
     }
     // The USB copy of the Immich database (missing, stale or without its version note),
@@ -5446,6 +5453,15 @@ mod round_two_tests {
             "USB photo copy: 2 files are damaged or missing"
         );
         assert!(!alerts(&row(2))[0].to_string().contains("a.jpg"));
+        // D11: files the USB drive has no room for are said as that, with what to do.
+        let said = partial_reason(
+            &json!({"in_use": 0, "unsupported_names": 0, "no_room": 2, "files": ["a/film.mkv"]}),
+        );
+        assert!(said.starts_with("2 files were not copied"), "{said}");
+        assert!(
+            said.contains("2 too big for the room left on the USB drive: make room"),
+            "{said}"
+        );
         assert!(partial_reason(&json!({"in_use": 1, "files": ["a.docx"]}))
             .starts_with("1 file was not copied"));
     }

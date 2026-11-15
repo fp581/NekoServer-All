@@ -2007,6 +2007,8 @@ pub struct CloudCopy {
     pub refused: Vec<String>,
     /// Files skipped because they changed or vanished while being copied (in use).
     pub skipped_files: Vec<String>,
+    /// Files left out because the USB drive has too little room left for them.
+    pub no_room: Vec<String>,
     /// What the checksum checks of the USB copy found.
     pub integrity: Integrity,
 }
@@ -2020,25 +2022,31 @@ impl CloudCopy {
         self
     }
     pub fn complete(&self) -> bool {
-        self.skipped == 0 && self.refused.is_empty()
+        self.skipped == 0 && self.refused.is_empty() && self.no_room.is_empty()
     }
     /// What was left out, for the job report: counts and (up to 50) file names.
     pub fn missing(&self) -> Option<Value> {
         if self.complete() {
             return None;
         }
+        // The files with no room first: they are the ones to act on.
         let files: Vec<&String> = self
-            .skipped_files
+            .no_room
             .iter()
+            .chain(&self.skipped_files)
             .chain(&self.refused)
             .take(50)
             .collect();
-        Some(json!({
+        let mut out = json!({
             "in_use": self.skipped,
             "unsupported_names": self.refused.len(),
             "files": files,
             "reason": "Nextcloud files not copied to the USB drive this week",
-        }))
+        });
+        if !self.no_room.is_empty() {
+            out["no_room"] = json!(self.no_room.len());
+        }
+        Some(out)
     }
 }
 pub fn copy_cloud(
@@ -2049,12 +2057,60 @@ pub fn copy_cloud(
     check: Check,
     internal: Option<&str>,
 ) -> Result<CloudCopy> {
+    copy_cloud_with(
+        cloud,
+        dest,
+        apply,
+        fat_names,
+        check,
+        internal,
+        &common::free_bytes,
+    )
+}
+/// Whether a new file of `size` bytes can't go onto a drive with `free` bytes left.
+fn no_room_for(size: u64, free: u128) -> bool {
+    u128::from(size) > free
+}
+/// What the job says about the files in `files` that the USB drive has no room for.
+fn no_room_said(files: &[String], free: Option<u128>) -> String {
+    let mut shown = files
+        .iter()
+        .take(10)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if files.len() > 10 {
+        shown += &format!(" and {} more", files.len() - 10);
+    }
+    let left = free.map_or(String::new(), |bytes| {
+        format!(" ({:.1} GB is free there)", bytes as f64 / 1e9)
+    });
+    format!(
+        "{} not copied because the USB drive has too little room left{left}; every other file was copied. Make room on the drive or use a bigger one, and the next run copies {}: {shown}",
+        common::plural(files.len(), "file was", "files were"),
+        if files.len() == 1 { "it" } else { "them" }
+    )
+}
+/// `copy_cloud`; `free` gives the bytes free on the drive that holds a folder (tests
+/// stand in for a drive that is nearly full).
+fn copy_cloud_with(
+    cloud: &Path,
+    dest: &Path,
+    apply: bool,
+    fat_names: bool,
+    check: Check,
+    internal: Option<&str>,
+    free: &dyn Fn(&Path) -> Result<u128>,
+) -> Result<CloudCopy> {
     let (cloud, dest) = separate(cloud, dest)?;
     let (mut copied, mut versions, mut skipped) = (0, 0, 0);
     let mut refused = vec![];
     let mut clashes = vec![];
     let mut unreadable = vec![];
     let mut too_long = vec![];
+    // Files the drive has no room for: left out and named, like the too-long paths. One
+    // such file used to stop the copy, and every file after it was never copied (D11).
+    let mut no_room = vec![];
     let mut seen = std::collections::HashMap::new();
     let mut skipped_files = vec![];
     // The USB copy keeps its own ledger: the Nextcloud files are not on the HDD.
@@ -2167,7 +2223,16 @@ pub fn copy_cloud(
             }
             let key = ledger_key(&target, &root)?;
             let expected = ledger.get(&key).map(|e| e.sha256.clone());
-            let result = kept_copy(path, &target, apply, 0o600, check, expected.as_deref());
+            // A new file bigger than the room left is not even begun (it would be
+            // written for an hour, then fail); one that runs out of room part-way (a
+            // new version, or other files landing meanwhile) is left out the same way.
+            let fits = target.exists()
+                || !no_room_for(fs::metadata(path).map_or(0, |m| m.len()), free(&root)?);
+            let result = if fits {
+                kept_copy(path, &target, apply, 0o600, check, expected.as_deref())
+            } else {
+                Err(std::io::Error::from_raw_os_error(libc::ENOSPC).into())
+            };
             if result.is_ok() || path.exists() {
                 live.add(&target, &root);
             }
@@ -2197,6 +2262,7 @@ pub fn copy_cloud(
                         record_kept(&mut ledger, &root, &kept, &mut report)?;
                     }
                 }
+                Err(e) if common::drive_full(&e) => no_room.push(shown),
                 Err(e) if in_use_now(&e, path) => {
                     skipped += 1;
                     skipped_files.push(format!("{user}/{}", relative.display()));
@@ -2235,6 +2301,9 @@ pub fn copy_cloud(
     if !too_long.is_empty() {
         println!("Nextcloud: {}", too_long_said("files", &too_long));
     }
+    if !no_room.is_empty() {
+        println!("Nextcloud: {}", no_room_said(&no_room, free(&root).ok()));
+    }
     let exfat: Vec<&String> = refused
         .iter()
         .filter(|r| !unreadable.contains(r) && !too_long.contains(r))
@@ -2259,6 +2328,7 @@ pub fn copy_cloud(
         skipped,
         refused,
         skipped_files,
+        no_room,
         integrity: report,
     })
 }
@@ -7003,6 +7073,52 @@ mod tests {
         assert_eq!(missing["in_use"], 1);
         assert_eq!(missing["unsupported_names"], 1);
         assert_eq!(missing["files"], json!(["alice/open.docx", "bob/a:b.txt"]));
+    }
+    /// D11: a file bigger than the room left on the USB drive stopped the weekly
+    /// Nextcloud copy with "the drive is full", and every file sorting after it was
+    /// never copied. That one file is left out and named; the rest is copied.
+    #[test]
+    fn a_file_too_big_for_the_usb_drive_is_left_out_and_the_rest_is_copied() {
+        let root = scratch("cloud-no-room");
+        let (cloud, usb) = (root.join("cloud"), root.join("usb"));
+        write(&cloud.join("alice/files/a-notes.txt"), b"notes");
+        write(&cloud.join("alice/files/film.mkv"), &[7u8; 5000]);
+        write(&cloud.join("alice/files/z-letter.txt"), b"letter");
+        // A drive with 1000 bytes left: the film can't go there, the two texts can.
+        let nearly_full = |_: &Path| -> Result<u128> { Ok(1000) };
+        let run = || {
+            copy_cloud_with(&cloud, &usb, true, false, Check::Quick, None, &nearly_full).unwrap()
+        };
+        let copy = run();
+        assert_eq!(copy.copied, 2);
+        assert_eq!(copy.no_room, ["alice/film.mkv"]);
+        assert!(!copy.complete(), "a file left out is not a complete copy");
+        let saved = usb.join("nextcloud/alice/files");
+        assert_eq!(fs::read(saved.join("z-letter.txt")).unwrap(), b"letter");
+        assert!(!saved.join("film.mkv").exists());
+        let missing = copy.missing().unwrap();
+        assert_eq!(missing["no_room"], 1);
+        assert_eq!(missing["files"], json!(["alice/film.mkv"]));
+        // Said every week until there is room, never as a failure of the whole copy.
+        assert_eq!(run().no_room, ["alice/film.mkv"]);
+        let said = no_room_said(&copy.no_room, Some(1_500_000_000));
+        assert!(said.starts_with("1 file was not copied because the USB drive has too little room left (1.5 GB is free there)"), "{said}");
+        assert!(
+            said.contains("every other file was copied") && said.ends_with("alice/film.mkv"),
+            "{said}"
+        );
+        // Room again: it is copied like any new file.
+        let copy = copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        assert_eq!((copy.copied, copy.no_room.len()), (1, 0));
+        assert_eq!(fs::read(saved.join("film.mkv")).unwrap().len(), 5000);
+        // The drive filling up while a file is written (the system's own error) leaves
+        // that file out too.
+        let full = Error::from(std::io::Error::from_raw_os_error(libc::ENOSPC));
+        assert!(common::drive_full(&full), "{full}");
+        assert!(!common::drive_full(&Error::new(
+            "Source changed during the copy"
+        )));
+        let _ = fs::remove_dir_all(root);
     }
     #[test]
     fn changed_files_become_dated_versions_never_overwrites() {

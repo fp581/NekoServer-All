@@ -42,11 +42,17 @@ impl From<std::io::Error> for Error {
         // operation failed: No space left on device (os error 28)" (deep check 217).
         if matches!(e.raw_os_error(), Some(libc::ENOSPC) | Some(libc::EDQUOT)) {
             return Self(format!(
-                "The drive it was writing to is full ({e}): make room on it, or move to a bigger drive"
+                "{DRIVE_FULL} ({e}): make room on it, or move to a bigger drive"
             ));
         }
         Self(format!("Filesystem or process operation failed: {e}"))
     }
+}
+/// How the error of a full drive begins (see From<std::io::Error>).
+const DRIVE_FULL: &str = "The drive it was writing to is full";
+/// Whether `e` says that the drive written to is full.
+pub fn drive_full(e: &Error) -> bool {
+    e.0.starts_with(DRIVE_FULL)
 }
 impl From<serde_json::Error> for Error {
     // The parser's own reason is kept ("expected value at line 1 column 1"); what is read
