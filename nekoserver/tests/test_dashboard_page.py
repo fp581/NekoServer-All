@@ -1259,6 +1259,16 @@ class MediaFoldersPageTests(unittest.TestCase):
         self.assertNotIn('Not looked at', busy['page'])
         self.assertIn('Working', busy['page'])
 
+    def test_the_folders_stay_shown_while_a_change_is_at_work(self):
+        # Seen for real: while a change was at work (a copy into the library takes hours)
+        # the page showed no folder at all, only "Looking at your folders…".
+        working = {'format': 'neko-media-folders-v1', 'state': 'working', 'message': 'Copying… Telling the apps…'}
+        before = {'ok': True, 'working': False, 'result': media_result()}
+        (flow,) = page(('mediaFlow', {'result': working, 'working': True, 'before': before}))
+        self.assertIn('Copying… Telling the apps…', flow['page'])
+        self.assertIn('/mnt/nas/films', flow['page'])
+        self.assertNotIn('Looking at your folders', flow['page'])
+
     def test_without_the_pin_nothing_is_asked_or_shown(self):
         (out,) = page(('mediaSignedOut', None))
         self.assertEqual(out['sent'], [])

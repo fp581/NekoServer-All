@@ -5268,7 +5268,14 @@ async function mediaState() {
   const answer = await postControl('media-state');
   clearTimeout(MEDIA.timer);
   if (answer.ok) {
+    const shown = mediaKinds();
     MEDIA.answer = answer;
+    if (answer.working && !mediaKinds().length && shown.length) {
+      // A change at work has no folders to say yet: the ones shown stay (a copy into
+      // the library takes hours, and the page said "Looking at your folders…" for all
+      // of them, with no folder shown).
+      MEDIA.answer = { ...answer, result: { ...object(answer.result), kinds: shown } };
+    }
     if (answer.working) {
       MEDIA.refused = null; // the look was refused only because this change is at work
       MEDIA.timer = setTimeout(() => void mediaState(), MEDIA_POLL);

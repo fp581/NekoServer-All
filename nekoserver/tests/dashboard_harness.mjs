@@ -428,7 +428,7 @@ SPECIAL.askTyped = async argument => {
    each kind with the form to add a folder; the form is then filled in and sent.
    argument: {result: what media-state answers as the last result, look: what media-change
    answers a look (accepted when not given), working: whether media-state says a change is
-   at work, add: {path, downloads, how}}. Returns what was sent, what the page then shows,
+   at work, before: the answer the page showed already, add: {path, downloads, how}}. Returns what was sent, what the page then shows,
    and what the form sent. */
 async function settle() {
   for (let i = 0; i < 30; i++) await Promise.resolve();
@@ -436,7 +436,8 @@ async function settle() {
 SPECIAL.mediaFlow = async argument => {
   const byId = keptPage();
   app.state.route = 'media';
-  Object.assign(app.MEDIA, { answer: null, asked: false, refused: null, formKey: '', browse: null });
+  const before = argument.before ?? null; // what the page showed before (media-state's answer)
+  Object.assign(app.MEDIA, { answer: before, asked: false, refused: null, formKey: '', browse: null });
   Object.assign(app.MEDIA.form, { kind: '', path: '', how: 'in_place', downloads: false });
   const sent = server((path, body) => {
     if (path === '/api/control/media-state') {
