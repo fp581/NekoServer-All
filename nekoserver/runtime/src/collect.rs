@@ -404,6 +404,21 @@ fn smart_summary(v: &Value, code: i32) -> Value {
     }
     r
 }
+/// SMART readings kept from the last collection, one per drive.
+const SMART_KEPT: usize = 20;
+/// The `keep` newest SMART readings (by when each drive was checked). Taking the ones
+/// that sort last by name kept a drive long gone and dropped a drive in use, which was
+/// then asked again on every collection (deep check 303).
+fn smart_kept(saved: &Value, keep: usize) -> Value {
+    let mut rows: Vec<(&String, &Value)> = saved.as_object().into_iter().flatten().collect();
+    let checked = |row: &Value| row["checked_at"].as_f64().unwrap_or(0.0);
+    rows.sort_by(|a, b| checked(b.1).total_cmp(&checked(a.1)));
+    json!(rows
+        .into_iter()
+        .take(keep)
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect::<serde_json::Map<_, _>>())
+}
 fn smart(source: &str, identity: &str, cache: &mut Value, now: f64, interval: f64) -> Value {
     let Some(dev) = device(source) else {
         return json!({"status":"unknown","reason":NO_ONE_DISK,"checked_at":null});
@@ -3170,17 +3185,7 @@ pub fn run(a: &Args) -> Result<()> {
     } else {
         empty()
     };
-    let mut cache = previous["smart"]
-        .as_object()
-        .map(|m| {
-            json!(m
-                .iter()
-                .rev()
-                .take(20)
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect::<serde_json::Map<_, _>>())
-        })
-        .unwrap_or_else(empty);
+    let mut cache = smart_kept(&previous["smart"], SMART_KEPT);
     let (disks, mounted, ok, media_ok) = storage(&cfg, &mut cache, now)?;
     let arrays = arrays_section(
         &mounted,
@@ -4586,6 +4591,29 @@ mod integrity_tests {
     }
 }
 
+#[cfg(test)]
+mod smart_cache_tests {
+    use serde_json::json;
+    #[test]
+    fn the_newest_readings_are_kept_not_the_last_by_name() {
+        // Deep check 303: "z-old" (checked long ago) stayed, "a-new" was dropped.
+        let mut saved = serde_json::Map::new();
+        for n in 0..25 {
+            saved.insert(
+                format!("z-old-{n:02}|/dev/sdz"),
+                json!({"checked_at": 1000.0 + n as f64}),
+            );
+        }
+        saved.insert("a-new|/dev/sda".into(), json!({"checked_at": 9000.0}));
+        let kept = super::smart_kept(&json!(saved), super::SMART_KEPT);
+        let kept = kept.as_object().unwrap();
+        assert_eq!(kept.len(), 20);
+        assert!(kept.contains_key("a-new|/dev/sda"));
+        assert!(!kept.contains_key("z-old-00|/dev/sdz"));
+        assert!(kept.contains_key("z-old-24|/dev/sdz"));
+        assert_eq!(super::smart_kept(&json!(null), 20), json!({}));
+    }
+}
 #[cfg(test)]
 mod heat_tests {
     use super::*;
