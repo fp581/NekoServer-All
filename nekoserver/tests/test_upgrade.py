@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 import tarfile
+import types
 import tempfile
 import unittest
 from pathlib import Path
@@ -608,32 +609,34 @@ class UpgradeTests(unittest.TestCase):
                 raise TypeError(f"TarFile.extractall() got an unexpected keyword argument '{next(iter(more))}'")
             return plain(bundle, path, members, numeric_owner=numeric_owner)
 
-        kept = {name: getattr(tarfile, name) for name in ('data_filter', 'FilterError') if hasattr(tarfile, name)}
-        for name in kept:
-            delattr(tarfile, name)
-        try:
-            with mock.patch.object(tarfile.TarFile, 'extractall', without_filter):
-                self.assertEqual(self.upgrade(self.setup(1)), 0)
-                self.assertIn(f'NekoServer {NEWER} is installed and checked', self.said)
-                for name, kind, link in (
-                    ('NekoServer-All-x/escape', tarfile.SYMTYPE, '/etc/passwd'),
-                    ('NekoServer-All-x/../outside', tarfile.REGTYPE, ''),
-                    ('/NekoServer-All-x/absolute', tarfile.REGTYPE, ''),
-                    ('NekoServer-All-x/device', tarfile.CHRTYPE, ''),
-                ):
-                    with self.subTest(name):
-                        bad = io.BytesIO()
-                        with tarfile.open(fileobj=bad, mode='w:gz') as bundle:
-                            info = tarfile.TarInfo(name)
-                            info.type, info.linkname = kind, link
-                            bundle.addfile(info)
-                        self.said.clear()
-                        self.assertEqual(self.upgrade(self.setup(), payload=bad.getvalue()), 1)
-                        self.assertIn('not a NekoServer release', ' '.join(self.said))
-                        self.assertEqual(list(self.dir.rglob('outside')), [])
-        finally:
-            for name, value in kept.items():
-                setattr(tarfile, name, value)
+        # The filters are hidden from upgrade.py's view of tarfile only: tarfile itself uses
+        # data_filter by default from Python 3.14, so taking it out of the module breaks it.
+        old_tarfile = types.ModuleType('tarfile')
+        old_tarfile.__dict__.update(
+            {name: value for name, value in vars(tarfile).items() if name not in ('data_filter', 'FilterError')}
+        )
+        with (
+            mock.patch.object(upgrade, 'tarfile', old_tarfile),
+            mock.patch.object(tarfile.TarFile, 'extractall', without_filter),
+        ):
+            self.assertEqual(self.upgrade(self.setup(1)), 0)
+            self.assertIn(f'NekoServer {NEWER} is installed and checked', self.said)
+            for name, kind, link in (
+                ('NekoServer-All-x/escape', tarfile.SYMTYPE, '/etc/passwd'),
+                ('NekoServer-All-x/../outside', tarfile.REGTYPE, ''),
+                ('/NekoServer-All-x/absolute', tarfile.REGTYPE, ''),
+                ('NekoServer-All-x/device', tarfile.CHRTYPE, ''),
+            ):
+                with self.subTest(name):
+                    bad = io.BytesIO()
+                    with tarfile.open(fileobj=bad, mode='w:gz') as bundle:
+                        info = tarfile.TarInfo(name)
+                        info.type, info.linkname = kind, link
+                        bundle.addfile(info)
+                    self.said.clear()
+                    self.assertEqual(self.upgrade(self.setup(), payload=bad.getvalue()), 1)
+                    self.assertIn('not a NekoServer release', ' '.join(self.said))
+                    self.assertEqual(list(self.dir.rglob('outside')), [])
 
     def test_a_cut_off_or_damaged_download_is_said_in_plain_words(self):
         # Deep check 181/183, a stand-in server closing the connection half-way: the
