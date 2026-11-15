@@ -290,7 +290,7 @@ During interactive `--apply`, a step that needs a browser, desktop app or phone:
 - Optional extras (TV, ntfy phone alerts, outage monitor, the AI assistant) are asked once with yes/no. `no` is saved as `"wanted": false` in `my-config.json` and the step counts as done; set it to `true` to set the extra up on a later run.
 - Steps already confirmed are not repeated on a re-run: Tailscale sign-in and HTTPS, the phone walkthrough (for the same app addresses) and each TV hardware test.
 - TV: open Steam, Bluetooth settings when selected, display settings and browser playback; explain main-PC Remote Play and Xbox-controller tests. Hardware results are user-confirmed; package/service checks remain automatic.
-- New ntfy subscriptions and independent heartbeat monitors: open setup guidance, explain the work on the phone/provider, then collect private destination values in hidden console fields. Subscription/recipient choices are yours; the browser handoff sends no test messages.
+- New ntfy subscriptions and independent heartbeat monitors: open setup guidance, explain the work on the phone/provider, then collect the private address in a hidden field (in the terminal or the setup window) and send one test to it: a test message for the alerts ("did it arrive?"), a test check-in for the outage warning. Subscription/recipient choices are yours.
 - `acceptance.py --manual --save`: open relevant app pages and guide witnessed tests with the same yes/no loop. User confirmation never overrides a failed automatic check or performs a destructive restore for you.
 
 ### The order of the steps

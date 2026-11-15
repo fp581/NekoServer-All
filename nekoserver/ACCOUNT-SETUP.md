@@ -5,11 +5,17 @@
 If a supported API cannot finish an account, guided setup now opens its UI, repeats instructions on no, and retries authenticated checks on yes. Normal local email-shaped logins do not imply external email verification. See GUIDED-SETUP.md.
 
 
-The full installer now collects and applies local app credentials. It asks in the terminal before deploying applications:
+Setup makes an account in every app for you. It asks once how, in the terminal and in the setup window, before it installs the apps:
 
 ```text
-Logins for the apps: 1 = NekoServer makes a strong username and password for each app (recommended; you can see them later), 2 = you choose them app by app. Type 1 or 2:
+How would you like to set up your app accounts?
+Each selected app has a separate account. NekoServer stores its required credentials privately so it can connect and check the apps.
+  1) Create strong passwords for me (recommended)
+  2) Choose my own logins
+Type 1 or 2, then press Enter. Enter alone takes the first.
 ```
+
+With 1 you never type or remember a password: "To see one app's login", below, shows any of them later.
 
 With option 2, each app asks whether to generate its login or enter it yourself. Custom passwords are typed with hidden input and confirmed a second time. New passwords must be 12-128 characters with no control characters. Usernames use letters, digits, underscores or hyphens and begin with a letter. Immich and Seerr require an email-shaped login instead of a conventional username.
 

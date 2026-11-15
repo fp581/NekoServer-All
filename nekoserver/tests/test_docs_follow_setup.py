@@ -55,6 +55,13 @@ class QuotedQuestionTests(unittest.TestCase):
                     unknown.append(f'{guide.name}: {quoted}')
         self.assertEqual(unknown, [])
 
+    def test_the_logins_question_is_shown_as_the_terminal_asks_it(self):
+        """ACCOUNT-SETUP.md and GUIDED-SETUP.md showed the question of an earlier release
+        ("Logins for the apps: 1 = NekoServer makes a strong username ...")."""
+        asked = questions.terminal('logins_who').strip()
+        for name in ('GUIDED-SETUP.md', 'ACCOUNT-SETUP.md'):
+            self.assertIn('```text\n' + asked + '\n```', doc(name), name)
+
     def test_the_home_network_is_said_not_asked(self):
         """GUIDED-SETUP.md showed a question (`Choose your home-network interface number:`)
         for a PC with a cable and Wi-Fi. Setup takes the cable and says so."""
