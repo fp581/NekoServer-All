@@ -31,6 +31,12 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 - **Immich follows a time zone changed after its first setup**, as every other schedule and app already did.
 - **A dashboard PIN asked again and left empty is no longer shown by "Show login".**
 
+### Fixed: the dashboard in a real server's states
+- **With Docker stopped, the apps say "Docker stopped" and Docker's alert is the one thing to fix**, naming the apps and the command that starts it; every app said "Not checked yet" and Needs attention listed twelve items.
+- **A failing drive says it is failing**, that it may stop working, to check the backups and how to move it, and "What should I do?" opens a guide about drive health (it opened the one about connecting a drive).
+- **A nightly backup that failed because Docker was stopped says so**, and how to start it (it said "Application Docker operation failed").
+- **An app stopped by the weekly update night says an update is running**, not "needs attention: choose Restart app".
+
 ### Fixed: the update from 0.51.2
 - **Running setup again no longer restarts the media apps** on a server with its own film or music folders: every folder remounted as it already was counted as a change, so a film playing or a download was cut off, and the log said "Your own folders changed".
 - **An update that doesn't fit on the SSD says the SSD is full**, where, and to make room and start again (it showed "[Errno 28] No space left on device"). This helps from the update after 0.51.3.
