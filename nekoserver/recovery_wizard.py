@@ -46,6 +46,7 @@ from neko_common import (
     media_group,
     location,
     photo_library,
+    music_library,
     FOLDER_FLAGS,
     Destination,
     DestinationGone,  # noqa: F401 (the restores raise it; callers catch it from here)
@@ -101,6 +102,7 @@ MENU = [
     ('passwords', f"{PASSWORD_LIST} (and the apps' own password files)"),
     ('apps', 'App settings, from a nightly backup'),
     ('host', 'Steam and Samba settings, from a nightly backup'),
+    ('music', 'Music files, from the nightly music backup'),
     ('monthly', 'The settings and databases of every app, from a monthly snapshot (for rebuilding a server)'),
 ]
 
@@ -133,6 +135,10 @@ def menu(config):
     }
 
     def offered(key):
+        if key == 'music':
+            # Offered where there is a music backup to restore (it runs only on some
+            # servers: music_backed_up), also after Music was switched off.
+            return bool(music_snapshots(config))
         if on.get(key, True):
             return True
         if key == 'cloud':
@@ -2124,6 +2130,99 @@ def restore_nightly(config, kind, prompt, output):
         )
 
 
+MUSIC_BACKUP = 'backups/music'  # the nightly music backup on the HDD (runtime music_backup.rs)
+MUSIC_SNAPSHOT = re.compile(r'^(\d+)-\d+\.json$')  # one run's list: <microseconds>-<pid>.json
+
+
+def music_snapshots(config):
+    """(path, label) of the nightly music backup's runs on the HDD, newest first."""
+    folder = Path(config['media_mount']) / MUSIC_BACKUP / 'snapshots'
+    found = []
+    for path in folder.iterdir() if folder.is_dir() else ():
+        match = MUSIC_SNAPSHOT.match(path.name)
+        if match and path.is_file() and not path.is_symlink():
+            found.append((int(match[1]), path))
+    return [(path, when(stamp)) for stamp, path in sorted(found, reverse=True)]
+
+
+def music_tool():
+    """music-recovery.py, the music backup's own checked restore (its name has a hyphen)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location('music_recovery', ROOT / 'music-recovery.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def restore_music(config, prompt, output):
+    """The music library as one night's music backup had it, into a new folder, made the
+    media account's (Navidrome and Lidarr run as it), with the line that copies it back.
+    Deep check 675: the menu said music is never backed up, on servers whose nightly music
+    backup ran, and no guide said how to get it back."""
+    runs = music_snapshots(config)
+    if not runs:
+        output('No nightly music backup found on the HDD.')
+        return
+    run = choose('Which night\'s music backup? The newest is first.', runs, prompt, output)
+    if run is None:
+        return
+    try:
+        files = json.loads(run.read_text())['files']
+        size = sum(row['size'] for row in files)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError(
+            f'The list of that night\'s music backup ({run}) cannot be read; choose another night'
+        ) from exc
+    target = restore_target(config, f'music-{stamp()}', prompt, output)
+    if target is None:
+        output(NOTHING_CHANGED)
+        return
+    ensure_room(standing_folder(target), size, RESTORE)
+    library = music_library(config)
+    rows = [
+        ('Restore', dict(MENU)['music']),
+        ('From', f'{run} (the night of {dict(runs)[run]})'),
+        ('Which files', f'your music as that night\'s backup had it: {file_count(len(files))}'),
+        ('Size', f'{size_words(size)} (free space where it goes: {free_space(target)})'),
+        ('Into', f'{target} (a new folder)'),
+        ('Overwritten', f'nothing. Your music library ({library}) stays as it is.'),
+        APPS_KEEP_RUNNING,
+    ]
+    if not review(rows, prompt, output):
+        output(NOTHING_CHANGED)
+        return
+    make_home(config, target)
+    output(COPYING)
+    with part_way(target, output):
+        count = music_tool().restore(Path(config['media_mount']) / MUSIC_BACKUP, run, target)
+    # Navidrome reads the library, and Lidarr writes it, as the media account: files that
+    # stayed root's private ones would be copied back unreadable for them.
+    media = config.get('media', {})
+    uid, gid = int(media.get('uid', 1000)), int(media.get('gid', 1000))
+    if account(uid) is None:
+        handed = no_such_account(uid, target)
+    else:
+        give_to(target, uid, gid)
+        if Path(target).parent == restore_home(config):
+            os.chown(Path(target).parent, 0, gid)
+            os.chmod(Path(target).parent, 0o750)
+        handed = [f'The folder and its files now belong to {account(uid)[0]}, the account the music apps run as.']
+    say(
+        output,
+        f'\nDone: {file_count(count)} copied to {target} (checksums verified)',
+        *handed,
+        'To put them back into your music library, without replacing a file that is there now:',
+        f'  sudo cp -a -n {shlex.quote(str(target))}/. {shlex.quote(str(library))}/',
+        '(or copy only the folders you need from it). Navidrome finds them at its next scan, within the hour.',
+        *(
+            (f'Files of your own music folders are under {target / "your-own"}: copy those back to where they were.',)
+            if (Path(target) / 'your-own').is_dir()
+            else ()
+        ),
+    )
+
+
 def restore_monthly(config, prompt, output):
     runs = monthly_snapshots(Path(config['media_mount']) / MONTHLY_DIR, need='restore-tests.json')
     if not runs:
@@ -3388,6 +3487,7 @@ RESTORES = {
     'passwords': restore_passwords,
     'apps': lambda c, p, o: restore_nightly(c, 'apps', p, o),
     'host': lambda c, p, o: restore_nightly(c, 'host', p, o),
+    'music': restore_music,
     'monthly': restore_monthly,
 }
 DRIVE_ACTIONS = {
@@ -3399,7 +3499,7 @@ DRIVE_ACTIONS = {
 
 # The restores whose backups the HDD keeps, and those of them the USB drive may hold too.
 # Without the HDD, "no backup found" would read as "no backup was ever made".
-KEPT_ON_HDD = {'photos', 'passwords', 'apps', 'host', 'monthly'}
+KEPT_ON_HDD = {'photos', 'passwords', 'apps', 'host', 'music', 'monthly'}
 ALSO_ON_USB = {'photos', 'passwords'}
 HDD_AWAY = (
     'The HDD is not mounted at {mount} (or another drive is there), so the backups NekoServer keeps '
@@ -3413,6 +3513,13 @@ NO_MEDIA_BACKUP = (
     'Films, shows and music are not backed up, so they are not in this list. A film or show',
     'deleted by mistake: search for it again in Radarr or Sonarr (if you use them), or copy it',
     'again from where you got it. Jellyfin\'s own settings (what you watched) are under "App settings".',
+)
+# The same where the nightly music backup ran: music is in the list (deep check 675).
+NO_FILM_BACKUP = (
+    'Films and shows are not backed up, so they are not in this list. A film or show deleted by',
+    'mistake: search for it again in Radarr or Sonarr (if you use them), or copy it again from where',
+    'you got it. Jellyfin\'s own settings (what you watched) are under "App settings". Your music is',
+    'under "Music files", from its nightly backup.',
 )
 
 
@@ -3437,7 +3544,9 @@ def restore_section(config, prompt, output):
         'it once. Nothing is written before that.',
         'A restore brings back files, settings and databases. It does not reinstall Linux or the apps.',
     )
-    if media_group(config, 'movies') or media_group(config, 'music'):
+    if music_snapshots(config):
+        say(output, *NO_FILM_BACKUP)
+    elif media_group(config, 'movies') or media_group(config, 'music'):
         say(output, *NO_MEDIA_BACKUP)
     if media_group(config, 'photos') or nextcloud_on(config):
         say(output, *TRASH_FIRST)

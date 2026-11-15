@@ -246,7 +246,8 @@ What is copied, where, and when (times are in your `timezone`):
 | Steam saves and settings, Samba settings, any extra folders you list | HDD | Every night |
 | All app settings, databases and app versions (the monthly snapshot) | HDD | 1st of each month |
 | The one app being updated, just before its update | HDD | On the update night (Wednesdays), only when a new version is installed |
-| **Movies, shows and music** | **Not backed up** | |
+| Music, on servers with the music backup (the music on a drive of its own, a music folder of yours that setup backs up, or `"backup_enabled"` under `"music"`) | HDD | Every night |
+| **Movies and shows**, and music without the music backup | **Not backed up** | |
 
 - **Photos, videos and Nextcloud files are only ever added to the backup.** Nothing on it is overwritten or deleted. If you edit a file, the new version is saved next to the old one with a date in its name.
 - **Old snapshots are cleaned up automatically:** the newest 3 nightly (apps and settings; setup takes 1 to 7), 4 weekly Immich database copies and 3 monthly snapshots are kept. Only database copies that still match the checksum in their note count (a checksum is a fingerprint of a file's content: it no longer matches when even one byte changed): a damaged copy, or one without its note, never pushes out a good older one. Change `keep_snapshots` and `database_keep` in `my-config.json` to change the weekly and monthly ones; the nightly count is chosen on setup's backups page.
