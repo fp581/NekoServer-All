@@ -31,6 +31,12 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 - **Immich follows a time zone changed after its first setup**, as every other schedule and app already did.
 - **A dashboard PIN asked again and left empty is no longer shown by "Show login".**
 
+### Fixed: moments when a protection was off
+- **A closed terminal or a dropped SSH connection stops setup as Ctrl+C does**, so its clean-up runs: the USB drive measured read-only is unmounted again, the terminal's echo comes back, and the step is not left "running". `recover.py snapshot` starts Immich again when it is stopped that way (it stayed off until the next restart).
+- **A review the terminal has gone past cannot start setup from the window** (Back typed in the terminal while the window still showed the earlier review).
+- **The monthly snapshot looks for the backup key once.** A key made while it ran (as its own advice says) labelled the snapshot encrypted while its password files were plain; a key gone meanwhile left the passwords nowhere.
+- **A new backup password chosen while the monthly snapshot seals its password list no longer leaves a list no password opens**: the list is sealed for the key that is copied with it.
+
 ### Fixed: checks that said "pass" wrongly
 - **The app check fails Sonarr, Radarr, Lidarr or qBittorrent whose library is read-only** (left so after a monthly check of a slow app failed part-way), and the hourly app check fails app data that is read-only, as setup's check already did.
 - **The app SSD and the media HDD fail the check when Linux turned them read-only** after write errors; only their identity was looked at.
