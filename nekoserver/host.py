@@ -429,6 +429,15 @@ def _why(exc):
 # What a proxy or firewall that refused the connection makes a download say (a filter
 # that answers in its place says 403 through the proxy's tunnel).
 REFUSED = re.compile(r'tunnel connection failed|proxy|403|forbidden', re.IGNORECASE)
+# No name server answered at all (EAI_AGAIN), as with systemd-resolved switched off while
+# /etc/resolv.conf still points to it (deep check 266). A filter that blocks one site
+# answers "Name or service not known" instead, which stays with the causes above.
+NO_NAME_SERVICE = re.compile(r'temporary failure in name resolution', re.IGNORECASE)
+NO_NAME_SERVICE_WORDS = (
+    ' Here no name server (DNS) answered when the site\'s name was looked up: if the PC is connected '
+    'but no site opens in a browser, its network settings name no working DNS server; on Ubuntu, '
+    'systemd-resolved may be switched off (sudo systemctl enable --now systemd-resolved starts it).'
+)
 
 
 def unreachable(maker, url, what, reason, tries):
@@ -447,6 +456,9 @@ def unreachable(maker, url, what, reason, tries):
             ' Likely causes: something on your network blocks that site (a proxy, a router or parental filter, '
             'an ad-blocker such as Pi-hole, a VPN), the site is down for a while, or this PC is offline right now.'
         )
+        if NO_NAME_SERVICE.search(reason):
+            # (An offline PC says the same: the causes above stay.)
+            causes += NO_NAME_SERVICE_WORDS
     return (
         f'Could not reach {site} ({maker}\'s site) to download {what}{tried} ({reason}).{causes} Check that '
         f'https://{site} opens in a browser on this PC, then run  sudo bash install.sh  again.' + clock_hint(reason)

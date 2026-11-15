@@ -1473,8 +1473,22 @@ class RepositoryKeyErrorTests(unittest.TestCase):
         with self.assertRaisesRegex(
             RuntimeError,
             r'Could not reach download\.docker\.com \(Docker.s site\) .*after 3 tries '
-            r'\(Temporary failure in name resolution\)\. Likely causes',
+            r'\(Temporary failure in name resolution\)\. Likely causes.*offline right now\. Here no name server '
+            r'\(DNS\) answered.*systemd-resolved',
         ):
+            family.fetch_key(host.DOCKER, 'ubuntu', 'resolute')
+
+    def test_a_site_a_filter_does_not_know_keeps_the_usual_causes(self):
+        # Deep check 266: only "no name server answered" is the name service; a filter that
+        # blocks one site answers that it does not know it.
+        import urllib.error
+
+        def unknown(url):
+            raise urllib.error.URLError('[Errno -2] Name or service not known')
+
+        family = self.family(unknown)
+        family.say, family.sleep = (lambda text: None), (lambda seconds: None)
+        with self.assertRaisesRegex(RuntimeError, r'Name or service not known\)\. Likely causes'):
             family.fetch_key(host.DOCKER, 'ubuntu', 'resolute')
 
 
