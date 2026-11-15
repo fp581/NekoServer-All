@@ -276,7 +276,9 @@ class Window:
         self.tables = tables
         self.packages = None  # this Linux's package names (family_packages), once asked
         self.started = threading.Event()  # Start was pressed in the window
-        self.revision = 0  # counts the saved changes of the switches: which choices a review shows
+        # Counts what changes a review: a switch saved, a page shown anew (show). The window
+        # sends the count of the review on its screen with Start.
+        self.revision = 0
         # Before setup starts: 'apps' (the first page), 'storage' (the drives are being
         # asked for), 'review'. The wizard says which (show); the window's Continue and
         # Back are kept in `button` until the wizard takes them (pressed).
@@ -465,6 +467,11 @@ class Window:
             self.stage = stage
             self.storage_lines = list(storage_lines)
             self.button = None
+            # A page shown anew is a new review: its drives may be others (Back, then the
+            # storage page again), which the switches' count alone does not show. A window
+            # still showing the review from before (a second behind, its tab asleep) must
+            # not start setup with it, least of all while the drives are being asked.
+            self.revision += 1
 
     def press(self, button):
         """Continue (on the first page) or Back (on the review) pressed in the window.
@@ -507,8 +514,8 @@ class Window:
         started; with start, every extra is saved as it stands (explanations.settle: the
         first page was gone through, so no step asks about one again) and setup starts
         in one step. `reviewed`: the revision of the review the person saw; when the
-        choices are no longer those (a switch saved after it, or one sent with Start),
-        the change is saved and setup does not start (CHANGED), so what installs is
+        choices are no longer those (a switch saved after it, one sent with Start, or
+        another page shown since: Back, the drives asked again), the change is saved and setup does not start (CHANGED), so what installs is
         always what the review said."""
         by_id = {e['id']: e for e in explanations.EXTRAS}
         chosen = {k: v for k, v in changes.items() if k in by_id and isinstance(v, bool)}

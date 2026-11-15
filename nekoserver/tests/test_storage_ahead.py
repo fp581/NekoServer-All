@@ -257,6 +257,7 @@ class WindowStageTests(unittest.TestCase):
         window = setup_gui.Window.__new__(setup_gui.Window)
         window.lock = __import__('threading').Lock()
         window.frozen, window.stage, window.button, window.storage_lines = False, 'apps', None, []
+        window.revision = 0
         return window
 
     def test_a_button_counts_only_on_its_own_page_and_once(self):
