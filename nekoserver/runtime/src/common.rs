@@ -1077,6 +1077,7 @@ fn job_in_words(command: &[&str]) -> Option<String> {
             "app-snapshot" | "app-resume" => "the app backup".to_string(),
             "host-snapshot" | "host-resume" => "the system backup".to_string(),
             "drive-return" => "the start of the apps after a drive came back".to_string(),
+            "" => ANOTHER_JOB.to_string(),
             other => format!("{ANOTHER_JOB} ({other})"),
         });
     }
@@ -2477,6 +2478,11 @@ mod lock_tests {
             .unwrap()
             .contains("recover.py"));
         assert_eq!(job(&["sleep", "30"]), None);
+        assert_eq!(job(&[runtime]).unwrap(), "another NekoServer job");
+        assert_eq!(
+            job(&[runtime, "notify"]).unwrap(),
+            "another NekoServer job (notify)"
+        );
         // A real holder: another process with a job's command line holds the lock.
         // (python3 holds it itself: a lock taken by the flock command is listed under
         // that command, which is gone at once.)
