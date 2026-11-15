@@ -1362,7 +1362,8 @@ def cmd_list(card, args, say):
         )
     for where_, why in unusable:
         say(UNUSABLE % (where_, why))
-    say('%d file(s)' % len(records))
+    # In words: "0 file(s)" read like a fault in the tool, not like a count.
+    say('%d %s' % (len(records), 'file' if len(records) == 1 else 'files'))
     return 1 if unusable else 0
 
 

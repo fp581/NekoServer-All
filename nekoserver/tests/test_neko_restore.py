@@ -235,7 +235,9 @@ class ListAndVerifyTests(Base):
         self.assertEqual(self.run_tool('list'), 0)
         self.assertIn('2002/city\\nnight.png', said_text(self), 'a control character is shown escaped')
         self.assertEqual(self.run_tool('list', SEARCH, 'beach'), 0)
-        self.assertIn('1 file(s)', said_text(self))
+        self.assertEqual(self.said[-1], '1 file', 'a count in words, not "1 file(s)"')
+        self.assertEqual(self.run_tool('list'), 0)
+        self.assertEqual(self.said[-1], '2 files')
         self.assertEqual(self.run_tool('verify'), 0)
         self.assertIn('ok 2, damaged 0, missing 0', said_text(self))
 
@@ -812,11 +814,11 @@ class WhereTests(Base):
         for typed in ('München', 'München', '[1]'):
             with self.subTest(typed=typed):
                 self.assertEqual(self.run_tool('list', SEARCH, typed), 0)
-                self.assertIn('1 file(s)', said_text(self))
+                self.assertEqual(self.said[-1], '1 file')
                 self.assertEqual(self.run_tool('where', typed), 0)
                 self.assertIn('(5 bytes)', said_text(self))
         self.assertEqual(self.run_tool('list', SEARCH, '.*'), 0)
-        self.assertIn('0 file(s)', said_text(self))
+        self.assertEqual(self.said[-1], '0 files')
         self.assertEqual(self.run_tool('restore', str(self.dest), SEARCH, 'München'), 0)
         self.assertEqual((self.dest / mac_name).read_bytes(), b'photo', 'restored under its own name')
 
