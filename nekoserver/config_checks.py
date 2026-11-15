@@ -1,7 +1,7 @@
 """Pure checks for selected modules, before any installer module can mutate OS state."""
 
 import re
-from neko_common import DASHBOARD_DEFAULT_PORT, host_timezone
+from neko_common import DASHBOARD_DEFAULT_PORT, host_timezone, whole_number
 from modules import (
     app_backup,
     dashboard,
@@ -99,20 +99,14 @@ def validate(config, plan):
     if set(plan) & {'media', 'photos', 'photo_backup', 'photo_preservation', 'music_backup', 'maintenance'}:
         host_timezone(config)
     if 'media_monitor' in plan:
-        value = config.get('monitoring', {}).get('interval_minutes', 60)
-        if type(value) is not int or not 15 <= value <= 1440:
-            raise RuntimeError('Invalid media monitoring interval')
+        whole_number(config.get('monitoring', {}), 'monitoring', 'interval_minutes', 60, 15, 1440)
     if 'onboarding' in plan:
-        value = config.get('onboarding', {}).get('wait_seconds', 180)
-        if type(value) is not int or not 0 <= value <= 600:
-            raise RuntimeError('Invalid startup wait')
+        whole_number(config.get('onboarding', {}), 'onboarding', 'wait_seconds', 180, 0, 600)
     if set(plan) & {'account_credentials', 'accounts'}:
         import account_store
 
         account_store.enabled(config)
-        value = config.get('accounts', {}).get('wait_seconds', 180)
-        if type(value) is not int or not 0 <= value <= 600:
-            raise RuntimeError('Account startup wait must be 0..600 seconds')
+        whole_number(config.get('accounts', {}), 'accounts', 'wait_seconds', 180, 0, 600)
     opts = config.get('photos', {})
     if 'photos' in plan:
         value = opts.get('immich_version', 'auto')
@@ -120,10 +114,8 @@ def validate(config, plan):
             raise RuntimeError('Invalid Immich release version')
     if 'photo_preservation' in plan:
         for key, default, minimum in (('archive_interval_minutes', 60, 15), ('archive_min_age_seconds', 600, 60)):
-            value = opts.get(key, default)
             maximum = 10080 if key == 'archive_interval_minutes' else 31536000
-            if type(value) is not int or not minimum <= value <= maximum:
-                raise RuntimeError('Invalid photo archive interval/age')
+            whole_number(opts, 'photos', key, default, minimum, maximum)
         _time(opts.get('database_backup_time', '02:15'))
     if 'photo_backup' in plan:
         _time(opts.get('backup_time', '03:00'))

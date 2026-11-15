@@ -10,6 +10,7 @@ import native_runtime
 import host
 from neko_common import (
     SHARED,
+    whole_number,
     SYSTEMD_UNITS,
     VERSION,
     atomic_json,
@@ -65,10 +66,7 @@ def settings(config):
         ('journal_ram_mb', 64, 16, 256),
         ('journal_retention_days', 14, 1, 90),
     ):
-        value = opts.get(key, default)
-        if type(value) is not int or not low <= value <= high:
-            raise RuntimeError('Invalid journal bound')
-        values[key] = value
+        values[key] = whole_number(opts, 'server_os', key, default, low, high)
     return policy, values
 
 

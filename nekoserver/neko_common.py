@@ -413,6 +413,19 @@ def printable(text):
     return UNSHOWN.sub(lambda m: m.group(0).encode('unicode_escape').decode('ascii'), str(text))
 
 
+def whole_number(opts, group, key, default, low, high):
+    """The whole number `key` under `group` in the settings (`opts` is that group), from
+    `low` to `high`; anything else refused with the setting, the file and the range named,
+    so the person knows what to write (deep check plan 277: "Invalid journal bound")."""
+    value = opts.get(key, default)
+    if type(value) is not int or not low <= value <= high:
+        raise RuntimeError(
+            f'"{key}" under "{group}" in my-config.json is {value!r}: write a whole number from {low} to '
+            f'{high} there (or take the line out to use {default}), then run setup again'
+        )
+    return value
+
+
 def look_alike_letters(text):
     """True when `text` mixes Latin letters with Cyrillic or Greek ones, many of which look
     the same (Cyrillic а and Latin a): "Меdia" can't be told from "Media" on a screen.

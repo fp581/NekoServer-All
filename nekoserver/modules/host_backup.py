@@ -12,6 +12,7 @@ import host
 from modules.app_backup import kept_count
 from neko_common import (
     RESUME_TIMEOUT,
+    whole_number,
     SYSTEMD_UNITS,
     VERSION,
     atomic_json,
@@ -73,9 +74,7 @@ def settings(config):
     for key in ('steam', 'samba'):
         if type(opts.get(key, True)) is not bool:
             raise RuntimeError('host_backup switches must be booleans')
-    free = opts.get('minimum_free_gb', 2)
-    if type(free) is not int or not 1 <= free <= 1024:
-        raise RuntimeError('Invalid backup free-space reserve')
+    whole_number(opts, 'host_backup', 'minimum_free_gb', 2, 1, 1024)
     kept_count(config, 'host_backup', SETTINGS_BACKUPS)  # 1 to 7, or an earlier setting kept as it was
     paths = opts.get('extra_paths', [])
     if not isinstance(paths, list) or len(paths) > 32 or any(not isinstance(p, str) for p in paths):

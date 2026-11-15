@@ -15,7 +15,7 @@ import sys
 
 import native_runtime
 import outside_request
-from neko_common import SHARED, VERSION, atomic_json, safe_path, check_units, write_units
+from neko_common import SHARED, VERSION, atomic_json, safe_path, check_units, write_units, whole_number
 
 DEPENDENCIES = ['dashboard']
 DESCRIPTION = 'Background ntfy alerts, grouped retries and recovery notices (Rust)'
@@ -35,10 +35,7 @@ def options(config):
         ('repeat_seconds', 43200, 3600, 604800),
         ('minimum_interval_seconds', 300, 60, 3600),
     ):
-        value = opts.get(key, default)
-        if type(value) is not int or not low <= value <= high:
-            raise RuntimeError('Invalid notification timing')
-        result[key] = value
+        result[key] = whole_number(opts, 'notifications', key, default, low, high)
     return result
 
 
