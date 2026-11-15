@@ -1,6 +1,10 @@
 # Changelog
 
-## v0.51.2 — (in progress; the release number is 0.51.2)
+## v0.51.3 — (in progress; the release number is 0.51.3)
+
+Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how NekoServer is used.
+
+## v0.51.2 — 2026-11-15
 
 Fixes only, from a wider review of 0.51.0 and from trying the tools on a fresh Ubuntu 24.04. Nothing changes in how NekoServer is used.
 
