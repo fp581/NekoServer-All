@@ -13,6 +13,8 @@ Every copy is read back and checked before it counts. That read came straight af
 - **The SD-card engine** (not switched on yet) and **the card restore tool**'s second check.
 
 ### Fixed: getting files back (the recovery menu, restore tools, backup cards)
+- **Two card restores into one folder at once no longer delete each other's half-written files** (both used one temporary name, giving false failures and false "skipped").
+- **A Nextcloud restore with very long paths finishes** (its last check ended in a traceback instead of "Done").
 - **The card restore tool works on a PC with little memory**: reading even a small progress file reserved 1 GB up front.
 - **"1 file … it", "2 files … them"** in the restore summary.
 - **The recovery menu says films, shows and music have no backup**, so a deleted film isn't looked for there.
@@ -41,6 +43,11 @@ Every copy is read back and checked before it counts. That read came straight af
 - **Nothing is restored onto the card itself.** `restore /mnt` (the card) copied every file onto the card, among its records; a folder on the card is now refused, also through a link.
 
 ### Fixed: backups and upgrades
+- **A drive move waits for the dashboard's minute-long jobs** (readings, alerts, heartbeat) instead of stopping after hours of copying; a real backup still stops it.
+- **The "a backup is running" message says to run the same command again**, not always `sudo bash install.sh`.
+- **A file too deep for Linux's path limit no longer stops the whole backup for good**: it is left out and named, and the rest is copied (every file sorting after it was never backed up again; photo archive, Nextcloud copy and USB photo copy).
+- **An upgrade cut off while downloading is not reported as passed** (the dashboard showed it done while the old release still ran).
+- **A monthly-run failure is said under its own step**, not "while waiting for a weekly USB copy".
 - **The monthly run's reasons keep their advice whole on the dashboard** ("night too short" lost the setting's name, "foreign Docker volume" lost "run setup again").
 - **The monthly recovery says when Docker doesn't answer** (after 60 seconds), instead of waiting for good.
 - **An upgrade from the dashboard works on Debian 12's Python (3.11.2)**: it stopped with "module 'tarfile' has no attribute 'FilterError'"; the same safety checks are now done by hand there.
@@ -127,6 +134,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **`notify --test` says what happened**: that the alert server took the test and to look at your phone, or that it was not sent and what to check. It printed nothing, or only "Notification delivery failed".
 
 ### Fixed: the dashboard and Ask Neko
+- **Waiting phone alerts go within a minute once a test gets through**, instead of up to an hour behind the retry delay.
 - **What a backup left out is cut at a word or sentence**, not mid-word ("…the whole Nextcl").
 - **Ask Neko says when a question is too long** (it was cut at 500 characters silently) **and when the box is empty**.
 - **Ask Neko leaves out the alert and heartbeat addresses** read from where setup keeps them (it looked in the settings, where they never are).
@@ -167,6 +175,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **DASHBOARD.md says where a forgotten PIN can be found**, and what the reset gives.
 
 ### Fixed: apps and the network
+- **A media import names the files it leaves out because they are still downloading** (`.!qB`, `.part`) and how to copy them later; the finished film was never copied.
 - **The home gateway stops retrying a refused start** (it looped for good) and is shown under "Starts by itself" like Docker and Samba.
 - **A share name mixing Latin with Cyrillic or Greek letters is refused** ("Меdia" beside "Media").
 - **Immich and Nextcloud take only a stable release** (pre-releases and drafts were accepted), and an odd answer from the release list is said plainly, not a traceback.
