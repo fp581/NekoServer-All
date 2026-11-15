@@ -100,7 +100,7 @@ Then the setup wizard shows its first page, **What would you like this server to
 
 On a PC that already has NekoServer, setup first says what it found (the release that is set up, a setup that was cut off and where, or saved answers) and offers the choices that apply.
 
-**Where to store your apps and files** is asked before that yes. Setup lists every drive connected to the PC (size, kind, model, the name you gave it, how full it is) and asks for the drive for NekoServer and your apps, the drive for the backups, where Immich's photos, the films and shows, the music and Nextcloud's files are kept (the drive of the apps, the backups' drive, or a drive of their own), and an optional removable drive for the offline backup. Each line comes with a recommended drive: press Enter to take it, or type another drive's number. No drive's name is typed, and choosing a drive changes nothing on it; setup never formats one. A drive that cannot have a role is in the list with the reason, the sizes in numbers (the apps need at least 20 GB free, the media and backups 50 GB). The disk Linux runs from can be chosen too, so a PC with one drive works; setup says what that means first. (An installation drive for one group's apps is not offered in 0.50.0; it moves to 0.51.x.)
+**Where to store your apps and files** is asked before that yes. Setup lists every drive connected to the PC (size, kind, model, the name you gave it, how full it is) and asks for the drive for NekoServer and your apps, the drive for the backups, where Immich's photos, the films and shows, the music and Nextcloud's files are kept (the drive of the apps, the backups' drive, or a drive of their own), and an optional removable drive for the offline backup. Each line comes with a recommended drive: press Enter to take it, or type another drive's number. No drive's name is typed, and choosing a drive changes nothing on it; setup never formats one. A drive that cannot have a role is in the list with the reason, the sizes in numbers (the apps need at least 20 GB free, the media and backups 50 GB). The disk Linux runs from can be chosen too, so a PC with one drive works; setup says what that means first. (A drive of their own for one group's apps is not offered yet: the apps are installed together, on the apps' drive.)
 
 Then it asks **whether you already have films, shows or music**, and for their folder: used where it is (nothing is copied) or copied into the library, and whether new ones are saved there too.
 
@@ -119,7 +119,7 @@ Once you start, it first lists what it found on this computer (processor, system
 11. **Runs the first checkup and backup**, once every step is done: an app health check, then each backup you set up, straight away instead of the first night, then a check of the whole server. It says which ones finished and names anything that needs a look. This takes a few minutes to an hour, depending on how much is on the drives.
 12. **Shows a finishing screen**: what's done, what needs you first and what waits for it, your app addresses, whether a dashboard PIN is set, and how to see your passwords.
 
-Whenever it needs you, it shows numbered instructions, opens the right page, and asks in the step's own words, such as `Did the Tailscale page say this server is connected? [yes/no]`. Answer `no` to see the step again. Steps that belong together (setting up the phone, trying the TV) are listed as one part with one question at the end.
+Whenever it needs you, it shows numbered instructions, opens the right page, and asks in the step's own words, such as `Is this server connected to Tailscale?`, with a line under it on how to answer (`Type yes or no, then press Enter.`). Answer `no` to see the step again. Steps that belong together (setting up the phone, trying the TV) are listed as one part with one question at the end.
 
 ### Two ways to follow the installation: the terminal and the setup window
 
@@ -171,9 +171,9 @@ cd NekoServer-All/nekoserver
 sudo bash install.sh
 ```
 
-The third line copies your settings into the new folder. If you forget it, setup finds the copy it keeps on the SSD and asks `Use them for this release (yes when updating)?`: answer `yes`. Nothing installed runs from the old folder, so once setup has finished you can delete `NekoServer-All.old`. After this, updates are `git pull` again.
+The third line copies your settings into the new folder. If you forget it, setup finds the copy it keeps on the SSD and copies it in by itself; it says so (`The settings of the server on this PC are in …`). Nothing installed runs from the old folder, so once setup has finished you can delete `NekoServer-All.old`. After this, updates are `git pull` again.
 
-Coming from a release before 0.39.2, where each release had a folder named for its version (`nekoserver-v0.37.3`, say)? After `git pull` the folder is simply `nekoserver`, and your `my-config.json` is still in the old one. Setup finds it there, or the copy it keeps on the SSD, and asks `Use them for this release (yes when updating)?`. Answer `yes`: it copies your settings in. The old folder can then be deleted.
+Coming from a release before 0.39.2, where each release had a folder named for its version (`nekoserver-v0.37.3`, say)? After `git pull` the folder is simply `nekoserver`, and your `my-config.json` is still in the old one. Setup finds it there, or the copy it keeps on the SSD, and copies your settings in by itself; it says where it found them (`The settings of the server on this PC are in …`). The old folder can then be deleted.
 
 ---
 
@@ -227,13 +227,15 @@ What is copied, where, and when (times are in your `timezone`):
 | Nextcloud files | USB drive | Sundays |
 | App settings | HDD | Every night |
 | Steam saves and settings, Samba settings, any extra folders you list | HDD | Every night |
-| All app settings, databases and app versions, before updates | HDD | 1st of each month |
+| All app settings, databases and app versions (the monthly snapshot) | HDD | 1st of each month |
+| The one app being updated, just before its update | HDD | On the update night (Wednesdays), only when a new version is installed |
 | **Movies, shows and music** | **Not backed up** | |
 
 - **Photos, videos and Nextcloud files are only ever added to the backup.** Nothing on it is overwritten or deleted. If you edit a file, the new version is saved next to the old one with a date in its name.
-- **Old snapshots are cleaned up automatically:** the newest 3 nightly (apps and settings; setup takes 1 to 7), 4 weekly Immich database copies and 3 monthly snapshots are kept. Only database copies that still match the checksum in their note count: a damaged copy, or one without its note, never pushes out a good older one. Change `keep_snapshots` and `database_keep` in `my-config.json` to change the weekly and monthly ones; the nightly count is chosen on setup's backups page.
-- **On the 1st of each month**, at night, the server takes a snapshot, tests that it can be restored, then updates the apps. If an update fails, it goes back to the snapshot automatically. New major versions are only shown on the dashboard until you approve them (see [Optional settings](#optional-settings)).
-- **Weekly copies only add what is new.** Photos already backed up are recognised without being read again, so a weekly run takes minutes, not hours, even for a big library. Any file rewritten or replaced since its copy is compared by content. Once a month, as the first step of the monthly run (before its backup and updates), every copy is compared by checksum.
+- **Old snapshots are cleaned up automatically:** the newest 3 nightly (apps and settings; setup takes 1 to 7), 4 weekly Immich database copies and 3 monthly snapshots are kept. Only database copies that still match the checksum in their note count (a checksum is a fingerprint of a file's content: it no longer matches when even one byte changed): a damaged copy, or one without its note, never pushes out a good older one. Change `keep_snapshots` and `database_keep` in `my-config.json` to change the weekly and monthly ones; the nightly count is chosen on setup's backups page.
+- **On the 1st of each month**, at night, the server checks every backup copy, takes a snapshot of every app and tests that it can be restored. It updates nothing.
+- **App updates come once a week**, on the update night (Wednesday unless you change `update_day`). A new version of an app first waits a week (`settle_days`); then that app alone is stopped, a snapshot of it is taken, and it is updated and checked. If the update fails, the app goes back to its snapshot automatically. New major versions are only shown on the dashboard until you approve them (see [Optional settings](#optional-settings) and [MONTHLY-MAINTENANCE.md](MONTHLY-MAINTENANCE.md)).
+- **Weekly copies only add what is new.** Photos already backed up are recognised without being read again, so a weekly run takes minutes, not hours, even for a big library. Any file rewritten or replaced since its copy is compared by content. Once a month, as the first step of the monthly check (before its snapshot), every copy is compared by checksum.
 - **An incomplete weekly copy is shown as one.** If some Nextcloud files could not be copied (open while copying, or names an exFAT USB drive cannot store, including two names that differ only in upper/lower case, such as `Documents` and `documents`, which exFAT treats as one), the dashboard and phone alerts say *Incomplete* and list them, instead of reporting success.
 
 **Getting something back.** Run `sudo bash install.sh --recover`. A menu asks what you want back (photos, Nextcloud files, the password list, app settings, or a whole monthly snapshot), lists the backups by date, and restores into a **new** folder, so nothing you have now is overwritten. It checks there is enough free space first, and waits if the weekly backup is using the USB drive. It ends by telling you how to put things back. More detail: [RECOVERY.md](RECOVERY.md).
@@ -322,6 +324,14 @@ Good to know:
 | Word | Meaning |
 | --- | --- |
 | **Tailscale** | A free app that lets your devices reach your server from anywhere, privately. |
+| **SSD, HDD** | Two kinds of drive: an SSD is fast, an HDD (a hard disk) is slower and usually bigger. In these guides "the SSD" is the drive you chose for the apps and "the HDD" the one for the media and the backups, whatever kind they are. |
+| **Mount** | Connecting a drive to a folder, so its files show up there (`/srv/nekoserver` for the SSD). Setup does it for the drives you chose; "not mounted" means the drive is not connected to its folder. |
+| **UUID** | The ID a drive's filesystem carries. NekoServer remembers each drive by it, because Linux's short names (`sda1`) can change at a restart. You never have to type it. |
+| **Snapshot** | A copy of an app's settings and databases as they were at one moment, kept with its date, so they can be brought back as they were then. |
+| **Checksum** | A fingerprint of a file's content. A backup copy whose checksum no longer matches is damaged. |
+| **NAS** | A storage box on your home network that shares its drives with your computers. |
+| **Docker, container** | Docker is the program that runs the apps; each app runs in a "container", a closed box of its own with everything it needs. |
+| **Samba** | The program behind the shared folders other computers at home can open. |
 | **Module** | One part of the installer (for example `photos` or `dashboard`). |
 | **NEEDS SETUP** | A step needs something from you. The message says what. Fix it and run `sudo bash install.sh` again. |
 | **BLOCKED** | A step waits for another step that has not succeeded yet. |
