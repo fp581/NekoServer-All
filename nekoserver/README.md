@@ -146,7 +146,7 @@ It is one installation, which you can follow and answer in two places at the sam
 - **Closed the window, or it did not open?** Copy the address the terminal showed into a browser **on this PC**, from your own account, and it opens again (a window still open elsewhere then says it was opened somewhere else). It works only on this PC (it is not reachable from another computer or a phone) and only while setup runs. Without a desktop, use the terminal alone; nothing is missing. **No desktop on the server** (Ubuntu Server, say)? The terminal is enough. To follow in a browser on another computer anyway, the terminal shows a line such as `ssh -L 40123:127.0.0.1:40123 you@<this server's address>`: run it on that computer, keep it open, and open the window's address there. It is let in as the account that ran `sudo`.
 - **At the end** it shows the finishing screen (what's done, what still needs you, your app addresses), which stays in the window until you close it, also after setup has closed.
 
-More detail: [GUIDED-SETUP.md](GUIDED-SETUP.md#the-setup-window).
+More detail: [GUIDED-SETUP.md](GUIDED-SETUP.md#the-setup-window-in-detail).
 
 **Stopped, or something not finished?** Run `sudo bash install.sh` again. It keeps everything already done and continues with the rest. Steps you already confirmed (Tailscale, the phone, the TV tests) are not asked again.
 

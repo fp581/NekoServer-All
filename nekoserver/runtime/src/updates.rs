@@ -317,7 +317,7 @@ pub(crate) fn for_dashboard(data: &Path, settle_days: u64, now: f64) -> Value {
 pub(crate) const RELEASES: &str =
     "https://api.github.com/repos/fp581/NekoServer-All/releases?per_page=30";
 const RELEASE_FILE: &str = "nekoserver.json";
-/// "v0.43.0" (stable) or "v0.43.0Beta" (beta), as README.md "Release channels" says: the
+/// "v0.43.0" (stable) or "v0.43.0Beta" (beta), as MONTHLY-MAINTENANCE.md says: the
 /// numbers, and whether it is a beta. The ways a release was really tagged are read too
 /// ("v0.46.1-beta", "v0.47.0-Beta", "0.47.4-beta" without the v: the last two were
 /// offered to no server). Any other tag (a typo) is no release. The rule is setup's too
