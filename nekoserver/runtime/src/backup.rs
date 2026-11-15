@@ -368,6 +368,38 @@ fn version_name(target: &Path, stamp: &str) -> PathBuf {
     let (stem, ext) = version_parts(&name);
     target.with_file_name(format!("{stem}.neko-{stamp}{ext}"))
 }
+/// Longest path Linux opens, in bytes (PATH_MAX counts the closing zero).
+const PATH_MAX: usize = libc::PATH_MAX as usize - 1;
+/// Whether a backup can keep `target`: its path, the partial copy written beside it first
+/// and a later dated version all stay within PATH_MAX. A file deep in folders with long
+/// names (synced from Windows, say) fitted where it is, but not in the backup's folder
+/// or not with the partial copy's longer name beside it: copying it failed with "File
+/// name too long" and stopped the whole run, so no file after it was ever backed up.
+fn path_fits(target: &Path) -> bool {
+    let folder = target.parent().map_or(0, |p| p.as_os_str().len());
+    let name = target.file_name().map_or(0, |n| n.len());
+    let longest = (name + VERSION_TAG)
+        .min(NAME_MAX)
+        .max(partial_name("").len());
+    folder + 1 + longest <= PATH_MAX
+}
+/// What the job says about files left out by `path_fits` (`what`: "photos and videos").
+fn too_long_said(what: &str, files: &[String]) -> String {
+    let mut shown = files
+        .iter()
+        .take(10)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if files.len() > 10 {
+        shown += &format!(" and {} more", files.len() - 10);
+    }
+    format!(
+        "{} {what} were not backed up because the folders they are in have such long names that their full path in the backup would be longer than Linux allows ({} bytes). Move them into a folder with a shorter path, or shorten the folder names; the next run copies them: {shown}",
+        files.len(),
+        PATH_MAX + 1
+    )
+}
 /// Write down the full name behind a shortened version stem (in the folder's NAMES), so
 /// a restore puts the file back under its own name.
 fn remember_name(folder: &Path, stem: &str, name: &str, apply: bool) -> Result<()> {
@@ -761,6 +793,8 @@ pub struct Integrity {
     /// Left out of a copy onto an exFAT drive: a name exFAT refuses, or one that differs
     /// from another only in upper/lower case (see `exfat_refuses`).
     pub unstorable: Vec<String>,
+    /// Left out because their path in the backup would be too long (`path_fits`).
+    pub too_long: Vec<String>,
 }
 impl Integrity {
     /// Text for a failed job when a copy is damaged, with how to settle it; None when
@@ -1179,6 +1213,12 @@ fn archive_with(
                 live.add(&target, &archive);
                 return Ok(());
             }
+            if !path_fits(&target) {
+                // Left out and named; its earlier copy (if any) stays in the inventory.
+                report.too_long.push(relative.to_string_lossy().to_string());
+                live.add(&target, &archive);
+                return Ok(());
+            }
             // A saved file where one of its folders must go, or a saved folder where it
             // must go: moved aside (kept, never deleted), or the archive could never
             // copy this file again.
@@ -1255,6 +1295,12 @@ fn archive_with(
     report.print("Archive");
     if versions > 0 {
         println!("Archive: {versions} changed files kept as dated versions");
+    }
+    if !report.too_long.is_empty() {
+        println!(
+            "Archive: {}",
+            too_long_said("photos and videos", &report.too_long)
+        );
     }
     if replaced > 0 {
         println!("Archive: {replaced} saved files were in the way of a file that became a folder (or a folder that became a file); they are kept in {REPLACED}/{when} at the archive's top");
@@ -1427,7 +1473,8 @@ fn exfat_refuses(key: &str, seen: &mut std::collections::HashMap<String, String>
 /// The photos an exFAT USB drive can't hold, kept on it (shared.json "left_out"): its
 /// checksum list and lists of files still name them, as the HDD's do, so a restore from
 /// the drive called them missing copies and offered to repair them, though they are safe
-/// on the HDD (deep check plan 191). On any other drive there is no such list.
+/// on the HDD (deep check plan 191). On any other drive there is such a list only for
+/// photos whose path would be too long there (`path_fits`).
 fn note_left_out(dest: &Path, exfat: bool, left: &[String]) -> Result<()> {
     let path = dest.join(common::shared("left_out", "file"));
     if !exfat {
@@ -1555,6 +1602,10 @@ fn mirror_on(
             continue;
         }
         let target = dest.join(key);
+        if !path_fits(&target) {
+            report.too_long.push(key.clone());
+            continue;
+        }
         if conflicting.contains(key) {
             let apart = match usb_ledger.as_mut() {
                 Some(theirs) => histories_apart(
@@ -1676,13 +1727,27 @@ fn mirror_on(
         // keeps every record it already had.
         ledger.save()?;
         ledger.publish_copy(&dest, usb_ledger.as_ref())?;
-        note_left_out(&dest, exfat, &report.unstorable)?;
+        // Photos too deep for this drive are left out the same way: a restore from it
+        // must not take them for lost copies.
+        let left: Vec<String> = report
+            .unstorable
+            .iter()
+            .chain(&report.too_long)
+            .cloned()
+            .collect();
+        note_left_out(&dest, exfat || !report.too_long.is_empty(), &left)?;
         // Only now is this copy's run complete (see inventory::begin).
         if report.list_problem.is_none() {
             inventory::finish_mirror(&source, &dest)?;
         }
     }
     report.print("Backup");
+    if !report.too_long.is_empty() {
+        println!(
+            "Backup: {}",
+            too_long_said("photos and videos", &report.too_long)
+        );
+    }
     if !report.unstorable.is_empty() {
         println!(
             "Backup: {} files not copied because the USB drive (exFAT) cannot store their names (a character exFAT refuses, or the same name as another file but for upper/lower case); they stay safe on the HDD, and a USB drive formatted as ext4 takes them all: {}",
@@ -1955,6 +2020,7 @@ pub fn copy_cloud(
     let mut refused = vec![];
     let mut clashes = vec![];
     let mut unreadable = vec![];
+    let mut too_long = vec![];
     let mut seen = std::collections::HashMap::new();
     let mut skipped_files = vec![];
     // The USB copy keeps its own ledger: the Nextcloud files are not on the HDD.
@@ -2046,6 +2112,13 @@ pub fn copy_cloud(
             }
             let user_files = root.join(&user).join("files");
             let target = user_files.join(relative);
+            if !path_fits(&target) {
+                // Left out and named; its earlier copy (if any) stays in the inventory.
+                too_long.push(shown.clone());
+                refused.push(shown);
+                live.add(&target, &root);
+                return Ok(());
+            }
             let in_way = in_the_way(&user_files, relative);
             if !in_way.is_empty() {
                 if !apply {
@@ -2121,7 +2194,13 @@ pub fn copy_cloud(
             unreadable.iter().take(20).cloned().collect::<Vec<_>>().join(", ")
         );
     }
-    let exfat: Vec<&String> = refused.iter().filter(|r| !unreadable.contains(r)).collect();
+    if !too_long.is_empty() {
+        println!("Nextcloud: {}", too_long_said("files", &too_long));
+    }
+    let exfat: Vec<&String> = refused
+        .iter()
+        .filter(|r| !unreadable.contains(r) && !too_long.contains(r))
+        .collect();
     if !exfat.is_empty() {
         println!(
             "Nextcloud: {} files not copied because the USB drive (exFAT) cannot store their names; rename them or use an ext4 USB drive: {}",
@@ -3953,7 +4032,14 @@ fn archive_result(data: &Path, checks: &Integrity, check: Check) -> Result<Optio
     if let Some(problem) = checks.problem("HDD archive") {
         return Err(Error::new(&problem));
     }
-    Ok(checks.list_problem.clone())
+    // Files left out make the run incomplete, as a list of files that could not be written does.
+    let too_long =
+        (!checks.too_long.is_empty()).then(|| too_long_said("photos and videos", &checks.too_long));
+    Ok(joined(
+        [checks.list_problem.clone(), too_long]
+            .into_iter()
+            .flatten(),
+    ))
 }
 impl Integrity {
     /// Add what a later pass over the same tree found (each file listed once).
@@ -3963,6 +4049,7 @@ impl Integrity {
         // The later pass looked at every file again: its count is the one that stands.
         self.unverified = later.unverified;
         self.list_problem = later.list_problem.or(self.list_problem.take());
+        self.too_long = later.too_long;
         for (mine, theirs) in [
             (&mut self.damaged, later.damaged),
             (&mut self.both_damaged, later.both_damaged),
@@ -5086,10 +5173,15 @@ fn copy_to_usb(run: &UsbRun) -> Result<Option<Value>> {
         .as_ref()
         .map(|p| p.unstorable.clone())
         .unwrap_or_default();
+    let too_long = photos
+        .as_ref()
+        .filter(|p| !p.too_long.is_empty())
+        .map(|p| too_long_said("photos and videos", &p.too_long));
     // A list of files that could not be written makes the backup incomplete too.
     let source_problem = joined(
         [
             cloud.problem,
+            too_long,
             photos.and_then(|p| p.list_problem),
             cloud_copy
                 .as_ref()
@@ -8113,6 +8205,69 @@ mod tests {
             add_only_copy(&src, &dst, true, 0o644, Check::Quick).unwrap(),
             Added::Version
         );
+        let _ = fs::remove_dir_all(root);
+    }
+    /// `base`/eee.../fff (folders of 200 bytes, then one to make up the rest): a folder
+    /// whose path is `len` bytes long, as a deep folder tree synced from Windows can be.
+    fn deep_folder(base: &Path, len: usize) -> PathBuf {
+        let mut folder = base.to_path_buf();
+        while folder.as_os_str().len() + 201 + 1 < len {
+            folder.push("e".repeat(200));
+        }
+        let rest = len - folder.as_os_str().len() - 1;
+        folder.push("f".repeat(rest));
+        fs::create_dir_all(&folder).unwrap();
+        folder
+    }
+    /// Deep check plan 337: a file that fits where it is but whose copy (or the partial
+    /// copy beside it) would be longer than Linux allows stopped the whole run with "File
+    /// name too long", so nothing after it was ever backed up. It is left out and named.
+    #[test]
+    fn a_file_too_deep_for_the_backup_is_named_and_the_rest_is_copied() {
+        let root = scratch("too-deep");
+        // Nextcloud: the USB drive's folder is longer than the files' own.
+        let (cloud, usb) = (root.join("c"), root.join("usb-drive"));
+        fs::create_dir_all(&usb).unwrap();
+        let files = cloud.join("alice/files");
+        let deep = deep_folder(&files.join("Deep"), 4070);
+        write(&deep.join("a.txt"), b"deep");
+        write(&files.join("later.txt"), b"later");
+        let made = copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        assert!(usb.join("nextcloud/alice/files/later.txt").is_file());
+        assert_eq!(made.refused.len(), 1);
+        assert!(made.refused[0].ends_with("/a.txt"));
+        assert!(!made.complete());
+        // The photo archive: its folder is longer than Immich's.
+        let (immich, archive) = (root.join("i"), root.join("photo-archive"));
+        let deep = deep_folder(&immich.join("library/admin"), 4070);
+        write(&deep.join("a.jpg"), b"deep");
+        write(&immich.join("upload/u/later.jpg"), b"later");
+        dated(&deep.join("a.jpg"), std::time::SystemTime::now() - DAY);
+        dated(
+            &immich.join("upload/u/later.jpg"),
+            std::time::SystemTime::now() - DAY,
+        );
+        let (copied, report) = archive_checked(&immich, &archive, true, 600, Check::Quick).unwrap();
+        assert_eq!(copied, 1);
+        assert_eq!(report.too_long.len(), 1);
+        assert!(report.too_long[0].ends_with("/a.jpg"));
+        let data = root.join("ssd");
+        fs::create_dir_all(&data).unwrap();
+        let said = archive_result(&data, &report, Check::Quick)
+            .unwrap()
+            .unwrap();
+        assert!(
+            said.contains("1 photos and videos were not backed up"),
+            "{said}"
+        );
+        // The USB copy of the archive, onto a drive whose folder is longer still.
+        let deep = deep_folder(&archive.join("library/admin"), 4070);
+        write(&deep.join("b.jpg"), b"deep");
+        let usb = root.join("usb-drive-with-a-longer-name");
+        fs::create_dir_all(&usb).unwrap();
+        let (_, report) = mirror(&archive, &usb, true, Check::Quick).unwrap();
+        assert!(usb.join("upload/u/later.jpg").is_file());
+        assert_eq!(report.too_long.len(), 1);
         let _ = fs::remove_dir_all(root);
     }
     #[test]
