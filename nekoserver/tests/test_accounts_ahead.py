@@ -132,6 +132,22 @@ class AheadTests(unittest.TestCase):
             account_store.AHEAD.clear()
             self.assertEqual(account_store.other(config, 'dashboard_pin'), '12345678')
 
+    def test_a_pin_asked_again_and_left_empty_is_no_longer_shown(self):
+        """Deep check 409: the PIN file removed to choose a new PIN (DASHBOARD.md), and
+        the new one left empty: the dashboard has no PIN, and "Show login" still showed
+        the old one."""
+        config = settings(self.folder)
+        never = mock.Mock(side_effect=AssertionError('asked'))
+        with mock.patch.object(account_store, 'check_parent'), mock.patch.object(account_store, 'private'):
+            account_store.AHEAD.update(mode='custom', apps={}, others={'dashboard_pin': '11112222'})
+            account_store.collect(config, [], never, never, self.said.append)
+            self.assertEqual(account_store.load(config)['others'], {'dashboard_pin': '11112222'})
+            account_store.AHEAD.update(mode='custom', apps={}, others={'dashboard_pin': ''})
+            account_store.collect(config, [], never, never, self.said.append)
+            self.assertEqual(account_store.load(config)['others'], {})
+            account_store.AHEAD.clear()
+            self.assertIsNone(account_store.get(config, 'dashboard_pin'))
+
     def test_a_server_whose_apps_have_logins_asks_nothing(self):
         config = settings(self.folder)
         stored = {'format': 1, 'mode': 'generate', 'apps': {'immich': {}}, 'others': {}}

@@ -529,7 +529,15 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
                 save(config, value)
     if AHEAD.get('others'):
         # The PIN and the shared folders' password chosen on the page before the approval.
-        value.setdefault('others', {}).update({k: v for k, v in AHEAD['others'].items() if v})
+        # One asked for and left empty takes the kept one away: it was asked because the
+        # server has none now (the PIN file removed to choose a new one, say), so the one
+        # kept from before opens nothing, and "Show login" would still show it.
+        others = value.setdefault('others', {})
+        for key, chosen in AHEAD['others'].items():
+            if chosen:
+                others[key] = chosen
+            else:
+                others.pop(key, None)
     missing = [app for app in apps if app not in value['apps']]
     # A login made on the accounts page for an app found since to have data of its own
     # (its drive mounted by the storage step meanwhile) is not one the app knows: asked.
