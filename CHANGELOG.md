@@ -31,6 +31,11 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 - **Immich follows a time zone changed after its first setup**, as every other schedule and app already did.
 - **A dashboard PIN asked again and left empty is no longer shown by "Show login".**
 
+### Fixed: checks that said "pass" wrongly
+- **The app check fails Sonarr, Radarr, Lidarr or qBittorrent whose library is read-only** (left so after a monthly check of a slow app failed part-way), and the hourly app check fails app data that is read-only, as setup's check already did.
+- **The app SSD and the media HDD fail the check when Linux turned them read-only** after write errors; only their identity was looked at.
+- **Seerr's request provider check knows which folder takes new files**, so requests still going to a folder that takes none no longer pass.
+
 ### Fixed: logins the apps' own settings change
 Each was told "type the login the app has now" at every setup run, though the saved login was right:
 - **Sonarr, Radarr, Lidarr or Prowlarr set to "Disabled for Local Addresses"**: the password is checked by the app's sign-in instead.
