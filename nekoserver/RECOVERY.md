@@ -95,6 +95,8 @@ Each run notes, before it copies anything, that it has started (`.neko-inventory
 
 Each list also keeps the checksum of every file's content, so a date restores exactly what you had then: also when a file later became a folder (and the backup moved its saved copy into `neko-replaced`), or a new file took its name. A file whose content no saved copy holds any more is named as not restored, never replaced by another file's content. Lists written by 0.39.6 have no checksums yet: a file that became a folder (or the other way round) after such a list is left out of that date's restore, and the menu says so; "Everything ever kept" still has every saved copy of it. A backup made before 0.39.6 has no list yet. Then the menu says so and restores everything ever kept, as before: look through the restore folder and delete what you had removed before uploading the rest. A list that can't be read is never used; the menu then offers everything too. A photo still being written during a weekly copy is not in that copy yet, so it is not in its list either.
 
+**Restored files keep their dates.** Each restored photo, video or Nextcloud file gets back the date it was last changed, as the backup noted it, so Immich sorts a photo without a date inside it (a scan, a screenshot) under the right day. A file whose date the backup never noted (it was saved before NekoServer kept dates and is no longer on the server) comes back dated the day of the restore. Files copied off the backup drive by hand carry the date the backup wrote them: use the menu when the dates matter.
+
 ### What each operation does
 
 The commands of `recover.py` (`sudo python3 recover.py COMMAND`; `--help` lists them, and `COMMAND --help` a command's own options):

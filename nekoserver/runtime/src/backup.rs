@@ -1015,6 +1015,26 @@ fn record_kept(
     }
     Ok(())
 }
+/// Note in the checksum list when the original `source` was last changed, for the copy
+/// `kept_copy` just made or compared (its file), or, for a first copy (`target`) the
+/// quick check passed, only where no date is noted yet (copies from before dates were noted).
+/// The saved copy's own date stays the time it was written, which the quick checks go
+/// by; a restore gives the file this date back (D1).
+fn date_kept(ledger: &mut Ledger, root: &Path, kept: &Kept, target: &Path, source: &Path) {
+    let (file, only_missing) = match (&kept.file, &kept.sha256) {
+        (Some(file), Some(_)) => (file.as_path(), false),
+        (None, _) if kept.added == Added::Same && kept.source_sha256.is_none() => (target, true),
+        _ => return,
+    };
+    let (Ok(key), Ok(meta)) = (ledger_key(file, root), fs::metadata(source)) else {
+        return;
+    };
+    let ns = meta
+        .mtime()
+        .saturating_mul(1_000_000_000)
+        .saturating_add(meta.mtime_nsec());
+    ledger.date(&key, ns, only_missing);
+}
 /// Files of a backup tree that are data (not its ledger, notes, partial files or the
 /// folder of damaged copies), with their ledger keys.
 fn tree_files(root: &Path) -> Result<Vec<(String, PathBuf)>> {
@@ -1300,6 +1320,7 @@ fn archive_with(
             }
             if apply {
                 record_kept(&mut ledger, &archive, &kept, &mut report)?;
+                date_kept(&mut ledger, &archive, &kept, &target, path);
             }
             Ok(())
         })?;
@@ -1450,6 +1471,7 @@ fn histories_apart(
             size: fs::metadata(hdd)?.len(),
             verified_at: common::now(),
             how: USB_ONLY.to_string(),
+            mtime_ns: ours.mtime_ns,
         };
         theirs.adopt(&ledger_key(&versioned, dest)?, &entry)?;
     }
@@ -2325,6 +2347,7 @@ fn copy_cloud_with(
                     }
                     if apply {
                         record_kept(&mut ledger, &root, &kept, &mut report)?;
+                        date_kept(&mut ledger, &root, &kept, &target, path);
                     }
                 }
                 Err(e) if common::drive_full(&e) => no_room.push(shown),
@@ -7141,6 +7164,64 @@ mod tests {
         assert_eq!(missing["in_use"], 1);
         assert_eq!(missing["unsupported_names"], 1);
         assert_eq!(missing["files"], json!(["alice/open.docx", "bob/a:b.txt"]));
+    }
+    /// D1: the copies and their restores kept no file dates, so a restored photo without
+    /// EXIF data landed in Immich on the day of the restore. A saved copy's own date
+    /// stays the time it was written (the quick checks go by it); the original's date
+    /// is noted in the checksum list, on the HDD and on the USB drive, for the restore.
+    #[test]
+    fn the_checksum_list_notes_when_each_original_was_last_changed() {
+        let root = scratch("original-dates");
+        // On a real drive when NEKO_DATES_USB names one (mounted, empty).
+        let usb = std::env::var_os("NEKO_DATES_USB").map_or(root.join("usb"), PathBuf::from);
+        let (library, hdd, cloud) = (root.join("immich"), root.join("hdd"), root.join("cloud"));
+        let dated = |path: &Path, body: &[u8], seconds: u64| {
+            write(path, body);
+            let when = std::time::UNIX_EPOCH + Duration::new(seconds, 123_456_789);
+            let file = fs::File::options().write(true).open(path).unwrap();
+            file.set_modified(when).unwrap();
+            (seconds * 1_000_000_000 + 123_456_789) as i64
+        };
+        let noted = |tree: &Path, key: &str| Ledger::read(tree).unwrap().get(key).unwrap().mtime_ns;
+        let photo = library.join("upload/u/scan.jpg");
+        let taken = dated(&photo, b"a scan without EXIF", 1_000_000_000); // 2001
+        archive(&library, &hdd, true, 60, Check::Quick).unwrap();
+        assert_eq!(noted(&hdd, "upload/u/scan.jpg"), Some(taken));
+        // The copy itself is dated when it was written, as the quick check needs.
+        let copy = fs::metadata(hdd.join("upload/u/scan.jpg")).unwrap();
+        assert!(copy.mtime() > 1_700_000_000, "{}", copy.mtime());
+        // The USB mirror of the archive carries the date in its own list.
+        mirror(&hdd, &usb.join("photos"), true, Check::Quick).unwrap();
+        assert_eq!(noted(&usb.join("photos"), "upload/u/scan.jpg"), Some(taken));
+        // Records from before this (no date): the next quick run notes it, on the HDD
+        // and, through the mirror, in the USB drive's list, which keeps its own records.
+        for tree in [hdd.clone(), usb.join("photos")] {
+            let text = fs::read_to_string(tree.join(LEDGER)).unwrap();
+            let old = text.replace(&format!(",\"mtime_ns\":{taken}"), "");
+            assert_ne!(old, text);
+            fs::write(tree.join(LEDGER), old).unwrap();
+            assert_eq!(noted(&tree, "upload/u/scan.jpg"), None);
+        }
+        archive(&library, &hdd, true, 60, Check::Quick).unwrap();
+        mirror(&hdd, &usb.join("photos"), true, Check::Quick).unwrap();
+        assert_eq!(noted(&hdd, "upload/u/scan.jpg"), Some(taken));
+        assert_eq!(noted(&usb.join("photos"), "upload/u/scan.jpg"), Some(taken));
+        // Nextcloud files, and each later version of one with its own date.
+        let letter = cloud.join("alice/files/letter.txt");
+        let first = dated(&letter, b"first", 1_100_000_000);
+        copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        let tree = usb.join("nextcloud");
+        assert_eq!(noted(&tree, "alice/files/letter.txt"), Some(first));
+        let second = dated(&letter, b"second, longer", 1_200_000_000);
+        copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        let ledger = Ledger::read(&tree).unwrap();
+        let version = ledger
+            .entries()
+            .find(|(key, _)| key.contains("letter.neko-"))
+            .unwrap();
+        assert_eq!(version.1.mtime_ns, Some(second));
+        assert_eq!(noted(&tree, "alice/files/letter.txt"), Some(first));
+        let _ = fs::remove_dir_all(root);
     }
     /// D8: Photo.jpg renamed to photo.jpg in Nextcloud. exFAT takes both for one name, so
     /// the renamed file was left out every week as a clash with its own saved copy, and

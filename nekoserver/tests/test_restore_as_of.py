@@ -121,6 +121,42 @@ class RestoreAsOfTests(Restoring):
         self.assertIn('As of the last backup (2026-11-01 03:00 UTC)', out)
         self.assertIn('Restoring the 2 files you had', out)
 
+    def test_restored_files_get_the_dates_their_originals_had(self):
+        # D1: a restored file was dated the moment of the restore. The backup notes each
+        # original's date in its checksum list ("mtime_ns"), and the restore gives it back
+        # once the copy is checked; a copy without a noted date keeps the restore's time.
+        files, entries = self.tree / 'alice/files', {}
+        dates = {
+            'keep.txt': 1_000_000_000_123_456_789,
+            EDIT: 1_600_000_000_000_000_000,
+            'gone.txt': 999_999_999_000_000_000,
+        }
+        for name in ('keep.txt', EDIT, 'gone.txt', 'old-name.txt', 'new-name.txt'):
+            body = (files / name).read_bytes()
+            row = {'sha256': hashlib.sha256(body).hexdigest(), 'size': len(body), 'verified_at': 1.0, 'how': 'copied'}
+            if name in dates:
+                row['mtime_ns'] = dates[name]
+            entries['alice/files/' + name] = row
+        self.write(
+            self.tree / '.neko-ledger.json', json.dumps({'entries': entries, 'format': 'neko-ledger-v1'}).encode()
+        )
+
+        def restored_dates(*choices):
+            self.restore(*choices)
+            folder = next((self.media / 'restored').iterdir()) / 'files'
+            return {p.relative_to(folder).as_posix(): p.stat().st_mtime_ns for p in folder.rglob('*') if p.is_file()}
+
+        started = time.time_ns() - 5_000_000_000
+        as_of = restored_dates('1', '1', '1', 'yes')
+        self.assertEqual(as_of['keep.txt'], dates[EDIT], 'the version you had, with that version\'s date')
+        self.assertGreater(as_of['new-name.txt'], started, 'no date noted: the time of the restore')
+        earlier = restored_dates('1', '2', '1', '1', 'yes')  # as of the backup before
+        self.assertEqual((earlier['keep.txt'], earlier['gone.txt']), (dates['keep.txt'], dates['gone.txt']))
+        newest = restored_dates('1', '3', '1', '1', 'yes')  # everything, the newest version of each
+        self.assertEqual((newest['keep.txt'], newest['gone.txt']), (dates[EDIT], dates['gone.txt']))
+        every = restored_dates('1', '3', '2', '1', 'yes')  # every version
+        self.assertEqual((every['keep.txt'], every[EDIT]), (dates['keep.txt'], dates[EDIT]))
+
     def last_run(self, at, listed, state=None):
         self.write(
             self.tree / '.neko-inventory/last-run.json',

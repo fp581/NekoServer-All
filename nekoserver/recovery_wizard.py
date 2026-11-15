@@ -56,6 +56,7 @@ from neko_common import (
     backup_files,
     copy_checked,
     copy_checked_into,
+    ledger_dates,
     ensure_room,
     findmnt,
     identity_matches,
@@ -440,6 +441,15 @@ def retired_copies(root):
     }
 
 
+def original_date(name, folder, changed):
+    """Give the restored file `name` (in the open `folder`, or a path when None) the date
+    its original was last changed (`changed`, ns; None: not noted, the file keeps the
+    time of the restore). A drive that can't hold that date leaves the file as it is."""
+    if changed is not None:
+        with contextlib.suppress(OSError, OverflowError):
+            os.utime(name, ns=(changed, changed), dir_fd=folder, follow_symlinks=False)
+
+
 class Checked:
     """Restores check every file against the backup tree's checksum ledger. A file the
     ledger has no checksum for yet is restored but counted as unverified. A file damaged
@@ -457,6 +467,10 @@ class Checked:
         except RuntimeError as exc:
             # A checksum list the drive lost mid-write: the files are restored unchecked.
             self.sums, self.ledger_problem = {}, str(exc)
+        # When each original was last changed, where the backup noted it: a restored file
+        # gets that date back (a saved copy's own date is when the backup wrote it).
+        # Immich files a photo without EXIF data under its file date.
+        self.dates = ledger_dates(self.root) if self.root else {}
         self.lost = retired_copies(self.root) if self.root else {}
         # Photos the exFAT USB drive can't hold (names it can't store): safe on the HDD.
         self.left_out = left_out(self.root) if self.root else set()
@@ -511,7 +525,7 @@ class Checked:
                 key = None
         expected = expected or self.sums.get(key)
         try:
-            self.write(source, target, expected)
+            self.write(source, target, expected, self.dates.get(key))
         except BackupDamaged:
             self.damaged.append(key or str(source))
             return
@@ -520,12 +534,14 @@ class Checked:
         else:
             self.unverified += 1
 
-    def write(self, source, target, expected):
+    def write(self, source, target, expected, changed=None):
         """Copy `source` to `target` through the restore folder's open folder (copy_checked
         without a begun restore). Raises DestinationGone, with nothing written, once the
-        restore folder is no longer the one opened."""
+        restore folder is no longer the one opened. `changed`: when the original was last
+        changed (ns), given to the restored file once its copy is checked."""
         if self.target is None:
             copy_checked(source, target, expected)
+            original_date(target, None, changed)
             return
         relative = Path(target).relative_to(self.destination)
         self.target.check(self.restored())
@@ -533,6 +549,7 @@ class Checked:
         try:
             with open(source, 'rb') as src:
                 copy_checked_into(src, folder, relative.name, expected, source)
+            original_date(relative.name, folder, changed)
         except BackupDamaged:
             self.keep_damaged(folder, relative.name, relative)
             raise

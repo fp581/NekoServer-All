@@ -52,6 +52,13 @@ pub struct Entry {
     /// How it was first verified: "copied" (three matching checksums while copying)
     /// or "agreed" (two independent copies matched).
     pub how: String,
+    /// When the original was last changed (its modification time, nanoseconds since
+    /// 1970), noted when the copy was made or found to match it; None in older
+    /// records. A saved copy's own date is when it was written (the quick checks
+    /// go by that, backup.rs copied_since_change), so the original's date is kept here,
+    /// and a restore gives it back to the file (recovery_wizard.py): Immich files a
+    /// photo without EXIF data under its file date.
+    pub mtime_ns: Option<i64>,
 }
 
 /// What recording a checksum did.
@@ -180,6 +187,7 @@ impl Ledger {
                 size,
                 verified_at: common::now(),
                 how: how.to_string(),
+                mtime_ns: None,
             },
         );
         self.unsaved += 1;
@@ -187,6 +195,22 @@ impl Ledger {
             self.save()?;
         }
         Ok(Recorded::New)
+    }
+    /// Note the original's modification time for the recorded copy `rel` (see
+    /// Entry::mtime_ns). `only_missing`: for a copy that was not compared just now,
+    /// only a record that has no date yet gets one.
+    pub fn date(&mut self, rel: &str, mtime_ns: i64, only_missing: bool) {
+        if self._lock.is_none() {
+            return;
+        }
+        if let Some(entry) = self.entries.get_mut(rel) {
+            let keep =
+                entry.mtime_ns == Some(mtime_ns) || (only_missing && entry.mtime_ns.is_some());
+            if !keep {
+                entry.mtime_ns = Some(mtime_ns);
+                self.unsaved += 1;
+            }
+        }
     }
     /// Take over a checksum another copy's ledger recorded (when this one lost it), as
     /// it was recorded there. An existing entry is never replaced.
@@ -251,14 +275,22 @@ impl Ledger {
     /// entries: a copy of them all and a JSON tree of it took 2.7 GB to add one photo to a
     /// ledger of a million (deep check 223).
     fn write(&self, kept: Option<&Ledger>, out: &mut dyn Write) -> Result<()> {
-        let mut all: BTreeMap<&String, &Entry> = self.entries.iter().collect();
+        // Each entry with the date of its original to write: its own, or for a record
+        // `kept` has without one, the date this ledger noted for the same content.
+        let mut all: BTreeMap<&String, (&Entry, Option<i64>)> = self
+            .entries
+            .iter()
+            .map(|(k, e)| (k, (e, e.mtime_ns)))
+            .collect();
         let mut retired = self.retired.clone();
         if let Some(kept) = kept {
-            all.extend(
-                kept.entries
-                    .iter()
-                    .filter(|(k, e)| !self.retired_as(k, &e.sha256)),
-            );
+            for (k, e) in kept.entries.iter() {
+                if self.retired_as(k, &e.sha256) {
+                    continue;
+                }
+                let ours = self.entries.get(k).filter(|o| o.sha256 == e.sha256);
+                all.insert(k, (e, e.mtime_ns.or(ours.and_then(|o| o.mtime_ns))));
+            }
             for (k, row) in &kept.retired {
                 retired.entry(k.clone()).or_insert_with(|| row.clone());
             }
@@ -266,13 +298,16 @@ impl Ledger {
         // The keys in the order a JSON object of them is written (entries, format, retired).
         // Each piece is made first and then written, so a full drive is said as one.
         out.write_all(b"{\"entries\":{")?;
-        for (n, (rel, e)) in all.into_iter().enumerate() {
+        for (n, (rel, (e, mtime_ns))) in all.into_iter().enumerate() {
             if n > 0 {
                 out.write_all(b",")?;
             }
             out.write_all(&serde_json::to_vec(rel)?)?;
             out.write_all(b":")?;
-            let row = json!({"sha256": e.sha256, "size": e.size, "verified_at": e.verified_at, "how": e.how});
+            let mut row = json!({"sha256": e.sha256, "size": e.size, "verified_at": e.verified_at, "how": e.how});
+            if let Some(ns) = mtime_ns {
+                row["mtime_ns"] = json!(ns);
+            }
             out.write_all(&serde_json::to_vec(&row)?)?;
         }
         write!(out, "}},\"format\":\"{FORMAT}\"")?;
@@ -356,6 +391,7 @@ fn entry_of(rel: &str, row: &Value) -> Option<Entry> {
         size: row["size"].as_u64().unwrap_or(0),
         verified_at: row["verified_at"].as_f64().unwrap_or(0.0),
         how: row["how"].as_str().unwrap_or("").to_string(),
+        mtime_ns: row["mtime_ns"].as_i64(),
     })
 }
 impl<'de> Deserialize<'de> for Contents {

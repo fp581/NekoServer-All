@@ -756,6 +756,24 @@ def read_ledger(root):
     return {rel: row['sha256'] for rel, row in _ledger_rows(path, {})}
 
 
+def ledger_dates(root):
+    """{relative path: when its original was last changed (nanoseconds since 1970)} for
+    the saved copies whose checksum-list row notes it ("mtime_ns", written by the backup
+    program, ledger.rs). A saved copy's own date is the time it was written, so a restore
+    takes the original's date from here. {} when the list can't be read."""
+    path = Path(root) / LEDGER_NAME
+    if not path.exists():
+        return {}
+    try:
+        return {
+            rel: row['mtime_ns']
+            for rel, row in _ledger_rows(path, {})
+            if type(row.get('mtime_ns')) is int and abs(row['mtime_ns']) < 2**62
+        }
+    except RuntimeError:
+        return {}
+
+
 def record_ledger(root, entries, how, replace=(), retire=None):
     """Add {relative path: sha256} to a tree's checksum ledger, with the same rules as the
     backup program: one writer at a time (its lock), an existing entry is never
