@@ -36,6 +36,7 @@ import zlib
 import guided_setup
 import nfs_exports
 from neko_restore import read_at_most
+from neko_common import typed_folder as typed_folder_named
 from neko_common import (
     nextcloud_enabled,
     OPERATION_LOCK,
@@ -345,10 +346,12 @@ def folder_problem(path, avoid=(), refuse=(), made_later=None):
 def typed_folder(prompt, output):
     """A typed absolute path without '..', or None when the user goes back."""
     while True:
-        typed = prompt(
-            'Type the full name of a NEW folder, for example /home/you/restored-photos '
-            '(Enter alone goes back, with nothing restored): '
-        ).strip()
+        typed = typed_folder_named(
+            prompt(
+                'Type the full name of a NEW folder, for example /home/you/restored-photos '
+                '(Enter alone goes back, with nothing restored): '
+            )
+        )
         if not typed:
             return None
         candidate = Path(typed)

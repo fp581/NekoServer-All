@@ -7,7 +7,9 @@ also have new ones saved there, or have the folder copied into the library inste
 The checks, the mounting and the library are existing_media's
 (tests/test_existing_media.py); here: the page and where setup acts on the answer."""
 
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +21,7 @@ sys.path.insert(0, str(ROOT))
 import existing_media  # noqa: E402
 import existing_page  # noqa: E402
 import media_libraries  # noqa: E402
+import neko_common  # noqa: E402
 import placement  # noqa: E402
 import questions  # noqa: E402
 
@@ -167,6 +170,28 @@ class PageTests(unittest.TestCase):
                 existing_page.folder_found(ctx.config, 'movies', 'films', (typed('a', 'b', 'c'), said.append))
             )
         self.assertIn('No folder of films is used for now. Run setup again to give one.', said)
+
+    def test_a_folder_dragged_in_or_copied_from_a_shell_is_the_folder(self):
+        """Deep check 481: a folder dragged into the terminal comes in quotes, one copied
+        from a shell has its spaces escaped, and ~ is the person's home: each was "is not a
+        folder on this PC" (setup runs as root, through sudo)."""
+        import pwd
+
+        with tempfile.TemporaryDirectory() as d:
+            folder = os.path.join(d, "Ana's Films")
+            os.mkdir(folder)
+            ctx = context()
+            for given in (f'"{folder}"', f"'{folder}' ", folder.replace(' ', '\\ ').replace("'", "\\'")):
+                with self.subTest(given=given):
+                    seen = []
+                    with mock.patch.object(existing_media, 'check', side_effect=lambda c, k, f, n: seen.append(f)):
+                        existing_page.folder_found(ctx.config, 'movies', 'films', (typed(given), print))
+                    self.assertEqual(seen, [folder])
+                    self.assertTrue(os.path.isdir(seen[0]))
+        home = pwd.getpwnam('nobody').pw_dir.rstrip('/')
+        self.assertEqual(neko_common.typed_folder('~/Videos', {'SUDO_USER': 'nobody'}), home + '/Videos')
+        self.assertEqual(neko_common.typed_folder('/mnt/tank/films'), '/mnt/tank/films')
+        self.assertEqual(neko_common.typed_folder('~other/x', {'SUDO_USER': 'nobody'}), '~other/x')
 
     def test_the_words(self):
         asked = questions.Q['existing_media']

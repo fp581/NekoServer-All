@@ -2233,6 +2233,18 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertEqual(len(left), 1, 'only the file copied whole')
         self.assertEqual(left[0].read_bytes(), (self.root / 'src' / left[0].name).read_bytes())
 
+    def test_a_new_folder_typed_with_its_home_or_quotes_is_taken(self):
+        """Deep check 481: "~/restored" and a quoted path were "Please type a full path
+        starting with /" (the menu runs as root, through sudo)."""
+        import pwd
+
+        home = pwd.getpwnam('nobody').pw_dir.rstrip('/')
+        with mock.patch.dict(os.environ, {'SUDO_USER': 'nobody'}):
+            got = recovery_wizard.typed_folder(lambda _: '~/restored photos', print)
+        self.assertEqual(got, Path(home + '/restored photos'))
+        got = recovery_wizard.typed_folder(lambda _: "'/media/ana/USB/restored'", print)
+        self.assertEqual(got, Path('/media/ana/USB/restored'))
+
     def test_one_file_with_several_versions_is_said_as_one(self):
         """Deep check 485: "1 files had more than one version; you get the newest of each"."""
         self.write('src/report.txt', b'first')
