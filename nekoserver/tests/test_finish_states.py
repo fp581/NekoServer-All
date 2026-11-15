@@ -362,5 +362,18 @@ class CollectTests(unittest.TestCase):
         self.assertEqual(finish_states.login_states(self.config), {})
 
 
+class OneListOfOptionalStepsTests(unittest.TestCase):
+    def test_the_window_and_the_terminal_agree_on_what_a_finished_server_waits_for(self):
+        """Deep check 293: a failed TV, phone alerts or heartbeat step needed you in the
+        terminal (wizard.OPTIONAL: the assistant alone) but was optional in the window."""
+        import wizard
+
+        for step in ('tv', 'notifications', 'heartbeat', 'assistant', 'media'):
+            attention, pending = finish_states.step_items({'plan': [step], 'steps': {step: 'failed'}})
+            self.assertEqual(bool(pending), step in wizard.OPTIONAL, step)
+            self.assertEqual(bool(attention), step not in wizard.OPTIONAL, step)
+        self.assertEqual(wizard.OPTIONAL, {'assistant'})
+
+
 if __name__ == '__main__':
     unittest.main()

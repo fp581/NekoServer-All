@@ -131,6 +131,11 @@ DASHBOARD_DEFAULT_PORT = 8787
 # APP_PORTS: something of the person's own on it (an Ollama they installed) keeps it,
 # and the assistant is not installed.
 ASSISTANT = 'assistant'
+# The steps a finished server does not wait for, in the terminal, the setup window and
+# the dashboard alike (deep check 293): the assistant, whose step turns anything that
+# goes wrong into "needs a look". The TV, phone alerts and heartbeat are needed once you
+# asked for them (left out, their step finishes anyway).
+OPTIONAL_STEPS = frozenset((ASSISTANT,))
 OLLAMA_PORT = 11434
 
 

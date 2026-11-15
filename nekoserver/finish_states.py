@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 
 from neko_common import (
+    OPTIONAL_STEPS,
     nextcloud_enabled,
     APPS,
     app_port,
@@ -42,8 +43,6 @@ SEEN, NOT_WORKING, LATER = 'seen', 'not_working', 'later'
 
 # The setup step that installs each app (every media app comes with the "media" step).
 STEP_OF = {'immich': 'photos', 'nextcloud': 'nextcloud'}
-# A step a finished server does not wait for (wizard.OPTIONAL and acceptance.OPTIONAL).
-OPTIONAL_STEPS = frozenset(('assistant', 'tv', 'notifications', 'heartbeat'))
 # The one thing a person tries in each app: (test, the app it belongs to, whether an
 # empty library means there is nothing to try yet).
 APP_TESTS = (

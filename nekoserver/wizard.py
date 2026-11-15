@@ -698,7 +698,7 @@ def show_checkup(checkup, output):
 # step turns anything that goes wrong (a download cut off, too little memory) into "needs
 # a look". It is still listed with its reason; the first checkup, the exit code and the
 # headline do not wait for it (as upgrade.works_on leaves it out).
-OPTIONAL = frozenset((ASSISTANT,))
+OPTIONAL = neko_common.OPTIONAL_STEPS
 
 
 def planned(config, states, ran=()):
