@@ -52,10 +52,20 @@ def main():
     print('Public CA certificate exported. SHA-256 fingerprint: ' + export(json.loads(settings.read_text()), a.export))
 
 
+def reason(exc):
+    """Why the export failed, in words: NekoServer's own messages as they are, a file
+    error as what and where ("File exists: /home/me/root.crt"). No traceback."""
+    if isinstance(exc, OSError) and exc.strerror:
+        return f'{exc.strerror}: {exc.filename}' if exc.filename else exc.strerror
+    if isinstance(exc, KeyError):
+        return f'the settings have no {exc}'
+    return str(exc) or type(exc).__name__
+
+
 if __name__ == '__main__':
     try:
         main()
-    except Exception:
-        raise SystemExit(
-            'Certificate export failed; verify mounts, CA and a new destination. No private key is exported.'
-        ) from None
+    except Exception as exc:
+        # The reason itself, not one sentence for every failure: that hid "the destination
+        # must be a new .crt file" and a settings file missing a line (deep check plan 283).
+        raise SystemExit(f'Certificate export failed: {reason(exc)}. No private key is exported.') from None
