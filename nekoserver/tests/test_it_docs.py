@@ -173,6 +173,17 @@ class AcceptanceTextTests(unittest.TestCase):
             self.assertNotIn(stale, text)
 
 
+class HostBackupFamilyTests(unittest.TestCase):
+    def test_the_host_backup_guide_names_every_family_and_what_it_keeps_of_it(self):
+        """HOST-BACKUPS.md named only Arch and Debian, while RECOVERY.md and the code
+        (host.FAMILIES) have five: each one's package settings are kept in host backups."""
+        text = ' '.join(doc('HOST-BACKUPS.md').split())
+        for family in host.FAMILIES:
+            self.assertIn(family.label, text)
+            for path in family.settings:
+                self.assertIn(f'`{path}`', text, f'{family.label}: {path}')
+
+
 class UserGuideOrderTests(unittest.TestCase):
     """D13-D15: each guide starts with what a home user does; the technical part is kept,
     under a heading that says it is for administrators."""
