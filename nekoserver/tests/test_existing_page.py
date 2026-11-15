@@ -59,12 +59,52 @@ class PageTests(unittest.TestCase):
         # Answered no: saved as answered, and not asked again.
         ctx = context()
         self.assertTrue(existing_page.ask(ctx, typed('no'), lambda line: None))
-        self.assertEqual(ctx.config, {existing_page.ASKED: True})
+        self.assertEqual(ctx.config, {existing_page.ASKED: True, existing_page.ANSWERED: ['movies', 'tv', 'music']})
         self.assertFalse(existing_page.ask(ctx, never, never))
         # Left (Ctrl+D): nothing saved, asked again next time.
         ctx = context()
         self.assertFalse(existing_page.ask(ctx, mock.Mock(side_effect=EOFError), lambda line: None))
         self.assertNotIn(existing_page.ASKED, ctx.config)
+
+    def test_a_kind_whose_folders_were_all_refused_is_asked_about_again(self):
+        """Review of 0.51.2 (P2): three folders that could not be used ended with "Run setup
+        again to give one", but the question was saved as answered, so it never came."""
+        refused = existing_media.Refused('not_a_folder', path='/mnt/x')
+        ctx = context(media_apps={'music': False})
+        said = []
+        # Films: three folders refused. Shows: Enter alone (none of those), which is an answer.
+        with mock.patch.object(existing_media, 'check', side_effect=refused):
+            self.assertTrue(existing_page.ask(ctx, typed('yes', 'a', 'b', 'c', ''), said.append))
+        self.assertIn('No folder of films is used for now. Run setup again to give one.', said)
+        self.assertEqual(ctx.config[existing_page.ANSWERED], ['tv'])
+        # The next run asks again, about films only.
+        keys = []
+        answers = iter(['yes', ''])
+
+        def asked(text):
+            keys.append(text)
+            return next(answers)
+
+        self.assertTrue(existing_page.ask(ctx, asked, said.append))
+        self.assertEqual(len(keys), 2)
+        self.assertIn('films', keys[1])
+        self.assertNotIn('shows', keys[1])
+        self.assertEqual(ctx.config[existing_page.ANSWERED], ['movies', 'tv'])
+
+    def test_a_kind_switched_on_later_is_asked_about(self):
+        ctx = context(media_apps={'music': False})
+        self.assertTrue(existing_page.ask(ctx, typed('no'), lambda line: None))
+        self.assertEqual(ctx.config[existing_page.ANSWERED], ['movies', 'tv'])
+        never = mock.Mock(side_effect=AssertionError('asked'))
+        self.assertFalse(existing_page.ask(ctx, never, never))
+        # Music switched on since: the question comes for it.
+        ctx.config['media_apps'] = {'music': True}
+        self.assertTrue(existing_page.ask(ctx, typed('no'), lambda line: None))
+        self.assertEqual(ctx.config[existing_page.ANSWERED], ['movies', 'tv', 'music'])
+        # Settings from before the list: every kind this server plays now counts as answered.
+        old = context(media_apps={'music': False}, **{existing_page.ASKED: True})
+        self.assertTrue(existing_page.ask(old, never, never))
+        self.assertEqual(old.config[existing_page.ANSWERED], ['movies', 'tv'])
 
     def test_a_folder_is_checked_said_back_and_saved_in_the_table(self):
         ctx = context()

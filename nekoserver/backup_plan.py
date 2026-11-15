@@ -135,8 +135,9 @@ def review(config, group, new=DEFAULT, held=None):
         return said + f' With {new}, none of them is removed, as there are not more than {new}.'
     return (
         said + f' If you change it to {new}, {effect}, but only after the next backup that succeeds. Nothing is '
-        'removed now, a backup that fails removes nothing, and the newest backup always stays. Your photos, '
-        'videos, films and music are not touched by this number.'
+        'removed now, and the newest backup always stays. A backup that fails removes nothing, with one '
+        'exception: when the HDD is too full for the next backup, the oldest ones are removed first to make '
+        'room. Your photos, videos, films and music are not touched by this number.'
     )
 
 

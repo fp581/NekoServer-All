@@ -145,8 +145,10 @@ class UpgradeTests(unittest.TestCase):
             asked[0],
             'This server keeps the newest 14 nightly app backups. New servers keep 3, and the most that can be '
             'chosen from now on is 7. There are 14 now. If you change it to 3, the 11 oldest are removed, but only '
-            'after the next backup that succeeds. Nothing is removed now, a backup that fails removes nothing, and '
-            'the newest backup always stays. Your photos, videos, films and music are not touched by this number.'
+            'after the next backup that succeeds. Nothing is removed now, and the newest backup always stays. A '
+            'backup that fails removes nothing, with one exception: when the HDD is too full for the next backup, '
+            'the oldest ones are removed first to make room. Your photos, videos, films and music are not touched '
+            'by this number.'
             '\nKeep the newest 3 nightly app backups from now on?',
         )
         self.assertIn('are removed after the next backup that succeeds, none before', lines[0])

@@ -132,6 +132,7 @@ SETTINGS_BEYOND_TEMPLATE = {
         *('locations', 'placement', 'drives', 'media_apps', 'install', 'acceptance_scope'),
         # setup's own notes: installer.RETENTION_REVIEWED, existing_page.ASKED and COPIES
         *('profile_steps_known', 'retention_reviewed', 'existing_media_asked', 'existing_media_copy'),
+        'existing_media_answered',  # existing_page.ANSWERED
     ),
     'docker': ('persistent_root',),
     'photos': (

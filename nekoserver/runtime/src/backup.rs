@@ -3396,6 +3396,23 @@ fn make_room_with(
         removed.push(oldest.clone());
     }
 }
+/// The error of a backup that failed after `make_room` had removed snapshots (`removed`)
+/// for it: the reason, and that older backups went for a backup that was not made (review
+/// of 0.51.2: the run failed with only its own reason, and the dashboard still showed the
+/// history as whole). Unchanged when nothing was removed.
+pub fn failed_after_room(root: &Path, removed: &[String], error: Error) -> Error {
+    if removed.is_empty() {
+        return error;
+    }
+    let left = common::complete_snapshots(root)
+        .map(|found| found.len())
+        .unwrap_or(0);
+    Error::new(&format!(
+        "{error}. Before it failed, {} removed to make room on the HDD, so {} left: free space on the HDD",
+        common::plural(removed.len(), "older snapshot was", "older snapshots were"),
+        common::plural(left, "backup is", "backups are"),
+    ))
+}
 /// What the report says when `make_room` removed snapshots (`removed`) and, with the new
 /// one published, `root` holds fewer than the `keep` snapshots the settings ask for: the
 /// run is done in part, so the dashboard shows the history is shorter than believed.
@@ -8504,6 +8521,15 @@ mod tests {
         // Nothing removed, or as many left as the settings keep: nothing to say.
         assert_eq!(short_history(&root, &[], 7).unwrap(), None);
         assert_eq!(short_history(&root, &removed, 2).unwrap(), None);
+        // The backup then fails: its reason says the older one went for nothing (review
+        // of 0.51.2), and is left alone when nothing was removed.
+        let failed = failed_after_room(&root, &removed, Error::new("Source changed"));
+        assert_eq!(
+            failed.to_string(),
+            "Source changed. Before it failed, 1 older snapshot was removed to make room on the HDD, so 2 backups are left: free space on the HDD"
+        );
+        let plain = failed_after_room(&root, &[], Error::new("Source changed"));
+        assert_eq!(plain.to_string(), "Source changed");
         let error = make_room_with(&root, 100, &free, &short).unwrap_err();
         assert_eq!(error.to_string(), "short: 90 free");
         assert_eq!(names(&root), ["snapshot-300-1"]);

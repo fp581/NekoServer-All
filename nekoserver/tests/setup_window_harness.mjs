@@ -70,9 +70,22 @@ const refusal = states.find(state => state.refuseStart)?.refuseStart;
 let failures = states.find(state => state.failAnswer)?.failAnswer ?? 0;
 // {"postFail": 403} in any state: every button press is answered with that status.
 const postFail = states.find(state => state.postFail)?.postFail;
+// How many switch saves were on their way at once (one: they go one after another).
+let saves = 0;
+let savesAtOnce = 0;
 globalThis.fetch = async (route, options) => {
   if (options?.method === 'POST') {
     posts.push([route, JSON.parse(options.body)]);
+    if (route === 'api/choose' && !postFail) {
+      saves += 1;
+      savesAtOnce = Math.max(savesAtOnce, saves);
+      return {
+        json: async () => {
+          saves -= 1;
+          return { ok: true };
+        }
+      };
+    }
     if (postFail)
       return {
         ok: false,
@@ -116,6 +129,11 @@ function pressCard(state) {
     const input = card.children[1].children[1].children[0];
     input.checked = !input.checked;
     input.fire('change');
+    // {"pressTwice": true}: and straight back, before the first press was saved.
+    if (state.pressTwice) {
+      input.checked = !input.checked;
+      input.fire('change');
+    }
   }
 }
 // {"pressInside": "a card's title"}: the switch inside that card.
@@ -325,6 +343,7 @@ const accounts = (elements['ask-page-accounts']?.children ?? []).map(row => [
 console.log(
   JSON.stringify({
     posts,
+    savesAtOnce,
     parts,
     subs,
     review,

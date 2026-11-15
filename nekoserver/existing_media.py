@@ -670,7 +670,56 @@ def use_in_place(
     if after != before:
         atomic_write(fstab, after, 0o644)
         run(['systemctl', 'daemon-reload'], 60)
+    # A folder taken back (or its group moved): what NekoServer's old lines connected and
+    # the new ones no longer name is disconnected, so no app goes on seeing it.
+    for point in sorted(set(fstab_mounts('\n'.join(own_lines(before)))) - set(fstab_mounts('\n'.join(lines)))):
+        if mounted(point) is not None and not disconnected(run, mounted, point):
+            log(STILL_CONNECTED.format(point=point))
     return [mounted_row(config, entry, (run, find, kind, mounted), log) for entry in wanted]
+
+
+def own_lines(text):
+    """NekoServer's own lines in /etc/fstab's text (those between BEGIN and END)."""
+    lines, inside = [], False
+    for line in text.splitlines():
+        if line.strip() in (BEGIN, END):
+            inside = line.strip() == BEGIN
+        elif inside:
+            lines.append(line)
+    return lines
+
+
+def same_folder(point, path):
+    """Whether the folder connected at `point` is `path` itself (a bind mount is the same
+    folder under another name). Something being mounted there is not enough: after the
+    choice changed, it is still the folder chosen before."""
+    try:
+        return os.path.samefile(point, path)
+    except OSError:
+        return False
+
+
+def disconnected(run, mounted, point):
+    """Unmount what is connected at `point` (every layer of it); False when an app still
+    holds it open, so it could not be."""
+    for _ in range(8):
+        if mounted(point) is None:
+            return True
+        try:
+            run(['umount', str(point)], 120)
+        except RuntimeError:
+            return False
+    return mounted(point) is None
+
+
+STILL_CONNECTED = (
+    'The folder chosen before is still connected at {point} (an app has it open), so it was left. '
+    'Restart the PC, then run setup again: nothing new is written there meanwhile.'
+)
+OTHER_FOLDER = (
+    'Your {what} were changed to {path}, but the folder chosen before is still connected to the library '
+    '(an app has it open). Nothing new is written there. Restart the PC, then run setup again.'
+)
 
 
 def mounted_row(config, entry, tools, log):
@@ -690,6 +739,14 @@ def mounted_row(config, entry, tools, log):
         log(row['reason'])
         return row
     mode = 'rw' if entry['new_files'] else 'ro'
+    # The folder was changed: what is connected there is the one chosen before. A remount
+    # would only change its options and leave the old folder in the library (review of
+    # 0.51.2: the settings and the checks named the new folder, the apps saw the old one).
+    if mounted(point) is not None and not same_folder(point, entry['path']):
+        if not disconnected(run, mounted, point):
+            row['reason'] = OTHER_FOLDER.format(what=WHAT[entry['holds']], path=entry['path'])
+            log(row['reason'])
+            return row
     if mounted(point) is None:
         run(['mount', str(point)], 120)
     else:
@@ -723,10 +780,14 @@ def available(config, find=findmnt, kind=source_import.share_type, mounted=sourc
     rows = []
     for entry in extras(config):
         there = still_there(entry, find, kind)
-        bound = mounted(mount_point(config, entry['holds'], entry['use'])) is not None
+        point = mount_point(config, entry['holds'], entry['use'])
+        other = there and mounted(point) is not None and not same_folder(point, entry['path'])
+        bound = mounted(point) is not None and not other
         reason = None
         if not there:
             reason = away_words(entry)
+        elif other:
+            reason = OTHER_FOLDER.format(what=WHAT[entry['holds']], path=entry['path'])
         elif not bound:
             reason = f'{entry["path"]} is there, but not connected to the library yet; run setup again (or restart)'
         rows.append(

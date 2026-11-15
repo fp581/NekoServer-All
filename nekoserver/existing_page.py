@@ -31,6 +31,10 @@ KINDS = (
     ('music', 'music', 'music'),
 )
 ASKED = 'existing_media_asked'  # true in the settings once the question was answered
+# The kinds (movies, tv, music) the question was answered for. One flag for all of them
+# (review of 0.51.2) also covered a kind whose folders were all refused ("Run setup again
+# to give one" then never asked), and a kind switched on later was never asked about.
+ANSWERED = 'existing_media_answered'
 # The folders to copy into the library, in the settings until they are copied:
 # [{"holds": "movies", "path": "/mnt/tank/films"}].
 COPIES = 'existing_media_copy'
@@ -92,11 +96,12 @@ def picked(key, asking, **values):
         output('Type 1 or 2.')
 
 
-def folder_found(config, kind, words, asking, key='existing_folder', new_files=False, tries=3):
+def folder_found(config, kind, words, asking, key='existing_folder', new_files=False, tries=3, gave_up=None):
     """A folder that passed the check for this kind (what existing_media.check returned),
     or None when there is none: Enter alone, the window's Skip, or `tries` folders that
     cannot be used. A folder that cannot be used says why, in existing_media's words, and
-    is asked for again. `asking`: (prompt, output)."""
+    is asked for again. `asking`: (prompt, output). `gave_up`: a list that gets the kind
+    when the tries ran out, so the kind is asked about again at the next run."""
     prompt, output = asking
     for _ in range(tries):
         folder = typed(key, prompt, what=words)
@@ -107,6 +112,8 @@ def folder_found(config, kind, words, asking, key='existing_folder', new_files=F
         except existing_media.Refused as refused:
             output(str(refused))
     output(f'No folder of {words} is used for now. Run setup again to give one.')
+    if gave_up is not None:
+        gave_up.append(kind)
     return None
 
 
@@ -148,17 +155,18 @@ def on_network_share(found):
 
 def one_kind(config, kind, words, asking):
     """One kind's answers, put into the settings: its folder, how it is used, and where
-    new ones are saved."""
+    new ones are saved. False when no folder typed could be used: not answered yet."""
     prompt, output = asking
-    found = folder_found(config, kind, words, asking)
+    gave_up = []
+    found = folder_found(config, kind, words, asking, gave_up=gave_up)
     if found is None:
-        return
+        return not gave_up
     where = f" ({found['share']})" if on_network_share(found) and found['share'] != found['path'] else ''
     if picked('existing_use', asking, what=words) == SECOND:
         wanted = {'holds': kind, 'path': found['path']}
         config[COPIES] = [*[c for c in config.get(COPIES) or [] if c != wanted], wanted]
         output(f"Your {words}: {found['path']}{where}. {COPIED_LATER}")
-        return
+        return True
     output(f"Your {words}: {found['path']}{where}. {IN_PLACE}")
     entries = [existing_media.entry_for(kind, found)]
     if downloads(config, kind) and questions.yes_no('existing_new_files', prompt, output, what=words):
@@ -175,25 +183,44 @@ def one_kind(config, kind, words, asking):
         )
     for entry in entries:
         config['placement'] = existing_media.with_choice(config, entry)['placement']
+    return True
+
+
+def answered_kinds(config):
+    """The kinds the question was answered for, and whether the settings were brought up
+    to date for it: settings from before the list (only the one flag) count every kind
+    this server plays now as answered, as they were then."""
+    saved = config.get(ANSWERED)
+    if isinstance(saved, list):
+        return {kind for kind in saved if isinstance(kind, str)}, False
+    if config.get(ASKED) is True:
+        done = {kind for kind, _ in kinds(config)}
+        config[ANSWERED] = [kind for kind, _, _ in KINDS if kind in done]
+        return done, True
+    return set(), False
 
 
 def ask(ctx, prompt=None, output=print):
-    """The page, asked once: whether there are films, shows or music already, then each
-    kind's answers (one_kind). They are saved in the placement table
-    (existing_media.with_choice); a folder to copy is kept until it is copied (COPIES).
-    Returns True when the settings changed."""
+    """The page, asked once for each kind this server plays: whether there are films,
+    shows or music already, then each kind's answers (one_kind). They are saved in the
+    placement table (existing_media.with_choice); a folder to copy is kept until it is
+    copied (COPIES). A kind whose folders could not be used, or that was switched on
+    since, is asked about at the next run. Returns True when the settings changed."""
     config = ctx.config
     changed = keep_table(config)
-    asked = kinds(config)
-    if not asked or config.get(ASKED) is True:
+    done, updated = answered_kinds(config)
+    changed = changed or updated
+    waiting = [(kind, words) for kind, words in kinds(config) if kind not in done]
+    if not waiting:
         return changed
     answer = questions.yes_no('existing_media', prompt, output)
     if answer is None:
         return changed  # left: asked again next time
     config[ASKED] = True
-    if answer:
-        for kind, words in asked:
-            one_kind(config, kind, words, (prompt, output))
+    for kind, words in waiting:
+        if not answer or one_kind(config, kind, words, (prompt, output)):
+            done.add(kind)
+    config[ANSWERED] = [kind for kind, _, _ in KINDS if kind in done]
     return True
 
 

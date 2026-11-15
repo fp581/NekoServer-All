@@ -47,6 +47,13 @@ class Server:
             str(self.ssd): ('/dev/sdc1', 'ext4'),
         }
         self.bound = {}  # mount points bound by "mount", as the kernel's table would have them
+        # What each bound point is bound to, where it is not the folder the settings name.
+        self.bound_from = {}
+        patcher = mock.patch.object(
+            existing_media, 'same_folder', lambda point, path: self.bound_from.get(str(point), str(path)) == str(path)
+        )
+        patcher.start()
+        case.addCleanup(patcher.stop)
         self.config = {
             'data_mount': str(self.ssd),
             'media_mount': str(self.media),
@@ -365,11 +372,17 @@ class MountTests(unittest.TestCase):
     def setUp(self):
         self.pc = Server(self)
         self.ran = []
+        self.busy = set()  # mount points an app holds open: umount fails there
 
     def run_tool(self, argv, timeout):
         self.ran.append(argv)
         if argv[0] == 'mount' and '-o' not in argv:
             self.pc.bound[argv[-1]] = '77'
+        if argv[0] == 'umount':
+            if argv[-1] in self.busy:
+                raise RuntimeError('umount failed: target is busy')
+            self.pc.bound.pop(argv[-1], None)
+            self.pc.bound_from.pop(argv[-1], None)
 
     def use(self, config, permanent=()):
         how = self.pc.how()
@@ -432,6 +445,44 @@ class MountTests(unittest.TestCase):
         # The choice taken back: the block goes, the other lines stay.
         self.use(self.pc.config)
         self.assertEqual(self.pc.fstab.read_text(), earlier)
+
+    def test_a_changed_folder_replaces_the_one_connected_before(self):
+        """Review of 0.51.2 (P1): with the folder changed, setup only remounted the mount
+        point with new options, so the folder chosen before stayed in the library while the
+        settings and the checks named the new one: new imports could reach the wrong one."""
+        config = self.pc.chosen()
+        self.use(config)
+        point = str(self.pc.media / 'library' / 'existing' / 'movies')
+        self.pc.bound_from[point] = str(self.pc.nas / 'old films')  # what is really bound there
+        # The check no longer calls it ready because something is mounted there.
+        (row,) = existing_media.available(config, **self.pc.how())
+        self.assertFalse(row['ready'])
+        self.assertIn('the folder chosen before is still connected', row['reason'])
+        with self.assertRaises(existing_media.Away):
+            existing_media.guard(config, 'movies', **self.pc.how())
+        # Setup disconnects the old folder and connects the new one.
+        self.ran.clear()
+        (row,) = self.use(config)
+        self.assertEqual(self.ran, [['umount', point], ['mount', point]])
+        self.assertTrue(row['mounted'])
+        self.assertTrue(existing_media.available(config, **self.pc.how())[0]['ready'])
+        # An app holds the old one open: it is left, said, and nothing counts as connected.
+        self.pc.bound_from[point] = str(self.pc.nas / 'old films')
+        self.busy.add(point)
+        self.ran.clear()
+        (row,) = self.use(config)
+        self.assertEqual(self.ran, [['umount', point]])
+        self.assertFalse(row['mounted'])
+        self.assertIn('Restart the PC, then run setup again', row['reason'])
+
+    def test_a_folder_taken_back_is_disconnected(self):
+        config = self.pc.chosen()
+        self.use(config)
+        point = str(self.pc.media / 'library' / 'existing' / 'movies')
+        self.ran.clear()
+        self.use(self.pc.config)
+        self.assertIn(['umount', point], self.ran)
+        self.assertNotIn(point, self.pc.bound)
 
     def test_a_block_without_its_end_line_stops_before_any_line_is_lost(self):
         mine = 'UUID=7 /mnt/my-backups ext4 defaults 0 2'

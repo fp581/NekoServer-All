@@ -1827,7 +1827,7 @@ def section_changes(before, after):
     changes = {section: change for section, change in found.items() if change[0] or change[1]}
     # The films question's two answers of their own (that it was asked, the folders to
     # copy), and the backups page's.
-    for key in (existing_page.ASKED, existing_page.COPIES, *AHEAD_KEYS):
+    for key in (existing_page.ASKED, existing_page.ANSWERED, existing_page.COPIES, *AHEAD_KEYS):
         if after.get(key) and after.get(key) != before.get(key):
             changes[key] = after[key]
     return changes

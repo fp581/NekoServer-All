@@ -647,41 +647,48 @@ fn snapshot(
             + RESERVE;
         let removed =
             backup::make_room(&root, needed, &|have| short_of_space(media, have, needed))?;
-        let stage = backup::stage_snapshot(&root)?;
-        let payload = &stage.payload;
-        for row in &mut files {
-            let rel = PathBuf::from(row["path"].as_str().unwrap());
-            let target = payload.join(&rel);
-            if row["kind"] == "directory" {
-                common::directory(&target, 0o700)?;
-            } else {
-                common::directory(target.parent().unwrap(), 0o700)?;
-                row["sha256"] = json!(copy_file(&data.join(&rel), &target)?);
+        // From here a failure comes after older snapshots may have been removed for room:
+        // it says so (`failed_after_room`), not only why it failed.
+        let made = (|| -> Result<(u64, Option<String>)> {
+            let stage = backup::stage_snapshot(&root)?;
+            let payload = &stage.payload;
+            for row in &mut files {
+                let rel = PathBuf::from(row["path"].as_str().unwrap());
+                let target = payload.join(&rel);
+                if row["kind"] == "directory" {
+                    common::directory(&target, 0o700)?;
+                } else {
+                    common::directory(target.parent().unwrap(), 0o700)?;
+                    row["sha256"] = json!(copy_file(&data.join(&rel), &target)?);
+                }
             }
-        }
-        // Containers are stopped, but installer and settings files can still have
-        // other writers. List everything again: a file that changed, appeared or went
-        // away since the first listing makes this snapshot inconsistent.
-        unchanged_since_listing(data, names, &devices, &files, &skipped)?;
-        verify_staged(payload, &files)?;
-        let manifest = json!({"format":"neko-media-snapshot-v1","version":VERSION,"created_at":common::now(),"containers":containers,"files":files,"skipped":skipped,"storage":common::json(cfgpath,64000)["storage"]});
-        // 1 to 7 (0.50.0), or the earlier count setup marked; a count that is neither
-        // removes nothing and is reported.
-        let settings = common::json(cfgpath, 64000);
-        let (keep, refused) = backup::keep_count(
-            &settings["app_backup"]["keep_snapshots"],
-            &settings["app_backup"]["earlier"],
-            "app_backup",
-        );
-        backup::publish_snapshot(
-            &root,
-            &stage,
-            &files,
-            || backup::guard(cfgpath, data, media),
-            &manifest,
-            keep,
-            None,
-        )?;
+            // Containers are stopped, but installer and settings files can still have
+            // other writers. List everything again: a file that changed, appeared or went
+            // away since the first listing makes this snapshot inconsistent.
+            unchanged_since_listing(data, names, &devices, &files, &skipped)?;
+            verify_staged(payload, &files)?;
+            let manifest = json!({"format":"neko-media-snapshot-v1","version":VERSION,"created_at":common::now(),"containers":containers,"files":files,"skipped":skipped,"storage":common::json(cfgpath,64000)["storage"]});
+            // 1 to 7 (0.50.0), or the earlier count setup marked; a count that is neither
+            // removes nothing and is reported.
+            let settings = common::json(cfgpath, 64000);
+            let (keep, refused) = backup::keep_count(
+                &settings["app_backup"]["keep_snapshots"],
+                &settings["app_backup"]["earlier"],
+                "app_backup",
+            );
+            backup::publish_snapshot(
+                &root,
+                &stage,
+                &files,
+                || backup::guard(cfgpath, data, media),
+                &manifest,
+                keep,
+                None,
+            )?;
+            Ok((keep, refused))
+        })();
+        let (keep, refused) =
+            made.map_err(|error| backup::failed_after_room(&root, &removed, error))?;
         // Snapshots removed early for room, leaving fewer than the settings keep: the
         // run is done in part, so the dashboard says the history is shorter.
         let short = backup::short_history(&root, &removed, keep)?;

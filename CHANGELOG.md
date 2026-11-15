@@ -4,6 +4,12 @@
 
 Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how NekoServer is used.
 
+### Fixed: from the review of 0.51.2
+- **Changing the folder of films, shows or music you already have now connects the new one.** Setup only changed the options of what was connected, so the folder chosen before stayed in the library while the settings and the checks named the new one: new downloads could have gone to the old folder. The old folder is now disconnected first; when an app still has it open, setup says so (restart, then run setup again) and nothing counts as connected meanwhile. A folder taken back is disconnected too.
+- **A nightly app backup that fails after making room says what it removed.** When the HDD is too full for the next backup, the oldest ones are removed first (the newest always stays). A run that then failed gave only its own reason; it now adds how many older backups went and how many are left. Setup's words about the number of backups said "a backup that fails removes nothing"; they now name this one exception.
+- **Start installs only what the review on the screen said.** Two quick presses of a switch were saved side by side and could arrive the other way round, and a switch saved after the review was drawn changed what Start did. Switches are now saved one after another, and Start is refused with "The choices changed after this review was shown" until the new review has been seen.
+- **A kind of media whose folders could not be used is asked about again**, as "Run setup again to give one" said (the question was saved as answered), and films, shows or music switched on later get the question too.
+
 ## v0.51.2 — 2026-11-15
 
 Fixes only, from a wider review of 0.51.0 and from trying the tools on a fresh Ubuntu 24.04. Nothing changes in how NekoServer is used.

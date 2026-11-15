@@ -555,6 +555,25 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 409)
         return json.loads(caught.exception.read())
 
+    def test_start_installs_only_what_the_review_on_the_screen_said(self):
+        """Review of 0.51.2 (P2): a switch saved after the review was drawn (a slow save, a
+        second tab) changed what Start installs, though the review said otherwise."""
+        shown = self.state()['revision']
+        self.assertEqual(self.post('api/choose', {'tv': True}), {'ok': True})
+        self.assertEqual(self.state()['revision'], shown + 1)
+        # Start from the older review: not started, and said.
+        said = self.refused('api/start', {'choices': {}, 'reviewed': shown})
+        self.assertIn('The choices changed after this review was shown', said['reason'])
+        self.assertFalse(self.window.started.is_set())
+        # A switch that comes with Start is saved, and shown in the next review first.
+        said = self.refused('api/start', {'choices': {'tv': False}, 'reviewed': shown + 1})
+        self.assertIn('Look at the review again', said['reason'])
+        self.assertFalse(self.window.started.is_set())
+        self.assertFalse(json.loads(self.settings.read_text())['tv']['wanted'])
+        # The review as it is now: setup starts.
+        self.assertEqual(self.post('api/start', {'choices': {}, 'reviewed': self.state()['revision']}), {'ok': True})
+        self.assertTrue(self.window.started.is_set())
+
     def test_a_late_choice_after_the_start_cannot_change_the_saved_settings(self):
         self.post('api/start', {'choices': {'tv': False}})
         # The installer saves what it found (the SSD) while setup runs...
