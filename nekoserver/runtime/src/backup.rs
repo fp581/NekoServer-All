@@ -383,8 +383,10 @@ fn path_fits(target: &Path) -> bool {
         .max(partial_name("").len());
     folder + 1 + longest <= PATH_MAX
 }
-/// What the job says about files left out by `path_fits` (`what`: "photos and videos").
-fn too_long_said(what: &str, files: &[String]) -> String {
+/// What the job says about files left out by `path_fits` (`what`: "photo or video",
+/// "photos and videos"): one file is said as one (deep check 485: "1 photos and videos
+/// were not backed up ... Move them").
+fn too_long_said((one, many): (&str, &str), files: &[String]) -> String {
     let mut shown = files
         .iter()
         .take(10)
@@ -394,12 +396,18 @@ fn too_long_said(what: &str, files: &[String]) -> String {
     if files.len() > 10 {
         shown += &format!(" and {} more", files.len() - 10);
     }
+    let (were, folders, they, them) = if files.len() == 1 {
+        ("was", "the folder it is in has", "its", "it")
+    } else {
+        ("were", "the folders they are in have", "their", "them")
+    };
     format!(
-        "{} {what} were not backed up because the folders they are in have such long names that their full path in the backup would be longer than Linux allows ({} bytes). Move them into a folder with a shorter path, or shorten the folder names; the next run copies them: {shown}",
-        files.len(),
+        "{} {were} not backed up because {folders} such long names that {they} full path in the backup would be longer than Linux allows ({} bytes). Move {them} into a folder with a shorter path, or shorten the folder names; the next run copies {them}: {shown}",
+        common::plural(files.len(), one, many),
         PATH_MAX + 1
     )
 }
+const PHOTOS: (&str, &str) = ("photo or video", "photos and videos");
 /// Write down the full name behind a shortened version stem (in the folder's NAMES), so
 /// a restore puts the file back under its own name.
 fn remember_name(folder: &Path, stem: &str, name: &str, apply: bool) -> Result<()> {
@@ -1346,10 +1354,7 @@ fn archive_with(
         );
     }
     if !report.too_long.is_empty() {
-        println!(
-            "Archive: {}",
-            too_long_said("photos and videos", &report.too_long)
-        );
+        println!("Archive: {}", too_long_said(PHOTOS, &report.too_long));
     }
     if replaced > 0 {
         println!("Archive: {} in the way of a file that became a folder (or a folder that became a file); kept in {REPLACED}/{when} at the archive's top", common::plural(replaced, "saved file was", "saved files were"));
@@ -1800,10 +1805,7 @@ fn mirror_on(
     }
     report.print("Backup");
     if !report.too_long.is_empty() {
-        println!(
-            "Backup: {}",
-            too_long_said("photos and videos", &report.too_long)
-        );
+        println!("Backup: {}", too_long_said(PHOTOS, &report.too_long));
     }
     if !report.unstorable.is_empty() {
         println!(
@@ -2389,7 +2391,7 @@ fn copy_cloud_with(
         );
     }
     if !too_long.is_empty() {
-        println!("Nextcloud: {}", too_long_said("files", &too_long));
+        println!("Nextcloud: {}", too_long_said(("file", "files"), &too_long));
     }
     if !no_room.is_empty() {
         println!("Nextcloud: {}", no_room_said(&no_room, free(&root).ok()));
@@ -4404,8 +4406,7 @@ fn archive_result(data: &Path, checks: &Integrity, check: Check) -> Result<Optio
         return Err(Error::new(&problem));
     }
     // Files left out make the run incomplete, as a list of files that could not be written does.
-    let too_long =
-        (!checks.too_long.is_empty()).then(|| too_long_said("photos and videos", &checks.too_long));
+    let too_long = (!checks.too_long.is_empty()).then(|| too_long_said(PHOTOS, &checks.too_long));
     Ok(joined(
         [checks.list_problem.clone(), too_long]
             .into_iter()
@@ -5552,7 +5553,7 @@ fn copy_to_usb(run: &UsbRun) -> Result<Option<Value>> {
     let too_long = photos
         .as_ref()
         .filter(|p| !p.too_long.is_empty())
-        .map(|p| too_long_said("photos and videos", &p.too_long));
+        .map(|p| too_long_said(PHOTOS, &p.too_long));
     // A list of files that could not be written makes the backup incomplete too.
     let source_problem = joined(
         [
@@ -7498,7 +7499,10 @@ mod tests {
         fs::write(usb.join("upload").join(&current), b"ZZZZ").unwrap(); // same size, later
         let (_, report) = mirror(&hdd, &usb, true, Check::Quick).unwrap();
         assert_eq!(report.repaired, 1);
-        assert_eq!(fs::read(usb.join("upload").join(&current)).unwrap(), b"BBBB");
+        assert_eq!(
+            fs::read(usb.join("upload").join(&current)).unwrap(),
+            b"BBBB"
+        );
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -8827,6 +8831,22 @@ mod tests {
         fs::create_dir_all(&folder).unwrap();
         folder
     }
+    #[test]
+    fn files_too_deep_are_counted_in_words_that_fit_the_count() {
+        let two = too_long_said(PHOTOS, &["a/1.jpg".into(), "a/2.jpg".into()]);
+        assert!(
+            two.starts_with(
+                "2 photos and videos were not backed up because the folders they are in have"
+            ),
+            "{two}"
+        );
+        assert!(two.contains("Move them into"), "{two}");
+        let one = too_long_said(("file", "files"), &["a/1.txt".into()]);
+        assert!(
+            one.starts_with("1 file was not backed up because the folder it is in has"),
+            "{one}"
+        );
+    }
     /// Deep check plan 337: a file that fits where it is but whose copy (or the partial
     /// copy beside it) would be longer than Linux allows stopped the whole run with "File
     /// name too long", so nothing after it was ever backed up. It is left out and named.
@@ -8865,7 +8885,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(
-            said.contains("1 photos and videos were not backed up"),
+            said.contains("1 photo or video was not backed up because the folder it is in has")
+                && said.contains("Move it into"),
             "{said}"
         );
         // The USB copy of the archive, onto a drive whose folder is longer still.
