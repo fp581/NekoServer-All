@@ -1147,6 +1147,16 @@ pub(crate) fn encrypt_secrets_with(
     }
     private(&key)?;
     private(&cert)?;
+    // The key and its certificate are read once, as a pair, and go into the snapshot
+    // first; the list is then sealed for the snapshot's own copy of the certificate.
+    // (The certificate was read from the key folder for the sealing and both files copied
+    // from there afterwards: a new backup password chosen in between, which swaps the two
+    // files, left a list sealed for the old certificate beside the new key, and no
+    // password opened it.)
+    let (key_bytes, cert_bytes) = key_pair(&key, &cert)?;
+    let recipient = snapshot.join(SECRETS_CERT);
+    common::atomic(&snapshot.join(SECRETS_KEY), &key_bytes, 0o600)?;
+    common::atomic(&recipient, &cert_bytes, 0o600)?;
     let output = snapshot.join(SECRETS_ARCHIVE);
     let mut archive = std::process::Command::new("tar")
         .args(["--create", "--file", "-", "--acls", "--xattrs", "-C"])
@@ -1166,7 +1176,7 @@ pub(crate) fn encrypt_secrets_with(
             "cms", "-encrypt", "-binary", "-aes256", "-outform", "DER", "-out",
         ])
         .arg(&output)
-        .arg(&cert)
+        .arg(&recipient)
         .stdin(stream)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -1174,7 +1184,9 @@ pub(crate) fn encrypt_secrets_with(
         .map_err(|e| common::not_started(e, "openssl"))?;
     let archived = archive.wait()?;
     if !archived.success() || !sealed.success() {
-        let _ = fs::remove_file(&output);
+        for name in [SECRETS_ARCHIVE, SECRETS_KEY, SECRETS_CERT] {
+            let _ = fs::remove_file(snapshot.join(name));
+        }
         return Err(Error::new("Could not encrypt the app password files"));
     }
     fs::set_permissions(
@@ -1182,10 +1194,29 @@ pub(crate) fn encrypt_secrets_with(
         <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
     )?;
     fs::File::open(&output)?.sync_all()?;
-    for (source, name) in [(&key, SECRETS_KEY), (&cert, SECRETS_CERT)] {
-        common::atomic(&snapshot.join(name), &common::bytes(source, 64_000)?, 0o600)?;
-    }
     Ok("encrypted")
+}
+/// The backup key and its certificate, read as the pair they are. A new backup password
+/// (backup_secrets.py --new-password) puts a new certificate and a new key in their
+/// places, one after the other: two reads that agree are of one pair, and reads that
+/// differ are made again a moment later.
+fn key_pair(key: &Path, cert: &Path) -> Result<(Vec<u8>, Vec<u8>)> {
+    let read = || -> Result<(Vec<u8>, Vec<u8>)> {
+        Ok((common::bytes(key, 64_000)?, common::bytes(cert, 64_000)?))
+    };
+    let mut pair = read()?;
+    for _ in 0..20 {
+        let again = read()?;
+        if again == pair {
+            return Ok(pair);
+        }
+        pair = again;
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    Err(Error::new(
+        "The backup key keeps changing (a new backup password is being chosen?), so the app \
+         password files were not sealed. Run this again once that is done",
+    ))
 }
 pub(crate) fn verify(snapshot: &Path) -> Result<Value> {
     private(snapshot)?;
@@ -6411,6 +6442,91 @@ mod tests {
             seal_as_decided(&data, &snap, &keys, sealing).unwrap(),
             "encrypted"
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+    /// Whether the snapshot's own copy of the backup key, with `password`, opens its list.
+    fn opens(snap: &Path, password: &str) -> bool {
+        std::process::Command::new("openssl")
+            .args(["cms", "-decrypt", "-binary", "-inform", "DER", "-in"])
+            .arg(snap.join(SECRETS_ARCHIVE))
+            .arg("-inkey")
+            .arg(snap.join(SECRETS_KEY))
+            .args(["-passin", &format!("pass:{password}"), "-recip"])
+            .arg(snap.join(SECRETS_CERT))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    }
+    /// Deep check 456. A new backup password (backup_secrets.py --new-password) puts a new
+    /// certificate and a new key in the key folder, one after the other. The list was
+    /// sealed for the certificate read from that folder, and the key and certificate were
+    /// copied from it afterwards: a swap in between left a snapshot whose list is sealed
+    /// for the old certificate beside the new key, which no password opens. Run for real,
+    /// with a list large enough that the swap falls inside its sealing.
+    #[test]
+    fn a_new_backup_password_while_the_list_is_sealed_leaves_a_list_that_opens() {
+        let root = scratch("new-password");
+        let (data, keys, newer) = (root.join("ssd"), root.join("keys"), root.join("new-key"));
+        let snap = root.join("hdd/backups/monthly/900-1");
+        for dir in [
+            data.join("secrets/accounts"),
+            keys.clone(),
+            newer.clone(),
+            snap.clone(),
+        ] {
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)
+                .unwrap();
+        }
+        fs::write(
+            data.join("secrets/accounts/APP-CREDENTIALS.txt"),
+            b"jellyfin admin pw\n",
+        )
+        .unwrap();
+        // 64 MB of zeros (they take no room on the drive): sealing them takes a moment.
+        fs::File::create(data.join("secrets/accounts/large"))
+            .unwrap()
+            .set_len(64 << 20)
+            .unwrap();
+        backup_key(&keys, "old-password");
+        backup_key(&newer, "new-password");
+        // The swap, in backup_secrets.new_password's order, once the sealing is under way:
+        // openssl has read the certificate by the time it creates the archive.
+        let (archive, from, to) = (snap.join(SECRETS_ARCHIVE), newer.clone(), keys.clone());
+        let swap = std::thread::spawn(move || {
+            for _ in 0..40_000 {
+                if archive.exists() {
+                    for name in [SECRETS_CERT, SECRETS_KEY] {
+                        fs::rename(from.join(name), to.join(name)).unwrap();
+                    }
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_micros(500));
+            }
+            false
+        });
+        assert_eq!(
+            encrypt_secrets_with(&data, &snap, &keys).unwrap(),
+            "encrypted"
+        );
+        assert!(swap.join().unwrap(), "the key was never swapped");
+        // The key that travels with the snapshot opens its list, with that key's password.
+        assert!(
+            opens(&snap, "old-password") || opens(&snap, "new-password"),
+            "the snapshot's key copy does not open its password list"
+        );
+        // And the folder holds the new pair, whole, for the next snapshot.
+        let next = root.join("hdd/backups/monthly/901-1");
+        fs::DirBuilder::new().mode(0o700).create(&next).unwrap();
+        assert_eq!(
+            encrypt_secrets_with(&data, &next, &keys).unwrap(),
+            "encrypted"
+        );
+        assert!(opens(&next, "new-password"));
         fs::remove_dir_all(root).unwrap();
     }
     /// The rollback of an app whose settings are on another drive (0.50.0): its usual
