@@ -23,6 +23,14 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 - **A file whose name starts or ends with a space gets its newest version back.** The note naming the current version was trimmed, so after an edit undone since, an older version was restored.
 - **A kind of media whose folders could not be used is asked about again**, as "Run setup again to give one" said (the question was saved as answered), and films, shows or music switched on later get the question too.
 
+### Fixed: changing a choice after the first setup
+- **A folder of films, shows or music changed, or set to take no new files, while the apps run reaches them as it is now.** Running apps kept seeing it as before, writable too; setup now restarts the apps that see these folders. A Jellyfin library left from a folder taken back (or copied in instead) is named for removal, and Seerr requests still going to a folder that takes no new files are said.
+- **Folders shared before stop being shared when no share is left**; Samba kept sharing them.
+- **The shared folders' password is asked for the account the shares belong to** (a second administrator running setup got a new password every run that Samba never used).
+- **A graphics chip taken out no longer leaves Jellyfin and Immich set to it** (videos that need converting did not play); it is switched back on when the chip returns.
+- **Immich follows a time zone changed after its first setup**, as every other schedule and app already did.
+- **A dashboard PIN asked again and left empty is no longer shown by "Show login".**
+
 ### Fixed: backups and getting files back
 - **Restored photos and Nextcloud files get the dates their originals had.** The backup now notes when each original was last changed, and the recovery menu sets it on each restored file once its checksum passes; restored photos without EXIF data no longer land on the day of the restore in Immich. Files copied off the drive by hand keep the copy's date (STORAGE.md, RECOVERY.md).
 - **On a full HDD the nightly app backup removes no older backup when that cannot make the room.** It removed them one by one until only the newest was left, and failed anyway (films filling the drive). It now measures first. A night that did remove backups for room says so with any count setting.
