@@ -13,6 +13,8 @@ Every copy is read back and checked before it counts. That read came straight af
 - **The SD-card engine** (not switched on yet) and **the card restore tool**'s second check.
 
 ### Fixed: getting files back (the recovery menu, restore tools, backup cards)
+- **The card restore tool works on a PC with little memory**: reading even a small progress file reserved 1 GB up front.
+- **"1 file … it", "2 files … them"** in the restore summary.
 - **The recovery menu says films, shows and music have no backup**, so a deleted film isn't looked for there.
 - **The recovery menu left after only looking around says nothing was changed**, not that restores "stay as they are".
 - **A backup card unplugged mid-restore is said as such** ("The card stopped answering", the files so far are complete, how to carry on), instead of every remaining file called damaged.
@@ -39,6 +41,9 @@ Every copy is read back and checked before it counts. That read came straight af
 - **Nothing is restored onto the card itself.** `restore /mnt` (the card) copied every file onto the card, among its records; a folder on the card is now refused, also through a link.
 
 ### Fixed: backups and upgrades
+- **An upgrade from the dashboard works on Debian 12's Python (3.11.2)**: it stopped with "module 'tarfile' has no attribute 'FilterError'"; the same safety checks are now done by hand there.
+- **A returning drive waits for a running job before starting the apps** (up to 30 minutes, then says so), instead of starting Docker in the middle of a job or an update's rollback.
+- **Root writes into a folder an app owns through the opened folder**, so a folder swapped for a link meanwhile is refused, not followed.
 - **A full USB backup drive says to use a bigger one, never to delete copies on it**; any job on a full drive says so in words (was "No space left on device (os error 28)").
 - **A forgotten backup password is said with what to do**, and a new one can be chosen (`backup_secrets.py --new-password`) for future lists.
 - **The checksum ledger and the lists of files are read and written row by row**: a 1-million-photo ledger took 2.7 GB of memory to add one photo, now 365 MB; a 100,000-photo archive run went from 345 MB to about 72 MB. The files are the same, byte for byte.
@@ -61,6 +66,17 @@ Every copy is read back and checked before it counts. That read came straight af
 - **An older password list after the backup key was made again says it is from the earlier key** and asks for that password, instead of "Wrong password" to the right new one.
 
 ### Fixed: setup and its tools
+- **`install.sh --check` works in a Latin-1 terminal** (it stopped on a dash it could not show).
+- **`doas bash install.sh` knows whose account it is**, and a PC without sudo is told how to get it with its own package manager, not apt.
+- **A 32-bit PC is called a 32-bit PC**, not "a Raspberry Pi or another ARM board"; an image-based Fedora gets the read-only-system message.
+- **Arch with AMD graphics gets its video decoding** (now part of mesa; it was silently left out).
+- **A download with no DNS answering says how to start the name service**, besides the usual causes.
+- **`sudo bash install.sh` by hand stops while a NekoServer upgrade is at work or was cut off**, naming the service that finishes it; it took the setup lock, so the upgrade could neither finish nor put the old release back.
+- **The source wizard saves nothing while the data SSD is not mounted** (as root it wrote onto the system disk).
+- **The review promises only what the steps set up**: the TV switch needs Movies and shows, and Immich follows the photos step's own rule.
+- **Ctrl+D at "Show a login now?" keeps the phone or TV part for the next run**, as the screen says, instead of failing the step.
+- **A media app mistyped by hand in the settings is named**, with the valid names.
+- **Nextcloud's "enabled" is read one way everywhere** (missing means on); some places read it as off.
 - **A cut-off settings file, or a setting of the wrong kind, is named in plain words by every command** (music-setup, migrate, media-connect, source-wizard, `upgrade resume`, onboard and system updates showed tracebacks).
 - **Phone alerts that stopped arriving are tested again by setup**, which asks for the address again when the test fails (it kept the broken one silently).
 - **Turning Nextcloud off says what is kept and what stops** (the files stay on the HDD; the USB copy stops), and its old copies stay restorable from the recovery menu.
@@ -69,7 +85,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **The setup window refuses a change sent from another page on this PC** (the sign-in cookie goes to every port of 127.0.0.1), and closes a connection that stops halfway after 10 seconds.
 - **A drive's label or model can no longer send escape codes to the terminal** in the drive list.
 - **Downloads stop at their whole time limit** (one byte a second ran 40 s against 5 s), and an answer cut off, too large or not a web site's is said plainly.
-- **Docs**: moving to a new PC, letting a friend watch your films (and that they can open the dashboard), renaming the server, where films go and what to do when a drive fills up later.
+- **Docs**: HOST-BACKUPS.md names all five Linux families; moving to a new PC, letting a friend watch your films (and that they can open the dashboard), renaming the server, where films go and what to do when a drive fills up later.
 - **"Continue unfinished setup" says what it really does** (it asks the first page, drives and review again), not that it goes straight on at the step that stopped.
 - **On one drive, the review names that drive** for the photos, not "the drive of the backups".
 - **Backup times typed as "2:30" are taken** (kept as 02:30).
@@ -107,6 +123,8 @@ Every copy is read back and checked before it counts. That read came straight af
 - **`notify --test` says what happened**: that the alert server took the test and to look at your phone, or that it was not sent and what to check. It printed nothing, or only "Notification delivery failed".
 
 ### Fixed: the dashboard and Ask Neko
+- **Ask Neko says when a question is too long** (it was cut at 500 characters silently) **and when the box is empty**.
+- **Ask Neko leaves out the alert and heartbeat addresses** read from where setup keeps them (it looked in the settings, where they never are).
 - **A home-network address the PC no longer has (a new router) is said**, instead of a green page while home addresses and shared folders had stopped.
 - **A time zone changed since setup is said**, with what to do (the monthly update, which stops the apps, could move into the day).
 - **Slow connections no longer stop the page**: 200 of them made every page load fail.
@@ -144,6 +162,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **DASHBOARD.md says where a forgotten PIN can be found**, and what the reset gives.
 
 ### Fixed: apps and the network
+- **The home gateway stops retrying a refused start** (it looped for good) and is shown under "Starts by itself" like Docker and Samba.
 - **A share name mixing Latin with Cyrillic or Greek letters is refused** ("Меdia" beside "Media").
 - **Immich and Nextcloud take only a stable release** (pre-releases and drafts were accepted), and an odd answer from the release list is said plainly, not a traceback.
 - **The nftables rule setup advises is inserted, so it works** (added at the end it was never reached under Arch's rules).
@@ -172,6 +191,7 @@ Every copy is read back and checked before it counts. That read came straight af
 - **A card never gets a set inventory it cannot read back.** The engine now stops, naming the limit, before writing a list larger than its reader takes.
 
 ### Checked
+- The tests run to the end on Python 3.11.0–3.11.2 (Debian 12) as well.
 - **The card's restore tool runs on Python 3.8, as it promises**: its tests now run on a real Python 3.8 in CI (they pass), so a newer Python feature in it fails the build instead of a restore on an older PC.
 
 ## v0.51.1 — 2026-11-13
