@@ -31,6 +31,10 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 - **Immich follows a time zone changed after its first setup**, as every other schedule and app already did.
 - **A dashboard PIN asked again and left empty is no longer shown by "Show login".**
 
+### Fixed: the update from 0.51.2
+- **Running setup again no longer restarts the media apps** on a server with its own film or music folders: every folder remounted as it already was counted as a change, so a film playing or a download was cut off, and the log said "Your own folders changed".
+- **An update that doesn't fit on the SSD says the SSD is full**, where, and to make room and start again (it showed "[Errno 28] No space left on device"). This helps from the update after 0.51.3.
+
 ### Fixed: the first month of a household
 - **A USB drive left unplugged on copy night is a warning, not a 3 am urgent alert.** The weekly copy counted it as an urgent failure, so the phone rang at the highest priority that night and every 12 hours after, until the drive came back. The dashboard's card says the drive was not plugged in, as the alert does.
 - **A 12-hour reminder comes quietly and says "still"**; only a new problem is sent as urgent.
