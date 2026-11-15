@@ -205,8 +205,9 @@ pub fn run(a: &Args) -> Result<()> {
         )?;
         if !waiting.is_empty() {
             println!(
-                "Music: {} files changed in the last 10 minutes (still being added?) wait for the next backup: {}",
-                waiting.len(),
+                "Music: {} changed in the last 10 minutes (still being added?) and {} for the next backup: {}",
+                common::plural(waiting.len(), "file", "files"),
+                if waiting.len() == 1 { "waits" } else { "wait" },
                 waiting.iter().take(10).cloned().collect::<Vec<_>>().join(", ")
             );
         }

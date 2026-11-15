@@ -96,9 +96,13 @@ fn md_array(block: &Path, name: &str) -> Value {
         .filter(|m| m["errors"].as_u64().unwrap_or(0) > 0)
         .map(|m| {
             format!(
-                "{} ({} corrected read errors)",
+                "{} ({})",
                 m["device"].as_str().unwrap_or(""),
-                m["errors"]
+                crate::common::plural(
+                    m["errors"].as_u64().unwrap_or(0),
+                    "corrected read error",
+                    "corrected read errors"
+                )
             )
         })
         .collect();
@@ -127,7 +131,7 @@ fn md_array(block: &Path, name: &str) -> Value {
     } else if !FINE.contains(&state.as_str()) {
         ("warning", format!("The array reports the state {state}"))
     } else if mismatches > 0 {
-        ("warning", format!("{mismatches} blocks differ between the drives' copies (found by a consistency check): have md repair them, and check the drives' health"))
+        ("warning", format!("{} between the drives' copies (found by a consistency check): have md repair them, and check the drives' health", crate::common::plural(mismatches, "block differs", "blocks differ")))
     } else if !worn.is_empty() {
         (
             "warning",

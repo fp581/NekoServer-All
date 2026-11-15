@@ -96,7 +96,7 @@ fn unclear(service: &str, count: usize) -> String {
     if count == 0 {
         format!("its container from before the backup is gone and no {service} container is there now; {start}")
     } else {
-        format!("its container from before the backup is gone and {count} {service} containers are there now, so it is not clear which one to start; remove the extra ones (sudo docker ps -a lists them) and {start}")
+        format!("its container from before the backup is gone and {} there now, so it is not clear which one to start; remove the extra ones (sudo docker ps -a lists them) and {start}", common::plural(count, &format!("{service} container is"), &format!("{service} containers are")))
     }
 }
 fn restart(service: &str, id: &str) -> Result<()> {

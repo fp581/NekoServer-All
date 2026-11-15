@@ -1124,10 +1124,6 @@ fn assistant(cfg: &Value, data: Option<&Path>) -> Value {
         _ => json!({"set_up": false}),
     }
 }
-/// "1 file", "3 files".
-fn plural(n: u64, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
-}
 /// Setup writes an app's Compose file last, once its settings are in place (media.py,
 /// photos.py, nextcloud.py): without one, setup has not set the app up yet.
 fn set_up(data: &Path, app: &str) -> bool {
@@ -1752,7 +1748,7 @@ fn partial_reason(missing: &Value) -> String {
         parts.push(format!(
             "{} not copied ({in_use} in use, {names} with names the USB drive cannot store; \
              their names are in the backup's report, reports/jobs on the application SSD)",
-            plural(in_use + names, "file was", "files were")
+            common::plural(in_use + names, "file was", "files were")
         ));
     }
     // The USB copy of the Immich database (missing, stale or without its version note),
@@ -2959,7 +2955,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
                     format!(
                         "{}: {} damaged or missing",
                         text(&c["name"]),
-                        plural(bad, "file is", "files are")
+                        common::plural(bad, "file is", "files are")
                     ),
                     &format!(
                         "Run  sudo bash install.sh --recover  and choose \"{}\", then \"{}\"; it lists the files.",

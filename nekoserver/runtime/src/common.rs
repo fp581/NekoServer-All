@@ -54,6 +54,12 @@ impl From<serde_json::Error> for Error {
     }
 }
 pub type Result<T> = std::result::Result<T, Error>;
+/// "1 file", "3 files" (or with its verb: "1 file differs", "3 files differ"): every
+/// count the runtime says goes through this, so none says "1 files" (deep check 300).
+pub fn plural<N: std::fmt::Display + PartialEq + From<u8>>(n: N, one: &str, many: &str) -> String {
+    let words = if n == N::from(1) { one } else { many };
+    format!("{n} {words}")
+}
 /// `result`, with a later failure (unmounting, writing the report) added after its own
 /// error instead of replacing it: the first error is the one that explains the run.
 pub fn first_error<T>(result: Result<T>, later: Result<()>) -> Result<T> {
@@ -971,9 +977,9 @@ pub fn lock_wait(path: &Path, max: Duration) -> Result<File> {
             Err(e) => {
                 if start.elapsed() >= max {
                     return Err(Error::new(&format!(
-                        "Another NekoServer job still held {} after {} minutes",
+                        "Another NekoServer job still held {} after {}",
                         path.display(),
-                        max.as_secs() / 60
+                        plural(max.as_secs() / 60, "minute", "minutes")
                     )));
                 }
                 if !announced {
@@ -1033,9 +1039,9 @@ fn shared_lock_wait_with(
                         ))
                     } else {
                         Error::new(&format!(
-                            "Another NekoServer job still held {} after {} minutes",
+                            "Another NekoServer job still held {} after {}",
                             path.display(),
-                            max.as_secs() / 60
+                            plural(max.as_secs() / 60, "minute", "minutes")
                         ))
                     });
                 }
@@ -1813,6 +1819,16 @@ mod media_answer_tests {
 }
 #[cfg(test)]
 mod catalogue_tests {
+    #[test]
+    fn plural_says_one_and_many() {
+        assert_eq!(super::plural(1usize, "file", "files"), "1 file");
+        assert_eq!(super::plural(0u64, "file", "files"), "0 files");
+        assert_eq!(
+            super::plural(2i64, "file differs", "files differ"),
+            "2 files differ"
+        );
+        assert_eq!(super::plural(1.0f64, "second", "seconds"), "1 second");
+    }
     #[test]
     fn every_app_of_the_shared_catalogue_is_read_whole() {
         let listed = super::SHARED["apps"].as_array().unwrap().len();

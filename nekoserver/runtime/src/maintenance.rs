@@ -1544,7 +1544,7 @@ fn health(
                 still_working(file, project, service, &mut seen)
             }) {
                 if !said {
-                    println!("Monthly update: {name} is still starting after {} minutes and keeps working (a new release may be updating its database); waiting for it up to {} minutes in all", wait / 60, MIGRATION_WAIT.max(wait) / 60);
+                    println!("Monthly update: {name} is still starting after {} and keeps working (a new release may be updating its database); waiting for it up to {} in all", common::plural(wait / 60, "minute", "minutes"), common::plural(MIGRATION_WAIT.max(wait) / 60, "minute", "minutes"));
                     said = true;
                 }
                 thread::sleep(Duration::from_secs(5));
@@ -1552,8 +1552,8 @@ fn health(
             }
             return attempt.map_err(|e| {
                 Error::new(&format!(
-                    "{name} was not ready after {} minutes ({e}). If it was still updating its database, raise \"health_wait_seconds\" under \"maintenance\" (up to 1800) and run  sudo bash install.sh  again; the next monthly update then waits longer",
-                    elapsed / 60
+                    "{name} was not ready after {} ({e}). If it was still updating its database, raise \"health_wait_seconds\" under \"maintenance\" (up to 1800) and run  sudo bash install.sh  again; the next monthly update then waits longer",
+                    common::plural(elapsed / 60, "minute", "minutes")
                 ))
             });
         }
@@ -3557,13 +3557,15 @@ fn retry_transient<T>(
     loop {
         match attempt() {
             Ok(value) => return Ok(value),
-            Err(e) => match left.next() {
-                Some(&wait) if transient(&e.to_string()) => {
-                    println!("Monthly update: a download was refused for now ({e}); trying again in {wait} seconds");
-                    sleep(wait);
+            Err(e) => {
+                match left.next() {
+                    Some(&wait) if transient(&e.to_string()) => {
+                        println!("Monthly update: a download was refused for now ({e}); trying again in {}", common::plural(wait, "second", "seconds"));
+                        sleep(wait);
+                    }
+                    _ => return Err(e),
                 }
-                _ => return Err(e),
-            },
+            }
         }
     }
 }
@@ -4154,7 +4156,7 @@ fn clean_images(
         println!("App update: could not note the replaced images for the next clean-up ({e})");
     }
     if !removed.is_empty() {
-        println!("App update: removed {} app image(s) from two updates ago that nothing uses (each kept snapshot still has its own in images.tar)", removed.len());
+        println!("App update: removed {} from two updates ago that nothing uses (each kept snapshot still has its own in images.tar)", common::plural(removed.len(), "app image", "app images"));
     }
     Ok(removed)
 }
@@ -4606,7 +4608,7 @@ fn look_for_updates(cfg: &Value, data: &Path, media: &Path) -> Result<Vec<String
             common::now(),
             settle,
         )? {
-            println!("{name}: {version} found; it is installed on an update night once it has waited {settle} days, or at the next one if you choose \"Install at the next update night\" on the dashboard");
+            println!("{name}: {version} found; it is installed on an update night once it has waited {}, or at the next one if you choose \"Install at the next update night\" on the dashboard", common::plural(settle, "day", "days"));
         }
     }
     crate::updates::save_pending(data, &pending)?;

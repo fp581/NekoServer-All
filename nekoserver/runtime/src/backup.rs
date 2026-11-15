@@ -826,49 +826,74 @@ impl Integrity {
         }
         if !self.both_damaged.is_empty() {
             parts.push(format!(
-                "CRITICAL: {} files match their recorded checksum in no copy; every copy is kept untouched: {}",
-                self.both_damaged.len(),
+                "CRITICAL: {} recorded checksum in no copy; every copy is kept untouched: {}",
+                common::plural(
+                    self.both_damaged.len(),
+                    "file matches its",
+                    "files match their"
+                ),
                 list(&self.both_damaged)
             ));
         }
         if !self.missing.is_empty() {
             parts.push(format!(
-                "{} {what} files that were backed up and verified are missing: {}",
-                self.missing.len(),
+                "{} that {} backed up and verified {} missing: {}",
+                common::plural(
+                    self.missing.len(),
+                    &format!("{what} file"),
+                    &format!("{what} files")
+                ),
+                if self.missing.len() == 1 {
+                    "was"
+                } else {
+                    "were"
+                },
+                if self.missing.len() == 1 { "is" } else { "are" },
                 list(&self.missing)
             ));
         }
         if !self.disagree.is_empty() {
             parts.push(format!(
-                "{} files differ between the HDD and the USB drive, with no recorded checksum (or two different ones) to tell which is right; both are kept untouched: {}",
-                self.disagree.len(),
+                "{} between the HDD and the USB drive, with no recorded checksum (or two different ones) to tell which is right; both are kept untouched: {}",
+                common::plural(self.disagree.len(), "file differs", "files differ"),
                 list(&self.disagree)
             ));
         }
         (!parts.is_empty()).then(|| parts.join(". "))
     }
     fn print(&self, what: &str) {
+        for line in self.counts(what) {
+            println!("{line}");
+        }
+    }
+    /// The log lines with this run's counts (none for a count of 0).
+    fn counts(&self, what: &str) -> Vec<String> {
+        let mut lines = vec![];
         if self.newly_verified > 0 {
-            println!("{what}: {} checksums recorded", self.newly_verified);
+            lines.push(format!(
+                "{what}: {} recorded",
+                common::plural(self.newly_verified, "checksum", "checksums")
+            ));
         }
         if self.repaired > 0 {
-            println!(
-                "{what}: {} damaged copies replaced from a verified copy (the damaged ones are kept in {QUARANTINE}/)",
-                self.repaired
-            );
+            lines.push(format!(
+                "{what}: {} replaced from a verified copy (the damaged ones are kept in {QUARANTINE}/)",
+                common::plural(self.repaired, "damaged copy", "damaged copies")
+            ));
         }
         if self.unverified > 0 {
-            println!(
-                "{what}: {} files have no recorded checksum yet (unverified until a second copy agrees)",
-                self.unverified
-            );
+            lines.push(format!(
+                "{what}: {} no recorded checksum yet (unverified until a second copy agrees)",
+                common::plural(self.unverified, "file has", "files have")
+            ));
         }
         if self.usb_only > 0 {
-            println!(
-                "{what}: {} files are on the USB drive only (saved before this HDD archive was begun); a restore from the USB drive has them",
-                self.usb_only
-            );
+            lines.push(format!(
+                "{what}: {} on the USB drive only (saved before this HDD archive was begun); a restore from the USB drive has them",
+                common::plural(self.usb_only, "file is", "files are")
+            ));
         }
+        lines
     }
 }
 /// Save one tree's check results in `reports/integrity.json` (read by the dashboard and
@@ -1058,8 +1083,8 @@ fn clear_partials(root: &Path) -> Result<usize> {
     }
     if !found.is_empty() {
         println!(
-            "Backup: removed {} partial copies left by a run that was cut off in {}",
-            found.len(),
+            "Backup: removed {} left by a run that was cut off in {}",
+            common::plural(found.len(), "partial copy", "partial copies"),
             root.display()
         );
     }
@@ -1089,13 +1114,13 @@ fn save_inventory(root: &Path, live: &Inventory, ledger: &Ledger, what: &str) ->
     });
     match result {
         Ok((path, true)) => println!(
-            "{what}: noted the {} files you have now ({})",
-            live.len(),
+            "{what}: noted the {} you have now ({})",
+            common::plural(live.len(), "file", "files"),
             path.display()
         ),
         Ok((path, false)) => println!(
-            "{what}: the {} files you have now are the same as in the last list ({}), so no new one was written",
-            live.len(),
+            "{what}: the {} you have now the same as in the last list ({}), so no new one was written",
+            common::plural(live.len(), "file is", "files are"),
             path.display()
         ),
         Err(_) => println!("{what}: {}", problem.as_deref().unwrap_or_default()),
@@ -1294,7 +1319,10 @@ fn archive_with(
     }
     report.print("Archive");
     if versions > 0 {
-        println!("Archive: {versions} changed files kept as dated versions");
+        println!(
+            "Archive: {} kept as dated versions",
+            common::plural(versions, "changed file", "changed files")
+        );
     }
     if !report.too_long.is_empty() {
         println!(
@@ -1303,13 +1331,18 @@ fn archive_with(
         );
     }
     if replaced > 0 {
-        println!("Archive: {replaced} saved files were in the way of a file that became a folder (or a folder that became a file); they are kept in {REPLACED}/{when} at the archive's top");
+        println!("Archive: {} in the way of a file that became a folder (or a folder that became a file); kept in {REPLACED}/{when} at the archive's top", common::plural(replaced, "saved file was", "saved files were"));
     }
     if waiting > 0 {
-        println!("Archive: {waiting} files changed in the last {} seconds wait for the next run (they may still be being written)", settle.unwrap_or(0));
+        let (changed, wait) = if waiting == 1 {
+            ("file", "waits")
+        } else {
+            ("files", "wait")
+        };
+        println!("Archive: {waiting} {changed} changed in the last {} {wait} for the next run (they may still be being written)", common::plural(settle.unwrap_or(0), "second", "seconds"));
     }
     if in_use > 0 {
-        println!("Archive: {in_use} files changed, moved or were deleted while being copied; the next run copies them if they are still there");
+        println!("Archive: {} changed, moved or deleted while being copied; the next run copies them if they are still there", common::plural(in_use, "file was", "files were"));
     }
     println!(
         "Archive: {copied} new verified originals{}",
@@ -1516,7 +1549,7 @@ fn mirror_on(
     // here first, so they never stand in the way of what took their place.
     let followed = follow_moves(&source, &dest, &files, &ledger, apply)?;
     if followed > 0 {
-        println!("Backup: {followed} saved files the HDD archive kept aside (in {REPLACED}/) were moved the same way on the USB drive");
+        println!("Backup: {} the HDD archive kept aside (in {REPLACED}/) moved the same way on the USB drive", common::plural(followed, "saved file", "saved files"));
     }
     // The USB copy's own ledger: its records stay, also when the HDD's ledger was lost
     // or is incomplete (they say which copy is good), and the HDD's ledger takes back
@@ -1750,13 +1783,14 @@ fn mirror_on(
     }
     if !report.unstorable.is_empty() {
         println!(
-            "Backup: {} files not copied because the USB drive (exFAT) cannot store their names (a character exFAT refuses, or the same name as another file but for upper/lower case); they stay safe on the HDD, and a USB drive formatted as ext4 takes them all: {}",
-            report.unstorable.len(),
+            "Backup: {} not copied because the USB drive (exFAT) cannot store their names (a character exFAT refuses, or the same name as another file but for upper/lower case); they stay safe on the HDD, and a USB drive formatted as ext4 takes them all: {}",
+            common::plural(report.unstorable.len(), "file", "files"),
             report.unstorable.iter().take(20).cloned().collect::<Vec<_>>().join(", ")
         );
     }
     println!(
-        "Backup: {copied} new verified files{}",
+        "Backup: {}{}",
+        common::plural(copied, "new verified file", "new verified files"),
         if apply { "" } else { " identified (dry run)" }
     );
     Ok((copied, report))
@@ -2183,14 +2217,18 @@ pub fn copy_cloud(
             save_inventory(&root, &live, &ledger, "Nextcloud").or(report.list_problem.take());
     }
     report.print("Nextcloud");
-    println!("Nextcloud: {copied} new files, {versions} changed files kept as dated versions, {skipped} skipped while in use");
+    println!(
+        "Nextcloud: {}, {} kept as dated versions, {skipped} skipped while in use",
+        common::plural(copied, "new file", "new files"),
+        common::plural(versions, "changed file", "changed files")
+    );
     if replaced > 0 {
-        println!("Nextcloud: {replaced} saved files were in the way of a file that became a folder (or a folder that became a file); they are kept in {REPLACED}/{when} beside the user's files");
+        println!("Nextcloud: {} in the way of a file that became a folder (or a folder that became a file); kept in {REPLACED}/{when} beside the user's files", common::plural(replaced, "saved file was", "saved files were"));
     }
     if !unreadable.is_empty() {
         println!(
-            "Nextcloud: {} files not copied because their names are not valid text (UTF-8), so the backup cannot record them; rename them: {}",
-            unreadable.len(),
+            "Nextcloud: {} not copied because their names are not valid text (UTF-8), so the backup cannot record them; rename them: {}",
+            common::plural(unreadable.len(), "file", "files"),
             unreadable.iter().take(20).cloned().collect::<Vec<_>>().join(", ")
         );
     }
@@ -2203,8 +2241,8 @@ pub fn copy_cloud(
         .collect();
     if !exfat.is_empty() {
         println!(
-            "Nextcloud: {} files not copied because the USB drive (exFAT) cannot store their names; rename them or use an ext4 USB drive: {}",
-            exfat.len(),
+            "Nextcloud: {} not copied because the USB drive (exFAT) cannot store their names; rename them or use an ext4 USB drive: {}",
+            common::plural(exfat.len(), "file", "files"),
             exfat.iter().take(20).map(|r| r.as_str()).collect::<Vec<_>>().join(", ")
         );
     }
@@ -2370,8 +2408,8 @@ fn copy_newest_of(kind: &DumpKind, hdd_dumps: &Path, usb: &Path) -> Result<Optio
         // Kept on the HDD (and never pruned): made while the clock was wrong, so their
         // names cannot say when. The newest copy with a believable date goes to the USB.
         problems.push(format!(
-            "{} {label} database copies are dated in the future ({}); they were made while the server's clock was wrong (check it with timedatectl) and are kept, but the newest copy with a believable date was used",
-            future.len(),
+            "{} dated in the future ({}); made while the server's clock was wrong (check it with timedatectl), kept, but the newest copy with a believable date was used",
+            common::plural(future.len(), &format!("{label} database copy is"), &format!("{label} database copies are")),
             future.join(", ")
         ));
     }
@@ -3320,12 +3358,14 @@ pub fn short_history(root: &Path, removed: &[String], keep: u64) -> Result<Optio
     if removed.is_empty() || left as u64 >= keep {
         return Ok(None);
     }
-    let count = match removed.len() {
-        1 => "1 older application snapshot was".to_string(),
-        n => format!("{n} older application snapshots were"),
-    };
+    let count = common::plural(
+        removed.len(),
+        "older application snapshot was",
+        "older application snapshots were",
+    );
     Ok(Some(json!([format!(
-        "the HDD was short of space, so {count} removed to make room for tonight's snapshot; {left} of the {keep} snapshots the settings keep (app_backup.keep_snapshots) remain"
+        "the HDD was short of space, so {count} removed to make room for tonight's snapshot; {left} of the {} the settings keep (app_backup.keep_snapshots) remain",
+        common::plural(keep, "snapshot", "snapshots")
     )])))
 }
 /// Check the drives, take the lock monthly maintenance and the other jobs hold, then
@@ -4279,9 +4319,9 @@ fn resume_app(app: &Paused, ctl: &dyn Containers, journal: &Path) -> Result<()> 
     }
     if let Some(at) = saved["stopped_at"].as_f64() {
         println!(
-            "{}: started again; it was paused for {:.0} seconds for its weekly backup",
+            "{}: started again; it was paused for {} for its weekly backup",
             app.name,
-            (common::now() - at).max(0.0)
+            common::plural((common::now() - at).max(0.0).round(), "second", "seconds")
         );
     }
     finish_journal(journal)
@@ -5264,6 +5304,45 @@ fn cloud_to_usb(run: &UsbRun, cloud: &Path) -> Result<CloudPart> {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn one_file_is_counted_as_one_file() {
+        // Deep check 300: the log said "1 files have no recorded checksum yet".
+        let one = |rows: &[&str]| rows.iter().map(|r| r.to_string()).collect::<Vec<_>>();
+        let report = super::Integrity {
+            unverified: 1,
+            repaired: 1,
+            usb_only: 1,
+            newly_verified: 1,
+            disagree: one(&["a.jpg"]),
+            missing: one(&["b.jpg"]),
+            both_damaged: one(&["c.jpg"]),
+            ..Default::default()
+        };
+        let said = report.counts("Archive").join("\n") + &report.findings("photo").unwrap();
+        for words in [
+            "Archive: 1 checksum recorded",
+            "Archive: 1 damaged copy replaced",
+            "Archive: 1 file has no recorded checksum yet",
+            "Archive: 1 file is on the USB drive only",
+            "1 file differs between the HDD and the USB drive",
+            "1 photo file that was backed up and verified is missing",
+            "CRITICAL: 1 file matches its recorded checksum in no copy",
+        ] {
+            assert!(said.contains(words), "{words} not in {said}");
+        }
+        assert!(!said.contains("1 files"), "{said}");
+        let many = super::Integrity {
+            unverified: 3,
+            disagree: one(&["a", "b"]),
+            ..Default::default()
+        };
+        let said = many.counts("Archive").join("\n") + &many.findings("photo").unwrap();
+        assert!(
+            said.contains("3 files have no recorded checksum yet"),
+            "{said}"
+        );
+        assert!(said.contains("2 files differ"), "{said}");
+    }
     /// 0.51.2 user check: the USB drive failed and a new one is plugged in. The weekly
     /// copy, which looks for the old drive's UUID, said only "External drive missing".
     #[test]
@@ -8084,7 +8163,7 @@ mod tests {
         report.missing = vec!["alice/files/gone.txt".into()];
         let text = report.problem("USB Nextcloud").unwrap();
         assert!(
-            text.contains("are missing")
+            text.contains("1 USB Nextcloud file that was backed up and verified is missing")
                 && text.starts_with(&settle_advice())
                 && text.ends_with(SETTLE_MORE),
             "{text}"

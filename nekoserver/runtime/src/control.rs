@@ -203,8 +203,7 @@ impl Allowance {
 fn wait_words(wait: Duration) -> String {
     let minutes = wait.as_secs().div_ceil(60).max(1);
     match minutes {
-        1 => "1 minute".to_string(),
-        m if m < 120 => format!("{m} minutes"),
+        m if m < 120 => common::plural(m, "minute", "minutes"),
         m => format!("about {} hours", m.div_ceil(60)),
     }
 }
