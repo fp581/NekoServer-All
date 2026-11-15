@@ -261,9 +261,11 @@ def listener(client, entry, administrator, admin_entry):
 # The app's "Authentication Required" settings (Settings, General, Security) that still ask
 # for the login: setup chooses "Enabled"; "Disabled for Local Addresses" is the app's
 # other choice, often picked by hand later, and still asks everyone outside the home
-# network. The password is proved by the sign-in below either way (the app sets its
-# cookie only for the right one).
-SIGN_IN_REQUIRED = ('enabled', 'disabledforlocaladdresses')
+# network. Radarr 7 and Sonarr 5 add "Disabled for Localhost": only the container's own
+# loopback is let in, and setup comes in through Docker's port mapping, so it is asked
+# to sign in too. The password is proved by the sign-in below either way (the app sets
+# its cookie only for the right one).
+SIGN_IN_REQUIRED = ('enabled', 'disabledforlocaladdresses', 'disabledforlocalhost')
 
 
 def arr(client, entry, config, app):

@@ -47,12 +47,16 @@ def stand_in(answer):
     return server
 
 
-def sonarr(required, key='key123', username='neko_a', password='pw'):
-    """Sonarr v4 as its source has it: /api/v3 wants the API key; POST /login checks the
-    password and sets the SonarrAuth cookie only for the right one (a redirect either
-    way); /initialize.json carries the key for a signed-in session, and for every
-    request from a local address when "Authentication Required" is "Disabled for Local
-    Addresses" (this PC is one)."""
+def sonarr(required, key='key123', username='neko_a', password='pw', app='Sonarr'):
+    """Sonarr v4 (or Radarr 7, `app`) as its source has it: /api/v3 wants the API key;
+    POST /login checks the password and sets the <app>Auth cookie only for the right one
+    (a redirect either way); /initialize.json carries the key for a signed-in session,
+    and for every request from a local address when "Authentication Required" is
+    "Disabled for Local Addresses" (this PC is one). Radarr 7's "Disabled for Localhost"
+    lets in only the container's own loopback (UiAuthorizationHandler, IPAddress.IsLoopback),
+    and setup reaches the container through Docker's port mapping, from Docker's gateway:
+    it is asked to sign in."""
+    cookie = app + 'Auth=signed'
     host = {
         'id': 1,
         'authenticationMethod': 'forms',
@@ -71,10 +75,10 @@ def sonarr(required, key='key123', username='neko_a', password='pw'):
         if path == '/login' and method == 'POST':
             form = urllib.parse.parse_qs(body.decode())
             if form.get('username') == [username] and form.get('password') == [password]:
-                return 302, {'Location': '/', 'Set-Cookie': 'SonarrAuth=signed; Path=/'}, b''
+                return 302, {'Location': '/', 'Set-Cookie': cookie + '; Path=/'}, b''
             return 302, {'Location': '/login?loginFailed=true'}, b''
         if path == '/initialize.json':
-            if 'SonarrAuth=signed' in (headers.get('Cookie') or '') or required == 'disabledForLocalAddresses':
+            if cookie in (headers.get('Cookie') or '') or required == 'disabledForLocalAddresses':
                 return 200, {}, {'apiRoot': '/api/v3', 'apiKey': key}
             return 302, {'Location': '/login'}, b''
         return 404, {}, b''
@@ -91,18 +95,19 @@ class MediaManagerSignInChoice(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        folder = Path(self.tmp.name) / 'appdata' / 'sonarr'
-        folder.mkdir(parents=True)
-        (folder / 'config.xml').write_text('<Config><ApiKey>key123</ApiKey></Config>')
+        for app in ('sonarr', 'radarr'):
+            folder = Path(self.tmp.name) / 'appdata' / app
+            folder.mkdir(parents=True)
+            (folder / 'config.xml').write_text('<Config><ApiKey>key123</ApiKey></Config>')
         self.config = {'data_mount': self.tmp.name}
 
-    def signs_in(self, required, password='pw'):
-        server = sonarr(required)
+    def signs_in(self, required, password='pw', app='sonarr'):
+        server = sonarr(required, app=app.capitalize())
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
-        client = account_setup.Client('sonarr', server.server_address[1])
+        client = account_setup.Client(app, server.server_address[1])
         entry = {'username': 'neko_a', 'password': password, 'allow_create': False}
-        account_setup.arr(client, entry, self.config, 'sonarr')
+        account_setup.arr(client, entry, self.config, app)
 
     def test_the_login_still_counts_when_local_addresses_are_let_in(self):
         self.signs_in('disabledForLocalAddresses')
@@ -112,6 +117,14 @@ class MediaManagerSignInChoice(unittest.TestCase):
         for required in ('disabledForLocalAddresses', 'enabled'):
             with self.subTest(required=required), self.assertRaises(RuntimeError):
                 self.signs_in(required, password='wrong')
+
+    def test_radarr_7s_disabled_for_localhost_still_asks_and_counts(self):
+        """Deep check 535: Radarr 7.0 (on :latest since 14 November 2026) has a third
+        choice, "Disabled for Localhost" (Sonarr 5 has it too). Picked there, setup said on
+        every run that the saved login did not work, and the weekly update lost its check."""
+        self.signs_in('disabledForLocalhost', app='radarr')
+        with self.assertRaises(RuntimeError):
+            self.signs_in('disabledForLocalhost', password='wrong', app='radarr')
 
 
 def seerr(local_login):
