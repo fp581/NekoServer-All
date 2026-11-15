@@ -262,5 +262,90 @@ class CardGuideTests(unittest.TestCase):
             self.assertIn(option, text)
 
 
+class BeginnerFirstTests(unittest.TestCase):
+    """Deep check plans 381, 383 to 386 and 390: the pages README.md sends a home user to
+    (phone alerts, the outage warning, Nextcloud, this PC's own backups, sleep and logs)
+    began with the administrator's reference ("an OS-local Rust oneshot worker and timer").
+    Each now starts with what it is, what you do and what to do when it stops; the
+    reference is kept, under "For administrators"."""
+
+    PAGES = {
+        'NOTIFICATIONS.md': ('## Set it up', '**Send alerts to my phone**'),
+        'HEARTBEAT.md': ('## Set it up', '**Warn me if the server stops checking in**'),
+        'NEXTCLOUD.md': ('**Open it.**', '**Personal files - Nextcloud**'),
+        'HOST-BACKUPS.md': ('**Getting something back:**', '**Steam and Samba settings, from a nightly backup**'),
+        'SERVER-OS.md': ('**The PC no longer goes to sleep.**', '`"server_os"`'),
+    }
+    JARGON = (
+        'oneshot',
+        'systemd',
+        'Compose',
+        'PostgreSQL',
+        'logind',
+        'drop-in',
+        'UID',
+        'tdbsam',
+        'needs_setup',
+        'noninteractive',
+        'bearer',
+        'hdparm',
+        'journald',
+        'Rust',
+        '` module',
+        ' profile',
+    )
+
+    def test_each_page_starts_with_the_user_and_keeps_the_reference(self):
+        for name, (first, named) in self.PAGES.items():
+            with self.subTest(doc=name):
+                text = doc(name)
+                admin = text.index('\n## For administrators\n')
+                user_part = text[:admin]
+                self.assertLess(text.index(first), admin)
+                self.assertIn(named, user_part)
+                for word in self.JARGON:
+                    self.assertNotIn(word, user_part)
+                self.assertGreater(len(text) - admin, 2000)
+
+    def test_what_the_pages_name_is_what_setup_shows(self):
+        import explanations
+        import recovery_wizard
+
+        titles = {row['id']: row['title'] for row in explanations.EXTRAS}
+        self.assertIn(f"**{titles['notifications']}**", doc('NOTIFICATIONS.md'))
+        self.assertIn(f"**{titles['heartbeat']}**", doc('HEARTBEAT.md'))
+        self.assertIn(f"**{titles['nextcloud']}**", doc('NEXTCLOUD.md'))
+        menu = dict(recovery_wizard.MENU)
+        self.assertIn(f"**{menu['host']}**", doc('HOST-BACKUPS.md'))
+        self.assertIn(f"**{menu['cloud']}**", doc('NEXTCLOUD.md'))
+        self.assertIn(f"**{dict(recovery_wizard.SECTIONS)['restore']}**", doc('HOST-BACKUPS.md'))
+
+    def test_the_steps_on_the_phone_are_the_ones_setup_shows(self):
+        from modules import heartbeat, notifications
+
+        self.assertIn(f'**{notifications.TEST_TITLE}**', doc('NOTIFICATIONS.md'))
+        self.assertIn('Healthchecks.io (free)', ' '.join(heartbeat.form_lines({})))
+        self.assertIn('Healthchecks.io (free)', doc('HEARTBEAT.md'))
+
+    def test_no_page_says_the_program_comes_ready_made_or_that_updates_skip_new_steps(self):
+        """NOTIFICATIONS.md: "The native executable is included; a Rust compiler is not needed
+        on the server" (setup builds it on the PC, README.md). Three pages: "select the
+        module explicitly when upgrading" (an update adds a release's new steps to the
+        profiles of an older my-config.json: config_checks.merge_profiles)."""
+        import config_checks
+
+        self.assertTrue(callable(config_checks.merge_profiles))
+        for guide in GUIDES:
+            text = guide.read_text()
+            for stale in (
+                'a Rust compiler is not needed',
+                'explicitly when upgrading',
+                'select it explicitly',
+                'explicit module command when upgrading',
+                '512GB',
+            ):
+                self.assertNotIn(stale, text, guide.name)
+
+
 if __name__ == '__main__':
     unittest.main()

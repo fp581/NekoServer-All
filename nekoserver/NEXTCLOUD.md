@@ -1,4 +1,21 @@
-# Personal cloud
+# Nextcloud: your own cloud drive
+
+Nextcloud is a private cloud drive, like Google Drive or Dropbox, that runs on your own server: your documents are kept on your drive, and you reach them from a browser, from your phone and from your computers. Setup installs it when **Personal files - Nextcloud** is switched on (it is, unless you switch it off).
+
+- **Open it.** At home: `https://192.168.1.20:8447` with your server's own home address (the end of setup shows it). Anywhere, with Tailscale on: `https://yourserver.tailXXXX.ts.net:8447`. On the server itself: `http://127.0.0.1:8088`.
+- **Your login.** Setup made the administrator account and saved its name and password. To see them (with a QR code for your phone): `sudo python3 /srv/nekoserver/installer/releases/v0.51.3/account-setup.py show nextcloud`. Make an account for each person in the family in Nextcloud itself (your picture at the top right, then *Accounts*).
+- **On your phone and computer.** Install the **Nextcloud** app, type the address above and sign in. It can keep a folder on your computer in step with the server.
+- **Where the files are.** In `cloud/files` on the drive you chose for Nextcloud (the HDD unless you chose another). Add, change and delete files only through Nextcloud (the website or its apps), never in that folder directly or through the shared folders: Nextcloud would not notice.
+- **Backups.** Your Nextcloud files are copied to the **USB drive** every week, and only there: without a USB backup drive they have no backup. Nothing on the copy is ever overwritten or deleted. Nextcloud's own settings and database are in the monthly snapshot on the HDD.
+- **Getting files back.** `sudo bash install.sh --recover`, then **Restore something from a backup** and **Nextcloud files** ([RECOVERY.md](RECOVERY.md)).
+- **Changed the administrator's password in Nextcloud?** Tell setup too ("Changing that password", below), or later runs of setup stop at the Nextcloud account check.
+- **Don't want it?** "Switching Nextcloud off", below: nothing is deleted.
+
+---
+
+## For administrators
+
+The rest of this page is the technical reference.
 
 Nextcloud is included in the full profile and has its own cloud profile. No VM is required. It runs as a four-container Compose project: Apache/Nextcloud, PostgreSQL 17, Redis 7 and the upstream cron worker. It uses the upstream Nextcloud Docker image, rather than the All-in-One controller, to keep ownership of storage and the existing NekoServer gateway clear.
 
