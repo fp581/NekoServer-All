@@ -353,6 +353,24 @@ fn disk_under(lsblk: &str) -> Option<String> {
 }
 /// Why a drive's health can't be read, when no one disk is found under it.
 const NO_ONE_DISK: &str = "Its health (SMART) is not read: no one disk was found under it (a volume over several disks, or a device this PC does not name as a disk)";
+/// Said of a SATA SSD whose rated writes are nearly used up.
+const SSD_WORN: &str = "SSD wear is high: it has used 90% or more of the writes it is made for. Plan to replace it, and keep the backups going";
+/// How much of a SATA SSD's rated writes are used, in percent (the standard "Percentage
+/// Used Endurance Indicator" of its device statistics, page 7), or Null. Only NVMe's own
+/// figure was read, so a SATA SSD (a common app SSD) wearing out was never said (deep
+/// check 518).
+fn sata_wear(v: &Value) -> Value {
+    let pages = v["ata_device_statistics"]["pages"].as_array();
+    let row = pages
+        .into_iter()
+        .flatten()
+        .filter(|page| page["number"] == 7)
+        .filter_map(|page| page["table"].as_array())
+        .flatten()
+        .find(|row| row["offset"] == 8 && row["flags"]["valid"] != false);
+    let used = row.map_or(&v["endurance_used"]["current_percent"], |row| &row["value"]);
+    num(used, 0.0, 255.0)
+}
 fn smart_summary(v: &Value, code: i32) -> Value {
     let mut r = json!({"status":"unknown","temperature":null,"wear_percent":null,"reason":"SMART unavailable or drive sleeping; no wake requested"});
     if let Some(pass) = v["smart_status"]["passed"].as_bool() {
@@ -373,6 +391,9 @@ fn smart_summary(v: &Value, code: i32) -> Value {
         0.0,
         1000.0,
     );
+    if r["wear_percent"].is_null() {
+        r["wear_percent"] = sata_wear(v);
+    }
     let critical = num(
         &v["nvme_smart_health_information_log"]["critical_warning"],
         0.0,
@@ -383,7 +404,13 @@ fn smart_summary(v: &Value, code: i32) -> Value {
         r["reason"] = json!("NVMe critical warning");
     } else if r["status"] == "pass" && r["wear_percent"].as_f64().unwrap_or(0.0) >= 90.0 {
         r["status"] = json!("warning");
-        r["reason"] = json!("NVMe endurance usage is high");
+        r["reason"] = json!(
+            if v["nvme_smart_health_information_log"]["percentage_used"].is_null() {
+                SSD_WORN
+            } else {
+                "NVMe endurance usage is high"
+            }
+        );
     }
     if let Some(table) = v["ata_smart_attributes"]["table"].as_array() {
         for row in table {
@@ -419,6 +446,17 @@ fn smart_kept(saved: &Value, keep: usize) -> Value {
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect::<serde_json::Map<_, _>>())
 }
+/// The smartctl command for disk `dev`. A SATA disk (/dev/sdX) is also asked for its
+/// device statistics, where a SATA SSD says how worn it is (sata_wear); an NVMe disk says
+/// so in its own health log, and is not asked for an ATA log.
+fn smart_command(dev: &str) -> Vec<&str> {
+    let mut args = vec!["smartctl", "--json", "--health", "--attributes"];
+    if dev.starts_with("/dev/sd") {
+        args.push("--log=devstat");
+    }
+    args.extend(["--nocheck=standby", dev]);
+    args
+}
 fn smart(source: &str, identity: &str, cache: &mut Value, now: f64, interval: f64) -> Value {
     let Some(dev) = device(source) else {
         return json!({"status":"unknown","reason":NO_ONE_DISK,"checked_at":null});
@@ -434,6 +472,7 @@ fn smart(source: &str, identity: &str, cache: &mut Value, now: f64, interval: f6
             "SMART health failed",
             "NVMe critical warning",
             "NVMe endurance usage is high",
+            SSD_WORN,
             "Pending or uncorrectable sectors",
             "Reallocated sectors detected",
             "SMART reports historical/current health errors; inspect the disk",
@@ -441,17 +480,7 @@ fn smart(source: &str, identity: &str, cache: &mut Value, now: f64, interval: f6
         ];
         return json!({"status":old["status"],"temperature":num(&old["temperature"],1.0,150.0),"wear_percent":num(&old["wear_percent"],0.0,1000.0),"checked_at":old["checked_at"],"reason":if reasons.contains(&text(&old["reason"])){text(&old["reason"])}else{"Inspect drive health"}});
     }
-    let (code, s) = probe(
-        &[
-            "smartctl",
-            "--json",
-            "--health",
-            "--attributes",
-            "--nocheck=standby",
-            &dev,
-        ],
-        15,
-    );
+    let (code, s) = probe(&smart_command(&dev), 15);
     let v: Value = serde_json::from_str(&s).unwrap_or_else(|_| empty());
     let mut r = smart_summary(&v, code);
     r["checked_at"] = json!(now);
@@ -5254,6 +5283,47 @@ mod round_two_tests {
         assert!(read(0)["temperature"].is_null());
         assert_eq!(read(0)["status"], "pass");
         assert_eq!(read(34)["temperature"], 34);
+    }
+    /// Deep check 518: a SATA SSD at 95% of its rated writes was said to be fine; only an
+    /// NVMe SSD's wear was read. smartctl gives a SATA SSD's in its device statistics
+    /// (page 7, "Percentage Used Endurance Indicator"), asked for SATA disks only.
+    #[test]
+    fn a_worn_sata_ssd_is_said_worn() {
+        let sata = |used: i64, valid: bool| {
+            json!({"smart_status": {"passed": true}, "ata_device_statistics": {"pages": [
+                {"number": 1, "name": "General Statistics", "table": [{"offset": 8, "name": "Lifetime Power-On Resets", "value": 95}]},
+                {"number": 7, "name": "Solid State Device Statistics", "table": [{"offset": 8,
+                    "name": "Percentage Used Endurance Indicator", "size": 1, "value": used,
+                    "flags": {"value": 192, "string": "N--- ", "valid": valid, "normalized": true}}]}]}})
+        };
+        let worn = smart_summary(&sata(95, true), 0);
+        assert_eq!(worn["status"], "warning");
+        assert_eq!(worn["wear_percent"], 95);
+        assert!(worn["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("SSD wear is high"));
+        assert_eq!(smart_summary(&sata(12, true), 0)["status"], "pass");
+        assert_eq!(smart_summary(&sata(12, true), 0)["wear_percent"], 12);
+        // A figure the drive marks as not valid is no reading.
+        assert!(smart_summary(&sata(95, false), 0)["wear_percent"].is_null());
+        // smartctl 7.4's own summary of it, when the table is not there.
+        let summary =
+            json!({"smart_status": {"passed": true}, "endurance_used": {"current_percent": 91}});
+        assert_eq!(smart_summary(&summary, 0)["status"], "warning");
+        // An NVMe SSD keeps its own words; a disk without the figure has none.
+        let nvme = json!({"smart_status": {"passed": true}, "nvme_smart_health_information_log": {"percentage_used": 96, "critical_warning": 0}});
+        assert_eq!(
+            smart_summary(&nvme, 0)["reason"],
+            "NVMe endurance usage is high"
+        );
+        assert!(
+            smart_summary(&json!({"smart_status": {"passed": true}}), 0)["wear_percent"].is_null()
+        );
+        // Asked of SATA disks only.
+        assert!(smart_command("/dev/sda").contains(&"--log=devstat"));
+        assert!(!smart_command("/dev/nvme0n1").contains(&"--log=devstat"));
+        assert_eq!(smart_command("/dev/sda").last(), Some(&"/dev/sda"));
     }
     /// 0.45.8: the upgrade runs as nekoserver-upgrade@<release>; the dashboard asked the
     /// unit "nekoserver-upgrade", which does not exist, so a run at work read as cut off.
