@@ -2249,13 +2249,18 @@ function nextRun(timer) {
     'No schedule'
   );
 }
+/* When a job that waits for a missing drive comes back: one you start yourself (the
+ * upgrade) never "runs again" by itself. */
+function blockedNext(job) {
+  return onDemand(job) ? 'You can start it once the drive is back.' : 'Runs again once the drive is back.';
+}
 function backupCard(job, fresh) {
   const card = el('article', 'card'),
     timer = object(job.timer);
   card.append(
     cardHeading(text(job.name, 'Backup'), backupBadge(job, fresh)),
     el('p', '', (COPIES_NOTHING.has(job.id) ? 'Last good run: ' : 'Last good copy: ') + ago(job.last_success)),
-    el('p', '', job.blocked ? 'Runs again once the drive is back.' : nextRun(timer))
+    el('p', '', job.blocked ? blockedNext(job) : nextRun(timer))
   );
   if (job.blocked) {
     card.append(el('p', 'reason', text(job.blocked)));

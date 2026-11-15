@@ -46,7 +46,8 @@ const CALLS = new Set([
   'ago',
   'outputsBadge',
   'sensorBadge',
-  'temperatureName'
+  'temperatureName',
+  'blockedNext'
 ]);
 /* Calls answered from another function's result, with more of it; the last four run a
    piece of Ask Neko on a page that keeps what is put on it (ASK_PAGE below). */

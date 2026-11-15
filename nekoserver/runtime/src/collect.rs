@@ -1536,13 +1536,24 @@ fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
             row["scheduled"] = json!(false);
         }
         if let Some(drive) = away {
-            row["blocked"] = json!(format!(
-                "The {drive} is missing, so this backup can't run until it is back."
-            ));
+            row["blocked"] = json!(blocked_words(key, drive));
         }
         out.push(row);
     }
     json!(out)
+}
+/// What job `key` says while a drive it needs (`drive`, its name) is missing. Not every
+/// job in the list is a backup: the upgrade's row said "so this backup can't run" too
+/// (deep check, D14).
+fn blocked_words(key: &str, drive: &str) -> String {
+    let what = match key {
+        "upgrade" => "NekoServer can't be upgraded",
+        "maintenance" => "the monthly check and snapshot can't run",
+        "updates" => "the apps can't be updated",
+        "update_check" => "new app versions can't be looked for",
+        _ => "this backup can't run",
+    };
+    format!("The {drive} is missing, so {what} until it is back.")
 }
 /// A job's state once it is overdue (`stale`): a backup that keeps failing stays a
 /// failure (urgent), anything else is overdue.
@@ -4790,6 +4801,34 @@ mod user_panel_tests {
         assert_eq!(assistant(&yes, None), json!({"set_up": null}));
         assert_eq!(assistant(&json!({}), None), json!({"set_up": false}));
         let _ = fs::remove_dir_all(&root);
+    }
+    /// D14: with a drive missing, the upgrade's row (and the update jobs') said "so this
+    /// backup can't run": only the jobs that make a backup say that.
+    #[test]
+    fn only_a_backup_says_this_backup_while_a_drive_is_missing() {
+        for (key, ..) in JOBS {
+            let said = blocked_words(key, "Media HDD");
+            assert!(said.starts_with("The Media HDD is missing, so "), "{said}");
+            assert!(said.ends_with(" until it is back."), "{said}");
+            let backup = !["upgrade", "maintenance", "updates", "update_check"].contains(&key);
+            assert_eq!(said.contains("this backup"), backup, "{key}: {said}");
+        }
+        assert_eq!(
+            blocked_words("upgrade", "Application SSD"),
+            "The Application SSD is missing, so NekoServer can't be upgraded until it is back."
+        );
+        // The list itself says it (the rows the page shows).
+        let rows = backups(&json!({}), 1000.0, false, Some("Media HDD"));
+        let row = |id: &str| {
+            rows.as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["id"] == id)
+                .unwrap()["blocked"]
+                .clone()
+        };
+        assert!(text(&row("upgrade")).contains("can't be upgraded"));
+        assert!(text(&row("host")).contains("this backup can't run"));
     }
     /// The HDD missing (user panel UP-03/UP-04): one drive alert naming the apps it
     /// stopped, no "check its container logs" for each, and no backup alerts of their own.

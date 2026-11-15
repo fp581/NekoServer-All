@@ -410,6 +410,18 @@ def hdd_missing():
 class UserPanelFindingsTests(unittest.TestCase):
     """What the 0.40.1 user panel and Dana found on the dashboard (UP-xx, D10)."""
 
+    def test_a_job_you_start_yourself_is_not_said_to_run_again_by_itself(self):
+        # D14: with a drive missing the upgrade's card said "so this backup can't run"
+        # (the collector's words, collect.rs blocked_words) and "Runs again once the
+        # drive is back"; an upgrade is started by you.
+        away = 'The Media HDD is missing, so NekoServer can’t be upgraded until it is back.'
+        upgrade, nightly = page(
+            ('blockedNext', {'id': 'upgrade', 'scheduled': False, 'blocked': away}),
+            ('blockedNext', {'id': 'archive', 'blocked': HDD_AWAY}),
+        )
+        self.assertEqual(upgrade, 'You can start it once the drive is back.')
+        self.assertEqual(nightly, 'Runs again once the drive is back.')
+
     def test_a_missing_hdd_never_shows_backups_as_ok_and_raises_one_alert(self):
         # UP-03 and UP-04: no "All recent copies OK" or "Checksums match" while the HDD is
         # missing, and the apps it stopped are not eight more items.
