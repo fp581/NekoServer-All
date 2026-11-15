@@ -71,6 +71,8 @@ DELETES_IN_BACKUP = {
     'database_of': 'its own unfinished database copy',
     'clear_stale_dumps': 'unfinished database copies older than an hour',
     'prune_dumps_of': 'database copies beyond the newest four (files named <app>-<date> only)',
+    'drop': "a snapshot's own half-made folder, when that snapshot failed (Stage)",
+    'note_left_out': 'on a USB drive that is no longer exFAT, the list of photos exFAT could not hold',
 }
 
 
