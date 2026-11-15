@@ -5,9 +5,7 @@ import argparse
 import contextlib
 import copy
 import fcntl
-import signal
 import stat
-import threading
 import datetime as dt
 import importlib.util
 import json
@@ -41,6 +39,7 @@ from neko_common import (
     BUNDLE_MANIFEST,
     MEDIA_APPS,
     readable_output,
+    stopping_on_hangup,
 )
 
 # The installer's own log lines (a step's status), as against a step's own words.
@@ -1027,17 +1026,17 @@ def main(argv=None):
     # A closed terminal or a dropped SSH connection ended setup on the spot, with no
     # cleanup: the USB drive mounted to measure it stayed mounted read-only (the weekly
     # copy could not use it), and the step stayed "running". It stops as Ctrl+C does now.
-    before = host.stop_on_hangup() if threading.current_thread() is threading.main_thread() else {}
     try:
-        if args.wizard:
-            import wizard
+        with stopping_on_hangup():
+            if args.wizard:
+                import wizard
 
-            return wizard.run(execute, Path(args.state_dir), config=args.config)
-        if args.recover:
-            import recovery_wizard
+                return wizard.run(execute, Path(args.state_dir), config=args.config)
+            if args.recover:
+                import recovery_wizard
 
-            return recovery_wizard.run(config_path=args.config)
-        return execute(args)
+                return recovery_wizard.run(config_path=args.config)
+            return execute(args)
     except KeyboardInterrupt:
         again = 'sudo bash install.sh --recover' if args.recover else 'sudo bash install.sh'
         with contextlib.suppress(OSError):  # the terminal may be gone
@@ -1050,9 +1049,6 @@ def main(argv=None):
     except (InstallerError, RuntimeError, ValueError, OSError, KeyError, TypeError) as exc:
         print(f'ERROR: {exc}', file=sys.stderr)
         return 2
-    finally:
-        for number, handler in before.items():
-            signal.signal(number, handler)
 
 
 if __name__ == '__main__':

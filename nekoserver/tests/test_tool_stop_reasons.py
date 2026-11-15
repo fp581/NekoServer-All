@@ -98,5 +98,46 @@ class TimeZoneTests(unittest.TestCase):
             self.assertIn('timedatectl list-timezones', said)
 
 
+class ClosedTerminalTests(unittest.TestCase):
+    def test_immich_runs_again_when_the_terminal_closes_during_a_snapshot(self):
+        """Deep check 452: `recover.py snapshot --apply` stops Immich while every photo is
+        copied (hours) and starts it again in a finally block. A closed terminal or a
+        dropped SSH connection (SIGHUP), or a `kill` (SIGTERM), ended the tool on the spot:
+        Immich stayed off until the next restart of the PC, with nobody told. Run as a
+        program of its own, the copy stood in for by a wait."""
+        import signal
+        import subprocess
+
+        program = (
+            'import os, signal, sys, time\n'
+            f'sys.path.insert(0, {str(ROOT)!r})\n'
+            'import recover, recovery_tools\n'
+            'def snapshot(a, config):\n'
+            '    with recovery_tools.restarted_after(config, ["compose"], ["immich-server"]):\n'
+            '        print("Immich stopped", flush=True)\n'
+            '        os.kill(os.getpid(), getattr(signal, sys.argv[1]))\n'
+            '        time.sleep(30)\n'
+            'recovery_tools.restart_owed = lambda config, base=None: print("Immich started again", flush=True)\n'
+            'recover.run = snapshot\n'
+            'recover.checked_settings = lambda value: value\n'
+            'recover.read_settings = lambda path: ({}, None)\n'
+            'sys.exit(recover.main(["check"]))\n'
+        )
+        for name in ('SIGHUP', 'SIGTERM'):
+            with self.subTest(name):
+                ran = subprocess.run(
+                    [sys.executable, '-c', program, name],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    check=False,
+                    preexec_fn=lambda: signal.signal(signal.SIGHUP, signal.SIG_DFL),
+                )
+                self.assertEqual(ran.stdout.splitlines(), ['Immich stopped', 'Immich started again'], ran.stderr)
+                self.assertEqual(ran.returncode, 2)
+                self.assertIn('Recovery failed: stopped', ran.stderr)
+                self.assertNotIn('Traceback', ran.stderr)
+
+
 if __name__ == '__main__':
     unittest.main()

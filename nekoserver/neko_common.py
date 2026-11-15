@@ -15,6 +15,7 @@ import socket
 import stat
 import subprocess
 import sys
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -80,6 +81,18 @@ def stop_on_hangup():
             raise KeyboardInterrupt
 
     return {number: signal.signal(number, stop) for number in HANGUPS}
+
+
+@contextlib.contextmanager
+def stopping_on_hangup():
+    """stop_on_hangup for the length of a block; the handlers there were come back after
+    it. Only Python's main thread may set them: from any other, nothing changes."""
+    before = stop_on_hangup() if threading.current_thread() is threading.main_thread() else {}
+    try:
+        yield
+    finally:
+        for number, handler in before.items():
+            signal.signal(number, handler)
 
 
 def local_timezone(localtime='/etc/localtime', etc_timezone=ETC_TIMEZONE, zoneinfo=ZONEINFO):

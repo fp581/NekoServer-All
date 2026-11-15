@@ -81,8 +81,12 @@ def main(argv=None):
         print('Recovery stopped: ' + problem, file=sys.stderr)
         print(AFTER_FAILURE, file=sys.stderr)
         return 2
+    # A closed terminal or a dropped SSH connection stops the command as Ctrl+C does: a
+    # snapshot stops Immich for hours and starts it again in a finally block, which the
+    # signal alone skipped (Immich then stayed off until the next restart of the PC).
     try:
-        result = run(a, config)
+        with neko_common.stopping_on_hangup():
+            result = run(a, config)
         print(json.dumps(result, indent=2))
         return 1 if result.get('status') == 'needs_setup' else 0
     except (
