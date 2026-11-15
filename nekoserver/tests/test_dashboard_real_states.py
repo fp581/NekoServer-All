@@ -36,6 +36,17 @@ class RealStatesTests(unittest.TestCase):
         for words in ('migrate.py list', 'Replace the OS and reattach the existing store', 'Backups'):
             self.assertIn(words, guide)
 
+    def test_an_app_stopped_by_the_update_night_says_an_update_is_running(self):
+        # Deep check 616: during the weekly update night the app being updated read
+        # "Jellyfin needs attention: restart it", with no word of the update at work.
+        alert = {'id': 'app:jellyfin', 'level': 'warning', 'title': 'Jellyfin needs attention', 'detail': 'Restart it.'}
+        for job, said in (('updates', True), ('applications', True), ('maintenance', True), ('music', False)):
+            with self.subTest(job=job):
+                backups = [{'id': job, 'name': job, 'status': 'running'}]
+                issues = page(('issueDetails', status(alerts=[alert], backups=backups)))[0]
+                detail = next(i['detail'] for i in issues if i['id'] == 'app:jellyfin')
+                self.assertEqual('an app update is running' in detail, said, detail)
+
 
 if __name__ == '__main__':
     unittest.main()

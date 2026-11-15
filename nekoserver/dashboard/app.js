@@ -708,13 +708,17 @@ function issueCollector() {
   };
   return { rows, add };
 }
+const APP_STOPPING_JOBS = new Set(['applications', 'maintenance', 'updates']);
 function alertIssues(s, add) {
-  const busy = s.backups.some(j => ['applications', 'maintenance'].includes(j.id) && j.status === 'running');
+  /* The jobs that stop apps for a while: the nightly app backup, the monthly run and the
+   * weekly update night (each app is stopped while its new version goes in; deep check
+   * 616: Jellyfin read "needs attention, restart it" while it was being updated). */
+  const busy = s.backups.some(j => APP_STOPPING_JOBS.has(j.id) && j.status === 'running');
   for (const alert of s.alerts) {
     const raw = text(alert.id),
       id = raw.startsWith('backup:') ? 'job:' + raw.slice(7) : raw;
     const unit = unitFor(id);
-    const note = id.startsWith('app:') && busy ? ' A backup or monthly update is running, so this may be expected.' : '';
+    const note = id.startsWith('app:') && busy ? ' A backup or an app update is running, so this may be expected.' : '';
     add(
       id || 'alert-' + s.alerts.indexOf(alert),
       text(alert.title, 'Server needs attention'),
