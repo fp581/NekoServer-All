@@ -908,10 +908,17 @@ class WindowTests(unittest.TestCase):
         cookie = next(iter(jar))
         port = self.window.server.server_address[1]
         own = 'http://127.0.0.1:%d' % port
-        for origin in (['http://127.0.0.1:1'], ['http://elsewhere.example'], [], [own, own]):
+        for origin, host in (
+            (['http://127.0.0.1:1'], True),
+            (['http://elsewhere.example'], True),
+            ([], True),
+            ([own, own], True),
+            ([own], False),  # no Host header: refused, not an error inside the window
+        ):
             connection = http.client.HTTPConnection('127.0.0.1', port, timeout=5)
             connection.putrequest('POST', '/t/' + self.window.token + '/api/choose', skip_host=True)
-            connection.putheader('Host', '127.0.0.1:%d' % port)
+            if host:
+                connection.putheader('Host', '127.0.0.1:%d' % port)
             connection.putheader('Cookie', f'{cookie.name}={cookie.value}')
             for value in origin:
                 connection.putheader('Origin', value)
@@ -919,6 +926,11 @@ class WindowTests(unittest.TestCase):
             connection.endheaders(b'{"tv": false}')
             with self.subTest(origin=origin):
                 answer = connection.getresponse()
+                if not host:  # refused (the address is not this window's), not an error
+                    self.assertIn(answer.status, (403, 404))
+                    answer.read()
+                    connection.close()
+                    continue
                 self.assertEqual(answer.status, 403)
                 self.assertIn(b'Only the setup window can change setup', answer.read())
             connection.close()

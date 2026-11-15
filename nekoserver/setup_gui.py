@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -68,7 +69,19 @@ OTHER_ACCOUNT = refusal(
     'Only the account that runs setup can open this window',
     'Open it from that account\'s desktop on this PC (or as root).',
 )
+
+
 # A change asked for by a page other than the window's own.
+def own_origin(origins, host):
+    """Whether a request's Origin headers name this window's own page: exactly one, on
+    plain HTTP (the window is served on this PC only), at the Host the request was sent to.
+    A request without a Host header is refused, not an error."""
+    if not host or not origins or len(origins) != 1:
+        return False
+    sent = urllib.parse.urlsplit(origins[0])
+    return sent.scheme == 'http' and sent.netloc == host and not sent.path.strip('/')
+
+
 ANOTHER_PAGE = refusal(
     'Only the setup window can change setup',
     'Another web page tried to change your setup choices; nothing was changed. Use the setup window itself.',
@@ -680,7 +693,7 @@ class Window:
                 # window's cookie to a page on another port of this PC too (the same site
                 # for a cookie), so the cookie alone let such a page press Start (deep
                 # check 236). Browsers always send Origin with a POST.
-                if self.headers.get_all('Origin') != ['http://' + self.headers.get('Host')]:
+                if not own_origin(self.headers.get_all('Origin'), self.headers.get('Host')):
                     return self.reply(ANOTHER_PAGE)
                 if not self.admitted(route):
                     return self.reply(self.refusal)
