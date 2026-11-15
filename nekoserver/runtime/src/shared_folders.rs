@@ -449,10 +449,19 @@ mod tests {
     #[test]
     fn a_share_with_spaces_in_its_name_is_the_share() {
         // findmnt's "FSTYPE SOURCE" for a Windows share, as it prints it.
-        assert!(really_mounted(Some("cifs //nas/My Media"), "//nas/My Media"));
-        assert!(really_mounted(Some("cifs   //nas/My Media"), "//nas/My Media"));
+        assert!(really_mounted(
+            Some("cifs //nas/My Media"),
+            "//nas/My Media"
+        ));
+        assert!(really_mounted(
+            Some("cifs   //nas/My Media"),
+            "//nas/My Media"
+        ));
         assert!(!really_mounted(Some("cifs //nas/My"), "//nas/My Media"));
-        assert!(!really_mounted(Some("autofs //nas/My Media"), "//nas/My Media"));
+        assert!(!really_mounted(
+            Some("autofs //nas/My Media"),
+            "//nas/My Media"
+        ));
     }
 
     /// Gate run C8: with the share away, the apps that see it stop; once it answers and
