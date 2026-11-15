@@ -14,7 +14,22 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 - **The restore rehearsal changes none of your saved text.** It swapped one of the database copy's own statements anywhere in the copy, so the same words inside an album's description were changed in the rehearsal. Only that statement itself is swapped now.
 - **A media import no longer takes another file of the same size and date for its copy.** Three pieces of both files (start, middle, end) are compared; reading every film whole at every run would take hours.
 - **Restored music is written out and read back from the drive**, like every other restore (it was read back from memory).
+- **Music you already have is connected on a server without Jellyfin.** The step that adds your own music folder to Navidrome sat behind a Jellyfin-only part of setup; the Music step now does it.
+- **Logins that are not administrators can play a music folder added later.** Navidrome shows a regular user only the libraries given to them, and a library added after the login was made was given to nobody. The listener login and the music check's login now get it, at every setup run. If Navidrome refuses, setup says which login and which library to tick.
+- **A folder in a Jellyfin library of the wrong kind no longer passes** (films set up as a music library): the kind is checked with the folder, and setup names the library to remove.
+- **The app check fails an app whose own data folder is read-only** (Immich's photos and database, Jellyfin's settings, Navidrome's database), not only a wrong path.
+- **An app switched off gets no desktop shortcut**, though its files are kept (Nextcloud, and Immich with only its own switch off); a shortcut setup made for it earlier is taken away.
 - **A kind of media whose folders could not be used is asked about again**, as "Run setup again to give one" said (the question was saved as answered), and films, shows or music switched on later get the question too.
+
+### Fixed: the guides and the tools' help
+- **README.md and GUIDED-SETUP.md quote the questions, the drive list and the steps as setup has them now** (six questions were in old words; the app updates are weekly, not "on the 1st"; the setup window does open again).
+- **Each guide page starts with what a user does**; the reference is kept under "For administrators" (NOTIFICATIONS, HEARTBEAT, NEXTCLOUD, HOST-BACKUPS, SERVER-OS). False statements about upgrades and a Rust compiler are gone.
+- **APP-BACKUPS.md and HOST-BACKUPS.md give the exact steps the recovery menu sends you there for** (how to put a restored settings file back).
+- **GATEWAY.md says what to do about the browser's warning at the home address.**
+- **Every command and option of the recovery and check tools says what it is in `--help`** (`recover.py` had seven commands without a word), and `install.sh --help` lists options README.md really has.
+- **CARD-RECOVERY.md describes `verify` as it answers, and `--record`.**
+- **The password list is named as the recovery menu shows it**, in messages and guides.
+- **Words a beginner may not know are explained at first use** (mount, UUID, snapshot, checksum, NAS, container, certificate).
 
 ## v0.51.2 — 2026-11-15
 
