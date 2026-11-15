@@ -331,6 +331,12 @@ def stale_lists(result):
     return bool(STALE_LISTS.search(_output(result)))
 
 
+def no_source_answered(result):
+    """apt says "Hit:" or "Get:" for each source that answered: none means none did
+    (deep check 296: that was still "Some package sources could not be reached")."""
+    return not re.search(r'^(Hit|Get):', _output(result), re.MULTILINE)
+
+
 def environment():
     """For package managers and systemctl: English messages (their output is read, and
     "Candidate:" is "Candidat :" in French), no questions on the terminal, and Ubuntu's
@@ -1197,10 +1203,17 @@ class Debian(PackageLock, Family):
             raise RuntimeError('Refreshing the package lists failed: ' + _reason(result))
         if stale_lists(result):
             line = next(line for line in _output(result).splitlines() if STALE_LISTS.match(line))
-            self.say(
-                'Some package sources could not be reached (' + line[3:].strip() + '); going on with their '
-                'lists from before' + clock_hint(_output(result)) + '.'
-            )
+            if no_source_answered(result):
+                self.say(
+                    'None of the package sources could be reached (' + line[3:].strip() + '); going on with the '
+                    'lists from before, which may be out of date' + clock_hint(_output(result)) + '. If installing '
+                    'fails next, check that this PC is online, then run setup again.'
+                )
+            else:
+                self.say(
+                    'Some package sources could not be reached (' + line[3:].strip() + '); going on with their '
+                    'lists from before' + clock_hint(_output(result)) + '.'
+                )
         self.refreshed = True
 
     def _wait_for_lists(self):

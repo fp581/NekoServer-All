@@ -775,6 +775,7 @@ class InstallScriptTests(unittest.TestCase):
         (self.root / 'bin/apt-get').write_text(
             '#!/bin/sh\necho "APT-GET $*" >> "$LOG"\nn=$(cat "$APT_WARNINGS")\n'
             'case "$*" in *update) if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$APT_WARNINGS"; '
+            'echo "Hit:1 http://archive.ubuntu.com/ubuntu noble InRelease"; '
             'echo "W: Failed to fetch https://download.docker.com/linux/ubuntu/dists/noble/InRelease  Could not resolve"; '
             'echo "W: Some index files failed to download. They have been ignored, or old ones used instead."; fi;; esac\nexit 0\n'
         )
@@ -792,6 +793,21 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(log.count('update'), 3)
         self.assertIn('Some package sources could not be reached', result.stdout)
         self.assertIn('START --wizard', log)
+
+    def test_no_source_answering_is_not_called_some(self):
+        """Deep check 296: every source failing (apt still exits 0) said "Some package sources"."""
+        self.use_debian()
+        (self.root / 'bin/apt-get').write_text(
+            '#!/bin/sh\necho "APT-GET $*" >> "$LOG"\n'
+            'case "$*" in *update) echo "Err:1 http://archive.ubuntu.com/ubuntu noble InRelease"; '
+            'echo "W: Failed to fetch http://archive.ubuntu.com/ubuntu/dists/noble/InRelease  Unable to connect"; '
+            'echo "W: Some index files failed to download. They have been ignored, or old ones used instead.";; esac\n'
+            'exit 0\n'
+        )
+        result, log = self.run_script(self.root, replace=[('sleep 20', 'sleep 0')])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('None of the package sources could be reached', result.stdout)
+        self.assertNotIn('Some package sources', result.stdout)
 
     def test_a_lock_another_program_holds_is_waited_out(self):
         self.use_debian()

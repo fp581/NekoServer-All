@@ -51,7 +51,12 @@ retrying() {
     attempt=$((attempt + 1))
   done
   if ((code == 0)) && grep -qE "$stale_pattern" "$output"; then
-    echo 'Some package sources could not be reached (the lines above say which); going on with their lists from before.'
+    # apt says "Hit:" or "Get:" for each source that answered: with none, none did.
+    if grep -qE '^(Hit|Get):' "$output"; then
+      echo 'Some package sources could not be reached (the lines above say which); going on with their lists from before.'
+    else
+      echo 'None of the package sources could be reached (the lines above say why); going on with the lists from before, which may be out of date. If installing fails next, check that this PC is online, then run setup again.'
+    fi
   fi
   if grep -qiE "$clock_pattern" "$output"; then
     echo "This PC's clock looks wrong (check the date and time with  timedatectl): let the network set it (sudo timedatectl set-ntp true), wait a minute, then run  sudo bash install.sh  again." >&2

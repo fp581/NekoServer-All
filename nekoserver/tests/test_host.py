@@ -2338,6 +2338,7 @@ class PackageReviewTest(unittest.TestCase):
 
     def test_a_source_apt_only_warned_about_is_tried_again(self):
         warned = (
+            'Hit:1 http://archive.ubuntu.com/ubuntu noble InRelease\n'
             'W: Failed to fetch https://download.docker.com/linux/ubuntu/dists/noble/InRelease  Could not '
             'resolve download.docker.com\nW: Some index files failed to download. They have been ignored, '
             'or old ones used instead.'
@@ -2356,6 +2357,25 @@ class PackageReviewTest(unittest.TestCase):
             'Some package sources could not be reached (Failed to fetch https://download.docker.com', family.said[-1]
         )
         self.assertTrue(family.refreshed)
+
+    def test_no_source_answering_is_not_called_some(self):
+        """Deep check 296: apt-get update with every source failing (as a real one said it in an
+        Ubuntu 24.04 chroot with its proxy refused) still exits 0, and setup said "Some"."""
+        none = (
+            'Err:1 http://archive.ubuntu.com/ubuntu noble InRelease\n'
+            '  Could not connect to 127.0.0.1:48101 (127.0.0.1). - connect (111: Connection refused)\n'
+            'Err:2 http://archive.ubuntu.com/ubuntu noble-updates InRelease\n'
+            '  Unable to connect to 127.0.0.1:48101:\n'
+            'Reading package lists...\n'
+            'W: Failed to fetch http://archive.ubuntu.com/ubuntu/dists/noble/InRelease  Could not connect to '
+            '127.0.0.1:48101 (127.0.0.1). - connect (111: Connection refused)\n'
+            'W: Some index files failed to download. They have been ignored, or old ones used instead.\n'
+        )
+        apt = Answers(FakeApt(offered={'samba'}), is_update, [(0, none)] * 3)
+        family = self.quiet(self.family(apt))
+        family.refresh()
+        self.assertTrue(family.said[-1].startswith('None of the package sources could be reached'), family.said[-1])
+        self.assertIn('check that this PC is online', family.said[-1])
 
     def test_a_damaged_key_file_is_downloaded_again(self):
         family = self.family()
