@@ -387,8 +387,8 @@ class Card:
         # /mnt itself too (`sudo mount /dev/sdb1 /mnt` is a usual way to mount a card).
         if not (top == own or any((top + '/').startswith(root) for root in CARD_ROOTS)):
             raise Unusable(
-                '%s is not where a card is mounted. Mount the card under /media or /mnt (as Linux does '
-                'by itself), or run this tool from the card' % show(top)
+                '%s is not where a card is mounted. Mount the card under /media, /run/media or /mnt (a '
+                'desktop does that by itself), or run this tool from the card' % show(top)
             )
         try:
             self.top = open_dir(top)

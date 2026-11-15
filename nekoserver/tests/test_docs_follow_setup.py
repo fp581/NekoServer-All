@@ -214,5 +214,39 @@ class StorageGuideTests(unittest.TestCase):
         self.assertNotIn('install updates', doc('STORAGE.md'))
 
 
+class CardGuideTests(unittest.TestCase):
+    """Deep check plan 380: CARD-RECOVERY.md followed on a card (a hand-written one)."""
+
+    def test_verify_is_described_as_it_answers(self):
+        """ "It says ok, damaged or missing for each one": a card with nothing wrong gets
+        one line of counts, and only damaged or missing files are named."""
+        import tempfile
+
+        import neko_restore
+
+        sys.path.insert(0, str(ROOT / 'tests'))
+        import test_neko_restore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            card = test_neko_restore.Card(Path(tmp) / 'card')
+            for n in range(4):
+                card.add(f'2021/beach/{n}.jpg', b'sand')
+            said = []
+            with test_neko_restore.cards_under(tmp):
+                code = neko_restore.main(['--card', str(card.top), 'verify'], say=said.append)
+        self.assertEqual((code, len(said)), (0, 1))
+        text = doc('CARD-RECOVERY.md')
+        self.assertIn(f'`{said[0]}`', text)
+        self.assertNotIn('for each one', text)
+
+    def test_every_option_of_the_tool_is_in_the_guide(self):
+        source = (ROOT / 'neko_restore.py').read_text()
+        options = set(re.findall(r"add_argument\(\s*'(--[a-z-]+)'", source))
+        self.assertGreater(len(options), 6)
+        text = doc('CARD-RECOVERY.md')
+        for option in options:
+            self.assertIn(option, text)
+
+
 if __name__ == '__main__':
     unittest.main()
