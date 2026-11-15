@@ -7,6 +7,7 @@ from pathlib import Path
 import host
 import setup_progress
 from neko_common import (
+    nextcloud_enabled,
     SHARED,
     immich_wanted,
     media_apps_wanted,
@@ -580,7 +581,7 @@ def collector_settings(cfg, smart, interval=60):
     clean['heartbeat'] = {'interval_seconds': cfg.get('heartbeat', {}).get('interval_seconds', 300)}
     clean['runtime'] = {'backend': cfg.get('runtime', {}).get('backend')}
     clean['gateway'] = {k: cfg.get('gateway', {}).get(k) for k in ('services', 'lan_ip', 'lan_cidr')}
-    clean['nextcloud'] = {'enabled': cfg.get('nextcloud', {}).get('enabled', False)}
+    clean['nextcloud'] = {'enabled': nextcloud_enabled(cfg)}
     # The TV step's choice (guided_setup.wanted saves it as tv.wanted): with its report on the
     # SSD, it decides whether the page offers Steam Big Picture.
     clean['tv'] = {'wanted': cfg.get('tv', {}).get('wanted')}

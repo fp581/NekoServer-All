@@ -42,7 +42,7 @@ Number of the drive for your apps, photos and music (the app SSD) (Enter for 2, 
 Drive 5 (Cruzer Blade, 15 GB USB drive, named "stick") cannot be the app SSD: it is too small: the app SSD needs a drive of at least 22 GB (20 GB free once formatted). Choose another one from the list.
 Number of the drive for your apps, photos and music (the app SSD) (Enter for 2, the recommended one): [2]
 Drive 2 (Samsung SSD 870, 466 GB SSD, named "apps") is the app SSD. Nothing on it is changed by choosing it.
-Now choose the drive for your movies, shows and the backups (the media HDD). It needs at least 50 GB free, so a drive of 54 GB or more (500 GB or more is recommended).
+Now choose the drive for your movies, shows, Nextcloud files and the backups (the media HDD). It needs at least 50 GB free, so a drive of 54 GB or more (500 GB or more is recommended).
   1) WD SN770, 477 GB NVMe SSD
   2) Samsung SSD 870, 466 GB SSD, named "apps", about 1 % full
   3) WDC WD20EZRZ, 1.8 TB HDD, named "media", about 40 % full, holds files  (recommended)
@@ -52,9 +52,9 @@ Now choose the drive for your movies, shows and the backups (the media HDD). It 
   7) Synology LUN, 3.6 TB network disk (iSCSI), named "nas-media"
   8) KINGSTON SNV2S250G, 233 GB NVMe SSD
   9) Crucial MX500, 238 GB SSD, named "Windows"  - not this one: it is formatted NTFS (Windows), which Linux apps can't keep their files on
-Number of the drive for your movies, shows and the backups (the media HDD) (Enter for 3, the recommended one): [3]
+Number of the drive for your movies, shows, Nextcloud files and the backups (the media HDD) (Enter for 3, the recommended one): [3]
 Drive 3 (WDC WD20EZRZ, 1.8 TB HDD, named "media") is the media HDD. Nothing on it is changed by choosing it.
-Now choose the drive for the weekly copy of your files (the USB backup drive).
+Now choose the drive for the weekly copy of your Nextcloud files (the USB backup drive).
   1) WD SN770, 477 GB NVMe SSD  - not this one: it is the disk Linux runs from; the offline backup must be a drive of its own that you can take away
   2) Samsung SSD 870, 466 GB SSD, named "apps", about 1 % full  - not this one: it is already the app SSD
   3) WDC WD20EZRZ, 1.8 TB HDD, named "media", about 40 % full, holds files  - not this one: it is already the media HDD
@@ -64,9 +64,9 @@ Now choose the drive for the weekly copy of your files (the USB backup drive).
   7) Synology LUN, 3.6 TB network disk (iSCSI), named "nas-media"
   8) KINGSTON SNV2S250G, 233 GB NVMe SSD
   9) Crucial MX500, 238 GB SSD, named "Windows"  - not this one: it is formatted NTFS (Windows); a backup drive must be exFAT or ext4 (FAT32 cannot hold files over 4 GB, such as videos)
-Number of the drive for the weekly copy of your files (the USB backup drive) (Enter to skip for now): [9]
+Number of the drive for the weekly copy of your Nextcloud files (the USB backup drive) (Enter to skip for now): [9]
 Drive 9 (Crucial MX500, 238 GB SSD, named "Windows") cannot be the USB backup drive: it is formatted NTFS (Windows); a backup drive must be exFAT or ext4 (FAT32 cannot hold files over 4 GB, such as videos). Copy off anything you need from it, then format it yourself (this erases it) with the Disks app (GNOME) or KDE Partition Manager. Choose another one from the list.
-Number of the drive for the weekly copy of your files (the USB backup drive) (Enter to skip for now): [4]
+Number of the drive for the weekly copy of your Nextcloud files (the USB backup drive) (Enter to skip for now): [4]
 Drive 4 (SanDisk Ultra, 29 GB USB drive, named "BACKUP") is the USB backup drive. Nothing on it is changed by choosing it.
 
 ===== Setup run again: the drives chosen last time =====
@@ -85,9 +85,9 @@ Now choose the drive for your apps, photos and music (the app SSD). It needs at 
 Number of the drive for your apps, photos and music (the app SSD) (Enter for 1, the recommended one): [1]
 Drive 1 (WD SN770, 477 GB NVMe SSD) is the app SSD. Nothing on it is changed by choosing it.
 It is the disk Linux runs from: NekoServer keeps this in a folder of it (/var/lib/nekoserver). If that disk fails, Linux and what is kept there are lost together, and a disk that fills up stops Linux too. A drive of its own is the safer choice.
-Now choose the drive for your movies, shows and the backups (the media HDD). It needs at least 50 GB free, so a drive of 54 GB or more (500 GB or more is recommended).
+Now choose the drive for your movies, shows, Nextcloud files and the backups (the media HDD). It needs at least 50 GB free, so a drive of 54 GB or more (500 GB or more is recommended).
   1) WD SN770, 477 GB NVMe SSD  (recommended)
-Number of the drive for your movies, shows and the backups (the media HDD) (Enter for 1, the recommended one): [1]
+Number of the drive for your movies, shows, Nextcloud files and the backups (the media HDD) (Enter for 1, the recommended one): [1]
 Drive 1 (WD SN770, 477 GB NVMe SSD) is the media HDD. Nothing on it is changed by choosing it.
 It is the disk Linux runs from: NekoServer keeps this in a folder of it (/var/lib/nekoserver). If that disk fails, Linux and what is kept there are lost together, and a disk that fills up stops Linux too. A drive of its own is the safer choice.
 The backups are then on the same disk as what they copy. They still help after a mistake or a broken app, but not when that disk fails: an offline backup on a removable drive is what covers that.

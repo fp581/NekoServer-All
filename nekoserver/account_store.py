@@ -13,6 +13,7 @@ import string
 import setup_progress
 import questions
 from neko_common import (
+    nextcloud_enabled,
     APPS as CATALOG,
     atomic_json,
     atomic_write,
@@ -314,7 +315,7 @@ def selected(config, plan):
             result.insert(result.index('navidrome') + 1, 'navidrome_listener')
     if 'photos' in plan and immich_wanted(config):
         result.append('immich')
-    if 'nextcloud' in plan and config.get('nextcloud', {}).get('enabled', True):
+    if 'nextcloud' in plan and nextcloud_enabled(config):
         result.append('nextcloud')
     return [app for app in APPS if app in result]
 

@@ -21,6 +21,7 @@ folders belong to a row, and which rows share a drive; it changes nothing by its
 """
 
 from neko_common import (
+    nextcloud_enabled,
     APP_GROUPS,
     DOWNLOADS,
     INSTALL_SECTION,
@@ -134,7 +135,7 @@ def applies(config, row):
     if row in MEDIA_GROUPS:
         return media_group(config, row)
     if row == CLOUD:
-        return config.get('nextcloud', {}).get('enabled', True) is True
+        return nextcloud_enabled(config)
     return True
 
 

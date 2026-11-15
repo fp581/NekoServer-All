@@ -1592,7 +1592,8 @@ class UsbPickerTests(unittest.TestCase):
         self.assertNotIn('nvme0n1p3', offered)  # spare partition of the system disk: the disk is one row
         # Worded as the SSD and HDD lists are, not as UUIDs and mount points (seen on a Debian VM).
         self.assertIn('  4) 1.0 TB drive', shown)
-        self.assertIn('Now choose the drive for the weekly copy of your files (the USB backup drive).', shown)
+        # No "enabled" under Nextcloud: it is set up, so its files are what the copy takes.
+        self.assertIn('Now choose the drive for the weekly copy of your Nextcloud files (the USB backup drive).', shown)
         self.assertNotIn('UUID=', offered)
 
     def test_a_typo_in_the_usb_picker_is_asked_again(self):

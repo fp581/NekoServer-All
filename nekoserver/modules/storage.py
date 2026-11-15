@@ -12,6 +12,7 @@ import sys
 import types
 from pathlib import Path
 from neko_common import (
+    nextcloud_enabled,
     atomic_json,
     atomic_write,
     drives_in_use,
@@ -2467,7 +2468,7 @@ def asked_where(config, what):
         return apps_to_connect(config)  # Jellyfin's library, or the download apps' folders
     if what == 'music':
         return media_group(config, 'music')
-    return config.get('nextcloud', {}).get('enabled', True) is True
+    return nextcloud_enabled(config)
 
 
 def recommended(ssd_gb, threshold):

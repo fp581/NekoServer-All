@@ -1800,7 +1800,7 @@ def listed(parts):
 def drive_holds(config, key):
     """What goes on the drive of this role ('data_ssd', 'media_hdd', 'usb'), naming only
     what this server has (gate run C: "your apps, photos and music" with Photos off)."""
-    cloud = bool(config.get('nextcloud', {}).get('enabled', False))
+    cloud = nextcloud_enabled(config)
     if key == 'data_ssd':
         return listed(
             ['your apps'] + ['photos'] * media_group(config, 'photos') + ['music'] * media_group(config, 'music')
@@ -1897,6 +1897,15 @@ def media_steps_left_out(config):
 def immich_wanted(config):
     """Immich is set up: photos.deploy_immich, and the Photos group not left out."""
     return media_group(config, 'photos') and config.get('photos', {}).get('deploy_immich') is True
+
+
+def nextcloud_enabled(config):
+    """Nextcloud is set up, read the one way everything reads it: on unless its "enabled"
+    is false, as modules/nextcloud.py runs it (and config_checks.nextcloud_default writes
+    a missing one in as true). Read as off before, a missing "enabled" left a running
+    Nextcloud out of the dashboard, the capacity notes and the weekly USB copy."""
+    section = config.get('nextcloud')
+    return not (isinstance(section, dict) and section.get('enabled') is False)
 
 
 # The optional questions setup asks (the media apps, the backup times, and when it

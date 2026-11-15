@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 
 from neko_common import (
+    nextcloud_enabled,
     APPS,
     app_port,
     atomic_json,
@@ -386,7 +387,7 @@ def chosen_apps(config, links=None):
     selected = list(media_services(config))
     if immich_wanted(config):
         selected.append('immich')
-    if config.get('nextcloud', {}).get('enabled') is True:
+    if nextcloud_enabled(config):
         selected.append('nextcloud')
     found = []
     for app in (a for a in APPS if a in selected):
@@ -405,7 +406,7 @@ def app_backup_off(config):
 
 def offline_backup_off(config):
     """The offline copy has nothing to copy, or no removable drive was chosen for it."""
-    if not immich_wanted(config) and config.get('nextcloud', {}).get('enabled') is not True:
+    if not immich_wanted(config) and not nextcloud_enabled(config):
         return True
     photos = config.get('photos', {})
     return photos.get('external_backup_wanted') is False and not photos.get('external_backup_uuid')

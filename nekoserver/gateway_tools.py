@@ -10,6 +10,7 @@ import recovery_tools
 from network_access import lan, verify_lan, choose_lan, save_settings
 import host
 from neko_common import (
+    nextcloud_enabled,
     SHARED,
     VERSION,
     safe_path,
@@ -174,7 +175,7 @@ DEFAULT_SERVICES = ('jellyfin', 'seerr', 'immich', 'navidrome', 'nextcloud')
 
 def installed(config, app):
     if app == 'nextcloud':
-        return bool(config.get('nextcloud', {}).get('enabled'))
+        return nextcloud_enabled(config)
     if app == 'immich':
         return immich_wanted(config)
     return app in media_services(config)

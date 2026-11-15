@@ -36,6 +36,7 @@ import zlib
 import guided_setup
 import nfs_exports
 from neko_common import (
+    nextcloud_enabled,
     OPERATION_LOCK,
     SHARED,
     hold_operation,
@@ -140,9 +141,8 @@ def menu(config):
 
 
 def nextcloud_on(config):
-    """Nextcloud is part of this server: on unless its "enabled" is false."""
-    section = config.get('nextcloud')
-    return not (isinstance(section, dict) and section.get('enabled') is False)
+    """Nextcloud is part of this server (neko_common.nextcloud_enabled)."""
+    return nextcloud_enabled(config)
 
 
 def nextcloud_set_up(config):

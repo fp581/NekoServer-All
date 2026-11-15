@@ -556,7 +556,7 @@ def restore_tests(modules, config):
     """The witnessed restore tests of the backups set up (beside the photo restore): one per
     kind of data, as the dashboard's RESTORE TRIED asks for (status_checks.restore_tests)."""
     out = []
-    if 'photo_backup' in modules and config.get('nextcloud', {}).get('enabled') is True:
+    if 'photo_backup' in modules and neko_common.nextcloud_enabled(config):
         out += [
             (
                 'cloud_restore',
@@ -771,7 +771,7 @@ def accepted_modules(config, modules):
     skipped = unavailable_steps(config)
     # Nextcloud switched off in the settings ("enabled": false) is not set up: its checks
     # and its client test would only ever fail or wait (the nextcloud step skips itself).
-    if config.get('nextcloud', {}).get('enabled', True) is not True:
+    if not neko_common.nextcloud_enabled(config):
         skipped = skipped | {'nextcloud'}
     # A media group switched off (Photos, Movies and shows, Music): its steps set
     # nothing up, so there is nothing of theirs to accept; with every group off, none

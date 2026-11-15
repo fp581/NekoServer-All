@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 
 import nfs_exports
-from neko_common import APPS, findmnt, immich_wanted, media_services, safe_path
+from neko_common import APPS, findmnt, immich_wanted, media_services, nextcloud_enabled, safe_path
 
 # Only these programs are run, with plain arguments (no shell, no control characters).
 PROGRAMS = {'systemctl', 'docker', 'findmnt', 'tailscale'}
@@ -116,7 +116,7 @@ def applications(config):
     selected = set(media_services(config))
     if immich_wanted(config):
         selected.add('immich')
-    if config.get('nextcloud', {}).get('enabled'):
+    if nextcloud_enabled(config):
         selected.add('nextcloud')
     out = []
     for app in (a for a in APPS if a in selected):

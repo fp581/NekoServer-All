@@ -11,6 +11,7 @@ from pathlib import Path
 import native_runtime
 from modules.photo_preservation import resume_command, resume_unit
 from neko_common import (
+    nextcloud_enabled,
     nas_disk_wwn,
     cloud_files,
     MANAGED_UNIT,
@@ -177,7 +178,7 @@ def copies(config):
     """What the weekly USB copy takes: (Immich's photo archive, Nextcloud's files)."""
     return (
         immich_wanted(config),
-        bool(config.get('nextcloud', {}).get('enabled', False)),
+        nextcloud_enabled(config),
     )
 
 

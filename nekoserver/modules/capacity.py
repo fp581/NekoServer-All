@@ -361,10 +361,10 @@ def assess(
 
 def usb_pending_words(config):
     """What the next weekly copy still has to add, naming only what this server has."""
-    from neko_common import immich_wanted, listed
+    from neko_common import immich_wanted, listed, nextcloud_enabled
 
     photos = immich_wanted(config)
-    cloud = bool(config.get('nextcloud', {}).get('enabled', False))
+    cloud = nextcloud_enabled(config)
     return listed(
         ['photos and versions from the HDD archive', 'photos not archived yet'] * photos
         + ['Nextcloud files'] * cloud

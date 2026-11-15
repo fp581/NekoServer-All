@@ -134,7 +134,7 @@ class DriveWordsTests(unittest.TestCase):
         films = {'media_apps': {'photos': False, 'movies': True, 'music': False}, 'nextcloud': {'enabled': False}}
         self.assertEqual(drive_holds(films, 'data_ssd'), 'your apps')
         self.assertEqual(drive_holds(films, 'media_hdd'), 'your movies, shows and the backups')
-        none = {'media_apps': {'photos': False, 'movies': False, 'music': False}}
+        none = {'media_apps': {'photos': False, 'movies': False, 'music': False}, 'nextcloud': {'enabled': False}}
         self.assertEqual(drive_holds(none, 'media_hdd'), 'the backups')
         self.assertEqual(drive_holds(none, 'usb'), 'the weekly copy of your files')
 
