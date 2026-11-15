@@ -783,11 +783,11 @@ class SetupDownloadTests(unittest.TestCase):
             'Finding the current Immich release: could not download .*Temporary failure.*connected to the internet',
         ):
             neko_common.fetch(api, 'Finding the current Immich release', 1000, opener=offline)
-        limited = self.failing(urllib.error.HTTPError(api, 403, 'rate limit exceeded', {}, None))
+        limited = self.failing(urllib.error.HTTPError(api, 403, 'rate limit exceeded', {}, io.BytesIO()))
         with self.assertRaisesRegex(RuntimeError, 'GitHub is limiting requests.*wait an hour'):
             neko_common.fetch(api, 'Finding the current Immich release', 1000, opener=limited)
         gone = 'https://github.com/immich-app/immich/releases/download/v9.9.9/docker-compose.yml'
-        missing = self.failing(urllib.error.HTTPError(gone, 404, 'Not Found', {}, None))
+        missing = self.failing(urllib.error.HTTPError(gone, 404, 'Not Found', {}, io.BytesIO()))
         with self.assertRaisesRegex(RuntimeError, 'answered HTTP 404'):
             neko_common.fetch(gone, 'Downloading Immich v9.9.9\'s compose file', 1000, opener=missing)
 
@@ -3312,7 +3312,7 @@ class RestoreTestWaitTests(unittest.TestCase):
                 if code is None:
                     raise OSError('refused')
                 if code != 200:
-                    raise urllib.error.HTTPError(url, code, 'x', {}, None)
+                    raise urllib.error.HTTPError(url, code, 'x', {}, io.BytesIO())
                 return Response(200)
 
         return Opener()

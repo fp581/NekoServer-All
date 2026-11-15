@@ -2,6 +2,7 @@
 checks T12 to T14). Everything here runs on folders of its own with stand-ins for
 findmnt, the apps' account, mount and the apps' APIs: no Docker, no network."""
 
+import io
 import os
 import sys
 import tempfile
@@ -960,10 +961,10 @@ class Navidrome:
         self.seen.append((asked.get_method(), path, body, asked.get_header('X-nd-authorization')))
         if path == '/auth/login':
             if body['password'] != 'right':
-                raise urllib.error.HTTPError(asked.full_url, 401, 'no', {}, None)
+                raise urllib.error.HTTPError(asked.full_url, 401, 'no', {}, io.BytesIO())
             return Answer({'token': 'tok', 'isAdmin': self.admin})
         if not self.libraries:
-            raise urllib.error.HTTPError(asked.full_url, 404, 'no', {}, None)
+            raise urllib.error.HTTPError(asked.full_url, 404, 'no', {}, io.BytesIO())
         if asked.get_method() == 'POST':
             self.have.append({'id': 2, **body})
         return Answer(self.have)

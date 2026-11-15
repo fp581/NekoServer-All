@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 import os
 import subprocess
@@ -1440,7 +1441,7 @@ class RepositoryKeyErrorTests(unittest.TestCase):
         import urllib.error
 
         def missing(url):
-            raise urllib.error.HTTPError(url, 404, 'Not Found', {}, None)
+            raise urllib.error.HTTPError(url, 404, 'Not Found', {}, io.BytesIO())
 
         family = self.family(missing)
         with self.assertRaisesRegex(
@@ -1618,7 +1619,7 @@ class FedoraTest(unittest.TestCase):
 
     def test_a_fedora_release_docker_does_not_package_yet_is_named(self):
         def missing(url):
-            raise host.urllib.error.HTTPError(url, 404, 'Not Found', {}, None)
+            raise host.urllib.error.HTTPError(url, 404, 'Not Found', {}, io.BytesIO())
 
         family = self.family(fetch=missing)
         with self.assertRaisesRegex(RuntimeError, 'Docker does not offer packages for Fedora 44 yet'):
@@ -1749,7 +1750,7 @@ class RhelTest(unittest.TestCase):
 
     def test_a_release_docker_does_not_package_yet_is_named(self):
         def missing(url):
-            raise host.urllib.error.HTTPError(url, 404, 'Not Found', {}, None)
+            raise host.urllib.error.HTTPError(url, 404, 'Not Found', {}, io.BytesIO())
 
         future = dict(self.ALMA, VERSION_ID='11.0')
         family = self.family(release=future, fetch=missing)

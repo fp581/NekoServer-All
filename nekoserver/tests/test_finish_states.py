@@ -5,6 +5,7 @@ a reason and a named next action. Wizard checks T26 (an empty library is neither
 nor a passed playback test), T37 (no single "all passed" over what nobody tested) and T38
 (a task put off leaves the server ready and stays in the list)."""
 
+import io
 import json
 import sys
 import tempfile
@@ -232,7 +233,7 @@ class Opener:
         if isinstance(answer, Exception):
             raise answer
         if answer >= 400:
-            raise urllib.error.HTTPError(url, answer, 'no', {}, None)
+            raise urllib.error.HTTPError(url, answer, 'no', {}, io.BytesIO())
         return self
 
     def __enter__(self):
