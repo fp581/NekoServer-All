@@ -205,5 +205,68 @@ class AppStillStartingAfterAnUpdate(unittest.TestCase):
         self.assertEqual(saved.get('state'), 'needs_setup')
 
 
+def qbittorrent(let_in, password='pw'):
+    """qBittorrent 5's Web UI API as its source has it: a computer it lets in without a
+    password ("Bypass authentication for clients on localhost" or "... in whitelisted IP
+    subnets") is given a session whatever it sends; otherwise only the right password
+    gets one (an empty 204 and the QBT_SID_<port> cookie)."""
+
+    def answer(method, path, headers, body):
+        signed = 'QBT_SID_8080=s1' in (headers.get('Cookie') or '')
+        if path == '/api/v2/auth/login':
+            form = urllib.parse.parse_qs(body.decode())
+            if let_in or (form.get('username') == ['neko_q'] and form.get('password') == [password]):
+                return 204, {'Set-Cookie': 'QBT_SID_8080=s1; Path=/'}, b''
+            return 401, {}, b'Fails.'
+        if not (signed or let_in):
+            return 403, {}, b'Forbidden'
+        if path == '/api/v2/app/preferences':
+            return (
+                200,
+                {},
+                {
+                    'web_ui_username': 'neko_q',
+                    'bypass_local_auth': False,
+                    'bypass_auth_subnet_whitelist_enabled': let_in,
+                    'bypass_auth_subnet_whitelist': '172.16.0.0/12' if let_in else '',
+                },
+            )
+        if path == '/api/v2/auth/logout':
+            return 200, {}, b''
+        return 404, {}, b''
+
+    return stand_in(answer)
+
+
+class QbittorrentLetsInWithoutAPassword(unittest.TestCase):
+    """People often tick "Bypass authentication for clients in whitelisted IP subnets" in
+    qBittorrent, with Docker's network, so their apps need no password. qBittorrent then
+    takes any password from there: the saved one is "not tried", never "type the login
+    qBittorrent has now", and the weekly update is told it could not be tried."""
+
+    entry = {'username': 'neko_q', 'password': 'pw', 'allow_create': False, 'state': 'verified'}
+
+    def client(self, let_in):
+        server = qbittorrent(let_in)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return account_setup.Client('qbittorrent', server.server_address[1])
+
+    def test_let_in_is_said_as_not_tried(self):
+        self.assertEqual(account_setup.qbittorrent(self.client(True), self.entry), account_setup.QBITTORRENT_LET_IN)
+        with (
+            mock.patch.object(account_setup.store, 'get', return_value=self.entry),
+            mock.patch.object(account_setup, 'verify_project', return_value=0),
+            mock.patch.object(account_setup, 'wait'),
+        ):
+            client = self.client(True)
+            self.assertIsNone(account_setup.signs_in({'data_mount': '/x'}, 'qbittorrent', lambda *_: client))
+
+    def test_without_it_the_password_is_tried(self):
+        self.assertIsNone(account_setup.qbittorrent(self.client(False), self.entry))
+        with self.assertRaises(RuntimeError):
+            account_setup.qbittorrent(self.client(False), dict(self.entry, password='wrong'))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -329,7 +329,17 @@ def arr(client, entry, config, app):
     check(isinstance(loaded, dict) and loaded.get('apiKey') == key)
 
 
+QBITTORRENT_LET_IN = (
+    'not tried: qBittorrent lets some computers in without a password (in qBittorrent: Tools, Options, '
+    'Web UI, "Bypass authentication for clients ..."), so the saved password could not be tried; the saved '
+    'login is kept. Untick those for NekoServer to check this login'
+)
+
+
 def qbittorrent(client, entry):
+    """qBittorrent's Web UI login. Returns a note for the setup log, or None."""
+    made = False
+
     def login(username, password):
         reply = client.call('/api/v2/auth/login', 'POST', form={'username': username, 'password': password}, raw=True)
         # qBittorrent 4 answers a good login with "Ok." and a cookie named SID;
@@ -378,13 +388,22 @@ def qbittorrent(client, entry):
         client.call('/api/v2/auth/logout', 'POST', form={}, raw=True)
         client.jar.clear()
         check(login(entry['username'], entry['password']))
+        made = True
     preferences = client.call('/api/v2/app/preferences')
-    check(
-        preferences.get('web_ui_username') == entry['username']
-        and preferences.get('bypass_local_auth') is False
-        and preferences.get('bypass_auth_subnet_whitelist_enabled') is False
+    check(preferences.get('web_ui_username') == entry['username'])
+    # A computer qBittorrent lets in without a password (this one, or one in a network
+    # ticked there: people tick Docker's for their apps) is given a session whatever
+    # password it sends, so the one above proved nothing. Setup switches both off when
+    # it makes the login; switched on again later, they are the person's choice.
+    let_in = (
+        preferences.get('bypass_local_auth') is not False
+        or preferences.get('bypass_auth_subnet_whitelist_enabled') is not False
     )
     client.call('/api/v2/auth/logout', 'POST', form={}, raw=True)
+    if let_in:
+        check(not made)
+        return QBITTORRENT_LET_IN
+    return None
 
 
 def seerr_signed_in_as(client, result, entry):
@@ -616,7 +635,8 @@ def signs_in(config, app, client_factory=Client):
     installs a new version). Read-only: with `allow_create` off the app checks below never
     make or change an account, and nothing is written to the saved logins. Returns None
     when there is no saved login to try, or it could not be tried (Nextcloud with
-    two-factor sign-in on, Seerr with password sign-in off); raises with the reason
+    two-factor sign-in on, Seerr with password sign-in off, qBittorrent letting this PC
+    in without one); raises with the reason
     (never a password) when the app refuses it."""
     entry = store.get(config, app)
     if not entry:
@@ -638,9 +658,11 @@ def signs_in(config, app, client_factory=Client):
             if nextcloud(client, entry, config) == NEXTCLOUD_TWO_FACTOR:
                 return None
         else:
-            {'jellyfin': jellyfin, 'immich': immich, 'navidrome': navidrome, 'qbittorrent': qbittorrent}[app](
+            # Let in without a password (qBittorrent): the saved one was not tried.
+            if {'jellyfin': jellyfin, 'immich': immich, 'navidrome': navidrome, 'qbittorrent': qbittorrent}[app](
                 client, entry
-            )
+            ) == QBITTORRENT_LET_IN:
+                return None
         return True
     finally:
         client.close()
@@ -702,9 +724,9 @@ def provision(config, apps, output=print, client_factory=Client):
             elif app == 'nextcloud':
                 note = nextcloud(client, entry, config)
             else:
-                {'jellyfin': jellyfin, 'immich': immich, 'navidrome': navidrome, 'qbittorrent': qbittorrent}[app](
-                    client, entry
-                )
+                note = {'jellyfin': jellyfin, 'immich': immich, 'navidrome': navidrome, 'qbittorrent': qbittorrent}[
+                    app
+                ](client, entry)
             store.update(config, app, state='verified', allow_create=False)
             output(store.APPS[app][0] + ': ' + (note or 'verified'))
         except (

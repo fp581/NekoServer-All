@@ -213,7 +213,8 @@ def signin(settings, app, output=print):
     if answer is None:
         output(
             app + ': no saved login could be tried (none is saved, or the app takes no password now: '
-            'two-factor sign-in in Nextcloud, password sign-in switched off in Seerr)'
+            'two-factor sign-in in Nextcloud, password sign-in switched off in Seerr, qBittorrent letting '
+            'this PC in without one)'
         )
         return NO_LOGIN
     output(app + ': signed in with its saved login')
