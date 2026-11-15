@@ -1002,6 +1002,18 @@ class Navidrome:
     def __init__(self, admin=True, libraries=True):
         self.admin, self.libraries, self.seen = admin, libraries, []
         self.have = [{'id': 1, 'name': 'Music Library', 'path': '/music'}]
+        # Its users, and the libraries each one who is not an administrator may play
+        # ({user id: [library ids]}); `stuck`: a Navidrome that refuses to change them.
+        self.users, self.may_play, self.stuck = [], {}, False
+
+    def user_libraries(self, asked, user, body):
+        import urllib.error
+
+        if asked.get_method() == 'PUT':
+            if self.stuck or next(x for x in self.users if x['id'] == user)['isAdmin']:
+                raise urllib.error.HTTPError(asked.full_url, 400, 'no', {}, io.BytesIO())
+            self.may_play[user] = body['libraryIds']
+        return Answer([x for x in self.have if x['id'] in self.may_play.get(user, [])])
 
     def open(self, asked, timeout=None):
         import json
@@ -1016,6 +1028,10 @@ class Navidrome:
             return Answer({'token': 'tok', 'isAdmin': self.admin})
         if not self.libraries:
             raise urllib.error.HTTPError(asked.full_url, 404, 'no', {}, io.BytesIO())
+        if path == '/api/user':
+            return Answer(self.users)
+        if path.startswith('/api/user/'):
+            return self.user_libraries(asked, path.split('/')[3], body)
         if asked.get_method() == 'POST':
             self.have.append({'id': 2, **body})
         return Answer(self.have)
@@ -1031,19 +1047,72 @@ class MusicTests(unittest.TestCase):
         self.config = existing_media.with_choice(self.pc.config, existing_media.entry_for('music', found))
         self.pc.bound[str(self.pc.ssd / 'library/existing/music')] = '78'
 
-    def libraries(self, navidrome, saved, config=None):
+    def libraries(self, navidrome, saved, config=None, listener=None):
         def api(username, password):
             return existing_media.navidrome_api(username, password, 'http://127.0.0.1:4533', navidrome)
 
-        with mock.patch.object(existing_media.account_store, 'get', return_value=saved) as asked:
+        def logins(config, app, verified=False):
+            return listener if app == 'navidrome_listener' else saved
+
+        with mock.patch.object(existing_media.account_store, 'get', side_effect=logins) as asked:
             rows = existing_media.music_libraries(config or self.config, True, api, **self.pc.how())
         return rows, asked
+
+    def with_users(self):
+        """A Navidrome with the administrator, NekoServer's listener (given the one
+        library there was when setup made it) and a user the person made themselves."""
+        navidrome = Navidrome()
+        navidrome.users = [
+            {'id': 'a', 'userName': 'neko', 'isAdmin': True},
+            {'id': 'b', 'userName': 'listener', 'isAdmin': False},
+            {'id': 'c', 'userName': 'guest', 'isAdmin': False},
+        ]
+        navidrome.may_play = {'b': [1], 'c': [1]}
+        return navidrome
+
+    def test_the_listener_may_play_a_folder_added_after_it_was_made(self):
+        """Review of 0.51.2: Navidrome shows a user who is not an administrator only the
+        libraries given to them, and setup gave them once, when it made the listener: the
+        music check (and a phone signed in as the listener) never saw the folder."""
+        navidrome = self.with_users()
+        admin, listener = {'username': 'neko', 'password': 'right'}, {'username': 'listener', 'password': 'x'}
+        rows, _ = self.libraries(navidrome, admin, listener=listener)
+        self.assertEqual(rows, [{'check': 'navidrome:existing:music', 'status': 'pass'}])
+        self.assertIn(('PUT', '/api/user/b/library', {'libraryIds': [1, 2]}, 'Bearer tok'), navidrome.seen)
+        # Only the login NekoServer keeps: the administrator sees everything anyway, and a
+        # user the person made is theirs to decide about.
+        self.assertEqual(navidrome.may_play, {'b': [1, 2], 'c': [1]})
+        # Run again, as on a server that already had the library without it: nothing is
+        # changed twice; a listener that lost it gets it back.
+        navidrome.seen.clear()
+        self.libraries(navidrome, admin, listener=listener)
+        self.assertNotIn('PUT', [method for method, *_ in navidrome.seen])
+        navidrome.may_play['b'] = [1]
+        self.libraries(navidrome, admin, listener=listener)
+        self.assertEqual(navidrome.may_play['b'], [1, 2])
+
+    def test_the_login_the_music_check_uses_may_play_it_too(self):
+        navidrome = self.with_users()
+        saved = existing_media.music_client.credential_path(self.config)
+        saved.parent.mkdir(parents=True)
+        saved.write_text('{"user": "guest"}')
+        self.libraries(navidrome, {'username': 'neko', 'password': 'right'})
+        self.assertEqual(navidrome.may_play, {'b': [1], 'c': [1, 2]})
+
+    def test_a_listener_navidrome_would_not_change_is_a_step_left_with_what_to_do(self):
+        navidrome = self.with_users()
+        navidrome.stuck = True
+        login = {'username': 'neko', 'password': 'right'}
+        (row,), _ = self.libraries(navidrome, login, listener={'username': 'listener', 'password': 'x'})
+        self.assertEqual(row['status'], 'needs_setup')
+        self.assertIn('the login "listener" could not be allowed to play it', row['reason'])
+        self.assertIn('tick the library "Music (your folder)"', row['reason'])
 
     def test_navidrome_is_signed_in_to_as_its_administrator_and_given_the_folder(self):
         navidrome = Navidrome()
         rows, asked = self.libraries(navidrome, {'username': 'neko', 'password': 'right'})
         self.assertEqual(rows, [{'check': 'navidrome:existing:music', 'status': 'pass'}])
-        asked.assert_called_once_with(self.config, 'navidrome', verified=True)
+        asked.assert_any_call(self.config, 'navidrome', verified=True)
         self.assertEqual(navidrome.seen[0], ('POST', '/auth/login', {'username': 'neko', 'password': 'right'}, None))
         added = {'name': 'Music (your folder)', 'path': '/data/existing/music'}
         self.assertIn(('POST', '/api/library', added, 'Bearer tok'), navidrome.seen)

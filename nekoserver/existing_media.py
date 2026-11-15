@@ -32,6 +32,7 @@ from pathlib import Path
 
 import account_store
 import media_libraries
+import music_client
 import nfs_exports
 import placement
 import source_import
@@ -892,46 +893,90 @@ def jellyfin_libraries(client, config, apply=False, **how):
     return rows
 
 
-def navidrome_listed(call):
-    """Navidrome's libraries, as its API lists them."""
-    listed = call('GET', NAVIDROME_LIBRARIES, None)
+def navidrome_listed(call, endpoint=NAVIDROME_LIBRARIES):
+    """Navidrome's libraries (or those one user may play), as its API lists them."""
+    listed = call('GET', endpoint, None)
     if not isinstance(listed, list) or any(not isinstance(x, dict) for x in listed):
         raise RuntimeError('Unsupported Navidrome library response')
     return listed
 
 
-def navidrome_one(call, config, entry, apply, how):
-    """Navidrome's library for one music folder: there already, or made and read back."""
+NAVIDROME_USERS = '/api/user'  # Navidrome's users; <this>/<id>/library: the libraries one may play
+NOT_SHARED = (
+    'Your own music folder is in Navidrome, but the login "{user}" could not be allowed to play it. In Navidrome '
+    'open Settings, Users, "{user}", tick the library "{name}" and save; then run setup again'
+)
+
+
+def navidrome_share(call, library, name, listeners):
+    """Let the logins NekoServer keeps that are not administrators (`listeners`, by user
+    name) play this library too. Navidrome shows such a user only the libraries given to
+    them, and setup gives them when it makes the account: a library added afterwards was
+    not theirs (review of 0.51.2). What they may play already is kept as it is;
+    administrators see every library anyway."""
+    if not listeners:
+        return
+    users = call('GET', NAVIDROME_USERS, None)
+    if not isinstance(users, list):
+        raise RuntimeError('Unsupported Navidrome user response')
+    for user in users:
+        if not isinstance(user, dict) or user.get('userName') not in listeners or user.get('isAdmin') is not False:
+            continue
+        theirs = f"{NAVIDROME_USERS}/{urllib.parse.quote(str(user.get('id')), safe='')}/library"
+        try:
+            have = [x['id'] for x in navidrome_listed(call, theirs)]
+            if library not in have:
+                call('PUT', theirs, {'libraryIds': [*have, library]})
+                if library not in [x['id'] for x in navidrome_listed(call, theirs)]:
+                    raise RuntimeError('Library access was not retained')
+        except (RuntimeError, LookupError, KeyError):
+            raise media_libraries.SetupRequired(NOT_SHARED.format(user=user['userName'], name=name)) from None
+
+
+def navidrome_one(call, config, entry, apply, how, listeners=()):
+    """Navidrome's library for one music folder: there already, or made and read back;
+    then the listeners are allowed to play it."""
     name, path = library_name(entry), container_path('music', entry['use'])
     check_name = f"navidrome:existing:{slot('music', entry['use'])}"
     ready_row(config, entry, how)
     listed = navidrome_listed(call)
-    if any(str(x.get('path', '')).rstrip('/') == path for x in listed):
-        return media_libraries.row(check_name, 'pass')
-    if any(str(x.get('name', '')).casefold() == name.casefold() for x in listed):
-        raise media_libraries.SetupRequired(NAME_TAKEN.format(app='Navidrome', name=name))
-    if not apply:
-        return media_libraries.row(check_name, 'needs_setup', 'Preview: library would be created')
-    call('POST', NAVIDROME_LIBRARIES, {'name': name, 'path': path})
-    again = call('GET', NAVIDROME_LIBRARIES, None)
-    if not isinstance(again, list) or not any(isinstance(x, dict) and x.get('path') == path for x in again):
-        raise RuntimeError('Library creation was not retained')
+
+    def ours(listed):
+        return [x for x in listed if str(x.get('path', '')).rstrip('/') == path]
+
+    found = ours(listed)
+    if not found:
+        if any(str(x.get('name', '')).casefold() == name.casefold() for x in listed):
+            raise media_libraries.SetupRequired(NAME_TAKEN.format(app='Navidrome', name=name))
+        if not apply:
+            return media_libraries.row(check_name, 'needs_setup', 'Preview: library would be created')
+        call('POST', NAVIDROME_LIBRARIES, {'name': name, 'path': path})
+        found = ours(navidrome_listed(call))
+        if not found:
+            raise RuntimeError('Library creation was not retained')
+    if apply:
+        navidrome_share(call, found[0]['id'], found[0].get('name', name), listeners)
     return media_libraries.row(check_name, 'pass')
 
 
-def navidrome_library(call, config, apply=False, **how):
-    """A Navidrome library for each of the person's music folders (/data/existing/music).
-    `call(method, endpoint, payload)`: Navidrome's own API as its administrator, returning
-    the decoded answer (GET /api/library lists, POST /api/library adds); navidrome_api()
-    makes one. A Navidrome without several libraries answers 404 (LookupError): said as a
-    step left, never an error."""
+def navidrome_library(call, config, apply=False, listeners=(), **how):
+    """A Navidrome library for each of the person's music folders (/data/existing/music),
+    which the `listeners` (user names) may play. `call(method, endpoint, payload)`:
+    Navidrome's own API as its administrator, returning the decoded answer (GET
+    /api/library lists, POST /api/library adds); navidrome_api() makes one. A Navidrome
+    without several libraries answers 404 (LookupError): said as a step left, never an
+    error."""
     rows = []
     for entry in extras(config):
         if entry['holds'] != 'music':
             continue
         check_name = f"navidrome:existing:{slot('music', entry['use'])}"
         rows.append(
-            library_row(check_name, lambda entry=entry: navidrome_one(call, config, entry, apply, how), (LookupError,))
+            library_row(
+                check_name,
+                lambda entry=entry: navidrome_one(call, config, entry, apply, how, listeners),
+                (LookupError,),
+            )
         )
     return rows
 
@@ -994,7 +1039,22 @@ def music_libraries(config, apply=False, api=navidrome_api, **how):
         call = api(saved['username'], saved['password'])
     except media_libraries.SetupRequired as exc:
         return [media_libraries.row('navidrome:existing:music', 'needs_setup', str(exc))]
-    return navidrome_library(call, config, apply, **how)
+    return navidrome_library(call, config, apply, navidrome_listeners(config), **how)
+
+
+def navidrome_listeners(config):
+    """The user names of the Navidrome logins NekoServer keeps that are not the
+    administrator: the listener setup made (account_store), and the one the music check
+    signs in with (music_client; the same one unless it was made by hand)."""
+    names = set()
+    saved = account_store.get(config, 'navidrome_listener')
+    if saved:
+        names.add(saved['username'])
+    try:
+        names.add(str(json.loads(music_client.credential_path(config).read_text(encoding='utf-8'))['user']))
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+        pass  # no music check set up yet
+    return names
 
 
 # ---- copying instead -----------------------------------------------------------------------
