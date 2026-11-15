@@ -1831,14 +1831,29 @@ def restore_cloud(config, prompt, output):
 
 
 def encrypted_by_nextcloud(folder, sample=200):
-    """Nextcloud's server-side encryption starts each file with an "HBEGIN:" header."""
-    for path in sorted(p for p in Path(folder).rglob('*') if p.is_file() and not p.is_symlink())[:sample]:
-        try:
-            with path.open('rb') as stream:
-                if stream.read(7) == b'HBEGIN:':
-                    return True
-        except OSError:
-            continue
+    """Nextcloud's server-side encryption starts each file with an "HBEGIN:" header. The
+    first `sample` files are read through their open folders (os.fwalk), as the restore
+    wrote them: by its whole path, a file deep in long folder names is longer than Linux
+    opens (4096 bytes), and the menu stopped with a traceback after the restore."""
+    seen = 0
+    for _, dirs, names, folder_fd in os.fwalk(folder, follow_symlinks=False):
+        dirs.sort()
+        for name in sorted(names):
+            if seen >= sample:
+                return False
+            try:
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=folder_fd)
+            except OSError:
+                continue  # a symlink, or not readable
+            try:
+                if stat.S_ISREG(os.fstat(fd).st_mode):
+                    seen += 1
+                    if os.read(fd, 7) == b'HBEGIN:':
+                        return True
+            except OSError:
+                continue
+            finally:
+                os.close(fd)
     return False
 
 

@@ -1014,6 +1014,28 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertIn('ENCRYPTED', text)
         self.assertNotIn('upload the', text)
 
+    def test_the_encryption_check_reads_a_file_whose_path_is_longer_than_linux_opens(self):
+        # Deep check plan 337: a restore writes through open folders, so a file deep in
+        # long folder names comes back even when its whole path is over 4096 bytes. The
+        # check after it looked each file up by that path and stopped the menu with a
+        # traceback (File name too long) once the restore had finished.
+        folder = self.root / 'restored'
+        folder.mkdir()
+        fd = os.open(folder, os.O_RDONLY)
+        try:
+            for _ in range(22):  # 22 folders of 200 bytes: past 4096 with the folder
+                os.mkdir('d' * 200, dir_fd=fd)
+                deeper = os.open('d' * 200, os.O_RDONLY, dir_fd=fd)
+                os.close(fd)
+                fd = deeper
+            deep = os.open('deep.txt', os.O_WRONLY | os.O_CREAT, 0o600, dir_fd=fd)
+            os.write(deep, b'HBEGIN:oc_encryption_module:OC_DEFAULT_MODULE:HEND')
+            os.close(deep)
+        finally:
+            os.close(fd)
+        self.assertTrue(recovery_wizard.encrypted_by_nextcloud(folder))
+        self.assertFalse(recovery_wizard.encrypted_by_nextcloud(folder, sample=0))
+
     def test_newest_version_is_restored_under_its_own_name(self):
         usb = self.root / 'usb'
         files = 'usb/nextcloud/alice/files/'
