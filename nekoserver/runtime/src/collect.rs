@@ -1559,6 +1559,9 @@ fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
         if undone {
             row["rolled_back"] = json!(true);
         }
+        if key == "external" && state == "fail" && usb_was_away(&saved) {
+            row["usb_away"] = json!(true);
+        }
         // Said to the page too: it kept its own rule, and listed "NekoServer upgrade
         // schedule is off" after every upgrade that worked.
         if !scheduled(key) {
@@ -1777,6 +1780,12 @@ fn failure_reason(saved: &Value) -> String {
 /// copies on it does not help (the next run copies them again, and a Nextcloud file whose
 /// only copy it was is then lost): a bigger drive does (deep check 242).
 pub(crate) const USB_FULL: &str = "The USB drive is full. Don't delete anything on it to make room: the next copy puts it back, and the USB drive holds the only copy of older Nextcloud files. Use a bigger USB drive instead (STORAGE.md, \"Another USB drive\"), and keep this one as an older copy.";
+/// The weekly USB copy found its drive not plugged in. The USB drive is the one meant to
+/// be taken away, so this asks the person to plug it in: a warning, not an urgent failure
+/// that woke the phone at 3 am, every night, while it stayed away (deep check 496/497).
+fn usb_was_away(saved: &Value) -> bool {
+    text(&saved["reason"]) == common::sanitize(crate::backup::USB_MISSING)
+}
 fn with_full_usb_advice(key: &str, said: String) -> String {
     if key == "external" && said.contains("No space left on device") {
         format!("{said} {USB_FULL}")
@@ -2979,14 +2988,17 @@ pub(crate) fn alerts(s: &Value) -> Value {
                 continue;
             }
             if ["fail", "stale", "partial"].contains(&text(&j["status"])) {
+                let away = j["usb_away"] == true;
                 add(
                     format!("backup:{}", text(&j["id"])),
-                    if j["status"] == "fail" {
+                    if j["status"] == "fail" && !away {
                         "critical"
                     } else {
                         "warning"
                     },
-                    if j["rolled_back"] == true {
+                    if away {
+                        format!("{}: the USB drive was not plugged in", text(&j["name"]))
+                    } else if j["rolled_back"] == true {
                         format!(
                             "{}: the update was undone, your apps work",
                             text(&j["name"])
@@ -4345,6 +4357,46 @@ mod os_tests {
                 crate::backup::USB_MISSING
             )
         );
+    }
+    /// Deep check 496/497 (a household's second week): the USB drive was taken away, the
+    /// Sunday copy found it missing, and the phone got an urgent alert at 3 am, repeated
+    /// every 12 hours while it stayed away. It is a warning that says what happened; any
+    /// other failure of the copy stays urgent.
+    #[test]
+    fn a_usb_drive_left_unplugged_is_a_warning_that_says_so() {
+        let data = std::env::temp_dir().join(format!("neko-usb-away-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&data);
+        fs::create_dir_all(data.join("reports/jobs")).unwrap();
+        let cfg = json!({"data_mount": data.to_string_lossy(), "photos": {"external_backup_uuid": "0000dead-0000-4000-8000-00000000beef"}, "nextcloud": {"enabled": true}});
+        let usb = |reason: &str| {
+            // As the weekly copy records a failure (backup.rs, finished).
+            let saved = json!({"status": "fail", "stage": "checking the USB drive", "reason": common::sanitize(reason), "started_at": 900.0});
+            fs::write(data.join("reports/jobs/external.json"), saved.to_string()).unwrap();
+            let rows = backups(&cfg, 1000.0, true, None);
+            let row = rows
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["id"] == "external")
+                .unwrap()
+                .clone();
+            let shown = alerts(&json!({ "backups": [row] }));
+            shown[0].clone()
+        };
+        let away = usb(crate::backup::USB_MISSING);
+        assert_eq!(away["level"], "warning");
+        assert_eq!(
+            away["title"],
+            "USB copy (photos and files): the USB drive was not plugged in"
+        );
+        assert!(text(&away["detail"]).contains("Plug it in"), "{away}");
+        let other = usb("External filesystem mismatch");
+        assert_eq!(other["level"], "critical");
+        assert_eq!(
+            other["title"],
+            "USB copy (photos and files) needs attention"
+        );
+        let _ = fs::remove_dir_all(&data);
     }
     #[test]
     fn failed_job_says_why_and_where() {
