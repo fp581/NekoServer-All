@@ -47,7 +47,8 @@ const CALLS = new Set([
   'outputsBadge',
   'sensorBadge',
   'temperatureName',
-  'blockedNext'
+  'blockedNext',
+  'appMenu'
 ]);
 /* Calls answered from another function's result, with more of it; the last four run a
    piece of Ask Neko on a page that keeps what is put on it (ASK_PAGE below). */
@@ -179,6 +180,8 @@ const SPECIAL = {
   newlyFinished: argument => argument.map(s => app.newlyFinished(app.validStatus(s))?.id ?? null),
   catFile: argument => app.catFile(argument.mood, argument.small),
   appSpec: argument => app.appSpec(argument.id, argument.app),
+  // What an app's menu says it is (the label its card shows too).
+  appMenu: argument => app.appMenu(argument).subtitle,
   pinRefusal: argument => app.pinRefusal(argument.answer, argument.now),
   // The Fans page's count, with its readings answered (this stand-in page reached none).
   outputsBadge: argument => {

@@ -2419,8 +2419,11 @@ fn held_apps(s: &Value) -> Vec<&str> {
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|a| ["exited", "created", "dead"].contains(&text(&a["state"])))
-        .filter(|a| any_stopped || for_shares.contains(&text(&a["id"])))
+        .filter(|a| {
+            a["state"] == DOCKER_DOWN
+                || (["exited", "created", "dead"].contains(&text(&a["state"]))
+                    && (any_stopped || for_shares.contains(&text(&a["id"]))))
+        })
         .map(|a| text(&a["name"]))
         .filter(|n| !n.is_empty())
         .collect()
@@ -2487,9 +2490,37 @@ fn share_alerts(s: &Value) -> Vec<(String, String, String)> {
         })
         .collect()
 }
+/// An app's state while Docker, which runs every app, is stopped or failed.
+const DOCKER_DOWN: &str = "docker_down";
+/// Docker is stopped or failed (its row of the startup list) and could not say how the
+/// apps are ("unknown"): none of them runs without it, so each is marked `docker_down`
+/// and held, and Docker's one alert names them. Before, the page showed every app as
+/// "Not checked yet", with ten "try opening it" items under the one thing to do (deep
+/// check 615).
+fn apps_without_docker(s: &mut Value) {
+    let stopped = s["startup"].as_array().into_iter().flatten().any(|u| {
+        u["unit"] == "docker.service" && ["failed", "inactive"].contains(&text(&u["active"]))
+    });
+    if !stopped {
+        return;
+    }
+    for a in s["applications"].as_array_mut().into_iter().flatten() {
+        if a["state"] == "unknown" {
+            a["state"] = json!(DOCKER_DOWN);
+        }
+    }
+}
+/// What Docker's alert says when it is down: the apps it stopped and how to start it.
+fn docker_down_advice(apps: &[&str]) -> String {
+    format!(
+        "None of the apps run without it ({}). Start it again:  sudo systemctl start docker  (or restart the PC); the apps start with it. If it stops again,  sudo journalctl -u docker.service -n 60  says why. If a drive is missing, connect it first.",
+        apps.join(", ")
+    )
+}
 /// Marks the apps stopped on purpose (`held`), so the page says the drive's one alert
 /// instead of one "stopped" per app: decided here, once.
 fn mark_held(s: &mut Value) {
+    apps_without_docker(s);
     let held: Vec<String> = held_apps(s).into_iter().map(String::from).collect();
     if let Some(apps) = s["applications"].as_array_mut() {
         for a in apps {
@@ -2727,11 +2758,21 @@ pub(crate) fn alerts(s: &Value) -> Value {
             "In the Tailscale admin console (Machines), open this server's menu and choose Disable key expiry, so it stays signed in.",
         );
     }
+    // The apps that are down with Docker (apps_without_docker): its alert names them.
+    let without_docker: Vec<&str> = s["applications"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|a| a["state"] == DOCKER_DOWN)
+        .map(|a| text(&a["name"]))
+        .collect();
     for unit in s["startup"].as_array().into_iter().flatten() {
         // Schedules can be off on purpose (the backup cards show those); the
         // services everything else depends on must start with the computer.
         let name = text(&unit["unit"]);
         let core = !name.ends_with(".timer") || name == "nekoserver-dashboard-collect.timer";
+        let docker_apps = (name == "docker.service" && !without_docker.is_empty())
+            .then(|| docker_down_advice(&without_docker));
         // Enabled is not the same as healthy: a failed service is reported either way
         // (a finished one-shot, such as a resume service, is "inactive", not failed).
         if unit["active"] == "failed" {
@@ -2739,7 +2780,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
                 format!("startup:{name}:failed"),
                 if core { "critical" } else { "warning" },
                 format!("{} has stopped with an error", text(&unit["name"])),
-                failed_advice(name),
+                docker_apps.as_deref().unwrap_or(failed_advice(name)),
             );
         } else if stays_running(name) && unit["active"] == "inactive" {
             // Not failed, yet not running: Docker waiting for a drive that never
@@ -2748,7 +2789,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
                 format!("startup:{name}:failed"),
                 "critical",
                 format!("{} is not running", text(&unit["name"])),
-                "It is stopped. If a drive is missing, connect it and restart the PC; otherwise the guide shows how to start it.",
+                docker_apps.as_deref().unwrap_or("It is stopped. If a drive is missing, connect it and restart the PC; otherwise the guide shows how to start it."),
             );
         }
         if core && unit["enabled"] == false {
@@ -3073,7 +3114,24 @@ pub(crate) fn alerts(s: &Value) -> Value {
             "The app checks have not run for a while, so the dashboard can't say whether the apps work. Server health → Checks & monitoring says why. If it stays so, run  sudo bash install.sh  again in the NekoServer folder: it sets the checks up again.",
         );
     }
-    if s["media"]["counts"]["fail"].as_u64().unwrap_or(0) > 0 {
+    // Failed checks only of apps that are stopped on purpose (held: a drive away, Docker
+    // down) are said by that one alert; "restart it on Your apps" can't help them.
+    let held_ids: Vec<&str> = s["applications"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|a| a["held"] == true)
+        .map(|a| text(&a["id"]))
+        .collect();
+    let failed: Vec<&str> = s["media"]["checks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["status"] == "fail")
+        .map(|c| text(&c["name"]))
+        .collect();
+    let only_held = !failed.is_empty() && failed.iter().all(|name| held_ids.contains(name));
+    if s["media"]["counts"]["fail"].as_u64().unwrap_or(0) > 0 && !only_held {
         add(
             "media-failure".into(),
             "warning",
@@ -5167,6 +5225,50 @@ mod user_panel_tests {
         mark_held(&mut s);
         assert_eq!(s["applications"][0]["held"], false);
         assert!(alerts(&s).to_string().contains("app:jellyfin"));
+    }
+    #[test]
+    fn apps_down_with_docker_are_its_one_alert_not_ten_unchecked_apps() {
+        // Deep check 615, the real collector with Docker stopped: every app read "Not
+        // checked yet" with "try opening it", ten items under Docker's own alert, whose
+        // advice ("setup can start it again") did not say the apps were down with it.
+        for docker in ["failed", "inactive"] {
+            let mut s = json!({
+            "storage": [{"id": "media_hdd", "name": "Media HDD", "status": "mounted"}],
+            "startup": [{"unit": "docker.service", "name": "Apps (Docker)", "enabled": true, "active": docker}],
+            // The app checks fail too: said by Docker's alert, not as one of their own.
+            "media": {"counts": {"fail": 2}, "checks": [{"name": "jellyfin", "status": "fail"},
+                                                        {"name": "immich", "status": "fail"}]},
+            "applications": [
+                {"id": "jellyfin", "name": "Jellyfin", "state": "unknown", "health": "unknown"},
+                {"id": "immich", "name": "Immich", "state": "unknown", "health": "unknown"}
+            ]});
+            mark_held(&mut s);
+            for app in s["applications"].as_array().unwrap() {
+                assert_eq!(
+                    (&app["state"], &app["held"]),
+                    (&json!("docker_down"), &json!(true))
+                );
+            }
+            let shown = alerts(&s);
+            let ids: Vec<&str> = shown
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| text(&a["id"]))
+                .collect();
+            assert_eq!(ids, ["startup:docker.service:failed"], "{shown}");
+            let detail = text(&shown[0]["detail"]);
+            assert!(detail.contains("(Jellyfin, Immich)"), "{detail}");
+            assert!(detail.contains("sudo systemctl start docker"), "{detail}");
+        }
+        // Docker running but not answering for a moment: the apps stay "unknown", and
+        // nothing is said for Docker.
+        let mut s = json!({
+        "startup": [{"unit": "docker.service", "name": "Apps (Docker)", "enabled": true, "active": "active"}],
+        "applications": [{"id": "jellyfin", "name": "Jellyfin", "state": "unknown"}]});
+        mark_held(&mut s);
+        assert_eq!(s["applications"][0]["state"], "unknown");
+        assert_eq!(s["applications"][0]["held"], false);
     }
     /// UP-03: with the HDD missing its archive's old "matches" is not shown as current.
     #[test]

@@ -351,6 +351,7 @@ h1 {
 .badge.unhealthy,
 .badge.missing,
 .badge.exited,
+.badge.docker_down,
 .badge.dead {
   color: var(--red);
   background: color-mix(in srgb, var(--red) 13%, var(--surface));

@@ -225,6 +225,7 @@ const LABELS = {
   restarting: 'Restarting',
   dead: 'Stopped',
   ambiguous: 'Check setup',
+  docker_down: 'Docker stopped',
   disabled: 'Checks off',
   complete: 'All checked',
   pending: 'Not finished',
@@ -712,8 +713,7 @@ function alertIssues(s, add) {
     const raw = text(alert.id),
       id = raw.startsWith('backup:') ? 'job:' + raw.slice(7) : raw;
     const unit = unitFor(id);
-    const note =
-      id.startsWith('app:') && busy ? ' A backup or monthly update is running, so this may be expected.' : '';
+    const note = id.startsWith('app:') && busy ? ' A backup or monthly update is running, so this may be expected.' : '';
     add(
       id || 'alert-' + s.alerts.indexOf(alert),
       text(alert.title, 'Server needs attention'),
