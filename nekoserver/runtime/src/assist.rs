@@ -33,7 +33,11 @@ const ANSWER_TOKENS: u64 = 700;
 /// How many log lines of an attention item's service are read, and how much of them is kept.
 const LOG_LINES: &str = "40";
 const LOG_CHARS: usize = 6000;
-const SUMMARY_CHARS: usize = 3000;
+const SUMMARY_CHARS: usize = 5000;
+/// How many attention items are given with their own words (the rest by title), and how
+/// much of those words: the longest the collector writes say what to do in about 500.
+const DETAILED_ALERTS: usize = 5;
+const DETAIL_CHARS: usize = 500;
 /// How long an answer may take: the first words may take a while (the model is loaded
 /// into memory first); after that a pause of `next`, or the whole answer taking longer
 /// than `total`, ends it. When the page has not asked for it for `abandon` (it was
@@ -562,15 +566,25 @@ fn readings(status: &Value, now: f64) -> String {
         "NekoServer {}",
         status["version"].as_str().unwrap_or("?")
     )];
-    let attention = rows("alerts");
+    let mut attention = rows("alerts");
     if !status["alerts"].is_array() {
         lines.push(NO_ATTENTION_LIST.into());
     } else if attention.is_empty() {
         lines.push("Nothing needs attention.".into());
     }
-    for a in &attention {
+    // The urgent ones first: a small model answers in the order it reads, and with ten
+    // things wrong it began with the phone alerts (deep check 622).
+    attention.sort_by_key(|a| a["level"] != "critical");
+    for (n, a) in attention.iter().enumerate() {
+        // With the alert's own words of what happened and what to do: with its title
+        // alone, "What should I do?" had no answer but a made-up one (deep checks 631,
+        // 639). The first few only, so the backups, drives and apps still fit.
+        let detail = Some(text(&a["detail"]))
+            .filter(|d| n < DETAILED_ALERTS && !d.trim().is_empty())
+            .map(|d| format!(": {}", common::shortened(d.trim(), DETAIL_CHARS)))
+            .unwrap_or_default();
         lines.push(format!(
-            "Needs attention: {} ({})",
+            "Needs attention: {} ({}){detail}",
             text(&a["title"]),
             text(&a["level"])
         ));
@@ -1935,6 +1949,63 @@ mod tests {
             "reason": "Failed: download", "last_success": null, "last_attempt": now - 60.0}]});
         assert!(readings(&ran, now)
             .contains("Job NekoServer upgrade (not a backup): fail (Failed: download)"));
+    }
+
+    /// Deep checks 622, 631 and 639, with the real collector on loop drives: the model was
+    /// given each alert's title only ("Media HDD is almost full"), never what to do, and
+    /// with ten things wrong the list began with the phone alerts, the urgent ones after.
+    #[test]
+    fn the_summary_says_what_to_do_about_the_urgent_things_first() {
+        let now = 1_800_000_000.0;
+        let fail = |id: &str, name: &str| {
+            json!({"id": id, "name": name, "status": "fail",
+            "reason": "Failed while writing the snapshot: No space left on device.", "last_success": now - 3.0 * 86_400.0})
+        };
+        // The readings of deep check 622, with the collector's own alerts for them.
+        let mut status = json!({"generated_at": now,
+            "notifications": {"status": "fail"},
+            "battery": {"discharging": true, "percent": 23.0},
+            "tailscale": {"state": "NeedsLogin", "signed_in_before": true},
+            "metrics": {"memory_percent": 98.0},
+            "storage": [{"id": "media_hdd", "name": "Media HDD", "status": "mounted", "used_percent": 98.0,
+                "total": 4e12, "used": 3.92e12}],
+            "applications": [{"id": "jellyfin", "name": "Jellyfin", "state": "exited", "health": "unknown"},
+                {"id": "immich", "name": "Immich", "state": "running", "health": "unhealthy"},
+                {"id": "seerr", "name": "Seerr", "state": "restarting", "health": "unknown"}],
+            "backups": [fail("host", "Host and user snapshot"), fail("applications", "Media application snapshot"),
+                fail("database", "Immich database"), fail("archive", "Photo archive")]});
+        status["alerts"] = collect::alerts(&status);
+        assert!(status["alerts"].as_array().unwrap().len() >= 10);
+        assert_eq!(
+            status["alerts"][0]["level"], "warning",
+            "the collector's own order"
+        );
+        let s = summary(&status, now);
+        let attention: Vec<&str> = s
+            .lines()
+            .filter(|l| l.starts_with("Needs attention:"))
+            .collect();
+        let urgent = attention
+            .iter()
+            .take_while(|l| l.contains("(critical)"))
+            .count();
+        assert!(
+            attention[urgent..]
+                .iter()
+                .all(|l| !l.contains("(critical)")),
+            "{s}"
+        );
+        assert!(urgent >= 5, "{s}");
+        // What to do, in the alert's own words.
+        assert!(
+            s.contains("Needs attention: Media HDD is almost full (critical): "),
+            "{s}"
+        );
+        assert!(s.contains("sudo tailscale up"), "{s}");
+        // And the rest still fits.
+        assert!(s.contains("Drive Media HDD: mounted, 80.0 GB free"), "{s}");
+        assert!(s.contains("App Seerr: restarting"), "{s}");
+        assert!(s.contains("Backup Photo archive: fail"), "{s}");
     }
 
     /// Review of 0.49.0: an unreadable status file became {} and the model was told
