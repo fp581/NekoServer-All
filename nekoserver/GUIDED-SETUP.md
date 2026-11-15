@@ -206,7 +206,7 @@ sudo python3 backup_secrets.py --new-password
 sudo bash install.sh
 ```
 
-The first line asks for the new password twice; the second makes a new password list with it. Backups made before keep the old password: should it come back to mind, they still open with it.
+The first line asks for the new password twice. With a USB backup drive, the second makes a new password list with it at once; without one, the next monthly backup is the first to make a list with it (the first line says which). Backups made before keep the old password: should it come back to mind, they still open with it.
 
 ### 15. The first checkup, and the finishing screen
 

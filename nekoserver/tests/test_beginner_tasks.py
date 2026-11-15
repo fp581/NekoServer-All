@@ -85,11 +85,21 @@ class ForgottenBackupPasswordTests(unittest.TestCase):
 
     def test_a_new_backup_password_keeps_the_old_key_beside_it(self):
         old = (self.keys / backup_secrets.KEY_NAME).read_bytes()
-        backup_secrets.new_password(answers('second password', 'second password'), self.out.append, self.keys, 'T')
+        typed = answers('second password', 'second password')
+        backup_secrets.new_password(typed, self.out.append, self.keys, 'T', usb_copy=lambda: True)
         self.assertTrue(backup_secrets.unlocks('second password', self.keys / backup_secrets.KEY_NAME))
         self.assertEqual((self.keys / (backup_secrets.KEY_NAME + '.before-T')).read_bytes(), old)
         self.assertTrue((self.keys / (backup_secrets.CERT_NAME + '.before-T')).is_file())
         self.assertIn('sudo bash install.sh', self.out[-1])
+
+    def test_without_a_usb_copy_setup_is_not_said_to_make_a_new_list(self):
+        """Deep check 360: only the weekly USB copy's step seals a list at setup, so on a
+        server without one "run sudo bash install.sh: it makes a new password list" made
+        none, and every list in the backups still needed the forgotten password."""
+        typed = answers('second password', 'second password')
+        backup_secrets.new_password(typed, self.out.append, self.keys, 'T', usb_copy=lambda: False)
+        self.assertNotIn('install.sh', self.out[-1])
+        self.assertIn('next monthly backup', self.out[-1])
 
     def test_no_new_password_confirmed_leaves_the_old_one(self):
         old = (self.keys / backup_secrets.KEY_NAME).read_bytes()

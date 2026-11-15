@@ -159,7 +159,24 @@ def setup(ask=getpass.getpass, out=print, key_dir=KEY_DIR, tries=3, intro=True):
     )
 
 
-def new_password(ask=getpass.getpass, out=print, key_dir=KEY_DIR, stamp=None):
+def usb_copy_installed():
+    """Whether the weekly USB copy is set up: only its setup step seals a password list on
+    the HDD (photo_backup.seal_passwords); without it the next monthly snapshot is the
+    first list made with a new key."""
+    from modules import photo_backup
+
+    return photo_backup.SERVICE_UNIT.is_file()
+
+
+# Said after a new backup password, by whether setup makes a list with it now.
+NEW_LIST_BY_SETUP = 'Now run  sudo bash install.sh  once: it makes a new password list with the new backup password.'
+NEW_LIST_MONTHLY = (
+    'The next monthly backup makes the first password list with the new backup password. Until then, every '
+    'password list in your backups opens only with the old one.'
+)
+
+
+def new_password(ask=getpass.getpass, out=print, key_dir=KEY_DIR, stamp=None, usb_copy=usb_copy_installed):
     """The backup password was forgotten: a new key, locked with a new password, for the
     backups from now on. The old key is kept beside it, renamed, never deleted: each
     backup carries its own copy of the key it was made with, so an old password that
@@ -186,7 +203,9 @@ def new_password(ask=getpass.getpass, out=print, key_dir=KEY_DIR, stamp=None):
                 'had. Run  sudo python3 backup_secrets.py --new-password  to try again'
             ) from None
         raise
-    out('Now run  sudo bash install.sh  once: it makes a new password list with the new backup password.')
+    # Setup seals a list only for the weekly USB copy: without one it made none, and the
+    # person was told a list with the new password was there (deep check 360).
+    out(NEW_LIST_BY_SETUP if usb_copy() else NEW_LIST_MONTHLY)
 
 
 RESTORE_PROMPT = (
