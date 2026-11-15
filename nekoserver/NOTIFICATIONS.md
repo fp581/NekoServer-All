@@ -73,6 +73,7 @@ The explicit test sends a labelled test message and records whether the provider
 | Condition | Behavior |
 | --- | --- |
 | Missing/wrong mounted drive | Immediately eligible for a critical alert; subject to global delivery spacing/backoff |
+| A shared folder of yours on the network (films or music used where they are) that does not answer, with its apps stopped | Critical, after the debounce; recovered only once its check says it answers |
 | Low disk space, SMART warnings, CPU temperature high for five minutes (or at the chip's own limit) | Warn from current collector findings |
 | Tailscale signed out or its sign-in running out, monthly backups without a backup password, the outside heartbeat not reached, phone alerts that could not be delivered for a while | Warn like the others, so a problem shown on the dashboard also reaches the phone |
 | Failed/overdue photo or media application backups | Report the affected job; a running/unknown job does not establish recovery |
