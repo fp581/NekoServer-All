@@ -760,5 +760,38 @@ class WhereTests(Base):
         self.assertIn('does not match its header', said_text(self))
 
 
+class GuardTests(Base):
+    """Deep check plan 288: changes to the tool that no test noticed (each check below
+    could be turned off, or turned round, and every other test still passed)."""
+
+    def test_only_the_records_named_are_restored(self):
+        self.card.add(A_2001, b'card a')
+        wanted = self.card.add('2001/b.jpg', b'card b')
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--record', wanted['record_id']), 0)
+        self.assertEqual(sorted(p.name for p in (self.dest / '2001').iterdir()), ['b.jpg'])
+
+    def test_a_file_the_drive_gives_back_otherwise_is_not_kept(self):
+        """A drive that keeps other bytes than it was given (a fake-capacity stick): the
+        read-back differs, so the file fails and nothing is left under its name."""
+        self.card.add(A_2001, b'card a')
+        real = tool.from_the_drive
+
+        def lying(fd):
+            real(fd)
+            Path(os.readlink(f'/proc/self/fd/{fd}')).write_bytes(b'card b')
+
+        with mock.patch.object(tool, 'from_the_drive', lying):
+            self.assertEqual(self.run_tool('restore', str(self.dest)), 1)
+        self.assertIn('failed      2001/a.jpg', said_text(self))
+        self.assertEqual([p for p in self.dest.rglob('*') if p.is_file()], [])
+
+    def test_a_card_copy_longer_than_its_record_is_damaged(self):
+        rec = self.card.add(A_JPG, b'one')
+        with self.card.payload(rec).open('ab') as grown:
+            grown.write(b' and more')
+        self.assertEqual(self.run_tool('verify'), 1)
+        self.assertIn('damaged  a.jpg', said_text(self))
+
+
 if __name__ == '__main__':
     unittest.main()
