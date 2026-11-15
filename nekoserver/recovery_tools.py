@@ -447,7 +447,13 @@ def reattach(config, bundle, apply=False, confirm=''):
     if problem:
         raise RuntimeError(problem)
     record = Path(config['data_mount']) / 'installer/host-checkpoint.json'
-    saved = json.loads(safe_path(record).read_text())
+    # The drive's folder comes from the settings, a file: the record is read only as a .json
+    # file, by its real path (as source_import reads the source list).
+    real = os.path.realpath(safe_path(record))
+    if not (real.startswith(os.sep) and real.endswith('.json')):
+        raise RuntimeError(f'the record on the SSD ({record}) is not a .json file. Nothing was changed.')
+    with open(real, encoding='utf-8') as handle:
+        saved = json.loads(handle.read())
     kept = Path(bundle) / CONFIG_NAME
     if (
         saved.get('format') != 'neko-host-checkpoint-v1'
