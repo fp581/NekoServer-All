@@ -3696,6 +3696,8 @@ fn transaction(cfgpath: &Path, cfg: &Value, plan: &Plan) -> Result<Vec<String>> 
     if audit {
         common::stage("waiting for a weekly USB copy at work to finish");
         backup::no_weekly_copy()?;
+        // Waited: a later failure is not said to be "while waiting" (deep check 314).
+        common::stage("");
     }
     mounts(cfgpath, cfg, false)?;
     let data = Path::new(string(cfg, "data_mount")?);
@@ -3881,6 +3883,9 @@ fn room(
     paths: &(Vec<String>, Vec<String>),
     audit: bool,
 ) -> Result<Value> {
+    // Before measuring: a folder du can't read was reported under the step before
+    // ("while waiting for a weekly USB copy at work to finish", deep check 314).
+    common::stage("checking free space");
     let data = Path::new(string(cfg, "data_mount")?);
     let media = Path::new(string(cfg, "media_mount")?);
     let setting = cfg["maintenance"]["minimum_free_gb"]
@@ -3889,7 +3894,6 @@ fn room(
         .saturating_mul(1 << 30);
     let app_bytes = size(data, &paths.0)?;
     let media_bytes = size(media, &paths.1)?;
-    common::stage("checking free space");
     let mut retention = if audit {
         prune_monthly(data, media, keep_snapshots(cfg), None)?
     } else {
@@ -4873,6 +4877,7 @@ pub fn update_apps(a: &Args) -> Result<()> {
         || common::lock(&data.join("installer/recovery.lock")),
         || job_lock(&data),
     )?;
+    common::stage("");
     // Anything a cut-off run left is finished first (or undone).
     resume(&cfgpath, &cfg)?;
     if only.is_none() && !night(&cfg) {
@@ -6178,6 +6183,27 @@ mod tests {
         let off = json!({"media_mount":"/mnt/m","photos":{"external_backup_uuid":"cccc-3333"}});
         let (archive, usb) = copies_to_check(&off, cfgpath);
         assert!(archive.is_none() && usb.is_none());
+    }
+    #[test]
+    fn a_folder_that_cannot_be_measured_is_said_under_checking_free_space() {
+        // Deep check 314, under systemd: the monthly run's `du` failed on a missing app
+        // folder, and the journal and the dashboard said "failed while waiting for a
+        // weekly USB copy at work to finish", the step before, long done.
+        let root = scratch("stage");
+        let cfg = json!({"data_mount": root.join("ssd"), "media_mount": root.join("hdd"),
+            "maintenance": {"keep_snapshots": 3}});
+        let paths = (vec!["compose/nextcloud".to_string()], vec![]);
+        common::stage("waiting for a weekly USB copy at work to finish");
+        let folder = root.join("hdd/backups/monthly");
+        let failed = room(&cfg, &folder, &["nextcloud".to_string()], &paths, true);
+        let stage = common::current_stage();
+        let _ = fs::remove_dir_all(&root);
+        assert!(failed.is_err());
+        assert_eq!(stage, "checking free space");
+        // Once the wait is over its stage is cleared, in both runs that wait.
+        let source = include_str!("maintenance.rs");
+        assert!(source.contains("backup::no_weekly_copy()?;\n        // Waited: a later failure is not said to be \"while waiting\" (deep check 314).\n        common::stage(\"\");"));
+        assert!(source.contains("|| job_lock(&data),\n    )?;\n    common::stage(\"\");"));
     }
     use std::os::unix::fs::DirBuilderExt;
     fn scratch(name: &str) -> PathBuf {
