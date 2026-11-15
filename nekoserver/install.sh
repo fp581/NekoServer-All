@@ -143,9 +143,16 @@ if "$apply" && "$readonly_mode"; then
 fi
 
 if "$apply"; then
+  # doas (used instead of sudo on some PCs) names the account that started it in
+  # DOAS_USER; setup reads SUDO_USER to know whose account the server is for.
+  if [[ -n "${DOAS_USER:-}" && -z "${SUDO_USER:-}" ]]; then
+    export SUDO_USER="$DOAS_USER"
+  fi
   if ((EUID != 0)); then
     if command -v sudo >/dev/null; then
       echo 'Run it with sudo:  sudo bash install.sh' >&2
+    elif command -v doas >/dev/null; then
+      echo 'Run it with doas:  doas bash install.sh' >&2
     else
       # Debian set up with a root password has no sudo at first.
       echo 'Setup needs administrator rights, and this PC has no sudo yet. Become root with  su -  (it asks for the root password), then either:' >&2

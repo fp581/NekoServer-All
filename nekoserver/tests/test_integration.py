@@ -594,6 +594,27 @@ class InstallScriptTests(unittest.TestCase):
             result, _ = self.run_script(self.root)
         self.assertNotIn('Started as root', result.stdout)
 
+    def test_doas_names_the_account_as_sudo_does(self):
+        # Deep check 270: started with  doas bash install.sh  setup said "Started as root, not
+        # with sudo" and did not know whose account the server was for (doas sets DOAS_USER).
+        started = ('exec python3 "$ROOT/installer.py" "$@"', 'echo "START $* for=${SUDO_USER:-}" >> "$LOG"')
+        with mock.patch.dict(os.environ, {'SUDO_USER': '', 'DOAS_USER': 'neko'}):
+            result, log = self.run_script(self.root, replace=(started,))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('Started as root', result.stdout)
+        self.assertIn('START --wizard for=neko', log)
+        # Without root, on a PC with doas and no sudo: doas is the way named.
+        doas = self.root / 'bin/doas'
+        doas.write_text('#!/bin/sh\nexit 0\n')
+        doas.chmod(0o755)
+        no_sudo = (
+            ('if ((EUID != 0)); then\n    if command -v sudo', 'if ((1 != 0)); then\n    if command -v no-such-sudo'),
+        )
+        result, log = self.run_script(self.root, replace=no_sudo)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Run it with doas:  doas bash install.sh', result.stderr)
+        self.assertNotIn('START', log)
+
     def test_suse_goes_on_when_only_a_repository_was_skipped(self):
         # One third-party repository that does not answer (a Packman mirror, say) used to stop
         # setup before it started; a refresh where no repository answered still stops it.
