@@ -334,7 +334,7 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
     }
     (active, unknown, true)
 }
-fn send(cfg: &Value, runtime: &Path, message: &str, critical: bool) -> Result<()> {
+fn send(cfg: &Value, runtime: &Path, message: &str, priority: u8) -> Result<()> {
     let url = cfg["endpoint"].as_str().unwrap_or("");
     let token = if cfg.get("token").is_none() {
         ""
@@ -352,7 +352,7 @@ fn send(cfg: &Value, runtime: &Path, message: &str, critical: bool) -> Result<()
         return Err(Error::new("Invalid private notification destination"));
     }
     // JSON quoted strings also satisfy curl's double-quoted configuration syntax.
-    let mut config=format!("url = {}\nrequest = \"POST\"\nheader = \"Title: NekoServer health\"\nheader = \"Content-Type: text/plain; charset=utf-8\"\nheader = \"Priority: {}\"\ndata-binary = {}\n",serde_json::to_string(url)?,if critical{5}else{3},serde_json::to_string(message)?);
+    let mut config=format!("url = {}\nrequest = \"POST\"\nheader = \"Title: NekoServer health\"\nheader = \"Content-Type: text/plain; charset=utf-8\"\nheader = \"Priority: {}\"\ndata-binary = {}\n",serde_json::to_string(url)?,priority,serde_json::to_string(message)?);
     if !token.is_empty() {
         config.push_str(&format!(
             "header = {}\n",
@@ -422,6 +422,32 @@ impl Listed {
             (kind.starts_with("array-") && !self.arrays.contains(key))
                 || (kind == "nas" && !self.nas.contains(key))
         })
+    }
+}
+/// Is this alert a reminder: a problem already sent at this level (or more urgent), sent
+/// again by the 12-hour repeat? A problem that became urgent since is not.
+fn reminder(entry: &Value, level: &str) -> bool {
+    entry["last_sent"].is_number() && (level != "critical" || entry["sent_level"] == "critical")
+}
+/// ntfy's priority for one message: 5 (urgent: long vibrations, and through the phone's
+/// quiet hours where it allows) only for an urgent problem that is new or newly urgent; 3
+/// (the phone's normal sound) for other news; 2 (low: no sound or vibration) when the
+/// message holds only reminders. The reminders went at 5 too, so a problem first sent at
+/// 3 am woke the house again at 3 am every night until it was fixed (deep check 497).
+fn priority(events: &[(String, bool, String)], entries: &Value) -> u8 {
+    let news: Vec<_> = events
+        .iter()
+        .filter(|(id, recovered, level)| *recovered || !reminder(&entries[id.as_str()], level))
+        .collect();
+    if news
+        .iter()
+        .any(|(_, recovered, level)| !*recovered && level == "critical")
+    {
+        5
+    } else if !news.is_empty() {
+        3
+    } else {
+        2
     }
 }
 /// Pure transition logic; only successfully delivered events advance deduplication.
@@ -620,7 +646,7 @@ pub fn run(a: &Args) -> Result<()> {
             &cfg,
             &runtime,
             "NekoServer test: notification delivery is configured.",
-            false,
+            3,
         );
         let mut state = after_test(old, result.is_ok(), now);
         state["destination"] = json!(destination);
@@ -636,10 +662,17 @@ pub fn run(a: &Args) -> Result<()> {
     let due = delivery_due(&state["next_attempt"], now);
     let mut failed = false;
     if !events.is_empty() && due {
+        let urgency = priority(&events, &state["entries"]);
         let mut message = String::from("NekoServer health update\n");
         for (id, recovered, level) in &events {
+            // A reminder says so: it is the problem already sent, not a new one.
+            let still = if !*recovered && reminder(&state["entries"][id.as_str()], level) {
+                "still "
+            } else {
+                ""
+            };
             message.push_str(&format!(
-                "{}: {}\n",
+                "{still}{}: {}\n",
                 if *recovered {
                     "RECOVERED"
                 } else {
@@ -650,14 +683,7 @@ pub fn run(a: &Args) -> Result<()> {
         }
         message.push_str("Review the local dashboard and service logs for details.");
         state["last_attempt"] = json!(now);
-        if send(
-            &cfg,
-            &runtime,
-            &message,
-            events.iter().any(|(_, r, l)| !*r && l == "critical"),
-        )
-        .is_ok()
-        {
+        if send(&cfg, &runtime, &message, urgency).is_ok() {
             for (id, recovered, level) in &events {
                 if *recovered {
                     state["entries"].as_object_mut().unwrap().remove(id);
@@ -1306,5 +1332,41 @@ mod review_tests {
             events.iter().any(|e| e.0 == "monitoring-stale"),
             "{events:?}"
         );
+    }
+    /// Deep check 497 (a phone alert at 3 am: is it worth waking for?): the 12-hour
+    /// reminder of a problem already sent went at ntfy's urgent priority, like a new one,
+    /// so a problem first sent at night woke the phone at night every day it lasted.
+    #[test]
+    fn only_a_new_urgent_problem_is_sent_as_urgent() {
+        let snapshot = |now: f64, alerts: Value| json!({"format":"neko-dashboard-v1","generated_at":now,"alerts":alerts,"applications":[{"id":"sonarr","state":"running","health":"healthy","responding":true}],"storage":[],"backups":[],"media":{"status":"current"},"metrics":{"temperature":40}});
+        let alerts = json!([{"id":"app:jellyfin","level":"critical"}]);
+        let (state, events) = plan(
+            &snapshot(1000., alerts.clone()),
+            &json!({}),
+            1000.,
+            0,
+            43200,
+        );
+        assert_eq!(priority(&events, &state["entries"]), 5);
+        // Sent at 1000 (as run() records a delivered message), still there 12 hours on.
+        let mut sent = state;
+        sent["entries"]["app:jellyfin"]["last_sent"] = json!(1000.);
+        sent["entries"]["app:jellyfin"]["sent_level"] = json!("critical");
+        let later = 1000. + 43200.;
+        let (state, events) = plan(&snapshot(later, alerts), &sent, later, 0, 43200);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(priority(&events, &state["entries"]), 2);
+        // A new warning beside the reminder: the phone's normal sound.
+        let both =
+            json!([{"id":"app:jellyfin","level":"critical"},{"id":"app:sonarr","level":"warning"}]);
+        let (state, events) = plan(&snapshot(later, both), &sent, later, 0, 43200);
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(priority(&events, &state["entries"]), 3);
+        // Sent as a warning, urgent now: that is news, sent as urgent.
+        let mut warned = sent.clone();
+        warned["entries"]["app:jellyfin"]["sent_level"] = json!("warning");
+        let urgent = json!([{"id":"app:jellyfin","level":"critical"}]);
+        let (state, events) = plan(&snapshot(1500., urgent), &warned, 1500., 0, 43200);
+        assert_eq!(priority(&events, &state["entries"]), 5);
     }
 }
