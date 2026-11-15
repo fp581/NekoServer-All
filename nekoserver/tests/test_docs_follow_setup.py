@@ -406,6 +406,33 @@ class DashboardGuideTests(unittest.TestCase):
             self.assertIn('\u201c' + titles[extra] + '\u201d', guides)
 
 
+class GatewayGuideTests(unittest.TestCase):
+    """Deep check plan 386: README.md says of the browser's certificate warning
+    "GATEWAY.md explains how to trust it"; GATEWAY.md said "Export instructions are in
+    gateway_cert.py --help", and that help had no instructions."""
+
+    def test_the_guide_says_what_to_do_about_the_warning(self):
+        text = doc('GATEWAY.md')
+        part = text.split('## The warning at the home address')[1].split('\n## ')[0]
+        self.assertLess(text.index('## The warning at the home address'), text.index('## For administrators'))
+        self.assertIn('sudo python3 gateway_cert.py --export ~/nekoserver-root.crt', part)
+        for device in ('Windows', 'macOS', 'iPhone', 'Android', 'Firefox'):
+            self.assertIn(device, part)
+        self.assertNotIn('Export instructions are in gateway_cert.py --help', text)
+        self.assertIn('(GATEWAY.md#the-warning-at-the-home-address)', doc('README.md'))
+
+    def test_the_file_name_of_the_example_is_one_the_tool_takes(self):
+        import tempfile
+
+        import gateway_cert
+
+        with tempfile.TemporaryDirectory() as home:
+            self.assertEqual(gateway_cert.export_target(home + '/nekoserver-root.crt').name, 'nekoserver-root.crt')
+
+    def test_the_home_network_is_not_selected_by_hand(self):
+        self.assertNotIn('Select the physical home interface', doc('GATEWAY.md'))
+
+
 class ToolHelpTests(unittest.TestCase):
     """Deep check plan 388: --help of the tools the guides tell a person to run. recover.py
     listed seven commands and eight options without a word on any of them, acceptance.py
