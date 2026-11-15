@@ -23,6 +23,9 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 
 ### Fixed: backups and getting files back
 - **Restored photos and Nextcloud files get the dates their originals had.** The backup now notes when each original was last changed, and the recovery menu sets it on each restored file once its checksum passes; restored photos without EXIF data no longer land on the day of the restore in Immich. Files copied off the drive by hand keep the copy's date (STORAGE.md, RECOVERY.md).
+- **On a full HDD the nightly app backup removes no older backup when that cannot make the room.** It removed them one by one until only the newest was left, and failed anyway (films filling the drive). It now measures first. A night that did remove backups for room says so with any count setting.
+- **When an older app backup is removed is said the same everywhere** (the backups page, the lines after a new count, the guides): after a backup that succeeds, or first when the HDD is too full for the next one. The offline copy's row says what the USB drive keeps (the newest 3 password lists and 4 database copies), not "nothing is ever removed".
+- **The qBittorrent password question says where the password is kept** (in Sonarr, Radarr and Lidarr); it said "used once and not kept".
 - **Nightly backups on the night of the monthly run are skipped, not failed**: they waited 3 hours for it, then failed with an alert.
 - **A file too big for the USB drive's free space is left out and named, and the rest is copied**; every file after it was never copied.
 - **A file renamed only in upper or lower case stays backed up on an exFAT USB drive** (it was left out every week and could not be restored under either name).
