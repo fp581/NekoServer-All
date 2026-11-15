@@ -2177,6 +2177,28 @@ class RecoveryWizardTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'on another NAS disk than setup chose'):
                 usb.open()
 
+    def test_a_mistyped_backup_password_is_said_as_such_not_as_a_missing_list(self):
+        """Deep check 688, on loop drives: the wrong password's error was caught as the USB
+        drive's, so the menu said "The USB drive is not looked at: Wrong password ..." and
+        then "No password list on the HDD, nor on the USB drive" of the list just opened."""
+        usb = self.root / 'usb'
+        self.write('usb/passwords/100-1/manifest.json', b'{"format":"neko-maintenance-v1"}')
+        self.write('usb/passwords/100-1/secrets.tar.cms', b'sealed')
+        wrong = RuntimeError('Wrong password for this backup; nothing was restored')
+        with (
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None) as left,
+            mock.patch.object(backup_secrets, 'asked_restore', side_effect=wrong),
+            mock.patch.object(recovery_wizard, 'new_folder', return_value=self.root / 'out'),
+        ):
+            out = []
+            with self.assertRaisesRegex(RuntimeError, 'Wrong password'):
+                recovery_wizard.restore_passwords(self.config, answers('1', 'yes'), out.append)
+        said = '\n'.join(out)
+        self.assertNotIn('not looked at', said)
+        self.assertNotIn('No password list', said)
+        left.assert_called_once()  # the drive is let go all the same
+
     def test_no_password_list_anywhere_is_said(self):
         with (
             mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=None),

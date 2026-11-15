@@ -1973,17 +1973,21 @@ def restore_passwords(config, prompt, output):
     setup's) and the USB drive's copies, when it is plugged in (the review of 0.46.1: with
     any list on the HDD, a newer one on the USB drive was never offered)."""
     hdd = password_snapshots(config)
-    try:
-        with Usb(config) as usb:
-            runs = newest_first(hdd + usb_password_lists(usb))
-            if runs:
-                return restore_password_list(config, runs, prompt, output)
-    except RuntimeError as exc:
-        # The USB drive busy (the weekly copy) or refused: the HDD's lists all the same
-        # (the audit of 0.46.2).
-        output(f'The USB drive is not looked at: {exc}.')
-        if hdd:
-            return restore_password_list(config, hdd, prompt, output)
+    with contextlib.ExitStack() as held:
+        # Only opening the USB drive may fail here and fall back to the HDD's lists: the
+        # restore's own failure (a mistyped backup password, deep check 688) was taken
+        # for the drive's, said as "The USB drive is not looked at: Wrong password" and
+        # then "No password list on the HDD, nor on the USB drive", of a list just found.
+        try:
+            usb = held.enter_context(Usb(config))
+        except RuntimeError as exc:
+            # The USB drive busy (the weekly copy) or refused: the HDD's lists all the same
+            # (the audit of 0.46.2).
+            output(f'The USB drive is not looked at: {exc}.')
+            usb = None
+        runs = newest_first(hdd + usb_password_lists(usb))
+        if runs:
+            return restore_password_list(config, runs, prompt, output)
     output('No password list on the HDD, nor on the USB drive (or it is not plugged in).')
 
 
