@@ -698,13 +698,27 @@ def copy_entries(entries, folder, uid, gid, guard, links=()):
     return skipped
 
 
+def first_ten(names):
+    """The first ten names, and how many more there are: a report row names at most ten."""
+    more = f' and {len(names) - 10} more' if len(names) > 10 else ''
+    return ', '.join(names[:10]) + more
+
+
+def counted(names, one, many):
+    """'1 file was ...' or '3 files were ...' (deep check 485: "1 files were")."""
+    return neko_common.file_count(len(names)) + (f' {one}' if len(names) == 1 else f' {many}')
+
+
 def with_skipped(result, skipped):
     """The report row, naming the files whose names could not be copied."""
     if skipped:
         result['skipped_names'] = len(skipped)
         said = (
-            f'{len(skipped)} files were not copied because their names could not be used (rename them, then '
-            'copy again with --again): ' + ', '.join(skipped[:10])
+            counted(skipped, 'was not copied because its name', 'were not copied because their names')
+            + ' could not be used ('
+            + ('rename it' if len(skipped) == 1 else 'rename them')
+            + ', then copy again with --again): '
+            + first_ten(skipped)
         )
         result['reason'] = result['reason'] + '. ' + said if result.get('reason') else said
     return result
@@ -717,9 +731,15 @@ def with_downloading(result, downloading):
     if downloading:
         result['still_downloading'] = len(downloading)
         said = (
-            f'{len(downloading)} files were still being downloaded (or written) and were not copied: '
-            + ', '.join(downloading[:10])
-            + f'. When they have finished, copy them with  {AGAIN}  (in the NekoServer folder)'
+            counted(
+                downloading,
+                'was still being downloaded (or written) and was not',
+                'were still being downloaded (or written) and were not',
+            )
+            + ' copied: '
+            + first_ten(downloading)
+            + ('. When it has finished, copy it' if len(downloading) == 1 else '. When they have finished, copy them')
+            + f' with  {AGAIN}  (in the NekoServer folder)'
         )
         result['reason'] = result['reason'] + '. ' + said if result.get('reason') else said
     return result
@@ -732,7 +752,7 @@ def with_leftovers(result, leftovers):
         result['download_leftovers'] = len(leftovers)
         said = (
             "Left out, as a download program's own files and no films, shows or music (qBittorrent's .parts): "
-            + ', '.join(leftovers[:10])
+            + first_ten(leftovers)
         )
         result['reason'] = result['reason'] + '. ' + said if result.get('reason') else said
     return result
@@ -742,7 +762,7 @@ def with_links(result, links):
     """The report row, saying that files with several names were counted and kept once."""
     if links:
         result['hard_links'] = len(links)
-        count = '1 file' if len(links) == 1 else f'{len(links)} files'
+        count = neko_common.file_count(len(links))
         said = (
             f'Kept once in the library: {count} that the source holds under a second name (hard links, as download '
             'programs and Sonarr or Radarr make them). Each second name is a link there too and takes no room of its own'
@@ -773,8 +793,9 @@ def with_conflicts(result, conflicts):
     if conflicts:
         result['kept_library_version'] = len(conflicts)
         result['reason'] = (
-            f'{len(conflicts)} files were left out because the library already has a different file at '
-            'that place (kept as it is): ' + ', '.join(conflicts[:10])
+            counted(conflicts, 'was', 'were')
+            + ' left out because the library already has a different file at that place (kept as it is): '
+            + first_ten(conflicts)
         )
     return result
 
