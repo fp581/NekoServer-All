@@ -1295,6 +1295,7 @@ def save(config, report):
 
 
 def main(argv=None):
+    neko_common.readable_output()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=lambda v: Path(checked_settings(v)), default=default_settings(ROOT))
     parser.add_argument('--profile', default='full')

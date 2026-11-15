@@ -13,6 +13,8 @@ import shutil
 import socket
 import stat
 import subprocess
+import sys
+import tempfile
 import time
 import unicodedata
 import urllib.error
@@ -25,6 +27,15 @@ VERSION = '0.51.2'
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
 ZONEINFO = Path('/usr/share/zoneinfo')
 ETC_TIMEZONE = Path('/etc/timezone')
+
+
+def readable_output():
+    """Text the terminal's character set has no room for (a dash, or a file name in another
+    script, on a Latin-1 locale) is shown as "?" instead of stopping the tool with a codec
+    error (deep check 271: "sudo bash install.sh --check" stopped on its first line)."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(errors='replace')
 
 
 def local_timezone(localtime='/etc/localtime', etc_timezone=ETC_TIMEZONE, zoneinfo=ZONEINFO):

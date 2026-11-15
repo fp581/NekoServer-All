@@ -36,6 +36,7 @@ from neko_common import (
     NO_SETTINGS,
     BUNDLE_MANIFEST,
     MEDIA_APPS,
+    readable_output,
 )
 
 # The installer's own log lines (a step's status), as against a step's own words.
@@ -935,6 +936,7 @@ def finish_update():
 
 
 def main(argv=None):
+    readable_output()
     # Named as people run it (install.sh hands its options on), not as this file.
     parser = argparse.ArgumentParser(
         prog='sudo bash install.sh',
