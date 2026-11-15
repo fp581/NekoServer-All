@@ -537,6 +537,24 @@ fn test_said(sent: Result<()>) -> Result<&'static str> {
     sent.map(|()| TEST_TAKEN)
         .map_err(|_| Error::new(TEST_NOT_TAKEN))
 }
+/// The alert record after `notify --test`. A test the server took while alerts were
+/// failing proves it can be reached again: the alerts still waiting go at the next run
+/// (within a minute). Before, they waited out the retry delay (up to an hour after a long
+/// network outage) while the record already said "pass" (deep check 372).
+fn after_test(old: Value, taken: bool, now: f64) -> Value {
+    let mut state = if old.is_object() { old } else { json!({}) };
+    state["format"] = json!("neko-notifications-v1");
+    state["last_attempt"] = json!(now);
+    if taken && state["delivery_status"] == "fail" {
+        state["attempts"] = json!(0);
+        state["next_attempt"] = json!(now);
+    }
+    state["delivery_status"] = json!(if taken { "pass" } else { "fail" });
+    if taken {
+        state["last_success"] = json!(now);
+    }
+    state
+}
 pub fn run(a: &Args) -> Result<()> {
     common::require_root()?;
     let config_path = a.path("config")?;
@@ -580,14 +598,8 @@ pub fn run(a: &Args) -> Result<()> {
             "NekoServer test: notification delivery is configured.",
             false,
         );
-        let mut state = if old.is_object() { old } else { json!({}) };
-        state["format"] = json!("neko-notifications-v1");
+        let mut state = after_test(old, result.is_ok(), now);
         state["destination"] = json!(destination);
-        state["last_attempt"] = json!(now);
-        state["delivery_status"] = json!(if result.is_ok() { "pass" } else { "fail" });
-        if result.is_ok() {
-            state["last_success"] = json!(now);
-        }
         common::atomic_json(&path, &state)?;
         report(&runtime, &state, now, 0)?;
         return test_said(result).map(|said| println!("{said}"));
@@ -657,6 +669,26 @@ pub fn run(a: &Args) -> Result<()> {
 }
 #[cfg(test)]
 mod tests {
+    /// Deep check 372 (a stand-in alert server stopped, then started again): a test the
+    /// server took left the waiting alert behind its retry delay, under "pass".
+    #[test]
+    fn a_test_taken_after_failures_lets_the_waiting_alerts_go_at_the_next_run() {
+        let failing = json!({"format":"neko-notifications-v1","entries":{},"attempts":7,
+            "delivery_status":"fail","next_attempt":4600.0});
+        let state = after_test(failing.clone(), true, 1000.0);
+        assert_eq!(state["delivery_status"], "pass");
+        assert_eq!(state["attempts"], 0);
+        assert!(delivery_due(&state["next_attempt"], 1000.0));
+        // Not taken: the retry delay stays.
+        let state = after_test(failing, false, 1000.0);
+        assert!(!delivery_due(&state["next_attempt"], 1000.0));
+        // After a delivery that worked, the pause between messages is kept.
+        let sent = json!({"delivery_status":"pass","next_attempt":1200.0,"attempts":0});
+        assert!(!delivery_due(
+            &after_test(sent, true, 1000.0)["next_attempt"],
+            1000.0
+        ));
+    }
     /// Deep check 249: a home-network address that changed reaches the phone too, and is
     /// not called recovered while the connections can't be listed.
     #[test]
