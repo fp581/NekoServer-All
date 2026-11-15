@@ -119,6 +119,25 @@ class InstallTest(unittest.TestCase):
         self.assertIn(['pacman', '-S', '--needed', '--noconfirm', 'mesa', 'libva-utils'], pacman.calls)
         self.assertEqual(said, ['Video drivers for the AMD graphics chip: libva-mesa-driver, libva-utils'])
 
+    def test_a_video_driver_not_offered_is_named_not_called_built_in(self):
+        # Deep check 307: Fedora without RPM Fusion has no intel-media-driver, and the log
+        # said the drivers were "built into the system".
+        from modules import hardware_video
+
+        for offered, words in (
+            ({'libva-utils'}, 'Video drivers for the INTEL graphics chip: libva-utils; not in this system'),
+            (set(), 'Video drivers for the INTEL graphics chip: none installed; not in this system'),
+        ):
+            family = mock.Mock(available=lambda p, offered=offered: p in offered)
+            family.name = 'fedora'
+            with mock.patch.object(host, 'current', return_value=family):
+                said = []
+                hardware_video.install_drivers('intel', said.append)
+            self.assertTrue(said[0].startswith(words), said)
+            self.assertIn("package sources: intel-media-driver", said[0])
+            self.assertIn('RPM Fusion', said[0])
+            self.assertNotIn('built into the system', said[0])
+
     def test_waits_while_another_pacman_works(self):
         pacman = FakePacman(offered={'b'})
         family = host.Arch(pacman)

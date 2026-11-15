@@ -35,9 +35,22 @@ HARDWARE = 'hardware.yaml'
 def install_drivers(vendor, log, run=subprocess.run):
     """The chip's video drivers and vainfo, where this system's repositories have them."""
     family = host.current(run)
-    wanted = [p for p in gpu.VIDEO.get(vendor, []) if family.available(p)]
+    packages = gpu.VIDEO.get(vendor, [])
+    wanted = [p for p in packages if family.available(p)]
     family.install(wanted)
-    log('Video drivers for the ' + vendor.upper() + ' graphics chip: ' + (', '.join(wanted) or 'built into the system'))
+    said = 'Video drivers for the ' + vendor.upper() + ' graphics chip: ' + (', '.join(wanted) or 'none installed')
+    # What was not found is named: "built into the system" was said on a Fedora
+    # without RPM Fusion, where Intel's driver is simply not offered (deep check 307).
+    missing = [p for p in packages if p not in wanted]
+    if missing:
+        said += '; not in this system\'s package sources: ' + ', '.join(missing)
+        if 'intel-media-driver' in missing and family.name in ('fedora', 'rhel'):
+            said += (
+                ' (it comes from RPM Fusion\'s "nonfree" repository: turn that on as https://rpmfusion.org/'
+                'Configuration says, then run setup again)'
+            )
+        said += '. Jellyfin and Immich bring video drivers of their own; they are tried next'
+    log(said)
 
 
 def container(project, service, run=subprocess.run):
