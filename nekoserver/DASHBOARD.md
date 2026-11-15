@@ -38,6 +38,7 @@ Installing needs the secure Tailscale address (https) or the server's own addres
 | **Processes** | What's running, including inside each app, with processor and memory use. Search and sort. Right-click a program (on a phone, tap ⋯) to restart its app, or to close an app opened on the desktop. |
 | **Server health** | Drive space and health, RAID arrays and Btrfs pools (each drive of an array, rebuilds with their progress, and the error counters that show a drive going bad early), **what starts by itself after a restart**, the outside heartbeat, phone notifications, app checks and waiting updates. |
 | **Updates** | Three tabs. **Apps**: the version each app runs, the new versions waiting and the night each installs by itself, with **Update now** for the impatient. **NekoServer**: the release this server runs and a newer one to upgrade to. **System**: the Linux updates that are waiting, and whether the PC needs a restart. Changing anything here needs the PIN. |
+| **Media folders** | Your films, shows and music: NekoServer's own library and the folders of yours connected to it, whether each is there now, and where new downloads go. Add a folder, take one away, or send new downloads elsewhere; see **Media folders** below. Needs the PIN on every device. |
 | **Needs attention** | Everything to look at, most urgent first, each with "What should I do?". |
 | **Help** | Step-by-step guides, the error codes below, installing it as an app, and a privacy-safe summary to share. |
 
@@ -122,6 +123,18 @@ On a computer, right-click an app on **Your apps**, or a program on **Processes*
 **Backups and updates come first.** While a backup or the monthly update runs, Restart app waits, and the menu says which job is running (E47). Only one app restarts at a time.
 
 **"Not responding"** means the app's own health check failed. Without a health check, a running app shows as *Running*: try opening it. A busy processor never counts as "not responding": converting a video can rightly keep every core at 100%.
+
+## Media folders
+
+The films, shows and music you already had are asked about during setup. **Media folders** does the same after setup, at any time: it shows, for films, shows and music, NekoServer's own library and each folder of yours connected to it (**Ready**, or why it is not there now), and which one new downloads go to. Everything on this page needs your PIN, on the server too.
+
+- **Add a folder**: choose what is in it, then type its path as this server sees it (for a NAS: where its shared folder is mounted here) or press **Pick a folder** to choose from the drives and shared folders mounted under /mnt, /media, /run/media and /srv. **Use it where it is** connects it to the apps without copying anything; **Copy its files into the library** copies them, and your folder is kept as it is. Tick **New downloads go there** to save new ones in it. The server checks the folder first, as the apps' account would use it, and says in plain words why one can't be used (nothing is mounted there, the apps can't read it, it is read-only, it is not connected at every start).
+- **Send new downloads here**: new films, shows or music go to NekoServer's library, or to a connected folder the apps may write to (checked first).
+- **Take away**: the folder is disconnected from the apps. **The files in it are never deleted, moved or changed**; they are just no longer shown.
+
+Each kind has one folder used where it is, and one more for new downloads only. The change is made by the same code setup uses, so setup and this page always agree, and both copies of your settings are saved. The apps that see these folders are then restarted and told (Jellyfin's and Navidrome's libraries, the folders of Sonarr, Radarr and Lidarr). When something is left for you, such as a Jellyfin library to remove or Seerr's folder for requests to choose, the page says it under **What to do next**.
+
+**A folder an app holds open** (a film playing from it, say) can't be disconnected right away: it is closed to new files at once, and the page says to restart the server; it is gone after the restart. While a change is at work the page says **Working on it…**; a second change waits until it has finished, and so does a change while setup, an upgrade or a backup runs.
 
 ## Error codes
 
