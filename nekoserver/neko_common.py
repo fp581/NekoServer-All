@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -57,6 +58,28 @@ def readable_output():
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, 'reconfigure'):
             stream.reconfigure(errors='replace')
+
+
+HANGUPS = (signal.SIGHUP, signal.SIGTERM)
+
+
+def stop_on_hangup():
+    """A closed terminal or SSH connection (SIGHUP), or a `kill` or the system shutting
+    down (SIGTERM), stops a tool as Ctrl+C does, so the cleanup in its finally blocks
+    still runs: the start protection lifted (host.py), a drive mounted for a measurement
+    unmounted again and the terminal's echo switched back on (setup's steps), Immich
+    started again after a snapshot (recover.py). Left to Python, either signal ends the
+    tool on the spot and none of that happens.
+    Only the first one: a second does not cut that cleanup short. Returns the handlers
+    there were before."""
+    stopping = []
+
+    def stop(number, frame):
+        if not stopping:
+            stopping.append(number)
+            raise KeyboardInterrupt
+
+    return {number: signal.signal(number, stop) for number in HANGUPS}
 
 
 def local_timezone(localtime='/etc/localtime', etc_timezone=ETC_TIMEZONE, zoneinfo=ZONEINFO):

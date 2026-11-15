@@ -2,9 +2,12 @@
 """NekoServer modular, standard-library-only orchestration framework."""
 
 import argparse
+import contextlib
 import copy
 import fcntl
+import signal
 import stat
+import threading
 import datetime as dt
 import importlib.util
 import json
@@ -1021,6 +1024,10 @@ def main(argv=None):
             parser.error(str(exc))
     if args.apply and (args.check or args.dry_run):
         parser.error('--apply cannot be combined with --check or --dry-run')
+    # A closed terminal or a dropped SSH connection ended setup on the spot, with no
+    # cleanup: the USB drive mounted to measure it stayed mounted read-only (the weekly
+    # copy could not use it), and the step stayed "running". It stops as Ctrl+C does now.
+    before = host.stop_on_hangup() if threading.current_thread() is threading.main_thread() else {}
     try:
         if args.wizard:
             import wizard
@@ -1033,15 +1040,19 @@ def main(argv=None):
         return execute(args)
     except KeyboardInterrupt:
         again = 'sudo bash install.sh --recover' if args.recover else 'sudo bash install.sh'
-        print(
-            f'\nStopped. Nothing that was finished is undone. Run  {again}  again '
-            'when you are ready: it continues where it stopped.',
-            file=sys.stderr,
-        )
+        with contextlib.suppress(OSError):  # the terminal may be gone
+            print(
+                f'\nStopped. Nothing that was finished is undone. Run  {again}  again '
+                'when you are ready: it continues where it stopped.',
+                file=sys.stderr,
+            )
         return 130
     except (InstallerError, RuntimeError, ValueError, OSError, KeyError, TypeError) as exc:
         print(f'ERROR: {exc}', file=sys.stderr)
         return 2
+    finally:
+        for number, handler in before.items():
+            signal.signal(number, handler)
 
 
 if __name__ == '__main__':

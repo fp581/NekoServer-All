@@ -29,7 +29,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 import setup_progress
-from neko_common import atomic_write
+from neko_common import atomic_write, stop_on_hangup
 
 OS_RELEASE = '/etc/os-release'
 # Every system package the apps need outside their containers, by NekoServer's names.
@@ -2189,7 +2189,7 @@ def main(argv):
     if len(argv) != 1 or argv[0] not in commands:
         print('usage: python3 host.py bootstrap|repair|toolchain', file=sys.stderr)
         return 2
-    before = _stop_on_hangup()
+    before = stop_on_hangup()
     try:
         commands[argv[0]]()
     except KeyboardInterrupt:
@@ -2232,25 +2232,6 @@ def stopped(message, note=None):
             return
         with os.fdopen(handle, 'w', encoding='utf-8') as stream:
             stream.write(message + '\n')
-
-
-HANGUPS = (signal.SIGHUP, signal.SIGTERM)
-
-
-def _stop_on_hangup():
-    """A closed terminal or SSH connection (SIGHUP), or the system shutting down
-    (SIGTERM), stops host.py as Ctrl+C does, so the cleanup in its finally blocks still
-    runs: start protection (policy-rc.d, the masks) lifted once nothing is left to tidy.
-    Only the first one: a second does not cut that cleanup short. Returns the handlers
-    there were before."""
-    stopping = []
-
-    def stop(number, frame):
-        if not stopping:
-            stopping.append(number)
-            raise KeyboardInterrupt
-
-    return {number: signal.signal(number, stop) for number in HANGUPS}
 
 
 if __name__ == '__main__':
