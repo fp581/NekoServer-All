@@ -22,6 +22,20 @@ class RealStatesTests(unittest.TestCase):
         issues = page(('collectIssues', status(applications=apps, alerts=[alert])))[0]
         self.assertEqual([i['id'] for i in issues], ['startup:docker.service:failed'])
 
+    def test_a_failing_drive_opens_the_drive_health_guide(self):
+        # Deep check 618: a failing drive opened "Check a drive or free up space".
+        smart = {'status': 'fail', 'reason': 'Pending or uncorrectable sectors'}
+        drive = {'id': 'media_hdd', 'name': 'Media HDD', 'status': 'mounted', 'smart': smart}
+        alert = {'id': 'smart:media_hdd', 'level': 'critical', 'title': 'Media HDD is failing', 'detail': 'x'}
+        for alerts in ([alert], []):  # the collector's alert, and the page's own
+            with self.subTest(alerts=bool(alerts)):
+                issues = page(('issueDetails', status(storage=[drive], alerts=alerts)))[0]
+                self.assertEqual([(i['id'], i['guide']) for i in issues], [('smart:media_hdd', 'health')])
+        source = (ROOT / 'dashboard/app.js').read_text()
+        guide = source.split('  health: {')[1].split('\n  },')[0]
+        for words in ('migrate.py list', 'Replace the OS and reattach the existing store', 'Backups'):
+            self.assertIn(words, guide)
+
 
 if __name__ == '__main__':
     unittest.main()

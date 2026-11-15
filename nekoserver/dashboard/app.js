@@ -676,6 +676,7 @@ const ALERT_GUIDES = [
   [id => id.startsWith('setup:'), 'setup'],
   [id => id.startsWith('tailscale:'), 'remote'],
   [id => id.startsWith('integrity:'), 'integrity'],
+  [id => id.startsWith('smart:'), 'health'],
   [id => STORAGE_ISSUE.test(id) || id.startsWith('share:'), 'storage'],
   [id => id.startsWith('job:') || id === 'backup-key', 'backup'],
   [id => id.startsWith('startup:'), 'startup'],
@@ -844,7 +845,7 @@ function driveIssues(s, add) {
         'smart:' + disk.id,
         name + ' health needs a look',
         text(smart.reason, 'Review the drive health report.'),
-        'storage',
+        'health',
         severity(smart.status === 'fail')
       );
     }
@@ -4695,6 +4696,20 @@ const GUIDES = {
       'For low space, remove large files you don’t need. Never delete your only backup.'
     ],
     extra: 'lsblk -f\nfindmnt\ndf -h'
+  },
+  /* A drive whose own health check (SMART) warns: it may die, so the backups and a new
+   * drive come first (deep check 618; the storage guide spoke of connecting it and of
+   * free space). */
+  health: {
+    title: 'A drive is wearing out or failing',
+    intro: 'A drive whose health check warns can stop working any day. Act while it still works.',
+    steps: [
+      'Open Backups and check that every backup shows a recent good copy. Plug in the USB drive if it is away.',
+      'Get a new drive at least as big. Connect it next to the old one and make its filesystem (NekoServer never formats a drive).',
+      'For the app SSD or the media HDD, in the NekoServer folder, run the first command below: it lists where each drive can move. Then move it with the second (STORAGE.md, “Moving to a bigger drive”). The old drive is not changed.',
+      'For the system disk (OS SSD), follow RECOVERY.md, “Replace the OS and reattach the existing store”.'
+    ],
+    extra: 'sudo python3 migrate.py list\nsudo python3 migrate.py move --drive media_hdd --to <UUID>'
   },
   acceptance: {
     title: 'Check that everything really works',

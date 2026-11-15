@@ -2315,6 +2315,27 @@ fn space_advice(id: &str, full: bool) -> &'static str {
         _ => "90% or more used. Backups and uploads stop once it is full: free up space there before then.",
     }
 }
+/// What a drive's health alert says: what its own health check (SMART) found, in plain
+/// words, and what to do. It said only the check's words ("Pending or uncorrectable
+/// sectors") under "health warning", and its guide was about connecting a drive and
+/// freeing space: nobody was told the drive may die and should be replaced while it
+/// still works (deep check 618).
+fn health_advice(id: &str, reason: &str, failing: bool) -> String {
+    let found = match reason {
+        "Pending or uncorrectable sectors" => "Its own health check (SMART) found places on it that can no longer be read",
+        "Reallocated sectors detected" => "Its own health check (SMART) found worn places on it, which it has replaced with spare ones",
+        "SMART health failed" | "NVMe critical warning" => "Its own health check (SMART) says it is failing",
+        "NVMe endurance usage is high" | SSD_WORN => "It has used up 90% or more of the writes it is made for",
+        _ => "Its own health check (SMART) reports errors",
+    };
+    let what = match (id, failing) {
+        ("os", true) => "it may stop working any day. Your apps and files are on the other drives: check that Backups shows recent good copies, and put Linux on a new disk soon (RECOVERY.md, \"Replace the OS and reattach the existing store\")",
+        (_, true) => "it may stop working any day, with what is on it. Check that Backups shows recent good copies, then move it to a new drive while it still works: connect the new drive and, in the NekoServer folder, run  sudo python3 migrate.py list  (STORAGE.md, \"Moving to a bigger drive\")",
+        ("os", false) => "it still works, but plan to replace it. Keep the backups going",
+        (_, false) => "it still works, but plan to replace it, and keep the backups going. A new drive takes its place with  sudo python3 migrate.py  (STORAGE.md, \"Moving to a bigger drive\")",
+    };
+    format!("{found}, so {what}.")
+}
 /// backup_secrets.py's key: without it every monthly snapshot holds the app password
 /// files in plain text (the monthly job says so in its log each run; the dashboard
 /// says so all the time, so it can't go unnoticed).
@@ -2863,15 +2884,16 @@ pub(crate) fn alerts(s: &Value) -> Value {
             }
             let state = text(&d["smart"]["status"]);
             if state == "fail" || state == "warning" {
+                let failing = state == "fail";
                 add(
                     format!("smart:{id}"),
-                    if state == "fail" {
-                        "critical"
+                    if failing { "critical" } else { "warning" },
+                    if failing {
+                        format!("{name} is failing")
                     } else {
-                        "warning"
+                        format!("{name} health warning")
                     },
-                    format!("{name} health warning"),
-                    text(&d["smart"]["reason"]),
+                    &health_advice(id, text(&d["smart"]["reason"]), failing),
                 );
             }
         }
@@ -5225,6 +5247,47 @@ mod user_panel_tests {
         mark_held(&mut s);
         assert_eq!(s["applications"][0]["held"], false);
         assert!(alerts(&s).to_string().contains("app:jellyfin"));
+    }
+    #[test]
+    fn a_failing_drive_says_so_and_to_move_it_while_it_works() {
+        // Deep check 618, the real collector with smartctl reporting unreadable sectors on
+        // the HDD: "Media HDD health warning / Pending or uncorrectable sectors", and
+        // nothing on what that means or what to do.
+        let drive = |id: &str, smart: Value| json!({"storage": [{"id": id, "name": "Media HDD", "status": "mounted", "smart": smart}]});
+        let failing = alerts(&drive(
+            "media_hdd",
+            json!({"status": "fail", "reason": "Pending or uncorrectable sectors"}),
+        ));
+        assert_eq!(failing[0]["level"], "critical");
+        assert_eq!(failing[0]["title"], "Media HDD is failing");
+        let said = text(&failing[0]["detail"]);
+        for words in [
+            "can no longer be read",
+            "may stop working any day",
+            "Backups",
+            "migrate.py list",
+        ] {
+            assert!(said.contains(words), "{said}");
+        }
+        let worn = alerts(&drive(
+            "media_hdd",
+            json!({"status": "warning", "reason": "Reallocated sectors detected"}),
+        ));
+        assert_eq!(worn[0]["level"], "warning");
+        assert!(
+            text(&worn[0]["detail"]).contains("plan to replace it"),
+            "{worn}"
+        );
+        // The system disk is not moved with migrate.py: it is put on a new disk.
+        let os = alerts(&drive(
+            "os",
+            json!({"status": "fail", "reason": "SMART health failed"}),
+        ));
+        let said = text(&os[0]["detail"]);
+        assert!(
+            said.contains("Replace the OS") && !said.contains("migrate.py"),
+            "{said}"
+        );
     }
     #[test]
     fn apps_down_with_docker_are_its_one_alert_not_ten_unchecked_apps() {
