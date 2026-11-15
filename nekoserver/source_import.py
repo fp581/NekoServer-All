@@ -511,14 +511,19 @@ def already_copied(current, dest, apply=False):
     return True
 
 
-def planned_copies(folder, target, apply=False, conflicts=None, downloading=None, leftovers=None):
+def planned_copies(folder, target, apply=False, conflicts=None, downloading=None, leftovers=None, links=None):
     """[(file, where it goes, its stat)] for every file not imported yet. Strict listing:
     a folder that cannot be read makes this source incomplete (nothing is copied),
     instead of silently leaving an album out. A different file already at a file's place
     in the library (another source's `folder.jpg`, one Sonarr replaced) is kept and the
     file left out: its path, relative to the source, goes into `conflicts`. A file still
     being downloaded (TEMPORARY) is left out too, its path in `downloading`; a download
-    program's own leftover (LEFTOVERS) likewise, its path in `leftovers`."""
+    program's own leftover (LEFTOVERS) likewise, its path in `leftovers`.
+    With `links` (a list), a file that has several names in the source (hard links, as
+    download programs and the Arr apps make them) is planned once: each further name
+    goes into `links` as (file, where it goes, its stat, where the first name goes), to
+    be made a hard link in the library. Before, each name was counted for room and
+    copied as a file of its own."""
 
     def unfinished(here, name):
         noted = leftovers if name.endswith(LEFTOVERS) else downloading if name.endswith(TEMPORARY) else None
@@ -534,26 +539,81 @@ def planned_copies(folder, target, apply=False, conflicts=None, downloading=None
         raise IncompleteSource(
             [Path(p).relative_to(folder).as_posix() if Path(p).is_relative_to(folder) else '.' for p, _ in exc.problems]
         ) from None
-    entries = []
+    entries, first, stable = [], {}, {}
     for found_path, _ in sorted(found):
         current = safe_path(found_path)
         dest = safe_path(target / current.relative_to(folder))
-        if dest.exists() or dest.is_symlink():
-            note_conflict(current, dest, folder, apply, conflicts)
-            continue
         # lstat: the file itself (strict_files found it a regular file, never a symlink).
-        entries.append((current, dest, current.lstat()))
+        stat = current.lstat()
+        same_file = several_names(stat, current, stable) if links is not None else None
+        if dest.exists() or dest.is_symlink():
+            if note_conflict(current, dest, folder, apply, conflicts) and same_file:
+                first.setdefault(same_file, dest)  # copied by an earlier run: linked to as well
+            continue
+        if same_file in first:
+            links.append((current, dest, stat, first[same_file]))
+            continue
+        if same_file:
+            first[same_file] = dest
+        entries.append((current, dest, stat))
     return entries
 
 
+def several_names(stat, current, stable):
+    """(drive, inode) of a file that has more than one name (hard links), else None.
+    Only where inode numbers are kept (stable_inodes, asked once per drive: `stable`)."""
+    if stat.st_nlink < 2:
+        return None
+    if stat.st_dev not in stable:
+        stable[stat.st_dev] = stable_inodes(current.parent)
+    return (stat.st_dev, stat.st_ino) if stable[stat.st_dev] else None
+
+
 def note_conflict(current, dest, folder, apply, conflicts):
-    """A file already at `dest`: an earlier copy of `current` (nothing to do), or a different
-    file, kept and noted in `conflicts` (raised when no list is kept)."""
+    """A file already at `dest`: an earlier copy of `current` (nothing to do: True), or a
+    different file, kept and noted in `conflicts` (raised when no list is kept)."""
     if already_copied(current, dest, apply):
-        return
+        return True
     if conflicts is None:
         raise RuntimeError('Existing imported file differs; refusing overwrite')
     conflicts.append(current.relative_to(folder).as_posix())
+    return False
+
+
+def link_copy(current, dest, stat, first, uid, gid, guard=None):
+    """Make `dest` a hard link to `first`, the library's copy of the same source file
+    under its first name, so the file is in the library once, as it is in the source.
+    False when that can't be done (the first copy is not there, or the drive has no hard
+    links): the caller then copies the file like any other."""
+    now = current.lstat()
+    if identity(now) != identity(stat) or (now.st_size, now.st_mtime_ns) != (stat.st_size, stat.st_mtime_ns):
+        raise SourceChanged('Source changed during import')
+    try:
+        have = os.stat(first, follow_symlinks=False)
+    except OSError:
+        return False
+    # Copies keep their original's size and date: anything else there is not that copy.
+    if not S_ISREG(have.st_mode) or (have.st_size, have.st_mtime_ns) != (stat.st_size, stat.st_mtime_ns):
+        return False
+    if guard:
+        guard.check(dest.parent)
+    source = open_folder(first.parent)
+    try:
+        parent = open_folder(safe_path(dest.parent), 0o2775, uid, gid)
+        try:
+            if guard:
+                guard.check_fd(parent)
+            os.link(first.name, dest.name, src_dir_fd=source, dst_dir_fd=parent, follow_symlinks=False)
+            os.fsync(parent)
+        except OSError as exc:
+            if exc.errno not in (errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS, errno.EXDEV, errno.EMLINK):
+                raise
+            return False
+        finally:
+            os.close(parent)
+    finally:
+        os.close(source)
+    return True
 
 
 def configured_folder(source):
@@ -591,8 +651,8 @@ def copy_source(source, media, apply=False, uid=None, gid=None, guard=None):
     left = move_legacy(folder, media, category, guard) if apply else []
     if left:
         return legacy_left(left, folder, media, category)
-    conflicts, downloading, leftovers = [], [], []
-    entries = planned_copies(folder, target, apply, conflicts, downloading, leftovers)
+    conflicts, downloading, leftovers, links = [], [], [], []
+    entries = planned_copies(folder, target, apply, conflicts, downloading, leftovers, links)
     required = sum(stat.st_size for _, _, stat in entries)
     free = shutil.disk_usage(media).free
     if required > free:
@@ -600,17 +660,17 @@ def copy_source(source, media, apply=False, uid=None, gid=None, guard=None):
             f'Nothing was copied: it needs {size_words(required)} and the library drive has {size_words(free)} free. '
             'Free some room or take this folder out of the source list'
         )
-    skipped = copy_entries(entries, folder, uid, gid, guard) if apply else []
-    copied = len(entries) - len(skipped) if apply else 0
+    skipped = copy_entries(entries, folder, uid, gid, guard, links) if apply else []
+    copied = len(entries) + len(links) - len(skipped) if apply else 0
     result = {
         'status': 'copied' if apply else 'preview',
         'copied': copied,
-        'new_files': len(entries),
+        'new_files': len(entries) + len(links),
         'bytes': required,
         'destination': str(target),
     }
     result = with_downloading(with_skipped(with_conflicts(result, conflicts), skipped), downloading)
-    return with_leftovers(result, leftovers)
+    return with_links(with_leftovers(result, leftovers), links)
 
 
 def shown_name(path):
@@ -619,15 +679,18 @@ def shown_name(path):
     return os.fsencode(str(path)).decode('utf-8', 'backslashreplace')
 
 
-def copy_entries(entries, folder, uid, gid, guard):
-    """Copy each planned file; returns the ones skipped because their name could not be
-    used (relative to the source), so one odd name never stops the whole source."""
+def copy_entries(entries, folder, uid, gid, guard, links=()):
+    """Copy each planned file, then give each further name of a file with several names
+    (`links`, see planned_copies) its hard link; returns the ones skipped because their
+    name could not be used (relative to the source), so one odd name never stops the
+    whole source."""
     skipped, stable = [], {}
-    for current, dest, stat in entries:
+    for current, dest, stat, first in [(*entry, None) for entry in entries] + list(links):
         if stat.st_dev not in stable:
             stable[stat.st_dev] = stable_inodes(current.parent)
         try:
-            import_file(current, dest, stat, uid, gid, guard, stable[stat.st_dev])
+            if first is None or not link_copy(current, dest, stat, first, uid, gid, guard):
+                import_file(current, dest, stat, uid, gid, guard, stable[stat.st_dev])
         except UnicodeError:
             skipped.append(shown_name(current.relative_to(folder)))
         except SourceChanged:
@@ -668,8 +731,21 @@ def with_leftovers(result, leftovers):
     if leftovers:
         result['download_leftovers'] = len(leftovers)
         said = (
-            f'{len(leftovers)} files that a download program keeps for itself (qBittorrent\'s .parts) were left '
-            'out, since they are no films, shows or music: ' + ', '.join(leftovers[:10])
+            "Left out, as a download program's own files and no films, shows or music (qBittorrent's .parts): "
+            + ', '.join(leftovers[:10])
+        )
+        result['reason'] = result['reason'] + '. ' + said if result.get('reason') else said
+    return result
+
+
+def with_links(result, links):
+    """The report row, saying that files with several names were counted and kept once."""
+    if links:
+        result['hard_links'] = len(links)
+        count = '1 file' if len(links) == 1 else f'{len(links)} files'
+        said = (
+            f'Kept once in the library: {count} that the source holds under a second name (hard links, as download '
+            'programs and Sonarr or Radarr make them). Each second name is a link there too and takes no room of its own'
         )
         result['reason'] = result['reason'] + '. ' + said if result.get('reason') else said
     return result
