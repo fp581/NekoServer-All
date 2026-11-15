@@ -346,6 +346,23 @@ class SourceWizardTests(unittest.TestCase):
                 self.assertEqual(code, 2)
                 self.assertIn('list of your media sources', error.getvalue())
 
+    def test_nothing_is_written_while_the_data_ssd_is_not_mounted(self):
+        """With the SSD away its folder is a plain one on the system disk: the wizard wrote
+        config/media-sources.json (and the kept answer) there. It now stops first."""
+        with tempfile.TemporaryDirectory() as d:
+            settings = Path(d) / 'settings.json'
+            settings.write_text(json.dumps({**json.loads((ROOT / 'config.json').read_text()), 'data_mount': d}))
+            wizard = self.wizard()
+            with (
+                mock.patch.object(sys, 'argv', ['source-wizard.py', '--config', str(settings)]),
+                mock.patch('builtins.input', return_value='no'),
+                mock.patch('builtins.print'),
+                self.assertRaises(SystemExit) as stopped,
+            ):
+                wizard.main()
+            self.assertIn('data SSD is not mounted', str(stopped.exception.code))
+            self.assertFalse((Path(d) / 'config').exists())
+
 
 class SourceListPathTests(unittest.TestCase):
     def test_only_a_json_file_is_read_as_the_source_list(self):

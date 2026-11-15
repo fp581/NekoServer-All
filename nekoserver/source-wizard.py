@@ -7,6 +7,7 @@ Does not mount remote shares, add trackers, or handle secrets.
 
 import argparse
 import json
+import os
 import re
 import urllib.parse
 from pathlib import Path
@@ -201,6 +202,14 @@ def main():
     if args.list:
         print(json.dumps(existing, indent=2))
         return
+    # The list (and the answer kept for setup) go on the data SSD. With the SSD not
+    # mounted its folder is an empty one on the system disk: writing there would fill the
+    # system disk and hide the list once the SSD comes back.
+    data = mount_path(settings['data_mount'])
+    if not os.path.ismount(data):
+        raise SystemExit(
+            f'Nothing was saved: the data SSD is not mounted at {data}. Connect it (or restart) and try again.'
+        )
     before = len(existing.get('sources', []))
     config = collect(existing)
     target.parent.mkdir(parents=True, exist_ok=True)
