@@ -28,6 +28,28 @@ ZONEINFO = Path('/usr/share/zoneinfo')
 ETC_TIMEZONE = Path('/etc/timezone')
 
 
+def adopt_doas_user(environ=os.environ):
+    """doas (sudo's stand-in on some PCs) names the account that started it in DOAS_USER
+    alone; NekoServer reads SUDO_USER (and SUDO_UID, SUDO_GID) to know whose account the
+    server is for. Taken over here, once, as install.sh does, so a tool started with doas
+    itself (doas python3 migrate.py) sees the same account (deep check 298)."""
+    import pwd
+
+    name = environ.get('DOAS_USER')
+    if not name or (environ.get('SUDO_USER') or name) != name:
+        return
+    environ['SUDO_USER'] = name
+    try:
+        entry = pwd.getpwnam(name)
+    except KeyError:
+        return
+    environ.setdefault('SUDO_UID', str(entry.pw_uid))
+    environ.setdefault('SUDO_GID', str(entry.pw_gid))
+
+
+adopt_doas_user()
+
+
 def readable_output():
     """Text the terminal's character set has no room for (a dash, or a file name in another
     script, on a Latin-1 locale) is shown as "?" instead of stopping the tool with a codec
