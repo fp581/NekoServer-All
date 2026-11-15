@@ -549,6 +549,10 @@ fn backup_times(row: &Value, now: f64) -> String {
     }
 }
 
+/// The jobs in the readings' "backups" list that copy nothing (dashboard/app.js
+/// COPIES_NOTHING): the app updates, the daily check for them, the upgrade.
+const COPIES_NOTHING: [&str; 3] = ["updates", "update_check", "upgrade"];
+
 /// A short summary of the readings: what needs attention, the backups, the drives, the
 /// apps. Plain lines, at most SUMMARY_CHARS characters.
 fn readings(status: &Value, now: f64) -> String {
@@ -572,9 +576,29 @@ fn readings(status: &Value, now: f64) -> String {
         ));
     }
     for b in rows("backups") {
+        let id = text(&b["id"]);
+        // The upgrade runs only when the person starts it: one never started is no backup
+        // that "never succeeded" (deep check 636: "Is everything backed up?" was answered
+        // with it).
+        if id == "upgrade" && b["last_success"].is_null() && b["last_attempt"].is_null() {
+            continue;
+        }
+        // The jobs that copy nothing are not called backups (the page's COPIES_NOTHING).
+        let kind = if COPIES_NOTHING.contains(&id.as_str()) {
+            "Job"
+        } else {
+            "Backup"
+        };
+        // Waiting for a drive that is away: its time to run comes, and it does not run
+        // (deep check 612: "next run in 6 hours" was all the model was told).
+        let blocked = b["blocked"]
+            .as_str()
+            .map(|why| format!("; {why}"))
+            .unwrap_or_default();
         lines.push(format!(
-            "Backup {}: {}{}{}",
+            "{kind} {}{}: {}{}{}{blocked}",
             text(&b["name"]),
+            if kind == "Job" { " (not a backup)" } else { "" },
             text(&b["status"]),
             b["reason"]
                 .as_str()
@@ -1875,6 +1899,42 @@ mod tests {
                 || s.ends_with("Backup Host and user snapshot: pass"),
             "{s}"
         );
+    }
+
+    /// Deep checks 612 and 636, with the real collector on loop drives: with the HDD away
+    /// every backup read "pass; next run in 6 hours" (the collector's "it can't run until
+    /// the HDD is back" was left out), and "Is everything backed up?" was answered from
+    /// the app updates and an upgrade never started ("no success yet"), all called
+    /// backups.
+    #[test]
+    fn the_summary_says_which_backups_wait_and_which_jobs_are_no_backups() {
+        let now = 1_800_000_000.0;
+        let waiting = "The Media HDD is missing, so this backup can't run until it is back.";
+        let status = json!({"backups": [
+            {"id": "host", "name": "Host and user snapshot", "status": "pass", "last_success": now - 3600.0,
+             "timer": {"next_run_at": now + 6.0 * 3600.0}, "blocked": waiting},
+            {"id": "updates", "name": "Weekly app updates", "status": "pass", "last_success": now - 3600.0},
+            {"id": "maintenance", "name": "Monthly check and snapshot", "status": "pass", "last_success": now - 3600.0},
+            {"id": "upgrade", "name": "NekoServer upgrade", "status": "unknown", "reason": "No recorded successful run",
+             "last_success": null, "last_attempt": null}]});
+        let s = readings(&status, now);
+        assert!(
+            s.contains(&format!("Backup Host and user snapshot: pass; last success 60 minutes ago, next run in 6 hours; {waiting}")),
+            "{s}"
+        );
+        assert!(
+            s.contains("Job Weekly app updates (not a backup): pass"),
+            "{s}"
+        );
+        assert!(!s.contains("Backup Weekly app updates"), "{s}");
+        // The monthly run makes a snapshot: a backup.
+        assert!(s.contains("Backup Monthly check and snapshot: pass"), "{s}");
+        assert!(!s.contains("NekoServer upgrade"), "{s}");
+        // An upgrade that ran is said, as a job.
+        let ran = json!({"backups": [{"id": "upgrade", "name": "NekoServer upgrade", "status": "fail",
+            "reason": "Failed: download", "last_success": null, "last_attempt": now - 60.0}]});
+        assert!(readings(&ran, now)
+            .contains("Job NekoServer upgrade (not a backup): fail (Failed: download)"));
     }
 
     /// Review of 0.49.0: an unreadable status file became {} and the model was told
