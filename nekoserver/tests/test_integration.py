@@ -824,6 +824,13 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn('Fedora Linux 44 (Silverblue) keeps its system files read-only', result.stderr)
         self.assertEqual(log, '')
+        # Deep check 269: one without dnf was told "Automatic setup supports ... Fedora (with
+        # dnf)", as if Fedora were not what it runs.
+        (self.root / 'bin/dnf').unlink()
+        result, log = self.run_script(self.root)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Fedora Linux 44 (Silverblue) keeps its system files read-only', result.stderr)
+        self.assertNotIn('Automatic setup supports', result.stderr)
         # SteamOS: Arch by name, pacman present, the system mounted read-only.
         (self.root / 'ostree-booted').unlink()
         (self.root / 'etc/os-release').write_text('ID=steamos\nID_LIKE=arch\nPRETTY_NAME="SteamOS"\n')

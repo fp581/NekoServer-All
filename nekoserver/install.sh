@@ -192,6 +192,16 @@ if "$apply"; then
   fi
   . /etc/os-release
   distro=" ${ID:-} ${ID_LIKE:-} "
+  # Image-based systems (Fedora Silverblue and Kinoite, SteamOS) name their family but
+  # keep the system files read-only: the package manager would fail halfway through.
+  # Checked before the family: one may come without its package manager (no dnf, say).
+  usr_options=$(findmnt -n -o OPTIONS --target /usr 2>/dev/null || true)
+  if [[ -e /run/ostree-booted || ",$usr_options," == *,ro,* ]]; then
+    echo "${PRETTY_NAME:-This system} keeps its system files read-only (an image-based system), so" >&2
+    echo 'NekoServer cannot install the packages it needs. Install it on Arch Linux, Debian, Ubuntu,' >&2
+    echo 'Fedora Workstation or Server, or openSUSE Leap or Tumbleweed instead.' >&2
+    exit 1
+  fi
   if [[ "$distro" == *' arch '* || "$distro" == *' nyarch '* ]] && command -v pacman >/dev/null; then
     family=arch
     clean_hint='sudo pacman -Sc'
@@ -276,15 +286,6 @@ if "$apply"; then
   if ! command -v systemctl >/dev/null; then
     echo 'NekoServer needs a Linux that starts with systemd, and this one does not (no systemctl).' >&2
     echo 'Under WSL, turn systemd on in /etc/wsl.conf ([boot] systemd=true), restart WSL, then run  sudo bash install.sh  again.' >&2
-    exit 1
-  fi
-  # Image-based systems (Fedora Silverblue and Kinoite, SteamOS) name their family but
-  # keep the system files read-only: the package manager would fail halfway through.
-  usr_options=$(findmnt -n -o OPTIONS --target /usr 2>/dev/null || true)
-  if [[ -e /run/ostree-booted || ",$usr_options," == *,ro,* ]]; then
-    echo "${PRETTY_NAME:-This system} keeps its system files read-only (an image-based system), so" >&2
-    echo 'NekoServer cannot install the packages it needs. Install it on Arch Linux, Debian, Ubuntu,' >&2
-    echo 'Fedora Workstation or Server, or openSUSE Leap or Tumbleweed instead.' >&2
     exit 1
   fi
   if [[ "$family" == debian && -e /run/reboot-required ]]; then
