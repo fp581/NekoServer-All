@@ -304,8 +304,10 @@ def copy(ctx):
 
 def libraries(config, apply=False):
     """What media_libraries.configure calls with Jellyfin's signed-in client: a library
-    for each folder of films and shows used in place. None with no such folder."""
-    if not existing_media.extras(config):
+    for each folder of films and shows used in place, and a word about a library left
+    from a folder taken back since. None on a server that never had such a folder (the
+    question was never answered)."""
+    if not existing_media.extras(config) and not (config.get(ASKED) or config.get(ANSWERED)):
         return None
     return lambda client: existing_media.jellyfin_libraries(client, config, apply)
 

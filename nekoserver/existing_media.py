@@ -911,6 +911,35 @@ def jellyfin_libraries(client, config, apply=False, **how):
                 check_name, lambda entry=entry, kind=kind: jellyfin_library(client, config, entry, kind, apply, how)
             )
         )
+    try:
+        rows += jellyfin_left_over(client, config)
+    except (RuntimeError, ValueError, TypeError, KeyError):
+        rows.append(media_libraries.row('jellyfin:existing', 'fail', API_FAILED))
+    return rows
+
+
+LEFT_OVER = (
+    'Jellyfin still has the library "{name}" for a folder of yours that NekoServer no longer connects (you took '
+    'it back, or had it copied into the library instead). What that library lists can no longer be played. In '
+    'Jellyfin open Dashboard, Libraries and remove "{name}" (this deletes no files), then run setup again'
+)
+
+
+def jellyfin_left_over(client, config):
+    """A row for each library Jellyfin still has at a place under /data/existing where
+    no folder of the settings is connected any more. Setup disconnects the folder, and
+    Jellyfin keeps the library: it goes on listing the films (it never forgets a library
+    whose folder it cannot open), none of them plays, and after "copy instead" every film
+    is listed twice. The library is the person's to remove (it holds what they watched),
+    so it is said, with where."""
+    used = {container_path(entry['holds'], entry['use']) for entry in extras(config)}
+    rows = []
+    for value in media_libraries.folders(client):
+        for place in sorted({str(location).rstrip('/') for location in value['Locations']}):
+            slot_name = place[len(CONTAINER) + 1 :]
+            if place.startswith(CONTAINER + '/') and place not in used and re.fullmatch(r'[a-z]+(-new)?', slot_name):
+                said = LEFT_OVER.format(name=value.get('Name', ''))
+                rows.append(media_libraries.row(f'jellyfin:existing:{slot_name}', 'needs_setup', said))
     return rows
 
 

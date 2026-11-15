@@ -653,7 +653,7 @@ class LibraryTests(unittest.TestCase):
         # Run again: there already, nothing made twice.
         client.calls.clear()
         self.assertEqual(self.libraries(client)[0]['status'], 'pass')
-        self.assertEqual([method for method, _ in client.calls], ['GET'])
+        self.assertEqual({method for method, _ in client.calls}, {'GET'})
 
     def test_the_folder_in_a_library_of_another_kind_is_not_passed(self):
         """Review of 0.51.2: the folder of films in a music library passed, on its path."""
@@ -668,6 +668,34 @@ class LibraryTests(unittest.TestCase):
         # Of the right kind (the person's own library for films): passed as before.
         client = Jellyfin([{**mine, 'CollectionType': 'movies'}])
         self.assertEqual(self.libraries(client), [{'check': 'jellyfin:existing:movies', 'status': 'pass'}])
+
+    def test_a_library_left_from_a_folder_taken_back_is_said(self):
+        """Deep check 391: the folder taken back (or copied into the library instead)
+        after Jellyfin got its library. Setup disconnects the folder; Jellyfin went on
+        listing its films, none of which played, and nothing said so."""
+        client = Jellyfin()
+        self.assertEqual(self.libraries(client), [{'check': 'jellyfin:existing:movies', 'status': 'pass'}])
+        taken_back = existing_media.without_choice(self.config, 'movies')
+        client.calls.clear()
+        (row,) = self.libraries(client, config=taken_back)
+        self.assertEqual((row['check'], row['status']), ('jellyfin:existing:movies', 'needs_setup'))
+        self.assertIn('Jellyfin still has the library "Movies (your folder)"', row['reason'])
+        self.assertIn('remove "Movies (your folder)" (this deletes no files)', row['reason'])
+        self.assertEqual(len(client.libraries), 1)  # the library is the person's to remove
+        self.assertEqual({method for method, _ in client.calls}, {'GET'})
+        # Removed in Jellyfin: nothing left to say. A library elsewhere is nobody's business.
+        client.libraries[:] = [{'Name': 'Mine', 'Locations': ['/data/movies', '/media/films'], 'ItemId': '2'}]
+        self.assertEqual(self.libraries(client, config=taken_back), [])
+
+    def test_the_library_step_is_reached_once_every_folder_is_taken_back(self):
+        import existing_page
+
+        taken_back = existing_media.without_choice(self.config, 'movies')
+        self.assertIsNone(existing_page.libraries(taken_back))  # never asked: nothing to look for
+        taken_back[existing_page.ANSWERED] = ['movies']
+        client = Jellyfin([{'Name': 'Movies (your folder)', 'Locations': ['/data/existing/movies'], 'ItemId': '9'}])
+        (row,) = existing_page.libraries(taken_back, apply=True)(client)
+        self.assertEqual(row['status'], 'needs_setup')
 
     def test_a_preview_and_a_share_that_is_away_make_nothing(self):
         client = Jellyfin()
