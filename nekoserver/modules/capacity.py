@@ -163,7 +163,9 @@ def current_files(folder):
     named = set()
     for note in Path(folder).rglob('.*.neko-latest'):
         try:
-            name = note.read_text(encoding='utf-8').strip()
+            # As the runtime wrote it (no newline): trimmed, " clip.mp4" was not checked
+            # like the mirror checks it (deep check 476).
+            name = note.read_text(encoding='utf-8')
         except (OSError, UnicodeDecodeError):
             continue
         if name and '/' not in name:

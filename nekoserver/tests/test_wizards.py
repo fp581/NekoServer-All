@@ -758,6 +758,21 @@ class CapacityTests(unittest.TestCase):
             # monthly checksum check compares everything).
             self.assertEqual(capacity.pending_bytes(usb, pairs, mirror=('upload',)), 40)
 
+    def test_the_current_copy_of_a_name_with_a_space_at_its_start_is_checked_too(self):
+        # Deep check 476: its note was trimmed, so the estimate trusted the damaged copy
+        # the weekly mirror writes again.
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            archive, usb = root / 'hdd/photos/archive', root / 'usb'
+            (archive / 'upload').mkdir(parents=True)
+            (usb / 'upload').mkdir(parents=True)
+            (archive / 'upload/ clip.mp4').write_bytes(b'A' * 40)
+            (archive / 'upload/. clip.mp4.neko-latest').write_text(' clip.mp4')
+            (usb / 'upload/. clip.mp4.neko-latest').write_text(' clip.mp4')
+            (usb / 'upload/ clip.mp4').write_bytes(b'Z' * 40)  # damaged, same size, newer
+            pairs = [(archive / 'upload', 'upload')]
+            self.assertEqual(capacity.pending_bytes(usb, pairs, mirror=('upload',)), 40)
+
     def test_a_same_size_edit_needs_room_again(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)

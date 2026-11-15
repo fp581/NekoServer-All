@@ -1640,7 +1640,9 @@ fn mirror_on(
             let named = String::from_utf8(common::bytes(path, 4096)?)
                 .map_err(|_| Error::new("Unreadable current-version note"))?;
             let folder = path.parent().unwrap_or(&source);
-            noted.insert(ledger_key(&folder.join(named.trim()), &source)?);
+            // As mark_latest wrote it: trimmed, " song.mp3"'s current copy was never
+            // checked by checksum (deep check 476).
+            noted.insert(ledger_key(&folder.join(&named), &source)?);
             notes.push(path.to_path_buf());
         }
         Ok(())
@@ -7478,6 +7480,25 @@ mod tests {
         let note = latest_marker(&usb.join("a.jpg"));
         assert_eq!(fs::read_to_string(note).unwrap(), "a.jpg");
         assert_eq!(names(&usb), names(&hdd));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn the_weekly_mirror_checks_the_current_copy_of_a_name_with_spaces_at_its_ends() {
+        // Deep check 476: the note was trimmed, so " a.jpg"'s current copy was trusted
+        // by its date and size, and same-size damage on the USB drive stayed.
+        let root = scratch("mirror-space");
+        let (src, hdd, usb) = (root.join("src/a"), root.join("hdd"), root.join("usb"));
+        write(&src, b"AAAA");
+        keep(&src, &hdd, "upload/ a.jpg");
+        write(&src, b"BBBB");
+        keep(&src, &hdd, "upload/ a.jpg");
+        mirror(&hdd, &usb, true, Check::Quick).unwrap();
+        let current = fs::read_to_string(latest_marker(&hdd.join("upload/ a.jpg"))).unwrap();
+        assert!(current.starts_with(' '), "{current}");
+        fs::write(usb.join("upload").join(&current), b"ZZZZ").unwrap(); // same size, later
+        let (_, report) = mirror(&hdd, &usb, true, Check::Quick).unwrap();
+        assert_eq!(report.repaired, 1);
+        assert_eq!(fs::read(usb.join("upload").join(&current)).unwrap(), b"BBBB");
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
