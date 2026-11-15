@@ -11,6 +11,8 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -295,6 +297,33 @@ class RestoreTests(Base):
         self.assertIn('restored 2', said_text(self))
         leftovers = [p for p in self.dest.rglob('*') if p.name.startswith('.neko-restore-')]
         self.assertEqual(leftovers, [])
+
+    def test_two_restores_into_one_folder_at_once_both_end_well(self):
+        # Plan 369: a second restore started while the first writes the same file waited
+        # for nothing, removed the first one's half-written file (same name) and the first
+        # then failed it with "No such file or directory".
+        self.card.add(A_2001, SAND * 100000)
+        real = tool.write_checked
+        second, said = [], []
+
+        def run_second():
+            second.append(tool.main([CARD_FLAG, str(self.card.top), 'restore', str(self.dest)], say=said.append))
+
+        other = threading.Thread(target=run_second)
+
+        def first_writes(*args):
+            if not other.is_alive() and not second:
+                other.start()
+                time.sleep(0.5)  # the second restore reaches the same file meanwhile
+            return real(*args)
+
+        with mock.patch.object(tool, 'write_checked', first_writes):
+            self.assertEqual(self.run_tool('restore', str(self.dest)), 0)
+            other.join(10)
+        self.assertIn('restored    2001/a.jpg', said_text(self))
+        self.assertEqual(second, [0])
+        self.assertIn('same file   2001/a.jpg', '\n'.join(said))
+        self.assertEqual((self.dest / A_2001).read_bytes(), SAND * 100000)
 
     def test_a_damaged_file_leaves_no_output(self):
         # A33.

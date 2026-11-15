@@ -40,6 +40,7 @@ Exit status: 0 all well, 1 something was damaged, missing, skipped or not restor
 """
 
 import argparse
+import contextlib
 import dataclasses
 import errno
 import hashlib
@@ -669,6 +670,27 @@ def from_the_drive(fd):
         pass  # a system without it: the check reads what Linux has, as before
 
 
+@contextlib.contextmanager
+def folder_held(dir_fd):
+    """This folder to this restore alone while it places one file. Two restores into one
+    folder at once removed each other's half-written file (its name is the record's) and
+    said "No such file or directory", or "is there already" for the file the other placed.
+    The second now waits for the first's file, then finds it there as "same file". The
+    lock goes with the process, so one that was killed never leaves it held."""
+    try:
+        import fcntl
+
+        fcntl.flock(dir_fd, fcntl.LOCK_EX)
+        held = True
+    except (ImportError, OSError):
+        held = False  # a system or folder without locks: one restore at a time, as before
+    try:
+        yield
+    finally:
+        if held:
+            fcntl.flock(dir_fd, fcntl.LOCK_UN)
+
+
 def remove_leftover(dir_fd, temp):
     """Remove `temp` when an earlier restore left it: one stopped hard (killed, a power
     cut) while writing this file cannot remove it, and the next run then failed the file
@@ -949,14 +971,15 @@ def restore_one(card, rec, dest_fd, rename, overwrite, listing=None):
     try:
         d = descend(dest_fd, parts[:-1], listing=listing)
         try:
-            clash(d, parts[-1], listing)
-            named = target in overwrite
-            if exists(d, parts[-1]) and not named:
-                if same_file(d, parts[-1], rec):
-                    return SAME_FILE, target  # restored before (by a run without --progress)
-                raise Taken('a file is there already')
-            copy_verified(card, rec, d, temp)
-            publish(d, temp, parts[-1], named, listing)
+            with folder_held(d):
+                clash(d, parts[-1], listing)
+                named = target in overwrite
+                if exists(d, parts[-1]) and not named:
+                    if same_file(d, parts[-1], rec):
+                        return SAME_FILE, target  # restored before (by a run without --progress)
+                    raise Taken('a file is there already')
+                copy_verified(card, rec, d, temp)
+                publish(d, temp, parts[-1], named, listing)
         finally:
             os.close(d)
         return 'restored', target
@@ -978,12 +1001,13 @@ def renamed_copy(card, rec, dest_fd, temp, listing=None):
     try:
         d = descend(dest_fd, [RENAMED], listing=listing)
         try:
-            if exists(d, other):
-                if same_file(d, other, rec):
-                    return SAME_FILE, '%s/%s' % (RENAMED, other)
-                return 'skipped', THERE_ALREADY % (RENAMED + '/' + other)
-            copy_verified(card, rec, d, temp)
-            publish(d, temp, other, False, listing)
+            with folder_held(d):
+                if exists(d, other):
+                    if same_file(d, other, rec):
+                        return SAME_FILE, '%s/%s' % (RENAMED, other)
+                    return 'skipped', THERE_ALREADY % (RENAMED + '/' + other)
+                copy_verified(card, rec, d, temp)
+                publish(d, temp, other, False, listing)
         finally:
             os.close(d)
     except (Taken, Invalid) as why:
