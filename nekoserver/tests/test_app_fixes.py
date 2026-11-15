@@ -121,6 +121,113 @@ class HardwareVideoMemoryTests(unittest.TestCase):
             self.assertEqual(hv.previous(report), {'jellyfin': hv.SWITCHED_OFF})
 
 
+class ChipTakenOutTests(unittest.TestCase):
+    """Deep check 403: the graphics chip is gone between two setup runs (taken out,
+    switched off in the BIOS, the drives moved to another PC). The report said "software"
+    while Jellyfin was still set to the chip NekoServer had chosen: it does not fall back
+    by itself, and whatever had to be converted did not play."""
+
+    CHIP = HardwareVideoMemoryTests.CHIP
+    CONFIG = {'media': {'services': ['jellyfin']}}
+
+    def setUp(self):
+        from modules import hardware_video as hv
+
+        self.hv, self.said = hv, []
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = Path(folder.name)
+        self.report = self.folder / 'reports/hardware-video.json'
+        self.report.parent.mkdir()
+        self.jellyfin = Jellyfin()
+        for patch in (
+            mock.patch('account_store.enabled', return_value=True),
+            mock.patch('account_store.get', return_value={'username': 'u', 'password': 'p' * 12}),
+            mock.patch('account_setup.wait'),
+            mock.patch('account_setup.Client', lambda app: self.jellyfin),
+            mock.patch.object(hv, 'container', return_value='abc123'),  # the app runs
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def with_chip(self, check):
+        before = self.hv.previous(self.report)
+        done = self.hv.apps_on(self.CONFIG, self.CHIP, self.said.append, check=check, before=before)
+        self.hv.outcome(mock.Mock(), self.report, self.CHIP, done, before)
+        return done['jellyfin']
+
+    def without_chip(self):
+        ctx = mock.Mock(apply=True, config={'data_mount': str(self.folder), **self.CONFIG})
+        ctx.log = self.said.append
+        with (
+            mock.patch.object(self.hv.gpu, 'graphics', return_value=[]),
+            mock.patch.object(self.hv.gpu, 'render_nodes', return_value=[]),
+            mock.patch.object(self.hv, 'GPU_DEVICE', self.folder / 'dri'),
+        ):
+            self.hv.run(ctx)
+        return self.hv.previous(self.report).get('jellyfin')
+
+    works = staticmethod(lambda app, node: {'codecs': ['h264'], 'encode': True, 'qsv': True})
+
+    def test_the_setting_setup_made_is_taken_back_and_made_again_when_the_chip_returns(self):
+        self.assertEqual(self.with_chip(self.works), 'on (qsv)')
+        self.assertEqual(self.without_chip(), self.hv.CHIP_AWAY)
+        self.assertEqual(self.jellyfin.accel, 'none')  # Jellyfin converts in software now
+        self.assertTrue(any('switched off in the app' in line for line in self.said), self.said)
+        # A second run without the chip changes nothing and remembers the same.
+        self.assertEqual(self.without_chip(), self.hv.CHIP_AWAY)
+        # The chip is back: on again, never taken for "you switched it off".
+        self.assertEqual(self.with_chip(self.works), 'on (qsv)')
+        self.assertEqual(self.jellyfin.accel, 'qsv')
+
+    def test_a_chip_that_no_longer_passes_the_apps_check_is_taken_back_too(self):
+        self.assertEqual(self.with_chip(self.works), 'on (qsv)')
+        self.assertEqual(self.with_chip(lambda app, node: None), self.hv.CHIP_AWAY)
+        self.assertEqual(self.jellyfin.accel, 'none')
+        self.assertEqual(self.with_chip(self.works), 'on (qsv)')
+
+    def test_a_setting_you_chose_yourself_is_never_taken_back(self):
+        self.jellyfin.accel = 'vaapi'  # chosen in Jellyfin before setup ever ran
+        self.assertEqual(self.with_chip(self.works), 'kept your setting (vaapi)')
+        self.assertEqual(self.without_chip(), 'kept your setting (vaapi)')
+        self.assertEqual(self.jellyfin.accel, 'vaapi')
+        # Nor one you changed after setup made its own.
+        self.report.write_text(json.dumps({'apps': {'jellyfin': 'on (qsv)'}}))
+        self.assertEqual(self.without_chip(), 'kept your setting (vaapi)')
+        self.assertEqual(self.jellyfin.accel, 'vaapi')
+
+    def test_switched_off_by_you_stays_your_choice(self):
+        self.assertEqual(self.with_chip(self.works), 'on (qsv)')
+        self.jellyfin.accel = 'none'
+        self.assertEqual(self.without_chip(), self.hv.SWITCHED_OFF)
+        self.assertEqual(self.with_chip(self.works), self.hv.SWITCHED_OFF)
+
+    def test_an_app_that_cannot_be_reached_is_said_and_tried_again_next_time(self):
+        self.assertEqual(self.with_chip(self.works), 'on (qsv)')
+        with mock.patch('account_setup.wait', side_effect=RuntimeError('jellyfin: unavailable')):
+            self.assertEqual(self.without_chip(), 'on (qsv)')  # still what it is set to
+        self.assertTrue(any('still set to convert video on the graphics chip (qsv)' in line for line in self.said))
+        self.assertEqual(self.jellyfin.accel, 'qsv')
+        self.assertEqual(self.without_chip(), self.hv.CHIP_AWAY)
+
+    def test_an_app_that_is_not_running_is_left_for_the_next_run(self):
+        self.assertEqual(self.with_chip(self.works), 'on (qsv)')
+        with mock.patch.object(self.hv, 'container', return_value=None):
+            self.assertEqual(self.without_chip(), 'on (qsv)')
+        self.assertEqual(self.jellyfin.accel, 'qsv')
+
+    def test_immichs_setting_is_taken_back_the_same_way(self):
+        immich = mock.Mock(headers={})
+        settings = {'ffmpeg': {'accel': 'qsv', 'accelDecode': True}}
+        immich.call.side_effect = lambda endpoint, method='GET', payload=None: (
+            {'isAdmin': True, 'accessToken': 't'} if endpoint == '/api/auth/login' else settings
+        )
+        state = self.hv.immich_back_to_software({'username': 'u', 'password': 'p'}, immich, 'qsv')
+        self.assertEqual(state, self.hv.CHIP_AWAY)
+        self.assertEqual(immich.call.call_args_list[2], mock.call('/api/system-config', 'PUT', settings))
+        self.assertEqual(settings['ffmpeg']['accel'], 'disabled')
+
+
 def chip_run(plain_ok, low_power_ok, entries=('VAEntrypointEncSliceLP',)):
     """docker as hardware video calls it: vainfo, then the test encodes."""
     lines = 'VAProfileH264Main : VAEntrypointVLD\n' + ''.join(f'VAProfileH264Main : {e}\n' for e in entries)
