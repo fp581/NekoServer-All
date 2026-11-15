@@ -5482,14 +5482,18 @@ fn usb_copy(a: &Args, check: Check, weekly: bool) -> Result<()> {
 /// incomplete; damage found by the checksum checks fails it, after everything was copied.
 fn copy_to_usb(run: &UsbRun) -> Result<Option<Value>> {
     let dest = &run.dest;
+    // From here every folder and file made on the USB drive first checks it is still
+    // mounted: unplugged mid-copy, the copy stops instead of filling the system disk
+    // through the empty folder it was mounted on.
+    // Held before the checks that it is the USB drive, not after: a drive that dropped
+    // out between those checks and the hold left the hold on the system disk's empty
+    // folder, and every photo was copied onto the system disk (deep check 528, on loop
+    // drives: 317 MB there, and each later copy refused the folder as not empty).
+    let _usb = common::expect_drive(dest)?;
     run.still()?;
     // Also when someone else mounted it: no private copy onto a readable drive.
     require_private_mount(dest, &run.fstype)?;
     run.drives()?;
-    // From here every folder and file made on the USB drive first checks it is still
-    // mounted: unplugged mid-copy, the copy stops instead of filling the system disk
-    // through the empty folder it was mounted on.
-    let _usb = common::expect_drive(dest)?;
     let mut photos = None;
     if let Some(source) = &run.source {
         common::stage("copying photos and videos to the USB drive");
@@ -6799,6 +6803,23 @@ mod tests {
         assert!(body[asked..].starts_with(
             "run.answering() {\n        return execute_keeping(Some(&run.data), \"external\""
         ));
+    }
+    /// Deep check 528, on loop drives: the USB drive dropped out just after the copy had
+    /// checked it was mounted and before it held the drive; the hold then took the system
+    /// disk's empty folder for the drive, and every photo was copied onto the system disk.
+    #[test]
+    fn the_usb_drive_is_held_before_it_is_checked() {
+        let source = include_str!("backup.rs");
+        let start = source.find("fn copy_to_usb(run: &UsbRun)").unwrap();
+        let copy = &source[start..start + source[start..].find("\n}\n").unwrap()];
+        let held = copy.find("common::expect_drive(dest)?").unwrap();
+        for check in [
+            "run.still()?",
+            "require_private_mount(dest",
+            "run.drives()?",
+        ] {
+            assert!(held < copy.find(check).unwrap(), "{check}");
+        }
     }
     #[test]
     fn the_usb_drive_checked_on_a_nas_is_the_device_mounted() {
