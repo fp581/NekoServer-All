@@ -1088,6 +1088,11 @@ fn waiting_line(who: &str, max: Duration) -> String {
         plural(max.as_secs().div_ceil(60), "minute", "minutes")
     )
 }
+/// Whether `e` says that a job waited its whole time for another job's lock.
+pub fn waited_out(e: &Error) -> bool {
+    e.to_string().contains(WAITED_OUT)
+}
+const WAITED_OUT: &str = "was still running after";
 /// What a job fails with when the other job was still at work after `max`.
 fn still_held(path: &Path, max: Duration) -> Error {
     let who = holder(path);
@@ -1097,7 +1102,7 @@ fn still_held(path: &Path, max: Duration) -> Error {
         .map(|first| first.to_uppercase().chain(who).collect::<String>())
         .unwrap_or_default();
     Error::new(&format!(
-        "{who} was still running after {}, so this job did not start (the other one holds {}). It runs at its next time; if the other job never ends, restart the PC",
+        "{who} {WAITED_OUT} {}, so this job did not start (the other one holds {}). It runs at its next time; if the other job never ends, restart the PC",
         plural(max.as_secs() / 60, "minute", "minutes"),
         path.display()
     ))

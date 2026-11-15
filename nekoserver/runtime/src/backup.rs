@@ -3145,9 +3145,21 @@ fn gave_way(e: &Error) -> bool {
 fn monthly_check_keeps(e: &Error) -> bool {
     gave_way(e) || !e.to_string().starts_with(INTEGRITY)
 }
-/// The weekly USB copy gave way to the monthly run, which copies the drive itself.
+/// A job gave way to the monthly run: the weekly USB copy (the monthly run copies the
+/// drive itself), or a nightly job that waited its 3 hours for it (MONTHLY_SKIP).
 pub fn yielded(e: &Error) -> bool {
-    e.to_string().starts_with(MONTHLY_YIELD)
+    let said = e.to_string();
+    said.starts_with(MONTHLY_YIELD) || said.starts_with(MONTHLY_SKIP)
+}
+/// Said by a nightly or weekly job that waited its 3 hours while the monthly update
+/// still held the jobs' lock. On the 1st the monthly run keeps that lock for its whole
+/// run (up to 18 hours), so every job of that night failed with an alert, though nothing
+/// was wrong (deep check, D2). Not a failure: no alert, the report stays as it was.
+const MONTHLY_SKIP: &str = "Skipped for the monthly update";
+fn monthly_skip() -> Error {
+    Error::new(&format!(
+        "{MONTHLY_SKIP}: it was still running after this job had waited 3 hours for it, and only one of them runs at a time. Nothing failed and there is nothing to do: this job runs again at its next time"
+    ))
 }
 /// Said when the weekly USB copy finds the monthly run at work: no failure, the drive
 /// gets its copy from the monthly run and the weekly copy runs again next week.
@@ -3488,7 +3500,23 @@ fn ssd_takes_writes(data: &Path) -> Result<()> {
 }
 fn recovery_lock(data: &Path) -> Result<fs::File> {
     let wait = std::time::Duration::from_secs(3 * 3600);
-    common::shared_lock_wait(&data.join("installer/recovery.lock"), wait, wait)
+    recovery_lock_within(&data.join("installer/recovery.lock"), wait, &unit_state)
+}
+/// The jobs' lock, waited for at most `wait`. A wait that ran out while the monthly
+/// update was at work (`state` gives a unit's systemd state) is a skipped night, said
+/// as that (monthly_skip), not a failure.
+fn recovery_lock_within(
+    lock: &Path,
+    wait: std::time::Duration,
+    state: &dyn Fn(&str) -> String,
+) -> Result<fs::File> {
+    common::shared_lock_wait(lock, wait, wait).map_err(|e| {
+        if common::waited_out(&e) && monthly_run_at_work(state) {
+            monthly_skip()
+        } else {
+            e
+        }
+    })
 }
 /// `coordinate` for what needs only the SSD: starting Immich again after its weekly
 /// pause. Immich and the lock live on the SSD, so a HDD that dropped out (the likeliest
@@ -4856,15 +4884,20 @@ fn unit_state(unit: &str) -> String {
 /// neither of its services at work (`state` gives a unit's systemd state).
 fn monthly_admission(state: &dyn Fn(&str) -> String, journal: &Path) -> Result<()> {
     no_unfinished_update_at(journal)?;
-    for unit in [
-        "nekoserver-maintenance.service",
-        "nekoserver-maintenance-resume.service",
-    ] {
-        if service_busy(&state(unit)) {
-            return Err(Error::new(MONTHLY_YIELD));
-        }
+    if monthly_run_at_work(state) {
+        return Err(Error::new(MONTHLY_YIELD));
     }
     Ok(())
+}
+/// The monthly run, or the service that finishes one, is at work (`state` gives a
+/// unit's systemd state).
+fn monthly_run_at_work(state: &dyn Fn(&str) -> String) -> bool {
+    [
+        "nekoserver-maintenance.service",
+        "nekoserver-maintenance-resume.service",
+    ]
+    .iter()
+    .any(|unit| service_busy(&state(unit)))
 }
 /// The weekly copy and the monthly run never overlap. The weekly copy checks, holding
 /// the USB drive's lock, that no monthly run has started (also one that started while
@@ -9929,6 +9962,47 @@ mod tests {
         let weekly = &weekly[..weekly.find("\n}\n").unwrap()];
         assert!(weekly.contains("Err(e) if gave_way(&e) => Err(e)"));
         assert!(include_str!("main.rs").contains("if common::postponed(&e) || backup::yielded(&e)"));
+        let _ = fs::remove_dir_all(root);
+    }
+    /// D2: on the 1st the monthly run holds the jobs' lock for its whole run (up to 18
+    /// hours); the nightly backups waited 3 hours, then failed with an alert. A job that
+    /// waited out the monthly run is skipped for that night and says so: no failure, no
+    /// alert, its report as it was. Waiting out any other job is still a failure.
+    #[test]
+    fn a_nightly_job_that_waited_out_the_monthly_run_is_skipped_not_failed() {
+        let root = scratch("monthly-holds-the-lock");
+        let lock = root.join("recovery.lock");
+        let held = common::lock(&lock).unwrap(); // the monthly run, at work
+        let short = std::time::Duration::from_millis(30);
+        let monthly = |unit: &str| {
+            if unit == "nekoserver-maintenance.service" {
+                "activating".to_string()
+            } else {
+                "inactive".to_string()
+            }
+        };
+        let skipped = recovery_lock_within(&lock, short, &monthly).unwrap_err();
+        let said = skipped.to_string();
+        assert!(said.starts_with("Skipped for the monthly update"), "{said}");
+        assert!(
+            said.contains("Nothing failed") && said.contains("next time"),
+            "{said}"
+        );
+        assert!(yielded(&skipped) && gave_way(&skipped), "{said}");
+        // Its report says what it said before the run.
+        let old = json!({"job":"music","status":"pass","last_success":160.0});
+        let row = running_row("music", 200.0, &old);
+        assert_eq!(settled_report(row, &old, &Err(skipped), &gave_way), old);
+        // Another job (no monthly run at work) held it all that time: a failure, as before.
+        let idle = |_: &str| "inactive".to_string();
+        let failed = recovery_lock_within(&lock, short, &idle).unwrap_err();
+        assert!(
+            common::waited_out(&failed) && !gave_way(&failed),
+            "{failed}"
+        );
+        // The lock free again: taken, whatever the monthly service's state.
+        drop(held);
+        assert!(recovery_lock_within(&lock, short, &monthly).is_ok());
         let _ = fs::remove_dir_all(root);
     }
     /// The monthly run tolerates a USB drive it could not check (full, or not mounting),
