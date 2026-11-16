@@ -592,7 +592,9 @@ def verify_project(config, app, quarantined=False):
     service = 'immich-server' if project == 'immich' else project
     root = Path(config['data_mount'])
     manifest = safe_path(root / 'compose' / project / 'compose.yaml')
-    check(manifest.is_file())
+    stopped = NotRunning(f'{store.CATALOG[project][0]} is not running: the step that starts it did not finish')
+    if not manifest.is_file():
+        raise stopped  # its step stopped before it was set up at all (Immich's release not found, say)
     ids = docker(
         [
             'ps',
@@ -606,7 +608,7 @@ def verify_project(config, app, quarantined=False):
     if not ids:
         # Said as what it is: "identity check did not match" sent a beginner to sign in to
         # an app that never started (then asked to finish it by hand, again and again).
-        raise NotRunning(f'{store.CATALOG[project][0]} is not running: the step that starts it did not finish')
+        raise stopped
     check(len(ids) == 1 and re.fullmatch(r'[a-f0-9]{12,64}', ids[0]))
     values = json.loads(docker(['inspect', ids[0]]))
     check(isinstance(values, list) and len(values) == 1)

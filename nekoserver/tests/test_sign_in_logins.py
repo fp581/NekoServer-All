@@ -276,8 +276,11 @@ class StepTests(unittest.TestCase):
             parts.append((title, steps))
             return set()
 
+        import account_setup
+
         with mock.patch.object(guided_setup, 'checkpoint', checkpoint), mock.patch.object(guided_setup, 'part', part):
-            accounts.finish_pending(ctx, ['jellyfin'])
+            with mock.patch.object(account_setup, 'running', return_value=True):  # Jellyfin runs, refused its login
+                accounts.finish_pending(ctx, ['jellyfin'])
             links = {'jellyfin': 'https://neko.ts.net:8443/', 'navidrome': 'https://neko.ts.net:8446/'}
             with (
                 mock.patch.object(gateway_tailnet.phone_guide, 'write_page', return_value='/tmp/page.html'),
@@ -332,6 +335,20 @@ class StepTests(unittest.TestCase):
             # Nothing was refused: the next run does not ask "did not take the saved login.
             # What now?" of an app that never ran (seen for eleven apps in the lab).
             self.assertNotIn(mock.call(config, 'jellyfin', state='needs_setup'), updated.call_args_list)
+            # Immich's step stopped before its Compose file was written (its release could
+            # not be looked up): not running either, not "identity check did not match".
+            said.clear()
+            with (
+                mock.patch.object(account_setup, 'docker', return_value=''),
+                mock.patch.object(account_store, 'get', saved),
+                mock.patch.object(account_store, 'update'),
+            ):
+                self.assertEqual(
+                    account_setup.provision(config, ['immich'], output=said.append, client_factory=mock.Mock()),
+                    ['immich'],
+                )
+                self.assertFalse(account_setup.running(config, 'immich'))
+            self.assertIn('Immich is not running', next(line for line in said if 'not verified' in line))
             # A running app that refused its login still gets the page.
             with (
                 mock.patch.object(account_setup, 'running', return_value=True),
