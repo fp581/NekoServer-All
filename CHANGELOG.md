@@ -31,6 +31,11 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 - **Immich follows a time zone changed after its first setup**, as every other schedule and app already did.
 - **A dashboard PIN asked again and left empty is no longer shown by "Show login".**
 
+### Fixed: photos every day
+- **After a broken SSD, RECOVERY.md sends you to rebuild Immich from the weekly database copies on the HDD**, with the exact commands, checked to bring back every account, album and photo. It sent you to upload the photos in the browser, which puts them all in one account and loses albums, faces and the family's logins; and Immich's own restore steps fail on NekoServer's copy.
+- **A drive filling up with the photos on it says that photos deleted in Immich free their room only after 30 days in its Trash**, and how to empty it.
+- **An unchanged weekly photo list is said in plain words** ("the 100000 files are you have now the same…").
+
 ### Fixed: a film from request to the TV
 - **Finished downloads end, so they no longer fill the drive over time.** Sonarr, Radarr and Lidarr remove a finished download only after qBittorrent stops it at a seeding limit, and qBittorrent had none, so every torrent was shared for ever: a film deleted or upgraded still took its space, and with your own folder every film was stored twice. When qBittorrent has no seeding limit of any kind, setup now sets "share ratio 2 or 7 days, then stop" and says so; a limit you set is left as it is.
 - **A film Radarr imports shows in Jellyfin within minutes**, not up to 12 hours later: libraries setup makes now watch their folders, and those made before are switched to it (their other options kept).
