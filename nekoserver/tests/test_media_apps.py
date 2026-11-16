@@ -449,7 +449,9 @@ class StepTests(unittest.TestCase):
             self.assertIn('cloud', keys)
             Path(hdd, 'backups/media-applications/snapshot-1-1').mkdir(parents=True)
             self.assertIn('apps', [key for key, _ in recovery_wizard.menu(config)])
-        self.assertEqual(recovery_wizard.menu(settings()), recovery_wizard.MENU)
+        # Everything but the music backup's line, which is there only with such a backup.
+        everything = [item for item in recovery_wizard.MENU if item[0] != 'music']
+        self.assertEqual(recovery_wizard.menu(settings()), everything)
 
 
 class RuntimeHandOffTests(unittest.TestCase):

@@ -2210,11 +2210,18 @@ def restore_music(config, prompt, output):
     if account(uid) is None:
         handed = no_such_account(uid, target)
     else:
-        give_to(target, uid, gid)
-        if Path(target).parent == restore_home(config):
-            os.chown(Path(target).parent, 0, gid)
-            os.chmod(Path(target).parent, 0o750)
-        handed = [f'The folder and its files now belong to {account(uid)[0]}, the account the music apps run as.']
+        name = account(uid)[0]
+        try:
+            give_to(target, uid, gid)
+            if Path(target).parent == restore_home(config):
+                os.chown(Path(target).parent, 0, gid)
+                os.chmod(Path(target).parent, 0o750)
+            handed = [f'The folder and its files now belong to {name}, the account the music apps run as.']
+        except OSError as exc:
+            handed = [
+                f'They belong to root ({exc.strerror}), so the music apps can\'t read them yet. Run:',
+                f'  sudo chown -R {name}: "{target}"',
+            ]
     say(
         output,
         f'\nDone: {file_count(count)} copied to {target} (checksums verified)',
