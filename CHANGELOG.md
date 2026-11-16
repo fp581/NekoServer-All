@@ -31,6 +31,10 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 - **Immich follows a time zone changed after its first setup**, as every other schedule and app already did.
 - **A dashboard PIN asked again and left empty is no longer shown by "Show login".**
 
+### Fixed: a film from request to the TV
+- **Finished downloads end, so they no longer fill the drive over time.** Sonarr, Radarr and Lidarr remove a finished download only after qBittorrent stops it at a seeding limit, and qBittorrent had none, so every torrent was shared for ever: a film deleted or upgraded still took its space, and with your own folder every film was stored twice. When qBittorrent has no seeding limit of any kind, setup now sets "share ratio 2 or 7 days, then stop" and says so; a limit you set is left as it is.
+- **A film Radarr imports shows in Jellyfin within minutes**, not up to 12 hours later: libraries setup makes now watch their folders, and those made before are switched to it (their other options kept).
+
 ### Fixed: Ask Neko's answers
 - **Ask Neko is told what to do about each problem, the urgent ones first**, not only their titles.
 - **"Is everything backed up?" gets a true answer**: backups waiting for a missing drive were given as fine, and jobs that copy nothing were counted as backups.
