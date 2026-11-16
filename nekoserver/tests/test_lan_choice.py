@@ -1,6 +1,7 @@
 """LAN folder sharing (Samba) and the LAN HTTPS gateway share one home-network choice,
 so a fresh setup with automatic LAN settings finishes Samba on the first pass."""
 
+import os
 import sys
 import tempfile
 import unittest
@@ -562,8 +563,9 @@ class SambaHowToOpenTests(unittest.TestCase):
     leaves out), and no guide or line of setup said what to type instead, on Windows, a
     Mac or Linux: a person who looked under Network found nothing."""
 
-    def run_to_the_end(self, mode='lan', **more):
-        """What setup said; the share file it wrote is kept in self.written."""
+    def run_to_the_end(self, mode='lan', write=False, **more):
+        """What setup said; the share file it wrote is kept in self.written. `write`:
+        "samba_media_write"."""
         logged = []
         with tempfile.TemporaryDirectory() as d:
             media = Path(d, 'media')
@@ -572,10 +574,17 @@ class SambaHowToOpenTests(unittest.TestCase):
             ctx = SimpleNamespace(
                 config={
                     'data_mount': str(Path(d) / 'ssd'),
+                    # The apps' user and group: accounts this PC has, as setup's own are.
+                    'media': {'uid': os.getuid(), 'gid': os.getgid()},
                     **more,
                     'media_mount': str(media),
                     'gateway': {'lan_ip': '192.168.1.20', 'lan_cidr': '192.168.1.0/24'},
-                    'networking': {'share_mode': mode, 'tailnet_only': True, 'shares': {'Media': 'library'}},
+                    'networking': {
+                        'share_mode': mode,
+                        'tailnet_only': True,
+                        'shares': {'Media': 'library'},
+                        'samba_media_write': write,
+                    },
                     'photos': {'deploy_immich': False},
                     'media_groups': {'movies': True},
                 },
@@ -675,6 +684,29 @@ class SambaFilmsElsewhereTests(unittest.TestCase):
         self.assertIn('[Media]\n   path = <tmp>/ssd/library\n', self.written)
         self.assertIn('Shares: Media.', said)
         self.assertIn('RequiresMountsFor=<tmp>/media <tmp>/ssd/library\n', self.guard)
+
+
+class SambaFilesOfTheAppsTests(unittest.TestCase):
+    """Deep check 794, seen with a real smbd: with the shares another account's than the
+    apps' ("samba_user"), a film copied into the writable Media share was that account's,
+    0744 in a 2755 folder (Samba's own masks), and Radarr, as the apps' user, got
+    "Permission denied" renaming it; without that account in the apps' group the copy
+    itself was refused. Files that come in now belong to the apps' account."""
+
+    run_to_the_end = SambaHowToOpenTests.run_to_the_end
+
+    def test_what_comes_in_through_a_writable_share_is_the_apps(self):
+        import grp
+        import pwd
+
+        apps = pwd.getpwuid(os.getuid()).pw_name, grp.getgrgid(os.getgid()).gr_name
+        self.run_to_the_end(media_apps={'movies': True, 'music': True})
+        self.assertNotIn('force user', self.written)  # read-only shares: nothing comes in
+        self.run_to_the_end(media_apps={'movies': True, 'music': True}, write=True)
+        for share in ('Media', 'Music'):
+            part = self.written.split(f'[{share}]\n')[1].split('\n\n')[0]
+            self.assertIn(f'   read only = no\n   follow symlinks = no\n   force user = {apps[0]}', part)
+            self.assertIn(f'   force group = {apps[1]}', part)
 
 
 if __name__ == '__main__':

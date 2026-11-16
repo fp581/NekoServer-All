@@ -78,9 +78,10 @@ def same_names(shares):
     return [names for names in seen.values() if len(names) > 1]
 
 
-def share_config(settings, media, user, placed=None):
+def share_config(settings, media, user, placed=None, apps=None):
     """NekoServer's share file. `placed`: the shares whose folder is not on the media drive
-    ({'Music': its folder}, placed_shares); they take the place of one of the same name."""
+    ({'Music': its folder}, placed_shares); they take the place of one of the same name.
+    `apps`: (account, group) the media apps run as (apps_account)."""
     shares = settings.get('shares', {})
     if not shares and not placed:
         raise RuntimeError('At least one share is required')
@@ -123,9 +124,24 @@ def share_config(settings, media, user, placed=None):
             f'   valid users = {user}',
             f'   read only = {"no" if writable(name, settings) else "yes"}',
             '   follow symlinks = no',
-            '',
         ]
+        if writable(name, settings) and apps:
+            # A film or an album copied in belongs to the apps' account, as the files they
+            # make do: with the shares another account's ("samba_user"), Samba's own 0744
+            # left Radarr and Lidarr unable to rename, upgrade or delete what came in.
+            out += [f'   force user = {apps[0]}', f'   force group = {apps[1]}']
+        out.append('')
     return '\n'.join(out)
+
+
+def apps_account(config):
+    """(account, group) of the media apps' user and group ID ("uid" and "gid" under
+    "media"), by name, as Samba takes them."""
+    import grp
+
+    settings = config.get('media', {})
+    uid, gid = int(settings.get('uid', 1000)), int(settings.get('gid', 1000))
+    return pwd.getpwuid(uid).pw_name, grp.getgrgid(gid).gr_name
 
 
 MUSIC_SHARE = 'Music'
@@ -518,7 +534,7 @@ def run(context):
     remember_service(service, managed)
     if not shutil.which('smbd'):
         family.install(['samba'])
-    desired = share_config(settings, media, user, placed)
+    desired = share_config(settings, media, user, placed, apps_account(context.config))
     # Safest: don't modify a pre-existing unmanaged Samba installation.
     if main.exists() and not includes_ours(main.read_text()):
         unmanaged_config(main, family, context.log)
