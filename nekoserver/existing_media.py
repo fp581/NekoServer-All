@@ -125,9 +125,32 @@ NO_NEW_FILES = {
     'owner': 'A file the apps\' account ({uid}:{gid}) wrote to {path} belongs to {said} there: the NAS maps every '
     'account to one of its own, and the apps could not change their own files later. Switch that mapping off '
     'for this PC on the NAS, or choose another folder for new {what}.',
+    # A drive from Windows or a camera: see FIX_WINDOWS.
+    'windows': 'A file the apps\' account ({uid}:{gid}) wrote to {path} belongs to {said} there, so the apps '
+    'could not change their own files later. {fix} Or choose another folder for new {what}.',
 }
 FIX_ON_NAS = 'On the NAS, give this PC (or the account {uid}:{gid}) access to the shared folder.'
 FIX_LOCAL = 'Give the account {uid}:{gid} access to it yourself (for example add it to the folder\'s group).'
+# A drive from Windows or a camera (NTFS, exFAT, FAT) keeps no Linux owners or
+# permissions: whoever mounted it owns every file, and chown, chmod or a group change
+# nothing. The one fix is the mount's own options (deep check 816: an NTFS drive of films
+# was told "the NAS maps every account", or to add the account to the folder's group).
+FIX_WINDOWS = (
+    'The drive is formatted for Windows (NTFS, exFAT or FAT), which keeps no Linux owners: its owner is set when '
+    'it is mounted. Add  uid={uid},gid={gid}  to its mount options (Disks: "Edit Mount Options", or its line in '
+    '/etc/fstab), restart the PC, then try again.'
+)
+# How such a drive shows when mounted (ntfs-3g and exFAT's FUSE driver show as fuseblk).
+WINDOWS_STYLE = ('ntfs', 'ntfs3', 'exfat', 'vfat', 'msdos', 'fuseblk')
+
+
+def fix_for(fstype, uid, gid):
+    """What to do so the apps' account may use a folder on a drive of this kind."""
+    if fstype in NETWORK:
+        return FIX_ON_NAS.format(uid=uid, gid=gid)
+    return (FIX_WINDOWS if fstype in WINDOWS_STYLE else FIX_LOCAL).format(uid=uid, gid=gid)
+
+
 WHAT = {'movies': 'movies', 'tv': 'shows', 'music': 'music'}
 
 
@@ -352,7 +375,7 @@ def read_only(path, statvfs=os.statvfs):
 def new_files_answer(real, found, category, uid, gid, as_user, statvfs):
     """Whether new files can be saved in the folder: {'ok': True}, or why not."""
     named = {'path': real, 'share': found['share'] or found['mount'], 'what': WHAT[category], 'uid': uid, 'gid': gid}
-    fix = (FIX_ON_NAS if found['fstype'] in NETWORK else FIX_LOCAL).format(uid=uid, gid=gid)
+    fix = fix_for(found['fstype'], uid, gid)
     if read_only(real, statvfs):
         return {'ok': False, 'code': 'read_only', 'reason': NO_NEW_FILES['read_only'].format(**named)}
     said = as_user(uid, gid, real, True)
@@ -362,7 +385,8 @@ def new_files_answer(real, found, category, uid, gid, as_user, statvfs):
     if kind == 'write' and 'read-only' in detail.lower():
         return {'ok': False, 'code': 'read_only', 'reason': NO_NEW_FILES['read_only'].format(**named)}
     code = 'owner' if kind == 'owner' else 'no_write'
-    return {'ok': False, 'code': code, 'reason': NO_NEW_FILES[code].format(said=detail or said, fix=fix, **named)}
+    words = 'windows' if code == 'owner' and found['fstype'] in WINDOWS_STYLE else code
+    return {'ok': False, 'code': code, 'reason': NO_NEW_FILES[words].format(said=detail or said, fix=fix, **named)}
 
 
 def check(
@@ -401,7 +425,7 @@ def check(
         add = nfs_exports.fstab_line(found['share'], found['mount'], found['fstype'])
     said = as_user(uid, gid, real, False)
     if said:
-        fix = (FIX_ON_NAS if found['fstype'] in NETWORK else FIX_LOCAL).format(uid=uid, gid=gid)
+        fix = fix_for(found['fstype'], uid, gid)
         raise Refused('unreadable', uid=uid, gid=gid, path=real, said=said.partition(' ')[2] or said, fix=fix)
     answer = new_files_answer(real, found, category, uid, gid, as_user, statvfs) if new_files else None
     if answer and answer['ok']:

@@ -234,6 +234,30 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(found['new_files']['code'], 'owner')
         self.assertIn('belongs to 65534:65534', found['new_files']['reason'])
 
+    def test_a_drive_from_windows_is_told_to_set_its_owner_when_mounted(self):
+        # Deep check 816, for real with an exFAT drive through FUSE (NTFS through ntfs-3g
+        # mounts the same way, as fuseblk): every file belongs to root, whoever wrote it.
+        # It was told "the NAS maps every account", and NTFS through the kernel's driver
+        # (files root's, 755) to add the account to the folder's group: neither can work.
+        self.pc.fstab.write_text(f'UUID=1 / ext4 defaults 0 1\nUUID=AB12 {self.pc.nas} ntfs nofail 0 0\n')
+        for fstype in ('fuseblk', 'ntfs3', 'exfat', 'vfat'):
+            self.pc.mounts[str(self.pc.nas)] = ('/dev/sdd1', fstype)
+            for said, code in (('owner 0:0', 'owner'), ('write Permission denied', 'no_write')):
+                found, _ = self.pc.check(new_files=True, said={'write': said})
+                reason = found['new_files']['reason']
+                self.assertEqual(found['new_files']['code'], code)
+                self.assertNotIn('NAS', reason, fstype)
+                self.assertNotIn('group', reason, fstype)
+                self.assertIn('formatted for Windows', reason)
+                self.assertIn('uid=1000,gid=1000  to its mount options', reason)
+                self.assertIn('choose another folder for new movies', reason)
+            refused = self.refusal(said={'read': 'read Permission denied'})
+            self.assertIn('uid=1000,gid=1000  to its mount options', str(refused))
+        # A Linux drive keeps its own advice.
+        self.pc.mounts[str(self.pc.nas)] = ('/dev/sdd1', 'ext4')
+        found, _ = self.pc.check(new_files=True, said={'write': 'write Permission denied'})
+        self.assertIn("add it to the folder's group", found['new_files']['reason'])
+
     def test_the_systems_and_nekoservers_own_folders_are_never_media(self):
         for folder, code in (
             ('films', 'not_a_folder'),
