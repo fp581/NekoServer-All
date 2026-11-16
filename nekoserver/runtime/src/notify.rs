@@ -40,6 +40,10 @@ fn label(id: &str) -> Option<String> {
         "notifications:delivery" => {
             return Some("Phone alerts could not be delivered for a while".into())
         }
+        "cards:quiet" => {
+            let days = crate::collect::cards_reminder_days();
+            return Some(format!("Backup cards: no card written for {days:.0} days"));
+        }
         _ => {}
     }
     let (kind, key) = id.split_once(':')?;
@@ -112,6 +116,7 @@ fn label(id: &str) -> Option<String> {
             "updates" => "Weekly app updates",
             "update_check" => "Daily update check",
             "upgrade" => "NekoServer upgrade",
+            "cards" => "Backup cards",
             _ => return None,
         },
         "app" => match key {
@@ -204,6 +209,7 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
         .map(|(id, ..)| format!("app:{id}"));
     let jobs = crate::collect::JOBS
         .iter()
+        .chain([&crate::collect::CARDS_JOB])
         .map(|(id, ..)| format!("backup:{id}"));
     let drives = ["data_ssd", "media_hdd", "os"]
         .iter()
@@ -414,12 +420,23 @@ fn retired(s: &Value) -> BTreeSet<String> {
             .filter(|r| r["status"] == "disabled")
             .filter_map(|r| r["id"].as_str().map(|id| format!("backup:{id}"))),
     );
+    // Backup cards switched off: their job and their reminder are gone with them.
+    if fresh_without_cards(s) {
+        out.insert("backup:cards".into());
+        out.insert(crate::collect::CARDS_QUIET.into());
+    }
     // The outside monitor switched off: nothing to reach any more.
     if s["heartbeat"]["timer"]["installed"] == false {
         out.insert("heartbeat:delivery".into());
     }
     out
 }
+fn fresh_without_cards(s: &Value) -> bool {
+    s["cards"]["enabled"] != true
+}
+/// Alerts the phone gets without a sound, even when new: a reminder of something to do
+/// some day, not a problem.
+const QUIET: [&str; 1] = [crate::collect::CARDS_QUIET];
 /// What the status lists now, for alerts about things that may go away on purpose.
 struct Listed {
     arrays: BTreeSet<String>,
@@ -473,7 +490,9 @@ fn reminder(entry: &Value, level: &str) -> bool {
 fn priority(events: &[(String, bool, String)], entries: &Value) -> u8 {
     let news: Vec<_> = events
         .iter()
-        .filter(|(id, recovered, level)| *recovered || !reminder(&entries[id.as_str()], level))
+        .filter(|(id, recovered, level)| {
+            *recovered || !(reminder(&entries[id.as_str()], level) || QUIET.contains(&id.as_str()))
+        })
         .collect();
     if news
         .iter()
@@ -1467,6 +1486,31 @@ mod review_tests {
         assert!(
             events.is_empty() && state["entries"]["share:movies"].is_null(),
             "{events:?}"
+        );
+    }
+
+    /// Backup cards (0.52.0): their job and their reminder have labels for the phone;
+    /// the reminder makes no sound, even when it is news; both go quietly away when the
+    /// switch is turned off.
+    #[test]
+    fn the_backup_cards_reminder_is_sent_without_a_sound() {
+        assert_eq!(
+            label("backup:cards").as_deref(),
+            Some("Backup cards: backup needs attention")
+        );
+        assert_eq!(
+            label("cards:quiet").as_deref(),
+            Some("Backup cards: no card written for 30 days")
+        );
+        let entries = json!({});
+        let quiet = vec![("cards:quiet".to_string(), false, "warning".to_string())];
+        assert_eq!(priority(&quiet, &entries), 2);
+        let full = vec![("backup:cards".to_string(), false, "warning".to_string())];
+        assert_eq!(priority(&full, &entries), 3);
+        let gone = retired(&json!({"backups": []}));
+        assert!(gone.contains("backup:cards") && gone.contains("cards:quiet"));
+        assert!(
+            !retired(&json!({"backups": [], "cards": {"enabled": true}})).contains("cards:quiet")
         );
     }
 }

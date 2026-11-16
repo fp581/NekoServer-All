@@ -144,6 +144,8 @@ pub fn save(place: &Place, store: &Store, seen: &Seen) -> Result<Value> {
     let status = json!({
         "format": FORMAT,
         "updated_at": now,
+        // Since when the set exists, for the reminder before anything was written.
+        "started_at": if old["started_at"].is_number() { old["started_at"].clone() } else { json!(now) },
         "set_name": name,
         "cards": cards,
         "files_on_cards": on,

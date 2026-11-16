@@ -158,11 +158,13 @@ fn a_real_card_is_enrolled_from_the_page_and_filled_by_the_job() {
     );
     assert!(!result.committed.is_empty() && !result.waiting.is_empty());
     let counts = status::count(&store, &cands).unwrap();
-    let mut seen = status::Seen::default();
-    seen.plugged = vec![1];
-    seen.full = vec![1];
-    seen.wrote = true;
-    seen.counts = Some(counts);
+    let seen = status::Seen {
+        plugged: vec![1],
+        full: vec![1],
+        wrote: true,
+        counts: Some(counts),
+        ..status::Seen::default()
+    };
     let shown = status::save(&place, &store, &seen).unwrap();
     assert_eq!(
         job::left_out(&written, &skipped, &shown),
