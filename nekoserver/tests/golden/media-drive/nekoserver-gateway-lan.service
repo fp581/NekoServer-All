@@ -2,10 +2,11 @@
 Description=NekoServer LAN HTTPS gateway
 Wants=network-online.target
 After=network-online.target
-StartLimitIntervalSec=10min
+StartLimitIntervalSec=1800s
 StartLimitBurst=6
 RequiresMountsFor=/srv/nekoserver /mnt/nekoserver-media
 [Service]
+TimeoutStartSec=300s
 User=caddy
 Group=caddy
 Environment=XDG_DATA_HOME=/srv/nekoserver/gateway/caddy-state

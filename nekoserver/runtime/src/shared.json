@@ -213,6 +213,10 @@
       "tailnet": 8447
     }
   ],
+  "gateway_start": {
+    "_about": "How long the home-network gateway's start check (startup.rs wait_for_lan) waits for this server's home-network address to appear before it refuses. After a power cut the PC is up before the router hands out addresses again; refused at once, the gateway used up its tries and the home addresses stayed down until someone started it. The gateway's unit (gateway_tools.unit) gives the check this long.",
+    "address_wait_seconds": 240
+  },
   "cats": {
     "_about": "The dashboard's cats (DASHBOARD.md, \"The cat\"): each mood has a big animation (\"home\": Home's status cat, the Processes cat, and the stand-in when a small one can't be fetched), a small animation and a still (\"pages\"). The runtime serves exactly these files, setup installs them.",
     "home": ["happy", "playful", "resting", "sleeping", "curious", "afraid", "listening", "breezy", "grooming"],

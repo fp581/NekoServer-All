@@ -478,22 +478,32 @@ def lan_model(config, portal_root):
     }
 
 
+# How long the start check waits for the home-network address to appear (shared.json).
+ADDRESS_WAIT = SHARED['gateway_start']['address_wait_seconds']
+GATEWAY_TRIES = 6
+
+
 def unit(config, code, state):
     data = config['data_mount']
     media = config['media_mount']
     guard = str(code / 'nekoserver-runtime') + ' gateway-guard'
+    # Each try may wait ADDRESS_WAIT for the address, then 10 s before the next one: the
+    # limit's window holds all the tries, so they still end.
+    window = GATEWAY_TRIES * (ADDRESS_WAIT + 60)
     return (
         '[Unit]\nDescription=NekoServer LAN HTTPS gateway\nWants=network-online.target\nAfter=network-online.target\n'
         # A refusal of the start check (ExecStartPre) is a failure Restart= retries, and
         # RestartPreventExitStatus= looks only at the main process: every 10 s it stayed
-        # under systemd's own limit (5 in 10 s) and retried for ever. Six tries, about a
-        # minute, then it shows as failed on the dashboard (Starts by itself). Drive return,
-        # the NAS check and setup start it again.
-        'StartLimitIntervalSec=10min\nStartLimitBurst=6\nRequiresMountsFor='
+        # under systemd's own limit (5 in 10 s) and retried for ever. Six tries, then it
+        # shows as failed on the dashboard (Starts by itself). Drive return, the NAS check
+        # and setup start it again.
+        f'StartLimitIntervalSec={window}s\nStartLimitBurst={GATEWAY_TRIES}\nRequiresMountsFor='
         + data
         + ' '
         + media
-        + '\n[Service]\nUser=caddy\nGroup=caddy\nEnvironment=XDG_DATA_HOME='
+        # The start check waits for the home-network address (after a power cut the router
+        # answers minutes after the PC is up): it is given that long, and a little more.
+        + f'\n[Service]\nTimeoutStartSec={ADDRESS_WAIT + 60}s\nUser=caddy\nGroup=caddy\nEnvironment=XDG_DATA_HOME='
         + str(state)
         + '\nEnvironment=XDG_CONFIG_HOME='
         + str(state)

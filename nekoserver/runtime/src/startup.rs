@@ -5,7 +5,7 @@ use crate::{
     Args,
 };
 use serde_json::Value;
-use std::net::Ipv4Addr;
+use std::{net::Ipv4Addr, time::Duration};
 fn private(ip: u32) -> bool {
     ip >> 24 == 10 || ip >> 20 == 0xac1 || ip >> 16 == 0xc0a8
 }
@@ -273,17 +273,60 @@ fn held_back(cfg: &serde_json::Value, held: bool) -> Option<String> {
         )
     })
 }
+/// This PC's connections and their addresses (`ip -j address show up`).
+fn interfaces() -> Result<Value> {
+    let (code, text) = common::command(&["ip", "-j", "address", "show", "up"], 10)?;
+    if code != 0 {
+        return Err(Error::new("LAN inspection failed"));
+    }
+    Ok(serde_json::from_str(&text)?)
+}
+/// How often the start check looks again for the home-network address.
+const LAN_POLL: Duration = Duration::from_secs(5);
+/// How long it waits for it (shared.json gateway_start; the unit allows that long).
+fn lan_wait() -> Duration {
+    Duration::from_secs(
+        common::SHARED["gateway_start"]["address_wait_seconds"]
+            .as_u64()
+            .expect("shared.json says how long the gateway waits for its address"),
+    )
+}
+/// `lan`, waiting up to `wait` for the saved home-network address to appear. After a
+/// power cut the PC is up before the router: the address comes a few minutes later.
+/// Refused at once, the gateway used up its six tries in about a minute, gave up, and the
+/// apps' home addresses stayed down until someone started it by hand. Any other refusal
+/// (settings that name no usable address, the connections unreadable) is at once.
+fn wait_for_lan(
+    cfg: &Value,
+    wait: Duration,
+    rows: impl Fn() -> Result<Value>,
+    sleep: impl Fn(Duration),
+) -> Result<()> {
+    let tries = wait.as_secs() / LAN_POLL.as_secs();
+    for done in 0..tries {
+        match rows().and_then(|rows| lan(cfg, &rows)) {
+            Err(e) if e.to_string() == LAN_GONE => {
+                if done == 0 {
+                    println!(
+                        "Waiting up to {} s for this server's home-network address {} (after a power cut the router may still be starting)",
+                        wait.as_secs(),
+                        cfg["gateway"]["lan_ip"].as_str().unwrap_or("")
+                    );
+                }
+                sleep(LAN_POLL);
+            }
+            other => return other,
+        }
+    }
+    rows().and_then(|rows| lan(cfg, &rows))
+}
 pub fn run(a: &Args, gateway: bool) -> Result<()> {
     let cfg = backup::open_job(a, 64000)?.cfg;
     if let Some(reason) = held_back(&cfg, crate::nas_watch::held()) {
         return Err(Error::new(&reason));
     }
     if gateway {
-        let (code, text) = common::command(&["ip", "-j", "address", "show", "up"], 10)?;
-        if code != 0 {
-            return Err(Error::new("LAN inspection failed"));
-        }
-        lan(&cfg, &serde_json::from_str(&text)?)?;
+        wait_for_lan(&cfg, lan_wait(), interfaces, std::thread::sleep)?;
     } else {
         copies(&cfg)?;
     }
@@ -302,6 +345,36 @@ mod tests {
         // Only the backup drive on a NAS: the check never holds the apps, nothing is refused.
         let local = json!({"storage":{"data_ssd":{"uuid":"a"},"media_hdd":{"uuid":"b"}}});
         assert!(held_back(&local, true).is_none());
+    }
+    #[test]
+    fn the_gateway_waits_for_an_address_the_router_has_not_given_yet() {
+        // After a power cut the router answers a few minutes after the PC is up.
+        let cfg = json!({"gateway":{"lan_ip":"192.168.1.20","lan_cidr":"192.168.1.0/24"}});
+        let on = json!([{"ifname":"enp3s0","addr_info":[{"family":"inet","scope":"global","local":"192.168.1.20","prefixlen":24}]}]);
+        let looks = std::cell::Cell::new(0);
+        let rows = || {
+            looks.set(looks.get() + 1);
+            Ok(if looks.get() < 10 {
+                json!([])
+            } else {
+                on.clone()
+            })
+        };
+        let slept = std::cell::Cell::new(0);
+        let wait = lan_wait();
+        assert!(wait >= Duration::from_secs(120), "{wait:?}");
+        assert!(wait_for_lan(&cfg, wait, rows, |_| slept.set(slept.get() + 1)).is_ok());
+        assert_eq!((looks.get(), slept.get()), (10, 9));
+        // Never there: refused as gone (what the dashboard's own check says), after the wait.
+        slept.set(0);
+        let gone = wait_for_lan(&cfg, wait, || Ok(json!([])), |_| slept.set(slept.get() + 1));
+        assert_eq!(gone.unwrap_err().to_string(), LAN_GONE);
+        assert_eq!(slept.get() as u64, wait.as_secs() / LAN_POLL.as_secs());
+        // Settings that name no usable address are refused at once.
+        slept.set(0);
+        let bad = json!({"gateway":{"lan_ip":"8.8.8.8","lan_cidr":"8.8.0.0/16"}});
+        assert!(wait_for_lan(&bad, wait, || Ok(on.clone()), |_| slept.set(1)).is_err());
+        assert_eq!(slept.get(), 0);
     }
     #[test]
     fn physical_lan_only() {
