@@ -102,7 +102,8 @@
     "drive_section": "Check or repair a drive",
     "check_drive": "Check a drive that stopped taking new files",
     "password_list": "The list of app passwords",
-    "fix_copies": "Fix damaged backup copies"
+    "fix_copies": "Fix damaged backup copies",
+    "cards": "From backup cards"
   },
   "release_tag": "v?([0-9]{1,6})\\.([0-9]{1,6})\\.([0-9]{1,6})(-?[Bb]eta)?",
   "immich_targets": {

@@ -18,6 +18,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / 'tests'))
 
 import explanations  # noqa: E402
 import native_runtime  # noqa: E402
@@ -369,6 +370,68 @@ class PageInBrowserTests(unittest.TestCase):
                 self.assertEqual(enrol[0]['mount'], '/run/media/amy/CARD')
                 self.assertEqual((enrol[0]['number'], enrol[0]['acknowledged']), (2, True))
                 self.assertLessEqual(seen['widths'][0], seen['widths'][1], 'no sideways scrolling')
+
+
+class RecoveryMenuTests(unittest.TestCase):
+    """The recovery menu's "From backup cards": the card plugged in, read with the
+    release's copy of the tool every card carries, into a new folder."""
+
+    def setUp(self):
+        import recovery_wizard
+        import test_neko_restore
+
+        self.wizard = recovery_wizard
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.tmp = Path(folder.name)
+        card = test_neko_restore.Card(self.tmp / 'card')
+        card.add('2001/beach.jpg', b'sand and sea')
+        card.add('2002/cake.jpg', b'candles')
+        self.mounts = self.tmp / 'mounts'
+        self.mounts.write_text(f'/dev/sdb1 {self.tmp}/card exfat rw 0 0\n/dev/sda1 / ext4 rw 0 0\n')
+        self.config = {
+            'data_mount': str(self.tmp / 'ssd'),
+            'media_mount': str(self.tmp / 'hdd'),
+            'cards': {'enabled': True},
+        }
+        roots = mock.patch('neko_restore.CARD_ROOTS', (str(self.tmp) + '/',))
+        roots.start()
+        self.addCleanup(roots.stop)
+
+    def run_tool(self, card, *args, capture=True):
+        """The tool in this process (its card places are the test's folder)."""
+        import neko_restore
+
+        said = []
+        status = neko_restore.main(['--card', str(card), *args], say=said.append)
+        return status, '\n'.join(said)
+
+    def test_it_is_offered_while_cards_are_on_and_restores_the_card_plugged_in(self):
+        with mock.patch.object(neko_common, 'server_exists', return_value=True):
+            self.assertIn('cards', dict(self.wizard.menu(self.config)))
+            self.assertNotIn('cards', dict(self.wizard.menu({**self.config, 'cards': {'enabled': False}})))
+        self.assertEqual(self.wizard.MENU[-1][1].split(':')[0], 'From backup cards')
+        self.assertEqual(self.wizard.plugged_cards(self.mounts), [str(self.tmp / 'card')])
+        target = self.tmp / 'restored'
+        said = []
+        answers = iter(['beach', 'yes'])
+        with (
+            mock.patch.object(self.wizard, 'card_tool', self.run_tool),
+            mock.patch.object(self.wizard, 'restore_target', return_value=target),
+            mock.patch.object(self.wizard, 'asked', side_effect=lambda *a, **k: next(answers) == 'yes'),
+        ):
+            self.wizard.restore_from_cards(self.config, lambda q='': next(answers), said.append, self.mounts)
+        self.assertEqual((target / '2001/beach.jpg').read_bytes(), b'sand and sea')
+        self.assertFalse((target / '2002/cake.jpg').exists(), 'only what was asked for')
+        text = '\n'.join(said)
+        self.assertIn('Example set - 001', text)
+        self.assertIn(f'Done: the files are in {target}.', text)
+
+    def test_no_card_plugged_in_says_how_to_connect_one(self):
+        said = []
+        self.wizard.restore_from_cards(self.config, lambda q='': '', said.append, self.tmp / 'none')
+        self.assertTrue(said[0].startswith('No backup card is plugged in and mounted.'))
+        self.assertIn('sudo mount -o ro', said[1])
 
 
 if __name__ == '__main__':

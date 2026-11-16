@@ -39,6 +39,7 @@ import nfs_exports
 from neko_restore import read_at_most
 from neko_common import typed_folder as typed_folder_named
 from neko_common import (
+    cards_enabled,
     nextcloud_enabled,
     OPERATION_LOCK,
     SHARED,
@@ -89,6 +90,7 @@ DRIVE_SECTION = SHARED['recovery_menu']['drive_section']
 CHECK_NAME = SHARED['recovery_menu']['check_drive']
 FIX_NAME = SHARED['recovery_menu']['fix_copies']
 PASSWORD_LIST = SHARED['recovery_menu']['password_list']
+FROM_CARDS = SHARED['recovery_menu']['cards']
 
 # The recovery menu's two parts (its first question).
 SECTIONS = [
@@ -105,6 +107,7 @@ MENU = [
     ('host', 'Steam and Samba settings, from a nightly backup'),
     ('music', 'Music files, from the nightly music backup'),
     ('monthly', 'The settings and databases of every app, from a monthly snapshot (for rebuilding a server)'),
+    ('cards', f'{FROM_CARDS}: photos, videos and documents from an SD card or USB stick of the set'),
 ]
 
 # Section 3: a check and a repair are different actions, and so is fixing backup copies.
@@ -136,6 +139,9 @@ def menu(config):
     }
 
     def offered(key):
+        if key == 'cards':
+            # Offered while backup cards are on, and after, while the server keeps a set.
+            return cards_enabled(config) or (Path(config['data_mount']) / SHARED['cards']['folder']).is_dir()
         if key == 'music':
             # Offered where there is a music backup to restore (it runs only on some
             # servers: music_backed_up), also after Music was switched off.
@@ -3570,6 +3576,111 @@ def run(prompt=input, output=print, config_path=None):
         return menu_loop(config, prompt, output)
 
 
+# ---- from backup cards (0.52.0): the restore tool every card carries ----------------------
+# The release's own copy of the tool: the same program as NekoBackup/tools/neko-restore.py
+# on the card. The one on the card is never run here as root: anyone who held the card
+# could have changed it.
+RESTORE_TOOL = ROOT / 'neko_restore.py'
+NO_CARD = (
+    'No backup card is plugged in and mounted. Plug one in: on the desktop it opens by itself. '
+    'Without a desktop, mount it read-only (lsblk -f shows its name, sdb1 say):',
+    '  sudo mkdir -p /mnt/card && sudo mount -o ro /dev/sdb1 /mnt/card',
+    'then choose this again.',
+)
+
+
+def unescaped(field):
+    """A mount point as /proc/self/mounts writes it ("My\\040Card" for "My Card")."""
+    return re.sub(r'\\([0-7]{3})', lambda m: chr(int(m.group(1), 8)), field)
+
+
+def plugged_cards(mounts='/proc/self/mounts'):
+    import neko_restore  # where it reads a card with --card: mounted there only
+
+    """The folders where a backup card is mounted now: a NekoBackup folder with its
+    identity.json at the top of a mount under /media, /run/media or /mnt."""
+    try:
+        lines = Path(mounts).read_text().splitlines()
+    except OSError:
+        return []
+    found = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        where = unescaped(parts[1])
+        if where.startswith(neko_restore.CARD_ROOTS) and (Path(where) / 'NekoBackup' / 'identity.json').is_file():
+            found.append(where)
+    return sorted(set(found))
+
+
+def card_tool(card, *args, capture=True):
+    """The restore tool on `card`: (exit status, what it said). 0: all fine; 1: something
+    was damaged, missing, skipped or not restored (its lines say what); 2: the card or
+    the command could not be used."""
+    done = subprocess.run(
+        [sys.executable, str(RESTORE_TOOL), '--card', str(card), *args],
+        capture_output=capture,
+        text=True,
+        timeout=None,
+        check=False,
+    )
+    return done.returncode, ((done.stdout or '') + (done.stderr or '')).strip()
+
+
+def restore_from_cards(config, prompt, output, mounts='/proc/self/mounts'):
+    """The files of one backup card, into a new folder, with the tool the card carries
+    (CARD-RECOVERY.md is the way without NekoServer). Nothing on the card or on the
+    server is changed; a file whose place is taken is skipped, never overwritten."""
+    cards = plugged_cards(mounts)
+    if not cards:
+        say(output, *NO_CARD)
+        return
+    card = cards[0] if len(cards) == 1 else choose('Which card?', [(c, c) for c in cards], prompt, output)
+    if card is None:
+        return
+    status, info = card_tool(card, 'info')
+    if status == 2:
+        output('That card cannot be read: ' + (info.splitlines()[-1] if info else 'the tool said nothing'))
+        return
+    say(output, '', info)
+    word = prompt('Only files whose folder or name holds this word (press Enter for every file on the card): ')
+    word = (word or '').strip()
+    target = restore_target(config, f'card-{stamp()}', prompt, output)
+    if target is None:
+        output(NOTHING_CHANGED)
+        return
+    rows = [
+        ('Restore', FROM_CARDS),
+        ('From', f'the card mounted at {card}'),
+        ('Which files', f'those with "{word}" in their folder or name' if word else 'every file on this card'),
+        ('Into', f'{target} (a new folder; each file is checked against its checksum)'),
+        ('Overwritten', 'nothing. Nothing on the card or in your apps is changed.'),
+        APPS_KEEP_RUNNING,
+    ]
+    if not review(rows, prompt, output):
+        output(NOTHING_CHANGED)
+        return
+    make_home(config, target)
+    Path(target).mkdir(parents=True, exist_ok=True)
+    output(COPYING)
+    args = ['restore', str(target), *(['--search', word] if word else [])]
+    with part_way(target, output):
+        status, _ = card_tool(card, *args, capture=False)
+    if status == 0:
+        say(
+            output,
+            f'\nDone: the files are in {target}.',
+            'The other cards of the set hold the rest: plug in the next one and choose this again.',
+        )
+    else:
+        say(
+            output,
+            f'\nThe restore into {target} finished, but not every file came back: the lines above say which and why.',
+            'Files whose place was taken were skipped, never overwritten (CARD-RECOVERY.md, "Restore").',
+        )
+
+
 RESTORES = {
     'photos': restore_photos,
     'cloud': restore_cloud,
@@ -3578,6 +3689,7 @@ RESTORES = {
     'host': lambda c, p, o: restore_nightly(c, 'host', p, o),
     'music': restore_music,
     'monthly': restore_monthly,
+    'cards': restore_from_cards,
 }
 DRIVE_ACTIONS = {
     'check': check_read_only,
