@@ -104,6 +104,34 @@ def matching(values, category, name, kind):
     return None
 
 
+# Jellyfin sees a new file at once only with its library's "real time monitoring" on. A
+# library made through Jellyfin's API has it off (LibraryOptions' own default, unlike
+# Jellyfin's Add Library page), and its library scan runs every 12 hours: a film Radarr
+# had put in the library stayed out of Jellyfin, and "requested" in Seerr, for up to half
+# a day (deep check 691). Libraries setup makes get it on; one made by an earlier setup
+# is switched on (said in the log).
+WATCHED = {'EnableRealtimeMonitor': True}
+
+
+def new_library_options():
+    """The body of Jellyfin's "add a library" call: real time monitoring on."""
+    return {'LibraryOptions': dict(WATCHED)}
+
+
+def watch_library(client, library, log=print):
+    """Switch real time monitoring on in a library setup made, when Jellyfin says it is
+    off. A library whose options Jellyfin does not give is left as it is."""
+    options = library.get('LibraryOptions')
+    if not isinstance(options, dict) or options.get('EnableRealtimeMonitor') is not False:
+        return
+    payload = {'Id': library['ItemId'], 'LibraryOptions': {**options, **WATCHED}}
+    client.call('/Library/VirtualFolders/LibraryOptions', 'POST', payload)
+    log(
+        f'jellyfin: real time monitoring switched on for the library "{library.get("Name", "")}": '
+        'new films and episodes now appear as soon as they arrive, not at the next scan (every 12 hours)'
+    )
+
+
 def sign_in(client, user, secret):
     """Sign the client in as a Jellyfin administrator (the password is not kept)."""
     if not secret:
@@ -154,10 +182,12 @@ def jellyfin(client, media, apply, username, password):
                 query = urllib.parse.urlencode(
                     {'name': name, 'collectionType': kind, 'paths': '/data/' + category, 'refreshLibrary': 'true'}
                 )
-                client.call('/Library/VirtualFolders?' + query, 'POST', {})
+                client.call('/Library/VirtualFolders?' + query, 'POST', new_library_options())
                 existing = matching(folders(client), category, name, kind)
                 if not existing:
                     raise RuntimeError('Library creation was not retained')
+            if apply:
+                watch_library(client, existing)
             ids.append(str(existing['ItemId']))
             results.append(row('jellyfin:' + category, 'pass'))
         except SetupRequired as exc:

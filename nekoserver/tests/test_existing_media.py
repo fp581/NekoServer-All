@@ -46,6 +46,7 @@ class Server:
             str(self.media): ('/dev/sdb1', 'ext4'),
             str(self.ssd): ('/dev/sdc1', 'ext4'),
         }
+        self.uuids = {}  # {mount folder: its filesystem's UUID}, where a test needs one
         self.bound = {}  # mount points bound by "mount", as the kernel's table would have them
         # What each bound point is bound to, where it is not the folder the settings name.
         self.bound_from = {}
@@ -69,7 +70,8 @@ class Server:
 
     def find(self, column, path, by='--mountpoint'):
         mount = self.holding(path)
-        return {'TARGET': mount, 'SOURCE': self.mounts[mount][0], 'FSTYPE': self.mounts[mount][1]}[column]
+        said = {'TARGET': mount, 'SOURCE': self.mounts[mount][0], 'FSTYPE': self.mounts[mount][1]}
+        return {**said, 'UUID': self.uuids.get(mount)}[column]
 
     def kind(self, path):
         return self.find('FSTYPE', path)
@@ -161,6 +163,35 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(refused.code, 'not_permanent')
         self.assertIn('only until the next restart', str(refused))
 
+    def test_films_on_the_drive_chosen_as_the_media_hdd_are_not_sent_to_fstab(self):
+        # The HDD just chosen as the media HDD, opened by the desktop (udisks) at
+        # /media/<account>/media with the films on it: not in /etc/fstab. The advice to
+        # make that mount permanent led to a line for the drive, which then stopped the
+        # storage step ("/etc/fstab already has a line for this drive"): a circle.
+        desktop = self.pc.top / 'desktop-media'
+        films = desktop / 'Movies'
+        (films / 'Alien (1979)').mkdir(parents=True)
+        self.pc.mounts[str(desktop)] = ('/dev/sdb1', 'ext4')
+        self.pc.uuids[str(desktop)] = 'hdd-uuid'  # the media HDD's, as the storage page saved it
+        refused = self.refusal(folder=films)
+        self.assertEqual(refused.code, 'nekoserver_drive')
+        said = str(refused)
+        self.assertIn('the drive you chose as the media HDD', said)
+        self.assertNotIn('Mount at system startup', said)
+        self.assertIn('Press Enter here for now', said)
+        media = self.pc.media
+        self.assertIn(f'sudo mv "{media}/Movies"/* "{media}/library/movies"/', said)
+        self.assertIn('needs no room', said)
+        # Shows go to their own library folder; music to the music library (on the SSD here).
+        self.assertIn(f'"{media}/library/tv"/', str(self.refusal(folder=films, category='tv')))
+        self.pc.config['locations'] = {'music': 'ssd'}
+        music = str(self.refusal(folder=films, category='music'))
+        self.assertIn(f'"{self.pc.ssd}/library/music"/', music)
+        self.assertNotIn('needs no room', music)
+        # Another drive the desktop opened is the person's own: what to do about that.
+        self.pc.uuids[str(desktop)] = 'their-own'
+        self.assertEqual(self.refusal(folder=films).code, 'not_permanent')
+
     def test_a_folder_the_apps_account_cannot_read_says_who_and_where_to_fix_it(self):
         refused = self.refusal(said={'read': 'read Permission denied'})
         self.assertEqual(refused.code, 'unreadable')
@@ -202,6 +233,30 @@ class CheckTests(unittest.TestCase):
         found, _ = self.pc.check(new_files=True, said={'write': 'owner 65534:65534'})
         self.assertEqual(found['new_files']['code'], 'owner')
         self.assertIn('belongs to 65534:65534', found['new_files']['reason'])
+
+    def test_a_drive_from_windows_is_told_to_set_its_owner_when_mounted(self):
+        # Deep check 816, for real with an exFAT drive through FUSE (NTFS through ntfs-3g
+        # mounts the same way, as fuseblk): every file belongs to root, whoever wrote it.
+        # It was told "the NAS maps every account", and NTFS through the kernel's driver
+        # (files root's, 755) to add the account to the folder's group: neither can work.
+        self.pc.fstab.write_text(f'UUID=1 / ext4 defaults 0 1\nUUID=AB12 {self.pc.nas} ntfs nofail 0 0\n')
+        for fstype in ('fuseblk', 'ntfs3', 'exfat', 'vfat'):
+            self.pc.mounts[str(self.pc.nas)] = ('/dev/sdd1', fstype)
+            for said, code in (('owner 0:0', 'owner'), ('write Permission denied', 'no_write')):
+                found, _ = self.pc.check(new_files=True, said={'write': said})
+                reason = found['new_files']['reason']
+                self.assertEqual(found['new_files']['code'], code)
+                self.assertNotIn('NAS', reason, fstype)
+                self.assertNotIn('group', reason, fstype)
+                self.assertIn('formatted for Windows', reason)
+                self.assertIn('uid=1000,gid=1000  to its mount options', reason)
+                self.assertIn('choose another folder for new movies', reason)
+            refused = self.refusal(said={'read': 'read Permission denied'})
+            self.assertIn('uid=1000,gid=1000  to its mount options', str(refused))
+        # A Linux drive keeps its own advice.
+        self.pc.mounts[str(self.pc.nas)] = ('/dev/sdd1', 'ext4')
+        found, _ = self.pc.check(new_files=True, said={'write': 'write Permission denied'})
+        self.assertIn("add it to the folder's group", found['new_files']['reason'])
 
     def test_the_systems_and_nekoservers_own_folders_are_never_media(self):
         for folder, code in (

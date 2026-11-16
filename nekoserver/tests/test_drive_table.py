@@ -560,6 +560,16 @@ class StoragePageTests(DriveListCase):
             self.assertEqual(
                 storage.asked_location(ctx, "Immich's photos", 'ssd', room, False, never, key='photos'), 'media'
             )
+            # The page offers drives 2 and 3 as "a drive of their own" too (the roles are
+            # chosen on the same page). Picked in the window once they became the app SSD
+            # and the backups' drive, they were refused with the terminal's "Type a number
+            # from 1 to 3" (seen in the Ubuntu lab): they are those two drives.
+            setup_progress._page['answers'].update({'photos': 'drive:3', 'movies': 'drive:2', 'music': 'drive:8'})
+            asked = []
+            with mock.patch.object(storage, 'page_fields', return_value=('photos', 'movies', 'music')):
+                places = storage.wished_places(SimpleNamespace(config=ctx.config, log=asked.append), INVENTORY)
+            self.assertEqual((places['photos'], places['movies'], places['music']['number']), ('media', 'ssd', 8))
+            self.assertFalse([line for line in asked if line.startswith('Type a number')], asked)
             photo_backup.select_external(ctx.config, INVENTORY, never, said.append)
             self.assertEqual(ctx.config['photos']['external_backup_uuid'], 'USB0-0001')
         self.assertIsNone(setup_progress.page_shown())

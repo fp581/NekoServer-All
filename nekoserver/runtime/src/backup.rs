@@ -383,8 +383,10 @@ fn path_fits(target: &Path) -> bool {
         .max(partial_name("").len());
     folder + 1 + longest <= PATH_MAX
 }
-/// What the job says about files left out by `path_fits` (`what`: "photos and videos").
-fn too_long_said(what: &str, files: &[String]) -> String {
+/// What the job says about files left out by `path_fits` (`what`: "photo or video",
+/// "photos and videos"): one file is said as one (deep check 485: "1 photos and videos
+/// were not backed up ... Move them").
+fn too_long_said((one, many): (&str, &str), files: &[String]) -> String {
     let mut shown = files
         .iter()
         .take(10)
@@ -394,12 +396,18 @@ fn too_long_said(what: &str, files: &[String]) -> String {
     if files.len() > 10 {
         shown += &format!(" and {} more", files.len() - 10);
     }
+    let (were, folders, they, them) = if files.len() == 1 {
+        ("was", "the folder it is in has", "its", "it")
+    } else {
+        ("were", "the folders they are in have", "their", "them")
+    };
     format!(
-        "{} {what} were not backed up because the folders they are in have such long names that their full path in the backup would be longer than Linux allows ({} bytes). Move them into a folder with a shorter path, or shorten the folder names; the next run copies them: {shown}",
-        files.len(),
+        "{} {were} not backed up because {folders} such long names that {they} full path in the backup would be longer than Linux allows ({} bytes). Move {them} into a folder with a shorter path, or shorten the folder names; the next run copies {them}: {shown}",
+        common::plural(files.len(), one, many),
         PATH_MAX + 1
     )
 }
+const PHOTOS: (&str, &str) = ("photo or video", "photos and videos");
 /// Write down the full name behind a shortened version stem (in the folder's NAMES), so
 /// a restore puts the file back under its own name.
 fn remember_name(folder: &Path, stem: &str, name: &str, apply: bool) -> Result<()> {
@@ -1138,14 +1146,21 @@ fn save_inventory(root: &Path, live: &Inventory, ledger: &Ledger, what: &str) ->
             common::plural(live.len(), "file", "files"),
             path.display()
         ),
-        Ok((path, false)) => println!(
-            "{what}: the {} you have now the same as in the last list ({}), so no new one was written",
-            common::plural(live.len(), "file is", "files are"),
-            path.display()
-        ),
+        Ok((path, false)) => println!("{what}: {}", unchanged_list_said(live.len(), &path)),
         Err(_) => println!("{what}: {}", problem.as_deref().unwrap_or_default()),
     }
     problem
+}
+/// What a run whose files are those of the last list says. Every weekly run printed "the
+/// 100000 files are you have now the same as in the last list" (deep check 729: the
+/// verb was put after the count, before "you have now").
+fn unchanged_list_said(count: usize, list: &Path) -> String {
+    let verb = if count == 1 { "is" } else { "are" };
+    format!(
+        "the {} you have now {verb} the same as in the last list ({}), so no new one was written",
+        common::plural(count, "file", "files"),
+        list.display()
+    )
 }
 /// Note that a run starts copying into the tree at `root` (inventory::begin). When the
 /// note can't be written, the run goes on and is reported incomplete.
@@ -1346,10 +1361,7 @@ fn archive_with(
         );
     }
     if !report.too_long.is_empty() {
-        println!(
-            "Archive: {}",
-            too_long_said("photos and videos", &report.too_long)
-        );
+        println!("Archive: {}", too_long_said(PHOTOS, &report.too_long));
     }
     if replaced > 0 {
         println!("Archive: {} in the way of a file that became a folder (or a folder that became a file); kept in {REPLACED}/{when} at the archive's top", common::plural(replaced, "saved file was", "saved files were"));
@@ -1640,7 +1652,9 @@ fn mirror_on(
             let named = String::from_utf8(common::bytes(path, 4096)?)
                 .map_err(|_| Error::new("Unreadable current-version note"))?;
             let folder = path.parent().unwrap_or(&source);
-            noted.insert(ledger_key(&folder.join(named.trim()), &source)?);
+            // As mark_latest wrote it: trimmed, " song.mp3"'s current copy was never
+            // checked by checksum (deep check 476).
+            noted.insert(ledger_key(&folder.join(&named), &source)?);
             notes.push(path.to_path_buf());
         }
         Ok(())
@@ -1798,10 +1812,7 @@ fn mirror_on(
     }
     report.print("Backup");
     if !report.too_long.is_empty() {
-        println!(
-            "Backup: {}",
-            too_long_said("photos and videos", &report.too_long)
-        );
+        println!("Backup: {}", too_long_said(PHOTOS, &report.too_long));
     }
     if !report.unstorable.is_empty() {
         println!(
@@ -2387,7 +2398,7 @@ fn copy_cloud_with(
         );
     }
     if !too_long.is_empty() {
-        println!("Nextcloud: {}", too_long_said("files", &too_long));
+        println!("Nextcloud: {}", too_long_said(("file", "files"), &too_long));
     }
     if !no_room.is_empty() {
         println!("Nextcloud: {}", no_room_said(&no_room, free(&root).ok()));
@@ -4402,8 +4413,7 @@ fn archive_result(data: &Path, checks: &Integrity, check: Check) -> Result<Optio
         return Err(Error::new(&problem));
     }
     // Files left out make the run incomplete, as a list of files that could not be written does.
-    let too_long =
-        (!checks.too_long.is_empty()).then(|| too_long_said("photos and videos", &checks.too_long));
+    let too_long = (!checks.too_long.is_empty()).then(|| too_long_said(PHOTOS, &checks.too_long));
     Ok(joined(
         [checks.list_problem.clone(), too_long]
             .into_iter()
@@ -5457,7 +5467,10 @@ fn usb_copy(a: &Args, check: Check, weekly: bool) -> Result<()> {
         // A drive that would not unmount is reported after the copy's own error, which
         // is the one that says what went wrong (and damage still reads as damage: the
         // monthly run stops only for an error that starts with INTEGRITY).
-        let unmounted = if mounted_here {
+        // A drive that dropped out (unplugged, or a USB hub that lost it) is unmounted
+        // already: "umount ... not mounted" was added to the report's reason, pushing
+        // what happened out of the 300 characters the dashboard shows (deep check 528).
+        let unmounted = if mounted_here && common::mounted(&run.dest) {
             success(&["umount", &run.dest.to_string_lossy()], 45)
         } else {
             Ok(())
@@ -5479,14 +5492,25 @@ fn usb_copy(a: &Args, check: Check, weekly: bool) -> Result<()> {
 /// incomplete; damage found by the checksum checks fails it, after everything was copied.
 fn copy_to_usb(run: &UsbRun) -> Result<Option<Value>> {
     let dest = &run.dest;
-    run.still()?;
-    // Also when someone else mounted it: no private copy onto a readable drive.
-    require_private_mount(dest, &run.fstype)?;
-    run.drives()?;
     // From here every folder and file made on the USB drive first checks it is still
     // mounted: unplugged mid-copy, the copy stops instead of filling the system disk
-    // through the empty folder it was mounted on.
-    let _usb = common::expect_drive(dest)?;
+    // through the empty folder it was mounted on. A failure once it is gone says so.
+    // Held before the checks that it is the USB drive, not after: a drive that dropped
+    // out between those checks and the hold left the hold on the system disk's empty
+    // folder, and every photo was copied onto the system disk (deep check 528, on loop
+    // drives: 317 MB there, and each later copy refused the folder as not empty).
+    let usb = common::expect_drive(dest)?;
+    usb.unless_gone((|| {
+        run.still()?;
+        // Also when someone else mounted it: no private copy onto a readable drive.
+        require_private_mount(dest, &run.fstype)?;
+        run.drives()?;
+        copy_onto_usb(run)
+    })())
+}
+/// `copy_to_usb` once the drive is checked and held.
+fn copy_onto_usb(run: &UsbRun) -> Result<Option<Value>> {
+    let dest = &run.dest;
     let mut photos = None;
     if let Some(source) = &run.source {
         common::stage("copying photos and videos to the USB drive");
@@ -5550,7 +5574,7 @@ fn copy_to_usb(run: &UsbRun) -> Result<Option<Value>> {
     let too_long = photos
         .as_ref()
         .filter(|p| !p.too_long.is_empty())
-        .map(|p| too_long_said("photos and videos", &p.too_long));
+        .map(|p| too_long_said(PHOTOS, &p.too_long));
     // A list of files that could not be written makes the backup incomplete too.
     let source_problem = joined(
         [
@@ -6797,6 +6821,41 @@ mod tests {
             "run.answering() {\n        return execute_keeping(Some(&run.data), \"external\""
         ));
     }
+    /// Deep check 528, the weekly copy on loop drives with the USB drive unplugged part-way:
+    /// a step that failed once the drive was gone said its raw error, and the unmount of
+    /// the drive that was no longer mounted added "umount ... not mounted" to the reason.
+    #[test]
+    fn a_usb_drive_unplugged_mid_copy_is_said_as_gone_without_an_unmount_error() {
+        let source = include_str!("backup.rs");
+        let part = |entry: &str| {
+            let start = source.find(entry).unwrap();
+            &source[start..start + source[start..].find("\n}\n").unwrap()]
+        };
+        let copy = part("fn copy_to_usb(run: &UsbRun)");
+        let held = copy.find("let usb = common::expect_drive(dest)?;").unwrap();
+        assert!(copy[held..]
+            .starts_with("let usb = common::expect_drive(dest)?;\n    usb.unless_gone((|| {"));
+        assert!(copy.ends_with("copy_onto_usb(run)\n    })())"), "{copy}");
+        assert!(part("fn usb_copy(a: &Args")
+            .contains("if mounted_here && common::mounted(&run.dest) {"));
+    }
+    /// Deep check 528, on loop drives: the USB drive dropped out just after the copy had
+    /// checked it was mounted and before it held the drive; the hold then took the system
+    /// disk's empty folder for the drive, and every photo was copied onto the system disk.
+    #[test]
+    fn the_usb_drive_is_held_before_it_is_checked() {
+        let source = include_str!("backup.rs");
+        let start = source.find("fn copy_to_usb(run: &UsbRun)").unwrap();
+        let copy = &source[start..start + source[start..].find("\n}\n").unwrap()];
+        let held = copy.find("common::expect_drive(dest)?").unwrap();
+        for check in [
+            "run.still()?",
+            "require_private_mount(dest",
+            "run.drives()?",
+        ] {
+            assert!(held < copy.find(check).unwrap(), "{check}");
+        }
+    }
     #[test]
     fn the_usb_drive_checked_on_a_nas_is_the_device_mounted() {
         let source = include_str!("backup.rs");
@@ -7478,6 +7537,28 @@ mod tests {
         let note = latest_marker(&usb.join("a.jpg"));
         assert_eq!(fs::read_to_string(note).unwrap(), "a.jpg");
         assert_eq!(names(&usb), names(&hdd));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn the_weekly_mirror_checks_the_current_copy_of_a_name_with_spaces_at_its_ends() {
+        // Deep check 476: the note was trimmed, so " a.jpg"'s current copy was trusted
+        // by its date and size, and same-size damage on the USB drive stayed.
+        let root = scratch("mirror-space");
+        let (src, hdd, usb) = (root.join("src/a"), root.join("hdd"), root.join("usb"));
+        write(&src, b"AAAA");
+        keep(&src, &hdd, "upload/ a.jpg");
+        write(&src, b"BBBB");
+        keep(&src, &hdd, "upload/ a.jpg");
+        mirror(&hdd, &usb, true, Check::Quick).unwrap();
+        let current = fs::read_to_string(latest_marker(&hdd.join("upload/ a.jpg"))).unwrap();
+        assert!(current.starts_with(' '), "{current}");
+        fs::write(usb.join("upload").join(&current), b"ZZZZ").unwrap(); // same size, later
+        let (_, report) = mirror(&hdd, &usb, true, Check::Quick).unwrap();
+        assert_eq!(report.repaired, 1);
+        assert_eq!(
+            fs::read(usb.join("upload").join(&current)).unwrap(),
+            b"BBBB"
+        );
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -8806,6 +8887,22 @@ mod tests {
         fs::create_dir_all(&folder).unwrap();
         folder
     }
+    #[test]
+    fn files_too_deep_are_counted_in_words_that_fit_the_count() {
+        let two = too_long_said(PHOTOS, &["a/1.jpg".into(), "a/2.jpg".into()]);
+        assert!(
+            two.starts_with(
+                "2 photos and videos were not backed up because the folders they are in have"
+            ),
+            "{two}"
+        );
+        assert!(two.contains("Move them into"), "{two}");
+        let one = too_long_said(("file", "files"), &["a/1.txt".into()]);
+        assert!(
+            one.starts_with("1 file was not backed up because the folder it is in has"),
+            "{one}"
+        );
+    }
     /// Deep check plan 337: a file that fits where it is but whose copy (or the partial
     /// copy beside it) would be longer than Linux allows stopped the whole run with "File
     /// name too long", so nothing after it was ever backed up. It is left out and named.
@@ -8844,7 +8941,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(
-            said.contains("1 photos and videos were not backed up"),
+            said.contains("1 photo or video was not backed up because the folder it is in has")
+                && said.contains("Move it into"),
             "{said}"
         );
         // The USB copy of the archive, onto a drive whose folder is longer still.
@@ -10541,5 +10639,16 @@ mod tests {
             checked.find("no_writes(key, path, true)").unwrap()
                 < checked.find("drive_at(").unwrap()
         );
+    }
+    /// Deep check 729: the weekly run with no change since its last list said "the
+    /// 100000 files are you have now the same as in the last list".
+    #[test]
+    fn an_unchanged_list_is_said_in_plain_words() {
+        let list = Path::new("/hdd/archive/.neko-inventory/x.json.gz");
+        assert_eq!(
+            unchanged_list_said(100000, list),
+            "the 100000 files you have now are the same as in the last list (/hdd/archive/.neko-inventory/x.json.gz), so no new one was written"
+        );
+        assert!(unchanged_list_said(1, list).starts_with("the 1 file you have now is the same"));
     }
 }

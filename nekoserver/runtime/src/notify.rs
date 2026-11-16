@@ -23,7 +23,9 @@ fn label(id: &str) -> Option<String> {
         "media-stale" => return Some("Media connection checks are stale".into()),
         "media-failure" => return Some("Media connection checks failed".into()),
         "backup-key" => return Some("Monthly backups keep the app passwords unencrypted".into()),
-        "tailscale:login" => return Some("Phone access is signed out of Tailscale".into()),
+        // One id for a sign-in that ran out and one never made (collect.rs, alerts): the
+        // phone said "signed out" to a server that was never signed in (deep check 497).
+        "tailscale:login" => return Some("Phone access needs a Tailscale sign-in".into()),
         "tailscale:off" => return Some("Phone access is off: Tailscale needs you".into()),
         "tailscale:expiry" => {
             return Some("Phone access stops soon: Tailscale sign-in runs out".into())
@@ -49,6 +51,18 @@ fn label(id: &str) -> Option<String> {
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b".:-_".contains(&b));
         return plain.then(|| "Network storage box: connection lost".to_string());
+    }
+    if kind == "share" {
+        // share:<what it holds> (collect.rs share_alerts): a folder of the person's own
+        // on a network share (films or music used where they are), not answering, with
+        // the apps that use it stopped. The dashboard said it as urgent and the phone
+        // never heard of it: it had no label (deep check 497).
+        let plain = !key.is_empty()
+            && key.len() <= 20
+            && key
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b));
+        return plain.then(|| "Your shared folder on the network does not answer".to_string());
     }
     if kind == "startup" {
         // startup:<unit> (won't start after a restart) or startup:<unit>:failed.
@@ -319,6 +333,17 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
             unknown.insert(format!("nas:{}", t["target"].as_str().unwrap_or("")));
         }
     }
+    // A shared folder is back only when its check says it answers; while it is not
+    // ready (its alert left out because its drive is away, say), it has not recovered.
+    for row in s["shared_folders"]["shares"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        if row["ready"] != true {
+            unknown.insert(format!("share:{}", row["holds"].as_str().unwrap_or("")));
+        }
+    }
     if s["media"]["status"] != "current" {
         unknown.insert("media-failure".into());
     }
@@ -334,7 +359,7 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
     }
     (active, unknown, true)
 }
-fn send(cfg: &Value, runtime: &Path, message: &str, critical: bool) -> Result<()> {
+fn send(cfg: &Value, runtime: &Path, message: &str, priority: u8) -> Result<()> {
     let url = cfg["endpoint"].as_str().unwrap_or("");
     let token = if cfg.get("token").is_none() {
         ""
@@ -352,7 +377,7 @@ fn send(cfg: &Value, runtime: &Path, message: &str, critical: bool) -> Result<()
         return Err(Error::new("Invalid private notification destination"));
     }
     // JSON quoted strings also satisfy curl's double-quoted configuration syntax.
-    let mut config=format!("url = {}\nrequest = \"POST\"\nheader = \"Title: NekoServer health\"\nheader = \"Content-Type: text/plain; charset=utf-8\"\nheader = \"Priority: {}\"\ndata-binary = {}\n",serde_json::to_string(url)?,if critical{5}else{3},serde_json::to_string(message)?);
+    let mut config=format!("url = {}\nrequest = \"POST\"\nheader = \"Title: NekoServer health\"\nheader = \"Content-Type: text/plain; charset=utf-8\"\nheader = \"Priority: {}\"\ndata-binary = {}\n",serde_json::to_string(url)?,priority,serde_json::to_string(message)?);
     if !token.is_empty() {
         config.push_str(&format!(
             "header = {}\n",
@@ -399,6 +424,9 @@ fn retired(s: &Value) -> BTreeSet<String> {
 struct Listed {
     arrays: BTreeSet<String>,
     nas: BTreeSet<String>,
+    /// The shared folders checked, or None when their check could not be read (the
+    /// app SSD away, say): then none of them is known to be back, nor gone.
+    shares: Option<BTreeSet<String>>,
 }
 impl Listed {
     fn of(s: &Value) -> Self {
@@ -412,7 +440,14 @@ impl Listed {
         Listed {
             arrays: ids(&s["arrays"], "id"),
             nas: ids(&s["network_storage"]["targets"], "target"),
+            shares: s["shared_folders"]["shares"]
+                .is_array()
+                .then(|| ids(&s["shared_folders"]["shares"], "holds")),
         }
+    }
+    /// A shared folder whose check could not be read: not known to be back.
+    fn unread(&self, id: &str) -> bool {
+        id.starts_with("share:") && self.shares.is_none()
     }
     /// An array gone from the list was stopped or taken out on purpose, and a NAS
     /// connection no longer kept (its drive moved off the NAS, the setting switched off)
@@ -421,7 +456,34 @@ impl Listed {
         id.split_once(':').is_some_and(|(kind, key)| {
             (kind.starts_with("array-") && !self.arrays.contains(key))
                 || (kind == "nas" && !self.nas.contains(key))
+                || (kind == "share" && self.shares.as_ref().is_some_and(|s| !s.contains(key)))
         })
+    }
+}
+/// Is this alert a reminder: a problem already sent at this level (or more urgent), sent
+/// again by the 12-hour repeat? A problem that became urgent since is not.
+fn reminder(entry: &Value, level: &str) -> bool {
+    entry["last_sent"].is_number() && (level != "critical" || entry["sent_level"] == "critical")
+}
+/// ntfy's priority for one message: 5 (urgent: long vibrations, and through the phone's
+/// quiet hours where it allows) only for an urgent problem that is new or newly urgent; 3
+/// (the phone's normal sound) for other news; 2 (low: no sound or vibration) when the
+/// message holds only reminders. The reminders went at 5 too, so a problem first sent at
+/// 3 am woke the house again at 3 am every night until it was fixed (deep check 497).
+fn priority(events: &[(String, bool, String)], entries: &Value) -> u8 {
+    let news: Vec<_> = events
+        .iter()
+        .filter(|(id, recovered, level)| *recovered || !reminder(&entries[id.as_str()], level))
+        .collect();
+    if news
+        .iter()
+        .any(|(_, recovered, level)| !*recovered && level == "critical")
+    {
+        5
+    } else if !news.is_empty() {
+        3
+    } else {
+        2
     }
 }
 /// Pure transition logic; only successfully delivered events advance deduplication.
@@ -478,7 +540,7 @@ fn plan(
             state["entries"].as_object_mut().unwrap().remove(&id);
             continue;
         }
-        if !active.contains_key(&id) && fresh && !unknown.contains(&id) {
+        if !active.contains_key(&id) && fresh && !unknown.contains(&id) && !listed.unread(&id) {
             if state["entries"][&id]["last_sent"].is_number() {
                 // A recovery is sent once it lasted as long as a problem must before it is
                 // sent: one that lasted a moment sent RECOVERED, then the alert again
@@ -620,7 +682,7 @@ pub fn run(a: &Args) -> Result<()> {
             &cfg,
             &runtime,
             "NekoServer test: notification delivery is configured.",
-            false,
+            3,
         );
         let mut state = after_test(old, result.is_ok(), now);
         state["destination"] = json!(destination);
@@ -636,10 +698,17 @@ pub fn run(a: &Args) -> Result<()> {
     let due = delivery_due(&state["next_attempt"], now);
     let mut failed = false;
     if !events.is_empty() && due {
+        let urgency = priority(&events, &state["entries"]);
         let mut message = String::from("NekoServer health update\n");
         for (id, recovered, level) in &events {
+            // A reminder says so: it is the problem already sent, not a new one.
+            let still = if !*recovered && reminder(&state["entries"][id.as_str()], level) {
+                "still "
+            } else {
+                ""
+            };
             message.push_str(&format!(
-                "{}: {}\n",
+                "{still}{}: {}\n",
                 if *recovered {
                     "RECOVERED"
                 } else {
@@ -650,14 +719,7 @@ pub fn run(a: &Args) -> Result<()> {
         }
         message.push_str("Review the local dashboard and service logs for details.");
         state["last_attempt"] = json!(now);
-        if send(
-            &cfg,
-            &runtime,
-            &message,
-            events.iter().any(|(_, r, l)| !*r && l == "critical"),
-        )
-        .is_ok()
-        {
+        if send(&cfg, &runtime, &message, urgency).is_ok() {
             for (id, recovered, level) in &events {
                 if *recovered {
                     state["entries"].as_object_mut().unwrap().remove(id);
@@ -1263,11 +1325,13 @@ mod review_tests {
                 "integrity": crate::collect::CHECKS.iter().map(|(id, name)| json!({"id": id, "name": name, "damaged": 1})).collect::<Vec<_>>(),
                 "updates": [{"app": "immich", "name": "Immich"}, {"app": "nextcloud", "name": "Nextcloud"}],
                 "media": {"status": "stale", "counts": {"fail": 1}},
+                "shared_folders": {"held": ["jellyfin"], "shares": [{"holds": "movies", "path": "/mnt/tank/films", "share": "nas:/tank", "ready": false, "apps": ["jellyfin"]}]},
             });
             both.extend(crate::collect::alerts(&s).as_array().unwrap().clone());
         }
         let ids: BTreeSet<&str> = both.iter().filter_map(|a| a["id"].as_str()).collect();
         for id in [
+            "share:movies",
             "tailscale:login",
             "tailscale:off",
             "tailscale:expiry",
@@ -1304,6 +1368,75 @@ mod review_tests {
         let (_, events) = plan(&late, &json!({}), now, 0, 43200);
         assert!(
             events.iter().any(|e| e.0 == "monitoring-stale"),
+            "{events:?}"
+        );
+    }
+    /// Deep check 497 (a phone alert at 3 am: is it worth waking for?): the 12-hour
+    /// reminder of a problem already sent went at ntfy's urgent priority, like a new one,
+    /// so a problem first sent at night woke the phone at night every day it lasted.
+    #[test]
+    fn only_a_new_urgent_problem_is_sent_as_urgent() {
+        let snapshot = |now: f64, alerts: Value| json!({"format":"neko-dashboard-v1","generated_at":now,"alerts":alerts,"applications":[{"id":"sonarr","state":"running","health":"healthy","responding":true}],"storage":[],"backups":[],"media":{"status":"current"},"metrics":{"temperature":40}});
+        let alerts = json!([{"id":"app:jellyfin","level":"critical"}]);
+        let (state, events) = plan(
+            &snapshot(1000., alerts.clone()),
+            &json!({}),
+            1000.,
+            0,
+            43200,
+        );
+        assert_eq!(priority(&events, &state["entries"]), 5);
+        // Sent at 1000 (as run() records a delivered message), still there 12 hours on.
+        let mut sent = state;
+        sent["entries"]["app:jellyfin"]["last_sent"] = json!(1000.);
+        sent["entries"]["app:jellyfin"]["sent_level"] = json!("critical");
+        let later = 1000. + 43200.;
+        let (state, events) = plan(&snapshot(later, alerts), &sent, later, 0, 43200);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(priority(&events, &state["entries"]), 2);
+        // A new warning beside the reminder: the phone's normal sound.
+        let both =
+            json!([{"id":"app:jellyfin","level":"critical"},{"id":"app:sonarr","level":"warning"}]);
+        let (state, events) = plan(&snapshot(later, both), &sent, later, 0, 43200);
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(priority(&events, &state["entries"]), 3);
+        // Sent as a warning, urgent now: that is news, sent as urgent.
+        let mut warned = sent.clone();
+        warned["entries"]["app:jellyfin"]["sent_level"] = json!("warning");
+        let urgent = json!([{"id":"app:jellyfin","level":"critical"}]);
+        let (state, events) = plan(&snapshot(1500., urgent), &warned, 1500., 0, 43200);
+        assert_eq!(priority(&events, &state["entries"]), 5);
+    }
+    /// Deep check 497: a shared folder of films on the network not answering (Jellyfin
+    /// stopped for it) was urgent on the dashboard and never reached the phone. It does
+    /// now, and is back only once its check says it answers again.
+    #[test]
+    fn a_shared_folder_that_does_not_answer_reaches_the_phone_and_recovers_on_evidence() {
+        let snapshot = |shares: Value, alerts: Value| json!({"format":"neko-dashboard-v1","generated_at":1000.0,"alerts":alerts,"applications":[],"storage":[],"backups":[],"media":{"status":"current"},"metrics":{"temperature":40,"memory_percent":10},"shared_folders":{"shares":shares}});
+        let row = |ready: bool| json!([{"holds": "movies", "ready": ready}]);
+        let alert = json!([{"id": "share:movies", "level": "critical"}]);
+        let (_, events) = plan(&snapshot(row(false), alert), &json!({}), 1000., 0, 43200);
+        assert_eq!(
+            events,
+            vec![("share:movies".to_string(), false, "critical".to_string())]
+        );
+        let sent = json!({"format":"neko-notifications-v1","attempts":0,
+            "entries":{"share:movies":{"first_seen":0.0,"last_sent":10.0,"sent_level":"critical"}}});
+        // Its check could not be read (the app SSD away): not back.
+        let (_, events) = plan(&snapshot(Value::Null, json!([])), &sent, 1000., 0, 43200);
+        assert!(events.is_empty(), "{events:?}");
+        // Not ready, its alert left out (its drive is away): not back either.
+        let (_, events) = plan(&snapshot(row(false), json!([])), &sent, 1000., 0, 43200);
+        assert!(events.is_empty(), "{events:?}");
+        let (_, events) = plan(&snapshot(row(true), json!([])), &sent, 1000., 0, 43200);
+        assert_eq!(
+            events,
+            vec![("share:movies".to_string(), true, "recovered".to_string())]
+        );
+        // Taken out of the settings: dropped, nothing recovered.
+        let (state, events) = plan(&snapshot(json!([]), json!([])), &sent, 1000., 0, 43200);
+        assert!(
+            events.is_empty() && state["entries"]["share:movies"].is_null(),
             "{events:?}"
         );
     }

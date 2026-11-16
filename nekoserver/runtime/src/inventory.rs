@@ -131,7 +131,8 @@ fn current_copy(target: &Path) -> Option<String> {
     )
     .ok()
     .and_then(|b| String::from_utf8(b).ok())
-    .map(|s| s.trim().to_string())
+    // Taken as mark_latest wrote it (no newline): trimmed, " song.mp3" named another
+    // copy or none, and the list gave the file's first, older copy (deep check 476).
     .filter(|n| !n.is_empty() && !n.contains('/') && n != "." && n != "..")
     .filter(|n| fs::symlink_metadata(folder.join(n)).is_ok_and(|m| m.is_file()));
     noted.or_else(|| {
@@ -519,6 +520,21 @@ mod tests {
         fs::remove_file(crate::backup::latest_marker(&target)).unwrap();
         fs::write(crate::backup::latest_marker(&target), b"photo.neko-2.jpg").unwrap();
         assert_eq!(current_copy(&target).as_deref(), Some("photo.neko-2.jpg"));
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn a_name_with_spaces_at_its_ends_keeps_its_current_copy() {
+        let root = std::env::temp_dir().join(format!("neko-note-space-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        for name in [" song.mp3", "song.mp3 "] {
+            let target = root.join(name);
+            fs::write(&target, b"first").unwrap();
+            let newer = format!("{}.neko-2", name);
+            fs::write(root.join(&newer), b"second").unwrap();
+            fs::write(crate::backup::latest_marker(&target), newer.as_bytes()).unwrap();
+            assert_eq!(current_copy(&target), Some(newer));
+        }
         let _ = fs::remove_dir_all(root);
     }
     #[test]

@@ -88,6 +88,12 @@ APPS = {
             'Allow access to your photos when the phone asks.',
             'Tap the cloud icon at the top, choose the albums to back up (e.g. Recents), '
             'and turn backup on. Optionally allow backup on mobile data.',
+            # The phone decides when an app may work in the background (Immich's
+            # "Automatic backup" page): a first backup of thousands of photos left to the
+            # background crawls or stops, and a battery-saving Android never runs it.
+            'Keep Immich open, on Wi-Fi and charging, until the first backup is done (thousands of photos take '
+            'hours). For later backups in the background: iPhone, Settings > General > Background App Refresh, on '
+            'for Immich; Android, Settings > Apps > Immich > Battery, "Unrestricted".',
         ],
     },
     'navidrome': {

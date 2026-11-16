@@ -134,6 +134,12 @@ def check(condition):
         raise RuntimeError('Authenticated account identity/administrator check did not match')
 
 
+class NotRunning(RuntimeError):
+    """The app is not running at all: its step did not start it (a download that failed,
+    a port another program holds). Nothing about its login is known, and nothing in the
+    browser can finish it: it is tried again once its app runs."""
+
+
 class NotAnswering(HTTPFailure):
     """The app did not answer in time: it may still be starting. After an update an app
     can take many minutes to update its database first (Jellyfin answers 503 meanwhile,
@@ -261,9 +267,11 @@ def listener(client, entry, administrator, admin_entry):
 # The app's "Authentication Required" settings (Settings, General, Security) that still ask
 # for the login: setup chooses "Enabled"; "Disabled for Local Addresses" is the app's
 # other choice, often picked by hand later, and still asks everyone outside the home
-# network. The password is proved by the sign-in below either way (the app sets its
-# cookie only for the right one).
-SIGN_IN_REQUIRED = ('enabled', 'disabledforlocaladdresses')
+# network. Radarr 7 and Sonarr 5 add "Disabled for Localhost": only the container's own
+# loopback is let in, and setup comes in through Docker's port mapping, so it is asked
+# to sign in too. The password is proved by the sign-in below either way (the app sets
+# its cookie only for the right one).
+SIGN_IN_REQUIRED = ('enabled', 'disabledforlocaladdresses', 'disabledforlocalhost')
 
 
 def arr(client, entry, config, app):
@@ -584,7 +592,9 @@ def verify_project(config, app, quarantined=False):
     service = 'immich-server' if project == 'immich' else project
     root = Path(config['data_mount'])
     manifest = safe_path(root / 'compose' / project / 'compose.yaml')
-    check(manifest.is_file())
+    stopped = NotRunning(f'{store.CATALOG[project][0]} is not running: the step that starts it did not finish')
+    if not manifest.is_file():
+        raise stopped  # its step stopped before it was set up at all (Immich's release not found, say)
     ids = docker(
         [
             'ps',
@@ -595,6 +605,10 @@ def verify_project(config, app, quarantined=False):
             'label=com.docker.compose.service=' + service,
         ]
     ).split()
+    if not ids:
+        # Said as what it is: "identity check did not match" sent a beginner to sign in to
+        # an app that never started (then asked to finish it by hand, again and again).
+        raise stopped
     check(len(ids) == 1 and re.fullmatch(r'[a-f0-9]{12,64}', ids[0]))
     values = json.loads(docker(['inspect', ids[0]]))
     check(isinstance(values, list) and len(values) == 1)
@@ -691,6 +705,18 @@ def what_to_do(config, app, entry, answered=True):
 ODD_ANSWER = 'the app answered in a form setup does not know'
 
 
+def running(config, app):
+    """The app's container runs (whether or not it is the right one: verify_project's
+    other checks say that). False only when it is not running at all."""
+    try:
+        verify_project(config, app)
+    except NotRunning:
+        return False
+    except (RuntimeError, OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError):
+        pass
+    return True
+
+
 def provision(config, apps, output=print, client_factory=Client):
     pending = []
     for app in apps:
@@ -738,13 +764,16 @@ def provision(config, apps, output=print, client_factory=Client):
             AttributeError,
             subprocess.SubprocessError,
         ) as exc:
-            store.update(config, app, state='needs_setup')
+            if not isinstance(exc, NotRunning):
+                # (An app that never ran refused nothing: marked so, the next run asked
+                # "did not take the saved login. What now?" of each of them.)
+                store.update(config, app, state='needs_setup')
             pending.append(app)
             # The reason, never the password: the checks' own messages name no values.
             # (A reply of another shape, a list where a record was expected, reaches here
             # as AttributeError: said in words.)
             reason = ODD_ANSWER if isinstance(exc, AttributeError) else str(exc) or type(exc).__name__
-            advice = what_to_do(config, app, entry, answered=not isinstance(exc, NotAnswering))
+            advice = what_to_do(config, app, entry, answered=not isinstance(exc, (NotAnswering, NotRunning)))
             output(f'{store.APPS[app][0]}: not verified ({reason}); the saved login is kept. {advice}')
         finally:
             client.close()

@@ -414,6 +414,11 @@ class MoveTests(unittest.TestCase):
                 fields = lines[found[0]].split()
                 subvolume = next((o[7:] for o in fields[3].split(',') if o.startswith('subvol=')), '')
                 self.mounted[argv[1]] = (fields[0].removeprefix('UUID='), fields[2], subvolume)
+                if fields[2] == 'none':
+                    # A bind line of a folder of the disk Linux runs from: findmnt shows
+                    # that disk, with the folder as its "subvolume".
+                    system = lines[migrate.mount_lines(lines, '/')[0]].split()
+                    self.mounted[argv[1]] = (system[0].removeprefix('UUID='), system[2], fields[0])
         return mock.Mock(returncode=0, stdout='')
 
     def start(self, stopped, out=print):
@@ -448,6 +453,13 @@ class MoveTests(unittest.TestCase):
         again = before[last_copy:]
         self.assertIn(('umount', str(self.staging)), again)
         self.assertLess(again.index(('umount', str(self.staging))), again.index(('mount_staging', str(self.staging))))
+
+    def test_one_file_that_differs_is_said_as_one(self):
+        """Deep check 485: "1 files differ after the copy"."""
+        with mock.patch.object(migrate, 'differences', return_value=['films/a.mkv']):
+            self.move()
+        said = '\n'.join(map(str, self.said))
+        self.assertIn('1 file differs after the copy (the first: films/a.mkv)', said)
 
     def test_a_good_copy_switches_to_the_new_drive_and_keeps_the_old_one(self):
         with mock.patch.object(migrate, 'differences', return_value=[]):
@@ -673,6 +685,64 @@ class MoveTests(unittest.TestCase):
                 'previous_drive': {'uuid': 'newbig-0001', 'fstype': 'ext4'},
             },
         )
+
+    def test_a_pc_with_one_drive_moves_the_media_onto_an_hdd_bought_later_and_back(self):
+        """Deep check 815: a mini PC set up with its one disk for everything (the HDD's part
+        is a folder of the disk Linux runs from, bind-mounted), and an HDD bought a week
+        later. STORAGE.md says to move onto it with migrate.py, which refused: "fstab must
+        have exactly one line that mounts /mnt/nekoserver-media, starting with UUID=..."
+        (setup's bind line is not one), with advice that led nowhere."""
+        folder = '/var/lib/nekoserver/media'
+        config = json.loads(json.dumps(CONFIG))
+        config['storage']['media_hdd'] = {'uuid': 'sys-00001', 'fstype': 'ext4', 'folder': folder, 'subvolume': folder}
+        self.settings.write_text(json.dumps(config))
+        self.fstab.write_text(f'UUID=sys-00001 / ext4 defaults 0 1\n{folder} /mnt/nekoserver-media none bind 0 0\n')
+        self.mounted['/mnt/nekoserver-media'] = ('sys-00001', 'ext4', folder)
+        with mock.patch.object(migrate, 'differences', return_value=[]):
+            self.assertEqual(self.move(), 0, self.said)
+        fstab = self.fstab.read_text()
+        self.assertIn('UUID=newbig-0001 /mnt/nekoserver-media ext4 defaults,nofail', fstab)
+        self.assertNotIn(f'{folder} /mnt/nekoserver-media', fstab)
+        self.assertEqual(self.mounted['/mnt/nekoserver-media'], ('newbig-0001', 'ext4', ''))
+        saved = json.loads(self.settings.read_text())['storage']['media_hdd']
+        self.assertEqual(saved['previous_drive'], config['storage']['media_hdd'])
+        self.assertEqual(saved['uuid'], 'newbig-0001')
+        self.assertNotIn('folder', saved)
+        # The old place is a folder of the disk Linux runs from: never "disconnect it".
+        self.assertIn(f'Its old folder on the disk Linux runs from ({folder}) was not changed', self.said[-1])
+        self.assertNotIn('disconnect', self.said[-1])
+        # Back again: setup's own bind line, not a UUID= line with that folder as a subvolume.
+        with (
+            mock.patch.object(migrate, 'connected_uuids', return_value={'sys-00001', 'newbig-0001'}),
+            mock.patch.object(migrate, 'stop_writers', return_value=[]),
+        ):
+            self.assertEqual(migrate.back(self.settings, self.said.append, self.journal, self.staging, self.fstab), 0)
+        fstab = self.fstab.read_text()
+        self.assertIn(f'{folder} /mnt/nekoserver-media none bind 0 0', fstab)
+        self.assertNotIn('UUID=sys-00001 /mnt/nekoserver-media', fstab)
+        self.assertEqual(self.mounted['/mnt/nekoserver-media'], ('sys-00001', 'ext4', folder))
+        saved = json.loads(self.settings.read_text())['storage']['media_hdd']
+        self.assertEqual(saved['folder'], folder)
+        self.assertEqual(saved['previous_drive'], {'uuid': 'newbig-0001', 'fstype': 'ext4'})
+
+    def test_a_role_on_the_one_drive_both_share_is_not_taken_apart(self):
+        """Both roles as folders of one drive of their own: moving one alone would leave
+        that drive unmounted under the other, so the move says so and changes nothing."""
+        from modules import storage
+
+        config = json.loads(json.dumps(CONFIG))
+        for key in ('data_ssd', 'media_hdd'):
+            config['storage'][key] = {'uuid': 'one-00001', 'fstype': 'ext4', 'folder': storage.SHARED_FOLDERS[key]}
+        self.settings.write_text(json.dumps(config))
+        self.fstab.write_text(
+            'UUID=sys-00001 / ext4 defaults 0 1\n'
+            + storage.bind_line(storage.SHARED_FOLDERS['media_hdd'], '/mnt/nekoserver-media')
+            + '\n'
+        )
+        self.mounted['/mnt/nekoserver-media'] = ('one-00001', 'ext4', '/nekoserver/media')
+        self.assertEqual(self.move(), 2)
+        self.assertIn('cannot take apart yet; nothing was changed', self.said[-1])
+        self.assertFalse([c for c in self.calls if c[0] in ('copy', 'stop')])
 
     def test_going_back_needs_the_old_drive_connected(self):
         with mock.patch.object(migrate, 'differences', return_value=[]):
@@ -1057,7 +1127,13 @@ class MoveTests(unittest.TestCase):
     def test_the_fstab_line_is_switched_only_when_it_is_the_old_drives(self):
         self.fstab.write_text(self.fstab.read_text() + 'UUID=other /mnt/nekoserver-media ext4 defaults 0 2\n')
         with self.assertRaisesRegex(RuntimeError, 'exactly one line'):
-            migrate.switch_fstab('/mnt/nekoserver-media', 'hdd-0001', 'newbig-0001', 'ext4', self.fstab)
+            migrate.switch_fstab(
+                '/mnt/nekoserver-media',
+                'media_hdd',
+                {'uuid': 'hdd-0001', 'fstype': 'ext4'},
+                {'uuid': 'newbig-0001', 'fstype': 'ext4'},
+                self.fstab,
+            )
 
 
 if __name__ == '__main__':

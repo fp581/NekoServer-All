@@ -986,10 +986,12 @@ def main(argv=None):
     except RuntimeError as exc:
         print(f'Nothing was connected: {exc}', file=sys.stderr)
         return 2
-    selected = config.get('media', {}).get('services', list(PORTS) + ['qbittorrent'])
-    # Connected: the managers that are set up. One whose group is switched off (Movies and
-    # shows, say) is stopped by the media step, so there is nothing to connect it to.
-    apps = tuple(x for x in ('sonarr', 'radarr', 'lidarr') if x in selected and app_wanted(config, x))
+    # The apps set up. One whose group is switched off (Movies and shows, say) is stopped by
+    # the media step: there is nothing to connect it to, and the connections setup made to
+    # it are taken away (--remove-stale) as for an app taken out of media.services.
+    listed = config.get('media', {}).get('services', list(PORTS) + ['qbittorrent'])
+    selected = [x for x in listed if app_wanted(config, x)]
+    apps = tuple(x for x in ('sonarr', 'radarr', 'lidarr') if x in selected)
     root = Path(args.data_root or config['data_mount'])
     if not root.is_dir() or root.is_symlink() or not os.path.ismount(root):
         parser.error('Data SSD must be mounted at --data-root')

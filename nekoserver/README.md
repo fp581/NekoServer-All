@@ -202,6 +202,8 @@ Keep a copy somewhere safe, such as a password manager.
 
 These addresses are **private**: they work only on devices signed in to your Tailscale account. Nothing is opened to the public internet, and your router needs no changes.
 
+**On a TV** Tailscale runs on Android TV, Google TV and Apple TV, but not on LG, Samsung or Roku TVs, and casting from the phone does not work: [GATEWAY.md](GATEWAY.md#on-a-tv) says what to do on each.
+
 **On other devices at home** you can also use your server's home address.
 
 > **First, in your router, reserve that address for the server** (the setting is usually called "DHCP reservation" or "static lease"). Otherwise it can change after a restart (or with a new router) and the home addresses and shared folders stop working; the dashboard then says *Home addresses stopped*. Run `sudo bash install.sh` again: it finds the new address by itself and moves them to it.
@@ -210,7 +212,22 @@ The home address is, for example, `https://192.168.1.20:8442` for the app menu (
 
 **The dashboard** shows your apps, backups, drives, alerts and live hardware (processor, memory, graphics, every temperature sensor and fan it can find, network, processes). On the server it is at `http://127.0.0.1:8787` (or **NekoServer Dashboard** in the app menu); on your phone or laptop (Tailscale on) at `https://yourserver.tailXXXX.ts.net:8448`, also on the phone setup page. You can change fan curves and RGB lighting (*Fans & lights*; phones and tablets need the PIN chosen during setup), and restart an app or close a desktop app (these need the PIN on every device). Nothing else can be changed from it. On a phone or tablet, choose *Add to Home Screen* / *Install app* to use it like an app. To keep it on the server only, set `"remote": false` under `"dashboard"`. Sonarr, Radarr, Lidarr, Prowlarr and qBittorrent are only reachable from the server's own browser, on purpose.
 
+**The shared folders** (*Media* with your films and shows, *Music* with the music Navidrome plays, *Photos* with the photo archive; read-only by default, and `"samba_media_write": true` under `"networking"` lets other computers add films and music; with the music placed on the same drive as the films it is in *Media*, under `music`) open from any computer at home. Windows does not list them under *Network* by itself (a Mac may): type the address, with your server's home address instead of `192.168.1.20` (setup's log shows these lines with your own address and username).
+
+- **Windows:** in File Explorer's address bar type `\\192.168.1.20\Media` and press Enter. To keep it as a drive letter, right-click *This PC*, *Map network drive*, and type the same address.
+- **Mac:** in Finder choose *Go*, *Connect to Server*, type `smb://192.168.1.20/Media`, and choose *Registered User*.
+- **Linux** (GNOME Files, Dolphin): press Ctrl+L and type `smb://192.168.1.20/Media`.
+- **Chromebook:** in *Files* choose *More* (⋮), *Services*, *SMB file share*, and type `\\192.168.1.20\Media` as the file share URL.
+
+Sign in with the username of the account that ran setup (`"samba_user"` under `"networking"` names another) and the password you chose for the shared folders in setup. Windows offers to remember it.
+
 **A friend should see your films.** Give them a login of their own in Jellyfin, never yours: open Jellyfin on the server, *Dashboard* → *Users* → **+**, and leave *administrator* off. At your home, they use the home address (`:8443`). From their own home, NekoServer opens nothing to the internet, so they need Tailscale too: in the Tailscale admin console (*Machines*), open this server's menu and choose **Share**, and send them the link; they install Tailscale with a free account of their own, accept it, and open the Jellyfin address ending in `:8443`. Sharing the server lets them reach its other addresses too (each still asks for a login, and the dashboard shows your server's state without one), so share it only with people you trust, or limit them to port 8443 with Tailscale's access rules. (Not tried in NekoServer's own tests yet.)
+
+**Someone else in the family.** Give each person a login of their own, never yours, so their photos and files stay theirs:
+
+- **Photos (Immich):** sign in to Immich with your login, open *Administration* → *Users* → **Create user**. On their phone, in the Immich app, they use the same address with their own login and switch on *Backup*. Their photos go into their own library, and the weekly backups copy every person's photos, theirs too.
+- **Files (Nextcloud):** your picture at the top right, then *Accounts* ([NEXTCLOUD.md](NEXTCLOUD.md)).
+- **Films (Jellyfin):** *Dashboard* → *Users* → **+**, with *administrator* off. For a child, open their user's *Parental control* and choose a *Maximum allowed parental rating*, and under *Access* leave out the libraries they should not see. With a Jellyfin login they can also sign in to Seerr and ask for films; what they ask for waits for you to approve it in Seerr (*Requests*). (Not tried in NekoServer's own tests yet.)
 
 **Renaming the server.** Its name is part of the app addresses (`https://NAME.tailXXXX.ts.net`). Change it in the Tailscale admin console (*Machines* → this server's menu → *Edit machine name*), then run `sudo bash install.sh` again: it gives the apps and the dashboard their addresses under the new name and makes a new phone setup page. Open the new addresses on each phone and computer (the old ones stop working; setup asks you to check the phone again). The home addresses (`https://192.168.1.20:8442`) stay the same.
 
@@ -229,7 +246,8 @@ What is copied, where, and when (times are in your `timezone`):
 | Steam saves and settings, Samba settings, any extra folders you list | HDD | Every night |
 | All app settings, databases and app versions (the monthly snapshot) | HDD | 1st of each month |
 | The one app being updated, just before its update | HDD | On the update night (Wednesdays), only when a new version is installed |
-| **Movies, shows and music** | **Not backed up** | |
+| Music, on servers with the music backup (the music on a drive of its own, a music folder of yours that setup backs up, or `"backup_enabled"` under `"music"`) | HDD | Every night |
+| **Movies and shows**, and music without the music backup | **Not backed up** | |
 
 - **Photos, videos and Nextcloud files are only ever added to the backup.** Nothing on it is overwritten or deleted. If you edit a file, the new version is saved next to the old one with a date in its name.
 - **Old snapshots are cleaned up automatically:** the newest 3 nightly (apps and settings; setup takes 1 to 7), 4 weekly Immich database copies and 3 monthly snapshots are kept. Only database copies that still match the checksum in their note count (a checksum is a fingerprint of a file's content: it no longer matches when even one byte changed): a damaged copy, or one without its note, never pushes out a good older one. Change `keep_snapshots` and `database_keep` in `my-config.json` to change the weekly and monthly ones; the nightly count is chosen on setup's backups page.

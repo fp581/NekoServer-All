@@ -7,7 +7,9 @@ also have new ones saved there, or have the folder copied into the library inste
 The checks, the mounting and the library are existing_media's
 (tests/test_existing_media.py); here: the page and where setup acts on the answer."""
 
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +21,7 @@ sys.path.insert(0, str(ROOT))
 import existing_media  # noqa: E402
 import existing_page  # noqa: E402
 import media_libraries  # noqa: E402
+import neko_common  # noqa: E402
 import placement  # noqa: E402
 import questions  # noqa: E402
 
@@ -167,6 +170,28 @@ class PageTests(unittest.TestCase):
                 existing_page.folder_found(ctx.config, 'movies', 'films', (typed('a', 'b', 'c'), said.append))
             )
         self.assertIn('No folder of films is used for now. Run setup again to give one.', said)
+
+    def test_a_folder_dragged_in_or_copied_from_a_shell_is_the_folder(self):
+        """Deep check 481: a folder dragged into the terminal comes in quotes, one copied
+        from a shell has its spaces escaped, and ~ is the person's home: each was "is not a
+        folder on this PC" (setup runs as root, through sudo)."""
+        import pwd
+
+        with tempfile.TemporaryDirectory() as d:
+            folder = os.path.join(d, "Ana's Films")
+            os.mkdir(folder)
+            ctx = context()
+            for given in (f'"{folder}"', f"'{folder}' ", folder.replace(' ', '\\ ').replace("'", "\\'")):
+                with self.subTest(given=given):
+                    seen = []
+                    with mock.patch.object(existing_media, 'check', side_effect=lambda c, k, f, n: seen.append(f)):
+                        existing_page.folder_found(ctx.config, 'movies', 'films', (typed(given), print))
+                    self.assertEqual(seen, [folder])
+                    self.assertTrue(os.path.isdir(seen[0]))
+        home = pwd.getpwnam('nobody').pw_dir.rstrip('/')
+        self.assertEqual(neko_common.typed_folder('~/Videos', {'SUDO_USER': 'nobody'}), home + '/Videos')
+        self.assertEqual(neko_common.typed_folder('/mnt/tank/films'), '/mnt/tank/films')
+        self.assertEqual(neko_common.typed_folder('~other/x', {'SUDO_USER': 'nobody'}), '~other/x')
 
     def test_the_words(self):
         asked = questions.Q['existing_media']
@@ -424,6 +449,36 @@ class SetupTests(unittest.TestCase):
         self.assertFalse(ctx.existing_mounts_changed)
         source = (ROOT / 'modules/media.py').read_text()
         self.assertLess(source.index('restart_for_own_folders(manifests'), source.index('stop_unselected(compose_dir'))
+
+    def test_setup_run_again_restarts_no_app_for_a_folder_as_it_was(self):
+        """Deep check 597/610 (the update to 0.51.3, run with real mounts): a folder that is
+        connected already is remounted at every setup run, with the options it has. That
+        was counted as a change, so every setup run and every upgrade restarted the apps
+        that see it (a film playing in Jellyfin stopped, downloads were cut off) and said
+        "Your own folders changed". Only a remount that turns it read-only or back is one."""
+        ctx = self.with_folder()
+        point = '/mnt/nekoserver-media/library/existing/movies'
+        writable = {point: True}
+
+        def remounts(mode):
+            def use_in_place(config, permanent, run, log):
+                run(['mount', '-o', f'remount,bind,{mode}', point], 120)
+                return [{'holds': 'movies', 'path': '/mnt/tank/films', 'mounted': True, 'reason': None}]
+
+            return use_in_place
+
+        def must_run(argv, timeout):
+            writable[argv[-1]] = argv[2].endswith(',rw')
+
+        for mode, change in (('rw', False), ('rw', False), ('ro', True), ('ro', False), ('rw', True)):
+            with (
+                mock.patch.object(existing_media, 'folder_answers', return_value=False),
+                mock.patch.object(existing_media, 'must_run', side_effect=must_run),
+                mock.patch.object(existing_media, 'takes_new_files', side_effect=lambda p: writable[p]),
+                mock.patch.object(existing_media, 'use_in_place', side_effect=remounts(mode)),
+            ):
+                existing_page.mount(ctx)
+            self.assertEqual(ctx.existing_mounts_changed, change, mode)
 
     def test_a_share_that_is_away_is_said_and_never_fails_the_step(self):
         ctx = self.with_folder()

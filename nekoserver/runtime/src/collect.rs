@@ -353,6 +353,24 @@ fn disk_under(lsblk: &str) -> Option<String> {
 }
 /// Why a drive's health can't be read, when no one disk is found under it.
 const NO_ONE_DISK: &str = "Its health (SMART) is not read: no one disk was found under it (a volume over several disks, or a device this PC does not name as a disk)";
+/// Said of a SATA SSD whose rated writes are nearly used up.
+const SSD_WORN: &str = "SSD wear is high: it has used 90% or more of the writes it is made for. Plan to replace it, and keep the backups going";
+/// How much of a SATA SSD's rated writes are used, in percent (the standard "Percentage
+/// Used Endurance Indicator" of its device statistics, page 7), or Null. Only NVMe's own
+/// figure was read, so a SATA SSD (a common app SSD) wearing out was never said (deep
+/// check 518).
+fn sata_wear(v: &Value) -> Value {
+    let pages = v["ata_device_statistics"]["pages"].as_array();
+    let row = pages
+        .into_iter()
+        .flatten()
+        .filter(|page| page["number"] == 7)
+        .filter_map(|page| page["table"].as_array())
+        .flatten()
+        .find(|row| row["offset"] == 8 && row["flags"]["valid"] != false);
+    let used = row.map_or(&v["endurance_used"]["current_percent"], |row| &row["value"]);
+    num(used, 0.0, 255.0)
+}
 fn smart_summary(v: &Value, code: i32) -> Value {
     let mut r = json!({"status":"unknown","temperature":null,"wear_percent":null,"reason":"SMART unavailable or drive sleeping; no wake requested"});
     if let Some(pass) = v["smart_status"]["passed"].as_bool() {
@@ -373,6 +391,9 @@ fn smart_summary(v: &Value, code: i32) -> Value {
         0.0,
         1000.0,
     );
+    if r["wear_percent"].is_null() {
+        r["wear_percent"] = sata_wear(v);
+    }
     let critical = num(
         &v["nvme_smart_health_information_log"]["critical_warning"],
         0.0,
@@ -383,7 +404,13 @@ fn smart_summary(v: &Value, code: i32) -> Value {
         r["reason"] = json!("NVMe critical warning");
     } else if r["status"] == "pass" && r["wear_percent"].as_f64().unwrap_or(0.0) >= 90.0 {
         r["status"] = json!("warning");
-        r["reason"] = json!("NVMe endurance usage is high");
+        r["reason"] = json!(
+            if v["nvme_smart_health_information_log"]["percentage_used"].is_null() {
+                SSD_WORN
+            } else {
+                "NVMe endurance usage is high"
+            }
+        );
     }
     if let Some(table) = v["ata_smart_attributes"]["table"].as_array() {
         for row in table {
@@ -419,6 +446,17 @@ fn smart_kept(saved: &Value, keep: usize) -> Value {
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect::<serde_json::Map<_, _>>())
 }
+/// The smartctl command for disk `dev`. A SATA disk (/dev/sdX) is also asked for its
+/// device statistics, where a SATA SSD says how worn it is (sata_wear); an NVMe disk says
+/// so in its own health log, and is not asked for an ATA log.
+fn smart_command(dev: &str) -> Vec<&str> {
+    let mut args = vec!["smartctl", "--json", "--health", "--attributes"];
+    if dev.starts_with("/dev/sd") {
+        args.push("--log=devstat");
+    }
+    args.extend(["--nocheck=standby", dev]);
+    args
+}
 fn smart(source: &str, identity: &str, cache: &mut Value, now: f64, interval: f64) -> Value {
     let Some(dev) = device(source) else {
         return json!({"status":"unknown","reason":NO_ONE_DISK,"checked_at":null});
@@ -434,6 +472,7 @@ fn smart(source: &str, identity: &str, cache: &mut Value, now: f64, interval: f6
             "SMART health failed",
             "NVMe critical warning",
             "NVMe endurance usage is high",
+            SSD_WORN,
             "Pending or uncorrectable sectors",
             "Reallocated sectors detected",
             "SMART reports historical/current health errors; inspect the disk",
@@ -441,17 +480,7 @@ fn smart(source: &str, identity: &str, cache: &mut Value, now: f64, interval: f6
         ];
         return json!({"status":old["status"],"temperature":num(&old["temperature"],1.0,150.0),"wear_percent":num(&old["wear_percent"],0.0,1000.0),"checked_at":old["checked_at"],"reason":if reasons.contains(&text(&old["reason"])){text(&old["reason"])}else{"Inspect drive health"}});
     }
-    let (code, s) = probe(
-        &[
-            "smartctl",
-            "--json",
-            "--health",
-            "--attributes",
-            "--nocheck=standby",
-            &dev,
-        ],
-        15,
-    );
+    let (code, s) = probe(&smart_command(&dev), 15);
     let v: Value = serde_json::from_str(&s).unwrap_or_else(|_| empty());
     let mut r = smart_summary(&v, code);
     r["checked_at"] = json!(now);
@@ -751,6 +780,9 @@ fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, Vec<Value
         );
         let info = app_drive(cfg, key, &path, expected, fs);
         let mut r = drive_row(key, name, &path, &info["status"]);
+        if holds_photos(cfg, &path) {
+            r["photos"] = json!(true);
+        }
         if info["status"] == "mounted" {
             let source = text(&info["source"]);
             mounted_details(&mut r, cfg, cache, now, (key, &path, source, fs, expected));
@@ -1469,14 +1501,15 @@ fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
         let start = num(&saved["started_at"], 0.0, now + 60.0);
         // Never succeeded: due one interval (plus a day) after its schedule was set up.
         let installed = timer_installed_at(unit);
+        let (timer, known) = timer_of(unit);
         let stale = if status == "running" {
             // A run with no start time can't be judged as fresh.
             start.as_f64().is_none_or(|t| now - t > max)
         } else {
-            first_overdue(success.as_f64(), installed, now, max)
+            let weekly = weekly || ["updates", "external"].contains(&key);
+            job_overdue(weekly, success.as_f64(), installed, &timer, now, max)
         };
         let state = overdue_state(status, stale);
-        let (timer, known) = timer_of(unit);
         if let Some(why) = retired(cfg, key) {
             out.push(json!({"id":key,"name":name,"status":"disabled","last_success":success,"last_attempt":start,"timer":timer,"reason":why,"restore":[]}));
             continue;
@@ -1529,6 +1562,9 @@ fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
         let mut row = json!({"id":key,"name":name,"status":state,"last_success":success,"last_attempt":start,"timer":timer,"reason":reason,"restore":restore_tests(cfg,key),"unit":format!("{unit}.service")});
         if undone {
             row["rolled_back"] = json!(true);
+        }
+        if key == "external" && state == "fail" && usb_was_away(&saved) {
+            row["usb_away"] = json!(true);
         }
         // Said to the page too: it kept its own rule, and listed "NekoServer upgrade
         // schedule is off" after every upgrade that worked.
@@ -1593,6 +1629,37 @@ fn timer_installed_at(unit: &str) -> Option<f64> {
 }
 /// Overdue: the last success is older than the interval, or there never was one and a
 /// day's grace after the first run was due (one interval after set-up) has passed.
+const WEEK: f64 = 7.0 * 86400.0;
+/// A weekly job (`max` its usual allowance) whose one week left out was its schedule's own
+/// doing: the app updates never run on the 1st (that night is the monthly check's), and a
+/// weekly job that gave way to a long monthly run is skipped, with no alert. Two weeks
+/// between successes are then normal, and it is overdue only once its next run is more
+/// than a week later than usual (seen over a season: the update night on Wed 1 July went
+/// to the monthly check, and "Weekly app updates: Last success is overdue" reached the
+/// phone on the 3rd, five days before its next night).
+fn week_left_out(success: Option<f64>, next_run: Option<f64>, now: f64, max: f64) -> bool {
+    match (success, next_run) {
+        (Some(last), Some(next)) => next > now && next - last <= max + WEEK,
+        _ => false,
+    }
+}
+/// Whether a job that is not running now is overdue: its last success (or, never
+/// successful, its schedule's setting up) too long ago, unless it is a weekly job whose
+/// schedule left one week out since then.
+fn job_overdue(
+    weekly: bool,
+    success: Option<f64>,
+    installed: Option<f64>,
+    timer: &Value,
+    now: f64,
+    max: f64,
+) -> bool {
+    // Never successful yet, the schedule's setting up stands for the last success: a
+    // first week the schedule leaves out (set up just before a monthly night) is normal too.
+    let since = success.or(installed);
+    first_overdue(success, installed, now, max)
+        && !(weekly && week_left_out(since, timer["next_run_at"].as_f64(), now, max))
+}
 fn first_overdue(success: Option<f64>, installed: Option<f64>, now: f64, max: f64) -> bool {
     match success {
         Some(t) => now - t > max,
@@ -1748,6 +1815,12 @@ fn failure_reason(saved: &Value) -> String {
 /// copies on it does not help (the next run copies them again, and a Nextcloud file whose
 /// only copy it was is then lost): a bigger drive does (deep check 242).
 pub(crate) const USB_FULL: &str = "The USB drive is full. Don't delete anything on it to make room: the next copy puts it back, and the USB drive holds the only copy of older Nextcloud files. Use a bigger USB drive instead (STORAGE.md, \"Another USB drive\"), and keep this one as an older copy.";
+/// The weekly USB copy found its drive not plugged in. The USB drive is the one meant to
+/// be taken away, so this asks the person to plug it in: a warning, not an urgent failure
+/// that woke the phone at 3 am, every night, while it stayed away (deep check 496/497).
+fn usb_was_away(saved: &Value) -> bool {
+    text(&saved["reason"]) == common::sanitize(crate::backup::USB_MISSING)
+}
 fn with_full_usb_advice(key: &str, said: String) -> String {
     if key == "external" && said.contains("No space left on device") {
         format!("{said} {USB_FULL}")
@@ -2266,6 +2339,26 @@ fn updates(cfg: &Value, data_ok: bool) -> Value {
     }
     json!(out)
 }
+/// Whether Immich's photos and videos live on the drive mounted at `folder` (where setup
+/// put them, "locations").
+fn holds_photos(cfg: &Value, folder: &Path) -> bool {
+    common::immich_wanted(cfg)
+        && common::files_root(cfg, "photos").is_ok_and(|root| root.as_path() == folder)
+}
+/// Added to a nearly full drive's advice when Immich's photos are on it. Photos grow on
+/// it every week, and a household deleting photos in Immich to make room saw nothing
+/// freed for 30 days: Immich keeps them in its Trash (trash.days, 30 by default), and
+/// the advice named the music and the films but never the photos (deep check 722).
+const PHOTOS_HERE: &str = " Immich's photos and videos are kept here too: those you delete in Immich free their space only once they leave its Trash (after 30 days, or at once with Empty trash in Immich's Trash). A bigger drive: STORAGE.md, \"Moving to a bigger drive\".";
+/// A nearly full drive's advice, with what to know when Immich's photos are on it.
+fn drive_space_advice(id: &str, full: bool, photos: bool) -> String {
+    let advice = space_advice(id, full);
+    if photos {
+        format!("{advice}{PHOTOS_HERE}")
+    } else {
+        advice.to_string()
+    }
+}
 /// What a nearly full drive stops, and how to free it.
 fn space_advice(id: &str, full: bool) -> &'static str {
     match (id, full) {
@@ -2276,6 +2369,27 @@ fn space_advice(id: &str, full: bool) -> &'static str {
         ("data_ssd", false) => "90% or more used. The apps keep their data, the music and their images here and can stop working once it is full: free up space there before then.",
         _ => "90% or more used. Backups and uploads stop once it is full: free up space there before then.",
     }
+}
+/// What a drive's health alert says: what its own health check (SMART) found, in plain
+/// words, and what to do. It said only the check's words ("Pending or uncorrectable
+/// sectors") under "health warning", and its guide was about connecting a drive and
+/// freeing space: nobody was told the drive may die and should be replaced while it
+/// still works (deep check 618).
+fn health_advice(id: &str, reason: &str, failing: bool) -> String {
+    let found = match reason {
+        "Pending or uncorrectable sectors" => "Its own health check (SMART) found places on it that can no longer be read",
+        "Reallocated sectors detected" => "Its own health check (SMART) found worn places on it, which it has replaced with spare ones",
+        "SMART health failed" | "NVMe critical warning" => "Its own health check (SMART) says it is failing",
+        "NVMe endurance usage is high" | SSD_WORN => "It has used up 90% or more of the writes it is made for",
+        _ => "Its own health check (SMART) reports errors",
+    };
+    let what = match (id, failing) {
+        ("os", true) => "it may stop working any day. Your apps and files are on the other drives: check that Backups shows recent good copies, and put Linux on a new disk soon (RECOVERY.md, \"Replace the OS and reattach the existing store\")",
+        (_, true) => "it may stop working any day, with what is on it. Check that Backups shows recent good copies, then move it to a new drive while it still works: connect the new drive and, in the NekoServer folder, run  sudo python3 migrate.py list  (STORAGE.md, \"Moving to a bigger drive\")",
+        ("os", false) => "it still works, but plan to replace it. Keep the backups going",
+        (_, false) => "it still works, but plan to replace it, and keep the backups going. A new drive takes its place with  sudo python3 migrate.py  (STORAGE.md, \"Moving to a bigger drive\")",
+    };
+    format!("{found}, so {what}.")
 }
 /// backup_secrets.py's key: without it every monthly snapshot holds the app password
 /// files in plain text (the monthly job says so in its log each run; the dashboard
@@ -2381,8 +2495,11 @@ fn held_apps(s: &Value) -> Vec<&str> {
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|a| ["exited", "created", "dead"].contains(&text(&a["state"])))
-        .filter(|a| any_stopped || for_shares.contains(&text(&a["id"])))
+        .filter(|a| {
+            a["state"] == DOCKER_DOWN
+                || (["exited", "created", "dead"].contains(&text(&a["state"]))
+                    && (any_stopped || for_shares.contains(&text(&a["id"]))))
+        })
         .map(|a| text(&a["name"]))
         .filter(|n| !n.is_empty())
         .collect()
@@ -2449,9 +2566,37 @@ fn share_alerts(s: &Value) -> Vec<(String, String, String)> {
         })
         .collect()
 }
+/// An app's state while Docker, which runs every app, is stopped or failed.
+const DOCKER_DOWN: &str = "docker_down";
+/// Docker is stopped or failed (its row of the startup list) and could not say how the
+/// apps are ("unknown"): none of them runs without it, so each is marked `docker_down`
+/// and held, and Docker's one alert names them. Before, the page showed every app as
+/// "Not checked yet", with ten "try opening it" items under the one thing to do (deep
+/// check 615).
+fn apps_without_docker(s: &mut Value) {
+    let stopped = s["startup"].as_array().into_iter().flatten().any(|u| {
+        u["unit"] == "docker.service" && ["failed", "inactive"].contains(&text(&u["active"]))
+    });
+    if !stopped {
+        return;
+    }
+    for a in s["applications"].as_array_mut().into_iter().flatten() {
+        if a["state"] == "unknown" {
+            a["state"] = json!(DOCKER_DOWN);
+        }
+    }
+}
+/// What Docker's alert says when it is down: the apps it stopped and how to start it.
+fn docker_down_advice(apps: &[&str]) -> String {
+    format!(
+        "None of the apps run without it ({}). Start it again:  sudo systemctl start docker  (or restart the PC); the apps start with it. If it stops again,  sudo journalctl -u docker.service -n 60  says why. If a drive is missing, connect it first.",
+        apps.join(", ")
+    )
+}
 /// Marks the apps stopped on purpose (`held`), so the page says the drive's one alert
 /// instead of one "stopped" per app: decided here, once.
 fn mark_held(s: &mut Value) {
+    apps_without_docker(s);
     let held: Vec<String> = held_apps(s).into_iter().map(String::from).collect();
     if let Some(apps) = s["applications"].as_array_mut() {
         for a in apps {
@@ -2689,11 +2834,21 @@ pub(crate) fn alerts(s: &Value) -> Value {
             "In the Tailscale admin console (Machines), open this server's menu and choose Disable key expiry, so it stays signed in.",
         );
     }
+    // The apps that are down with Docker (apps_without_docker): its alert names them.
+    let without_docker: Vec<&str> = s["applications"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|a| a["state"] == DOCKER_DOWN)
+        .map(|a| text(&a["name"]))
+        .collect();
     for unit in s["startup"].as_array().into_iter().flatten() {
         // Schedules can be off on purpose (the backup cards show those); the
         // services everything else depends on must start with the computer.
         let name = text(&unit["unit"]);
         let core = !name.ends_with(".timer") || name == "nekoserver-dashboard-collect.timer";
+        let docker_apps = (name == "docker.service" && !without_docker.is_empty())
+            .then(|| docker_down_advice(&without_docker));
         // Enabled is not the same as healthy: a failed service is reported either way
         // (a finished one-shot, such as a resume service, is "inactive", not failed).
         if unit["active"] == "failed" {
@@ -2701,7 +2856,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
                 format!("startup:{name}:failed"),
                 if core { "critical" } else { "warning" },
                 format!("{} has stopped with an error", text(&unit["name"])),
-                failed_advice(name),
+                docker_apps.as_deref().unwrap_or(failed_advice(name)),
             );
         } else if stays_running(name) && unit["active"] == "inactive" {
             // Not failed, yet not running: Docker waiting for a drive that never
@@ -2710,7 +2865,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
                 format!("startup:{name}:failed"),
                 "critical",
                 format!("{} is not running", text(&unit["name"])),
-                "It is stopped. If a drive is missing, connect it and restart the PC; otherwise the guide shows how to start it.",
+                docker_apps.as_deref().unwrap_or("It is stopped. If a drive is missing, connect it and restart the PC; otherwise the guide shows how to start it."),
             );
         }
         if core && unit["enabled"] == false {
@@ -2779,20 +2934,21 @@ pub(crate) fn alerts(s: &Value) -> Value {
                     } else {
                         format!("{name} is filling up")
                     },
-                    space_advice(id, full),
+                    &drive_space_advice(id, full, d["photos"] == true),
                 );
             }
             let state = text(&d["smart"]["status"]);
             if state == "fail" || state == "warning" {
+                let failing = state == "fail";
                 add(
                     format!("smart:{id}"),
-                    if state == "fail" {
-                        "critical"
+                    if failing { "critical" } else { "warning" },
+                    if failing {
+                        format!("{name} is failing")
                     } else {
-                        "warning"
+                        format!("{name} health warning")
                     },
-                    format!("{name} health warning"),
-                    text(&d["smart"]["reason"]),
+                    &health_advice(id, text(&d["smart"]["reason"]), failing),
                 );
             }
         }
@@ -2950,14 +3106,17 @@ pub(crate) fn alerts(s: &Value) -> Value {
                 continue;
             }
             if ["fail", "stale", "partial"].contains(&text(&j["status"])) {
+                let away = j["usb_away"] == true;
                 add(
                     format!("backup:{}", text(&j["id"])),
-                    if j["status"] == "fail" {
+                    if j["status"] == "fail" && !away {
                         "critical"
                     } else {
                         "warning"
                     },
-                    if j["rolled_back"] == true {
+                    if away {
+                        format!("{}: the USB drive was not plugged in", text(&j["name"]))
+                    } else if j["rolled_back"] == true {
                         format!(
                             "{}: the update was undone, your apps work",
                             text(&j["name"])
@@ -3032,7 +3191,24 @@ pub(crate) fn alerts(s: &Value) -> Value {
             "The app checks have not run for a while, so the dashboard can't say whether the apps work. Server health → Checks & monitoring says why. If it stays so, run  sudo bash install.sh  again in the NekoServer folder: it sets the checks up again.",
         );
     }
-    if s["media"]["counts"]["fail"].as_u64().unwrap_or(0) > 0 {
+    // Failed checks only of apps that are stopped on purpose (held: a drive away, Docker
+    // down) are said by that one alert; "restart it on Your apps" can't help them.
+    let held_ids: Vec<&str> = s["applications"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|a| a["held"] == true)
+        .map(|a| text(&a["id"]))
+        .collect();
+    let failed: Vec<&str> = s["media"]["checks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["status"] == "fail")
+        .map(|c| text(&c["name"]))
+        .collect();
+    let only_held = !failed.is_empty() && failed.iter().all(|name| held_ids.contains(name));
+    if s["media"]["counts"]["fail"].as_u64().unwrap_or(0) > 0 && !only_held {
         add(
             "media-failure".into(),
             "warning",
@@ -3825,6 +4001,13 @@ mod os_tests {
             (shown[0]["level"].as_str(), shown[0]["title"].as_str()),
             (Some("warning"), Some("Phone access is not set up yet"))
         );
+        // The phone's words for both are true for both (deep check 497: it said "signed
+        // out" to a server never signed in).
+        let phone = crate::notify::label_of("tailscale:login").unwrap();
+        assert!(
+            !phone.contains("signed out") && phone.contains("sign-in"),
+            "{phone}"
+        );
         let soon = login_state(
             &json!({"BackendState":"Running","Self":{"KeyExpiry":"2026-10-30T00:00:00Z"}}),
             now,
@@ -4011,6 +4194,74 @@ mod os_tests {
             day
         ));
         assert!(first_overdue(Some(now - 2.0 * day), None, now, day));
+    }
+    /// Deep check 771/772 (a season of weekly updates on Wednesdays): the night of Wed
+    /// 1 July is the monthly check's, so the updates ran on 24 June and 8 July. On 3 July
+    /// the job was "overdue" (9 days allowed), on the page and on the phone.
+    #[test]
+    fn a_week_the_schedule_leaves_out_is_not_overdue() {
+        let day = 86400.0;
+        let june_24 = 1_782_268_200.0; // Wed 24 June 2026, 02:30 UTC
+        let (july_3, july_8) = (june_24 + 9.5 * day, june_24 + 14.0 * day);
+        let max = 777600.0; // the weekly updates' allowance (JOBS)
+        let next = |at: f64| json!({"next_run_at": at});
+        let ran = Some(june_24);
+        assert!(!job_overdue(true, ran, None, &next(july_8), july_3, max));
+        // Two weeks left out (8 July missed too) is overdue, as is a schedule not known.
+        let (july_10, july_15) = (june_24 + 16.0 * day, june_24 + 21.0 * day);
+        assert!(job_overdue(true, ran, None, &next(july_15), july_10, max));
+        assert!(job_overdue(true, ran, None, &json!({}), july_3, max));
+        // A next run that is already past (the timer did not move on) proves nothing.
+        assert!(job_overdue(
+            true,
+            ran,
+            None,
+            &next(july_3 - 60.0),
+            july_3,
+            max
+        ));
+        // A job that is not weekly keeps its own allowance.
+        assert!(job_overdue(false, ran, None, &next(july_8), july_3, max));
+    }
+    /// Deep check 825/826 (a first install the week before a monthly night): set up on
+    /// Thu 25 June 2026, the weekly updates' first night (Wed 1 July) is the monthly
+    /// check's, so their first run is on 8 July. From 5 July the page and the phone said
+    /// "Weekly app updates needs attention: No successful run since it was set up".
+    #[test]
+    fn a_first_week_the_schedule_leaves_out_is_not_overdue() {
+        let day = 86400.0;
+        let june_24 = 1_782_268_200.0; // Wed 24 June 2026, 02:30 UTC
+        let installed = Some(june_24 + 1.5 * day); // Thu 25 June, in the afternoon
+        let (july_6, july_8) = (june_24 + 12.0 * day, june_24 + 14.0 * day);
+        let max = 777600.0; // the weekly updates' allowance (JOBS)
+        let next = |at: f64| json!({"next_run_at": at});
+        assert!(!job_overdue(
+            true,
+            None,
+            installed,
+            &next(july_8),
+            july_6,
+            max
+        ));
+        // Its first run on 8 July did not succeed either (next one 15 July): overdue.
+        let july_10 = june_24 + 16.0 * day;
+        assert!(job_overdue(
+            true,
+            None,
+            installed,
+            &next(july_8 + 7.0 * day),
+            july_10,
+            max
+        ));
+        // A job that is not weekly keeps its own allowance.
+        assert!(job_overdue(
+            false,
+            None,
+            installed,
+            &next(july_8),
+            july_6,
+            max
+        ));
     }
     #[test]
     fn a_check_that_could_not_run_since_the_last_report_makes_it_stale() {
@@ -4316,6 +4567,46 @@ mod os_tests {
                 crate::backup::USB_MISSING
             )
         );
+    }
+    /// Deep check 496/497 (a household's second week): the USB drive was taken away, the
+    /// Sunday copy found it missing, and the phone got an urgent alert at 3 am, repeated
+    /// every 12 hours while it stayed away. It is a warning that says what happened; any
+    /// other failure of the copy stays urgent.
+    #[test]
+    fn a_usb_drive_left_unplugged_is_a_warning_that_says_so() {
+        let data = std::env::temp_dir().join(format!("neko-usb-away-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&data);
+        fs::create_dir_all(data.join("reports/jobs")).unwrap();
+        let cfg = json!({"data_mount": data.to_string_lossy(), "photos": {"external_backup_uuid": "0000dead-0000-4000-8000-00000000beef"}, "nextcloud": {"enabled": true}});
+        let usb = |reason: &str| {
+            // As the weekly copy records a failure (backup.rs, finished).
+            let saved = json!({"status": "fail", "stage": "checking the USB drive", "reason": common::sanitize(reason), "started_at": 900.0});
+            fs::write(data.join("reports/jobs/external.json"), saved.to_string()).unwrap();
+            let rows = backups(&cfg, 1000.0, true, None);
+            let row = rows
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["id"] == "external")
+                .unwrap()
+                .clone();
+            let shown = alerts(&json!({ "backups": [row] }));
+            shown[0].clone()
+        };
+        let away = usb(crate::backup::USB_MISSING);
+        assert_eq!(away["level"], "warning");
+        assert_eq!(
+            away["title"],
+            "USB copy (photos and files): the USB drive was not plugged in"
+        );
+        assert!(text(&away["detail"]).contains("Plug it in"), "{away}");
+        let other = usb("External filesystem mismatch");
+        assert_eq!(other["level"], "critical");
+        assert_eq!(
+            other["title"],
+            "USB copy (photos and files) needs attention"
+        );
+        let _ = fs::remove_dir_all(&data);
     }
     #[test]
     fn failed_job_says_why_and_where() {
@@ -5080,6 +5371,91 @@ mod user_panel_tests {
         assert_eq!(s["applications"][0]["held"], false);
         assert!(alerts(&s).to_string().contains("app:jellyfin"));
     }
+    #[test]
+    fn a_failing_drive_says_so_and_to_move_it_while_it_works() {
+        // Deep check 618, the real collector with smartctl reporting unreadable sectors on
+        // the HDD: "Media HDD health warning / Pending or uncorrectable sectors", and
+        // nothing on what that means or what to do.
+        let drive = |id: &str, smart: Value| json!({"storage": [{"id": id, "name": "Media HDD", "status": "mounted", "smart": smart}]});
+        let failing = alerts(&drive(
+            "media_hdd",
+            json!({"status": "fail", "reason": "Pending or uncorrectable sectors"}),
+        ));
+        assert_eq!(failing[0]["level"], "critical");
+        assert_eq!(failing[0]["title"], "Media HDD is failing");
+        let said = text(&failing[0]["detail"]);
+        for words in [
+            "can no longer be read",
+            "may stop working any day",
+            "Backups",
+            "migrate.py list",
+        ] {
+            assert!(said.contains(words), "{said}");
+        }
+        let worn = alerts(&drive(
+            "media_hdd",
+            json!({"status": "warning", "reason": "Reallocated sectors detected"}),
+        ));
+        assert_eq!(worn[0]["level"], "warning");
+        assert!(
+            text(&worn[0]["detail"]).contains("plan to replace it"),
+            "{worn}"
+        );
+        // The system disk is not moved with migrate.py: it is put on a new disk.
+        let os = alerts(&drive(
+            "os",
+            json!({"status": "fail", "reason": "SMART health failed"}),
+        ));
+        let said = text(&os[0]["detail"]);
+        assert!(
+            said.contains("Replace the OS") && !said.contains("migrate.py"),
+            "{said}"
+        );
+    }
+    #[test]
+    fn apps_down_with_docker_are_its_one_alert_not_ten_unchecked_apps() {
+        // Deep check 615, the real collector with Docker stopped: every app read "Not
+        // checked yet" with "try opening it", ten items under Docker's own alert, whose
+        // advice ("setup can start it again") did not say the apps were down with it.
+        for docker in ["failed", "inactive"] {
+            let mut s = json!({
+            "storage": [{"id": "media_hdd", "name": "Media HDD", "status": "mounted"}],
+            "startup": [{"unit": "docker.service", "name": "Apps (Docker)", "enabled": true, "active": docker}],
+            // The app checks fail too: said by Docker's alert, not as one of their own.
+            "media": {"counts": {"fail": 2}, "checks": [{"name": "jellyfin", "status": "fail"},
+                                                        {"name": "immich", "status": "fail"}]},
+            "applications": [
+                {"id": "jellyfin", "name": "Jellyfin", "state": "unknown", "health": "unknown"},
+                {"id": "immich", "name": "Immich", "state": "unknown", "health": "unknown"}
+            ]});
+            mark_held(&mut s);
+            for app in s["applications"].as_array().unwrap() {
+                assert_eq!(
+                    (&app["state"], &app["held"]),
+                    (&json!("docker_down"), &json!(true))
+                );
+            }
+            let shown = alerts(&s);
+            let ids: Vec<&str> = shown
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| text(&a["id"]))
+                .collect();
+            assert_eq!(ids, ["startup:docker.service:failed"], "{shown}");
+            let detail = text(&shown[0]["detail"]);
+            assert!(detail.contains("(Jellyfin, Immich)"), "{detail}");
+            assert!(detail.contains("sudo systemctl start docker"), "{detail}");
+        }
+        // Docker running but not answering for a moment: the apps stay "unknown", and
+        // nothing is said for Docker.
+        let mut s = json!({
+        "startup": [{"unit": "docker.service", "name": "Apps (Docker)", "enabled": true, "active": "active"}],
+        "applications": [{"id": "jellyfin", "name": "Jellyfin", "state": "unknown"}]});
+        mark_held(&mut s);
+        assert_eq!(s["applications"][0]["state"], "unknown");
+        assert_eq!(s["applications"][0]["held"], false);
+    }
     /// UP-03: with the HDD missing its archive's old "matches" is not shown as current.
     #[test]
     fn the_hdd_archive_check_waits_for_the_hdd() {
@@ -5254,6 +5630,47 @@ mod round_two_tests {
         assert!(read(0)["temperature"].is_null());
         assert_eq!(read(0)["status"], "pass");
         assert_eq!(read(34)["temperature"], 34);
+    }
+    /// Deep check 518: a SATA SSD at 95% of its rated writes was said to be fine; only an
+    /// NVMe SSD's wear was read. smartctl gives a SATA SSD's in its device statistics
+    /// (page 7, "Percentage Used Endurance Indicator"), asked for SATA disks only.
+    #[test]
+    fn a_worn_sata_ssd_is_said_worn() {
+        let sata = |used: i64, valid: bool| {
+            json!({"smart_status": {"passed": true}, "ata_device_statistics": {"pages": [
+                {"number": 1, "name": "General Statistics", "table": [{"offset": 8, "name": "Lifetime Power-On Resets", "value": 95}]},
+                {"number": 7, "name": "Solid State Device Statistics", "table": [{"offset": 8,
+                    "name": "Percentage Used Endurance Indicator", "size": 1, "value": used,
+                    "flags": {"value": 192, "string": "N--- ", "valid": valid, "normalized": true}}]}]}})
+        };
+        let worn = smart_summary(&sata(95, true), 0);
+        assert_eq!(worn["status"], "warning");
+        assert_eq!(worn["wear_percent"], 95);
+        assert!(worn["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("SSD wear is high"));
+        assert_eq!(smart_summary(&sata(12, true), 0)["status"], "pass");
+        assert_eq!(smart_summary(&sata(12, true), 0)["wear_percent"], 12);
+        // A figure the drive marks as not valid is no reading.
+        assert!(smart_summary(&sata(95, false), 0)["wear_percent"].is_null());
+        // smartctl 7.4's own summary of it, when the table is not there.
+        let summary =
+            json!({"smart_status": {"passed": true}, "endurance_used": {"current_percent": 91}});
+        assert_eq!(smart_summary(&summary, 0)["status"], "warning");
+        // An NVMe SSD keeps its own words; a disk without the figure has none.
+        let nvme = json!({"smart_status": {"passed": true}, "nvme_smart_health_information_log": {"percentage_used": 96, "critical_warning": 0}});
+        assert_eq!(
+            smart_summary(&nvme, 0)["reason"],
+            "NVMe endurance usage is high"
+        );
+        assert!(
+            smart_summary(&json!({"smart_status": {"passed": true}}), 0)["wear_percent"].is_null()
+        );
+        // Asked of SATA disks only.
+        assert!(smart_command("/dev/sda").contains(&"--log=devstat"));
+        assert!(!smart_command("/dev/nvme0n1").contains(&"--log=devstat"));
+        assert_eq!(smart_command("/dev/sda").last(), Some(&"/dev/sda"));
     }
     /// 0.45.8: the upgrade runs as nekoserver-upgrade@<release>; the dashboard asked the
     /// unit "nekoserver-upgrade", which does not exist, so a run at work read as cut off.
@@ -5529,6 +5946,49 @@ mod round_two_tests {
         for id in ["media_hdd", "data_ssd", "d3"] {
             let said = space_advice(id, false);
             assert!(said.starts_with("90% or more used."), "{said}");
+        }
+    }
+    /// Deep check 722: a year of photos fills the drive they are on. Its alert named the
+    /// music and the films, never the photos, and a household deleting photos in Immich
+    /// to make room saw nothing freed for 30 days (Immich's Trash keeps them).
+    #[test]
+    fn a_full_drive_with_the_photos_says_how_immichs_trash_frees_room() {
+        let cfg = json!({"data_mount": "/srv/nekoserver", "media_mount": "/mnt/nekoserver-media",
+            "photos": {"deploy_immich": true}});
+        assert!(
+            holds_photos(&cfg, Path::new("/srv/nekoserver")),
+            "the SSD by default"
+        );
+        assert!(!holds_photos(&cfg, Path::new("/mnt/nekoserver-media")));
+        let mut on_media = cfg.clone();
+        on_media["locations"] = json!({"photos": "media"});
+        assert!(holds_photos(&on_media, Path::new("/mnt/nekoserver-media")));
+        assert!(!holds_photos(&on_media, Path::new("/srv/nekoserver")));
+        let mut off = cfg.clone();
+        off["photos"]["deploy_immich"] = json!(false);
+        assert!(!holds_photos(&off, Path::new("/srv/nekoserver")));
+        let detail = |photos: bool, used: f64| {
+            let mut row = json!({"id": "data_ssd", "name": "Application SSD", "status": "mounted",
+                "used_percent": used});
+            if photos {
+                row["photos"] = json!(true);
+            }
+            let all = alerts(&json!({"storage": [row]}));
+            let found = all
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["id"] == "space:data_ssd")
+                .cloned();
+            text(&found.expect("a space alert")["detail"]).to_string()
+        };
+        for used in [92.0, 98.0] {
+            assert!(
+                detail(true, used).contains("once they leave its Trash"),
+                "{used}"
+            );
+            assert!(detail(true, used).contains("Empty trash"), "{used}");
+            assert!(!detail(false, used).contains("Immich"), "{used}");
         }
     }
 }

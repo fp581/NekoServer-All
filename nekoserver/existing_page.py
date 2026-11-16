@@ -22,7 +22,7 @@ The checks, the mounting, the libraries and the copy are existing_media.py's.
 import existing_media
 import placement
 import questions
-from neko_common import FINDING, media_group
+from neko_common import FINDING, media_group, typed_folder
 
 # The kinds asked about, each with the group whose apps play it and its words.
 KINDS = (
@@ -104,7 +104,7 @@ def folder_found(config, kind, words, asking, key='existing_folder', new_files=F
     when the tries ran out, so the kind is asked about again at the next run."""
     prompt, output = asking
     for _ in range(tries):
-        folder = typed(key, prompt, what=words)
+        folder = typed_folder(typed(key, prompt, what=words))
         if not folder:
             return None
         try:

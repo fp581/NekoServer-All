@@ -6,7 +6,7 @@ Use Navidrome's browser player on the TV/Linux PC, **Amperfy on iPhone**, and op
 
 ## Storage and connections
 
-- The drive setup asked you to pick for music (the SSD by default, or the media drive: STORAGE.md, "Where each app keeps your files"): library/music, shared by Lidarr as /data/music and Navidrome as read-only /music. Music downloads (library/downloads/music) use the same drive.
+- The drive setup asked you to pick for music (the SSD by default, or the media drive: STORAGE.md, "Where each app keeps your files"): library/music, shared by Lidarr as /data/music and Navidrome as read-only /music. Music downloads (library/downloads/music) use the same drive. Other computers at home open library/music as the *Music* shared folder (in *Media*, under `music`, when the music is on the same drive as the films); to copy albums in from them, set `"samba_media_write": true` under `"networking"` (README.md, "The shared folders").
 - SSD: appdata/navidrome, containing its database/accounts/playlists/history/art cache; appdata/lidarr and their independent Compose files.
 - Browser setup: http://127.0.0.1:4533 on the server itself.
 - Phone/remote clients: the configured LAN HTTPS music URL, https://YOUR-SERVER-IP:8446, or your configured private Tailscale Serve music URL on port 8446. localhost on your phone refers to the phone, not the server. Use the same login on every client to share its playlists and favourites ("Your logins" below says which one is yours).
@@ -48,7 +48,7 @@ Noninteractive setup stays pending until the listener is configured. Missing cre
 2. Optional desktop player: https://github.com/jeffvli/feishin . Select Navidrome as the server type and use the same HTTPS URL/account. Linux Flatpak listing: https://flathub.org/apps/org.jeffvli.feishin . This is an optional user-facing upstream client, not another server daemon installed by the NekoServer release.
 3. Test a tagged album: play/pause, next track, seeking, album artwork, favourites and a playlist. Cache an album on the iPhone and test offline playback. Verify away-from-home access through Tailscale if selected. LAN-only HTTPS requires the server's private CA to be trusted by the phone and client.
 
-Navidrome playlists/accounts/history remain covered by application snapshots. Music files have no automatic backup (STORAGE.md); the opt-in music backup can be re-enabled with `music.backup_enabled`. It writes to the media drive: with the music itself on the media drive, it keeps older versions of your files but does not protect them from losing that drive (or the NAS it is on). See STORAGE.md for schedules, version retention and music-recovery.py instructions.
+Navidrome playlists/accounts/history remain covered by application snapshots. Music files have no automatic backup (STORAGE.md); the opt-in music backup can be re-enabled with `music.backup_enabled`. It writes to the media drive: with the music itself on the media drive, it keeps older versions of your files but does not protect them from losing that drive (or the NAS it is on). See STORAGE.md for schedules and version retention. To get music back from it, use the recovery menu (RECOVERY.md, "I deleted music by mistake, or lost it with its drive").
 
 ## Automated checks and monthly updates
 

@@ -54,6 +54,21 @@ class RestoreTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'new, separate restore directory'):
             music.restore(self.backup, self.snapshot, out)
 
+    def test_each_file_gets_back_the_date_its_list_recorded(self):
+        """Deep check 675: restored music was dated the day of the restore; the runtime's
+        lists record each file's date since 0.51.3 (music_backup.rs), and a list without
+        dates (an older one) still restores."""
+        value = json.loads(self.snapshot.read_text())
+        value['files'][0]['mtime'] = 1_600_000_000
+        self.snapshot.write_text(json.dumps(value))
+        out = self.dir / 'restored'
+        music.restore(self.backup, self.snapshot, out)
+        self.assertEqual(int((out / value['files'][0]['path']).stat().st_mtime), 1_600_000_000)
+        value['files'][0]['mtime'] = '2020-09-13'
+        self.snapshot.write_text(json.dumps(value))
+        with self.assertRaisesRegex(RuntimeError, 'Invalid music date'):
+            music.restore(self.backup, self.snapshot)
+
     def test_a_folder_swapped_in_between_two_files_is_a_failure_not_a_count(self):
         """The review of 0.47.9: each file was written through a fresh lookup of its path,
         so a folder swapped in mid-restore (its parent may be writable by others) got the
@@ -161,6 +176,76 @@ class RestoreTests(unittest.TestCase):
         with mock.patch.object(music.os, 'open', full):
             with self.assertRaisesRegex(OSError, 'No space left'):
                 music.restore(self.backup, self.snapshot, self.dir / 'restored')
+
+
+class MenuTests(unittest.TestCase):
+    """Deep check 675, on loop drives with the real nightly music backup: the recovery menu
+    said "Films, shows and music are not backed up" and had no line for the music backup
+    it had made, and no guide said how to get it back; music-recovery.py by hand left the
+    files root's private ones, which Navidrome (run as the media account) cannot read."""
+
+    def setUp(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from roomy import roomy_drive
+        import recovery_wizard
+
+        self.wizard = recovery_wizard
+        roomy_drive(self)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        self.config = {
+            'media_mount': str(self.dir / 'hdd'),
+            'data_mount': str(self.dir / 'ssd'),
+            'media': {'uid': os.getuid(), 'gid': os.getgid()},
+        }
+        ready = mock.patch.object(recovery_wizard, 'hdd_ready', return_value=True)
+        ready.start()
+        self.addCleanup(ready.stop)
+
+    def backed_up(self):
+        backup = self.dir / 'hdd/backups/music'
+        payload = b'a song'
+        checksum = hashlib.sha256(payload).hexdigest()
+        (backup / 'objects' / checksum[:2]).mkdir(parents=True)
+        (backup / 'objects' / checksum[:2] / checksum).write_bytes(payload)
+        (backup / 'snapshots').mkdir()
+        row = {'path': 'Artist/Album/01 Song.flac', 'sha256': checksum, 'size': len(payload)}
+        (backup / 'snapshots/1794782711045838-23790.json').write_text(
+            json.dumps({'format': 'neko-music-backup-v1', 'files': [row], 'waiting': []})
+        )
+
+    def answers(self, *values):
+        it = iter(values)
+        return lambda question='': next(it)
+
+    def section(self, *answers):
+        out = []
+        self.wizard.restore_section(self.config, self.answers(*answers), out.append)
+        return '\n'.join(out)
+
+    def test_a_server_with_a_music_backup_has_it_in_the_menu_and_restores_it(self):
+        self.backed_up()
+        said = self.section('0')
+        self.assertIn('Music files, from the nightly music backup', said)
+        self.assertNotIn('music are not backed up', said)
+        number = next(
+            line for line in said.splitlines() if line.endswith('. Music files, from the nightly music backup')
+        )
+        number = number.split('.')[0].strip()
+        given = []
+        with mock.patch.object(self.wizard, 'give_to', side_effect=lambda *a: given.append(a)):
+            said = self.section(number, '1', '1', 'yes')
+        restored = next((self.dir / 'hdd/restored').iterdir())
+        self.assertEqual((restored / 'Artist/Album/01 Song.flac').read_bytes(), b'a song')
+        # Given to the account the music apps run as, and the line that copies it back.
+        self.assertEqual(given, [(restored, os.getuid(), os.getgid())])
+        self.assertIn(f'sudo cp -a -n {restored}/. {self.dir}/ssd/library/music/', said)
+
+    def test_a_server_without_one_is_told_music_is_not_backed_up(self):
+        said = self.section('0')
+        self.assertNotIn('Music files', said)
+        self.assertIn('Films, shows and music are not backed up', said)
 
 
 if __name__ == '__main__':

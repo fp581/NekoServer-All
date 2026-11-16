@@ -22,12 +22,13 @@ def restore_tried(backups, passed):
     app = (ROOT / 'dashboard/app.js').read_text()
     helpers = '\n'.join(re.search(rf'^const {name} = .*$', app, re.MULTILINE).group(0) for name in ('list', 'values'))
     names = re.search(r'^const RESTORE_NAMES = \{.*?\};', app, re.MULTILINE | re.DOTALL).group(0)
+    how = re.search(r'^const RESTORE_HOW =\n.*?;$', app, re.MULTILINE | re.DOTALL).group(0)
     func = re.search(r'^function restoreTried\(s\) \{.*?^\}', app, re.MULTILINE | re.DOTALL).group(0)
     status = {
         'backups': backups,
         'acceptance': {'status': 'pending', 'manual_checks': [{'id': i, 'status': 'pass'} for i in passed]},
     }
-    script = f'{helpers}\n{names}\n{func}\nconsole.log(JSON.stringify(restoreTried({json.dumps(status)})));'
+    script = f'{helpers}\n{names}\n{how}\n{func}\nconsole.log(JSON.stringify(restoreTried({json.dumps(status)})));'
     return json.loads(subprocess.run([NODE, '-e', script], capture_output=True, text=True, check=True).stdout)
 
 
@@ -51,6 +52,15 @@ class RestoreTriedTests(unittest.TestCase):
         self.assertIn('Nextcloud files', result['words'])
         self.assertNotIn('photos', result['words'])
         self.assertEqual(restore_tried(backups, ['cloud_restore'])['result'], ['pass', 'Yes'])
+
+    def test_not_yet_says_how_to_try_a_restore_and_record_it(self):
+        # Deep check 500/501: "Try each once, so you know it works" said neither how, nor
+        # that a restore done with the recovery menu counts only once it is recorded.
+        backups = [row('archive', ['independent_restore']), row('external', ['independent_restore', 'cloud_restore'])]
+        for passed in ([], ['independent_restore']):
+            words = restore_tried(backups, passed)['words']
+            self.assertIn('sudo bash install.sh --recover', words)
+            self.assertIn('acceptance.py --profile full --save --manual', words)
 
     def test_music_backup_needs_its_own_restore_test(self):
         backups = [row('music', ['music_restore'])]
@@ -139,6 +149,29 @@ console.log(JSON.stringify(rows));'''
                 ['job:host', 'nekoserver-host-backup.service'],
             ],
         )
+
+
+def backup_badge(job):
+    """Run the dashboard's own backupBadge on one backup row (badge and the label stubbed)."""
+    app = (ROOT / 'dashboard/app.js').read_text()
+    func = re.search(r'^function backupBadge\(job, fresh\) \{.*?^\}', app, re.MULTILINE | re.DOTALL).group(0)
+    stubs = (
+        "const badge = (s, l) => [s, l];\nconst numeric = v => typeof v === 'number';\nconst jobLabel = j => 'Failed';"
+    )
+    script = f'{stubs}\n{func}\nconsole.log(JSON.stringify(backupBadge({json.dumps(job)}, true)));'
+    return json.loads(subprocess.run([NODE, '-e', script], capture_output=True, text=True, check=True).stdout)
+
+
+@unittest.skipUnless(NODE, 'node is not installed')
+class UsbAwayCardTests(unittest.TestCase):
+    """Deep check 496: the USB drive left unplugged for the weekly copy. Its alert is a
+    warning saying so (collect.rs usb_away); the backup's card said an urgent "Failed"."""
+
+    def test_the_card_says_the_usb_drive_was_not_plugged_in(self):
+        away = {'id': 'external', 'status': 'fail', 'usb_away': True, 'timer': {'installed': True}}
+        self.assertEqual(backup_badge(away), ['warning', 'USB drive not plugged in'])
+        other = {'id': 'external', 'status': 'fail', 'timer': {'installed': True}}
+        self.assertEqual(backup_badge(other), ['fail', 'Failed'])
 
 
 if __name__ == '__main__':

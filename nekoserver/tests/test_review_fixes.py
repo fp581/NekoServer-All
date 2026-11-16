@@ -2139,6 +2139,14 @@ class ImportLayoutTests(unittest.TestCase):
         with mock.patch.object(source_import.shutil, 'disk_usage', return_value=tiny):
             full = reason(self.entry)
         self.assertIn('the library drive has 4 bytes free', full)
+        # Deep check 483: sizes that round alike say how much is missing.
+        alike = mock.Mock(free=1_499_000_000)
+        with mock.patch.object(source_import.shutil, 'disk_usage', return_value=alike):
+            with mock.patch.object(
+                source_import, 'planned_copies', return_value=[(None, None, mock.Mock(st_size=1_503_000_000))]
+            ):
+                said = reason(self.entry)
+        self.assertIn('it needs 1.5 GB and the library drive has 1.5 GB free (4.0 MB too little)', said)
         noted = reason({'type': 'remote', 'uri': 'nfs://nas/films', 'category': 'movies'})
         self.assertIn('has no folder on this PC yet', noted)
         for said in (full, noted):

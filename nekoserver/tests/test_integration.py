@@ -433,6 +433,10 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(result.stdout.count('trying again'), 2)
         self.assertEqual(log.count('update'), 3)
         self.assertNotIn('START', log)
+        # It ended on apt's own lines alone: now it says what to do (seen in the Ubuntu lab
+        # behind a network that refused the archive).
+        self.assertIn('still did not answer after 3 tries, so setup stopped here', result.stderr)
+        self.assertIn('Check that this PC is online', result.stderr)
 
     def test_any_other_apt_failure_stops_at_once(self):
         self.use_debian()
@@ -443,6 +447,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 100)
         self.assertNotIn('trying again', result.stdout)
         self.assertEqual(log.count('update'), 1)
+        self.assertNotIn('did not answer', result.stderr)  # not a source that did not answer
 
     def test_the_runtime_is_built_on_this_pc_when_the_release_has_none(self):
         self.use_debian()
@@ -815,6 +820,29 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('None of the package sources could be reached', result.stdout)
         self.assertNotIn('Some package sources', result.stdout)
+
+    def test_a_package_manager_is_read_in_english_on_a_pc_in_another_language(self):
+        """Deep check 829, seen with Ubuntu's apt in German: "W: Fehlschlag beim Holen von"
+        matched none of the patterns, so a source that did not answer was never tried
+        again or named, and neither was a wrong clock or another program's lock (host.py
+        already runs the package managers in English for that reason)."""
+        self.use_debian()
+        (self.root / 'bin/apt-get').write_text(
+            '#!/bin/sh\necho "APT-GET $*" >> "$LOG"\n'
+            'case "$*" in *update) if [ "$LC_ALL" = C ]; then '
+            'echo "Err:1 http://archive.ubuntu.com/ubuntu noble InRelease"; '
+            'echo "W: Failed to fetch http://archive.ubuntu.com/ubuntu/dists/noble/InRelease  Unable to connect"; '
+            'echo "W: Some index files failed to download. They have been ignored, or old ones used instead."; '
+            'else echo "Fehl:1 http://archive.ubuntu.com/ubuntu noble InRelease"; '
+            'echo "W: Fehlschlag beim Holen von http://archive.ubuntu.com/ubuntu/dists/noble/InRelease"; '
+            'echo "W: Einige Indexdateien konnten nicht heruntergeladen werden."; fi;; esac\n'
+            'exit 0\n'
+        )
+        with mock.patch.dict(os.environ, {'LC_ALL': 'de_DE.UTF-8', 'LANG': 'de_DE.UTF-8', 'LANGUAGE': 'de'}):
+            result, log = self.run_script(self.root, replace=[('sleep 20', 'sleep 0')])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(log.count('update'), 3)  # tried again, as in English
+        self.assertIn('None of the package sources could be reached', result.stdout)
 
     def test_a_lock_another_program_holds_is_waited_out(self):
         self.use_debian()

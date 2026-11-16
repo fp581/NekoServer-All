@@ -330,5 +330,30 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(slept, [])
 
 
+class CloudOriginGuideTests(unittest.TestCase):
+    """Deep check 557: NEXTCLOUD.md said the most recently applied gateway becomes
+    Nextcloud's one origin and to reapply the chosen gateway to switch it, which setup has
+    not done since 0.21.1 (each gateway only adds its host; the first one's address stays
+    the address of background emails), so reapplying changed nothing."""
+
+    def test_the_guide_describes_what_setup_does(self):
+        text = (Path(__file__).resolve().parents[1] / 'NEXTCLOUD.md').read_text()
+        self.assertNotIn('most recently applied gateway', text)
+        self.assertIn("first gateway's address", text)
+
+    def test_the_guide_says_who_can_open_a_share_link(self):
+        """Deep check 752: Nextcloud makes a share link with the address in use (the home
+        one, or the Tailscale one), and NekoServer opens nothing to the internet, so a link
+        sent to someone outside opened nothing for them. No guide said so."""
+        root = Path(__file__).resolve().parents[1]
+        text = (root / 'NEXTCLOUD.md').read_text()
+        said = text[text.index('**Sharing a file by link.**') : text.index('## For administrators')]
+        self.assertIn('opens nothing for them', said)
+        self.assertIn('attach it to an email or a message instead', said)
+        # The way it names for someone trusted is one README really has.
+        self.assertIn('**A friend should see your films.**', (root / 'README.md').read_text())
+        self.assertIn('"A friend should see your films"', said)
+
+
 if __name__ == '__main__':
     unittest.main()

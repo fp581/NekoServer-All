@@ -65,6 +65,16 @@ class PhoneGuideTests(unittest.TestCase):
         # Not provisioned yet: still tells you how to see it.
         self.assertIn('account-setup.py show seerr', '\n'.join(phone_guide.instructions({}, 'seerr', LINKS['seerr'])))
 
+    def test_the_first_photo_backup_is_not_left_to_the_background(self):
+        """Deep check 551-552: "turn backup on" was the last step, so a phone with thousands
+        of photos was put away and left to the background, where iPhones run it rarely and a
+        battery-saving Android never: the backup crawled or stopped and nobody was told."""
+        text = '\n'.join(phone_guide.instructions({}, 'immich', LINKS['immich']))
+        self.assertIn('Keep Immich open', text)
+        self.assertIn('Background App Refresh', text)  # iPhone
+        self.assertIn('"Unrestricted"', text)  # Android's battery setting
+        self.assertIn('Keep Immich open', phone_guide.page_html({}, {'immich': LINKS['immich']}, qr=lambda u: ''))
+
     def test_the_person_is_the_administrator_in_navidrome_too(self):
         """0.50.0, item 11: Navidrome was the one app where the login the person was given
         was no administrator (the "listener"). On a server whose Navidrome logins are made

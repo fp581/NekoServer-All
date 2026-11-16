@@ -712,6 +712,9 @@ def _apply_lan(config):
     atomic_json(ledger, record)
     atomic_json(LAN_RECORD, record)
     configure_cloud_origin(config, lan(config)[0], lan_ports(config).get('nextcloud', 8447))
+    if 'jellyfin' in lan_ports(config):
+        said = seerr_play_links(config, HTTPS + lan(config)[0] + ':' + str(lan_ports(config)['jellyfin']), 'lan')
+        notes += [said] if said else []
     command(['systemctl', 'daemon-reload'])
     command(['systemctl', 'enable', '--now', 'nekoserver-gateway-lan.service'])
     try:
@@ -1085,6 +1088,13 @@ def _apply_tailnet(config):
         'reason': 'Restrict tailnet policy to intended users/devices and verify each application login and streaming/upload from a client.',
     }
     atomic_json(Path(config['data_mount']) / 'reports/gateway-tailnet.json', result)
+    said = (
+        seerr_play_links(config, HTTPS + host + ':' + str(APPS['jellyfin'][2]), 'tailnet')
+        if 'jellyfin' in apps
+        else None
+    )
+    if said:
+        result['notes'] = [said]
     return result
 
 
@@ -1184,6 +1194,47 @@ def configure_cloud_origin(config, host, port):
     if known not in [*values, host] or known in ('localhost', '127.0.0.1'):
         command(base + [OCC_SET, 'overwrite.cli.url', '--value=https://' + host + ':' + str(port)])
     trust_gateway_proxies(base, get('trusted_proxies'), cloud_proxies(compose))
+
+
+# A Jellyfin address Seerr's "External URL" holds that a gateway put there: a Tailscale
+# one, or a home one (any private address: the server's may have changed since).
+TAILNET_JELLYFIN = re.compile(r'https://[A-Za-z0-9.-]+\.ts\.net:' + str(APPS['jellyfin'][2]))
+HOME_JELLYFIN = re.compile(r'https://(\d+\.\d+\.\d+\.\d+):\d+')
+
+
+def seerr_play_links(config, url, kind, client=None):
+    """Seerr's "Play on Jellyfin" buttons (and its push alerts' links) lead to Seerr's
+    Jellyfin "External URL"; left empty, they lead to the address Seerr itself uses,
+    http://jellyfin:8096 inside Docker, which no phone can open (Seerr's Media.ts). Set
+    to this gateway's Jellyfin address: the Tailscale one, which phones use, over a home
+    one; a home one only while there is none (or the home address changed). An address
+    someone typed there is kept. Returns a note when it could not be set, else None."""
+    import media_libraries
+
+    if not (installed(config, 'seerr') and 'jellyfin' in selected(config)):
+        return None
+    try:
+        if client is None:
+            client = media_libraries.Client('seerr')
+            client.headers['X-Api-Key'] = media_libraries.seerr_key(config['data_mount'])
+        current = client.call('/settings/jellyfin')
+    except (media_libraries.SetupRequired, RuntimeError):
+        return None  # Seerr not set up yet: its Jellyfin link is made later, by account setup
+    if not isinstance(current, dict) or not current.get('serverId'):
+        return None  # not linked to Jellyfin yet
+    now = current.get('externalHostname') or ''
+    home = HOME_JELLYFIN.fullmatch(now)
+    ours = not now or TAILNET_JELLYFIN.fullmatch(now) or (home and ipaddress.ip_address(home[1]).is_private)
+    if now == url or not ours or (kind == 'lan' and TAILNET_JELLYFIN.fullmatch(now)):
+        return None
+    try:
+        client.call('/settings/jellyfin', 'POST', {'externalHostname': url})
+    except RuntimeError as exc:
+        return (
+            f'Seerr: its "Play on Jellyfin" buttons could not be pointed at {url} ({exc}). In Seerr, open '
+            f'Settings, Jellyfin, and type {url} under "External URL"'
+        )
+    return None
 
 
 def occ_value(base, key):

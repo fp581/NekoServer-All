@@ -37,6 +37,7 @@ import time
 from pathlib import Path
 
 from neko_common import (
+    file_count,
     SETTINGS_HELP,
     read_settings,
     MAINTENANCE_JOURNAL,
@@ -513,37 +514,75 @@ def names_drive(line, uuid):
     return line.split()[0].replace('"', '') == f'UUID={uuid}'
 
 
-def fstab_problem(mountpoint, uuid, fstab=FSTAB):
-    """Why the switch could not rewrite /etc/fstab for the drive `uuid` at `mountpoint`
-    (it needs exactly one line mounting that folder, naming the drive as UUID=...), or
-    None. Checked before anything is done: found only at the switch, the old drive was
-    already unmounted and the apps stopped, and resume stopped at the same place (seen
-    in 0.51.1 with a /dev/disk/by-uuid/ line)."""
+def system_folder(drive, record):
+    """The folder of the disk Linux runs from that the drive `record` is (a PC with one
+    drive: setup keeps the role there, bind-mounted at its usual place), or None for a
+    drive of its own. A role in a folder of one drive both roles share is refused: moving
+    one of them alone would leave that drive unmounted under the other."""
+    from modules import storage
+
+    folder = storage.system_folder(record, drive)
+    if folder and storage.on_one_drive(folder):
+        raise RuntimeError(
+            f'The {DRIVES[drive][1]} is a folder of the one drive both it and the '
+            f'{DRIVES["media_hdd" if drive == "data_ssd" else "data_ssd"][1]} are kept on, which this move cannot '
+            'take apart yet; nothing was changed'
+        )
+    return folder
+
+
+def mounts_record(line, drive, record):
+    """The fstab line mounts the drive `record`: its UUID=... line, or for a role kept on
+    the disk Linux runs from, setup's own bind line of its folder (deep check 815: a PC
+    with one drive, an HDD bought a week later, and the move refused the bind line)."""
+    folder = system_folder(drive, record)
+    if folder:
+        return line.split()[:1] == [folder] and line.split()[2:4] == ['none', 'bind']
+    return names_drive(line, record['uuid'])
+
+
+def line_for(drive, record, mountpoint):
+    """The fstab line that mounts the drive `record` at `mountpoint`."""
+    from modules.storage import bind_line, fstab_line
+
+    folder = system_folder(drive, record)
+    if folder:
+        return bind_line(folder, str(mountpoint))
+    return fstab_line(record['uuid'], record['fstype'], str(mountpoint), record.get('subvolume') or None)
+
+
+def fstab_problem(mountpoint, drive, record, fstab=FSTAB):
+    """Why the switch could not rewrite /etc/fstab for the drive `record` at `mountpoint`
+    (it needs exactly one line mounting that folder, naming the drive as UUID=..., or
+    setup's bind line of its folder on the disk Linux runs from), or None. Checked before
+    anything is done: found only at the switch, the old drive was already unmounted and
+    the apps stopped, and resume stopped at the same place (seen in 0.51.1 with a
+    /dev/disk/by-uuid/ line)."""
     try:
         lines = fstab.read_text().splitlines()
+        found = mount_lines(lines, mountpoint)
+        if len(found) == 1 and mounts_record(lines[found[0]], drive, record):
+            return None
     except OSError as exc:
         return f'{fstab} can not be read ({exc.strerror}); nothing was changed'
-    found = mount_lines(lines, mountpoint)
-    if len(found) == 1 and names_drive(lines[found[0]], uuid):
-        return None
+    except RuntimeError as exc:
+        return str(exc)
     return (
-        f'{fstab} must have exactly one line that mounts {mountpoint}, starting with UUID={uuid}, for the move to '
-        f'switch it; nothing was changed. Make it so (sudo bash install.sh says what to change), then try again'
+        f'{fstab} must have exactly one line that mounts {mountpoint}, starting with UUID={record["uuid"]}, for the '
+        'move to switch it; nothing was changed. Make it so (sudo bash install.sh says what to change), then try again'
     )
 
 
-def switch_fstab(mountpoint, old_uuid, new_uuid, fstype, fstab=FSTAB, now=None, subvolume=None):
-    """The line that mounts `mountpoint` names the new drive; the fstab as it was is
-    kept beside it (fstab.neko-before-move-<time>)."""
-    from modules.storage import fstab_line
-
+def switch_fstab(mountpoint, drive, old, new, fstab=FSTAB, now=None):
+    """The line that mounts `mountpoint` names the new drive `new` instead of `old` (drive
+    records); the fstab as it was is kept beside it (fstab.neko-before-move-<time>)."""
     lines = fstab.read_text().splitlines()
     found = mount_lines(lines, mountpoint)
-    if len(found) != 1 or not names_drive(lines[found[0]], old_uuid):
+    if len(found) != 1 or not mounts_record(lines[found[0]], drive, old):
         raise RuntimeError(f'/etc/fstab does not have exactly one line mounting {mountpoint} from the old drive')
     kept = fstab.with_name(f'{fstab.name}.neko-before-move-{int(now or time.time())}')
     shutil.copy2(fstab, kept)
-    lines[found[0]] = fstab_line(new_uuid, fstype, mountpoint, subvolume or None)
+    lines[found[0]] = line_for(drive, new, mountpoint)
     atomic_write(fstab, '\n'.join(lines) + '\n', 0o644)
     return kept
 
@@ -660,7 +699,7 @@ def move_held(settings, drive, new_uuid, out, journal, staging, fstab):
         return 2
     if mounted[2]:
         old['subvolume'] = mounted[2]
-    problem = fstab_problem(mountpoint, old['uuid'], fstab)
+    problem = fstab_problem(mountpoint, drive, old, fstab)
     if problem:
         out(problem)
         return 2
@@ -717,7 +756,8 @@ def copy_to_new(journal, drive, old, new, places, out):
     same_drives(mountpoint, old, staging, new)
     differ = differences(mountpoint, staging)
     if differ:
-        raise RuntimeError(f'{len(differ)} files differ after the copy (the first: {differ[0]})')
+        differs = 'differs' if len(differ) == 1 else 'differ'
+        raise RuntimeError(f'{file_count(len(differ))} {differs} after the copy (the first: {differ[0]})')
     same_drives(mountpoint, old, staging, new)
 
 
@@ -808,29 +848,31 @@ def checked_move(saved, config, drive):
     return str(mountpoint), old, new
 
 
-def fstab_names_new(mountpoint, new, fstab):
+def fstab_names_new(mountpoint, new, fstab, drive):
     """The one active line that mounts the folder names the new drive (a comment or
     another line naming it does not count): the switch was made before a restart."""
     lines = fstab.read_text().splitlines()
     found = mount_lines(lines, mountpoint)
-    return len(found) == 1 and names_drive(lines[found[0]], new['uuid'])
+    return len(found) == 1 and mounts_record(lines[found[0]], drive, new)
 
 
-def mounted_in_place(mountpoint, new, there, fstab):
+def mounted_in_place(mountpoint, new, there, fstab, drive):
     """Already switched and mounted (resume after setup or the check failed, with the apps
     started again on it): nothing to unmount; setup and the check run again."""
-    return there == (new['uuid'], new['fstype'], new.get('subvolume') or '') and fstab_names_new(mountpoint, new, fstab)
+    return there == (new['uuid'], new['fstype'], new.get('subvolume') or '') and fstab_names_new(
+        mountpoint, new, fstab, drive
+    )
 
 
-def unmounted_and_switched(mountpoint, old, new, fstab, out):
+def unmounted_and_switched(mountpoint, drive, old, new, fstab, out):
     """The old drive unmounted and /etc/fstab naming the new one; False (said) when the
     folder can't be unmounted."""
     run(['umount', str(mountpoint)], 600, check=False)
     if os.path.ismount(mountpoint):
         out(f'{mountpoint} could not be unmounted (something still uses it); nothing was switched')
         return False
-    if not fstab_names_new(mountpoint, new, fstab):
-        switch_fstab(mountpoint, old['uuid'], new['uuid'], new['fstype'], fstab, subvolume=new.get('subvolume'))
+    if not fstab_names_new(mountpoint, new, fstab, drive):
+        switch_fstab(mountpoint, drive, old, new, fstab)
     return True
 
 
@@ -851,8 +893,8 @@ def switch(settings, config, drive, journal=JOURNAL, staging=STAGING, fstab=FSTA
         )
         return 2
     run(['umount', str(staging)], 600, check=False)
-    in_place = mounted_in_place(mountpoint, new, there, fstab)
-    if not in_place and not unmounted_and_switched(mountpoint, old, new, fstab, out):
+    in_place = mounted_in_place(mountpoint, new, there, fstab, drive)
+    if not in_place and not unmounted_and_switched(mountpoint, drive, old, new, fstab, out):
         return 2
     set_drive(settings, config, drive, new, old)
     if not in_place:
@@ -902,8 +944,16 @@ def started_and_checked(config, drive, journal, out=print):
     journal.unlink(missing_ok=True)
     copy_note(journal).unlink(missing_ok=True)
     label = DRIVES[drive][1]
+    old = saved.get('old') or {}
     if going_back:
         out(f'The {label} is the old drive again. Anything saved to the other one since the move is still on it.')
+    elif old.get('folder'):
+        # The old place is a folder of the disk Linux runs from: never "disconnect it".
+        out(
+            f'Done: the {label} is the new drive, mounted at {saved.get("mount")}. Its old folder on the disk Linux '
+            f'runs from ({old["folder"]}) was not changed, and still takes its room there: keep it until you are '
+            'sure. To go back to it: sudo python3 migrate.py back'
+        )
     else:
         out(
             f'Done: the {label} is the new drive, mounted at {saved.get("mount")}. The old drive was not changed: '
@@ -969,7 +1019,7 @@ def back_problem(config, path, drive, previous, current, fstab=FSTAB):
         return FROM_THE_DOWNLOAD.format(label=label)
     if previous['uuid'] not in connected_uuids():
         return f'The old {label} ({previous["uuid"]}) is not connected'
-    return fstab_problem(mount_path(config[mount_key]), current['uuid'], fstab)
+    return fstab_problem(mount_path(config[mount_key]), drive, current, fstab)
 
 
 def back_held(settings, out, journal, staging, fstab, wanted=None):
@@ -1016,8 +1066,8 @@ def ran_again_on_old(saved, fstab):
     now, the computer was started again (Docker starts at boot), or it was started and
     stopped again meanwhile (stopped for a recovery, say). Its writes are on the old
     drive only."""
-    new = saved.get('new') or {}
-    if fstab_names_new(saved.get('mount', ''), new, fstab):
+    new, drive = saved.get('new') or {}, saved.get('drive')
+    if drive in DRIVES and fstab_names_new(saved.get('mount', ''), new, fstab, drive):
         return False
     stopped = [u for u in saved.get('stopped') or [] if isinstance(u, str) and UNIT.fullmatch(u)]
     if active(stopped):

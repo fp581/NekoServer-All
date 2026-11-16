@@ -225,6 +225,7 @@ const LABELS = {
   restarting: 'Restarting',
   dead: 'Stopped',
   ambiguous: 'Check setup',
+  docker_down: 'Docker stopped',
   disabled: 'Checks off',
   complete: 'All checked',
   pending: 'Not finished',
@@ -676,6 +677,7 @@ const ALERT_GUIDES = [
   [id => id.startsWith('setup:'), 'setup'],
   [id => id.startsWith('tailscale:'), 'remote'],
   [id => id.startsWith('integrity:'), 'integrity'],
+  [id => id.startsWith('smart:'), 'health'],
   [id => STORAGE_ISSUE.test(id) || id.startsWith('share:'), 'storage'],
   [id => id.startsWith('job:') || id === 'backup-key', 'backup'],
   [id => id.startsWith('startup:'), 'startup'],
@@ -707,14 +709,17 @@ function issueCollector() {
   };
   return { rows, add };
 }
+const APP_STOPPING_JOBS = new Set(['applications', 'maintenance', 'updates']);
 function alertIssues(s, add) {
-  const busy = s.backups.some(j => ['applications', 'maintenance'].includes(j.id) && j.status === 'running');
+  /* The jobs that stop apps for a while: the nightly app backup, the monthly run and the
+   * weekly update night (each app is stopped while its new version goes in; deep check
+   * 616: Jellyfin read "needs attention, restart it" while it was being updated). */
+  const busy = s.backups.some(j => APP_STOPPING_JOBS.has(j.id) && j.status === 'running');
   for (const alert of s.alerts) {
     const raw = text(alert.id),
       id = raw.startsWith('backup:') ? 'job:' + raw.slice(7) : raw;
     const unit = unitFor(id);
-    const note =
-      id.startsWith('app:') && busy ? ' A backup or monthly update is running, so this may be expected.' : '';
+    const note = id.startsWith('app:') && busy ? ' A backup or an app update is running, so this may be expected.' : '';
     add(
       id || 'alert-' + s.alerts.indexOf(alert),
       text(alert.title, 'Server needs attention'),
@@ -845,7 +850,7 @@ function driveIssues(s, add) {
         'smart:' + disk.id,
         name + ' health needs a look',
         text(smart.reason, 'Review the drive health report.'),
-        'storage',
+        'health',
         severity(smart.status === 'fail')
       );
     }
@@ -878,7 +883,7 @@ function backupIssues(s, add) {
         name + ' · ' + jobLabel(job),
         text(job.reason, 'Review the last backup attempt.'),
         guideFor('job:' + job.id),
-        severity(job.status === 'fail'),
+        severity(job.status === 'fail' && job.usb_away !== true),
         unit
       );
     } // a backup that has not run yet is no problem: Home's "Getting started" says when it will
@@ -1972,6 +1977,28 @@ function sendQuestion() {
   ASK.item = null;
   void askNeko(question, item);
 }
+/* The last question of this chat that Neko answered whole, and its answer, sent with the
+ * next question so a follow-up ("And how do I do that?") is understood: each question
+ * reached Neko alone before (deep check 642). The answer is cut to what fits in a request
+ * the web service takes (serve.rs MAX_BODY, 4096 bytes) with the new question. */
+const ASK_BODY = 4096;
+const EARLIER_CHARS = 2500; // what the server keeps of it (assist.rs EARLIER_ANSWER_CHARS)
+function earlierExchange(asked) {
+  const last = ASK.log.filter(e => text(e.answer).trim() && !e.error).at(-1);
+  if (!last) {
+    return null;
+  }
+  // Cut by characters, never inside one (half an emoji is not JSON the server reads).
+  let answer = Array.from(text(last.answer).trim()).slice(0, EARLIER_CHARS);
+  const before = () => ({ question: text(last.question), answer: answer.join('') });
+  while (
+    answer.length &&
+    new TextEncoder().encode(JSON.stringify({ ...asked, before: before() })).length > ASK_BODY - 256
+  ) {
+    answer = answer.slice(0, Math.floor(answer.length * 0.8));
+  }
+  return answer.length && text(last.question) ? before() : null;
+}
 async function askNeko(question, item) {
   if (!signedIn()) {
     askUnlock(() => askNeko(question, item));
@@ -1985,11 +2012,13 @@ async function askNeko(question, item) {
   }
   // Said with the question in the history too: the box (and its note) is emptied now.
   const entry = { question, answer: '', cut: askTooLong(question) ? 'Neko read only the start of this question.' : '' };
+  const asked = item ? { question, item } : { question };
+  const before = earlierExchange(asked);
   ASK.log.push(entry);
   ASK.busy = true;
   renderAsk();
   try {
-    const started = await postControl('ask', item ? { question, item } : { question });
+    const started = await postControl('ask', before ? { ...asked, before } : asked);
     if (started.error === 'E43') {
       // The PIN session ran out meanwhile: ask for the PIN, then the same question again.
       ASK.log.pop();
@@ -2161,6 +2190,11 @@ const RESTORE_NAMES = {
   app_restore: 'apps',
   host_restore: 'host & user files'
 };
+/* How a restore test is tried and recorded. "Try each once" said neither, and a restore
+ * done with the recovery menu left the page at "Not yet": it counts only once recorded
+ * (deep check 500/501). */
+const RESTORE_HOW =
+  ' Try one with the recovery menu (sudo bash install.sh --recover; RECOVERY.md), look at what came back, then record it: in the NekoServer folder, sudo python3 acceptance.py --profile full --save --manual, and answer yes for that test.';
 /* Restore confidence for the backups this server actually makes: each kind of data
  * needs its own witnessed restore test, and "Yes" only once every one has passed. */
 function restoreTried(s) {
@@ -2192,12 +2226,12 @@ function restoreTried(s) {
   if (!tested.length) {
     return {
       result: ['needs_setup', 'Not yet'],
-      words: 'Not tested yet: ' + names(untested) + '. Try each once, so you know it works.'
+      words: 'Not tested yet: ' + names(untested) + '.' + RESTORE_HOW
     };
   }
   return {
     result: ['warning', tested.length + ' of ' + needed.length],
-    words: 'Tested: ' + names(tested) + '. Not yet: ' + names(untested) + '.'
+    words: 'Tested: ' + names(tested) + '. Not yet: ' + names(untested) + '.' + RESTORE_HOW
   };
 }
 function renderProtection(s, fresh) {
@@ -2227,6 +2261,11 @@ function backupBadge(job, fresh) {
   }
   if (job.blocked) {
     return badge('warning', 'Can’t run now');
+  }
+  // The weekly copy found the USB drive away (collect.rs usb_was_away): its alert is a
+  // warning saying so, and the card agrees instead of an urgent "Failed".
+  if (job.usb_away === true) {
+    return badge('warning', 'USB drive not plugged in');
   }
   return badge(job.status, notSetUp ? 'Not set up' : jobLabel(job));
 }
@@ -2280,9 +2319,27 @@ function backupCard(job, fresh) {
   );
   return card;
 }
-function integrityResult(check) {
+/* When to have the USB drive plugged in for its full check: the monthly check runs early
+ * on the 1st (02:30 unless chosen otherwise). "The night of the 1st" read as the evening
+ * of the 1st, after the check had run (deep check 798): the time is named instead. */
+function usbCheckWhen(check, monthlyAt) {
+  if (!String(check.id).startsWith('usb_')) {
+    return '';
+  }
+  return (
+    ' For the USB copy, have the drive plugged in when the monthly check runs: ' +
+    (numeric(monthlyAt) && monthlyAt > 0 ? 'next on ' + localTime(monthlyAt) + '.' : 'early on the 1st of each month.')
+  );
+}
+/* The next run of the monthly check, from its timer on the Backups page. */
+function monthlyNext(s) {
+  const job = list(s.backups).find(j => j.id === 'maintenance');
+  return job ? object(job.timer).next_run_at : null;
+}
+function integrityResult(check, monthlyAt) {
   const damaged = integrityBad(check),
-    unverified = count(check.unverified);
+    unverified = count(check.unverified),
+    when = usbCheckWhen(check, monthlyAt);
   return firstOf(
     [
       [damaged, { state: 'fail', label: 'Needs repair', words: plural(damaged, 'damaged or missing file') + '.' }],
@@ -2293,7 +2350,8 @@ function integrityResult(check) {
           state: 'unknown',
           label: 'Not fully checked',
           words:
-            'Every copy is compared with its checksum in the monthly update (a USB drive only when it is plugged in then). That hasn’t happened yet.'
+            'Every copy is compared with its checksum in the monthly check (a USB drive only when it is plugged in then). That hasn’t happened yet.' +
+            when
         }
       ],
       [
@@ -2301,8 +2359,7 @@ function integrityResult(check) {
         {
           state: 'stale',
           label: 'Overdue',
-          words:
-            'The last full check is more than a month old; this result may no longer hold. For the USB copy, leave the drive plugged in on the night of the 1st.'
+          words: 'The last full check is more than a month old; this result may no longer hold.' + when
         }
       ],
       [
@@ -2313,10 +2370,10 @@ function integrityResult(check) {
     { state: 'pass', label: 'Matches', words: 'Every recorded file matched.' }
   );
 }
-function integrityRow(check, fresh) {
+function integrityRow(check, fresh, monthlyAt) {
   const row = el('div', 'row'),
     body = el('div'),
-    result = integrityResult(check);
+    result = integrityResult(check, monthlyAt);
   const repaired = count(check.repaired) ? ' · ' + count(check.repaired) + ' repaired' : '';
   body.append(
     el('h3', '', text(check.name, 'Checksum check')),
@@ -2369,7 +2426,7 @@ function renderBackups() {
   );
   put(
     'integrity',
-    s.integrity.map(check => integrityRow(check, fresh))
+    s.integrity.map(check => integrityRow(check, fresh, monthlyNext(s)))
   );
   put('restore-status', [restoreBox(s)]);
 }
@@ -4686,6 +4743,20 @@ const GUIDES = {
       'For low space, remove large files you don’t need. Never delete your only backup.'
     ],
     extra: 'lsblk -f\nfindmnt\ndf -h'
+  },
+  /* A drive whose own health check (SMART) warns: it may die, so the backups and a new
+   * drive come first (deep check 618; the storage guide spoke of connecting it and of
+   * free space). */
+  health: {
+    title: 'A drive is wearing out or failing',
+    intro: 'A drive whose health check warns can stop working any day. Act while it still works.',
+    steps: [
+      'Open Backups and check that every backup shows a recent good copy. Plug in the USB drive if it is away.',
+      'Get a new drive at least as big. Connect it next to the old one and make its filesystem (NekoServer never formats a drive).',
+      'For the app SSD or the media HDD, in the NekoServer folder, run the first command below: it lists where each drive can move. Then move it with the second (STORAGE.md, “Moving to a bigger drive”). The old drive is not changed.',
+      'For the system disk (OS SSD), follow RECOVERY.md, “Replace the OS and reattach the existing store”.'
+    ],
+    extra: 'sudo python3 migrate.py list\nsudo python3 migrate.py move --drive media_hdd --to <UUID>'
   },
   acceptance: {
     title: 'Check that everything really works',

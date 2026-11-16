@@ -42,22 +42,43 @@ fn inventory(
                 waiting.push(name.to_string());
                 continue;
             }
-            rows.push(json!({"path":name,"size":meta.len(),"sha256":common::digest(&path)?}));
+            // With its date (whole seconds), so a restore gives it back: the music came
+            // back dated the day of the restore (deep check 675), as "recently added".
+            rows.push(json!({"path":name,"size":meta.len(),"sha256":common::digest(&path)?,"mtime":meta.mtime()}));
         } else {
             return Err(Error::new("Music symlink or special file refused"));
         }
     }
     Ok(())
 }
-/// The library listed again after copying, for comparison with the first listing. A
-/// file that waited then (and may have settled since) is left out of both; a file
-/// changed during the run waits now, so it shows as changed.
+/// The library listed again after copying, for comparison with the first listing
+/// (`rows`). A file that waited then (and may have settled since) is left out of both; a
+/// file changed during the run waits now, so it shows as changed. A file that was not
+/// there at all then came in during the run: it waits for the next run too (added to
+/// `waiting`). Explorer, a Mac's Finder and cp -a give a copied file its original's date,
+/// so an album copied into the Music share during the run looked settled, and the whole
+/// night failed with "Music library changed" (deep check 766).
 fn listed_again(
     sources: &[(String, PathBuf)],
-    waited: &[String],
+    rows: &[serde_json::Value],
+    waiting: &mut Vec<String>,
 ) -> Result<Vec<serde_json::Value>> {
     let (mut after, _waiting) = listing(sources)?;
-    after.retain(|r| !waited.iter().any(|w| r["path"] == w.as_str()));
+    let before: std::collections::BTreeSet<&str> =
+        rows.iter().filter_map(|r| r["path"].as_str()).collect();
+    let mut arrived = vec![];
+    after.retain(|r| {
+        let path = r["path"].as_str().unwrap_or("");
+        if waiting.iter().any(|w| w == path) {
+            return false;
+        }
+        if !before.contains(path) {
+            arrived.push(path.to_string());
+            return false;
+        }
+        true
+    });
+    waiting.extend(arrived);
     Ok(after)
 }
 /// Where the person's own music folders are listed in a snapshot (G7, 0.50.0): under
@@ -168,7 +189,7 @@ pub fn run(a: &Args) -> Result<()> {
         let from = sources(&cfg, source)?;
         own_folders_there(&from, &mounted_and_answering)?;
         let root = common::safe(&media.join("backups/music"))?;
-        let (rows, waiting) = listing(&from)?;
+        let (rows, mut waiting) = listing(&from)?;
         common::directory(&root, 0o700)?;
         for row in &rows {
             backup::guard(&config, &data, &media)?;
@@ -187,7 +208,7 @@ pub fn run(a: &Args) -> Result<()> {
             }
         }
         // Refuse a partial catalogue if a download/import changed the source during copying.
-        if listed_again(&from, &waiting)? != rows {
+        if listed_again(&from, &rows, &mut waiting)? != rows {
             return Err(Error::new("Music library changed during backup"));
         }
         backup::guard(&config, &data, &media)?;
@@ -207,7 +228,7 @@ pub fn run(a: &Args) -> Result<()> {
         )?;
         if !waiting.is_empty() {
             println!(
-                "Music: {} changed in the last 10 minutes (still being added?) and {} for the next backup: {}",
+                "Music: {} changed in the last 10 minutes or added during this backup (still being added?) and {} for the next backup: {}",
                 common::plural(waiting.len(), "file", "files"),
                 if waiting.len() == 1 { "waits" } else { "wait" },
                 waiting.iter().take(10).cloned().collect::<Vec<_>>().join(", ")
@@ -312,19 +333,70 @@ mod tests {
         names.sort();
         assert_eq!(names, ["Album/ahead.flac", "Album/old.flac"]);
         assert_eq!(waiting, ["Album/new.flac"]);
+        // Each file's date is listed, for the restore to give back.
+        let old = fs::metadata(root.join("Album/old.flac")).unwrap().mtime();
+        assert!(rows
+            .iter()
+            .any(|r| r["path"] == "Album/old.flac" && r["mtime"] == old));
         rows.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
         // It settles during the run: not counted as a change.
         set("Album/new.flac", now - day);
         assert_eq!(
-            listed_again(&[(String::new(), root.clone())], &waiting).unwrap(),
+            listed_again(
+                &[(String::new(), root.clone())],
+                &rows,
+                &mut waiting.clone()
+            )
+            .unwrap(),
             rows
         );
         // A file that was backed up and then changes during the run is a change.
         set("Album/old.flac", now);
         assert_ne!(
-            listed_again(&[(String::new(), root.clone())], &waiting).unwrap(),
+            listed_again(
+                &[(String::new(), root.clone())],
+                &rows,
+                &mut waiting.clone()
+            )
+            .unwrap(),
             rows
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn an_album_copied_in_with_its_old_dates_during_the_run_waits_instead_of_failing_it() {
+        // Deep check 766: Windows Explorer, a Mac's Finder, cp -a and rsync -a give a copied
+        // file its original's date (seen with Samba 4.19: the data, then the dates, leave
+        // mtime in 2019 and ctime now). An album copied into the Music share while the
+        // nightly backup ran was taken for settled, so the second listing found files the
+        // first had not, and the whole night failed with "Music library changed".
+        let root = std::env::temp_dir().join(format!("neko-music-copied-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("Album")).unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(5 * 365 * 86400);
+        let copied = |name: &str| {
+            let path = root.join(name);
+            fs::write(&path, name).unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        };
+        copied("Album/00.flac");
+        let sources = [(String::new(), root.clone())];
+        let (rows, mut waiting) = listing(&sources).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(waiting.is_empty());
+        // Copied in between the two listings: dated years back, written just now.
+        copied("Album/01.flac");
+        assert_eq!(listed_again(&sources, &rows, &mut waiting).unwrap(), rows);
+        // It is named among the files that wait for the next run (the snapshot says so).
+        assert_eq!(waiting, ["Album/01.flac"]);
+        // A file of the first listing that changed is still a change.
+        fs::write(root.join("Album/00.flac"), "other").unwrap();
+        assert_ne!(listed_again(&sources, &rows, &mut vec![]).unwrap(), rows);
         fs::remove_dir_all(root).unwrap();
     }
 }

@@ -6,12 +6,16 @@ from pathlib import Path
 import host
 from neko_common import (
     look_alike_letters,
+    printable,
     safe_path,
     atomic_write,
     findmnt,
     immich_wanted,
     last_words,
+    location,
     media_group,
+    movies_library,
+    music_library,
     SYSTEMD_UNITS,
 )
 
@@ -27,7 +31,12 @@ SAMBA_SECTIONS = ('global', 'homes', 'printers')
 
 def validate_share(name, relative):
     if not name or not name.replace('_', '').isalnum():
-        raise RuntimeError('Invalid SMB share name')
+        # Named, with what a name may hold: "Invalid SMB share name" alone left a person who
+        # added "My Photos" or "Fotos-2024" guessing which one, and why (deep check 486).
+        raise RuntimeError(
+            f'The share name "{printable(name)}" cannot be used: a share name may hold only letters, digits and _ '
+            '(no spaces or other marks, such as My_Photos). Rename it under "shares" in my-config.json'
+        )
     if look_alike_letters(name):
         # Shown with its letters' codes, so the odd ones can be found (deep check 239).
         raise RuntimeError(
@@ -46,7 +55,10 @@ def validate_share(name, relative):
     # Written into smb.conf, which root's smbd reads: a line break would add settings
     # of its own (a command to run, say) and % starts a Samba variable.
     if not re.fullmatch(r'[A-Za-z0-9_./ -]+', str(relative)):
-        raise RuntimeError(f'SMB share path {relative!r} may use only letters, digits, spaces and . _ - /')
+        raise RuntimeError(
+            f'SMB share path {relative!r} may use only the letters A to Z, digits, spaces and . _ - / (no accents). '
+            'Rename the folder, or share another one, under "shares" in my-config.json'
+        )
     # Samba drops the spaces at the end of a setting, so "films " would share the folder
     # "films" instead of the one setup checked.
     if str(p) != str(p).rstrip():
@@ -66,9 +78,12 @@ def same_names(shares):
     return [names for names in seen.values() if len(names) > 1]
 
 
-def share_config(settings, media, user):
+def share_config(settings, media, user, placed=None, apps=None):
+    """NekoServer's share file. `placed`: the shares whose folder is not on the media drive
+    ({'Music': its folder}, placed_shares); they take the place of one of the same name.
+    `apps`: (account, group) the media apps run as (apps_account)."""
     shares = settings.get('shares', {})
-    if not shares:
+    if not shares and not placed:
         raise RuntimeError('At least one share is required')
     for names in same_names(shares):
         raise RuntimeError(
@@ -99,19 +114,94 @@ def share_config(settings, media, user):
         '   server min protocol = SMB2_10',
         '',
     ]
-    for name, rel in shares.items():
-        p = validate_share(name, rel)
+    folders = {name: media / validate_share(name, rel) for name, rel in shares.items()}
+    for name, path in {**folders, **(placed or {})}.items():
         out += [
             f'[{name}]',
-            f'   path = {media / p}',
+            f'   path = {path}',
             '   browseable = yes',
             '   guest ok = no',
             f'   valid users = {user}',
-            f'   read only = {"no" if name == "Media" and settings.get("samba_media_write", False) else "yes"}',
+            f'   read only = {"no" if writable(name, settings) else "yes"}',
             '   follow symlinks = no',
-            '',
         ]
+        if writable(name, settings) and apps:
+            # A film or an album copied in belongs to the apps' account, as the files they
+            # make do: with the shares another account's ("samba_user"), Samba's own 0744
+            # left Radarr and Lidarr unable to rename, upgrade or delete what came in.
+            out += [f'   force user = {apps[0]}', f'   force group = {apps[1]}']
+        out.append('')
     return '\n'.join(out)
+
+
+def apps_account(config):
+    """(account, group) of the media apps' user and group ID ("uid" and "gid" under
+    "media"), by name, as Samba takes them."""
+    import grp
+
+    settings = config.get('media', {})
+    uid, gid = int(settings.get('uid', 1000)), int(settings.get('gid', 1000))
+    return pwd.getpwuid(uid).pw_name, grp.getgrgid(gid).gr_name
+
+
+MUSIC_SHARE = 'Music'
+
+
+def writable(name, settings):
+    """The films and the music take new files from other computers with "samba_media_write"."""
+    return name in ('Media', MUSIC_SHARE) and bool(settings.get('samba_media_write', False))
+
+
+def media_share_drive(config):
+    """The drive whose library the Media share shows: the films' (films_share), else the
+    media drive."""
+    return location(config, 'movies') if films_share(config) else 'media'
+
+
+def music_share(config):
+    """{'Music': the folder Navidrome plays} when the music is not in the library the
+    Media share shows (the music is on the SSD by default), else {}. With the music
+    elsewhere the Media share held no music at all, and an album copied into it from
+    another computer never reached Navidrome (deep check 736). A share of yours named
+    Music stays the only one of that name."""
+    if not media_group(config, 'music') or location(config, 'music') == media_share_drive(config):
+        return {}
+    if any(name.lower() == MUSIC_SHARE.lower() for name in config.get('networking', {}).get('shares', {})):
+        return {}
+    return {MUSIC_SHARE: music_library(config)}
+
+
+def films_share(config):
+    """{'Media': the library Jellyfin shows} when the films and shows are placed on
+    another drive than the media drive (the SSD, or a drive of their own: setup asks),
+    else {}. The default Media share is "library" on the media drive: with the films
+    elsewhere it showed none of them, and a film copied into it never reached Jellyfin
+    (deep check 763). A Media share you pointed at another folder stays as you set it."""
+    shares = config.get('networking', {}).get('shares', {})
+    if shares.get('Media') != 'library' or not media_group(config, 'movies'):
+        return {}
+    if location(config, 'movies') == 'media':
+        return {}
+    return {'Media': movies_library(config)}
+
+
+def placed_shares(config):
+    """The default shares whose folder is not on the media drive, {name: its folder}:
+    they take the place of a share of the same name in the settings."""
+    return {**films_share(config), **music_share(config)}
+
+
+def media_drive_shares(config):
+    """The shares of the media drive's folders: those wanted, but for the ones placed on
+    another drive, which are shared from there."""
+    placed = placed_shares(config)
+    return {name: folder for name, folder in wanted_shares(config).items() if name not in placed}
+
+
+def anything_to_share(config):
+    """This server has a folder to share, so the shared folders need a password: with
+    none (only Nextcloud chosen, say) the step shares nothing and asks for none."""
+    return bool(media_drive_shares(config) or placed_shares(config))
 
 
 # With "bind interfaces only", smbd listens only on the addresses tailscale0 has when it
@@ -125,11 +215,14 @@ TAILNET_ADDRESS = (
 )
 
 
-def storage_guard(media, unit, mode, tailscale):
+def storage_guard(media, unit, mode, tailscale, also=()):
     """Samba's drop-in: it runs only with the media HDD mounted, stops when the HDD goes,
-    and in tailnet mode starts once the Tailscale address is there (or a minute passed)."""
+    and in tailnet mode starts once the Tailscale address is there (or a minute passed).
+    `also`: other shared folders (the films or the music on the SSD), whose drives must be mounted too,
+    or a share would show (and take files into) the empty folder on the system disk."""
+    mounts = ' '.join(str(path) for path in (media, *also))
     text = (
-        f'# Managed by NekoServer\n[Unit]\nRequiresMountsFor={media}\nBindsTo={unit}\n'
+        f'# Managed by NekoServer\n[Unit]\nRequiresMountsFor={mounts}\nBindsTo={unit}\n'
         f'After={unit} {tailscale if mode == "tailnet" else "network-online.target"}\n'
     )
     if mode == 'tailnet':
@@ -367,8 +460,11 @@ def run(context):
     family = host.current()
     service = family.service('samba')
     settings = context.config.get('networking', {})
-    settings = dict(settings, shares=wanted_shares(context.config))
-    if not settings['shares']:
+    # The films and the music placed on another drive are shared from there, never from
+    # the media drive's folder of the same name.
+    placed = placed_shares(context.config)
+    settings = dict(settings, shares=media_drive_shares(context.config))
+    if not anything_to_share(context.config):
         # Folders shared at an earlier run stop being shared, as one taken out of several does.
         stop_sharing(service, context.log)
         context.log(
@@ -422,6 +518,12 @@ def run(context):
             raise RuntimeError(
                 f'Share directory missing: {path}. Create it, or take the "{name}" share out of "shares" under "networking" in my-config.json'
             )
+    for name, path in placed.items():
+        path = safe_path(path)
+        if path.is_symlink():
+            raise RuntimeError(f'Share directory is a link, not a folder: {path}')
+        if not path.is_dir():
+            waiting.append(f'{name} ({path}, made by the media apps step)')
     if waiting:
         return {
             'status': 'needs_setup',
@@ -432,7 +534,7 @@ def run(context):
     remember_service(service, managed)
     if not shutil.which('smbd'):
         family.install(['samba'])
-    desired = share_config(settings, media, user)
+    desired = share_config(settings, media, user, placed, apps_account(context.config))
     # Safest: don't modify a pre-existing unmanaged Samba installation.
     if main.exists() and not includes_ours(main.read_text()):
         unmanaged_config(main, family, context.log)
@@ -447,7 +549,7 @@ def run(context):
     call(['testparm', '-s', str(main)], timeout=30)
     unit = call(['systemd-escape', '--path', '--suffix=mount', str(media)])
     override = SYSTEMD_UNITS / (service + '.d') / '10-nekoserver-storage.conf'
-    content = storage_guard(media, unit, mode, family.service('tailscale'))
+    content = storage_guard(media, unit, mode, family.service('tailscale'), placed.values())
     if override.exists() and not safe_path(override).read_text().startswith('# Managed by NekoServer\n'):
         raise RuntimeError('Unmanaged Samba storage guard')
     atomic_write(override, content, 0o644)
@@ -490,6 +592,36 @@ def run(context):
         # (shares of your own use it) is never on this list, and stays.
         remember_account(user)
     context.log(f'Samba configured for {mode}, authenticated user {user}; existing password preserved')
+    for line in how_to_open(mode, settings.get('lan_ip'), user, {**settings['shares'], **placed}):
+        context.log(line)
+
+
+def how_to_open(mode, ip, user, shares):
+    """What to type on another computer to open the shares. Windows never lists them
+    under "Network" by itself: it finds servers there with WS-Discovery and the old
+    NetBIOS browsing, which this Samba does not offer (disable netbios); a Mac or Linux
+    lists them only when the server's avahi announces them. Typing the address always works."""
+    where = ip if mode == 'lan' else '100.x.y.z'
+    first = next(iter(shares))
+    lines = [
+        'Shared folders: to open them from another computer, type their address; they may not show up '
+        'by themselves under "Network". '
+        + ('' if mode == 'lan' else 'Tailscale must be on there. ')
+        + 'Shares: '
+        + ', '.join(shares)
+        + '.',
+        f'  Windows: in File Explorer\'s address bar type  \\\\{where}\\{first}  (to keep it, right-click '
+        '"This PC", "Map network drive").',
+        f'  Mac: in Finder choose Go, "Connect to Server", type  smb://{where}/{first}  and choose "Registered User".',
+        f'  Linux: in the file manager press Ctrl+L and type  smb://{where}/{first}',
+        f'  Chromebook: in Files choose More (\u22ee), Services, "SMB file share", and type  \\\\{where}\\{first}',
+        f'  Sign in as {user} with the shared folders\' password chosen in setup.',
+    ]
+    if mode != 'lan':
+        lines.append(
+            "  Put the server's Tailscale address in place of 100.x.y.z: on the server,  tailscale ip -4  shows it."
+        )
+    return lines
 
 
 # Whether Samba was switched on before NekoServer switched it on: the uninstaller then

@@ -20,6 +20,16 @@ The first time you open a home address, the browser warns that the connection "i
   The file holds no secret: it only lets a device recognise your server. Its private half never leaves the server.
 - **Phone and TV apps often refuse** a certificate you installed yourself (Android apps do by default, and many TV apps have no way to add one). When an app won't connect at the home address, use its Tailscale address instead.
 
+## On a TV
+
+TV apps can't be given your server's certificate, so a TV uses the Tailscale addresses, and Tailscale runs only on some TVs:
+
+- **Android TV and Google TV** (Sony, Philips, TCL and others, and the Google TV Streamer or Chromecast with Google TV) and **Apple TV** (tvOS 17 or later): install Tailscale from the TV's app store and sign in to your Tailscale account, then install Jellyfin (on Apple TV: Swiftfin or Infuse) and enter the Jellyfin address ending in `:8443`.
+- **Fire TV:** Tailscale is not in Amazon's app store; it is installed from Tailscale's own site (https://tailscale.com/docs/install/amazon-fire), which takes some fiddling, and the newest sticks (Vega OS, such as the Fire TV Stick 4K Select) cannot run it.
+- **LG (webOS), Samsung (Tizen) and Roku TVs** have no Tailscale app, so their Jellyfin app cannot reach your server. Plug in a box or stick that has one (Google TV Streamer, Apple TV), or connect the server to the TV with an HDMI cable ([TV-SETUP.md](TV-SETUP.md)).
+- **Signing in on the TV** needs no typing of the long password with the remote: choose **Quick Connect** on the TV's sign-in screen (behind *Manual Login* on some), and it shows a six-letter code. In Jellyfin on your phone, already signed in, open your picture, then *Quick Connect*, and type that code.
+- **Casting from the phone** (the cast button in the Jellyfin app) does not work: the Chromecast or TV then fetches the film itself and cannot reach the private address. Use the Jellyfin app on the TV or stick instead.
+
 ---
 
 ## For administrators
@@ -34,7 +44,7 @@ Apply `lan_access` or the base `full` profile using the confirmed config. Setup 
 
 The LAN Caddy gateway uses a private certificate authority. Clients using its LAN URLs must explicitly trust the exported public root certificate; never transfer the private key. `sudo python3 gateway_cert.py --export FILE` writes that certificate ("The warning at the home address", above). The home portal uses port 8442.
 
-**Check each device before relying on the LAN URLs.** Phones and especially TV apps often ignore certificate authorities a user installs: Android apps do so by default, and many smart-TV, Roku and Fire TV apps offer no way to add one. Test the Jellyfin, Immich and Nextcloud apps on each device you plan to use. If an app refuses the LAN certificate, use the Tailscale route below (publicly trusted certificates), or the server's own TV session. A router DHCP reservation should keep the chosen LAN address stable.
+**Check each device before relying on the LAN URLs.** Phones and especially TV apps often ignore certificate authorities a user installs: Android apps do so by default, and many smart-TV, Roku and Fire TV apps offer no way to add one. Test the Jellyfin, Immich and Nextcloud apps on each device you plan to use. If an app refuses the LAN certificate, use the Tailscale route below (publicly trusted certificates), or the server's own TV session. Tailscale has clients for Android TV/Google TV, Apple TV and (sideloaded, not Vega OS) Fire TV only; LG webOS, Samsung Tizen and Roku TVs have none and need a streaming stick or the TV session ("On a TV", above). Casting to a Chromecast fails on both routes: the receiver fetches the stream itself and neither trusts the private CA nor joins the tailnet. A router DHCP reservation should keep the chosen LAN address stable.
 
 ### Away from home
 
@@ -46,4 +56,4 @@ Tailscale's publicly trusted Serve HTTPS path does not need the LAN Caddy CA on 
 
 Tailscale authorizes the device connection; it is not a shared app login, backup destination or photo/music player. Both the home server and phone need internet. The server must remain powered on with its storage available. **Keep the server signed in:** Tailscale signs a device out after 180 days unless key expiry is switched off for it. In the Tailscale admin console (Machines), open this server's menu and choose **Disable key expiry** (setup says so too). The dashboard warns two weeks before a sign-in runs out, and says so at once when the server is signed out (run `sudo tailscale up` to sign in again). Tailnet policy (who may reach the server) is yours to set.
 
-Nextcloud answers on every gateway address at once: each gateway only adds its address to Nextcloud's trusted domains, and links follow whichever address the client used. (Before v0.21.1 the gateway applied last replaced the other's address, so applying remote_access broke Nextcloud on the home network for devices without Tailscale.) The first gateway's address is used for links in background emails. The Docker hop between the gateway and Nextcloud is a trusted proxy, so Nextcloud sees each client's real address for login throttling and logs. Phone tests are recorded as user-confirmed evidence, separate from automatic server route checks and full acceptance.
+Nextcloud answers on every gateway address at once: each gateway only adds its address to Nextcloud's trusted domains, and links follow whichever address the client used. (Before v0.21.1 the gateway applied last replaced the other's address, so applying remote_access broke Nextcloud on the home network for devices without Tailscale.) The first gateway's address is used for links in background emails. The Docker hop between the gateway and Nextcloud is a trusted proxy, so Nextcloud sees each client's real address for login throttling and logs. Seerr's *Play on Jellyfin* buttons follow its Jellyfin *External URL* (Settings, Jellyfin); empty, they led to `http://jellyfin:8096`, Seerr's own address for Jellyfin inside Docker, which no phone opens. Each gateway puts its Jellyfin address there: the Tailscale one, or the home one while there is none. An address you typed there yourself is kept. Phone tests are recorded as user-confirmed evidence, separate from automatic server route checks and full acceptance.

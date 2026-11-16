@@ -363,6 +363,38 @@ class RemovedAppConnectionTests(unittest.TestCase):
                 onboarding.remove_stale(ctx, Path(d) / 'release', Path(d) / 'config.json')
                 run.assert_not_called()
 
+    def test_an_app_whose_group_was_switched_off_counts_as_taken_out(self):
+        """Deep check 750: Music switched off at a later setup run. Lidarr was stopped but
+        stayed in media.services, so Prowlarr kept its link to it and warned for good."""
+        from modules import onboarding
+
+        every = ['jellyfin', 'navidrome', 'sonarr', 'radarr', 'lidarr', 'prowlarr', 'seerr', 'qbittorrent']
+        music_off = {'media': {'services': every}, 'media_apps': {'movies': True, 'music': False}}
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / 'compose/lidarr').mkdir(parents=True)
+            (Path(d) / 'compose/lidarr/compose.yaml').write_text('services: {}\n')
+            ctx = mock.Mock(config={'data_mount': d, **music_off}, log=mock.Mock())
+            with mock.patch.object(onboarding.subprocess, 'run', return_value=mock.Mock(returncode=0)) as run:
+                onboarding.remove_stale(ctx, Path(d) / 'release', Path(d) / 'config.json')
+            self.assertIn('--remove-stale', run.call_args.args[0])
+            ctx.log.assert_any_call('Taking away the connections setup made to apps no longer set up: lidarr')
+        # media-connect itself (what that command runs) leaves Lidarr out of the apps set up.
+        with (
+            tempfile.NamedTemporaryFile('w', suffix='.json') as settings,
+            mock.patch.object(self.connect, 'read_settings', return_value={'data_mount': '/srv', **music_off}),
+            mock.patch.object(self.connect.os.path, 'ismount', return_value=True),
+            mock.patch.object(self.connect, 'remove_stale') as removing,
+            mock.patch('builtins.print'),
+        ):
+            settings.write('{}')
+            settings.flush()
+            argv = ['--config', settings.name, '--remove-stale', '--apply', '--data-root', '/']
+            self.assertEqual(self.connect.main(argv), 0)
+        root, selected, apply = removing.call_args.args
+        self.assertNotIn('lidarr', selected)
+        self.assertNotIn('navidrome', selected)
+        self.assertIn('prowlarr', selected)
+
 
 class QbittorrentLoginPassedOnTests(unittest.TestCase):
     """The qBittorrent login changed with account-setup.py (c): the download clients setup

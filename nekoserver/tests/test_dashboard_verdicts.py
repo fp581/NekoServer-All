@@ -50,6 +50,8 @@ class ChecksumVerdictTests(unittest.TestCase):
                 'checkDated',
                 'checkOverdue',
                 'filesIntact',
+                'localTime',
+                'usbCheckWhen',
                 'integrityResult',
             ),
         )
@@ -90,6 +92,42 @@ class ChecksumVerdictTests(unittest.TestCase):
         # A fresh quick run does not hide that the last full check is two months old.
         row['full_at'] = now - 60 * 86400
         self.assertEqual(self.verdicts(row)[0][0], 'stale')
+
+    def words(self, row, monthly_at):
+        code = pieces(
+            consts=('numeric', 'count', 'text', 'INTEGRITY_MAX_AGE'),
+            functions=(
+                'firstOf',
+                'plural',
+                'integrityBad',
+                'checkDated',
+                'checkOverdue',
+                'localTime',
+                'usbCheckWhen',
+                'integrityResult',
+            ),
+        )
+        return run(
+            code + f'\nconsole.log(JSON.stringify(integrityResult({json.dumps(row)}, {json.dumps(monthly_at)}).words));'
+        )
+
+    def test_a_usb_drive_plugged_in_only_for_the_weekly_copy_is_told_when_to_plug_it_in(self):
+        """Deep check 798: a USB drive plugged in only for the weekly copy is never there
+        for the monthly full check, so its row is overdue after 35 days. It said "leave the
+        drive plugged in on the night of the 1st", read as the evening of the 1st, while
+        the check runs early that morning (02:30 by default): it names the next run now."""
+        now = time.time()
+        row = {'id': 'usb_photos', 'at': now, 'full_at': now - 40 * 86400, 'unverified': 0}
+        at = now + 5 * 86400
+        said = self.words(row, at)
+        self.assertNotIn('night of the 1st', said)
+        expected = run(pieces(functions=('localTime',)) + f'\nconsole.log(JSON.stringify(localTime({at})));')
+        self.assertIn('have the drive plugged in when the monthly check runs: next on ' + expected + '.', said)
+        # No timer to read: the day and part of the day are said.
+        self.assertIn('early on the 1st of each month.', self.words(row, None))
+        # Never checked yet: the same advice. The HDD's own copy needs none.
+        self.assertIn('next on', self.words(dict(row, full_at=None), at))
+        self.assertNotIn('USB', self.words(dict(row, id='archive'), at))
 
 
 @unittest.skipUnless(NODE, 'node is not installed')

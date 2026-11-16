@@ -471,6 +471,28 @@ def nas_disk_wwn(saved, seen, label, choose):
 UNSHOWN = re.compile('[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]')
 
 
+def typed_folder(text, environ=os.environ):
+    """A folder as a person types or pastes it, as the path it names. A folder dragged
+    into the terminal comes in quotes ('/home/ana/My Films'), one copied from a shell has
+    its spaces escaped (/home/ana/My\\ Films), and ~ is the home folder of the person who
+    ran sudo (setup runs as root): each was "not a folder on this PC" (deep check 481)."""
+    text = text.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in '\'"':
+        text = text[1:-1]
+    elif '\\' in text:
+        text = re.sub(r'\\(.)', r'\1', text)
+    if text == '~' or text.startswith('~/'):
+        import pwd
+
+        name = environ.get('SUDO_USER')
+        try:
+            home = pwd.getpwnam(name).pw_dir if name and name != 'root' else os.path.expanduser('~')
+        except KeyError:
+            return text
+        text = home.rstrip('/') + text[1:]
+    return text
+
+
 def printable(text):
     """`text` as it can be printed: each such character written as its code (\\x1b)."""
     return UNSHOWN.sub(lambda m: m.group(0).encode('unicode_escape').decode('ascii'), str(text))

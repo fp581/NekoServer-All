@@ -822,6 +822,21 @@ class WhereTests(Base):
         self.assertEqual(self.run_tool('restore', str(self.dest), SEARCH, 'München'), 0)
         self.assertEqual((self.dest / mac_name).read_bytes(), b'photo', 'restored under its own name')
 
+    def test_a_search_finds_names_in_either_case(self):
+        """Deep check 488: a phone's or a PC's folder is "Beach Trip" or "IMG_0001.JPG";
+        "beach" or "img_0001" found nothing, as if the card did not have them."""
+        name = '2021/Beach Trip/IMG_0001.JPG'
+        self.card.add(name, b'photo')
+        self.snapshot([{'path': name, 'byte_size': 5, 'copies': [{'volume_id': VOLUME, 'state': 'committed'}]}])
+        for typed in ('beach', 'img_0001.jpg', 'BEACH TRIP'):
+            with self.subTest(typed=typed):
+                self.assertEqual(self.run_tool('list', SEARCH, typed), 0)
+                self.assertEqual(self.said[-1], '1 file')
+                self.assertEqual(self.run_tool('where', typed), 0)
+                self.assertIn('(5 bytes)', said_text(self))
+        self.assertEqual(self.run_tool('restore', str(self.dest), SEARCH, 'beach'), 0)
+        self.assertEqual((self.dest / name).read_bytes(), b'photo', 'restored under its own name')
+
     def test_a_tampered_inventory_is_refused(self):
         sid = self.snapshot([{'path': 'x.jpg', 'copies': []}])
         (self.card.nb / 'inventory' / (sid + VERSIONS)).write_bytes(b'{"path": "y.jpg"}\n')

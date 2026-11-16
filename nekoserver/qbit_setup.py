@@ -126,6 +126,35 @@ def automatic_mode(preferences, categories=('music',)):
     return {'auto_tmm_enabled': True}
 
 
+# How long a finished torrent is shared before qBittorrent stops it: a share ratio of 2,
+# or 7 days, whichever comes first. Sonarr, Radarr and Lidarr remove a download (and its
+# files in the downloads folder) only once qBittorrent has stopped it at such a limit
+# (their qBittorrent client: "pausedUP"/"stoppedUP" and the limit reached), and
+# qBittorrent has no limit unless one is set: every download was shared for good. Its
+# files then stayed in the downloads folder: a second full copy where films are copied
+# into a folder of the person's, and with hard links the space of every film or episode
+# deleted or replaced by a better copy was never freed. The drive filled over the months.
+SHARE_LIMITS = {
+    'max_ratio_enabled': True,
+    'max_ratio': 2,
+    'max_seeding_time_enabled': True,
+    'max_seeding_time': 7 * 24 * 60,  # minutes
+    # Stop. Not "Remove": qBittorrent would then drop the torrent and leave its files,
+    # which no app removes any more (and the import could come after it).
+    'max_ratio_act': 0,
+}
+LIMIT_SWITCHES = ('max_ratio_enabled', 'max_seeding_time_enabled', 'max_inactive_seeding_time_enabled')
+
+
+def share_limits(preferences):
+    """The preference change that gives finished torrents an end (SHARE_LIMITS), or {}:
+    when qBittorrent has a seeding limit of any kind already, it is the person's and stays;
+    an answer without these settings (not qBittorrent's) is not changed either."""
+    if 'max_ratio_enabled' not in preferences or any(preferences.get(key) is True for key in LIMIT_SWITCHES):
+        return {}
+    return dict(SHARE_LIMITS)
+
+
 def retained(verified, actual, changes, categories, desired):
     """qBittorrent kept what setup asked for: the download folders, automatic mode (when
     Lidarr needs it) and each category's folder."""
@@ -134,6 +163,7 @@ def retained(verified, actual, changes, categories, desired):
         path(verified.get('save_path', '')) == desired
         and ('temp_path' not in changes or path(verified.get('temp_path', '')) == changes['temp_path'])
         and ('music' not in categories or verified.get('auto_tmm_enabled') is True)
+        and ('max_ratio_enabled' not in changes or verified.get('max_ratio_enabled') is True)
         and all(c in actual and category_ok(c, path(actual[c].get('savePath', '')), desired) for c in categories)
     )
 
@@ -148,6 +178,14 @@ def save_preferences(client, changes, output):
             "Lidarr needs it: each torrent is then saved in its category's folder, and music on the SSD, "
             'where Lidarr finds it. Torrents you already have keep their mode. Without Lidarr in '
             'media.services, setup leaves this setting as you choose'
+        )
+    if changes.get('max_ratio_enabled'):
+        output(
+            'qBittorrent: a finished download is now shared until it has been uploaded twice, or for 7 days, '
+            'then stopped; Sonarr, Radarr and Lidarr then remove it from the downloads folder (your films, shows '
+            'and music stay in the library). Without a limit every download was shared for good and its files '
+            'kept taking space. To share for longer, set your own limits in qBittorrent (Tools, Options, '
+            'BitTorrent, Seeding Limits, with "then" set to Stop torrent): setup leaves any limit you set alone'
         )
     if changes:
         client.call('/app/setPreferences', {'json': json.dumps(changes)})
@@ -183,6 +221,7 @@ def configure(username, password, apply=False, categories=('tv', 'movies', 'musi
         # So it is switched on only with Lidarr (the music category), and said each time.
         # This changes only how new torrents start; existing torrents keep their mode.
         changes.update(automatic_mode(preferences, categories))
+        changes.update(share_limits(preferences))
         fix = {}
         for category in categories:
             if category not in existing:
