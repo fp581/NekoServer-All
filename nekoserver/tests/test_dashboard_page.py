@@ -1314,6 +1314,20 @@ class MediaFoldersPageTests(unittest.TestCase):
         self.assertIn('/mnt/nas/films', flow['page'])
         self.assertNotIn('Looking at your folders', flow['page'])
 
+    def test_a_copy_at_work_shows_how_far_it_is_and_that_backups_wait(self):
+        # The owner's decision 3 on PR 89: the copy's progress comes from the server (the
+        # job's own file), so a reload or a second browser shows the same.
+        said = 'Copying /mnt/nas/shows into the library. Backups and monthly updates wait until the copy is done.'
+        working = {'format': 'neko-media-folders-v1', 'state': 'working', 'message': said}
+        progress = {'files_done': 3, 'files_total': 10, 'bytes_done': 3_000_000_000, 'bytes_total': 12_500_000_000}
+        (flow, none) = page(
+            ('mediaFlow', {'result': working, 'working': True, 'progress': progress}),
+            ('mediaFlow', {'result': working, 'working': True, 'progress': None}),
+        )
+        self.assertIn('Backups and monthly updates wait until the copy is done.', flow['page'])
+        self.assertIn('3 of 10 files copied (3.0\xa0GB of 12.5\xa0GB)', flow['page'])
+        self.assertNotIn('files copied', none['page'])
+
     def test_without_the_pin_nothing_is_asked_or_shown(self):
         (out,) = page(('mediaSignedOut', None))
         self.assertEqual(out['sent'], [])

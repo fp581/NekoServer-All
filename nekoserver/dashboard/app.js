@@ -5484,6 +5484,9 @@ function mediaOutcomeNodes(answer) {
   if (message) {
     box.append(longText('', message));
   }
+  if (level === 'starting') {
+    box.append(...mediaProgress(object(answer).progress));
+  }
   for (const note of words(r.notes)) {
     box.append(longText('hint', note));
   }
@@ -5497,6 +5500,28 @@ function mediaOutcomeNodes(answer) {
     box.append(steps);
   }
   return [box];
+}
+/* How far a copy into the library is, as the server's job writes it (media-state's
+ * "progress"): the same on every browser and after a reload. [] when nothing is copied. */
+function mediaProgress(p) {
+  const done = numeric(p?.bytes_done) && numeric(p?.bytes_total) && numeric(p?.files_done) && numeric(p?.files_total);
+  if (!done) {
+    return [];
+  }
+  const bar = el('progress', 'media-progress');
+  bar.max = Math.max(p.bytes_total, 1);
+  bar.value = Math.min(p.bytes_done, bar.max);
+  bar.setAttribute('aria-label', 'Copied so far');
+  const said =
+    p.files_done +
+    ' of ' +
+    plural(p.files_total, 'file') +
+    ' copied (' +
+    bytes(p.bytes_done) +
+    ' of ' +
+    bytes(p.bytes_total) +
+    ')';
+  return [bar, el('p', 'media-progress-said', said)];
 }
 function renderMedia() {
   if (!signedIn()) {

@@ -394,11 +394,51 @@ ARR = {'movies': 'radarr', 'tv': 'sonarr', 'music': 'lidarr'}
 
 
 class Context:
-    """What setup's steps are given: the settings, a log, and (for the copy) a way to save."""
+    """What setup's steps are given: the settings, a log, and for the copy a way to save
+    and a way to say how far it is (copy_progress; existing_page.copy uses it)."""
 
-    def __init__(self, config, log, persist):
+    def __init__(self, config, log, persist, progress=None):
         self.config, self.log, self.apply = config, log, True
         self.persist_config = persist
+        if progress:
+            self.copy_progress = progress
+
+
+COPYING = (
+    'Copying {source} into the library. Backups and monthly updates wait until the copy is done; this page shows '
+    'how far it is.'
+)
+
+
+class CopyProgress:
+    """How far a copy into the library is, for the page: written to progress.json beside
+    the result (root's folder) at most once every `every` seconds and when it ends, so a
+    reload or a second browser sees the same. The control service hands it over while
+    the change is at work (media_folders.rs)."""
+
+    def __init__(self, folder, asked_id, working, every=1.0, clock=time.monotonic):
+        self.path = Path(folder) / FACTS['progress']
+        self.asked_id, self.working, self.every, self.clock = asked_id, working, every, clock
+        self.last = None
+
+    def __call__(self, kind, source):
+        """The progress callback for one folder's copy (source_import.copy_entries)."""
+        self.working(COPYING.format(source=source))
+
+        def told(files_done, bytes_done, files_total, bytes_total):
+            now = self.clock()
+            if self.last is not None and now - self.last < self.every and files_done < files_total:
+                return
+            self.last = now
+            said = {'files_done': files_done, 'files_total': files_total, 'bytes_done': bytes_done}
+            said['bytes_total'] = bytes_total
+            atomic_json(self.path, {'format': FORMAT, 'id': self.asked_id, 'kind': kind, 'source': source, **said})
+
+        return told
+
+    def done(self):
+        with contextlib.suppress(OSError):
+            self.path.unlink()
 
 
 def manifests(config):
@@ -615,8 +655,14 @@ def change(settings, asked, folder, out, steps=None, lock=apps_lock):
         settings.save()
         if settings.missed:
             out['notes'].append(ONLY_SSD.format(path=settings.missed))
-        ctx = Context(config, lambda line: out['log'].append(str(line)), settings.save)
-        tell_apps(ctx, kinds, settings.path, out, steps)
+        progress = CopyProgress(
+            folder, out['id'], lambda said: write_result(folder, {**out, 'state': 'working', 'message': said})
+        )
+        ctx = Context(config, lambda line: out['log'].append(str(line)), settings.save, progress)
+        try:
+            tell_apps(ctx, kinds, settings.path, out, steps)
+        finally:
+            progress.done()
 
 
 def run(settings_path, request, also=None, steps=None, lock=apps_lock, available=None):

@@ -1444,7 +1444,9 @@ def listed_source(config, entry):
     return sources
 
 
-def copy_now(config, category, folder, *, run=source_import.run, verify=verify_storage, again=False, **how):
+def copy_now(
+    config, category, folder, *, run=source_import.run, verify=verify_storage, again=False, progress=None, **how
+):
     """Copy the folder into the NekoServer library, the source kept as it is (after the
     person saw copy_preview and said yes). The copy is source_import's: add-only, a file
     the library already has differently is kept and the source's left out, a drive that
@@ -1453,7 +1455,8 @@ def copy_now(config, category, folder, *, run=source_import.run, verify=verify_s
 
     Returns the import's row for this folder ({'status': 'copied', 'copied', 'bytes',
     'destination', 'reason' ...}) with 'source' and 'source_kept': True. Needs root and
-    the drives mounted, as source_import.run does."""
+    the drives mounted, as source_import.run does. `progress`: told the files and bytes
+    done as the copy goes (source_import.copy_entries)."""
     shown = copy_preview(config, category, folder, **how)
     if not shown['fits']:
         raise RuntimeError(
@@ -1465,7 +1468,8 @@ def copy_now(config, category, folder, *, run=source_import.run, verify=verify_s
             )
         )
     listed_source(config, shown['entry'])
-    run(config, [shown['entry']], True, lambda: verify(config), again)
+    told = {'progress': progress} if progress else {}
+    run(config, [shown['entry']], True, lambda: verify(config), again, **told)
     report = os.path.join(os.path.realpath(config['data_mount']), 'reports', 'source-import.json')
     try:
         rows = json.loads(Path(report).read_text(encoding='utf-8')).get('sources') or []

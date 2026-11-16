@@ -2065,7 +2065,10 @@ mod tests {
         assert!(started.lock().unwrap().iter().all(|a| !a.contains("start")));
         // Looking needs no SSD: the last answer (none yet) and whether one is at work.
         let state = answer(&s, &json!({"op": "app_media_state", "token": token}));
-        assert_eq!(state, json!({"ok": true, "working": false, "result": null}));
+        assert_eq!(
+            state,
+            json!({"ok": true, "working": false, "result": null, "progress": null})
+        );
         let places = answer(&s, &json!({"op": "app_media_browse", "token": token}));
         assert_eq!(places["ok"], true, "{places}");
         let outside = answer(

@@ -353,7 +353,9 @@ def copy(ctx):
         kind, path = (folder.get('holds'), folder.get('path')) if isinstance(folder, dict) else (None, None)
         try:
             ctx.log(copy_said(existing_media.copy_preview(config, kind, path)))
-            row = existing_media.copy_now(config, kind, path)
+            # The dashboard's page shows how far the copy is (media_locations.CopyProgress).
+            told = {'progress': ctx.copy_progress(kind, path)} if hasattr(ctx, 'copy_progress') else {}
+            row = existing_media.copy_now(config, kind, path, **told)
         except (RuntimeError, OSError, TypeError) as problem:
             ctx.log(f'Your own folder {path} was not copied: {problem}. Setup tries again at its next run.')
             left.append(folder)

@@ -245,6 +245,58 @@ def tree(folder):
     }
 
 
+class CopyProgressTests(unittest.TestCase):
+    """The owner's decision 3 on PR 89: "Copy into the library" shows how far it is."""
+
+    def test_the_import_says_files_and_bytes_done_after_each_file(self):
+        with tempfile.TemporaryDirectory() as top:
+            source, media = Path(top) / 'old-tv', Path(top) / 'hdd'
+            (source / 'Show A').mkdir(parents=True)
+            (source / 'Show A' / 'e1.mkv').write_bytes(b'x' * 300)
+            (source / 'Show A' / 'e2.mkv').write_bytes(b'y' * 700)
+            media.mkdir()
+            told = []
+            entry = {'type': 'local', 'path': str(source), 'category': 'tv'}
+            result = source_import.copy_source(entry, media, apply=True, progress=lambda *now: told.append(now))
+        self.assertEqual(result['copied'], 2)
+        self.assertEqual(told[0], (0, 0, 2, 1000))
+        self.assertEqual(told[-1], (2, 1000, 2, 1000))
+        self.assertEqual(len(told), 3)
+
+    def test_progress_is_written_beside_the_result_at_most_once_a_second(self):
+        with tempfile.TemporaryDirectory() as folder:
+            now, said = [100.0], []
+            progress = media_locations.CopyProgress(folder, '0123456789abcdef', said.append, clock=lambda: now[0])
+            told = progress('tv', '/mnt/nas/shows')
+            self.assertEqual(said, [media_locations.COPYING.format(source='/mnt/nas/shows')])
+            self.assertIn('Backups and monthly updates wait until the copy is done', said[0])
+            path = Path(folder) / 'progress.json'
+            told(0, 0, 10, 1000)
+            written = json.loads(path.read_text())
+            self.assertEqual(
+                written,
+                {
+                    'format': 'neko-media-folders-v1',
+                    'id': '0123456789abcdef',
+                    'kind': 'tv',
+                    'source': '/mnt/nas/shows',
+                    'files_done': 0,
+                    'files_total': 10,
+                    'bytes_done': 0,
+                    'bytes_total': 1000,
+                },
+            )
+            told(1, 100, 10, 1000)  # within the second: not written
+            self.assertEqual(json.loads(path.read_text())['files_done'], 0)
+            now[0] += 1.5
+            told(2, 200, 10, 1000)
+            self.assertEqual(json.loads(path.read_text())['files_done'], 2)
+            told(10, 1000, 10, 1000)  # the end is always written
+            self.assertEqual(json.loads(path.read_text())['files_done'], 10)
+            progress.done()
+            self.assertFalse(path.exists())
+
+
 class GuideTests(unittest.TestCase):
     def test_the_guides_say_the_limit_shared_json_sets(self):
         cap = existing_media.FOLDERS_PER_KIND
@@ -626,10 +678,16 @@ class MediaFoldersTests(unittest.TestCase):
         self.assertGreater(len([c for c in self.pc.calls() if c.startswith('docker compose')]), len(restarts))
 
     def test_copy_into_the_library_is_setups_copy_with_the_folder_kept(self):
-        copied = []
+        copied, seen = [], []
 
         def copy_now(config, kind, path, **how):
             copied.append((kind, path))
+            # While it copies: how far it is beside the result, and the page told backups wait.
+            how['progress'](1, 4, 2, 10)
+            control = self.pc.control
+            seen.append(
+                (json.loads((control / 'progress.json').read_text()), json.loads((control / 'result.json').read_text()))
+            )
             return {'status': 'copied', 'copied': 1}
 
         with mock.patch.object(existing_media, 'copy_now', copy_now):
@@ -637,6 +695,11 @@ class MediaFoldersTests(unittest.TestCase):
         self.assertEqual(answer['state'], 'done', answer)
         self.assertIn('are copied into the library', answer['message'])
         self.assertEqual(copied, [('tv', str(self.pc.shows))])
+        ((progress, result),) = seen
+        self.assertEqual((progress['id'], progress['files_done'], progress['bytes_total']), (answer['id'], 1, 10))
+        self.assertEqual(result['state'], 'working')
+        self.assertIn('Backups and monthly updates wait until the copy is done', result['message'])
+        self.assertFalse((self.pc.control / 'progress.json').exists(), 'gone once the copy ended')
         self.assertNotIn(existing_page.COPIES, self.pc.settings(), 'copied: off the list')
         self.assertNotIn(existing_media.BEGIN, self.pc.fstab.read_text(), 'a copy connects nothing')
 

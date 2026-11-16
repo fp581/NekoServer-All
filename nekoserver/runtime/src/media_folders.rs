@@ -136,7 +136,33 @@ impl Folders {
             result["state"] = json!("failed");
             result["message"] = json!(STOPPED);
         }
-        json!({"ok": true, "working": working, "result": result})
+        json!({"ok": true, "working": working, "result": result, "progress": self.progress(working, &result)})
+    }
+    /// How far the copy of the change at work is (media_locations.CopyProgress): only
+    /// while it is at work, and only the one this change wrote (its request's id).
+    fn progress(&self, working: bool, result: &Value) -> Value {
+        let found = common::json(&self.folder.join(fact("progress")), 100_000);
+        let ours = found["format"] == fact("format")
+            && result["id"].is_string()
+            && found["id"] == result["id"];
+        let counted = ["files_done", "files_total", "bytes_done", "bytes_total"]
+            .iter()
+            .all(|key| found[*key].is_u64());
+        if !(working && ours && counted) {
+            return Value::Null;
+        }
+        let mut shown = json!({});
+        for key in [
+            "kind",
+            "source",
+            "files_done",
+            "files_total",
+            "bytes_done",
+            "bytes_total",
+        ] {
+            shown[key] = found[key].clone();
+        }
+        shown
     }
 
     /// A change from the page: checked, written for media_locations.py, and its service
@@ -617,7 +643,7 @@ mod tests {
         let (f, systemd, folder) = folders("state");
         assert_eq!(
             f.state(),
-            json!({"ok": true, "working": false, "result": null})
+            json!({"ok": true, "working": false, "result": null, "progress": null})
         );
         fs::create_dir_all(&folder).unwrap();
         let working = json!({"format": "neko-media-folders-v1", "state": "working", "message": "Working on it…"});
@@ -631,6 +657,38 @@ mod tests {
         // Something else in the file is not an answer of this page.
         common::atomic_json(&folder.join("result.json"), &json!({"state": "done"})).unwrap();
         assert_eq!(f.state()["result"], Value::Null);
+        fs::remove_dir_all(&folder).unwrap();
+    }
+
+    /// The owner's decision 3 on PR 89: a copy into the library shows how far it is, the
+    /// same for every browser (the job's own file, never the page's memory).
+    #[test]
+    fn a_copy_at_work_hands_its_progress_to_the_page() {
+        let (f, systemd, folder) = folders("progress");
+        fs::create_dir_all(&folder).unwrap();
+        let working = json!({"format": "neko-media-folders-v1", "id": "ab12cd34ab12cd34", "state": "working"});
+        common::atomic_json(&folder.join("result.json"), &working).unwrap();
+        let progress = json!({
+            "format": "neko-media-folders-v1", "id": "ab12cd34ab12cd34", "kind": "tv",
+            "source": "/mnt/nas/shows", "files_done": 3, "files_total": 10,
+            "bytes_done": 300, "bytes_total": 1000, "at": 1.0,
+        });
+        common::atomic_json(&folder.join("progress.json"), &progress).unwrap();
+        systemd.active.store(true, Ordering::SeqCst);
+        assert_eq!(
+            f.state()["progress"],
+            json!({"kind": "tv", "source": "/mnt/nas/shows", "files_done": 3, "files_total": 10, "bytes_done": 300, "bytes_total": 1000})
+        );
+        // Another change's file, one that is not whole, or a change that ended: none.
+        for (key, value) in [("id", json!("ffffffffffffffff")), ("bytes_done", json!(-1))] {
+            let mut other = progress.clone();
+            other[key] = value;
+            common::atomic_json(&folder.join("progress.json"), &other).unwrap();
+            assert_eq!(f.state()["progress"], Value::Null, "{key}");
+        }
+        common::atomic_json(&folder.join("progress.json"), &progress).unwrap();
+        systemd.active.store(false, Ordering::SeqCst);
+        assert_eq!(f.state()["progress"], Value::Null);
         fs::remove_dir_all(&folder).unwrap();
     }
 

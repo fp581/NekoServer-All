@@ -87,6 +87,8 @@
     "folder": "/run/nekoserver-control/media-folders",
     "request": "request.json",
     "result": "result.json",
+    "_progress": "A copy into the library at work writes how far it is here (media_locations.CopyProgress): {format, id (the request's), kind, source, files_done, files_total, bytes_done, bytes_total, at}. The control service hands it to the page with the state while the change is at work.",
+    "progress": "progress.json",
     "lock": "lock",
     "format": "neko-media-folders-v1",
     "kinds": ["movies", "tv", "music"],
