@@ -175,6 +175,19 @@ def placed_shares(config):
     return {**films_share(config), **music_share(config)}
 
 
+def media_drive_shares(config):
+    """The shares of the media drive's folders: those wanted, but for the ones placed on
+    another drive, which are shared from there."""
+    placed = placed_shares(config)
+    return {name: folder for name, folder in wanted_shares(config).items() if name not in placed}
+
+
+def anything_to_share(config):
+    """This server has a folder to share, so the shared folders need a password: with
+    none (only Nextcloud chosen, say) the step shares nothing and asks for none."""
+    return bool(media_drive_shares(config) or placed_shares(config))
+
+
 # With "bind interfaces only", smbd listens only on the addresses tailscale0 has when it
 # starts; Tailscale gives it one only once it has reached its servers, a little after
 # tailscaled itself has started. Waited for up to a minute; the wait always ends well,
@@ -434,8 +447,8 @@ def run(context):
     # The films and the music placed on another drive are shared from there, never from
     # the media drive's folder of the same name.
     placed = placed_shares(context.config)
-    settings = dict(settings, shares={n: r for n, r in wanted_shares(context.config).items() if n not in placed})
-    if not settings['shares'] and not placed:
+    settings = dict(settings, shares=media_drive_shares(context.config))
+    if not anything_to_share(context.config):
         # Folders shared at an earlier run stop being shared, as one taken out of several does.
         stop_sharing(service, context.log)
         context.log(

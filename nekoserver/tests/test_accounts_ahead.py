@@ -102,8 +102,27 @@ class AheadTests(unittest.TestCase):
             mock.patch('shutil.which', return_value='/usr/bin/pdbedit'),
             mock.patch('subprocess.run', side_effect=hung),
         ):
-            wanted = ORIGINAL_OTHERS_WANTED({'samba': {'enabled': True}})
+            wanted = ORIGINAL_OTHERS_WANTED(self.sharing(photos=True))
         self.assertEqual(wanted, ['shared_folders'])
+
+    def sharing(self, **groups):
+        """The settings of a new server, its media groups as chosen on setup's first page."""
+        config = json.loads((ROOT / 'config.json').read_text())
+        config['media_mount'] = self.folder
+        config['media_apps'] = {'photos': False, 'movies': False, 'music': False, **groups}
+        return config
+
+    def test_no_shared_folders_password_is_asked_where_nothing_is_shared(self):
+        """Deep check 792: the page read a "samba" section the settings never have, so a
+        server with nothing to share (only Nextcloud chosen) was asked for a shared folders
+        password at every run, which the shared folders step then never used."""
+        no_pdbedit = mock.patch('shutil.which', return_value=None)
+        pin_set = mock.patch.object(account_store.Path, 'exists', return_value=True)
+        with no_pdbedit, pin_set:
+            self.assertEqual(ORIGINAL_OTHERS_WANTED(self.sharing()), [])
+            for group in ('photos', 'movies', 'music'):
+                with self.subTest(group):
+                    self.assertEqual(ORIGINAL_OTHERS_WANTED(self.sharing(**{group: True})), ['shared_folders'])
 
     def test_the_page_has_a_row_for_each_secret_with_no_user_name(self):
         with account_store.accounts_page(settings(self.folder), ['immich'], ['dashboard_pin', 'shared_folders']):
@@ -179,6 +198,8 @@ class SharesOfAnotherAccountTests(unittest.TestCase):
             mock.patch('shutil.which', return_value='/usr/bin/pdbedit'),
             mock.patch('subprocess.run', side_effect=pdbedit),
             mock.patch.dict('os.environ', {'SUDO_USER': 'alice'}),
+            # A server with a folder to share (the shares themselves are not these tests' matter).
+            mock.patch('modules.samba.anything_to_share', return_value=True),
         ):
             patch.start()
             self.addCleanup(patch.stop)

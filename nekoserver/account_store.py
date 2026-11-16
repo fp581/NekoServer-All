@@ -620,7 +620,12 @@ def others_wanted(config):
     wanted = []
     if not Path('/etc/nekoserver-control/pin.json').exists():
         wanted.append('dashboard_pin')
-    if config.get('samba', {}).get('enabled', True) is not False:
+    from modules import samba
+
+    # Asked only where the shared folders step will share something: there is no
+    # "samba" section, and reading one asked every server for a password, also one with
+    # nothing to share (only Nextcloud chosen), at every run, for nothing.
+    if samba.anything_to_share(config):
         user = shares_account(config)
         known = ''
         if shutil.which('pdbedit'):
