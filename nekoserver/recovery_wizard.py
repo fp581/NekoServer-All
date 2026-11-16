@@ -27,6 +27,7 @@ from pathlib import Path
 import pwd
 import re
 import shlex
+import shutil
 import signal
 import stat
 import subprocess
@@ -1667,12 +1668,23 @@ def restore_photos(config, prompt, output):
         'To get them back into Immich: open Immich in a browser, click "Upload" and choose',
         'files from that folder (for thousands of files, the Immich command-line uploader is',
         'faster: see https://immich.app/docs/features/command-line-interface).',
+        # Every person's photos come back together; uploaded with the administrator's
+        # login, a family member's photos would land in the administrator's library.
+        *PHOTOS_OF_EACH_PERSON,
         f'Your current Immich library ({photo_library(config)}) was not touched.',
         'Rebuilding Immich after losing its drive (RECOVERY.md, "Rebuild Immich from the',
         'USB drive")? Then put both folders into the library Immich uses instead:',
         f'  sudo cp -a {shlex.quote(str(target / "upload"))} {shlex.quote(str(target / "library"))} '
         f'{shlex.quote(str(photo_library(config)))}/',
     )
+
+
+PHOTOS_OF_EACH_PERSON = (
+    'Each person in Immich has a folder of their own in it (in upload and in library),',
+    'named with their Immich user ID: in Immich, Administration, Users, open the person;',
+    'the ID is the end of the page\'s address. Upload a person\'s photos signed in to Immich',
+    'with THEIR login: uploaded with yours, they go into your library, not theirs.',
+)
 
 
 def report_restore(checked, target, output):
@@ -1905,6 +1917,10 @@ def restore_cloud(config, prompt, output):
         *ready,
         'To put them back: open Nextcloud in a browser (or the desktop app) and upload the',
         'files you need. Your current Nextcloud files were not touched.',
+        # Uploaded with the administrator's login, a family member's files would go into
+        # the administrator's own files, not back to them.
+        f'Upload them signed in to Nextcloud as {user}: uploaded with another login, they go',
+        'into that account\'s files, not back to theirs.',
     )
 
 
@@ -1950,18 +1966,63 @@ def plain_password_list(run):
     )
 
 
-def archive_problem(run, name):
-    """Why a monthly snapshot's `<name>.tar` can't be trusted (its checksum is missing or
-    doesn't match the one recorded in its manifest), or None."""
+def recorded_checksum(run, name):
+    """The checksum a monthly snapshot's manifest recorded for its `<name>.tar`, or None."""
     try:
         expected = json.loads((Path(run) / MANIFEST).read_text())['sha256'][name]
     except (OSError, ValueError, KeyError, TypeError):
-        expected = None
-    if not isinstance(expected, str) or len(expected) != 64:
+        return None
+    return expected if isinstance(expected, str) and len(expected) == 64 else None
+
+
+def take_out_checked(run, name, member, target):
+    """Take `member` out of a monthly snapshot's `<name>.tar` into `target` (a new, empty
+    folder), using only bytes that match the checksum recorded when the snapshot was made.
+    The archive is opened once and the same bytes are both checked and unpacked: checked
+    first and unpacked by name afterwards, a file replaced in between (another job writing
+    to the HDD, a drive failing) was unpacked unchecked and the menu said "Done" over
+    changed passwords. Unpacked into a hidden folder first and moved into place only when
+    the checksum matched. Returns why nothing was taken out, or None."""
+    expected = recorded_checksum(run, name)
+    if expected is None:
         return f'This snapshot has no checksum for its {name}.tar.'
-    with (Path(run) / (name + '.tar')).open('rb') as stream:
-        if hashlib.file_digest(stream, 'sha256').hexdigest() != expected:
-            return f'The {name}.tar in this snapshot is damaged (checksum mismatch).'
+    unpacking = Path(target) / '.unpacking'
+    unpacking.mkdir(mode=0o700)
+    digest = hashlib.sha256()
+    with (
+        open(os.open(Path(run) / f'{name}.tar', os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC), 'rb') as archive,
+        open(os.open(unpacking / 'tar-errors', os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600), 'w+') as errors,
+    ):
+        tar = subprocess.Popen(
+            ['tar', '--extract', '--file', '-', '--directory', str(unpacking), '--no-same-owner', member],
+            stdin=subprocess.PIPE,
+            stderr=errors,
+        )
+        for chunk in iter(lambda: archive.read(1024 * 1024), b''):
+            digest.update(chunk)
+            if tar.stdin and not tar.stdin.closed:
+                try:
+                    tar.stdin.write(chunk)
+                except BrokenPipeError:
+                    tar.stdin.close()  # tar stopped early; the rest is still checked
+        if not tar.stdin.closed:
+            try:
+                tar.stdin.close()
+            except BrokenPipeError:
+                pass
+        failed = tar.wait()
+        errors.seek(0)
+        said = errors.read().strip()
+    if digest.hexdigest() != expected:
+        shutil.rmtree(unpacking)
+        return f'The {name}.tar in this snapshot is damaged (checksum mismatch).'
+    if failed:
+        shutil.rmtree(unpacking)
+        return 'Could not take the password list out of that snapshot: ' + (said or 'tar failed')
+    os.unlink(unpacking / 'tar-errors')
+    for entry in os.listdir(unpacking):
+        os.rename(unpacking / entry, Path(target) / entry)
+    os.rmdir(unpacking)
     return None
 
 
@@ -2033,31 +2094,14 @@ def restore_password_list(config, runs, prompt, output):
         output(NOTHING_CHANGED)
         return
     if not sealed:
-        # The archive is checked against the checksum recorded when the snapshot was
-        # made before anything is taken out of it: a changed byte would change a password.
-        problem = archive_problem(run, 'data')
-        if problem:
-            output(problem + ' Nothing was restored. Use another monthly snapshot.')
-            return
+        # Only bytes that match the checksum recorded when the snapshot was made are
+        # taken out: a changed byte would change a password.
         target.mkdir(mode=0o700)
         with part_way(target, output):
-            result = subprocess.run(
-                [
-                    'tar',
-                    '--extract',
-                    '--file',
-                    str(run / 'data.tar'),
-                    '--directory',
-                    str(target),
-                    '--no-same-owner',
-                    'secrets/accounts',
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        if result.returncode:
-            output('Could not take the password list out of that snapshot: ' + (result.stderr.strip() or 'tar failed'))
+            problem = take_out_checked(run, 'data', 'secrets/accounts', target)
+        if problem:
+            shutil.rmtree(target)
+            output(problem + ' Nothing was restored. Use another monthly snapshot.')
             return
         say(output, f'\nDone. Open it with:  sudo cat {target}/secrets/accounts/APP-CREDENTIALS.txt')
         return

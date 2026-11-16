@@ -3604,6 +3604,32 @@ fn transient(said: &str) -> bool {
     .unwrap();
     TRANSIENT.iter().any(|mark| said.contains(mark)) || status.is_match(&said)
 }
+/// What a download says when the server it comes from was not reached at all (Docker's
+/// and curl's own words, lower case): no internet, or a router's parental controls or ad
+/// blocker that answers for the name with nothing or with a page of its own.
+const NOT_REACHED: [&str; 9] = [
+    "no such host",
+    "could not resolve",
+    "temporary failure in name resolution",
+    "network is unreachable",
+    "connection refused",
+    "no route to host",
+    "i/o timeout",
+    "x509:",
+    "certificate is valid for",
+];
+/// `app`'s look for a new version that failed with `error`, as the update check says it.
+/// Docker's own words alone ("dial tcp: lookup registry-1.docker.io ... no such host")
+/// did not say that the internet, or a router blocking the site, was what to check
+/// (deep checks 879 and 887); they stay after the plain words, for whoever helps.
+fn not_looked_for(app: &str, error: &str) -> String {
+    let said = error.to_lowercase();
+    if NOT_REACHED.iter().any(|mark| said.contains(mark)) {
+        format!("{app}: the site its new versions come from could not be reached. Check that this server is connected to the internet, and that the router's parental controls or ad blocker do not block it ({error})")
+    } else {
+        format!("{app}: {error}")
+    }
+}
 fn sleep_seconds(seconds: u64) {
     std::thread::sleep(std::time::Duration::from_secs(seconds));
 }
@@ -4629,7 +4655,7 @@ fn look_for_updates(cfg: &Value, data: &Path, media: &Path) -> Result<Vec<String
                     println!(
                     "{name}: no new version could be looked for ({e}); the next check tries again"
                 );
-                    said.push(format!("{name}: {e}"));
+                    said.push(not_looked_for(name, &e.to_string()));
                     continue;
                 }
             };
@@ -8586,6 +8612,32 @@ mod tests {
         assert!(at("clear_night_ran_out(data_root)") < at("stop(&rows)"));
     }
 
+    /// Deep checks 879 and 887: the internet down, or the router's parental controls
+    /// blocking Docker's registry. The daily check listed Docker's own words for each app;
+    /// it now says first what to check.
+    #[test]
+    fn a_download_server_not_reached_says_to_check_the_internet_and_the_router() {
+        for blocked in [
+            "Error response from daemon: Get \"https://registry-1.docker.io/v2/\": dial tcp: lookup registry-1.docker.io on 127.0.0.53:53: no such host",
+            "Error response from daemon: Get \"https://ghcr.io/v2/\": dial tcp 0.0.0.0:443: connect: connection refused",
+            "Error response from daemon: Get \"https://lscr.io/v2/\": tls: failed to verify certificate: x509: certificate is valid for blocked.router.lan, not lscr.io",
+            "curl: (6) Could not resolve host: api.github.com",
+        ] {
+            let said = not_looked_for("jellyfin", blocked);
+            assert!(said.starts_with("jellyfin: the site its new versions come from could not be reached"), "{said}");
+            assert!(said.contains("parental controls"), "{said}");
+            assert!(said.contains(blocked), "{said}");
+        }
+        let other = "Error response from daemon: manifest unknown";
+        assert_eq!(
+            not_looked_for("jellyfin", other),
+            format!("jellyfin: {other}")
+        );
+        let source = include_str!("maintenance.rs");
+        let body = &source[source.find("fn look_for_updates(").unwrap()..];
+        assert!(body[..body.find("\n}\n").unwrap()]
+            .contains("said.push(not_looked_for(name, &e.to_string()))"));
+    }
     // ---- fixes after the 0.39.5 review
     #[test]
     fn only_a_download_refused_for_now_is_tried_again() {

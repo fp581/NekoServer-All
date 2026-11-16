@@ -31,7 +31,7 @@ When a change went wrong (a setting you regret, a library that got muddled), bri
    sudo docker start neko-jellyfin-jellyfin-1
    ```
 
-3. Open the app and check it. When all is well, delete the settings you put aside (`sudo rm -r /srv/nekoserver/appdata/jellyfin.before`, or `sudo rm -r ONDRIVE.before` for an app on a drive of its own) and the restore folder. If it is not, stop the app again and move the `.before` folder back (on a drive of its own: `umount` first, as above, and `mount` again after).
+3. Open the app and check it. Its logins come back as they were that night: a password changed in the app since then, yours or a family member's, is the old one again. If setup's saved login for the app no longer works (you told setup a new password since that night, or the settings come from before a new SSD), the next `sudo bash install.sh` says so: run it once more and choose **c** at that app, and type the login it has now (the list of app passwords in a backup has it: recovery menu → **The list of app passwords**). When all is well, delete the settings you put aside (`sudo rm -r /srv/nekoserver/appdata/jellyfin.before`, or `sudo rm -r ONDRIVE.before` for an app on a drive of its own) and the restore folder. If it is not, stop the app again and move the `.before` folder back (on a drive of its own: `umount` first, as above, and `mount` again after).
 
 Only the `appdata` folder is copied back. The `compose` folder in the restore is for reference: never start an app from it.
 

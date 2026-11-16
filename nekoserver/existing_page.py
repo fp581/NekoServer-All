@@ -351,6 +351,10 @@ def copy_said(shown):
     return said
 
 
+# An import row that means the folder is in the library (source_import.import_one).
+COPIED = ('copied', 'imported_earlier')
+
+
 def copy(ctx):
     """Once the library folders are there: every folder the person chose to copy is
     copied into the library (existing_media.copy_now: add-only, their folder kept), after
@@ -372,6 +376,14 @@ def copy(ctx):
             row = existing_media.copy_now(config, kind, path, **told)
         except (RuntimeError, OSError, TypeError) as problem:
             ctx.log(f'Your own folder {path} was not copied: {problem}. Setup tries again at its next run.')
+            left.append(folder)
+            continue
+        if row.get('status') not in COPIED:
+            # The import said why it stopped (no room, the drive away, a file that could
+            # not be read) without raising: the folder was taken off the list all the
+            # same, so a run after fixing it never copied it (review of 0.51.3).
+            why = row.get('reason') or 'the copy did not finish'
+            ctx.log(f'Your own folder {path} was not copied: {why}. Setup tries again at its next run.')
             left.append(folder)
             continue
         ctx.log(

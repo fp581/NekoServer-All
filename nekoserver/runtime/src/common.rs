@@ -1005,15 +1005,26 @@ pub fn deliver(runtime: &Path, name: &str, config: &str, failure: &str) -> Resul
     );
     let _ = fs::remove_file(path);
     let (code, status) = result?;
-    if code != 0
-        || !status
-            .trim()
-            .parse::<u16>()
-            .is_ok_and(|v| (200..300).contains(&v))
+    if code != 0 {
+        // curl got no answer at all: no connection, a name that does not resolve, a
+        // certificate refused (a wrong clock). Told apart from a refusal, so the advice
+        // fits (an internet down for a day is no reason to set the alerts up again).
+        return Err(Error::new(&format!("{failure}: {UNREACHED}")));
+    }
+    if !status
+        .trim()
+        .parse::<u16>()
+        .is_ok_and(|v| (200..300).contains(&v))
     {
         return Err(Error::new(failure));
     }
     Ok(())
+}
+/// The end of `deliver`'s error when the server could not be reached at all.
+pub const UNREACHED: &str = "the server could not be reached";
+/// Whether a `deliver` error is one where the server was not reached (`UNREACHED`).
+pub fn unreached(error: &Error) -> bool {
+    error.to_string().ends_with(UNREACHED)
 }
 pub fn lock(path: &Path) -> Result<File> {
     safe(path)?;

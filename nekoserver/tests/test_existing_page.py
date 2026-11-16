@@ -404,6 +404,31 @@ class CopyTests(unittest.TestCase):
         # Nothing chosen: nothing looked at.
         self.assertEqual(existing_page.copy(context()), [])
 
+    def test_a_copy_the_import_stops_stays_on_the_list(self):
+        """Review of 0.51.3: an import that stopped and said why (no room, the folder
+        away) as its row's status, not as an error, was logged as "Copied into the library:
+        0 files" and the folder taken off the list, so setup run again after freeing room
+        never copied it."""
+        wanted = [{'holds': 'music', 'path': '/mnt/tank/music'}]
+        for row in (
+            {
+                'status': 'needs_setup',
+                'reason': 'Nothing was copied: it needs 40.0 GB and the library drive has 2.0 GB free',
+            },
+            {'status': 'needs_setup', 'reason': 'Source folder not found: connect the drive'},
+            {'status': 'needs_setup'},
+        ):
+            ctx = context(**{existing_page.COPIES: list(wanted)})
+            with (
+                mock.patch.object(existing_media, 'copy_preview', return_value=dict(self.SHOWN)),
+                mock.patch.object(existing_media, 'copy_now', return_value=row),
+            ):
+                self.assertEqual(existing_page.copy(ctx), wanted)
+            self.assertEqual(ctx.config[existing_page.COPIES], wanted)
+            self.assertIn('Your own folder /mnt/tank/music was not copied: ', ctx.logs[-1])
+            self.assertIn('Setup tries again at its next run.', ctx.logs[-1])
+            self.assertFalse(any(line.startswith('Copied into the library') for line in ctx.logs))
+
 
 class MusicTests(unittest.TestCase):
     def test_navidrome_gets_its_library_where_the_libraries_are_made(self):

@@ -1549,11 +1549,11 @@ fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
         } else if status == "partial" {
             Some(partial_reason(&saved["missing"]))
         } else if success.is_null() && stale {
-            Some("No successful run since it was set up".to_string())
+            Some(overdue_reason(key, "No successful run since it was set up"))
         } else if success.is_null() {
             Some("No recorded successful run".to_string())
         } else if stale {
-            Some("Last success is overdue".to_string())
+            Some(overdue_reason(key, "Last success is overdue"))
         } else {
             None
         };
@@ -1590,6 +1590,18 @@ fn blocked_words(key: &str, drive: &str) -> String {
         _ => "this backup can't run",
     };
     format!("The {drive} is missing, so {what} until it is back.")
+}
+/// Why job `key` is overdue (`said`), with what to do for the night-only ones. The monthly
+/// check and the update nights run only at night and never make up a missed night in the
+/// daytime (maintenance.py), so on a server switched off at night (at the wall, to save
+/// power) they never run, and "overdue" alone did not say why (deep check 890). The
+/// nightly backups do catch up when the PC is switched on.
+fn overdue_reason(key: &str, said: &str) -> String {
+    if ["maintenance", "updates"].contains(&key) {
+        format!("{said}. It runs only at night and never makes up a missed night in the daytime, so it does not run while the server is switched off at night. Leave the server on overnight, at least on the 1st of the month and on the update night.")
+    } else {
+        said.to_string()
+    }
 }
 /// A job's state once it is overdue (`stale`): a backup that keeps failing stays a
 /// failure (urgent), anything else is overdue.
@@ -2754,7 +2766,16 @@ pub(crate) fn alerts(s: &Value) -> Value {
         );
     }
     // Alerts that fail to reach anyone are still said on the page.
-    if s["notifications"]["status"] == "fail" {
+    // The alert server not reached at all (the internet down for a day, say) is told
+    // apart: setup run then could only fail its downloads too (deep check 879).
+    if s["notifications"]["status"] == "fail" && s["notifications"]["reason"] == "unreachable" {
+        add(
+            "notifications:delivery".into(),
+            "warning",
+            "Phone alerts are not being delivered".into(),
+            "This server could not reach your alert server: its internet connection is probably down (check the router), or its clock is wrong (check it with  timedatectl). The alerts wait and are sent by themselves once it is reached again. If the internet works, run  sudo bash install.sh  again: it sends a test message.",
+        );
+    } else if s["notifications"]["status"] == "fail" {
         add(
             "notifications:delivery".into(),
             "warning",
@@ -3253,7 +3274,10 @@ fn notification_status(now: f64) -> Value {
     if delivery_late(timer["active"] == true, saved["generated_at"].as_f64(), now) {
         status = "stale";
     }
-    json!({"status":status,"timer":timer,"last_success":common::shown_time(&saved["last_success"],now),"last_attempt":num(&saved["last_attempt"],0.0,now+30.0),"pending":num(&saved["pending"],0.0,100.0)})
+    // Why the last alerts were not sent (notify.rs why_not_sent), when they were not.
+    let reason = Some(text(&saved["reason"]))
+        .filter(|r| status == "fail" && ["unreachable", "refused"].contains(r));
+    json!({"status":status,"reason":reason,"timer":timer,"last_success":common::shown_time(&saved["last_success"],now),"last_attempt":num(&saved["last_attempt"],0.0,now+30.0),"pending":num(&saved["pending"],0.0,100.0)})
 }
 /// A laptop running on its battery (the charger unplugged, or a power cut): when it runs
 /// out the PC goes off at once, in the middle of a backup if it comes to that, and nothing
@@ -4568,6 +4592,44 @@ mod os_tests {
             )
         );
     }
+    /// Deep check 890: the server switched off at the wall every night. The nightly
+    /// backups catch up in the morning, but the monthly check and the update nights never
+    /// make up a missed night, and the page said only "Last success is overdue".
+    #[test]
+    fn a_night_only_job_overdue_says_the_server_must_be_on_at_night() {
+        let data = std::env::temp_dir().join(format!("neko-off-nights-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&data);
+        fs::create_dir_all(data.join("reports/jobs")).unwrap();
+        let cfg = json!({"data_mount": data.to_string_lossy()});
+        let now = 100.0 * 86400.0;
+        for key in ["maintenance", "updates", "applications"] {
+            let saved = json!({"status": "pass", "last_success": 10.0 * 86400.0, "started_at": 10.0 * 86400.0});
+            fs::write(
+                data.join(format!("reports/jobs/{key}.json")),
+                saved.to_string(),
+            )
+            .unwrap();
+        }
+        let rows = backups(&cfg, now, true, None);
+        let reason = |key: &str| {
+            let row = rows
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["id"] == key)
+                .unwrap();
+            assert_eq!(row["status"], "stale", "{row}");
+            text(&row["reason"]).to_string()
+        };
+        for key in ["maintenance", "updates"] {
+            let said = reason(key);
+            assert!(said.starts_with("Last success is overdue"), "{said}");
+            assert!(said.contains("switched off at night"), "{said}");
+        }
+        // A nightly backup catches up when the PC is on: no such advice.
+        assert_eq!(reason("applications"), "Last success is overdue");
+        fs::remove_dir_all(&data).unwrap();
+    }
     /// Deep check 496/497 (a household's second week): the USB drive was taken away, the
     /// Sunday copy found it missing, and the phone got an urgent alert at 3 am, repeated
     /// every 12 hours while it stayed away. It is a warning that says what happened; any
@@ -4647,6 +4709,26 @@ mod os_tests {
         );
         assert_eq!(shown[0]["level"], "warning");
         assert!(!text(&shown[0]["detail"]).contains("bob/a:b.txt"));
+    }
+    /// Deep check 879: the internet down for a day. "Run setup again" for alerts that did
+    /// not reach the alert server could only fail too; the page says to check the internet.
+    #[test]
+    fn phone_alerts_not_reaching_the_alert_server_point_at_the_internet() {
+        let said = |reason: Value| {
+            let shown = alerts(&json!({"notifications": {"status": "fail", "reason": reason}}));
+            assert_eq!(shown[0]["id"], "notifications:delivery");
+            text(&shown[0]["detail"]).to_string()
+        };
+        let offline = said(json!("unreachable"));
+        assert!(
+            offline.contains("internet connection is probably down"),
+            "{offline}"
+        );
+        assert!(offline.contains("sent by themselves"), "{offline}");
+        for refused in [json!("refused"), Value::Null] {
+            let detail = said(refused);
+            assert!(detail.contains("asks for the topic's address"), "{detail}");
+        }
     }
     /// Deep check 249 ("I changed my router"): the PC got another address at home, the
     /// home gateway and the shared folders stopped answering, and the page was all green.
