@@ -2318,9 +2318,27 @@ function backupCard(job, fresh) {
   );
   return card;
 }
-function integrityResult(check) {
+/* When to have the USB drive plugged in for its full check: the monthly check runs early
+ * on the 1st (02:30 unless chosen otherwise). "The night of the 1st" read as the evening
+ * of the 1st, after the check had run (deep check 798): the time is named instead. */
+function usbCheckWhen(check, monthlyAt) {
+  if (!String(check.id).startsWith('usb_')) {
+    return '';
+  }
+  return (
+    ' For the USB copy, have the drive plugged in when the monthly check runs: ' +
+    (numeric(monthlyAt) && monthlyAt > 0 ? 'next on ' + localTime(monthlyAt) + '.' : 'early on the 1st of each month.')
+  );
+}
+/* The next run of the monthly check, from its timer on the Backups page. */
+function monthlyNext(s) {
+  const job = list(s.backups).find(j => j.id === 'maintenance');
+  return job ? object(job.timer).next_run_at : null;
+}
+function integrityResult(check, monthlyAt) {
   const damaged = integrityBad(check),
-    unverified = count(check.unverified);
+    unverified = count(check.unverified),
+    when = usbCheckWhen(check, monthlyAt);
   return firstOf(
     [
       [damaged, { state: 'fail', label: 'Needs repair', words: plural(damaged, 'damaged or missing file') + '.' }],
@@ -2331,7 +2349,8 @@ function integrityResult(check) {
           state: 'unknown',
           label: 'Not fully checked',
           words:
-            'Every copy is compared with its checksum in the monthly update (a USB drive only when it is plugged in then). That hasn’t happened yet.'
+            'Every copy is compared with its checksum in the monthly check (a USB drive only when it is plugged in then). That hasn’t happened yet.' +
+            when
         }
       ],
       [
@@ -2339,8 +2358,7 @@ function integrityResult(check) {
         {
           state: 'stale',
           label: 'Overdue',
-          words:
-            'The last full check is more than a month old; this result may no longer hold. For the USB copy, leave the drive plugged in on the night of the 1st.'
+          words: 'The last full check is more than a month old; this result may no longer hold.' + when
         }
       ],
       [
@@ -2351,10 +2369,10 @@ function integrityResult(check) {
     { state: 'pass', label: 'Matches', words: 'Every recorded file matched.' }
   );
 }
-function integrityRow(check, fresh) {
+function integrityRow(check, fresh, monthlyAt) {
   const row = el('div', 'row'),
     body = el('div'),
-    result = integrityResult(check);
+    result = integrityResult(check, monthlyAt);
   const repaired = count(check.repaired) ? ' · ' + count(check.repaired) + ' repaired' : '';
   body.append(
     el('h3', '', text(check.name, 'Checksum check')),
@@ -2407,7 +2425,7 @@ function renderBackups() {
   );
   put(
     'integrity',
-    s.integrity.map(check => integrityRow(check, fresh))
+    s.integrity.map(check => integrityRow(check, fresh, monthlyNext(s)))
   );
   put('restore-status', [restoreBox(s)]);
 }
