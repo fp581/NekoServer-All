@@ -197,7 +197,8 @@ const JOB_UNITS = {
   maintenance: 'nekoserver-maintenance.service',
   updates: 'nekoserver-updates.service',
   update_check: 'nekoserver-update-check.service',
-  upgrade: 'nekoserver-upgrade-resume.service'
+  upgrade: 'nekoserver-upgrade-resume.service',
+  cards: 'nekoserver-cards.service'
 };
 /* The service a job runs as: the status says (the weekly photo schedule runs the
    database copy, an upgrade runs as nekoserver-upgrade@<release>), else the usual one. */
@@ -2313,6 +2314,21 @@ function backupCard(job, fresh) {
   }
   if (job.reason) {
     card.append(longText('reason', text(job.reason)));
+  }
+  if (job.id === 'cards') {
+    // The set itself: which card is in, what is on the cards and what waits for one.
+    for (const line of cardsSummary(cardSet())) {
+      card.append(el('p', '', line));
+    }
+    const row = el('div', 'update-actions');
+    row.append(
+      keyed(button('Write to the card now', writeNow, 'button small'), 'backup-cards-write'),
+      keyed(
+        button('Backup cards page', () => (location.hash = '#cards'), 'button small secondary'),
+        'backup-cards-page'
+      )
+    );
+    card.append(row);
   }
   card.append(
     keyed(

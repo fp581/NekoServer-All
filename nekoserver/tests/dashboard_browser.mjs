@@ -49,6 +49,11 @@ const CHECKS = {
       return [document.documentElement.scrollWidth, document.documentElement.clientWidth, overlap];
     });
   },
+  /* The words of the element `id` on page `route`. */
+  async pageText(browser, { route, id }) {
+    const page = await open(browser, route);
+    return page.evaluate(n => document.getElementById(n).innerText, id);
+  },
   /* The Backup cards page against a stand-in control service: whether it is in the menu,
      what it says of the set, the drives it finds when asked, and an enrolment through its
      dialog (the privacy tick, then the button): the dialog's title and the message after. */

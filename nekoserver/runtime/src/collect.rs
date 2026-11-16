@@ -1323,6 +1323,19 @@ fn failed_advice(unit: &str) -> &'static str {
 }
 /// Why a job is intentionally not part of this server now (its app or backup switched
 /// off), or None when its schedule is expected.
+/// The backup cards' job (0.52.0), listed only while they are switched on: a server
+/// without them shows the jobs it always had. Never overdue: it writes only when a card
+/// is plugged in, and a set left unwritten has its own reminder (alerts).
+pub(crate) const CARDS_JOB: (&str, &str, &str, f64) =
+    ("cards", "Backup cards", "nekoserver-cards", f64::MAX);
+/// Every monitored job of this server: JOBS, and the cards' job when it is on.
+pub(crate) fn jobs_of(cfg: &Value) -> Vec<(&'static str, &'static str, &'static str, f64)> {
+    let mut all = JOBS.to_vec();
+    if crate::cards::enabled(cfg) {
+        all.push(CARDS_JOB);
+    }
+    all
+}
 fn retired(cfg: &Value, key: &str) -> Option<&'static str> {
     let immich = common::immich_wanted(cfg);
     match key {
@@ -1447,7 +1460,7 @@ fn schedule_stopped(timer: &Value, known: bool, ever_ran: bool) -> Option<String
 /// than "Passed", and gets no alert of its own (the drive's alert is the one to act on).
 fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
     let mut out = vec![];
-    for (key, name, unit, base_max) in JOBS {
+    for (key, name, unit, base_max) in jobs_of(cfg) {
         let weekly =
             cfg["photos"]["backup_schedule"] == "weekly" && ["archive", "database"].contains(&key);
         let report_key = if weekly { "database" } else { key };
@@ -6063,5 +6076,56 @@ mod round_two_tests {
             assert!(detail(true, used).contains("Empty trash"), "{used}");
             assert!(!detail(false, used).contains("Immich"), "{used}");
         }
+    }
+
+    /// Backup cards (0.52.0): their job is a row of the Backups page like the others,
+    /// with what it left out, and the set comes with the readings; neither is there
+    /// while the switch is off, so a server without them reads as before.
+    #[test]
+    fn the_backup_cards_are_listed_like_the_other_jobs_only_while_switched_on() {
+        let data = std::env::temp_dir().join(format!("neko-cards-row-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&data);
+        fs::create_dir_all(data.join("reports/jobs")).unwrap();
+        fs::create_dir_all(data.join("cards")).unwrap();
+        let off = json!({"data_mount": data.to_string_lossy()});
+        let on = json!({"data_mount": data.to_string_lossy(), "cards": {"enabled": true}});
+        let ids = |cfg: &Value| -> Vec<String> {
+            backups(cfg, 1000.0, true, None)
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| text(&r["id"]).to_string())
+                .collect()
+        };
+        assert!(!ids(&off).contains(&"cards".to_string()));
+        assert_eq!(ids(&on).last().map(String::as_str), Some("cards"));
+        assert_eq!(crate::cards::status::reading(&off, &data, true), None);
+        // As the job records a run that filled the newest card (backup::execute_with).
+        let saved = json!({"job": "cards", "status": "partial", "started_at": 900.0, "last_partial": 950.0,
+            "missing": ["Card 2 is full: put in a new card (it becomes card 3)"]});
+        fs::write(data.join("reports/jobs/cards.json"), saved.to_string()).unwrap();
+        let rows = backups(&on, 1000.0, true, None);
+        let row = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "cards")
+            .unwrap();
+        assert_eq!(row["status"], "partial");
+        assert_eq!(
+            row["reason"],
+            "Card 2 is full: put in a new card (it becomes card 3)"
+        );
+        assert_eq!(row["unit"], "nekoserver-cards.service");
+        let status = json!({"format": "neko-cards-v1", "set_name": "NekoServer cards", "full_card": 2, "cards": []});
+        fs::write(data.join("cards/status.json"), status.to_string()).unwrap();
+        let reading = crate::cards::status::reading(&on, &data, true).unwrap();
+        assert_eq!(reading["set"]["full_card"], 2);
+        // The app SSD away: the set is not read, and not said to be empty either.
+        assert_eq!(
+            crate::cards::status::reading(&on, &data, false).unwrap()["set"],
+            json!({})
+        );
+        let _ = fs::remove_dir_all(&data);
     }
 }

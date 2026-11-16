@@ -293,7 +293,16 @@ class PageInBrowserTests(unittest.TestCase):
             'acceptance': {'status': 'complete'},
             'applications': [],
             'storage': [],
-            'backups': [],
+            'backups': [
+                {
+                    'id': 'cards',
+                    'name': 'Backup cards',
+                    'status': 'pass',
+                    'last_success': now - 2 * 86400,
+                    'timer': {'installed': True, 'active': True},
+                    'unit': 'nekoserver-cards.service',
+                }
+            ],
             'integrity': [],
             'alerts': [],
             'startup': [],
@@ -322,6 +331,20 @@ class PageInBrowserTests(unittest.TestCase):
         cls.server.wait(timeout=10)
         cls.control.shutdown()
         cls.folder.cleanup()
+
+    def test_the_backups_page_shows_the_set_with_the_cards_job(self):
+        done = subprocess.run(
+            [NODE, str(BROWSER), self.address, json.dumps([('pageText', {'route': 'backups', 'id': 'backups'})])],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=True,
+        )
+        shown = json.loads(done.stdout)[0]
+        self.assertIn('Backup cards', shown)
+        self.assertIn('Card 2 is in.', shown)
+        self.assertIn('1234 files on the cards, 1 file waiting for a card.', shown)
+        self.assertIn('Write to the card now', shown)
 
     def test_a_card_is_found_and_enrolled_through_the_page(self):
         for width in (1280, 390):
