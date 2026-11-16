@@ -430,11 +430,10 @@ fn names_in(path: &Path, limit: usize) -> std::result::Result<(Vec<String>, bool
     if !seen.is_dir() {
         return Err("That is not a folder.");
     }
-    let listing = fs::read_dir(path).map_err(|_| "That folder cannot be opened.")?;
+    let mut listing = fs::read_dir(path).map_err(|_| "That folder cannot be opened.")?;
     let mut names = Vec::new();
-    let mut more = false;
     // At most ten times the limit are read: a folder of a million files is not listed whole.
-    for entry in listing.take(limit * 10).flatten() {
+    for entry in listing.by_ref().take(limit * 10).flatten() {
         // The entry's own type: a link to a folder is a link, never followed.
         if !entry.file_type().is_ok_and(|t| t.is_dir()) {
             continue;
@@ -447,6 +446,10 @@ fn names_in(path: &Path, limit: usize) -> std::result::Result<(Vec<String>, bool
         }
         names.push(name);
     }
+    // Names left unread are said as "more": a folder of a few thousand songs and the
+    // folders beside them showed only some of them, or "No folders in it", with no word
+    // that there were more (deep check 850).
+    let mut more = listing.next().is_some();
     names.sort();
     if names.len() > limit {
         names.truncate(limit);
@@ -756,6 +759,15 @@ mod tests {
         assert!(!more);
         let (names, more) = names_in(&top, 2).unwrap();
         assert_eq!((names.len(), more), (2, true));
+        // More names than are read (ten times the limit): said as more, even when none of
+        // those read was a folder (a folder of songs with the albums' folders beside them).
+        let songs = top.join("Music");
+        fs::create_dir_all(songs.join("Abba")).unwrap();
+        for n in 0..12 {
+            fs::write(songs.join(format!("song {n}.mp3")), "x").unwrap();
+        }
+        let (_, more) = names_in(&songs, 1).unwrap();
+        assert!(more, "names left unread are said as more");
         // A folder reached through a link is not looked into.
         assert!(names_in(&top.join("etc-link"), 200).is_err());
         fs::remove_dir_all(&top).unwrap();

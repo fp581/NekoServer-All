@@ -5763,7 +5763,16 @@ async function mediaBrowse(path) {
   nodes.push(
     folders.length
       ? listing
-      : hint(here ? 'No folders in it.' : 'No drive or shared folder is connected under /mnt, /media or /srv.')
+      : hint(
+          firstOf(
+            [
+              // Only part of a very big folder is read: its folders may be in the rest.
+              [here && answer.more, 'No folders among the first names looked at.'],
+              [here, 'No folders in it.']
+            ],
+            'No drive or shared folder is connected under /mnt, /media or /srv.'
+          )
+        )
   );
   if (answer.more) {
     nodes.push(hint('There are more: type the rest of the path in the box.'));
