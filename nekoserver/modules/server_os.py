@@ -25,6 +25,7 @@ HDD_UNIT = 'nekoserver-hdd-policy.service'
 # Brings the apps back when the SSD or HDD returns after a drop-out (see runtime drive_return.rs).
 DRIVE_UNIT = 'nekoserver-drive-return.service'
 DRIVE_SETTINGS = Path('/etc/nekoserver-os/drives.json')
+HDD_GUARD = Path('/etc/nekoserver-os/storage.json')  # the HDD policy's settings (hdd_guard)
 # Checks the drives on a network storage box every minute (runtime nas_watch.rs).
 NAS_WATCH = SHARED['nas_watch']['service']
 NAS_WATCH_TIMER = SHARED['nas_watch']['timer']
@@ -448,7 +449,7 @@ def run(context):
     binary = native_runtime.deploy(
         Path(__file__).resolve().parents[1], context.config, Path('/usr/local/lib/nekoserver-os') / ('v' + VERSION)
     )
-    guard = safe_path('/etc/nekoserver-os/storage.json')
+    guard = safe_path(HDD_GUARD)
     check_units([HDD_UNIT], 'HDD policy')
     atomic_json(guard, hdd_guard(context.config))
     write_units({HDD_UNIT: unit(binary, guard, context.config)})

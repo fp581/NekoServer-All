@@ -163,6 +163,7 @@ class PC:
         # What the apps' account could not do, by folder: {'read': .., 'write': ..}.
         self.refusals = {}
         self.told = []  # the apps' steps, as they were asked
+        self.jobs = []  # the music folders the jobs' settings were brought up to date with
         original = existing_media.check
         patches = [
             mock.patch.dict(
@@ -210,6 +211,7 @@ class PC:
             'navidrome': noted('navidrome'),
             'root_folders': noted('root folders'),
             'seerr': noted('seerr'),
+            'jobs': lambda config, out: self.jobs.append(existing_media.backed_up(config)),
         }
 
     def ask(self, **request):
@@ -370,6 +372,8 @@ class MediaFoldersTests(unittest.TestCase):
                     'new_files': True,
                     'ready': True,
                     'reason': None,
+                    'backup': None,
+                    'backup_said': None,
                 }
             ],
         )
@@ -515,6 +519,60 @@ class MediaFoldersTests(unittest.TestCase):
         self.pc.ask(change='target', kind='movies', target='library')
         added = self.add(more, downloads=True)
         self.assertEqual([f['new_files'] for f in self.kind(added)['folders']], [False, False, True])
+
+    def test_music_on_a_nas_is_asked_about_the_backup_as_setup_asks_and_saved_the_same(self):
+        # The owner's decision 4 on PR 89: before, music added on the page was never
+        # backed up, and setup's question was not asked.
+        music = self.pc.nas / 'music'
+        look = self.pc.ask(change='look')
+        self.assertEqual(self.kind(look, 'music')['backup_question'], existing_page.backup_question())
+        self.assertIsNone(self.kind(look)['backup_question'])
+        no = self.pc.ask(change='add', kind='music', path=str(music), how='in_place', downloads=False, backup=False)
+        self.assertEqual(no['state'], 'done', no)
+        (entry,) = self.pc.settings()['placement']['music']['extra']
+        self.assertIs(entry['backup'], False)
+        self.assertIn('Your music: not backed up by NekoServer.', no['notes'])
+        self.assertEqual(self.kind(no, 'music')['folders'][0]['backup_said'], 'not backed up by NekoServer.')
+        self.assertEqual(self.pc.jobs[-1], [])
+        self.pc.ask(change='remove', kind='music', slot='music')
+        # Yes (as Enter in setup): saved as setup saves it, and the music backup's own
+        # settings are brought up to date to copy it from the next night.
+        yes = self.pc.ask(change='add', kind='music', path=str(music), how='in_place', downloads=False, backup=True)
+        (entry,) = self.pc.settings()['placement']['music']['extra']
+        self.assertIs(entry['backup'], True)
+        self.assertIn('Your music: copied each night with the music backup.', yes['notes'])
+        self.assertEqual([f['slot'] for f in self.pc.jobs[-1]], ['music'])
+        # A music folder on a drive of this PC is not a NAS's: not asked, not backed up.
+        (local,) = self.big_drive('music')
+        self.pc.ask(change='add', kind='music', path=str(local), how='in_place', downloads=False, backup=True)
+        self.assertNotIn('backup', self.pc.settings()['placement']['music']['extra'][1])
+        # A changed "where new downloads go" keeps the answer.
+        self.pc.ask(change='target', kind='music', target='music')
+        self.assertIs(self.pc.settings()['placement']['music']['extra'][0]['backup'], True)
+
+    def test_the_jobs_settings_are_brought_up_to_date_only_where_installed(self):
+        import native_runtime
+        from modules import app_backup, host_backup, server_os
+
+        top = self.pc.top / 'etc'
+        storage, drives, hdd = top / 'storage.json', top / 'drives.json', top / 'hdd.json'
+        top.mkdir()
+        storage.write_text('{}')
+        config = self.pc.config
+        out = {'log': []}
+        with (
+            mock.patch.object(native_runtime, 'BACKUP_GUARD', storage),
+            mock.patch.object(server_os, 'DRIVE_SETTINGS', drives),
+            mock.patch.object(server_os, 'HDD_GUARD', hdd),
+            mock.patch.object(app_backup, 'refresh') as apps,
+            mock.patch.object(host_backup, 'refresh') as host,
+        ):
+            media_locations.jobs(config, out)
+        self.assertEqual(json.loads(storage.read_text()), native_runtime.storage_config(config))
+        self.assertFalse(drives.exists() or hdd.exists(), 'a job that is not installed gets no settings')
+        apps.assert_called_once()
+        host.assert_called_once()
+        self.assertIn('Backups: settings brought up to date', out['log'])
 
     def test_a_kind_takes_more_folders_used_where_they_are_up_to_its_limit(self):
         self.add(downloads=False)

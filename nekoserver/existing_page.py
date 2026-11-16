@@ -40,6 +40,23 @@ ANSWERED = 'existing_media_answered'
 COPIES = 'existing_media_copy'
 IN_PLACE = 'They are used where they are; nothing is copied or changed.'
 ALREADY = '{path} is already connected for your {words}.'  # the dashboard's page says the same
+# The music backup question's answer, said back (here and on the dashboard's page).
+BACKED_UP = {True: 'copied each night with the music backup.', False: 'not backed up by NekoServer.'}
+
+
+def backup_question():
+    """The question setup asks about music on a NAS ("Back this up too?"), in its own
+    words, for the dashboard's Media folders page to ask the same: {'title', 'hint',
+    'choices': [{'backup': True/False, 'label'}]}, the first one being Enter's."""
+    asked = questions.words('existing_backup', what='music')
+    labels = dict(asked['choices'])
+    return {
+        'title': asked['title'],
+        'hint': asked['hint'],
+        'choices': [{'backup': True, 'label': labels[FIRST]}, {'backup': False, 'label': labels[SECOND]}],
+    }
+
+
 COPIED_LATER = 'They are copied into the NekoServer library once its drive is ready; your folder is kept as it is.'
 
 
@@ -220,10 +237,7 @@ def one_folder(config, kind, words, found, asking):
         # job, so they are not asked about and stay listed as not backed up.
         backed_up = picked('existing_backup', asking, what=words) == FIRST
         entries = [{**entry, 'backup': backed_up} for entry in entries]
-        output(
-            f'Your {words}: '
-            + ('copied each night with the music backup.' if backed_up else 'not backed up by NekoServer.')
-        )
+        output(f'Your {words}: {BACKED_UP[backed_up]}')
     staying = existing_media.download_only(config, kind) if any(e['new_files'] for e in entries) else None
     for entry in entries:
         config['placement'] = existing_media.with_choice(config, entry)['placement']

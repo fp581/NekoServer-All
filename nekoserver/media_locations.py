@@ -141,6 +141,11 @@ def checked_request(raw):
         asked.update(path=raw['path'], how=raw['how'], downloads=raw['downloads'])
         if asked['how'] == 'copy' and asked['downloads']:
             raise Refusal('A folder that is copied is not connected, so new downloads cannot go there.')
+        # Setup's "Back this up too?", for music used where it is (used only on a NAS).
+        if 'backup' in raw and type(raw['backup']) is not bool:
+            raise Refusal('Should the music backup copy it too? Reload the page and try again.')
+        if 'backup' in raw and asked['kind'] == 'music' and asked['how'] == 'in_place':
+            asked['backup'] = raw['backup']
     elif change == 'remove':
         if not existing_media.is_slot(asked['kind'], raw.get('slot')):
             raise Refusal('Which folder? Reload the page and try again.')
@@ -189,6 +194,8 @@ def kind_state(config, kind, rows):
     folders waiting to be copied."""
     mine = [row for row in rows if row['holds'] == kind]
     target = next((row for row in mine if row['new_files']), None)
+    # The music backup's answer for each folder (None: never asked, not on a NAS).
+    backup = {e['slot']: e.get('backup') for e in existing_media.extras(config) if e['holds'] == kind}
     downloads = existing_page.downloads(config, kind)
     copies = [
         c['path']
@@ -209,6 +216,8 @@ def kind_state(config, kind, rows):
                 'new_files': row['new_files'],
                 'ready': row['ready'],
                 'reason': row['reason'],
+                'backup': backup.get(row['slot']),
+                'backup_said': existing_page.BACKED_UP.get(backup.get(row['slot'])),
             }
             for row in mine
         ],
@@ -216,6 +225,8 @@ def kind_state(config, kind, rows):
         # How many more folders may be connected, and what is said when there is no room.
         'room': max(0, existing_media.FOLDERS_PER_KIND - len(mine)),
         'full': existing_media.full_words(kind) if len(mine) >= existing_media.FOLDERS_PER_KIND else None,
+        # Asked on the page as setup asks it, for music on a NAS used where it is.
+        'backup_question': existing_page.backup_question() if kind == 'music' else None,
     }
 
 
@@ -290,6 +301,10 @@ def add(config, asked, out):
     elif asked['downloads']:
         out['notes'].append(answer['note'])
     entry = existing_media.entry_for(kind, found, new_files=bool(answer.get('ok')))
+    if kind == 'music' and existing_page.on_network_share(found):
+        # As setup does: only music on a NAS is asked about; yes unless the answer was no.
+        entry['backup'] = asked.get('backup', True)
+        out['notes'].append(f'Your {words}: {existing_page.BACKED_UP[entry["backup"]]}')
     staying = existing_media.download_only(config, kind) if entry['new_files'] else None
     config['placement'] = existing_media.with_choice(config, entry)['placement']
     answered(config, kind)
@@ -519,6 +534,28 @@ def seerr(config, out):
     app_rows(rows, out, 'Seerr')
 
 
+def jobs(config, out):
+    """The scheduled jobs that keep their own copy of the drives and the person's folders
+    (native_runtime.storage_config): each one installed brought up to date, as a setup
+    run leaves them. Without it a change here counted only from the next setup run: the
+    music backup did not copy a music folder it was told to back up, and the apps were
+    not stopped while a new folder's share was away."""
+    import native_runtime
+    from modules import app_backup, host_backup, server_os
+    from neko_common import refresh_settings
+
+    log = out['log'].append
+    wanted = {
+        native_runtime.BACKUP_GUARD: ('Backups', lambda: native_runtime.storage_config(config)),
+        server_os.DRIVE_SETTINGS: ('Drive return', lambda: native_runtime.storage_config(config)),
+        server_os.HDD_GUARD: ('HDD policy', lambda: server_os.hdd_guard(config)),
+    }
+    for target, (label, settings) in wanted.items():
+        refresh_settings(target, settings(), log, label)
+    app_backup.refresh(config, log)
+    host_backup.refresh(config, log)
+
+
 def tell_apps(ctx, kinds, settings, out, steps=None):
     """After the settings changed: the folders bound as they say, the apps restarted
     when a folder was connected, taken away or switched between read-only and not, the
@@ -544,6 +581,7 @@ def tell_apps(ctx, kinds, settings, out, steps=None):
         if left:
             out['next'].append('The copy is not finished: ' + ' '.join(out['log'][-2:]))
     wanted = [
+        ('jobs', True, lambda: steps['jobs'](config, out)),
         ('jellyfin', set(kinds) & set(FILMS_AND_SHOWS) and 'jellyfin' in apps, lambda: steps['jellyfin'](config, out)),
         ('navidrome', 'music' in kinds and 'navidrome' in apps, lambda: steps['navidrome'](config, out)),
         (
@@ -580,6 +618,7 @@ STEPS = {
     'navidrome': navidrome,
     'root_folders': root_folders,
     'seerr': seerr,
+    'jobs': jobs,
 }
 
 

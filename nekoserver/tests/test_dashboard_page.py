@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 import unittest
 from pathlib import Path
@@ -1313,6 +1314,33 @@ class MediaFoldersPageTests(unittest.TestCase):
         self.assertIn('Copying… Telling the apps…', flow['page'])
         self.assertIn('/mnt/nas/films', flow['page'])
         self.assertNotIn('Looking at your folders', flow['page'])
+
+    def test_music_used_where_it_is_is_asked_about_the_backup_in_setups_words(self):
+        # The owner's decision 4 on PR 89: the question setup asks, with its words (sent by
+        # the server: existing_page.backup_question), and the answer sent with the folder.
+        sys.path.insert(0, str(ROOT))
+        import existing_page
+        import questions
+
+        asked = existing_page.backup_question()
+        result = media_result()
+        result['kinds'] = [{**result['kinds'][1], 'backup_question': asked}]
+        result['kinds'][0]['folders'][0]['backup_said'] = existing_page.BACKED_UP[False]
+        (yes, no, copied) = page(
+            ('mediaFlow', {'result': result, 'add': {'path': '/mnt/nas/music', 'downloads': False}}),
+            ('mediaFlow', {'result': result, 'add': {'path': '/mnt/nas/music', 'downloads': False, 'backup': False}}),
+            ('mediaFlow', {'result': result, 'add': {'path': '/mnt/nas/music', 'downloads': False, 'how': 'copy'}}),
+        )
+        self.assertEqual(asked['title'], questions.Q['existing_backup']['title'])
+        for words in (asked['title'], asked['choices'][0]['label'], asked['choices'][1]['label']):
+            self.assertIn(words, yes['form'])
+        self.assertIn('Backup: not backed up by NekoServer.', yes['page'])
+        self.assertIs(yes['formSent'][-1]['backup'], True)  # Enter's answer in setup
+        self.assertIs(no['formSent'][-1]['backup'], False)
+        self.assertNotIn('backup', copied['formSent'][-1])  # a copy is in the library's backup
+        # Films are never asked.
+        (films,) = page(('mediaFlow', {'result': media_result(), 'add': {'path': '/mnt/nas/f', 'downloads': False}}))
+        self.assertNotIn('backup', films['formSent'][-1])
 
     def test_a_copy_at_work_shows_how_far_it_is_and_that_backups_wait(self):
         # The owner's decision 3 on PR 89: the copy's progress comes from the server (the

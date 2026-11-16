@@ -463,7 +463,7 @@ SPECIAL.mediaFlow = async argument => {
   app.state.route = 'media';
   const before = argument.before ?? null; // what the page showed before (media-state's answer)
   Object.assign(app.MEDIA, { answer: before, asked: false, refused: null, formKey: '', browse: null });
-  Object.assign(app.MEDIA.form, { kind: '', path: '', how: 'in_place', downloads: false });
+  Object.assign(app.MEDIA.form, { kind: '', path: '', how: 'in_place', downloads: false, backup: true });
   const sent = server((path, body) => {
     if (path === '/api/control/media-state') {
       return { ok: true, working: Boolean(argument.working), result: argument.result, progress: argument.progress };
@@ -484,6 +484,12 @@ SPECIAL.mediaFlow = async argument => {
     path.clicked(); // its input listener
     if (add.how === 'copy') {
       find(form, n => n.tag === 'input' && n.type === 'radio' && n.value === 'copy').clicked();
+    }
+    if (add.backup === false) {
+      find(
+        form,
+        n => n.tag === 'input' && n.type === 'radio' && n.name === 'media-backup' && n.value === 'false'
+      ).clicked();
     }
     const downloads = find(form, n => n.tag === 'input' && n.type === 'checkbox');
     downloads.checked = add.downloads;

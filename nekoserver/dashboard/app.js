@@ -5308,7 +5308,7 @@ const MEDIA = {
   browse: null, // the folders offered to pick from, as media-browse said them
   path: null, // the form's folder box and the list to pick from (made with the form)
   box: null,
-  form: { kind: '', path: '', how: 'in_place', downloads: false },
+  form: { kind: '', path: '', how: 'in_place', downloads: false, backup: true },
   formKey: ''
 };
 const MEDIA_POLL = 2000; // how often the page looks while a change is at work
@@ -5400,6 +5400,9 @@ function mediaFolderRow(kind, f) {
   info.append(el('h3', '', f.path), el('p', '', text(MEDIA_ROLE[f.use], 'Your folder')));
   if (f.new_files) {
     info.append(el('p', 'media-target', 'New downloads go here'));
+  }
+  if (f.backup_said) {
+    info.append(el('p', '', 'Backup: ' + text(f.backup_said)));
   }
   if (!f.ready) {
     info.append(longText('reason', text(f.reason, 'Not there now.')));
@@ -5630,9 +5633,12 @@ function mediaForm(kinds) {
   Object.assign(downloadsBox, { type: 'checkbox', id: 'media-downloads', checked: f.downloads });
   downloadsField.append(downloadsBox, el('span', '', 'New downloads go there'));
   const note = el('p', 'hint');
+  const backup = mediaBackupField(kinds.find(k => k.backup_question)?.backup_question);
   const fit = () => {
     const kind = kinds.find(k => k.kind === f.kind) || kinds[0];
     const copying = f.how === 'copy';
+    // Setup's "Back this up too?": music used where it is (the server asks it only of a NAS's).
+    backup.hidden = !(kind.backup_question && !copying);
     downloadsBox.disabled = copying || !kind.downloads;
     if (downloadsBox.disabled) {
       downloadsBox.checked = f.downloads = false;
@@ -5679,10 +5685,35 @@ function mediaForm(kinds) {
     // A folder that is copied is not connected: new downloads can't go there.
     const downloads = f.how === 'in_place' && !downloadsBox.disabled && f.downloads;
     const body = { change: 'add', kind: f.kind, path: f.path.trim(), how: f.how, downloads };
+    if (!backup.hidden) {
+      body.backup = f.backup;
+    }
     void mediaChange(body, 'Checking ' + body.path + ' as the apps would see it…');
   });
-  form.append(kindField, pathField, pick, browse, how, go);
+  form.append(kindField, pathField, pick, browse, how, backup, go);
   return form;
+}
+/* The music backup question, in setup's own words (the server sends them: existing_page
+ * backup_question). The answer counts only for a folder on a NAS, as in setup. */
+function mediaBackupField(asked) {
+  const box = el('fieldset', 'media-how');
+  box.id = 'media-backup';
+  if (!asked) {
+    box.hidden = true;
+    return box;
+  }
+  box.append(el('legend', '', text(asked.title)), el('p', 'hint', text(asked.hint)));
+  for (const choice of list(asked.choices)) {
+    box.append(
+      mediaRadio('media-backup', String(choice.backup), text(choice.label), MEDIA.form.backup === choice.backup, () => {
+        MEDIA.form.backup = choice.backup;
+      })
+    );
+  }
+  box.append(
+    el('p', 'hint', 'Asked only for music on a NAS; a folder on a drive of this PC is not backed up by NekoServer.')
+  );
+  return box;
 }
 /* The folders to pick from: the server lists them (the page never reads the disk). */
 async function mediaBrowse(path) {

@@ -390,8 +390,13 @@ def storage_config(config):
     return found
 
 
+# The backups' own copy of storage_config (the music backup reads the music folders to
+# copy from it, the photo copies the drives).
+BACKUP_GUARD = Path('/etc/nekoserver-backups/storage.json')
+
+
 def backup_guard(config):
-    path = safe_path('/etc/nekoserver-backups/storage.json')
+    path = safe_path(BACKUP_GUARD)
     atomic_json(path, storage_config(config))
     return path
 

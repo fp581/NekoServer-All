@@ -258,6 +258,14 @@ pub fn checked(request: &Value) -> std::result::Result<Value, &'static str> {
             asked["path"] = json!(path);
             asked["how"] = json!(how);
             asked["downloads"] = json!(downloads);
+            // Setup's "Back this up too?" for music used where it is (only a NAS's is).
+            let backup = &request["backup"];
+            if !backup.is_null() && !backup.is_boolean() {
+                return Err("Should the music backup copy it too?");
+            }
+            if backup.is_boolean() && kind == "music" && how == "in_place" {
+                asked["backup"] = backup.clone();
+            }
         }
         // A folder is named by its slot; new downloads go to one, or to "library".
         "remove" => {
@@ -533,6 +541,18 @@ mod tests {
             wrong[key] = bad.clone();
             assert!(checked(&wrong).is_err(), "{key} = {bad}");
         }
+        // The music backup's answer goes on for music used where it is, and only then.
+        let music = json!({"change": "add", "kind": "music", "path": "/mnt/nas/music", "how": "in_place", "downloads": false, "backup": false});
+        assert_eq!(checked(&music).unwrap()["backup"], false);
+        let mut films = music.clone();
+        films["kind"] = json!("movies");
+        assert!(checked(&films).unwrap().get("backup").is_none());
+        let mut copied = music.clone();
+        copied["how"] = json!("copy");
+        assert!(checked(&copied).unwrap().get("backup").is_none());
+        let mut odd = music.clone();
+        odd["backup"] = json!("no");
+        assert!(checked(&odd).is_err());
         let copy = json!({"change": "add", "kind": "music", "path": "/mnt/m", "how": "copy", "downloads": true});
         assert!(checked(&copy).unwrap_err().contains("copied"));
         // A folder is named by its slot, of the kind asked about.
