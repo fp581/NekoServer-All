@@ -780,6 +780,9 @@ fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, Vec<Value
         );
         let info = app_drive(cfg, key, &path, expected, fs);
         let mut r = drive_row(key, name, &path, &info["status"]);
+        if holds_photos(cfg, &path) {
+            r["photos"] = json!(true);
+        }
         if info["status"] == "mounted" {
             let source = text(&info["source"]);
             mounted_details(&mut r, cfg, cache, now, (key, &path, source, fs, expected));
@@ -2304,6 +2307,26 @@ fn updates(cfg: &Value, data_ok: bool) -> Value {
     }
     json!(out)
 }
+/// Whether Immich's photos and videos live on the drive mounted at `folder` (where setup
+/// put them, "locations").
+fn holds_photos(cfg: &Value, folder: &Path) -> bool {
+    common::immich_wanted(cfg)
+        && common::files_root(cfg, "photos").is_ok_and(|root| root.as_path() == folder)
+}
+/// Added to a nearly full drive's advice when Immich's photos are on it. Photos grow on
+/// it every week, and a household deleting photos in Immich to make room saw nothing
+/// freed for 30 days: Immich keeps them in its Trash (trash.days, 30 by default), and
+/// the advice named the music and the films but never the photos (deep check 722).
+const PHOTOS_HERE: &str = " Immich's photos and videos are kept here too: those you delete in Immich free their space only once they leave its Trash (after 30 days, or at once with Empty trash in Immich's Trash). A bigger drive: STORAGE.md, \"Moving to a bigger drive\".";
+/// A nearly full drive's advice, with what to know when Immich's photos are on it.
+fn drive_space_advice(id: &str, full: bool, photos: bool) -> String {
+    let advice = space_advice(id, full);
+    if photos {
+        format!("{advice}{PHOTOS_HERE}")
+    } else {
+        advice.to_string()
+    }
+}
 /// What a nearly full drive stops, and how to free it.
 fn space_advice(id: &str, full: bool) -> &'static str {
     match (id, full) {
@@ -2879,7 +2902,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
                     } else {
                         format!("{name} is filling up")
                     },
-                    space_advice(id, full),
+                    &drive_space_advice(id, full, d["photos"] == true),
                 );
             }
             let state = text(&d["smart"]["status"]);
@@ -5823,6 +5846,49 @@ mod round_two_tests {
         for id in ["media_hdd", "data_ssd", "d3"] {
             let said = space_advice(id, false);
             assert!(said.starts_with("90% or more used."), "{said}");
+        }
+    }
+    /// Deep check 722: a year of photos fills the drive they are on. Its alert named the
+    /// music and the films, never the photos, and a household deleting photos in Immich
+    /// to make room saw nothing freed for 30 days (Immich's Trash keeps them).
+    #[test]
+    fn a_full_drive_with_the_photos_says_how_immichs_trash_frees_room() {
+        let cfg = json!({"data_mount": "/srv/nekoserver", "media_mount": "/mnt/nekoserver-media",
+            "photos": {"deploy_immich": true}});
+        assert!(
+            holds_photos(&cfg, Path::new("/srv/nekoserver")),
+            "the SSD by default"
+        );
+        assert!(!holds_photos(&cfg, Path::new("/mnt/nekoserver-media")));
+        let mut on_media = cfg.clone();
+        on_media["locations"] = json!({"photos": "media"});
+        assert!(holds_photos(&on_media, Path::new("/mnt/nekoserver-media")));
+        assert!(!holds_photos(&on_media, Path::new("/srv/nekoserver")));
+        let mut off = cfg.clone();
+        off["photos"]["deploy_immich"] = json!(false);
+        assert!(!holds_photos(&off, Path::new("/srv/nekoserver")));
+        let detail = |photos: bool, used: f64| {
+            let mut row = json!({"id": "data_ssd", "name": "Application SSD", "status": "mounted",
+                "used_percent": used});
+            if photos {
+                row["photos"] = json!(true);
+            }
+            let all = alerts(&json!({"storage": [row]}));
+            let found = all
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["id"] == "space:data_ssd")
+                .cloned();
+            text(&found.expect("a space alert")["detail"]).to_string()
+        };
+        for used in [92.0, 98.0] {
+            assert!(
+                detail(true, used).contains("once they leave its Trash"),
+                "{used}"
+            );
+            assert!(detail(true, used).contains("Empty trash"), "{used}");
+            assert!(!detail(false, used).contains("Immich"), "{used}");
         }
     }
 }
