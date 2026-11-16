@@ -31,6 +31,11 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 - **Immich follows a time zone changed after its first setup**, as every other schedule and app already did.
 - **A dashboard PIN asked again and left empty is no longer shown by "Show login".**
 
+### Fixed: watching and listening every day
+- **Music copied in from another computer now reaches Navidrome.** Music is on the SSD by default, but the only share was the media drive's library, so no share held the folder Navidrome plays (and README said *Media* had the music). There is now a *Music* share. It is read-only unless `samba_media_write` is on, and it waits for its drive.
+- **A group of apps switched off later (Music, say) is no longer checked every hour.** Navidrome and Lidarr showed as failed every hour after being stopped, and since the monthly update waits for that check, it was held back for good.
+- **Prowlarr's link to an app of a group switched off is removed**, so it no longer warns about the stopped Lidarr forever.
+
 ### Fixed: photos every day
 - **After a broken SSD, RECOVERY.md sends you to rebuild Immich from the weekly database copies on the HDD**, with the exact commands, checked to bring back every account, album and photo. It sent you to upload the photos in the browser, which puts them all in one account and loses albums, faces and the family's logins; and Immich's own restore steps fail on NekoServer's copy.
 - **A drive filling up with the photos on it says that photos deleted in Immich free their room only after 30 days in its Trash**, and how to empty it.
