@@ -920,13 +920,19 @@ def jellyfin_library(client, config, entry, kind, apply, how):
 
     values = media_libraries.folders(client)
     if there(values):
+        if apply:
+            for library in values:
+                if path in [str(p).rstrip('/') for p in library['Locations']] and library.get('ItemId'):
+                    media_libraries.watch_library(client, library)
         return media_libraries.row(check_name, 'pass')
     if any(str(x.get('Name', '')).casefold() == name.casefold() for x in values):
         raise media_libraries.SetupRequired(NAME_TAKEN.format(app='Jellyfin', name=name))
     if not apply:
         return media_libraries.row(check_name, 'needs_setup', 'Preview: library would be created')
     asked = {'name': name, 'collectionType': kind, 'paths': path, 'refreshLibrary': 'true'}
-    client.call('/Library/VirtualFolders?' + urllib.parse.urlencode(asked), 'POST', {})
+    client.call(
+        '/Library/VirtualFolders?' + urllib.parse.urlencode(asked), 'POST', media_libraries.new_library_options()
+    )
     if not there(media_libraries.folders(client)):
         raise RuntimeError('Library creation was not retained')
     return media_libraries.row(check_name, 'pass')

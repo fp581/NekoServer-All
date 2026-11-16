@@ -146,5 +146,127 @@ class FinishedDownloadsEndTests(unittest.TestCase):
             self.configure(QBITTORRENT_DEFAULTS, keeps=False)
 
 
+class JellyfinStandIn:
+    """Jellyfin's library calls on a free port, as Jellyfin does them: an added library
+    takes the LibraryOptions sent, else LibraryOptions' own defaults, where real time
+    monitoring is off (Jellyfin.Api LibraryStructureController.AddVirtualFolder,
+    MediaBrowser.Model LibraryOptions); /Library/VirtualFolders/LibraryOptions replaces them."""
+
+    def __init__(self, libraries=()):
+        self.libraries = [dict(x) for x in libraries]
+        stand_in = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def answer(self, value=None, status=200):
+                data = b'' if value is None else json.dumps(value).encode()
+                self.send_response(status if data else 204)
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self):
+                if self.path == '/System/Info/Public':
+                    return self.answer({'Id': 'server-1', 'StartupWizardCompleted': True})
+                if self.path == '/Library/VirtualFolders':
+                    return self.answer(stand_in.libraries)
+                self.answer({}, 404)
+
+            def do_POST(self):
+                raw = self.rfile.read(int(self.headers.get('Content-Length') or 0))
+                body = json.loads(raw) if raw.strip() else None
+                url = urllib.parse.urlsplit(self.path)
+                if url.path == '/Users/AuthenticateByName':
+                    return self.answer({'AccessToken': 't', 'User': {'Policy': {'IsAdministrator': True}}})
+                if url.path == '/Library/VirtualFolders':
+                    query = urllib.parse.parse_qs(url.query)
+                    options = {'EnableRealtimeMonitor': False, 'Enabled': True}
+                    options.update((body or {}).get('LibraryOptions') or {})
+                    stand_in.libraries.append(
+                        {
+                            'Name': query['name'][0],
+                            'CollectionType': query['collectionType'][0],
+                            'Locations': query['paths'][0].split(','),
+                            'ItemId': 'id-' + query['name'][0],
+                            'LibraryOptions': options,
+                        }
+                    )
+                    return self.answer()
+                if url.path == '/Library/VirtualFolders/LibraryOptions':
+                    for library in stand_in.libraries:
+                        if library['ItemId'] == body['Id']:
+                            library['LibraryOptions'] = body['LibraryOptions']
+                    return self.answer()
+                if url.path == '/Sessions/Logout':
+                    return self.answer()
+                self.answer({}, 404)
+
+        self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def client(self):
+        import media_libraries
+
+        client = media_libraries.Client('jellyfin')
+        client.base = f'http://127.0.0.1:{self.server.server_address[1]}'
+        return client
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class JellyfinSeesTheFilmTests(unittest.TestCase):
+    """Deep check 691: Radarr puts the film in /data/movies; Jellyfin listed it only at its
+    next library scan, every 12 hours, as the libraries setup made had real time
+    monitoring off (Jellyfin's default for a library added through its API)."""
+
+    def setUp(self):
+        import tempfile
+
+        self.media = Path(tempfile.mkdtemp(prefix='agentAW-media-', dir='/var/tmp'))
+        self.addCleanup(__import__('shutil').rmtree, self.media)
+        for folder in ('movies', 'tv'):
+            (self.media / 'library' / folder).mkdir(parents=True)
+
+    def run_setup(self, jellyfin):
+        import media_libraries
+
+        self.addCleanup(jellyfin.close)
+        client = jellyfin.client()
+        results, _, ids = media_libraries.jellyfin(client, self.media, True, lambda _: 'admin', lambda _: 'secret-word')
+        client.close()
+        self.assertEqual([r['status'] for r in results], ['pass'] * 3)
+        return {x['Locations'][0]: x['LibraryOptions'] for x in jellyfin.libraries}
+
+    def test_the_libraries_setup_makes_are_watched(self):
+        options = self.run_setup(JellyfinStandIn())
+        self.assertIs(options['/data/movies']['EnableRealtimeMonitor'], True)
+        self.assertIs(options['/data/tv']['EnableRealtimeMonitor'], True)
+
+    def test_a_library_an_earlier_setup_made_is_switched_on_and_keeps_its_other_options(self):
+        earlier = [
+            {
+                'Name': 'Movies',
+                'CollectionType': 'movies',
+                'Locations': ['/data/movies'],
+                'ItemId': 'm1',
+                'LibraryOptions': {'EnableRealtimeMonitor': False, 'PreferredMetadataLanguage': 'de'},
+            },
+            {
+                'Name': 'TV Shows',
+                'CollectionType': 'tvshows',
+                'Locations': ['/data/tv'],
+                'ItemId': 't1',
+                'LibraryOptions': {'EnableRealtimeMonitor': True},
+            },
+        ]
+        options = self.run_setup(JellyfinStandIn(earlier))
+        self.assertEqual(options['/data/movies'], {'EnableRealtimeMonitor': True, 'PreferredMetadataLanguage': 'de'})
+        self.assertIs(options['/data/tv']['EnableRealtimeMonitor'], True)
+
+
 if __name__ == '__main__':
     unittest.main()
