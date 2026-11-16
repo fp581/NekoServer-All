@@ -388,6 +388,12 @@ def storage_config(config):
         # The person's own folders on a network share, used where they are (0.50.0): the
         # apps that see one stay stopped while it does not answer (shared_folders.rs).
         found['shared_folders'] = shares
+    from neko_common import cards_settings
+
+    cards = cards_settings(config)
+    if cards:
+        # Backup cards switched on (0.52.0): what the card job copies (runtime cards.rs).
+        found['cards'] = cards
     nas = config.get('network_storage') or {}
     if nas.get('wanted') is True:
         # The NAS check logs in again once the NAS answers (runtime nas_watch.rs).

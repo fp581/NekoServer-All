@@ -38,6 +38,7 @@ STEP_EXPLANATIONS = {
     'heartbeat': 'Lets an outside service notice when the server goes offline and tell you.',
     'host_backup': 'Schedules a nightly backup of the system settings NekoServer wrote.',
     'maintenance': 'Schedules the monthly update: a verified backup, then newer app versions, then a check.',
+    'backup_cards': 'Schedules a nightly copy of your photos and documents onto your backup cards, when one is plugged in.',
 }
 
 # What each system package is for (NekoServer's names; a family may call them differently).
@@ -229,7 +230,26 @@ EXTRAS = (
         # One of the two, by what the NAS offers.
         'installs': ('open-iscsi', 'nfs-utils'),
     },
+    # Backup cards (0.52.0): read everywhere through neko_common.cards_enabled, which
+    # takes this entry, so the switch is defined here only. Off until switched on, also
+    # on a server set up before (an upgrade changes nothing).
+    {
+        'id': 'backup_cards',
+        'section': 'cards',
+        'key': 'enabled',
+        'part': 'storage',
+        'on_default': False,
+        'step': 'backup_cards',
+        'title': 'Backup cards',
+        'explanation': 'Copy your photos and documents onto SD cards or USB sticks you keep somewhere else. '
+        'Each night a card is plugged in, NekoServer adds what is new; when a card is full it asks for the '
+        'next one. You choose the cards on the dashboard. The copies are not encrypted: keep the cards safe.',
+        'small': "Immich's original photos and videos, and Nextcloud's files. Cards formatted ext4 or exFAT; "
+        'NekoServer never formats one.',
+        'installs': (),
+    },
 )
+EXTRA_BY_ID = {extra['id']: extra for extra in EXTRAS}
 
 
 def shown():

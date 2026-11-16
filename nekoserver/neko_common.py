@@ -2176,6 +2176,24 @@ def immich_wanted(config):
     return media_group(config, 'photos') and config.get('photos', {}).get('deploy_immich') is True
 
 
+def cards_enabled(config):
+    """Backup cards are switched on (setup's first page, explanations.EXTRAS
+    "backup_cards"). Off without an answer, also on a server set up before 0.52.0."""
+    import explanations
+
+    return explanations.extra_state(config, explanations.EXTRA_BY_ID['backup_cards']) is True
+
+
+def cards_settings(config):
+    """What the runtime's card job, the control service and the dashboard collector are
+    told about backup cards, or None while they are off: then the files they read stay
+    exactly as before (an upgrade changes nothing until the switch is on). The sources
+    are the ones CARD-RECOVERY.md promises: Immich's originals and Nextcloud's files."""
+    if not cards_enabled(config):
+        return None
+    return {'enabled': True, 'immich': immich_wanted(config), 'nextcloud': nextcloud_enabled(config)}
+
+
 def nextcloud_enabled(config):
     """Nextcloud is set up, read the one way everything reads it: on unless its "enabled"
     is false, as modules/nextcloud.py runs it (and config_checks.nextcloud_default writes
