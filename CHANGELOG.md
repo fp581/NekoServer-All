@@ -31,6 +31,9 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 - **Immich follows a time zone changed after its first setup**, as every other schedule and app already did.
 - **A dashboard PIN asked again and left empty is no longer shown by "Show login".**
 
+### Fixed: the server's upkeep over a season
+- **A weekly job skipped for the monthly night no longer shows as overdue.** The weekly app updates never run on the 1st, so when the update day fell on the 1st there were two weeks between runs. The dashboard allowed only 9 days, so it and the phone said "Last success is overdue" days before the next run. The same happened to the weekly USB copy skipped for a long monthly run. A weekly job is now overdue only when its next scheduled run is more than a week late.
+
 ### Fixed: files and shared folders every day
 - **An album copied into the Music share during the nightly music backup no longer fails the whole night.** A copy over Samba keeps its old dates, so it looked settled, and the second listing then found it and stopped with "Music library changed during backup". Such files now wait for the next night.
 - **The Media share follows the drive setup put the films on.** With the films on the SSD or another drive, the share showed an empty folder, and films copied into it never reached Jellyfin. Samba now waits for that drive, and the music gets its own share whenever it is not in that library.
