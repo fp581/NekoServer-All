@@ -2,6 +2,15 @@
 
 ## v0.52.0 — (in progress)
 
+### Added: backup cards
+- **Backup cards: a copy of your photos and documents on SD cards or USB sticks you keep somewhere else.** Switch them on on setup's first page, under Storage; they are off until you do, also after an upgrade. What goes on them: Immich's original photos and videos and each person's Nextcloud files, nothing else. The copies are not encrypted: keep the cards safe. BACKUP-CARDS.md says how to use them.
+- **You choose the cards on the dashboard.** A new Backup cards page (with your PIN, on the server too) lists the cards and sticks plugged in, and offers **Use this as card N of the set** for an empty one formatted ext4 or exFAT. NekoServer never formats or erases a card: a card of another set, one that holds files, a full one, a drive built into the PC, the disk Linux runs from and NekoServer's own drives are refused, each saying why.
+- **Every night a card of the set is plugged in, what is new goes onto it**, an hour after the other nightly backups, each file checked against its checksum, nothing on a card ever overwritten. **Write to the card now** does it at once. A card taken out in the middle loses nothing.
+- **A full card says which card to put in next**: "Card 2 is full: put in a new card (it becomes card 3)", on the dashboard and as a phone alert (a warning, not urgent). A set with no card written for 30 days gets a quiet reminder, without a sound.
+- **The Backups page shows the set**: which card is in, how many files are on the cards and how many wait for one, and when a card was last written.
+- **The recovery menu restores from a card**: "From backup cards", with the same restore tool every card carries. CARD-RECOVERY.md stays the way without NekoServer.
+- **A card keeps only its three newest inventories** (the list of which card held which file), and a new one is written only when something changed, so a card no longer fills up with them.
+
 ### Fixed: from the review of 0.51.3
 - **A password list restored from a snapshot made without a backup key is the one that was checked.** The archive was checked against its recorded checksum and then unpacked by name, so one replaced in between (another job writing to the HDD, a failing drive) was unpacked unchecked, with "Done" over changed passwords. It is now opened once; the same bytes are checked and unpacked, and moved into place only when they match.
 - **A password list restored from a snapshot made without a backup key brings the apps' own password files too**, as the menu promised and the Nextcloud guide counted on: each app's `.env` and Nextcloud's `config.php`, not only the account list. The finished restore names each file.
