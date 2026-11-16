@@ -77,6 +77,20 @@ class FamilyLoginTests(unittest.TestCase):
         self.assertIn('Parental control', part)  # Jellyfin, for a child
         self.assertIn('Seerr', part)
 
+    def test_the_readme_says_what_to_do_when_someone_forgot_their_password(self):
+        """Deep check 856: a child forgot their Immich password, a grandparent their
+        Jellyfin one. Neither app sends a reset email from a home server, and no guide said
+        that the administrator sets a new one, nor where."""
+        part = doc('README.md').split('**Someone forgot their password.**')[1].split('\n**')[0]
+        for app, where in (
+            ('Immich', '**Reset password**'),
+            ('Jellyfin', '*Users* → the person → *Password*'),
+            ('Nextcloud', '**Edit**'),
+        ):
+            self.assertIn(f'In {app}:', part)
+            self.assertIn(where, part)
+        self.assertIn('account-setup.py show', part)
+
 
 class LoginsAfterARestoreTests(unittest.TestCase):
     """Deep checks 865 and 870: after a new SSD, setup makes new logins for the new, empty
