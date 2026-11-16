@@ -87,7 +87,57 @@ CREATE TABLE IF NOT EXISTS conflicts (
     found_at TEXT NOT NULL,
     what TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS inventory_marks (
+    volume_id TEXT PRIMARY KEY,
+    epoch_id TEXT NOT NULL,
+    content INTEGER NOT NULL,
+    snapshot_id TEXT NOT NULL
+);
 ";
+
+/// What changes what an inventory snapshot says (0.52.0): each change counts up `content`
+/// in `meta`, so that a card is given a new snapshot only when there is something new to
+/// say (`inventory::checkpoint`). A source file's dates, a card's last sighting and the
+/// transactions in flight are not in a snapshot, and count nothing. Added to catalogues
+/// of layout 1 as they are opened: nothing else in them changes.
+const CONTENT_TRIGGERS: &str = "
+CREATE TRIGGER IF NOT EXISTS content_version_added AFTER INSERT ON versions
+    BEGIN UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'content'; END;
+CREATE TRIGGER IF NOT EXISTS content_version_changed AFTER UPDATE ON versions
+    WHEN OLD.checksum IS NOT NEW.checksum OR OLD.byte_size IS NOT NEW.byte_size
+        OR OLD.path IS NOT NEW.path OR OLD.source_id IS NOT NEW.source_id
+    BEGIN UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'content'; END;
+CREATE TRIGGER IF NOT EXISTS content_version_removed AFTER DELETE ON versions
+    BEGIN UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'content'; END;
+CREATE TRIGGER IF NOT EXISTS content_copy_added AFTER INSERT ON copies
+    BEGIN UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'content'; END;
+CREATE TRIGGER IF NOT EXISTS content_copy_changed AFTER UPDATE ON copies
+    WHEN OLD.state IS NOT NEW.state OR OLD.verified_at IS NOT NEW.verified_at
+        OR OLD.volume_id IS NOT NEW.volume_id
+    BEGIN UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'content'; END;
+CREATE TRIGGER IF NOT EXISTS content_copy_removed AFTER DELETE ON copies
+    BEGIN UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'content'; END;
+CREATE TRIGGER IF NOT EXISTS content_source_added AFTER INSERT ON sources
+    BEGIN UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'content'; END;
+CREATE TRIGGER IF NOT EXISTS content_source_changed AFTER UPDATE ON sources
+    BEGIN UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'content'; END;
+CREATE TRIGGER IF NOT EXISTS content_volume_added AFTER INSERT ON volumes
+    BEGIN UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'content'; END;
+CREATE TRIGGER IF NOT EXISTS content_volume_changed AFTER UPDATE ON volumes
+    WHEN OLD.state IS NOT NEW.state OR OLD.sequence_number IS NOT NEW.sequence_number
+        OR OLD.capacity_bytes IS NOT NEW.capacity_bytes OR OLD.observed IS NOT NEW.observed
+        OR OLD.last_recheck_at IS NOT NEW.last_recheck_at
+        OR OLD.last_recheck_result IS NOT NEW.last_recheck_result
+    BEGIN UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'content'; END;
+";
+
+/// The snapshot last written to a card, and what the catalogue was then.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InventoryMark {
+    pub epoch_id: String,
+    pub content: u64,
+    pub snapshot_id: String,
+}
 
 /// A volume's state in the catalogue (archive format 1, section 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -397,6 +447,15 @@ impl Store {
                 ))
             }
         }
+        // The change counter (0.52.0), also in a catalogue made before it.
+        tx.execute_batch(CONTENT_TRIGGERS)
+            .and_then(|_| {
+                tx.execute(
+                    "INSERT OR IGNORE INTO meta (key, value) VALUES ('content', '0')",
+                    [],
+                )
+            })
+            .map_err(|e| db("change counter", e))?;
         tx.commit().map_err(|e| db("commit", e))?;
         Ok(store)
     }
@@ -440,6 +499,54 @@ impl Store {
             CardError::new(Kind::Invalid, "the catalogue's revision is not a number")
         })?;
         Ok((epoch, revision))
+    }
+
+    /// The catalogue's epoch and its change counter (`CONTENT_TRIGGERS`).
+    pub fn content(&self) -> Res<(String, u64)> {
+        let counted = self.meta("content")?.parse().map_err(|_| {
+            CardError::new(
+                Kind::Invalid,
+                "the catalogue's change counter is not a number",
+            )
+        })?;
+        Ok((self.epoch()?, counted))
+    }
+
+    /// The snapshot last written to this card, as the catalogue remembers it.
+    pub fn inventory_mark(&self, volume_id: &str) -> Res<Option<InventoryMark>> {
+        self.conn
+            .query_row(
+                "SELECT epoch_id, content, snapshot_id FROM inventory_marks WHERE volume_id = ?1",
+                params![volume_id],
+                |r| {
+                    Ok(InventoryMark {
+                        epoch_id: r.get(0)?,
+                        content: number(r.get(1)?),
+                        snapshot_id: r.get(2)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|e| db("inventory mark", e))
+    }
+
+    /// Remember that `mark` is the snapshot now on this card.
+    pub fn mark_inventory(&mut self, volume_id: &str, mark: &InventoryMark) -> Res<()> {
+        self.conn
+            .execute(
+                "INSERT INTO inventory_marks (volume_id, epoch_id, content, snapshot_id) \
+                 VALUES (?1, ?2, ?3, ?4) ON CONFLICT (volume_id) DO UPDATE SET \
+                 epoch_id = excluded.epoch_id, content = excluded.content, \
+                 snapshot_id = excluded.snapshot_id",
+                params![
+                    volume_id,
+                    mark.epoch_id,
+                    signed(mark.content),
+                    mark.snapshot_id
+                ],
+            )
+            .map_err(|e| db("inventory mark", e))?;
+        Ok(())
     }
 
     /// A rebuilt catalogue is another history: a new epoch, revisions from 1 again.
