@@ -31,6 +31,13 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 - **Immich follows a time zone changed after its first setup**, as every other schedule and app already did.
 - **A dashboard PIN asked again and left empty is no longer shown by "Show login".**
 
+### Fixed: setup paths a beginner takes
+- **Films already on the drive you just chose for NekoServer get advice that works.** They were refused as "not permanent: add it in Disks", and doing that stopped the storage step on "fstab already has a line for this drive".
+- **A package source that never answers ends with what to do**, not with apt's own "E: Failed to fetch" lines.
+- **In the setup window, a place on the app SSD or the backups' drive is taken.** It said "Type a number from 1 to 3" and, after three tries, quietly used the recommended place.
+- **An app that never started is said so.** Setup sent you to the browser to "Finish" it at an address that answers nothing, asked again after every "no" for each of 11 apps, and the next run asked about each one's "refused" login. The step now also says Ctrl+D leaves it for later (Ctrl+C stops setup) and gives the full command to finish it.
+- **A first install no longer says "Last time you chose drive 2…"** about a drive picked a minute before.
+
 ### Fixed: the server's upkeep over a season
 - **A weekly job skipped for the monthly night no longer shows as overdue.** The weekly app updates never run on the 1st, so when the update day fell on the 1st there were two weeks between runs. The dashboard allowed only 9 days, so it and the phone said "Last success is overdue" days before the next run. The same happened to the weekly USB copy skipped for a long monthly run. A weekly job is now overdue only when its next scheduled run is more than a week late.
 
