@@ -31,6 +31,11 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 - **Immich follows a time zone changed after its first setup**, as every other schedule and app already did.
 - **A dashboard PIN asked again and left empty is no longer shown by "Show login".**
 
+### Fixed: files and shared folders every day
+- **An album copied into the Music share during the nightly music backup no longer fails the whole night.** A copy over Samba keeps its old dates, so it looked settled, and the second listing then found it and stopped with "Music library changed during backup". Such files now wait for the next night.
+- **The Media share follows the drive setup put the films on.** With the films on the SSD or another drive, the share showed an empty folder, and films copied into it never reached Jellyfin. Samba now waits for that drive, and the music gets its own share whenever it is not in that library.
+- **NEXTCLOUD.md says who can open a share link:** only people on your home network or your Tailscale, because NekoServer opens nothing to the internet.
+
 ### Fixed: watching and listening every day
 - **Music copied in from another computer now reaches Navidrome.** Music is on the SSD by default, but the only share was the media drive's library, so no share held the folder Navidrome plays (and README said *Media* had the music). There is now a *Music* share. It is read-only unless `samba_media_write` is on, and it waits for its drive.
 - **A group of apps switched off later (Music, say) is no longer checked every hour.** Navidrome and Lidarr showed as failed every hour after being stopped, and since the monthly update waits for that check, it was held back for good.
