@@ -76,6 +76,7 @@ pub struct Header {
     pub sha256: String,
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
 /// A copy as a snapshot lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CopyEntry {
@@ -85,6 +86,7 @@ pub struct CopyEntry {
     pub last_verified_at: Option<String>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
 /// One line of the version list. A snapshot carries no dates of the source file: a
 /// version learnt from it has none (0), so a normal run looks at that file again.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -555,6 +557,7 @@ fn check_versions(inventory: &Dir, header: &Header) -> Res<()> {
     Ok(())
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
 fn version_line(bytes: &[u8]) -> Res<VersionLine> {
     let map = format::parse_bounded(bytes, LINE_LIMIT, 3)?;
     let f = Fields(&map);
@@ -623,6 +626,7 @@ pub fn read(vol: &Volume) -> Res<Found> {
     Ok(found)
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
 /// Each line of a snapshot's version list, handed to `each`. The list was checked
 /// against its header by `read`; a line that does not parse now stops the reading.
 pub fn each_version(

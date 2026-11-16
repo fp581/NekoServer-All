@@ -12,6 +12,9 @@
 //!
 //! The report says plainly what cannot be known: a card enrolled, or a file copied, after
 //! the newest snapshot that was read is unknown to this catalogue.
+// The rebuild of a lost catalogue from the cards and their inventories: built and
+// tested, not offered yet by a page or a menu (0.52.0 writes and restores cards).
+#![cfg_attr(not(test), allow(dead_code))]
 use super::catalogue::{CopyRow, CopyState};
 use super::error::{CardError, Kind, Res};
 use super::format::{self, Record};

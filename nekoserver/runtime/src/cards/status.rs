@@ -156,3 +156,18 @@ pub fn save(place: &Place, store: &Store, seen: &Seen) -> Result<Value> {
     common::atomic_json(&place.status(), &status)?;
     Ok(status)
 }
+
+/// The dashboard's reading of the set (collect.rs "cards"), only while backup cards are
+/// switched on: the status as the job and the page last saved it (empty while the app
+/// SSD is away, or before the first card).
+pub fn reading(cfg: &Value, data: &Path, ok: bool) -> Option<Value> {
+    if !super::enabled(cfg) {
+        return None;
+    }
+    let set = if ok {
+        Place::on(data).previous()
+    } else {
+        json!({})
+    };
+    Some(json!({"enabled": true, "set": set}))
+}

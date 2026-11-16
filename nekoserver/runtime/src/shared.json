@@ -90,6 +90,7 @@
     "service": "nekoserver-cards.service",
     "timer": "nekoserver-cards.timer",
     "set_name": "NekoServer cards",
+    "restore_tool": "neko-restore.py",
     "filesystems": ["ext4", "exfat"],
     "keep_inventories": 3,
     "reminder_days": 30

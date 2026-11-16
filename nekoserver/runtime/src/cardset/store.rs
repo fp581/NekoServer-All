@@ -211,6 +211,7 @@ pub struct SourceRow {
     pub retired_at: Option<String>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // the catalogue's search, not offered yet
 /// One search result: a version and where its copies are.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Found {
@@ -310,6 +311,7 @@ const VOLUME_COLUMNS: &str = "volume_id, backup_set_id, sequence_number, label, 
      filesystem_uuid, enrolled_at, state, state_since, last_seen_at, last_recheck_at, \
      last_recheck_result, capacity_bytes, observed";
 
+#[cfg_attr(not(test), allow(dead_code))] // the catalogue's search, not offered yet
 /// `text` for a LIKE pattern: its own `%`, `_` and `\` match only themselves.
 fn like_pattern(text: &str) -> String {
     let mut out = String::from("%");
@@ -403,6 +405,7 @@ impl Store {
         Store::prepare(conn)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // the tests' catalogue, and the rebuild's dry run
     /// A catalogue in memory (tests, and the rebuild's dry run).
     pub fn in_memory() -> Res<Store> {
         Store::prepare(Connection::open_in_memory().map_err(|e| db("open", e))?)
@@ -583,6 +586,7 @@ impl Store {
         Ok(())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
     /// A rebuilt catalogue is another history: a new epoch, revisions from 1 again.
     pub fn start_epoch(&mut self) -> Res<String> {
         let epoch = format::new_uuid()?;
@@ -626,6 +630,7 @@ impl Store {
         Ok(())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
     /// A volume known only from an inventory snapshot (not attached): added if new, never
     /// changed if the catalogue knows it already.
     pub fn heard_of_volume(&mut self, v: &VolumeRow) -> Res<()> {
@@ -655,6 +660,7 @@ impl Store {
         Ok(())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // marking a card lost or retired, not offered yet
     /// A person's or a check's decision about a volume. Its copies follow: a lost or
     /// retired volume's copies are lost, a damaged one's damaged; none of them protects.
     pub fn set_volume_state(&mut self, volume_id: &str, state: VolumeState, now: &str) -> Res<()> {
@@ -750,6 +756,7 @@ impl Store {
         )
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
     /// A copy known from an inventory snapshot only (its volume's content not observed),
     /// or as the snapshot says it is (lost, damaged, missing). Never over a copy the
     /// catalogue observed itself.
@@ -791,6 +798,7 @@ impl Store {
         tx.commit().map_err(|e| db("commit", e))
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
     /// The version of this ID, if the catalogue has it.
     pub fn version(&self, version_id: &str) -> Res<Option<VersionRow>> {
         self.conn
@@ -803,6 +811,7 @@ impl Store {
             .map_err(|e| db("version", e))
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
     /// A disagreement kept for a person to review (never resolved by a date).
     pub fn add_conflict(&mut self, what: &str, now: &str) -> Res<()> {
         self.conn
@@ -814,6 +823,7 @@ impl Store {
         Ok(())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
     pub fn conflicts(&self) -> Res<Vec<String>> {
         self.rows("SELECT what FROM conflicts ORDER BY seq", [], |r| r.get(0))
     }
@@ -831,6 +841,7 @@ impl Store {
         tx.commit().map_err(|e| db("commit", e))
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // the catalogue's search, not offered yet
     /// Versions whose path holds `text` (as typed, any part of the path), newest first,
     /// each with its copies and the label of the volume that holds each.
     pub fn search(&self, text: &str, limit: u32) -> Res<Vec<Found>> {
@@ -856,6 +867,7 @@ impl Store {
         Ok(found)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // what no card protects, not shown yet
     /// Versions with no copy that protects them. `true` beside one: no copy is even on
     /// an offline or unobserved volume (lost or damaged everywhere): it cannot be got
     /// back from any known copy.
@@ -881,6 +893,7 @@ impl Store {
         Ok(out)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // a copy for the host backup, not taken yet
     /// A consistent copy of the catalogue for the host backup, at `target` (which must not
     /// exist yet): SQLite writes it from one read transaction, WAL included.
     pub fn export(&self, target: &Path) -> Res<()> {

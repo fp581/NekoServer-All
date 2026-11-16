@@ -3477,6 +3477,9 @@ pub fn run(a: &Args) -> Result<()> {
         json!([])
     };
     result["integrity"] = integrity(data, ok, away, text(&cfg["photos"]["external_backup_uuid"]));
+    if let Some(cards) = crate::cards::status::reading(&cfg, data, ok) {
+        result["cards"] = cards; // backup cards switched on (0.52.0)
+    }
     result["backup_key"] = json!(backup_key_ready());
     result["backup_place"] = backup_place(&cfg);
     let (localtime, etc_timezone) = (Path::new("/etc/localtime"), Path::new("/etc/timezone"));

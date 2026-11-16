@@ -3,7 +3,15 @@ the runtime's jobs and the dashboard, and that a server set up before is left ex
 it was until the switch is turned on."""
 
 import json
+import os
+import shutil
+import socket
+import socketserver
+import subprocess
 import sys
+import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -142,6 +150,202 @@ class ScheduleTests(unittest.TestCase):
         self.assertIn('backup_cards', old['profiles']['full'])
         with mock.patch.object(neko_common, 'server_exists', return_value=True):
             self.assertIs(neko_common.cards_enabled(old), False)
+
+
+class ControlUnitTests(unittest.TestCase):
+    """The control service enrols the cards: with the switch on it may write the set's
+    folder and the places a card is mounted, and has the restore tool beside it."""
+
+    def test_the_control_service_is_as_before_until_the_switch_is_on(self):
+        code = Path('/usr/local/lib/nekoserver-dashboard/v' + neko_common.VERSION)
+        before = dashboard.control_units(code, False, True, '/srv/nekoserver')[dashboard.CONTROL]
+        self.assertNotIn('/media', before)
+        on = dashboard.control_units(code, False, True, '/srv/nekoserver', cards=True)[dashboard.CONTROL]
+        self.assertIn(' -/srv/nekoserver/cards -/media -/run/media -/mnt\n', on)
+        self.assertEqual(on.replace(' -/srv/nekoserver/cards -/media -/run/media -/mnt', ''), before)
+
+
+HARNESS = ROOT / 'tests' / 'dashboard_harness.mjs'
+NODE = shutil.which('node')
+
+
+def page(*calls):
+    done = subprocess.run(
+        [NODE, str(HARNESS), json.dumps(calls)], capture_output=True, text=True, timeout=60, check=True
+    )
+    return json.loads(done.stdout)
+
+
+def a_set(now):
+    return {
+        'format': 'neko-cards-v1',
+        'updated_at': now,
+        'set_name': 'NekoServer cards',
+        'cards': [
+            {'number': 1, 'state': 'in_use', 'plugged': False, 'files': 1200, 'full': True},
+            {'number': 2, 'state': 'in_use', 'plugged': True, 'files': 34, 'full': False},
+        ],
+        'files_on_cards': 1234,
+        'files_waiting': 1,
+        'last_write_at': now - 2 * 86400,
+        'full_card': None,
+        'next_number': 3,
+    }
+
+
+@unittest.skipUnless(NODE, 'node is not installed')
+class PageTests(unittest.TestCase):
+    def test_the_page_says_which_card_is_in_and_what_waits(self):
+        now = time.time()
+        full = {**a_set(now), 'full_card': 2, 'cards': [{'number': 2, 'plugged': False, 'files': 3, 'full': True}]}
+        said = page(
+            ('cardsSummary', a_set(now)),
+            ('cardsSummary', full),
+            ('cardsSummary', {}),
+            ('cardLine', a_set(now)['cards'][0]),
+            ('cardsOn', {'cards': {'enabled': True}}),
+            ('cardsOn', {}),
+        )
+        self.assertEqual(said[0][0], 'Card 2 is in.')
+        self.assertEqual(said[0][1], '1234 files on the cards, 1 file waiting for a card.')
+        self.assertTrue(said[0][2].startswith('Last written '))
+        self.assertEqual(said[1][0], 'No card of the set is in. 1 card in the set.')
+        self.assertEqual(said[1][-1], 'Card 2 is full: put in a new card (it becomes card 3).')
+        self.assertTrue(said[2][0].startswith('No card is set up yet.'))
+        self.assertEqual(said[3], 'Card 1 · not in · 1200 files · full')
+        self.assertEqual(said[4:], [True, False])
+
+    def test_each_drive_is_offered_only_as_the_server_judged_it(self):
+        empty = {'label': 'CARD', 'size': 64e9, 'fstype': 'exfat', 'usable': True}
+        theirs = {'label': 'OLD', 'fstype': 'ext4', 'usable': False, 'why': 'This card belongs to another backup set.'}
+        ours = {'label': 'C1', 'fstype': 'ext4', 'card': 1}
+        said = page(('driveOffer', empty), ('driveOffer', theirs), ('driveOffer', ours))
+        # driveOffer(d, next) with next missing: the harness passes one argument.
+        self.assertIn('Use this as card', said[0]['action'])
+        self.assertEqual(
+            said[1], {'name': 'OLD · ext4', 'said': 'This card belongs to another backup set.', 'action': None}
+        )
+        self.assertEqual(said[2]['said'], 'Card 1 of your set.')
+
+
+RUNTIME = ROOT / 'runtime/bin/nekoserver-runtime'
+BROWSER = ROOT / 'tests' / 'dashboard_browser.mjs'
+
+
+def playwright_works():
+    if not NODE or not RUNTIME.is_file() or os.geteuid() == 0:
+        return False
+    probe = "require('playwright').chromium.launch().then(b => b.close())"
+    try:
+        return subprocess.run([NODE, '-e', probe], capture_output=True, timeout=60).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+class StandInControl(socketserver.StreamRequestHandler):
+    """The control service as the page sees it: signed in, one empty card plugged in."""
+
+    asked = []
+
+    def handle(self):
+        request = json.loads(self.rfile.readline())
+        StandInControl.asked.append(request)
+        op = request.get('op')
+        if op == 'status':
+            access = {'local': True, 'pin_set': True, 'unlocked': True, 'signed_in': True}
+            answer = {'ok': True, 'format': 'neko-control-v1', 'fans': {}, 'lights': {}, 'access': access}
+            answer['apps'] = {'available': True, 'actions': []}
+        elif op == 'cards_list':
+            drives = [
+                {'mount': '/run/media/amy/CARD', 'label': 'CARD', 'size': 64e9, 'fstype': 'exfat', 'usable': True},
+                {
+                    'mount': '/media/amy/WIN',
+                    'label': 'WIN',
+                    'size': 32e9,
+                    'fstype': 'ntfs',
+                    'usable': False,
+                    'why': 'This card is formatted ntfs, which backup cards are not: they are ext4 or exFAT.',
+                },
+            ]
+            answer = {'ok': True, 'set': a_set(time.time()), 'drives': drives, 'next_number': 2}
+        elif op == 'cards_enrol' and request.get('acknowledged') is True:
+            answer = {'ok': True, 'number': 2, 'message': 'Card 2 is ready. Write “2” on it.'}
+        else:
+            answer = {'ok': False, 'error': 'E42', 'message': 'Tick that you understand first.'}
+        self.wfile.write((json.dumps(answer) + '\n').encode())
+
+
+@unittest.skipUnless(playwright_works(), 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
+class PageInBrowserTests(unittest.TestCase):
+    """The page in Chromium, served by the runtime's own web server, with a stand-in for
+    the control service behind it."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.folder = tempfile.TemporaryDirectory()
+        here = Path(cls.folder.name)
+        now = time.time()
+        snapshot = {
+            'format': 'neko-dashboard-v1',
+            'generated_at': now,
+            'late_after': 630,
+            'version': 'x',
+            'acceptance': {'status': 'complete'},
+            'applications': [],
+            'storage': [],
+            'backups': [],
+            'integrity': [],
+            'alerts': [],
+            'startup': [],
+            'cards': {'enabled': True, 'set': a_set(now)},
+        }
+        (here / 'status.json').write_text(json.dumps(snapshot))
+        cls.control = socketserver.ThreadingUnixStreamServer(str(here / 'control.sock'), StandInControl)
+        threading.Thread(target=cls.control.serve_forever, daemon=True).start()
+        with socket.socket() as s:
+            s.bind(('127.0.0.1', 0))
+            port = s.getsockname()[1]
+        command = [str(RUNTIME), 'serve', '--assets', str(ROOT / 'dashboard'), '--status', str(here / 'status.json')]
+        command += ['--port', str(port), '--control', str(here / 'control.sock')]
+        cls.server = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cls.address = f'http://127.0.0.1:{port}/'
+        for _ in range(100):
+            try:
+                socket.create_connection(('127.0.0.1', port), timeout=1).close()
+                break
+            except OSError:
+                time.sleep(0.05)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.terminate()
+        cls.server.wait(timeout=10)
+        cls.control.shutdown()
+        cls.folder.cleanup()
+
+    def test_a_card_is_found_and_enrolled_through_the_page(self):
+        for width in (1280, 390):
+            StandInControl.asked.clear()
+            done = subprocess.run(
+                [NODE, str(BROWSER), self.address, json.dumps([('cardsPage', {'width': width})])],
+                capture_output=True,
+                text=True,
+                timeout=180,
+                check=True,
+            )
+            seen = json.loads(done.stdout)[0]
+            with self.subTest(width=width):
+                self.assertTrue(seen['nav'])
+                self.assertIn('Card 2 is in.', seen['set'])
+                self.assertIn('Write to the card now', seen['set'])
+                self.assertIn('Empty: it can be card 2 of the set.', seen['drives'][0])
+                self.assertIn('formatted ntfs', seen['drives'][1])
+                self.assertEqual(seen['dialog'], 'Use this card as card 2?')
+                self.assertEqual(seen['toast'], 'Card 2 is ready. Write “2” on it.')
+                enrol = [r for r in StandInControl.asked if r['op'] == 'cards_enrol']
+                self.assertEqual(enrol[0]['mount'], '/run/media/amy/CARD')
+                self.assertEqual((enrol[0]['number'], enrol[0]['acknowledged']), (2, True))
+                self.assertLessEqual(seen['widths'][0], seen['widths'][1], 'no sideways scrolling')
 
 
 if __name__ == '__main__':

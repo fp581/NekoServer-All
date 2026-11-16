@@ -292,7 +292,7 @@ fn a_damaged_or_unfinished_inventory_is_refused_and_left_alone() {
 /// Two cards: card 1 fills (snapshot at the swap, it knows card 1 only), card 2 takes the
 /// rest (snapshot at the end, it knows both).
 struct TwoCards {
-    s: Scratch,
+    _s: Scratch,
     src: super::source::Source,
     p1: PathBuf,
     p2: PathBuf,
@@ -318,7 +318,7 @@ fn two_cards(name: &str) -> TwoCards {
     assert_eq!(r2.state, RunState::Complete);
     inventory::write(&v2, &mut store, &super::format::now()).unwrap();
     TwoCards {
-        s,
+        _s: s,
         src,
         p1,
         p2,

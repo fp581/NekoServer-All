@@ -14,7 +14,10 @@ use std::path::{Path, PathBuf};
 
 pub mod drives;
 pub mod job;
+pub mod page;
 pub mod status;
+#[cfg(test)]
+mod tests_loop;
 
 /// A fact of shared.json's "cards" block (setup reads the same).
 pub fn fact(key: &str) -> &'static str {
