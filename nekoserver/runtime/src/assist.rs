@@ -838,6 +838,20 @@ pub fn offered(cfg: &Value, status: &Value, data: &Path) -> Vec<(String, String)
     out
 }
 
+/// What the guides say about the things a household asks most that no reading answers,
+/// in their words (deep checks 634, 635, 637, 638 and 648: with nothing to go on the model
+/// could only say it did not know, or make steps up). Each line is checked against its
+/// guide (the_guides_say_what_neko_is_told).
+pub const GUIDES: &[&str] = &[
+    "A photo or video deleted by mistake: first look in Immich's Trash (in the menu of the app or the website), which keeps it for 30 days; Restore puts it back. Older than that, or emptied from the Trash: in a terminal on the server, sudo bash install.sh --recover, then 1. Restore something from a backup, then Photos and videos (Immich) (RECOVERY.md).",
+    "A Nextcloud file deleted by mistake: first look in Nextcloud's Deleted files (in Files, at the bottom left); older: plug in the USB drive, then the recovery menu as above, Nextcloud files (RECOVERY.md).",
+    "Films, shows and music are not backed up: one deleted is found again in Radarr (films), Sonarr (shows) or Lidarr (music), or copied again from where it came from.",
+    "Someone else in the family gets a login of their own in each app, never yours: in Immich, Administration, Users, Create user; in Nextcloud, your picture at the top right, then Accounts; in Jellyfin, Dashboard, Users, + with administrator off (for a child, Parental control) (README.md, \"Someone else in the family\").",
+    "The apps update by themselves one night a week; the dashboard's Updates page, Apps, has Update now. NekoServer itself: the Updates page, NekoServer, Upgrade NekoServer (with the PIN); or in a terminal in the NekoServer-All/nekoserver folder: git pull, then sudo bash install.sh (README.md, \"Updating to a newer release\").",
+    "A film on a TV: LG, Samsung and Roku TVs cannot reach the server (they have no Tailscale app): plug in a box or stick that has one, or connect the server to the TV with an HDMI cable. Casting from the phone does not work: use the Jellyfin app on the TV or stick, with the Jellyfin address ending in :8443 (GATEWAY.md, \"On a TV\").",
+    "The dashboard's Help page has step-by-step guides.",
+];
+
 /// The messages for Ollama: what Neko is and may do, then the question with the readings
 /// and the item. Every part that comes from the server has had its secrets taken out.
 pub fn messages(
@@ -852,11 +866,19 @@ pub fn messages(
         .map(|(id, what)| format!("- {id}: {what}"))
         .collect::<Vec<_>>()
         .join("\n");
+    let guides = GUIDES
+        .iter()
+        .map(|line| format!("- {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let system = format!(
         "You are Neko, the helper in the dashboard of a NekoServer home server. Answer in plain, short words for a \
          person who is not a computer expert, in the language the question is written in (the readings below are \
-         in English; keep the names of apps, pages and buttons as they are written there). Use only the readings and log lines given; when they do not say, say \
-         you do not know. You cannot run commands or change anything yourself.\n\
+         in English; keep the names of apps, pages and buttons as they are written there). Use only the readings, \
+         the log lines and the guides given; when they do not say, say you do not know, and never make steps up. \
+         For a question that is not about this server or its apps, say in one sentence that you can only help with \
+         the server. You cannot run commands or change anything yourself.\n\
+         What the guides say:\n{guides}\n\
          If one of these fixes would help, end your answer with exactly one line \"ACTION: <id>\" naming it, and \
          nothing else on that line; otherwise write no ACTION line:\n{list}\n\
          If the problem looks like a bug in NekoServer itself, end with a part that starts \"BUG REPORT:\": what \
@@ -2405,6 +2427,96 @@ mod tests {
         assert!(system.contains("BUG REPORT:"));
         assert!(system.contains("cannot run commands"));
         assert!(!system.contains("restart_app"));
+    }
+
+    /// Deep checks 634, 635, 637, 638 and 648: "How do I get a deleted photo back?", "How
+    /// do I add a family member?", "How do I update NekoServer?", "Why is the TV not
+    /// playing this film?" had nothing in the prompt to answer from, so a correct answer
+    /// was not possible. The guides' own steps are given now, and each one is checked
+    /// against its guide here, so the two cannot drift apart.
+    #[test]
+    fn the_guides_say_what_neko_is_told() {
+        let guide = |name: &str| {
+            std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(name))
+                .unwrap()
+        };
+        let checks: [(&str, &[&str]); 6] = [
+            (
+                "RECOVERY.md",
+                &[
+                    "Trash",
+                    "30 days",
+                    "1. Restore something from a backup",
+                    "Photos and videos (Immich)",
+                ],
+            ),
+            (
+                "RECOVERY.md",
+                &["Deleted files", "at the bottom left", "Nextcloud files"],
+            ),
+            (
+                "RECOVERY.md",
+                &["not backed up", "Radarr", "Sonarr", "Lidarr"],
+            ),
+            (
+                "README.md",
+                &[
+                    "Someone else in the family",
+                    "Administration",
+                    "Create user",
+                    "Accounts",
+                    "Parental control",
+                ],
+            ),
+            (
+                "README.md",
+                &[
+                    "Updating to a newer release",
+                    "git pull",
+                    "sudo bash install.sh",
+                ],
+            ),
+            (
+                "GATEWAY.md",
+                &[
+                    "On a TV",
+                    "LG",
+                    "Samsung",
+                    "Roku",
+                    "HDMI cable",
+                    "Casting from the phone",
+                    ":8443",
+                ],
+            ),
+        ];
+        for (n, (file, words)) in checks.iter().enumerate() {
+            let text = guide(file);
+            for word in *words {
+                assert!(GUIDES[n].contains(word), "{n}: {word} not in {}", GUIDES[n]);
+                assert!(text.contains(word), "{file} no longer says {word}");
+            }
+        }
+        assert!(guide("RECOVERY.md").contains("sudo bash install.sh --recover"));
+        let dashboard = guide("DASHBOARD.md");
+        for word in [
+            "**NekoServer**",
+            "**Upgrade NekoServer** (with the PIN)",
+            "**Update now**",
+            "Step-by-step guides",
+        ] {
+            assert!(
+                dashboard.contains(word),
+                "DASHBOARD.md no longer says {word}"
+            );
+        }
+        // Every line is in the prompt, with the rule to keep to them.
+        let m = messages("How do I add my son?", "", None, &[], &[]);
+        let system = m[0]["content"].as_str().unwrap();
+        for line in GUIDES {
+            assert!(system.contains(line), "{line}");
+        }
+        assert!(system.contains("never make steps up"), "{system}");
+        assert!(system.contains("not about this server"), "{system}");
     }
 
     /// Deep check 641: a question in Hebrew, Spanish or German came with English
