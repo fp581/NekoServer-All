@@ -317,7 +317,7 @@ class StepTests(unittest.TestCase):
             with (
                 mock.patch.object(account_setup, 'docker', return_value=''),  # no such container runs
                 mock.patch.object(account_store, 'get', saved),
-                mock.patch.object(account_store, 'update'),
+                mock.patch.object(account_store, 'update') as updated,
                 mock.patch.object(guided_setup, 'checkpoint', lambda *a, **k: asked.append(a[1]) or True),
             ):
                 pending = account_setup.provision(config, ['jellyfin'], output=said.append, client_factory=mock.Mock())
@@ -329,6 +329,9 @@ class StepTests(unittest.TestCase):
             self.assertIn('Jellyfin is not running: the step that starts it did not finish', line)
             self.assertNotIn('identity', line)
             self.assertIn('once Jellyfin administrator answers', line)
+            # Nothing was refused: the next run does not ask "did not take the saved login.
+            # What now?" of an app that never ran (seen for eleven apps in the lab).
+            self.assertNotIn(mock.call(config, 'jellyfin', state='needs_setup'), updated.call_args_list)
             # A running app that refused its login still gets the page.
             with (
                 mock.patch.object(account_setup, 'running', return_value=True),

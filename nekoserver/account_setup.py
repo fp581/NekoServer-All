@@ -762,7 +762,10 @@ def provision(config, apps, output=print, client_factory=Client):
             AttributeError,
             subprocess.SubprocessError,
         ) as exc:
-            store.update(config, app, state='needs_setup')
+            if not isinstance(exc, NotRunning):
+                # (An app that never ran refused nothing: marked so, the next run asked
+                # "did not take the saved login. What now?" of each of them.)
+                store.update(config, app, state='needs_setup')
             pending.append(app)
             # The reason, never the password: the checks' own messages name no values.
             # (A reply of another shape, a list where a record was expected, reaches here
