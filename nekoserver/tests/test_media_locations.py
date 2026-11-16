@@ -714,6 +714,31 @@ class MediaFoldersTests(unittest.TestCase):
         same = self.pc.ask(change='target', kind='movies', target='movies')
         self.assertIn('already go there', same['message'])
 
+    def test_downloads_sent_elsewhere_say_what_the_apps_already_have_keeps_its_folder(self):
+        # Deep checks 831-832: downloads moved to a new HDD because the old one was full.
+        # The page said "New shows are saved in ... now", and Sonarr went on saving each
+        # new episode of a show it had into the show's old folder.
+        added = self.add(self.pc.shows, kind='tv', downloads=True)
+        self.assertEqual(added['state'], 'done', added)
+        moved = [n for n in added['notes'] if n.startswith('Sonarr keeps')]
+        self.assertEqual(
+            moved,
+            [
+                'Sonarr keeps the shows it has already in their folders in /data/tv: a new episode of a show you '
+                'follow still goes there. To move them to /data/existing/tv too, open Sonarr, press Select, tick '
+                'them, press Edit, choose /data/existing/tv as the Root Folder and answer yes to moving the files.'
+            ],
+        )
+        # Back to the library: the folder they went to is read-only now, and that is said.
+        back = self.pc.ask(change='target', kind='tv', target='library')
+        (said,) = [n for n in back['notes'] if n.startswith('Sonarr keeps')]
+        self.assertIn('in /data/existing/tv: a new episode', said)
+        self.assertIn('but that folder is read-only now, so Sonarr cannot save it there until they are moved', said)
+        self.assertIn('choose /data/tv as the Root Folder', said)
+        # A folder connected without new downloads changes nothing in Radarr: nothing said.
+        films = self.add(downloads=False)
+        self.assertFalse([n for n in films['notes'] if 'keeps the' in n], films['notes'])
+
     def test_a_folder_taken_away_is_disconnected_and_its_files_are_never_touched(self):
         self.add(downloads=True)
         before = tree(self.pc.nas)

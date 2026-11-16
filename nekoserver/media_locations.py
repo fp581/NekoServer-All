@@ -305,6 +305,35 @@ def overlapping(config, kind, real):
             raise Refusal(HAS_INSIDE.format(**named))
 
 
+# Radarr, Sonarr and Lidarr keep each film, show or artist they have in the root folder it
+# was added to: a new root folder counts only for what is added from then on.
+APP_KEEPS = {
+    'movies': ('Radarr', 'films', 'a better copy of one of them'),
+    'tv': ('Sonarr', 'shows', 'a new episode of a show you follow'),
+    'music': ('Lidarr', 'artists', 'a new album of an artist you follow'),
+}
+KEPT_BY_APP = (
+    '{app} keeps the {things} it has already in their folders in {old}: {example} still goes there{closed}. '
+    'To move them to {new} too, open {app}, press Select, tick them, press Edit, choose {new} as the Root Folder '
+    'and answer yes to moving the files.'
+)
+CLOSED = ', but that folder is read-only now, so {app} cannot save it there until they are moved'
+
+
+def kept_by_the_app(config, kind, old, out):
+    """Said when new downloads of `kind` go elsewhere than `old` (where the apps saw the
+    place before): the page said "New shows are saved in ... now", and Sonarr went on
+    saving each new episode of a show it had into that show's old folder (deep checks
+    831-832: onto the full HDD, or failing in a folder made read-only)."""
+    new = existing_media.new_files_folder(config, kind)
+    if new == old or ARR[kind] not in media_services(config):
+        return
+    app, things, example = APP_KEEPS[kind]
+    closed = '' if old == existing_media.new_files_folder({}, kind) else CLOSED.format(app=app)
+    said = KEPT_BY_APP.format(app=app, things=things, old=old, example=example, closed=closed, new=new)
+    out['notes'].append(said)
+
+
 def add(config, asked, out):
     """Connect a folder (or have it copied). Returns the kinds whose apps are to be told."""
     kind, words = asked['kind'], WORDS[asked['kind']]
@@ -339,10 +368,12 @@ def add(config, asked, out):
         entry['backup'] = asked.get('backup', True)
         out['notes'].append(f'Your {words}: {existing_page.BACKED_UP[entry["backup"]]}')
     staying = existing_media.download_only(config, kind) if entry['new_files'] else None
+    before = existing_media.new_files_folder(config, kind)
     config['placement'] = existing_media.with_choice(config, entry)['placement']
     answered(config, kind)
     if staying:
         out['notes'].append(existing_media.stays_words(staying))
+    kept_by_the_app(config, kind, before, out)
     out['message'] = f'Your {words} in {entry["path"]} are connected, used where they are.'
     if entry['new_files']:
         out['message'] += f' New {words} are saved there from now on.'
@@ -406,6 +437,7 @@ def target(config, asked, out):
     if wanted != LIBRARY and wanted not in entries:
         raise Refusal(NOT_CONNECTED.format(words=words))
     staying = existing_media.download_only(config, kind)
+    before = existing_media.new_files_folder(config, kind)
     if wanted == LIBRARY:
         config.update(existing_media.without_new_files(config, kind))
         out['message'] = f'New {words} are saved in the NekoServer library ({library_folder(config, kind)}) now.'
@@ -424,6 +456,7 @@ def target(config, asked, out):
         out['message'] = f'New {words} are saved in {entry["path"]} now.'
     if staying:
         out['notes'].append(existing_media.stays_words(staying))
+    kept_by_the_app(config, kind, before, out)
     return [kind]
 
 
