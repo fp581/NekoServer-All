@@ -283,6 +283,16 @@ pub fn checked(request: &Value) -> std::result::Result<Value, &'static str> {
             asked["target"] = json!(target);
         }
     }
+    // The folder the page showed under that slot: a slot is given again to a folder added
+    // after one was taken away, so a page left open on another device would change the
+    // new one (media_locations.shown_there refuses that).
+    if change != "add" && !request["path"].is_null() {
+        let shown = request["path"]
+            .as_str()
+            .filter(|p| plain_path(p))
+            .ok_or("Which folder?")?;
+        asked["path"] = json!(shown);
+    }
     Ok(asked)
 }
 
@@ -580,6 +590,20 @@ mod tests {
             );
         }
         assert!(checked(&json!({"change": "remove", "kind": "tv", "use": "in_place"})).is_err());
+        // The folder the page showed there goes on, for media_locations.py to compare.
+        for change in [
+            json!({"change": "remove", "kind": "tv", "slot": "tv-2", "path": "/mnt/nas/Shows"}),
+            json!({"change": "target", "kind": "tv", "target": "tv-2", "path": "/mnt/nas/Shows"}),
+        ] {
+            assert_eq!(
+                checked(&change).unwrap()["path"],
+                "/mnt/nas/Shows",
+                "{change}"
+            );
+            let mut odd = change.clone();
+            odd["path"] = json!("/mnt/../etc");
+            assert!(checked(&odd).is_err(), "{odd}");
+        }
         assert!(checked(&json!({"change": "target", "kind": "tv", "target": "/srv"})).is_err());
         assert!(checked(&json!({"change": "target", "kind": "tv", "target": "in_place"})).is_err());
         for target in ["library", "tv-3"] {

@@ -5414,7 +5414,8 @@ function mediaFolderRow(kind, f) {
     actions.append(
       button('Send new downloads here', () =>
         mediaChange(
-          { change: 'target', kind: kind.kind, target: f.slot },
+          // The folder shown goes too: a page left open must not change one added since in its slot.
+          { change: 'target', kind: kind.kind, target: f.slot, path: f.path },
           'Checking that new ' + kind.words + ' can be saved in ' + f.path + '…'
         )
       )
@@ -5437,7 +5438,11 @@ function confirmTakeAway(kind, f) {
       MEDIA_KEPT +
       ' An app that has a file open there keeps it until it restarts; the page says so if a restart is needed.',
     'Take it away',
-    () => void mediaChange({ change: 'remove', kind: kind.kind, slot: f.slot }, 'Disconnecting ' + f.path + '…')
+    () =>
+      void mediaChange(
+        { change: 'remove', kind: kind.kind, slot: f.slot, path: f.path },
+        'Disconnecting ' + f.path + '…'
+      )
   );
 }
 function mediaKindCard(kind) {

@@ -91,6 +91,10 @@ NO_DOWNLOADS = (
 )
 ALREADY = existing_page.ALREADY  # setup says the same
 NOT_CONNECTED = 'That folder is not connected for your {words} (any more). Nothing was changed.'
+CHANGED = (
+    'Your folders were changed since this page showed them (on another device, say): {path} is not the folder '
+    'there any more. Nothing was changed. Press Look again to see them as they are now, then try again.'
+)
 KEPT = 'The files in {path} were not touched: nothing was deleted, moved or changed there.'
 # A folder inside a connected one, one that has a connected one in it, or one connected
 # for another kind: the apps would list the same files twice (or as the wrong kind).
@@ -171,6 +175,12 @@ def checked_request(raw):
         if wanted != LIBRARY and not existing_media.is_slot(asked['kind'], wanted):
             raise Refusal('Where should new downloads go? Reload the page and try again.')
         asked['target'] = wanted
+    # The folder the page showed under that slot (a slot is given again to a folder added
+    # after one was taken away): checked against the settings by shown_there.
+    if change in ('remove', 'target') and 'path' in raw:
+        if not plain_path(raw['path']):
+            raise Refusal('Which folder? Reload the page and try again.')
+        asked['path'] = raw['path']
     return asked
 
 
@@ -258,6 +268,14 @@ def page_state(config, available=None):
 def entries_of(config, kind):
     """{slot: the saved entry} of this kind's folders, in the settings' order."""
     return {entry['slot']: entry for entry in existing_media.extras(config) if entry['holds'] == kind}
+
+
+def shown_there(asked, entry):
+    """Refusal when the page showed another folder under the slot asked about: a page
+    left open on a second device took away (or sent the downloads to) the folder added
+    on the first one since, which had been given the slot of the one it showed."""
+    if 'path' in asked and entry['path'] != asked['path']:
+        raise Refusal(CHANGED.format(path=asked['path']))
 
 
 def answered(config, kind):
@@ -415,6 +433,7 @@ def remove(config, asked, out):
     entry = entries_of(config, kind).get(asked['slot'])
     if not entry:
         raise Refusal(NOT_CONNECTED.format(words=words))
+    shown_there(asked, entry)
     config.update(existing_media.without_choice(config, kind, asked['slot']))
     out['message'] = f'{entry["path"]} is taken away from your {words}. ' + KEPT.format(path=entry['path'])
     if entry['new_files']:
@@ -436,6 +455,8 @@ def target(config, asked, out):
         return []
     if wanted != LIBRARY and wanted not in entries:
         raise Refusal(NOT_CONNECTED.format(words=words))
+    if wanted != LIBRARY:
+        shown_there(asked, entries[wanted])
     staying = existing_media.download_only(config, kind)
     before = existing_media.new_files_folder(config, kind)
     if wanted == LIBRARY:

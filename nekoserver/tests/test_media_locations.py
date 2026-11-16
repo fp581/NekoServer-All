@@ -739,6 +739,29 @@ class MediaFoldersTests(unittest.TestCase):
         films = self.add(downloads=False)
         self.assertFalse([n for n in films['notes'] if 'keeps the' in n], films['notes'])
 
+    def test_a_page_left_open_on_another_device_never_changes_the_folder_added_since(self):
+        # Deep check 842: the films folder was taken away on a phone and a new drive's
+        # films added, which got the same slot; the laptop, still showing the old one,
+        # pressed "Take away" on it and disconnected the new drive's films instead.
+        self.add(downloads=False)
+        self.pc.ask(change='remove', kind='movies', slot='movies')
+        (new,) = self.big_drive('films')
+        self.assertEqual(self.add(new, downloads=False)['state'], 'done')
+        before = self.pc.settings()
+        for request in (
+            {'change': 'remove', 'kind': 'movies', 'slot': 'movies', 'path': str(self.pc.films)},
+            {'change': 'target', 'kind': 'movies', 'target': 'movies', 'path': str(self.pc.films)},
+        ):
+            stale = self.pc.ask(**request)
+            self.assertEqual(stale['state'], 'refused', stale)
+            self.assertEqual(stale['message'], media_locations.CHANGED.format(path=self.pc.films))
+            self.assertEqual(self.pc.settings(), before)
+        # The folder the page shows is the one changed.
+        taken = self.pc.ask(change='remove', kind='movies', slot='movies', path=str(new))
+        self.assertEqual(taken['state'], 'done', taken)
+        odd = self.pc.ask(change='remove', kind='movies', slot='movies', path='/mnt/../etc')
+        self.assertIn('Which folder?', odd['message'])
+
     def test_a_folder_taken_away_is_disconnected_and_its_files_are_never_touched(self):
         self.add(downloads=True)
         before = tree(self.pc.nas)
