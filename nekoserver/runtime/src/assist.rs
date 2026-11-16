@@ -1503,6 +1503,10 @@ pub const CUT_OFF: &str = "the answer was cut off before it ended; ask again";
 pub const LENGTH_LIMIT: &str =
     "the answer reached its length limit before it ended, so it is not whole; ask again about one thing at a time";
 
+/// Said when the model could not have the memory it needs: free memory comes back when
+/// the apps need less, and a smaller model needs less (ASSISTANT.md, "Changing your mind").
+pub const MEMORY: &str = "the model needs more memory than is free for it now, so it was stopped; ask again in a while, when your apps need less. If it keeps happening, choose a smaller model (ASSISTANT.md, \"Changing your mind\")";
+
 /// Ollama's error in words a person can act on.
 fn plain_error(said: &str) -> String {
     let lower = said.to_lowercase();
@@ -1510,7 +1514,8 @@ fn plain_error(said: &str) -> String {
         "its model is not there yet (it may still be downloading; setup run again fetches it)"
             .into()
     } else if lower.contains("memory") || lower.contains("killed") {
-        "the model needs more memory than it may have here, so it was stopped".into()
+        // What to do, as a person can (deep check 646): it said only that it was stopped.
+        MEMORY.into()
     } else if lower.contains("while running the model") || lower.contains("unexpectedly stopped") {
         // Its runner was ended under it: on the 0.49.0 gate the kernel took the memory
         // back for the apps (the model goes first), and Ollama said only "unexpected".
@@ -2920,6 +2925,12 @@ mod tests {
             .0
             .unwrap_err()
             .contains("more memory"));
+        // As Ollama says it when the model does not fit at all: what to do is said too.
+        let (address, _) = fake_ollama(Some("HTTP/1.0 500 Internal Server Error\r\n\r\n{\"error\":\"model requires more system memory (5.5 GiB) than is available (3.1 GiB)\"}".into()));
+        let why = collect(&address, &LIMITS).0.unwrap_err();
+        assert!(why.contains("ask again in a while"), "{why}");
+        assert!(why.contains("choose a smaller model"), "{why}");
+        assert!(include_str!("../../ASSISTANT.md").contains("## Changing your mind"));
         // Killed by the kernel for the apps' sake, as on the 0.49.0 gate.
         let (address, _) = fake_ollama(Some(format!(
             "HTTP/1.0 200 OK\r\n\r\n{body}\n{{\"error\":\"an error was encountered while running the model: unexpected EOF\"}}\n"
