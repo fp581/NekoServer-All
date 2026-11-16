@@ -134,6 +134,12 @@ def check(condition):
         raise RuntimeError('Authenticated account identity/administrator check did not match')
 
 
+class NotRunning(RuntimeError):
+    """The app is not running at all: its step did not start it (a download that failed,
+    a port another program holds). Nothing about its login is known, and nothing in the
+    browser can finish it: it is tried again once its app runs."""
+
+
 class NotAnswering(HTTPFailure):
     """The app did not answer in time: it may still be starting. After an update an app
     can take many minutes to update its database first (Jellyfin answers 503 meanwhile,
@@ -597,6 +603,10 @@ def verify_project(config, app, quarantined=False):
             'label=com.docker.compose.service=' + service,
         ]
     ).split()
+    if not ids:
+        # Said as what it is: "identity check did not match" sent a beginner to sign in to
+        # an app that never started (then asked to finish it by hand, again and again).
+        raise NotRunning(f'{store.CATALOG[project][0]} is not running: the step that starts it did not finish')
     check(len(ids) == 1 and re.fullmatch(r'[a-f0-9]{12,64}', ids[0]))
     values = json.loads(docker(['inspect', ids[0]]))
     check(isinstance(values, list) and len(values) == 1)
@@ -693,6 +703,18 @@ def what_to_do(config, app, entry, answered=True):
 ODD_ANSWER = 'the app answered in a form setup does not know'
 
 
+def running(config, app):
+    """The app's container runs (whether or not it is the right one: verify_project's
+    other checks say that). False only when it is not running at all."""
+    try:
+        verify_project(config, app)
+    except NotRunning:
+        return False
+    except (RuntimeError, OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError):
+        pass
+    return True
+
+
 def provision(config, apps, output=print, client_factory=Client):
     pending = []
     for app in apps:
@@ -746,7 +768,7 @@ def provision(config, apps, output=print, client_factory=Client):
             # (A reply of another shape, a list where a record was expected, reaches here
             # as AttributeError: said in words.)
             reason = ODD_ANSWER if isinstance(exc, AttributeError) else str(exc) or type(exc).__name__
-            advice = what_to_do(config, app, entry, answered=not isinstance(exc, NotAnswering))
+            advice = what_to_do(config, app, entry, answered=not isinstance(exc, (NotAnswering, NotRunning)))
             output(f'{store.APPS[app][0]}: not verified ({reason}); the saved login is kept. {advice}')
         finally:
             client.close()

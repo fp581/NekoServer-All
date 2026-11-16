@@ -53,6 +53,11 @@ def finish_pending(ctx, pending):
     """Keep saved choices; open manual setup only for accounts the API could not finish."""
     remaining = []
     for app in pending:
+        if not account_setup.running(ctx.config, app):
+            # Its app never started: no page in the browser can finish it. Left pending
+            # (the provision line said why), and tried again once the app runs.
+            remaining.append(app)
+            continue
 
         def verify(app=app):
             with lock(ctx.config):
