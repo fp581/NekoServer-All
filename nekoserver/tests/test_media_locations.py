@@ -387,9 +387,9 @@ class MediaFoldersTests(unittest.TestCase):
             (big / name).mkdir(parents=True)
         return [big / name for name in names]
 
-    def test_settings_saved_by_0_51_3_are_shown_and_kept_as_they_were(self):
-        # 0.51.3 saved one folder used where it is and one only for new downloads, with no
-        # "slot": they are where 0.51.3 put them, and a third folder changes neither.
+    def settings_of_0_51_3(self):
+        """The films used in place (read-only) and a folder only for new films, saved as
+        0.51.3 saved them (no "slot"), and connected. Returns that folder."""
         (new,) = self.big_drive('new-films')
         self.add(downloads=False)
         old = {'mount': str(self.pc.top / 'big'), 'share': '/dev/sdd1', 'fstype': 'ext4'}
@@ -399,6 +399,12 @@ class MediaFoldersTests(unittest.TestCase):
             films[0].pop('slot')
             films.append({'path': str(new), 'holds': 'movies', 'use': 'new_files', 'new_files': True, **old})
             which.write_text(json.dumps(saved))
+        return new
+
+    def test_settings_saved_by_0_51_3_are_shown_and_kept_as_they_were(self):
+        # 0.51.3 saved one folder used where it is and one only for new downloads, with no
+        # "slot": they are where 0.51.3 put them, and a third folder changes neither.
+        new = self.settings_of_0_51_3()
         before = self.pc.settings()
         look = self.pc.ask(change='look')
         self.assertEqual(
@@ -417,6 +423,46 @@ class MediaFoldersTests(unittest.TestCase):
         fstab = self.pc.fstab.read_text()
         self.assertIn(f'{self.pc.films} {self.pc.point()} none bind,ro,nofail', fstab)
         self.assertIn(f'{new} {self.pc.point(slot="movies-new")} none bind,rw,nofail', fstab)
+
+    def test_a_folder_only_for_new_downloads_stays_connected_when_they_go_elsewhere(self):
+        # The owner's decision 2 on PR 89: 0.51 disconnected it, so the films the apps had
+        # saved there left the library. It stays, used where it is and read-only.
+        new = self.settings_of_0_51_3()
+        self.pc.load_state()['bound'][self.pc.point(slot='movies-new')] = str(new)  # connected by 0.51.3
+        self.pc.save_state()
+        to_library = self.pc.ask(change='target', kind='movies', target='library')
+        self.assertEqual(to_library['state'], 'done', to_library)
+        films = self.kind(to_library)
+        self.assertEqual(
+            [(f['slot'], f['use'], f['new_files']) for f in films['folders']],
+            [('movies', 'in_place', False), ('movies-new', 'in_place', False)],
+        )
+        self.assertEqual(films['target'], 'library')
+        stays = existing_media.STAYS.format(path=new, what='movies')
+        self.assertIn(stays, to_library['notes'])
+        self.assertIn(f'{new} {self.pc.point(slot="movies-new")} none bind,ro,nofail', self.pc.fstab.read_text())
+        self.assertEqual(self.pc.load_state()['bound'][self.pc.point(slot='movies-new')], str(new))
+        self.assertNotIn(f'umount {self.pc.point(slot="movies-new")}', self.pc.calls())
+        self.assertIn([self.pc.point(slot='movies-new'), 'remount,bind,ro'], self.pc.load_state()['remounts'])
+        # It is an ordinary folder now: new downloads can be sent back to it, or taken away.
+        back = self.pc.ask(change='target', kind='movies', target='movies-new')
+        self.assertEqual(back['state'], 'done', back)
+        self.assertEqual(self.kind(back)['target'], 'movies-new')
+
+    def test_a_folder_only_for_new_downloads_stays_when_another_folder_takes_them(self):
+        new = self.settings_of_0_51_3()
+        moved = self.pc.ask(change='target', kind='movies', target='movies')
+        self.assertEqual(moved['state'], 'done', moved)
+        self.assertEqual(
+            [(f['slot'], f['use'], f['new_files']) for f in self.kind(moved)['folders']],
+            [('movies', 'in_place', True), ('movies-new', 'in_place', False)],
+        )
+        self.assertIn(existing_media.STAYS.format(path=new, what='movies'), moved['notes'])
+        # A folder added with new downloads does the same.
+        (more,) = self.big_drive('more-films')
+        self.pc.ask(change='target', kind='movies', target='library')
+        added = self.add(more, downloads=True)
+        self.assertEqual([f['new_files'] for f in self.kind(added)['folders']], [False, False, True])
 
     def test_a_kind_takes_more_folders_used_where_they_are_up_to_its_limit(self):
         self.add(downloads=False)

@@ -5,6 +5,7 @@
 ### Added: Media folders page
 - **A Media folders page on the dashboard.** After setup, at any time: for films, shows and music it shows NekoServer's own library and each folder of yours connected to it (Ready, or why not), and where new downloads go. Add a folder (type it, or pick one from the drives and shares the PC has mounted), use it where it is or copy its files into the library, send new downloads to a folder or back to the library, or take a folder away. Your files are never deleted, moved or changed. It needs the PIN on every device, and the change is made by the same code setup uses.
 - **More than one folder of each kind.** Films, shows and music can each have up to 8 folders of yours connected, used where they are, on the page and in setup (which asks "Is any other folder holding your films?" until you answer That is all). New downloads still go to one place. Each folder keeps its place in the apps for as long as it is connected, so taking one away moves no other, and the folders a 0.51 server had stay exactly where they were.
+- **A folder that took only the new downloads stays connected when they go elsewhere.** It becomes an ordinary folder used where it is (read-only), so what was downloaded into it stays in Jellyfin, Navidrome and the other apps; 0.51 disconnected it. The page and setup say so.
 
 ## v0.51.3 — (in progress; the release number is 0.51.3)
 

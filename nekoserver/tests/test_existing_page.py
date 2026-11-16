@@ -330,6 +330,31 @@ class MoreFoldersTests(unittest.TestCase):
         self.assertEqual(copied[existing_page.COPIES], [{'holds': 'movies', 'path': '/mnt/tank/one-more'}])
 
 
+class DownloadOnlyStaysTests(unittest.TestCase):
+    def test_a_folder_only_for_new_ones_stays_used_when_another_takes_them(self):
+        """The owner's decision 2 on PR 89, in setup too: 0.51 dropped the folder that took
+        only the new films, and the films saved there left the library."""
+        new = writable(FOUND, path='/mnt/big/new-films', mount='/mnt/big', share='/dev/sdd1', fstype='ext4')
+        kids = {**FOUND, 'path': '/mnt/tank/kids'}
+        checks = [dict(FOUND), writable(FOUND, ok=False), new, dict(kids), writable(kids)]
+        ctx, said = context(storage=dict(DRIVES)), []
+        answers = typed(
+            *('/mnt/tank/films', '1', 'yes', '2', '/mnt/big/new-films'),  # read-only; new films elsewhere
+            *('/mnt/tank/kids', '1', 'yes'),  # another folder, which takes the new films
+        )
+        with mock.patch.object(existing_media, 'check', side_effect=checks):
+            existing_page.one_kind(ctx.config, 'movies', 'films', (answers, said.append))
+        self.assertEqual(
+            [(e['path'], e['use'], e['new_files'], e['slot']) for e in existing_media.extras(ctx.config)],
+            [
+                ('/mnt/tank/films', 'in_place', False, 'movies'),
+                ('/mnt/big/new-films', 'in_place', False, 'movies-new'),
+                ('/mnt/tank/kids', 'in_place', True, 'movies-2'),
+            ],
+        )
+        self.assertIn(existing_media.STAYS.format(path='/mnt/big/new-films', what='movies'), said)
+
+
 class CopyTests(unittest.TestCase):
     """ "Copy them into the NekoServer library": chosen on the page, done once the library is there."""
 

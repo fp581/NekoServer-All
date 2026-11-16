@@ -92,10 +92,6 @@ NO_DOWNLOADS = (
 ALREADY = existing_page.ALREADY  # setup says the same
 NOT_CONNECTED = 'That folder is not connected for your {words} (any more). Nothing was changed.'
 KEPT = 'The files in {path} were not touched: nothing was deleted, moved or changed there.'
-NEW_ONLY_LEAVES = (
-    '{path} took only the new {words}, so it is disconnected now. The files in it stay there, untouched; they are '
-    'no longer in your library while it is not connected.'
-)
 NOT_SAVED = 'The settings could not be saved ({why}), so nothing was changed.'
 ONLY_SSD = 'The settings copy on the SSD was saved; {path} was not there to save in, so setup there has the old choice.'
 
@@ -294,11 +290,11 @@ def add(config, asked, out):
     elif asked['downloads']:
         out['notes'].append(answer['note'])
     entry = existing_media.entry_for(kind, found, new_files=bool(answer.get('ok')))
-    leaving = next((e for e in entries.values() if e['use'] == NEW), None) if entry['new_files'] else None
+    staying = existing_media.download_only(config, kind) if entry['new_files'] else None
     config['placement'] = existing_media.with_choice(config, entry)['placement']
     answered(config, kind)
-    if leaving:
-        out['notes'].append(NEW_ONLY_LEAVES.format(path=leaving['path'], words=words))
+    if staying:
+        out['notes'].append(existing_media.stays_words(staying))
     out['message'] = f'Your {words} in {entry["path"]} are connected, used where they are.'
     if entry['new_files']:
         out['message'] += f' New {words} are saved there from now on.'
@@ -361,14 +357,9 @@ def target(config, asked, out):
         return []
     if wanted != LIBRARY and wanted not in entries:
         raise Refusal(NOT_CONNECTED.format(words=words))
-    leaving = next((e for e in entries.values() if e['use'] == NEW), None)
+    staying = existing_media.download_only(config, kind)
     if wanted == LIBRARY:
-        changed = config
-        if leaving:
-            changed = existing_media.without_choice(changed, kind, leaving['slot'])
-        if now != LIBRARY and entries[now]['use'] == IN_PLACE:
-            changed = existing_media.with_choice(changed, {**entries[now], 'new_files': False})
-        config.update(changed)
+        config.update(existing_media.without_new_files(config, kind))
         out['message'] = f'New {words} are saved in the NekoServer library ({library_folder(config, kind)}) now.'
     else:
         old = entries[wanted]
@@ -383,8 +374,8 @@ def target(config, asked, out):
         entry = kept_flags(existing_media.entry_for(kind, found, new_files=True), old)
         config['placement'] = existing_media.with_choice(config, entry)['placement']
         out['message'] = f'New {words} are saved in {entry["path"]} now.'
-    if leaving:
-        out['notes'].append(NEW_ONLY_LEAVES.format(path=leaving['path'], words=words))
+    if staying:
+        out['notes'].append(existing_media.stays_words(staying))
     return [kind]
 
 

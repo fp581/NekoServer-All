@@ -505,6 +505,29 @@ def free_slot(entries, category, use):
     raise RuntimeError(full_words(category))
 
 
+def read_only_now(entry):
+    """A folder that takes no new files any more, as its settings entry: one that took
+    only the new files stays connected as an ordinary folder used where it is (the
+    owner's decision on PR 89: its files stay in the apps' libraries), under its slot."""
+    return {**entry, 'use': IN_PLACE, 'new_files': False, 'slot': slot_of(entry)}
+
+
+# Said by setup and the dashboard's page when that happens.
+STAYS = (
+    '{path} took only the new {what} until now. It stays connected, used where it is (read-only), so the {what} '
+    'in it stay in your library. Nothing in it was changed.'
+)
+
+
+def download_only(config, category):
+    """The person's folder that takes only the new files of this kind, or None."""
+    return next((e for e in extras(config) if e['holds'] == category and e['use'] == NEW), None)
+
+
+def stays_words(entry):
+    return STAYS.format(path=entry['path'], what=WHAT[entry['holds']])
+
+
 def with_choice(config, entry):
     """A copy of the settings with this folder for its category. A folder that is there
     already (the same path) is changed where it is and keeps its slot; another one is
@@ -523,15 +546,23 @@ def with_choice(config, entry):
             kept.append(wanted)
         elif not isinstance(other, dict) or other.get('holds') != entry['holds']:
             kept.append(other)
-        elif entry['new_files'] and other.get('use') == NEW:
-            continue  # a folder that was only for the new files
-        elif entry['new_files']:
-            kept.append({**other, 'new_files': False})
+        elif entry['new_files'] and other.get('new_files', other.get('use') == NEW):
+            kept.append(read_only_now(other))
         else:
             kept.append(other)
     table[row]['extra'] = kept if same else [*kept, wanted]
     changed['placement'] = table
     extras(changed)  # refused here rather than at the next start
+    return changed
+
+
+def without_new_files(config, category):
+    """A copy of the settings where no folder of the person's takes the new files of
+    this kind (they go to NekoServer's library): each folder stays connected, read-only."""
+    changed = config
+    for entry in extras(config):
+        if entry['holds'] == category and entry['new_files']:
+            changed = with_choice(changed, read_only_now(entry))
     return changed
 
 

@@ -1062,18 +1062,37 @@ class NewFilesTests(unittest.TestCase):
 
     def test_there_is_one_place_for_new_files(self):
         config = self.both()
-        # The films' folder made writable after all: it takes the new files, the other goes.
+        # The films' folder made writable after all: it takes the new files. The folder
+        # that took only the new ones stays connected, used where it is and read-only
+        # (0.51 disconnected it: the films in it left the library), under its own slot.
+        self.assertEqual(existing_media.download_only(config, 'movies')['path'], str(self.new))
         again = self.pc.chosen(new_files=True)['placement']['movies']['extra'][0]
         one = existing_media.with_choice(config, again)
-        self.assertEqual([(e['use'], e['new_files']) for e in existing_media.extras(one)], [('in_place', True)])
+        self.assertEqual(
+            [(e['use'], e['new_files'], e['slot']) for e in existing_media.extras(one)],
+            [('in_place', True, 'movies'), ('in_place', False, 'movies-new')],
+        )
+        self.assertIsNone(existing_media.download_only(one, 'movies'))
         self.assertEqual(existing_media.new_files_folder(one, 'movies'), '/data/existing/movies')
-        # And back: a folder of their own takes them from the films' folder.
+        library = self.pc.media / 'library' / 'existing'
+        self.assertIn(f'{self.new} {library / "movies-new"} none bind,ro,nofail', existing_media.fstab_lines(one)[1])
+        said = existing_media.stays_words(existing_media.download_only(config, 'movies'))
+        self.assertIn('stays connected, used where it is (read-only)', said)
+        self.assertIn('the movies in it stay in your library', said)
+        # And back: a folder of their own takes them from the films' folder, in its place.
         found, _ = self.pc.check(folder=self.new, new_files=True)
         back = existing_media.with_choice(one, existing_media.entry_for('movies', found, use=existing_media.NEW))
         self.assertEqual(
-            [(e['use'], e['new_files']) for e in existing_media.extras(back)],
-            [('in_place', False), ('new_files', True)],
+            [(e['use'], e['new_files'], e['slot']) for e in existing_media.extras(back)],
+            [('in_place', False, 'movies'), ('new_files', True, 'movies-new')],
         )
+        # New files to the library: both stay connected, read-only.
+        library_only = existing_media.without_new_files(back, 'movies')
+        self.assertEqual(
+            [(e['use'], e['new_files'], e['slot']) for e in existing_media.extras(library_only)],
+            [('in_place', False, 'movies'), ('in_place', False, 'movies-new')],
+        )
+        self.assertEqual(existing_media.new_files_folder(library_only, 'movies'), '/data/movies')
         only = existing_media.without_choice(back, 'movies', 'movies-new')
         self.assertEqual([e['use'] for e in existing_media.extras(only)], ['in_place'])
         self.assertEqual(existing_media.new_files_folder(only, 'movies'), '/data/movies')

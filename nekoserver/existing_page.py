@@ -224,9 +224,11 @@ def one_folder(config, kind, words, found, asking):
             f'Your {words}: '
             + ('copied each night with the music backup.' if backed_up else 'not backed up by NekoServer.')
         )
+    staying = existing_media.download_only(config, kind) if any(e['new_files'] for e in entries) else None
     for entry in entries:
         config['placement'] = existing_media.with_choice(config, entry)['placement']
-    return True
+    if staying and existing_media.download_only(config, kind) != staying:
+        output(existing_media.stays_words(staying))  # as the dashboard's page says it
 
 
 def answered_kinds(config):
