@@ -31,6 +31,17 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 - **Immich follows a time zone changed after its first setup**, as every other schedule and app already did.
 - **A dashboard PIN asked again and left empty is no longer shown by "Show login".**
 
+### Fixed: loose ends of the everyday checks
+- **APP-BACKUPS.md's restore steps work for an app installed on a drive of its own.** Its `mv` failed with "Device or resource busy" there, and the copy after it mixed the backup into the live settings with nothing kept to go back to.
+- **The shared-folders password is asked only where something is shared.** A server with only Nextcloud chosen was asked for it at every setup run, and it was never used.
+- **Films and music copied into the shared folders can be renamed and upgraded by Radarr and Lidarr.** They belonged to the shared folders' account with read-only access for the apps; they now belong to the media apps' account.
+- **The dashboard says when to plug the USB drive in for its monthly check:** early on the 1st, naming the next run. "The night of the 1st" read as the evening, after the check had already run.
+
+### Fixed: restore drills
+- **Music comes back from its nightly backup through the recovery menu.** Servers with the nightly music backup were told "music is not backed up", the menu had no line for it, and MUSIC.md pointed to steps that did not exist. Restored music now keeps its file dates and is handed to the music apps' account; if that fails, the menu prints the command that does it.
+- **A mistyped backup password is said as such.** It showed as "The USB drive is not looked at: Wrong password…", then "No password list on the HDD, nor on the USB drive" about the list it had just opened.
+- **Photos come back from the HDD while the weekly copy is using the USB drive.** The restore refused even the HDD's copy, and RECOVERY.md said the menu waits when it did not.
+
 ### Fixed: setup paths a beginner takes
 - **Films already on the drive you just chose for NekoServer get advice that works.** They were refused as "not permanent: add it in Disks", and doing that stopped the storage step on "fstab already has a line for this drive".
 - **A package source that never answers ends with what to do**, not with apt's own "E: Failed to fetch" lines.
@@ -54,7 +65,7 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 ### Fixed: photos every day
 - **After a broken SSD, RECOVERY.md sends you to rebuild Immich from the weekly database copies on the HDD**, with the exact commands, checked to bring back every account, album and photo. It sent you to upload the photos in the browser, which puts them all in one account and loses albums, faces and the family's logins; and Immich's own restore steps fail on NekoServer's copy.
 - **A drive filling up with the photos on it says that photos deleted in Immich free their room only after 30 days in its Trash**, and how to empty it.
-- **An unchanged weekly photo list is said in plain words** ("the 100000 files are you have now the same…").
+- **An unchanged weekly or monthly file list is said in a whole sentence.** The log read "the 100000 files are you have now the same as in the last list"; it now reads "the 100000 files you have now are the same as in the last list".
 
 ### Fixed: a film from request to the TV
 - **Finished downloads end, so they no longer fill the drive over time.** Sonarr, Radarr and Lidarr remove a finished download only after qBittorrent stops it at a seeding limit, and qBittorrent had none, so every torrent was shared for ever: a film deleted or upgraded still took its space, and with your own folder every film was stored twice. When qBittorrent has no seeding limit of any kind, setup now sets "share ratio 2 or 7 days, then stop" and says so; a limit you set is left as it is.
