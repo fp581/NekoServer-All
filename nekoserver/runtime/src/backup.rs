@@ -1146,14 +1146,21 @@ fn save_inventory(root: &Path, live: &Inventory, ledger: &Ledger, what: &str) ->
             common::plural(live.len(), "file", "files"),
             path.display()
         ),
-        Ok((path, false)) => println!(
-            "{what}: the {} you have now the same as in the last list ({}), so no new one was written",
-            common::plural(live.len(), "file is", "files are"),
-            path.display()
-        ),
+        Ok((path, false)) => println!("{what}: {}", unchanged_list_said(live.len(), &path)),
         Err(_) => println!("{what}: {}", problem.as_deref().unwrap_or_default()),
     }
     problem
+}
+/// What a run whose files are those of the last list says. Every weekly run printed "the
+/// 100000 files are you have now the same as in the last list" (deep check 729: the
+/// verb was put after the count, before "you have now").
+fn unchanged_list_said(count: usize, list: &Path) -> String {
+    let verb = if count == 1 { "is" } else { "are" };
+    format!(
+        "the {} you have now {verb} the same as in the last list ({}), so no new one was written",
+        common::plural(count, "file", "files"),
+        list.display()
+    )
 }
 /// Note that a run starts copying into the tree at `root` (inventory::begin). When the
 /// note can't be written, the run goes on and is reported incomplete.
@@ -10632,5 +10639,16 @@ mod tests {
             checked.find("no_writes(key, path, true)").unwrap()
                 < checked.find("drive_at(").unwrap()
         );
+    }
+    /// Deep check 729: the weekly run with no change since its last list said "the
+    /// 100000 files are you have now the same as in the last list".
+    #[test]
+    fn an_unchanged_list_is_said_in_plain_words() {
+        let list = Path::new("/hdd/archive/.neko-inventory/x.json.gz");
+        assert_eq!(
+            unchanged_list_said(100000, list),
+            "the 100000 files you have now are the same as in the last list (/hdd/archive/.neko-inventory/x.json.gz), so no new one was written"
+        );
+        assert!(unchanged_list_said(1, list).starts_with("the 1 file you have now is the same"));
     }
 }
