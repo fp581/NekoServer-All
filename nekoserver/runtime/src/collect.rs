@@ -1645,7 +1645,7 @@ fn week_left_out(success: Option<f64>, next_run: Option<f64>, now: f64, max: f64
 }
 /// Whether a job that is not running now is overdue: its last success (or, never
 /// successful, its schedule's setting up) too long ago, unless it is a weekly job whose
-/// schedule left one week out.
+/// schedule left one week out since then.
 fn job_overdue(
     weekly: bool,
     success: Option<f64>,
@@ -1654,8 +1654,11 @@ fn job_overdue(
     now: f64,
     max: f64,
 ) -> bool {
+    // Never successful yet, the schedule's setting up stands for the last success: a
+    // first week the schedule leaves out (set up just before a monthly night) is normal too.
+    let since = success.or(installed);
     first_overdue(success, installed, now, max)
-        && !(weekly && week_left_out(success, timer["next_run_at"].as_f64(), now, max))
+        && !(weekly && week_left_out(since, timer["next_run_at"].as_f64(), now, max))
 }
 fn first_overdue(success: Option<f64>, installed: Option<f64>, now: f64, max: f64) -> bool {
     match success {
@@ -4219,6 +4222,46 @@ mod os_tests {
         ));
         // A job that is not weekly keeps its own allowance.
         assert!(job_overdue(false, ran, None, &next(july_8), july_3, max));
+    }
+    /// Deep check 825/826 (a first install the week before a monthly night): set up on
+    /// Thu 25 June 2026, the weekly updates' first night (Wed 1 July) is the monthly
+    /// check's, so their first run is on 8 July. From 5 July the page and the phone said
+    /// "Weekly app updates needs attention: No successful run since it was set up".
+    #[test]
+    fn a_first_week_the_schedule_leaves_out_is_not_overdue() {
+        let day = 86400.0;
+        let june_24 = 1_782_268_200.0; // Wed 24 June 2026, 02:30 UTC
+        let installed = Some(june_24 + 1.5 * day); // Thu 25 June, in the afternoon
+        let (july_6, july_8) = (june_24 + 12.0 * day, june_24 + 14.0 * day);
+        let max = 777600.0; // the weekly updates' allowance (JOBS)
+        let next = |at: f64| json!({"next_run_at": at});
+        assert!(!job_overdue(
+            true,
+            None,
+            installed,
+            &next(july_8),
+            july_6,
+            max
+        ));
+        // Its first run on 8 July did not succeed either (next one 15 July): overdue.
+        let july_10 = june_24 + 16.0 * day;
+        assert!(job_overdue(
+            true,
+            None,
+            installed,
+            &next(july_8 + 7.0 * day),
+            july_10,
+            max
+        ));
+        // A job that is not weekly keeps its own allowance.
+        assert!(job_overdue(
+            false,
+            None,
+            installed,
+            &next(july_8),
+            july_6,
+            max
+        ));
     }
     #[test]
     fn a_check_that_could_not_run_since_the_last_report_makes_it_stale() {
