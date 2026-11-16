@@ -78,6 +78,32 @@ class FamilyLoginTests(unittest.TestCase):
         self.assertIn('Seerr', part)
 
 
+class LoginsAfterARestoreTests(unittest.TestCase):
+    """Deep checks 865 and 870: after a new SSD, setup makes new logins for the new, empty
+    apps; putting Immich's or Nextcloud's database copy back (or an app's settings from a
+    night) brings back the accounts from before, with their old passwords. The guides then
+    said only "start it and check": the login "Show login" gave was refused, and the next
+    setup run stopped at the account check with nothing in the guide about it."""
+
+    def test_immich_s_rebuild_says_which_login_to_use_and_to_tell_setup(self):
+        part = doc('RECOVERY.md').split('### Rebuild Immich from the USB drive')[1].split('\n### ')[0]
+        step = part[part.index('4. Start Immich') :]
+        self.assertIn('Sign in with the Immich login you had before', step)
+        self.assertIn('The list of app passwords', step)
+        self.assertIn('choose **c** at Immich', step)
+
+    def test_nextcloud_s_database_restore_says_setup_asks_for_the_old_login(self):
+        part = doc('RECOVERY.md').split("### Nextcloud's database")[1].split('\n### ')[0]
+        step = part[part.index('4. Start Nextcloud') :]
+        self.assertIn('did not take its saved login', step)
+        self.assertIn('choose **c** at Nextcloud', step)
+
+    def test_an_app_s_settings_put_back_say_its_passwords_are_that_night_s(self):
+        part = doc('APP-BACKUPS.md').split("## Putting one app's settings back")[1].split('\n## ')[0]
+        self.assertIn('Its logins come back as they were that night', part)
+        self.assertIn('choose **c** at that app', part)
+
+
 class DeletedFilmTests(unittest.TestCase):
     """Deep check 253: a film deleted by mistake. The recovery menu listed photos, Nextcloud
     files, passwords and settings, and said nothing about films: the beginner looked for a
