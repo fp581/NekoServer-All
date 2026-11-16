@@ -141,7 +141,8 @@ def menu(config):
     def offered(key):
         if key == 'cards':
             # Offered while backup cards are on, and after, while the server keeps a set.
-            return cards_enabled(config) or (Path(config['data_mount']) / SHARED['cards']['folder']).is_dir()
+            data = config.get('data_mount')
+            return cards_enabled(config) or bool(data and (Path(data) / SHARED['cards']['folder']).is_dir())
         if key == 'music':
             # Offered where there is a music backup to restore (it runs only on some
             # servers: music_backed_up), also after Music was switched off.

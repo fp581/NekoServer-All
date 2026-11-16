@@ -64,6 +64,7 @@ music-setup.py
 recovery_wizard.py
     Type the full name of a NEW folder, for example /home/you/restored-photos (Enter alone goes back, with nothing restored):
     repair_drive
+    Only files whose folder or name holds this word (press Enter for every file on the card):
 source-wizard.py
     Category (movies/tv/music)
     Type (local/remote/indexer)
