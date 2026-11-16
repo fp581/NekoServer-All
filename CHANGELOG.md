@@ -8,6 +8,7 @@
 - **A folder that took only the new downloads stays connected when they go elsewhere.** It becomes an ordinary folder used where it is (read-only), so what was downloaded into it stays in Jellyfin, Navidrome and the other apps; 0.51 disconnected it. The page and setup say so.
 - **Copying a folder into the library shows how far it is.** The copy still starts at once, and backups wait for it; the page now shows the files and the size copied of the total, and says that backups wait until it is done. A reload, or another phone or PC, shows the same.
 - **Music on a NAS added on the page is asked "Back this up too?"**, in setup's words, and the answer is saved as setup saves it. The scheduled jobs' own copies of your folders (the music backup's list, the apps that wait for a share) are brought up to date at once, so a change made on the page counts from the next run, not from the next setup run.
+- **A change that half-fails says which step did not finish**, why, and what to do (for example "Jellyfin's library was not updated: it did not answer. Check that Jellyfin runs, then run setup again"), marked Partly done. Nothing is undone. Before, it said only "Run setup again", and a folder that could not be connected after the settings were saved was even shown as "Not changed".
 
 ## v0.51.3 — (in progress; the release number is 0.51.3)
 

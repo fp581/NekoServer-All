@@ -5329,6 +5329,8 @@ function mediaOutcome(answer) {
     [
       [!a.result, null],
       [r.state === 'done', ['pass', 'Done', text(r.message)]],
+      // Saved, but a step after it did not finish: What to do next names it (nothing is undone).
+      [r.state === 'partial', ['warning', 'Partly done', text(r.message)]],
       [r.state === 'refused', ['warning', 'Not changed', text(r.message)]],
       [r.state === 'failed', ['fail', 'Something went wrong', text(r.message)]]
     ],

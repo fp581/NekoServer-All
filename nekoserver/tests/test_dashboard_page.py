@@ -1272,6 +1272,10 @@ class MediaFoldersPageTests(unittest.TestCase):
             ('mediaOutcome', {'working': True, 'result': {'state': 'working', 'message': 'Telling the apps…'}}),
             ('mediaOutcome', {'working': False, 'result': {'state': 'failed', 'message': 'It stopped.'}}),
             ('mediaOutcome', {'working': False, 'result': None}),
+            (
+                'mediaOutcome',
+                {'working': False, 'result': {'state': 'partial', 'message': 'Connected. Not every step.'}},
+            ),
         )
         self.assertEqual(
             said,
@@ -1279,8 +1283,14 @@ class MediaFoldersPageTests(unittest.TestCase):
                 ['starting', 'Working on it…', 'Telling the apps…'],
                 ['fail', 'Something went wrong', 'It stopped.'],
                 None,
+                ['warning', 'Partly done', 'Connected. Not every step.'],
             ],
         )
+        # A step that did not finish is named under What to do next (the owner's decision 5).
+        jellyfin = "Jellyfin's library was not updated: it did not answer. Check that Jellyfin runs (Your apps)."
+        (flow,) = page(('mediaFlow', {'result': media_result(state='partial', next=[jellyfin])}))
+        self.assertIn('Partly done', flow['page'])
+        self.assertIn(jellyfin, flow['page'])
 
     def test_a_look_the_server_refuses_is_said_never_shown_as_no_media(self):
         # Seen for real with the app SSD unplugged: the look was refused (E47) and the page

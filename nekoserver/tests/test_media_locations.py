@@ -574,6 +574,68 @@ class MediaFoldersTests(unittest.TestCase):
         host.assert_called_once()
         self.assertIn('Backups: settings brought up to date', out['log'])
 
+    def test_a_change_that_half_fails_names_the_step_and_what_to_do(self):
+        # The owner's decision 5 on PR 89: it said only "Run setup again" (in a note), and
+        # a mount step that failed after the settings were saved said "Not changed".
+        def broken(why):
+            def step(*args):
+                raise RuntimeError(why)
+
+            return step
+
+        steps = self.pc.steps()
+        self.pc.steps = lambda: {**steps, 'jellyfin': broken('Jellyfin did not answer (HTTP 503).')}
+        answer = self.add(downloads=False)
+        self.assertEqual(answer['state'], 'partial', answer)
+        self.assertIn('are connected, used where they are', answer['message'])
+        self.assertIn(media_locations.PARTLY, answer['message'])
+        self.assertEqual(
+            answer['next'],
+            [
+                "Jellyfin's library was not updated: Jellyfin did not answer (HTTP 503). Check that Jellyfin runs "
+                '(Your apps), then run setup again.'
+            ],
+        )
+        self.assertEqual(answer['failed'], ['jellyfin'])
+        # The others were still told, and nothing was undone.
+        self.assertEqual([app for app, _ in self.pc.told], ['root folders', 'seerr'])
+        self.assertEqual(len(self.pc.settings()['placement']['movies']['extra']), 1)
+        # The folders not connected: said as such, never as "Not changed".
+        self.pc.steps = lambda: {**steps, 'mount': broken('mount: /x: special device does not exist')}
+        (other,) = self.big_drive('other-films')
+        mounted = self.add(other, downloads=False)
+        self.assertEqual(mounted['state'], 'partial', mounted)
+        self.assertIn('Your folders were not connected to the library: mount: /x', mounted['next'][0])
+        self.assertIn('Run setup again to connect them', mounted['next'][0])
+        self.assertEqual(len(self.pc.settings()['placement']['movies']['extra']), 2)
+
+    def test_the_apps_that_answer_a_failure_are_named_with_their_reason(self):
+        out = {'next': [], 'failed': []}
+        rows = [
+            {'check': 'jellyfin:existing:movies', 'status': 'fail', 'reason': 'Library API/path check failed'},
+            {'check': 'jellyfin:existing:tv', 'status': 'needs_setup', 'reason': 'Remove "Shows (your folder)"'},
+        ]
+        media_locations.app_rows(rows, out, 'Jellyfin', 'jellyfin')
+        self.assertEqual(
+            out['next'],
+            [
+                "Jellyfin's library was not updated: Library API/path check failed. Check that Jellyfin runs "
+                '(Your apps), then run setup again.',
+                'Jellyfin: Remove "Shows (your folder)"',
+            ],
+        )
+        done = mock.Mock(returncode=1, stdout='radarr: root folder incomplete (Radarr did not answer)\n')
+        media_locations.root_folders({}, '/x/my-config.json', out, run=lambda *a, **k: done)
+        self.assertIn(
+            'The folder for new downloads in Sonarr, Radarr or Lidarr was not updated: radarr: root folder '
+            'incomplete (Radarr did not answer). Check that they run',
+            out['next'][-1],
+        )
+        self.assertEqual(out['failed'], ['jellyfin', 'root folders'])
+        self.assertEqual(
+            set(media_locations.STEP_FAILED), {*media_locations.STEPS} - {'root_folders'} | {'root folders'}
+        )
+
     def test_a_kind_takes_more_folders_used_where_they_are_up_to_its_limit(self):
         self.add(downloads=False)
         cap = existing_media.FOLDERS_PER_KIND

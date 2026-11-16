@@ -468,15 +468,56 @@ def manifests(config):
     return found
 
 
-def app_rows(rows, out, label):
+# A step after the settings were saved that did not finish (the owner's decision 5 on PR
+# 89: nothing is undone): (what was not done, what to do), said with why on the page.
+STEP_FAILED = {
+    'mount': (
+        'Your folders were not connected to the library',
+        'Run setup again to connect them (or restart the server: they are connected at every start).',
+    ),
+    'restart': (
+        'The apps that show these folders were not restarted, so they may still show them as before',
+        'Restart the server, or run setup again.',
+    ),
+    'copy': (
+        'The copy into the library did not finish',
+        'Once the folder and the library drive are both connected, run setup again: it goes on with the copy.',
+    ),
+    'jobs': ("The backups' own list of your folders was not brought up to date", 'Run setup again.'),
+    'jellyfin': ("Jellyfin's library was not updated", 'Check that Jellyfin runs (Your apps), then run setup again.'),
+    'navidrome': (
+        "Navidrome's library was not updated",
+        'Check that Navidrome runs (Your apps), then run setup again.',
+    ),
+    'root folders': (
+        'The folder for new downloads in Sonarr, Radarr or Lidarr was not updated',
+        'Check that they run (Your apps), then run setup again.',
+    ),
+    'seerr': (
+        "Seerr's folder for requests was not updated",
+        'Check that Seerr runs (Your apps), then run setup again.',
+    ),
+}
+PARTLY = 'Not every step was finished (see What to do next); nothing was undone, and your settings keep the change.'
+
+
+def failed(out, step, reason):
+    """A step that did not finish, said with why and what to do (STEP_FAILED)."""
+    done, todo = STEP_FAILED[step]
+    why = str(reason or '').strip().rstrip('.') or 'it did not answer'
+    out['next'].append(f'{done}: {why}. {todo}')
+    out['failed'].append(step)
+
+
+def app_rows(rows, out, label, step):
     """Rows of setup's library and provider steps, said on the page: a step left for the
-    person goes to the next steps, a failure is said as it is."""
+    person goes to the next steps, a failure is said with the step it is."""
     for row in rows:
         status, reason = row.get('status'), row.get('reason')
         if status == 'needs_setup' and reason:
             out['next'].append(f'{label}: {reason}')
         elif status == 'fail':
-            out['notes'].append(f'{label}: {reason or "it did not answer"}. Try again later, or run setup again.')
+            failed(out, step, reason)
 
 
 def jellyfin(config, out):
@@ -499,11 +540,12 @@ def jellyfin(config, out):
         password=no_question,
         more=existing_page.libraries(config, True),
     )
-    app_rows([r for r in rows if r['check'].startswith('jellyfin:existing') or r['status'] != 'pass'], out, 'Jellyfin')
+    shown = [r for r in rows if r['check'].startswith('jellyfin:existing') or r['status'] != 'pass']
+    app_rows(shown, out, 'Jellyfin', 'jellyfin')
 
 
 def navidrome(config, out):
-    app_rows(existing_page.music_libraries(config, True), out, 'Navidrome')
+    app_rows(existing_page.music_libraries(config, True), out, 'Navidrome', 'navidrome')
 
 
 def root_folders(config, settings, out, run=subprocess.run):
@@ -513,15 +555,11 @@ def root_folders(config, settings, out, run=subprocess.run):
     try:
         done = run(argv, capture_output=True, text=True, timeout=600, check=False)
     except (OSError, subprocess.SubprocessError) as exc:
-        out['notes'].append(f'Sonarr, Radarr and Lidarr were not told ({exc}). Run setup again.')
+        failed(out, 'root folders', exc)
         return
     if done.returncode:
         said = [line for line in (done.stdout or '').splitlines() if 'incomplete' in line or 'skipped' in line]
-        out['notes'].append(
-            'Sonarr, Radarr or Lidarr did not take the folder: '
-            + ('; '.join(said[-3:]) or 'see the service log')
-            + '. Try again once they run, or run setup again.'
-        )
+        failed(out, 'root folders', '; '.join(said[-3:]) or 'see the service log')
 
 
 def seerr(config, out):
@@ -531,7 +569,7 @@ def seerr(config, out):
     rows = seerr_providers.configure(
         Path(config['data_mount']), True, apps, folders=seerr_providers.request_folders(config)
     )
-    app_rows(rows, out, 'Seerr')
+    app_rows(rows, out, 'Seerr', 'seerr')
 
 
 def jobs(config, out):
@@ -559,12 +597,16 @@ def jobs(config, out):
 def tell_apps(ctx, kinds, settings, out, steps=None):
     """After the settings changed: the folders bound as they say, the apps restarted
     when a folder was connected, taken away or switched between read-only and not, the
-    copy made, and each app given its library and folders. Each step's trouble is said,
-    and never stops the next one."""
+    copy made, and each app given its library and folders. A step that does not finish is said
+    with why and what to do (failed), and never stops the next one; nothing is undone."""
     config, apps = ctx.config, set(media_services(ctx.config))
     steps = steps or STEPS
     logged = len(out['log'])
-    rows = steps['mount'](ctx)
+    try:
+        rows = steps['mount'](ctx)
+    except Exception as exc:  # the next steps still run: each says what it could do
+        failed(out, 'mount', exc)
+        rows = []
     for row in rows:
         if not row.get('mounted') and row.get('reason'):
             out['notes'].append(str(row['reason']))
@@ -575,11 +617,19 @@ def tell_apps(ctx, kinds, settings, out, steps=None):
             out['next'].append(line)
     out['connected'] = [row['path'] for row in rows if row.get('mounted')]
     if getattr(ctx, 'existing_mounts_changed', False):
-        out['restarted'] = steps['restart'](manifests(config), [], ctx.log)
+        try:
+            out['restarted'] = steps['restart'](manifests(config), [], ctx.log)
+        except Exception as exc:
+            failed(out, 'restart', exc)
     if config.get(existing_page.COPIES):
-        left = steps['copy'](ctx)
+        logged = len(out['log'])
+        try:
+            left = steps['copy'](ctx)
+        except Exception as exc:
+            left = [exc]
         if left:
-            out['next'].append('The copy is not finished: ' + ' '.join(out['log'][-2:]))
+            said = [line for line in out['log'][logged:] if 'was not copied' in line]
+            failed(out, 'copy', said[-1] if said else left[-1])
     wanted = [
         ('jobs', True, lambda: steps['jobs'](config, out)),
         ('jellyfin', set(kinds) & set(FILMS_AND_SHOWS) and 'jellyfin' in apps, lambda: steps['jellyfin'](config, out)),
@@ -601,7 +651,7 @@ def tell_apps(ctx, kinds, settings, out, steps=None):
         try:
             step()
         except Exception as exc:  # one app's trouble never hides what the others said
-            out['notes'].append(f'{name}: not told ({exc}). Run setup again.')
+            failed(out, name, exc)
 
 
 def restart(found, failed, log):
@@ -702,6 +752,9 @@ def change(settings, asked, folder, out, steps=None, lock=apps_lock):
             tell_apps(ctx, kinds, settings.path, out, steps)
         finally:
             progress.done()
+        if out['failed']:
+            out['state'] = 'partial'
+            out['message'] += ' ' + PARTLY
 
 
 def run(settings_path, request, also=None, steps=None, lock=apps_lock, available=None):
@@ -713,7 +766,7 @@ def run(settings_path, request, also=None, steps=None, lock=apps_lock, available
     if not (real.startswith(os.sep) and real.endswith('.json')):
         raise SystemExit(f'The request must be a .json file: {request}')
     request, folder = real, Path(os.path.dirname(real))
-    out = {'id': '', 'state': 'done', 'message': '', 'notes': [], 'next': [], 'log': []}
+    out = {'id': '', 'state': 'done', 'message': '', 'notes': [], 'next': [], 'failed': [], 'log': []}
     try:
         with one_at_a_time(folder):
             asked = read_request(request)
