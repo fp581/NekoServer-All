@@ -497,7 +497,7 @@ class SambaMusicShareTests(unittest.TestCase):
     def shared(self, config):
         """{share name: (folder, read only)} of the share file setup writes."""
         settings = dict(config['networking'], shares=samba.wanted_shares(config))
-        text = samba.share_config(settings, Path(config['media_mount']), 'neko', samba.music_share(config))
+        text = samba.share_config(settings, Path(config['media_mount']), 'neko', samba.placed_shares(config))
         found, name = {}, None
         for line in text.splitlines():
             if line.startswith('[') and line != '[global]':
@@ -636,6 +636,45 @@ class SambaHowToOpenTests(unittest.TestCase):
         text = (ROOT / 'README.md').read_text()
         for typed in ('\\\\192.168.1.20\\Media', 'smb://192.168.1.20/Media', 'Connect to Server', 'Map network drive'):
             self.assertIn(typed, text)
+
+
+class SambaFilmsElsewhereTests(unittest.TestCase):
+    """Deep check 763: setup asks where the films and shows go (the SSD, the media drive
+    or a drive of their own), but the Media share was always the media drive's library.
+    With the films on the SSD it showed an empty folder, and a film copied into its
+    movies folder landed on the media drive, where Jellyfin never looked."""
+
+    config = SambaMusicShareTests.config
+    shared = SambaMusicShareTests.shared
+    run_to_the_end = SambaHowToOpenTests.run_to_the_end
+
+    def test_the_media_share_is_the_library_jellyfin_shows(self):
+        from neko_common import movies_library
+
+        config = self.config(locations={'movies': 'ssd'})
+        shared = self.shared(config)
+        self.assertEqual(movies_library(config), Path('/srv/nekoserver/library'))
+        self.assertEqual(shared['Media'][0], Path('/srv/nekoserver/library'))
+        config['networking']['samba_media_write'] = True
+        self.assertFalse(self.shared(config)['Media'][1])
+
+    def test_music_on_the_media_drive_keeps_a_share_of_its_own_then(self):
+        config = self.config(locations={'movies': 'ssd', 'music': 'media'})
+        self.assertEqual(self.shared(config)['Music'][0], Path('/mnt/nekoserver-media/library/music'))
+        # Both on the SSD: the Media share holds the music, under music.
+        config = self.config(locations={'movies': 'ssd', 'music': 'ssd'})
+        self.assertEqual(samba.music_share(config), {})
+
+    def test_a_media_share_of_your_own_stays_where_you_said(self):
+        config = self.config(locations={'movies': 'ssd'})
+        config['networking']['shares']['Media'] = 'my-films'
+        self.assertEqual(self.shared(config)['Media'][0], Path('/mnt/nekoserver-media/my-films'))
+
+    def test_a_whole_run_shares_the_films_and_waits_for_their_drive(self):
+        said = self.run_to_the_end(media_apps={'movies': True, 'music': True}, locations={'movies': 'ssd'})
+        self.assertIn('[Media]\n   path = <tmp>/ssd/library\n', self.written)
+        self.assertIn('Shares: Media.', said)
+        self.assertIn('RequiresMountsFor=<tmp>/media <tmp>/ssd/library\n', self.guard)
 
 
 if __name__ == '__main__':

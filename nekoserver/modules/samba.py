@@ -14,6 +14,7 @@ from neko_common import (
     last_words,
     location,
     media_group,
+    movies_library,
     music_library,
     SYSTEMD_UNITS,
 )
@@ -77,11 +78,11 @@ def same_names(shares):
     return [names for names in seen.values() if len(names) > 1]
 
 
-def share_config(settings, media, user, music=None):
-    """NekoServer's share file. `music`: the share of the music folder when it is not on
-    the media drive ({'Music': its folder}, music_share)."""
+def share_config(settings, media, user, placed=None):
+    """NekoServer's share file. `placed`: the shares whose folder is not on the media drive
+    ({'Music': its folder}, placed_shares); they take the place of one of the same name."""
     shares = settings.get('shares', {})
-    if not shares and not music:
+    if not shares and not placed:
         raise RuntimeError('At least one share is required')
     for names in same_names(shares):
         raise RuntimeError(
@@ -113,7 +114,7 @@ def share_config(settings, media, user, music=None):
         '',
     ]
     folders = {name: media / validate_share(name, rel) for name, rel in shares.items()}
-    for name, path in {**folders, **(music or {})}.items():
+    for name, path in {**folders, **(placed or {})}.items():
         out += [
             f'[{name}]',
             f'   path = {path}',
@@ -135,17 +136,43 @@ def writable(name, settings):
     return name in ('Media', MUSIC_SHARE) and bool(settings.get('samba_media_write', False))
 
 
+def media_share_drive(config):
+    """The drive whose library the Media share shows: the films' (films_share), else the
+    media drive."""
+    return location(config, 'movies') if films_share(config) else 'media'
+
+
 def music_share(config):
-    """{'Music': the folder Navidrome plays} when the music is not on the media drive (it
-    is on the SSD by default), else {}. The Media share is the media drive's library, so
-    with the music elsewhere it held no music at all, and an album copied into it from
+    """{'Music': the folder Navidrome plays} when the music is not in the library the
+    Media share shows (the music is on the SSD by default), else {}. With the music
+    elsewhere the Media share held no music at all, and an album copied into it from
     another computer never reached Navidrome (deep check 736). A share of yours named
     Music stays the only one of that name."""
-    if not media_group(config, 'music') or location(config, 'music') == 'media':
+    if not media_group(config, 'music') or location(config, 'music') == media_share_drive(config):
         return {}
     if any(name.lower() == MUSIC_SHARE.lower() for name in config.get('networking', {}).get('shares', {})):
         return {}
     return {MUSIC_SHARE: music_library(config)}
+
+
+def films_share(config):
+    """{'Media': the library Jellyfin shows} when the films and shows are placed on
+    another drive than the media drive (the SSD, or a drive of their own: setup asks),
+    else {}. The default Media share is "library" on the media drive: with the films
+    elsewhere it showed none of them, and a film copied into it never reached Jellyfin
+    (deep check 763). A Media share you pointed at another folder stays as you set it."""
+    shares = config.get('networking', {}).get('shares', {})
+    if shares.get('Media') != 'library' or not media_group(config, 'movies'):
+        return {}
+    if location(config, 'movies') == 'media':
+        return {}
+    return {'Media': movies_library(config)}
+
+
+def placed_shares(config):
+    """The default shares whose folder is not on the media drive, {name: its folder}:
+    they take the place of a share of the same name in the settings."""
+    return {**films_share(config), **music_share(config)}
 
 
 # With "bind interfaces only", smbd listens only on the addresses tailscale0 has when it
@@ -162,7 +189,7 @@ TAILNET_ADDRESS = (
 def storage_guard(media, unit, mode, tailscale, also=()):
     """Samba's drop-in: it runs only with the media HDD mounted, stops when the HDD goes,
     and in tailnet mode starts once the Tailscale address is there (or a minute passed).
-    `also`: other shared folders (the music on the SSD), whose drives must be mounted too,
+    `also`: other shared folders (the films or the music on the SSD), whose drives must be mounted too,
     or a share would show (and take files into) the empty folder on the system disk."""
     mounts = ' '.join(str(path) for path in (media, *also))
     text = (
@@ -404,9 +431,11 @@ def run(context):
     family = host.current()
     service = family.service('samba')
     settings = context.config.get('networking', {})
-    settings = dict(settings, shares=wanted_shares(context.config))
-    music = music_share(context.config)
-    if not settings['shares'] and not music:
+    # The films and the music placed on another drive are shared from there, never from
+    # the media drive's folder of the same name.
+    placed = placed_shares(context.config)
+    settings = dict(settings, shares={n: r for n, r in wanted_shares(context.config).items() if n not in placed})
+    if not settings['shares'] and not placed:
         # Folders shared at an earlier run stop being shared, as one taken out of several does.
         stop_sharing(service, context.log)
         context.log(
@@ -460,7 +489,7 @@ def run(context):
             raise RuntimeError(
                 f'Share directory missing: {path}. Create it, or take the "{name}" share out of "shares" under "networking" in my-config.json'
             )
-    for name, path in music.items():
+    for name, path in placed.items():
         path = safe_path(path)
         if path.is_symlink():
             raise RuntimeError(f'Share directory is a link, not a folder: {path}')
@@ -476,7 +505,7 @@ def run(context):
     remember_service(service, managed)
     if not shutil.which('smbd'):
         family.install(['samba'])
-    desired = share_config(settings, media, user, music)
+    desired = share_config(settings, media, user, placed)
     # Safest: don't modify a pre-existing unmanaged Samba installation.
     if main.exists() and not includes_ours(main.read_text()):
         unmanaged_config(main, family, context.log)
@@ -491,7 +520,7 @@ def run(context):
     call(['testparm', '-s', str(main)], timeout=30)
     unit = call(['systemd-escape', '--path', '--suffix=mount', str(media)])
     override = SYSTEMD_UNITS / (service + '.d') / '10-nekoserver-storage.conf'
-    content = storage_guard(media, unit, mode, family.service('tailscale'), music.values())
+    content = storage_guard(media, unit, mode, family.service('tailscale'), placed.values())
     if override.exists() and not safe_path(override).read_text().startswith('# Managed by NekoServer\n'):
         raise RuntimeError('Unmanaged Samba storage guard')
     atomic_write(override, content, 0o644)
@@ -534,7 +563,7 @@ def run(context):
         # (shares of your own use it) is never on this list, and stays.
         remember_account(user)
     context.log(f'Samba configured for {mode}, authenticated user {user}; existing password preserved')
-    for line in how_to_open(mode, settings.get('lan_ip'), user, {**settings['shares'], **music}):
+    for line in how_to_open(mode, settings.get('lan_ip'), user, {**settings['shares'], **placed}):
         context.log(line)
 
 

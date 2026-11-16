@@ -77,9 +77,9 @@ def check(config, modules):
             )
         else:
             settings = config['networking']
-            from modules.samba import music_share, wanted_shares, writable as share_writable
+            from modules.samba import placed_shares, wanted_shares, writable as share_writable
 
             folders = {name: media / relative for name, relative in wanted_shares(config).items()}
-            for name, path in {**folders, **music_share(config)}.items():
+            for name, path in {**folders, **placed_shares(config)}.items():
                 inspect('samba:' + name, path, record.pw_uid, groups, share_writable(name, settings))
     return rows

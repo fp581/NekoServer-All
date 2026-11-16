@@ -6,7 +6,7 @@ Use Navidrome's browser player on the TV/Linux PC, **Amperfy on iPhone**, and op
 
 ## Storage and connections
 
-- The drive setup asked you to pick for music (the SSD by default, or the media drive: STORAGE.md, "Where each app keeps your files"): library/music, shared by Lidarr as /data/music and Navidrome as read-only /music. Music downloads (library/downloads/music) use the same drive. Other computers at home open library/music as the *Music* shared folder (in *Media*, under `music`, when the music is on the media drive); to copy albums in from them, set `"samba_media_write": true` under `"networking"` (README.md, "The shared folders").
+- The drive setup asked you to pick for music (the SSD by default, or the media drive: STORAGE.md, "Where each app keeps your files"): library/music, shared by Lidarr as /data/music and Navidrome as read-only /music. Music downloads (library/downloads/music) use the same drive. Other computers at home open library/music as the *Music* shared folder (in *Media*, under `music`, when the music is on the same drive as the films); to copy albums in from them, set `"samba_media_write": true` under `"networking"` (README.md, "The shared folders").
 - SSD: appdata/navidrome, containing its database/accounts/playlists/history/art cache; appdata/lidarr and their independent Compose files.
 - Browser setup: http://127.0.0.1:4533 on the server itself.
 - Phone/remote clients: the configured LAN HTTPS music URL, https://YOUR-SERVER-IP:8446, or your configured private Tailscale Serve music URL on port 8446. localhost on your phone refers to the phone, not the server. Use the same login on every client to share its playlists and favourites ("Your logins" below says which one is yours).
