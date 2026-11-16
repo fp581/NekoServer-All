@@ -169,7 +169,11 @@ class SetupWindowTests(unittest.TestCase):
         # server saves every switch as it stands when the button is pressed
         # (tests/test_first_page.py).
         seen = self.page([self.choose()], 'start')
-        self.assertEqual(seen['posts'], [['api/start', {'choices': {}}]])
+        self.assertEqual(seen['posts'], [['api/start', {'choices': {}, 'reviewed': None}]])
+        # With the review on the screen, Start names which choices that review shows.
+        review = {'title': 'Ready', 'button': 'Install', 'sections': []}
+        seen = self.page([{**self.choose(), 'stage': 'review', 'review': review, 'revision': 4}], 'start')
+        self.assertEqual(seen['posts'], [['api/start', {'choices': {}, 'reviewed': 4}]])
 
     def test_a_refused_start_gives_the_button_back_with_the_reason(self):
         # post() took any status for a success: after the server's 409 (the settings
@@ -177,7 +181,7 @@ class SetupWindowTests(unittest.TestCase):
         # disabled at "Starting…" and nothing said why.
         reason = "my-config.json can't be read right now: check it for a typo."
         seen = self.page([{**self.choose(), 'refuseStart': reason}], 'start')
-        self.assertEqual(seen['posts'], [['api/start', {'choices': {}}]])
+        self.assertEqual(seen['posts'], [['api/start', {'choices': {}, 'reviewed': None}]])
         self.assertEqual(seen['start'], [False, 'Install selected apps'])
         self.assertEqual(seen['review']['note'], reason)
 
@@ -230,6 +234,13 @@ class SetupWindowTests(unittest.TestCase):
         seen = self.page([{**state, 'press': 'Movies and shows - Jellyfin'}])
         self.assertEqual(seen['subs'][0], ['Movies and shows - Jellyfin', 'sub-switch', 'yes', False])
         self.assertEqual(seen['posts'], [['api/choose', {'media_movies': True}]])
+        # Pressed twice quickly: the saves go one after another, in the order pressed (review
+        # of 0.51.2: sent side by side, the first could arrive last and be the one saved).
+        seen = self.page([{**state, 'press': 'Movies and shows - Jellyfin', 'pressTwice': True}])
+        self.assertEqual(
+            seen['posts'], [['api/choose', {'media_movies': True}], ['api/choose', {'media_movies': False}]]
+        )
+        self.assertEqual(seen['savesAtOnce'], 1)
         # The switch inside the Music card pressed: Navidrome alone.
         seen = self.page([{**state, 'pressInside': 'Music - Navidrome'}])
         self.assertEqual(seen['subs'][1], ['Music - Navidrome', 'sub-switch', 'no', False])
@@ -320,7 +331,15 @@ class SetupWindowTests(unittest.TestCase):
         page = state['question']['page']
         page['fields'].update(keep_app_backup='3', keep_host_backup='3')
         page['counts'] = [
-            {'group': 'app_backup', 'what': 'nightly app backups', 'value': 3, 'least': 1, 'most': 7, 'review': None},
+            {
+                'group': 'app_backup',
+                'what': 'nightly app backups',
+                'value': 3,
+                'least': 1,
+                'most': 7,
+                'review': None,
+                'rule': 'An older one goes after a new one, or to make room.',
+            },  # fmt: skip
             {
                 'group': 'host_backup',
                 'what': 'nightly settings backups',
@@ -328,6 +347,7 @@ class SetupWindowTests(unittest.TestCase):
                 'least': 1,
                 'most': 7,
                 'review': None,
+                'rule': 'An older one goes after a new one.',
             },
         ]
         page['table'] = [
@@ -342,7 +362,7 @@ class SetupWindowTests(unittest.TestCase):
             ['Keep the latest nightly app backups', 'Keep the latest nightly settings backups'],
         )
         self.assertEqual([row[1] for row in seen['rows']][3:], [['3'], ['3']])
-        self.assertIn('An older one is removed only after a new backup has succeeded.', seen['rows'][3][2])
+        self.assertIn('From 1 to 7. An older one goes after a new one, or to make room. This never', seen['rows'][3][2])
         self.assertEqual(
             seen['backups'],
             [

@@ -276,8 +276,11 @@ class StepTests(unittest.TestCase):
             parts.append((title, steps))
             return set()
 
+        import account_setup
+
         with mock.patch.object(guided_setup, 'checkpoint', checkpoint), mock.patch.object(guided_setup, 'part', part):
-            accounts.finish_pending(ctx, ['jellyfin'])
+            with mock.patch.object(account_setup, 'running', return_value=True):  # Jellyfin runs, refused its login
+                accounts.finish_pending(ctx, ['jellyfin'])
             links = {'jellyfin': 'https://neko.ts.net:8443/', 'navidrome': 'https://neko.ts.net:8446/'}
             with (
                 mock.patch.object(gateway_tailnet.phone_guide, 'write_page', return_value='/tmp/page.html'),
@@ -288,6 +291,10 @@ class StepTests(unittest.TestCase):
         self.assertEqual(by_title['Finish Jellyfin administrator'][0], ['jellyfin'])
         self.assertIn('"Show login" in the setup window', by_title['Finish Jellyfin administrator'][1])
         self.assertNotIn('APP-CREDENTIALS.txt', by_title['Finish Jellyfin administrator'][1])
+        # Ctrl+C stops setup at this step (guided_setup.KEYS): it never "leaves it pending".
+        self.assertNotIn('pending with Ctrl+C', by_title['Finish Jellyfin administrator'][1])
+        self.assertIn('for later with Ctrl+D', by_title['Finish Jellyfin administrator'][1])
+        self.assertIn('choose c when it asks about this app', by_title['Finish Jellyfin administrator'][1])
         # The phone is one part (0.50.0): each of its steps names the login it means.
         [(title, steps)] = parts
         self.assertEqual(title, 'Use your apps away from home')
@@ -296,6 +303,59 @@ class StepTests(unittest.TestCase):
         # Navidrome's login on the phone is the one this server gives the person (item 11).
         self.assertEqual(logins['Navidrome: music'], ['navidrome_listener'])
         self.assertEqual(logins['Tailscale on the phone'], [])
+
+    def test_an_app_that_never_started_is_not_sent_to_the_browser(self):
+        # The films' step failed (a port another program holds, a download cut off), and
+        # the accounts step then said "identity check did not match" of Jellyfin and asked
+        # the person to finish it in the browser, at an address where nothing ran, until
+        # Ctrl+D: seen in the Ubuntu 24.04 lab, for each of eleven apps.
+        import account_setup
+        from modules import accounts
+
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / 'compose' / 'jellyfin').mkdir(parents=True)
+            (Path(folder) / 'compose' / 'jellyfin' / 'compose.yaml').write_text('services: {}\n')
+            config = {'data_mount': folder}
+            said, asked = [], []
+            with (
+                mock.patch.object(account_setup, 'docker', return_value=''),  # no such container runs
+                mock.patch.object(account_store, 'get', saved),
+                mock.patch.object(account_store, 'update') as updated,
+                mock.patch.object(guided_setup, 'checkpoint', lambda *a, **k: asked.append(a[1]) or True),
+            ):
+                pending = account_setup.provision(config, ['jellyfin'], output=said.append, client_factory=mock.Mock())
+                ctx = SimpleNamespace(config=config, apply=True, log=said.append)
+                left = accounts.finish_pending(ctx, pending)
+            self.assertEqual((pending, left), (['jellyfin'], ['jellyfin']))
+            self.assertEqual(asked, [], 'no "Finish Jellyfin" page for an app that is not running')
+            line = next(line for line in said if 'not verified' in line)
+            self.assertIn('Jellyfin is not running: the step that starts it did not finish', line)
+            self.assertNotIn('identity', line)
+            self.assertIn('once Jellyfin administrator answers', line)
+            # Nothing was refused: the next run does not ask "did not take the saved login.
+            # What now?" of an app that never ran (seen for eleven apps in the lab).
+            self.assertNotIn(mock.call(config, 'jellyfin', state='needs_setup'), updated.call_args_list)
+            # Immich's step stopped before its Compose file was written (its release could
+            # not be looked up): not running either, not "identity check did not match".
+            said.clear()
+            with (
+                mock.patch.object(account_setup, 'docker', return_value=''),
+                mock.patch.object(account_store, 'get', saved),
+                mock.patch.object(account_store, 'update'),
+            ):
+                self.assertEqual(
+                    account_setup.provision(config, ['immich'], output=said.append, client_factory=mock.Mock()),
+                    ['immich'],
+                )
+                self.assertFalse(account_setup.running(config, 'immich'))
+            self.assertIn('Immich is not running', next(line for line in said if 'not verified' in line))
+            # A running app that refused its login still gets the page.
+            with (
+                mock.patch.object(account_setup, 'running', return_value=True),
+                mock.patch.object(guided_setup, 'checkpoint', lambda *a, **k: asked.append(a[1]) or True),
+            ):
+                accounts.finish_pending(ctx, ['jellyfin'])
+            self.assertEqual(asked, ['Finish Jellyfin administrator'])
 
     def test_a_login_setup_makes_is_said_with_how_to_see_it(self):
         with tempfile.TemporaryDirectory() as folder:

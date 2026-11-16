@@ -432,6 +432,30 @@ class DebianTest(unittest.TestCase):
 
     # Installing
 
+    def test_amd_video_decoding_is_found_in_mesa_libgallium_on_ubuntu_26_04(self):
+        """Deep check 544: Mesa 25.2.8-3 and later (Ubuntu 26.04) put the VA drivers in
+        mesa-libgallium, which only "Provides: mesa-va-drivers". In 26.04's own apt
+        (debootstrap resolute) dpkg-query finds no mesa-va-drivers and apt-cache policy
+        says "Candidate: (none)", so AMD's video driver was said to be "not in this
+        system's package sources" and never installed. Ubuntu 24.04 keeps the old one."""
+        from modules import hardware_video
+
+        for offered, package in (
+            ({'mesa-libgallium', 'vainfo'}, 'mesa-libgallium'),  # 26.04
+            ({'mesa-va-drivers', 'vainfo'}, 'mesa-va-drivers'),  # 24.04, Debian 12 and 13
+        ):
+            with self.subTest(package=package):
+                apt = FakeApt(offered=offered)
+                family = self.family(apt)
+                with mock.patch.object(host, 'current', return_value=family):
+                    said = []
+                    hardware_video.install_drivers('amd', said.append)
+                    self.assertEqual(said, ['Video drivers for the AMD graphics chip: libva-mesa-driver, libva-utils'])
+                    installs = [argv[5:] for argv in apt.calls if argv[:2] == ['apt-get', 'install']]
+                    self.assertEqual(installs, [[package, 'vainfo']])
+                    # Found installed on the next run: nothing is installed again.
+                    self.assertTrue(family.installed('libva-mesa-driver'))
+
     def test_refreshes_lists_once_and_installs_only_what_is_missing(self):
         apt = FakeApt(offered={'samba', 'hdparm'}, installed={'hdparm'})
         family = self.family(apt)

@@ -24,7 +24,14 @@ class DesktopShortcutTests(unittest.TestCase):
             'data_mount': str(self.data),
             'dashboard': {'port': 8787},
             'media': {'services': ['jellyfin', 'navidrome', 'sonarr']},
+            'photos': {'deploy_immich': True},
         }
+
+    def set_up(self, *apps):
+        """The folder an app's own step leaves on the SSD (kept when it is switched off)."""
+        for app in apps:
+            (self.data / 'compose' / app).mkdir(parents=True)
+            (self.data / 'compose' / app / 'compose.yaml').write_text('services: {}\n')
 
     def files(self, which=lambda name: None, launcher=None):
         return desktop.shortcuts(self.config, which, launcher or self.root / 'no-launcher')
@@ -47,6 +54,38 @@ class DesktopShortcutTests(unittest.TestCase):
         self.assertIn('Name=Immich', names['nekoserver-immich.desktop'])
         # Nextcloud was not set up here: no shortcut that leads nowhere.
         self.assertNotIn('nekoserver-nextcloud.desktop', names)
+
+    def test_an_app_switched_off_gets_no_shortcut_though_its_folder_is_kept(self):
+        """Review of 0.51.2: Nextcloud switched off, and Immich with only its own switch
+        (photos.deploy_immich) off, kept their shortcuts: their Compose files stay."""
+        self.set_up('immich', 'nextcloud')
+        both = {'nekoserver-immich.desktop', 'nekoserver-nextcloud.desktop'}
+        self.assertLessEqual(both, set(self.files()))  # on (Nextcloud: unless switched off)
+        self.config['nextcloud'] = {'enabled': False}
+        self.config['photos'] = {'deploy_immich': False}
+        self.assertFalse(both & set(self.files()))
+        # Photos left out with the media apps: no Immich either.
+        self.config['photos'] = {'deploy_immich': True}
+        self.config['media_apps'] = {'photos': False}
+        self.assertNotIn('nekoserver-immich.desktop', self.files())
+
+    def test_the_shortcut_of_an_app_switched_off_since_is_taken_away(self):
+        self.set_up('nextcloud')
+        home = self.root / 'home'
+        (home / 'Desktop').mkdir(parents=True)
+        self.run_step(home)
+        made = [
+            home / 'Desktop/nekoserver-nextcloud.desktop',
+            home / '.local/share/applications/nekoserver-nextcloud.desktop',
+        ]
+        self.assertTrue(all(path.is_file() for path in made))
+        yours = home / 'Desktop/nekoserver-immich.desktop'
+        yours.write_text('[Desktop Entry]\nName=My photos\n')
+        self.config['nextcloud'] = {'enabled': False}
+        self.run_step(home)
+        self.assertFalse(any(path.exists() for path in made))
+        self.assertTrue(yours.is_file())  # not NekoServer's: left alone
+        self.assertTrue((home / 'Desktop/nekoserver-jellyfin.desktop').is_file())
 
     def test_the_browser_steam_and_the_dashboard_window(self):
         launcher = self.root / 'nekoserver-dashboard'

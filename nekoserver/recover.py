@@ -9,35 +9,84 @@ import neko_common
 from neko_common import checked_settings, default_settings
 
 
+# The commands, each in a line: what it does without --apply, and with it. RECOVERY.md,
+# "What each operation does", has the same list.
+COMMANDS = {
+    'check': 'Check that the right drives are mounted and the kept installer files are whole. Changes nothing',
+    'checkpoint': 'Look at Docker and where it keeps the apps; --apply saves that record on the SSD',
+    'reattach': 'After replacing Linux: check that the apps on the SSD can be taken over; --apply does it',
+    'snapshot': 'Show what a matched snapshot of Immich (photos and database) would copy; --apply makes it',
+    'restore-test': 'Check a snapshot and show the separate test copy of Immich; --apply starts that copy',
+    'resume': 'Start Immich again after a snapshot that was cut off',
+    'install-docker': 'After replacing Linux: show which Docker would be installed; --apply installs it, stopped',
+}
+CONFIRM = {
+    'reattach': "the UUID of the app SSD, typed to confirm that this is the drive to take over",
+    'restore-test': 'the word RESTORE-ISOLATED, typed to confirm',
+}
+EPILOG = (
+    'COMMAND --help shows a command\'s own options. RECOVERY.md, "What each operation does", explains each '
+    'command; to get files back from a backup, use the menu instead: sudo bash install.sh --recover'
+)
+
+
 def main(argv=None):
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--config', type=checked_settings, default=default_settings(Path(__file__).parent))
-    sub = p.add_subparsers(dest='action', required=True)
-    for name in ('check', 'checkpoint', 'reattach', 'snapshot', 'restore-test', 'resume', 'install-docker'):
-        cmd = sub.add_parser(name)
+    p = argparse.ArgumentParser(description=__doc__, epilog=EPILOG)
+    p.add_argument(
+        '--config',
+        type=checked_settings,
+        default=default_settings(Path(__file__).parent),
+        help=neko_common.SETTINGS_HELP,
+    )
+    sub = p.add_subparsers(dest='action', required=True, metavar='COMMAND')
+    for name, what in COMMANDS.items():
+        cmd = sub.add_parser(name, help=what, description=what)
         # Also after the command ("check --config my.json"), the order people type it in:
         # there it was not read, and the default's error said to name a file with --config.
-        cmd.add_argument('--config', type=checked_settings, default=argparse.SUPPRESS)
+        cmd.add_argument('--config', type=checked_settings, default=argparse.SUPPRESS, help=neko_common.SETTINGS_HELP)
         if name not in ('check', 'resume'):
-            cmd.add_argument('--apply', action='store_true')
+            cmd.add_argument(
+                '--apply', action='store_true', help='Do it. Without it the command only shows what it would do'
+            )
         if name in ('check', 'reattach'):
-            cmd.add_argument('--bundle', type=Path, default=Path(__file__).parent)
+            cmd.add_argument(
+                '--bundle',
+                type=Path,
+                default=Path(__file__).parent,
+                help='The folder of installer files to check (default: the folder this command is in)',
+            )
         if name in ('reattach', 'restore-test'):
-            cmd.add_argument('--confirm', default='')
+            cmd.add_argument('--confirm', default='', help='With --apply: ' + CONFIRM[name])
         if name == 'snapshot':
-            cmd.add_argument('--destination', required=True, type=Path)
+            cmd.add_argument(
+                '--destination',
+                required=True,
+                type=Path,
+                help='A new folder for the snapshot, directly under recovery-snapshots on the SSD or the HDD',
+            )
         if name == 'restore-test':
-            cmd.add_argument('--snapshot', required=True, type=Path)
-            cmd.add_argument('--workspace', required=True, type=Path)
-            cmd.add_argument('--port', type=int, default=2284)
+            cmd.add_argument('--snapshot', required=True, type=Path, help='The snapshot folder to try')
+            cmd.add_argument(
+                '--workspace',
+                required=True,
+                type=Path,
+                help='A new folder for the test copy, directly under recovery-tests on the SSD or the HDD',
+            )
+            cmd.add_argument(
+                '--port', type=int, default=2284, help='Where the test copy answers on this PC (default: 2284)'
+            )
     a = p.parse_args(argv)
     config, problem = read_settings(a.config)
     if problem:
         print('Recovery stopped: ' + problem, file=sys.stderr)
         print(AFTER_FAILURE, file=sys.stderr)
         return 2
+    # A closed terminal or a dropped SSH connection stops the command as Ctrl+C does: a
+    # snapshot stops Immich for hours and starts it again in a finally block, which the
+    # signal alone skipped (Immich then stayed off until the next restart of the PC).
     try:
-        result = run(a, config)
+        with neko_common.stopping_on_hangup():
+            result = run(a, config)
         print(json.dumps(result, indent=2))
         return 1 if result.get('status') == 'needs_setup' else 0
     except (

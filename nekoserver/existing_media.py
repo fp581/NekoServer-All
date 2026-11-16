@@ -32,18 +32,24 @@ from pathlib import Path
 
 import account_store
 import media_libraries
+import music_client
 import nfs_exports
 import placement
 import source_import
 from neko_common import (
+    EXTRA_MOUNTS,
     app_port,
     atomic_json,
     atomic_write,
+    extra_drives,
     files_root,
     findmnt,
     folder_answers,
     local_opener,
+    mount_path,
+    movies_library,
     music_downloads,
+    music_library,
     real_path,
     verify_storage,
 )
@@ -104,6 +110,10 @@ REFUSALS = {
     'permissions of your folder. {fix}',
     'whitespace_share': 'The shared folder {share} is mounted at a folder with a space in its name ({mount}); '
     'NekoServer cannot write that into /etc/fstab. Mount it at a folder without spaces, then try again.',
+    'nekoserver_drive': '{path} is on the drive you chose as {role}. Setup mounts that drive itself, at {base}, so '
+    'a folder on it is not added as a folder of yours (and it needs no line of its own in /etc/fstab). Press Enter '
+    'here for now. Once setup has finished, move your {what} into NekoServer\'s library, where the apps find '
+    'them:  sudo mv "{later}"/* "{library}"/{note}',
 }
 # Why "save new ones here too" is not offered for a folder that can be read.
 NO_NEW_FILES = {
@@ -115,9 +125,32 @@ NO_NEW_FILES = {
     'owner': 'A file the apps\' account ({uid}:{gid}) wrote to {path} belongs to {said} there: the NAS maps every '
     'account to one of its own, and the apps could not change their own files later. Switch that mapping off '
     'for this PC on the NAS, or choose another folder for new {what}.',
+    # A drive from Windows or a camera: see FIX_WINDOWS.
+    'windows': 'A file the apps\' account ({uid}:{gid}) wrote to {path} belongs to {said} there, so the apps '
+    'could not change their own files later. {fix} Or choose another folder for new {what}.',
 }
 FIX_ON_NAS = 'On the NAS, give this PC (or the account {uid}:{gid}) access to the shared folder.'
 FIX_LOCAL = 'Give the account {uid}:{gid} access to it yourself (for example add it to the folder\'s group).'
+# A drive from Windows or a camera (NTFS, exFAT, FAT) keeps no Linux owners or
+# permissions: whoever mounted it owns every file, and chown, chmod or a group change
+# nothing. The one fix is the mount's own options (deep check 816: an NTFS drive of films
+# was told "the NAS maps every account", or to add the account to the folder's group).
+FIX_WINDOWS = (
+    'The drive is formatted for Windows (NTFS, exFAT or FAT), which keeps no Linux owners: its owner is set when '
+    'it is mounted. Add  uid={uid},gid={gid}  to its mount options (Disks: "Edit Mount Options", or its line in '
+    '/etc/fstab), restart the PC, then try again.'
+)
+# How such a drive shows when mounted (ntfs-3g and exFAT's FUSE driver show as fuseblk).
+WINDOWS_STYLE = ('ntfs', 'ntfs3', 'exfat', 'vfat', 'msdos', 'fuseblk')
+
+
+def fix_for(fstype, uid, gid):
+    """What to do so the apps' account may use a folder on a drive of this kind."""
+    if fstype in NETWORK:
+        return FIX_ON_NAS.format(uid=uid, gid=gid)
+    return (FIX_WINDOWS if fstype in WINDOWS_STYLE else FIX_LOCAL).format(uid=uid, gid=gid)
+
+
 WHAT = {'movies': 'movies', 'tv': 'shows', 'music': 'music'}
 
 
@@ -200,6 +233,61 @@ def where(path, find=findmnt, kind=source_import.share_type, fstab_text='', what
         raise Refused('bare_mount_folder', path=path)
     persistent = mount == '/' or mount in listed
     return {'mount': mount, 'share': share or '', 'fstype': fstype or '', 'persistent': persistent}
+
+
+def drive_of_nekoserver(config, uuid):
+    """(the role's words, the folder setup mounts the drive at) when the filesystem with
+    this UUID is a drive the settings give NekoServer: the app SSD or the media HDD as
+    chosen on the storage page (also a minute ago, before the approval), or another drive
+    of a group's; None otherwise. The disk Linux runs from is never one: a role kept there
+    is only a folder of it, and the person's own folders beside it stay theirs."""
+    import drive_table
+    from modules.storage import ONE_DRIVE, SHARED_FOLDERS
+
+    if not uuid:
+        return None
+    storage = config.get('storage') if isinstance(config.get('storage'), dict) else {}
+    for key, mount_key in (('data_ssd', 'data_mount'), ('media_hdd', 'media_mount')):
+        record = storage.get(key) if isinstance(storage.get(key), dict) else {}
+        if record.get('uuid') != uuid:
+            continue
+        if record.get('folder') is None:
+            return drive_table.role(key), str(mount_path(config[mount_key]))
+        if record['folder'] in SHARED_FOLDERS.values():
+            return drive_table.role(key), ONE_DRIVE
+    for name, record in extra_drives(config).items():
+        network = record.get('network') if isinstance(record.get('network'), dict) else {}
+        if record.get('uuid') == uuid and not network.get('export'):
+            return 'a drive of its own for NekoServer', str(EXTRA_MOUNTS / name)
+    return None
+
+
+def on_nekoserver_drive(config, category, real, found, find):
+    """Refused when the folder is on a drive setup itself mounts (the person's films on
+    the HDD they chose as the media HDD, opened by the desktop at /media/<account>/...):
+    the desktop's mount is not permanent, but the advice for that (a line in /etc/fstab)
+    would then stop the storage step, which mounts the drive itself. Says where the
+    folder is once setup has mounted the drive, and the one move into the library."""
+    if found['fstype'] in NETWORK:
+        return
+    ours = drive_of_nekoserver(config, find('UUID', real, '--target'))
+    if ours is None or found['mount'] == ours[1]:
+        return  # not NekoServer's, or mounted where setup mounts it: checked as usual
+    role, base = ours
+    later = os.path.join(base, os.path.relpath(real, found['mount']))
+    library = music_library(config) if category == 'music' else movies_library(config) / category
+    same = str(library).startswith(base.rstrip('/') + '/')
+    note = ' (a move on the same drive takes a moment and needs no room).' if same else '.'
+    raise Refused(
+        'nekoserver_drive',
+        path=real,
+        role=role,
+        base=base,
+        what=WHAT[category],
+        later=later,
+        library=library,
+        note=note,
+    )
 
 
 # What the apps' user does in the folder, in a process of its own running as that user:
@@ -287,7 +375,7 @@ def read_only(path, statvfs=os.statvfs):
 def new_files_answer(real, found, category, uid, gid, as_user, statvfs):
     """Whether new files can be saved in the folder: {'ok': True}, or why not."""
     named = {'path': real, 'share': found['share'] or found['mount'], 'what': WHAT[category], 'uid': uid, 'gid': gid}
-    fix = (FIX_ON_NAS if found['fstype'] in NETWORK else FIX_LOCAL).format(uid=uid, gid=gid)
+    fix = fix_for(found['fstype'], uid, gid)
     if read_only(real, statvfs):
         return {'ok': False, 'code': 'read_only', 'reason': NO_NEW_FILES['read_only'].format(**named)}
     said = as_user(uid, gid, real, True)
@@ -297,7 +385,8 @@ def new_files_answer(real, found, category, uid, gid, as_user, statvfs):
     if kind == 'write' and 'read-only' in detail.lower():
         return {'ok': False, 'code': 'read_only', 'reason': NO_NEW_FILES['read_only'].format(**named)}
     code = 'owner' if kind == 'owner' else 'no_write'
-    return {'ok': False, 'code': code, 'reason': NO_NEW_FILES[code].format(said=detail or said, fix=fix, **named)}
+    words = 'windows' if code == 'owner' and found['fstype'] in WINDOWS_STYLE else code
+    return {'ok': False, 'code': code, 'reason': NO_NEW_FILES[words].format(said=detail or said, fix=fix, **named)}
 
 
 def check(
@@ -326,6 +415,7 @@ def check(
     real = checked_folder(config, folder)
     text = fstab.read_text(encoding='utf-8', errors='replace') if fstab.is_file() else ''
     found = where(real, find, kind or source_import.share_type, text, WHAT[category])
+    on_nekoserver_drive(config, category, real, found, find)
     add = None
     if not found['persistent']:
         if found['fstype'] not in nfs_exports.FILESYSTEMS:
@@ -335,7 +425,7 @@ def check(
         add = nfs_exports.fstab_line(found['share'], found['mount'], found['fstype'])
     said = as_user(uid, gid, real, False)
     if said:
-        fix = (FIX_ON_NAS if found['fstype'] in NETWORK else FIX_LOCAL).format(uid=uid, gid=gid)
+        fix = fix_for(found['fstype'], uid, gid)
         raise Refused('unreadable', uid=uid, gid=gid, path=real, said=said.partition(' ')[2] or said, fix=fix)
     answer = new_files_answer(real, found, category, uid, gid, as_user, statvfs) if new_files else None
     if answer and answer['ok']:
@@ -546,12 +636,14 @@ def backed_up(config):
 # A download is saved in the library's own downloads folder (/data/downloads), then the
 # importer (Radarr, Sonarr, Lidarr) puts it into the folder for new files. The person's
 # folder is a mount of its own inside /data, and Linux makes no hard link from one mount
-# to another, even on one drive: the importer copies the file and removes the download.
-# So a hard link is never promised here; the room is needed twice until the copy is done.
+# to another, even on one drive: the importer copies the file. The download is removed
+# only once qBittorrent stops sharing it (qbit_setup.SHARE_LIMITS: up to 7 days), so a
+# hard link is never promised here; the room is needed twice until then.
 
 COPIED_TWICE = (
-    'New {what} are downloaded to {downloads} first and then copied into {path}; the download is removed after '
-    'the copy. Each one needs room in both places for that moment, and the copy takes as long as the file is big.'
+    'New {what} are downloaded to {downloads} first and then copied into {path}. The download is removed from '
+    'there once qBittorrent has finished sharing it (after up to 7 days), so each one needs room in both places '
+    'until then, and the copy takes as long as the file is big.'
 )
 
 
@@ -670,7 +762,88 @@ def use_in_place(
     if after != before:
         atomic_write(fstab, after, 0o644)
         run(['systemctl', 'daemon-reload'], 60)
+    # A folder taken back (or its group moved): what NekoServer's old lines connected and
+    # the new ones no longer name is disconnected, so no app goes on seeing it.
+    for point in sorted(set(fstab_mounts('\n'.join(own_lines(before)))) - set(fstab_mounts('\n'.join(lines)))):
+        if mounted(point) is not None and not disconnected(run, mounted, point):
+            log(STILL_CONNECTED.format(point=point, written=written_there(closed_to_new_files(run, point))))
     return [mounted_row(config, entry, (run, find, kind, mounted), log) for entry in wanted]
+
+
+def own_lines(text):
+    """NekoServer's own lines in /etc/fstab's text (those between BEGIN and END)."""
+    lines, inside = [], False
+    for line in text.splitlines():
+        if line.strip() in (BEGIN, END):
+            inside = line.strip() == BEGIN
+        elif inside:
+            lines.append(line)
+    return lines
+
+
+def same_folder(point, path):
+    """Whether the folder connected at `point` is `path` itself (a bind mount is the same
+    folder under another name). Something being mounted there is not enough: after the
+    choice changed, it is still the folder chosen before."""
+    try:
+        return os.path.samefile(point, path)
+    except OSError:
+        return False
+
+
+def disconnected(run, mounted, point):
+    """Unmount what is connected at `point` (every layer of it); False when an app still
+    holds it open, so it could not be."""
+    for _ in range(8):
+        if mounted(point) is None:
+            return True
+        try:
+            run(['umount', str(point)], 120)
+        except RuntimeError:
+            return False
+    return mounted(point) is None
+
+
+def closed_to_new_files(run, point):
+    """The folder still connected at `point` made read-only. It could not be disconnected
+    (an app has it open), and it may be one that took new files: left as it was, the apps
+    went on saving into a folder the person had taken back or replaced, while setup said
+    nothing new was written there. False when even that is refused (an app is writing a
+    file there right now)."""
+    try:
+        run(['mount', '-o', 'remount,bind,ro', str(point)], 120)
+    except RuntimeError:
+        return False
+    return True
+
+
+def takes_new_files(point):
+    """Whether what is connected at `point` can be written to, asked of the mount itself."""
+    try:
+        return not read_only(point)
+    except OSError:
+        return False
+
+
+def written_there(closed):
+    """What to say about new files in a folder that is still connected: `closed`, it is
+    read-only now."""
+    if closed:
+        return 'Nothing new is written there.'
+    return (
+        'An app is writing there right now, so it could not be closed to new files either: until the '
+        'restart, new files may still be saved in it.'
+    )
+
+
+STILL_CONNECTED = (
+    'The folder chosen before is still connected at {point} (an app has it open), so it was left. {written} '
+    'Restart the PC, then run setup again.'
+)
+OTHER_FOLDER = (
+    'Your {what} were changed to {path}, but the folder chosen before is still connected to the library '
+    '(an app has it open). {written} Restart the PC, then run setup again.'
+)
 
 
 def mounted_row(config, entry, tools, log):
@@ -690,6 +863,15 @@ def mounted_row(config, entry, tools, log):
         log(row['reason'])
         return row
     mode = 'rw' if entry['new_files'] else 'ro'
+    # The folder was changed: what is connected there is the one chosen before. A remount
+    # would only change its options and leave the old folder in the library (review of
+    # 0.51.2: the settings and the checks named the new folder, the apps saw the old one).
+    if mounted(point) is not None and not same_folder(point, entry['path']):
+        if not disconnected(run, mounted, point):
+            written = written_there(closed_to_new_files(run, point))
+            row['reason'] = OTHER_FOLDER.format(what=WHAT[entry['holds']], path=entry['path'], written=written)
+            log(row['reason'])
+            return row
     if mounted(point) is None:
         run(['mount', str(point)], 120)
     else:
@@ -723,10 +905,16 @@ def available(config, find=findmnt, kind=source_import.share_type, mounted=sourc
     rows = []
     for entry in extras(config):
         there = still_there(entry, find, kind)
-        bound = mounted(mount_point(config, entry['holds'], entry['use'])) is not None
+        point = mount_point(config, entry['holds'], entry['use'])
+        other = there and mounted(point) is not None and not same_folder(point, entry['path'])
+        bound = mounted(point) is not None and not other
         reason = None
         if not there:
             reason = away_words(entry)
+        elif other:
+            # Said as it is now: read-only since setup found it still connected, or not.
+            written = written_there(not takes_new_files(point))
+            reason = OTHER_FOLDER.format(what=WHAT[entry['holds']], path=entry['path'], written=written)
         elif not bound:
             reason = f'{entry["path"]} is there, but not connected to the library yet; run setup again (or restart)'
         rows.append(
@@ -755,6 +943,11 @@ def guard(config, category, **how):
 
 
 NAME_TAKEN = '{app} already has a library called "{name}" for another folder; rename it in {app}, then run setup again'
+WRONG_KIND = (
+    'Jellyfin has your folder {path} in the library "{name}", which is for {has}, not for {what}: they would not '
+    'be shown properly. In Jellyfin open Dashboard, Libraries and remove "{name}" (this deletes no files), then '
+    'run setup again; it makes the right library'
+)
 API_FAILED = 'Library API/path check failed; existing settings preserved'
 NAVIDROME_LIBRARIES = '/api/library'  # Navidrome's list of libraries, read and added to
 TOO_OLD = (
@@ -795,19 +988,41 @@ def jellyfin_library(client, config, entry, kind, apply, how):
     ready_row(config, entry, how)
     path = container_path(entry['holds'], entry['use'])
 
-    def there():
-        return any(path in [str(p).rstrip('/') for p in x['Locations']] for x in media_libraries.folders(client))
+    def there(values):
+        """A library has the folder. Of the right kind, or said: Jellyfin reads films
+        as films only in a library for films (review of 0.51.2: a folder of films in a
+        music library passed, on its path alone)."""
+        found = [x for x in values if path in [str(p).rstrip('/') for p in x['Locations']]]
+        wrong = next((x for x in found if str(x.get('CollectionType') or '').casefold() != kind), None)
+        if wrong:
+            raise media_libraries.SetupRequired(
+                WRONG_KIND.format(
+                    path=entry['path'],
+                    name=wrong.get('Name', ''),
+                    has={'tvshows': 'shows'}.get(
+                        wrong.get('CollectionType'), wrong.get('CollectionType') or 'mixed content'
+                    ),
+                    what=WHAT[entry['holds']],
+                )
+            )
+        return bool(found)
 
     values = media_libraries.folders(client)
-    if any(path in [str(p).rstrip('/') for p in x['Locations']] for x in values):
+    if there(values):
+        if apply:
+            for library in values:
+                if path in [str(p).rstrip('/') for p in library['Locations']] and library.get('ItemId'):
+                    media_libraries.watch_library(client, library)
         return media_libraries.row(check_name, 'pass')
     if any(str(x.get('Name', '')).casefold() == name.casefold() for x in values):
         raise media_libraries.SetupRequired(NAME_TAKEN.format(app='Jellyfin', name=name))
     if not apply:
         return media_libraries.row(check_name, 'needs_setup', 'Preview: library would be created')
     asked = {'name': name, 'collectionType': kind, 'paths': path, 'refreshLibrary': 'true'}
-    client.call('/Library/VirtualFolders?' + urllib.parse.urlencode(asked), 'POST', {})
-    if not there():
+    client.call(
+        '/Library/VirtualFolders?' + urllib.parse.urlencode(asked), 'POST', media_libraries.new_library_options()
+    )
+    if not there(media_libraries.folders(client)):
         raise RuntimeError('Library creation was not retained')
     return media_libraries.row(check_name, 'pass')
 
@@ -828,49 +1043,122 @@ def jellyfin_libraries(client, config, apply=False, **how):
                 check_name, lambda entry=entry, kind=kind: jellyfin_library(client, config, entry, kind, apply, how)
             )
         )
+    try:
+        rows += jellyfin_left_over(client, config)
+    except (RuntimeError, ValueError, TypeError, KeyError):
+        rows.append(media_libraries.row('jellyfin:existing', 'fail', API_FAILED))
     return rows
 
 
-def navidrome_listed(call):
-    """Navidrome's libraries, as its API lists them."""
-    listed = call('GET', NAVIDROME_LIBRARIES, None)
+LEFT_OVER = (
+    'Jellyfin still has the library "{name}" for a folder of yours that NekoServer no longer connects (you took '
+    'it back, or had it copied into the library instead). What that library lists can no longer be played. In '
+    'Jellyfin open Dashboard, Libraries and remove "{name}" (this deletes no files), then run setup again'
+)
+
+
+def jellyfin_left_over(client, config):
+    """A row for each library Jellyfin still has at a place under /data/existing where
+    no folder of the settings is connected any more. Setup disconnects the folder, and
+    Jellyfin keeps the library: it goes on listing the films (it never forgets a library
+    whose folder it cannot open), none of them plays, and after "copy instead" every film
+    is listed twice. The library is the person's to remove (it holds what they watched),
+    so it is said, with where."""
+    used = {container_path(entry['holds'], entry['use']) for entry in extras(config)}
+    rows = []
+    for value in media_libraries.folders(client):
+        for place in sorted({str(location).rstrip('/') for location in value['Locations']}):
+            slot_name = place[len(CONTAINER) + 1 :]
+            if place.startswith(CONTAINER + '/') and place not in used and re.fullmatch(r'[a-z]+(-new)?', slot_name):
+                said = LEFT_OVER.format(name=value.get('Name', ''))
+                rows.append(media_libraries.row(f'jellyfin:existing:{slot_name}', 'needs_setup', said))
+    return rows
+
+
+def navidrome_listed(call, endpoint=NAVIDROME_LIBRARIES):
+    """Navidrome's libraries (or those one user may play), as its API lists them."""
+    listed = call('GET', endpoint, None)
     if not isinstance(listed, list) or any(not isinstance(x, dict) for x in listed):
         raise RuntimeError('Unsupported Navidrome library response')
     return listed
 
 
-def navidrome_one(call, config, entry, apply, how):
-    """Navidrome's library for one music folder: there already, or made and read back."""
+NAVIDROME_USERS = '/api/user'  # Navidrome's users; <this>/<id>/library: the libraries one may play
+NOT_SHARED = (
+    'Your own music folder is in Navidrome, but the login "{user}" could not be allowed to play it. In Navidrome '
+    'open Settings, Users, "{user}", tick the library "{name}" and save; then run setup again'
+)
+
+
+def navidrome_share(call, library, name, listeners):
+    """Let the logins NekoServer keeps that are not administrators (`listeners`, by user
+    name) play this library too. Navidrome shows such a user only the libraries given to
+    them, and setup gives them when it makes the account: a library added afterwards was
+    not theirs (review of 0.51.2). What they may play already is kept as it is;
+    administrators see every library anyway."""
+    if not listeners:
+        return
+    users = call('GET', NAVIDROME_USERS, None)
+    if not isinstance(users, list):
+        raise RuntimeError('Unsupported Navidrome user response')
+    for user in users:
+        if not isinstance(user, dict) or user.get('userName') not in listeners or user.get('isAdmin') is not False:
+            continue
+        theirs = f"{NAVIDROME_USERS}/{urllib.parse.quote(str(user.get('id')), safe='')}/library"
+        try:
+            have = [x['id'] for x in navidrome_listed(call, theirs)]
+            if library not in have:
+                call('PUT', theirs, {'libraryIds': [*have, library]})
+                if library not in [x['id'] for x in navidrome_listed(call, theirs)]:
+                    raise RuntimeError('Library access was not retained')
+        except (RuntimeError, LookupError, KeyError):
+            raise media_libraries.SetupRequired(NOT_SHARED.format(user=user['userName'], name=name)) from None
+
+
+def navidrome_one(call, config, entry, apply, how, listeners=()):
+    """Navidrome's library for one music folder: there already, or made and read back;
+    then the listeners are allowed to play it."""
     name, path = library_name(entry), container_path('music', entry['use'])
     check_name = f"navidrome:existing:{slot('music', entry['use'])}"
     ready_row(config, entry, how)
     listed = navidrome_listed(call)
-    if any(str(x.get('path', '')).rstrip('/') == path for x in listed):
-        return media_libraries.row(check_name, 'pass')
-    if any(str(x.get('name', '')).casefold() == name.casefold() for x in listed):
-        raise media_libraries.SetupRequired(NAME_TAKEN.format(app='Navidrome', name=name))
-    if not apply:
-        return media_libraries.row(check_name, 'needs_setup', 'Preview: library would be created')
-    call('POST', NAVIDROME_LIBRARIES, {'name': name, 'path': path})
-    again = call('GET', NAVIDROME_LIBRARIES, None)
-    if not isinstance(again, list) or not any(isinstance(x, dict) and x.get('path') == path for x in again):
-        raise RuntimeError('Library creation was not retained')
+
+    def ours(listed):
+        return [x for x in listed if str(x.get('path', '')).rstrip('/') == path]
+
+    found = ours(listed)
+    if not found:
+        if any(str(x.get('name', '')).casefold() == name.casefold() for x in listed):
+            raise media_libraries.SetupRequired(NAME_TAKEN.format(app='Navidrome', name=name))
+        if not apply:
+            return media_libraries.row(check_name, 'needs_setup', 'Preview: library would be created')
+        call('POST', NAVIDROME_LIBRARIES, {'name': name, 'path': path})
+        found = ours(navidrome_listed(call))
+        if not found:
+            raise RuntimeError('Library creation was not retained')
+    if apply:
+        navidrome_share(call, found[0]['id'], found[0].get('name', name), listeners)
     return media_libraries.row(check_name, 'pass')
 
 
-def navidrome_library(call, config, apply=False, **how):
-    """A Navidrome library for each of the person's music folders (/data/existing/music).
-    `call(method, endpoint, payload)`: Navidrome's own API as its administrator, returning
-    the decoded answer (GET /api/library lists, POST /api/library adds); navidrome_api()
-    makes one. A Navidrome without several libraries answers 404 (LookupError): said as a
-    step left, never an error."""
+def navidrome_library(call, config, apply=False, listeners=(), **how):
+    """A Navidrome library for each of the person's music folders (/data/existing/music),
+    which the `listeners` (user names) may play. `call(method, endpoint, payload)`:
+    Navidrome's own API as its administrator, returning the decoded answer (GET
+    /api/library lists, POST /api/library adds); navidrome_api() makes one. A Navidrome
+    without several libraries answers 404 (LookupError): said as a step left, never an
+    error."""
     rows = []
     for entry in extras(config):
         if entry['holds'] != 'music':
             continue
         check_name = f"navidrome:existing:{slot('music', entry['use'])}"
         rows.append(
-            library_row(check_name, lambda entry=entry: navidrome_one(call, config, entry, apply, how), (LookupError,))
+            library_row(
+                check_name,
+                lambda entry=entry: navidrome_one(call, config, entry, apply, how, listeners),
+                (LookupError,),
+            )
         )
     return rows
 
@@ -933,7 +1221,22 @@ def music_libraries(config, apply=False, api=navidrome_api, **how):
         call = api(saved['username'], saved['password'])
     except media_libraries.SetupRequired as exc:
         return [media_libraries.row('navidrome:existing:music', 'needs_setup', str(exc))]
-    return navidrome_library(call, config, apply, **how)
+    return navidrome_library(call, config, apply, navidrome_listeners(config), **how)
+
+
+def navidrome_listeners(config):
+    """The user names of the Navidrome logins NekoServer keeps that are not the
+    administrator: the listener setup made (account_store), and the one the music check
+    signs in with (music_client; the same one unless it was made by hand)."""
+    names = set()
+    saved = account_store.get(config, 'navidrome_listener')
+    if saved:
+        names.add(saved['username'])
+    try:
+        names.add(str(json.loads(music_client.credential_path(config).read_text(encoding='utf-8'))['user']))
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+        pass  # no music check set up yet
+    return names
 
 
 # ---- copying instead -----------------------------------------------------------------------

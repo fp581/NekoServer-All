@@ -10,17 +10,19 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import stat
 import subprocess
 import sys
+import threading
 import time
 import unicodedata
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.51.2'
+VERSION = '0.51.3'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -57,6 +59,40 @@ def readable_output():
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, 'reconfigure'):
             stream.reconfigure(errors='replace')
+
+
+HANGUPS = (signal.SIGHUP, signal.SIGTERM)
+
+
+def stop_on_hangup():
+    """A closed terminal or SSH connection (SIGHUP), or a `kill` or the system shutting
+    down (SIGTERM), stops a tool as Ctrl+C does, so the cleanup in its finally blocks
+    still runs: the start protection lifted (host.py), a drive mounted for a measurement
+    unmounted again and the terminal's echo switched back on (setup's steps), Immich
+    started again after a snapshot (recover.py). Left to Python, either signal ends the
+    tool on the spot and none of that happens.
+    Only the first one: a second does not cut that cleanup short. Returns the handlers
+    there were before."""
+    stopping = []
+
+    def stop(number, frame):
+        if not stopping:
+            stopping.append(number)
+            raise KeyboardInterrupt
+
+    return {number: signal.signal(number, stop) for number in HANGUPS}
+
+
+@contextlib.contextmanager
+def stopping_on_hangup():
+    """stop_on_hangup for the length of a block; the handlers there were come back after
+    it. Only Python's main thread may set them: from any other, nothing changes."""
+    before = stop_on_hangup() if threading.current_thread() is threading.main_thread() else {}
+    try:
+        yield
+    finally:
+        for number, handler in before.items():
+            signal.signal(number, handler)
 
 
 def local_timezone(localtime='/etc/localtime', etc_timezone=ETC_TIMEZONE, zoneinfo=ZONEINFO):
@@ -435,6 +471,28 @@ def nas_disk_wwn(saved, seen, label, choose):
 UNSHOWN = re.compile('[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]')
 
 
+def typed_folder(text, environ=os.environ):
+    """A folder as a person types or pastes it, as the path it names. A folder dragged
+    into the terminal comes in quotes ('/home/ana/My Films'), one copied from a shell has
+    its spaces escaped (/home/ana/My\\ Films), and ~ is the home folder of the person who
+    ran sudo (setup runs as root): each was "not a folder on this PC" (deep check 481)."""
+    text = text.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in '\'"':
+        text = text[1:-1]
+    elif '\\' in text:
+        text = re.sub(r'\\(.)', r'\1', text)
+    if text == '~' or text.startswith('~/'):
+        import pwd
+
+        name = environ.get('SUDO_USER')
+        try:
+            home = pwd.getpwnam(name).pw_dir if name and name != 'root' else os.path.expanduser('~')
+        except KeyError:
+            return text
+        text = home.rstrip('/') + text[1:]
+    return text
+
+
 def printable(text):
     """`text` as it can be printed: each such character written as its code (\\x1b)."""
     return UNSHOWN.sub(lambda m: m.group(0).encode('unicode_escape').decode('ascii'), str(text))
@@ -716,42 +774,62 @@ class _JsonMembers:
                 raise ValueError('no comma')
 
 
-def read_ledger(root):
-    """{relative path: sha256} recorded for a backup tree, or {} if it has no ledger yet.
-    A ledger with any unsafe path or malformed entry is not trusted at all. Read row by
-    row, keeping only each row's checksum (_JsonMembers)."""
-    path = Path(root) / LEDGER_NAME
-    if not path.exists():
-        return {}
+def _ledger_rows(path, rest):
+    """Each (relative path, row) of the checksum ledger at `path`, one at a time: the
+    file is read a piece at a time and never held whole (_JsonMembers). Its other
+    members (format, retired) are put into `rest`. A ledger with any unsafe path or
+    malformed entry is not trusted at all."""
     if path.is_symlink() or not path.is_file():
         raise RuntimeError(f'The checksum ledger {path} is not a regular file')
-    out, entries, ledger_format, invalid = {}, False, None, False
+    entries = False
     try:
         with path.open(encoding='utf-8') as handle:
             reader = _JsonMembers(handle)
             for key in reader.members():
                 if key != 'entries':
-                    value = reader.value()
-                    ledger_format = value if key == 'format' else ledger_format
+                    rest[key] = reader.value()
                     continue
                 entries = True
                 for rel in reader.members():
                     row = reader.value()
                     sha = row.get('sha256') if isinstance(row, dict) else None
                     if not valid_ledger_path(rel) or not (isinstance(sha, str) and re.fullmatch(r'[0-9a-f]{64}', sha)):
-                        invalid = True
-                    else:
-                        out[rel] = sha
+                        raise RuntimeError(f'The checksum ledger {path} has an invalid entry; it is not trusted')
+                    yield rel, row
             if not reader.at_end():
                 raise ValueError('more after the ledger')
     except (OSError, ValueError):
         entries = False
     # The format comes after the entries in the file: judged once it is all read.
-    if not entries or ledger_format != 'neko-ledger-v1':
+    if not entries or rest.get('format') != 'neko-ledger-v1':
         raise RuntimeError(f'The checksum ledger {path} is unreadable')
-    if invalid:
-        raise RuntimeError(f'The checksum ledger {path} has an invalid entry; it is not trusted')
-    return out
+
+
+def read_ledger(root):
+    """{relative path: sha256} recorded for a backup tree, or {} if it has no ledger yet.
+    Read row by row, keeping only each row's checksum (_ledger_rows)."""
+    path = Path(root) / LEDGER_NAME
+    if not path.exists():
+        return {}
+    return {rel: row['sha256'] for rel, row in _ledger_rows(path, {})}
+
+
+def ledger_dates(root):
+    """{relative path: when its original was last changed (nanoseconds since 1970)} for
+    the saved copies whose checksum-list row notes it ("mtime_ns", written by the backup
+    program, ledger.rs). A saved copy's own date is the time it was written, so a restore
+    takes the original's date from here. {} when the list can't be read."""
+    path = Path(root) / LEDGER_NAME
+    if not path.exists():
+        return {}
+    try:
+        return {
+            rel: row['mtime_ns']
+            for rel, row in _ledger_rows(path, {})
+            if type(row.get('mtime_ns')) is int and abs(row['mtime_ns']) < 2**62
+        }
+    except RuntimeError:
+        return {}
 
 
 def record_ledger(root, entries, how, replace=(), retire=None):
@@ -763,66 +841,84 @@ def record_ledger(root, entries, how, replace=(), retire=None):
     recovery wizard asks first); only those are overwritten. `retire`: {path: why} for
     saved copies you accepted as lost (the wizard asks first): each entry moves to
     "retired" with when and why, so the checks stop expecting it (backup's ledger.rs
-    keeps that part as it is)."""
+    keeps that part as it is).
+    The ledger is copied row by row into the new file, like read_ledger reads it: read
+    whole, a ledger of a million photos took most of a gigabyte in the recovery menu."""
     import fcntl
-    import time
     import uuid
 
     root = safe_path(Path(root))
+    for rel, sha in entries.items():
+        if not valid_ledger_path(rel) or not re.fullmatch(r'[0-9a-f]{64}', sha):
+            raise RuntimeError('Refusing an invalid checksum ledger entry')
     with open(root / '.neko-ledger.lock', 'a') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError('A backup job is using this backup right now; try again when it has finished') from None
         path = root / LEDGER_NAME
-        value = json.loads(path.read_text()) if path.exists() else {'format': 'neko-ledger-v1', 'entries': {}}
-        read_ledger(root)  # refuse to extend a ledger that is not trusted
-        added = []
-        for rel, sha in entries.items():
-            if not valid_ledger_path(rel) or not re.fullmatch(r'[0-9a-f]{64}', sha):
-                raise RuntimeError('Refusing an invalid checksum ledger entry')
-            if rel in value['entries'] and rel not in replace:
-                continue
-            value['entries'][rel] = {
-                'sha256': sha,
-                'size': (root / rel).stat().st_size,
-                'verified_at': time.time(),
-                'how': how,
-            }
-            added.append(rel)
-        added += retire_entries(value, retire or {})
-        if added:
-            temp = root / f'{LEDGER_NAME}.{uuid.uuid4()}.tmp'
-            try:
-                with open(temp, 'x') as out:
-                    os.fchmod(out.fileno(), 0o600)
-                    json.dump(value, out)
-                    out.flush()
-                    os.fsync(out.fileno())
+        temp = root / f'{LEDGER_NAME}.{uuid.uuid4()}.tmp'
+        try:
+            with open(temp, 'x', encoding='utf-8') as out:
+                os.fchmod(out.fileno(), 0o600)
+                added = _copy_ledger(path, out, root, entries, how, set(replace), retire or {})
+                out.flush()
+                os.fsync(out.fileno())
+            if added:
                 os.replace(temp, path)
                 fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
                 try:
                     os.fsync(fd)
                 finally:
                     os.close(fd)
-            finally:
-                if temp.exists():
-                    temp.unlink()
+        finally:
+            if temp.exists():
+                temp.unlink()
         return added
 
 
-def retire_entries(value, retire):
-    """Move each of `retire`'s paths ({path: why}) from a ledger's entries to its
-    "retired" part, with when and why. Returns the paths moved."""
+def _copy_ledger(path, out, root, entries, how, replace, retire):
+    """Write the ledger at `path` to `out` with record_ledger's changes, one row at a
+    time. Returns the paths added, then the paths retired."""
     import time
 
-    moved = []
-    for rel, why in retire.items():
-        old = value['entries'].pop(rel, None) if valid_ledger_path(rel) else None
-        if old is not None:
-            value.setdefault('retired', {})[rel] = {**old, 'retired_at': time.time(), 'why': why}
-            moved.append(rel)
-    return moved
+    def new_row(rel):
+        return {'sha256': entries[rel], 'size': (root / rel).stat().st_size, 'verified_at': time.time(), 'how': how}
+
+    rest, retired, added, there = {}, {}, set(), set()
+    written = False
+    out.write('{"entries": {')
+
+    def put(rel, row):
+        nonlocal written
+        if rel in retire:  # given up as lost: kept under "retired", with when and why
+            retired[rel] = {**row, 'retired_at': time.time(), 'why': retire[rel]}
+            return
+        out.write((', ' if written else '') + json.dumps(rel) + ': ' + json.dumps(row))
+        written = True
+
+    for rel, row in _ledger_rows(path, rest) if path.exists() else ():
+        if rel in entries:
+            there.add(rel)
+            if rel in replace:
+                row = new_row(rel)
+                added.add(rel)
+        put(rel, row)
+    for rel in entries:
+        if rel not in there:
+            added.add(rel)
+            put(rel, new_row(rel))
+    out.write('}')
+    before = rest.pop('retired', {})
+    if not isinstance(before, dict):
+        raise RuntimeError(f'The checksum ledger {path} is unreadable')
+    rest['format'] = 'neko-ledger-v1'
+    if before or retired:
+        rest['retired'] = {**before, **retired}
+    for key, value in rest.items():
+        out.write(', ' + json.dumps(key) + ': ' + json.dumps(value))
+    out.write('}')
+    return [rel for rel in entries if rel in added] + [rel for rel in retire if rel in retired]
 
 
 def sha256_file(path):
@@ -1083,6 +1179,12 @@ NO_SETTINGS_HELP = (
     'config.json in this folder is the settings template (no drives in it), not your settings. '
     'Run  sudo bash install.sh  first (it makes my-config.json), or name your settings file with '
     '--config (for example --config my-config.json)'
+)
+
+
+# What --config is, in every tool's --help.
+SETTINGS_HELP = (
+    'Your settings file. Left out: my-config.json in this folder (in the copy setup keeps on the SSD: its config.json)'
 )
 
 
@@ -2439,12 +2541,13 @@ def identity_matches(path, expected):
     return found is not None and found == (expected.get('uuid'), expected.get('fstype'), wanted)
 
 
-def verify_storage(config, keys=('data_ssd', 'media_hdd'), ask=None):
+def verify_storage(config, keys=('data_ssd', 'media_hdd'), ask=None, writable=False):
     """The drives are the ones setup chose (UUID, filesystem, Btrfs subvolume, the NAS disk's
     WWN), no copy of one is connected, and the SSD and the HDD are two filesystems: checked
     by the runtime (`nekoserver-runtime check-drives`, backup.rs), the same check every job
     and Docker's start guard make. The rules live once, there; setup kept a copy of its own,
-    which already disagreed with it (the review of 0.47.0)."""
+    which already disagreed with it (the review of 0.47.0). `writable`: each also takes new
+    files (not turned read-only by Linux after write errors)."""
     import tempfile
 
     import native_runtime
@@ -2460,7 +2563,9 @@ def verify_storage(config, keys=('data_ssd', 'media_hdd'), ask=None):
     with tempfile.TemporaryDirectory(prefix='neko-drives-') as work:
         path = Path(work) / 'drives.json'
         path.write_text(json.dumps(settings))
-        args = ['check-drives', '--config', str(path), '--drives', ','.join(keys)]
+        args = ['check-drives', '--config', str(path), '--drives', ','.join(keys)] + (
+            ['--writable'] if writable else []
+        )
         code, said = (ask or native_runtime.ask_runtime)(Path(__file__).resolve().parent, config, args)
     if code != 0:
         raise RuntimeError(native_runtime.reason_of(said, f'the drive check stopped (exit {code})'))

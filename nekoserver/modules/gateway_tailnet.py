@@ -233,6 +233,8 @@ def secure_addresses(ctx):
     def configure_routes():
         nonlocal result
         result = gateway_tools.apply_tailnet(ctx.config)
+        for note in result.pop('notes', []):
+            ctx.log(note)
         return result.get('status') == 'configured'
 
     interactive = guided_setup.interactive(ctx)

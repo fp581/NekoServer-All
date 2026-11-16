@@ -46,7 +46,15 @@ class Server:
             str(self.media): ('/dev/sdb1', 'ext4'),
             str(self.ssd): ('/dev/sdc1', 'ext4'),
         }
+        self.uuids = {}  # {mount folder: its filesystem's UUID}, where a test needs one
         self.bound = {}  # mount points bound by "mount", as the kernel's table would have them
+        # What each bound point is bound to, where it is not the folder the settings name.
+        self.bound_from = {}
+        patcher = mock.patch.object(
+            existing_media, 'same_folder', lambda point, path: self.bound_from.get(str(point), str(path)) == str(path)
+        )
+        patcher.start()
+        case.addCleanup(patcher.stop)
         self.config = {
             'data_mount': str(self.ssd),
             'media_mount': str(self.media),
@@ -62,7 +70,8 @@ class Server:
 
     def find(self, column, path, by='--mountpoint'):
         mount = self.holding(path)
-        return {'TARGET': mount, 'SOURCE': self.mounts[mount][0], 'FSTYPE': self.mounts[mount][1]}[column]
+        said = {'TARGET': mount, 'SOURCE': self.mounts[mount][0], 'FSTYPE': self.mounts[mount][1]}
+        return {**said, 'UUID': self.uuids.get(mount)}[column]
 
     def kind(self, path):
         return self.find('FSTYPE', path)
@@ -154,6 +163,35 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(refused.code, 'not_permanent')
         self.assertIn('only until the next restart', str(refused))
 
+    def test_films_on_the_drive_chosen_as_the_media_hdd_are_not_sent_to_fstab(self):
+        # The HDD just chosen as the media HDD, opened by the desktop (udisks) at
+        # /media/<account>/media with the films on it: not in /etc/fstab. The advice to
+        # make that mount permanent led to a line for the drive, which then stopped the
+        # storage step ("/etc/fstab already has a line for this drive"): a circle.
+        desktop = self.pc.top / 'desktop-media'
+        films = desktop / 'Movies'
+        (films / 'Alien (1979)').mkdir(parents=True)
+        self.pc.mounts[str(desktop)] = ('/dev/sdb1', 'ext4')
+        self.pc.uuids[str(desktop)] = 'hdd-uuid'  # the media HDD's, as the storage page saved it
+        refused = self.refusal(folder=films)
+        self.assertEqual(refused.code, 'nekoserver_drive')
+        said = str(refused)
+        self.assertIn('the drive you chose as the media HDD', said)
+        self.assertNotIn('Mount at system startup', said)
+        self.assertIn('Press Enter here for now', said)
+        media = self.pc.media
+        self.assertIn(f'sudo mv "{media}/Movies"/* "{media}/library/movies"/', said)
+        self.assertIn('needs no room', said)
+        # Shows go to their own library folder; music to the music library (on the SSD here).
+        self.assertIn(f'"{media}/library/tv"/', str(self.refusal(folder=films, category='tv')))
+        self.pc.config['locations'] = {'music': 'ssd'}
+        music = str(self.refusal(folder=films, category='music'))
+        self.assertIn(f'"{self.pc.ssd}/library/music"/', music)
+        self.assertNotIn('needs no room', music)
+        # Another drive the desktop opened is the person's own: what to do about that.
+        self.pc.uuids[str(desktop)] = 'their-own'
+        self.assertEqual(self.refusal(folder=films).code, 'not_permanent')
+
     def test_a_folder_the_apps_account_cannot_read_says_who_and_where_to_fix_it(self):
         refused = self.refusal(said={'read': 'read Permission denied'})
         self.assertEqual(refused.code, 'unreadable')
@@ -195,6 +233,30 @@ class CheckTests(unittest.TestCase):
         found, _ = self.pc.check(new_files=True, said={'write': 'owner 65534:65534'})
         self.assertEqual(found['new_files']['code'], 'owner')
         self.assertIn('belongs to 65534:65534', found['new_files']['reason'])
+
+    def test_a_drive_from_windows_is_told_to_set_its_owner_when_mounted(self):
+        # Deep check 816, for real with an exFAT drive through FUSE (NTFS through ntfs-3g
+        # mounts the same way, as fuseblk): every file belongs to root, whoever wrote it.
+        # It was told "the NAS maps every account", and NTFS through the kernel's driver
+        # (files root's, 755) to add the account to the folder's group: neither can work.
+        self.pc.fstab.write_text(f'UUID=1 / ext4 defaults 0 1\nUUID=AB12 {self.pc.nas} ntfs nofail 0 0\n')
+        for fstype in ('fuseblk', 'ntfs3', 'exfat', 'vfat'):
+            self.pc.mounts[str(self.pc.nas)] = ('/dev/sdd1', fstype)
+            for said, code in (('owner 0:0', 'owner'), ('write Permission denied', 'no_write')):
+                found, _ = self.pc.check(new_files=True, said={'write': said})
+                reason = found['new_files']['reason']
+                self.assertEqual(found['new_files']['code'], code)
+                self.assertNotIn('NAS', reason, fstype)
+                self.assertNotIn('group', reason, fstype)
+                self.assertIn('formatted for Windows', reason)
+                self.assertIn('uid=1000,gid=1000  to its mount options', reason)
+                self.assertIn('choose another folder for new movies', reason)
+            refused = self.refusal(said={'read': 'read Permission denied'})
+            self.assertIn('uid=1000,gid=1000  to its mount options', str(refused))
+        # A Linux drive keeps its own advice.
+        self.pc.mounts[str(self.pc.nas)] = ('/dev/sdd1', 'ext4')
+        found, _ = self.pc.check(new_files=True, said={'write': 'write Permission denied'})
+        self.assertIn("add it to the folder's group", found['new_files']['reason'])
 
     def test_the_systems_and_nekoservers_own_folders_are_never_media(self):
         for folder, code in (
@@ -365,11 +427,20 @@ class MountTests(unittest.TestCase):
     def setUp(self):
         self.pc = Server(self)
         self.ran = []
+        self.busy = set()  # mount points an app holds open: umount fails there
+        self.written = set()  # ... and those an app is writing a file in: not made read-only either
 
     def run_tool(self, argv, timeout):
         self.ran.append(argv)
         if argv[0] == 'mount' and '-o' not in argv:
             self.pc.bound[argv[-1]] = '77'
+        if argv[:2] == ['mount', '-o'] and argv[2].endswith(',ro') and argv[-1] in self.written:
+            raise RuntimeError('mount failed: mount point is busy')
+        if argv[0] == 'umount':
+            if argv[-1] in self.busy:
+                raise RuntimeError('umount failed: target is busy')
+            self.pc.bound.pop(argv[-1], None)
+            self.pc.bound_from.pop(argv[-1], None)
 
     def use(self, config, permanent=()):
         how = self.pc.how()
@@ -432,6 +503,83 @@ class MountTests(unittest.TestCase):
         # The choice taken back: the block goes, the other lines stay.
         self.use(self.pc.config)
         self.assertEqual(self.pc.fstab.read_text(), earlier)
+
+    def test_a_changed_folder_replaces_the_one_connected_before(self):
+        """Review of 0.51.2 (P1): with the folder changed, setup only remounted the mount
+        point with new options, so the folder chosen before stayed in the library while the
+        settings and the checks named the new one: new imports could reach the wrong one."""
+        config = self.pc.chosen()
+        self.use(config)
+        point = str(self.pc.media / 'library' / 'existing' / 'movies')
+        self.pc.bound_from[point] = str(self.pc.nas / 'old films')  # what is really bound there
+        # The check no longer calls it ready because something is mounted there.
+        (row,) = existing_media.available(config, **self.pc.how())
+        self.assertFalse(row['ready'])
+        self.assertIn('the folder chosen before is still connected', row['reason'])
+        with self.assertRaises(existing_media.Away):
+            existing_media.guard(config, 'movies', **self.pc.how())
+        # Setup disconnects the old folder and connects the new one.
+        self.ran.clear()
+        (row,) = self.use(config)
+        self.assertEqual(self.ran, [['umount', point], ['mount', point]])
+        self.assertTrue(row['mounted'])
+        self.assertTrue(existing_media.available(config, **self.pc.how())[0]['ready'])
+        # An app holds the old one open: it is left, said, and nothing counts as connected.
+        self.pc.bound_from[point] = str(self.pc.nas / 'old films')
+        self.busy.add(point)
+        self.ran.clear()
+        (row,) = self.use(config)
+        self.assertEqual(self.ran, [['umount', point], ['mount', '-o', 'remount,bind,ro', point]])
+        self.assertFalse(row['mounted'])
+        self.assertIn('Restart the PC, then run setup again', row['reason'])
+
+    def test_a_folder_that_stays_connected_is_closed_to_new_files(self):
+        """Deep check 391, run with real mounts: a folder that took new files, replaced
+        or taken back while an app held it open, stayed connected read-write. Setup said
+        "nothing new is written there", and the apps went on saving into it."""
+        point = str(self.pc.media / 'library' / 'existing' / 'movies')
+        said = []
+
+        def use(config):
+            how = self.pc.how()
+            return existing_media.use_in_place(config, run=self.run_tool, fstab=self.pc.fstab, log=said.append, **how)
+
+        closed = ['mount', '-o', 'remount,bind,ro', point]
+        use(self.pc.chosen(new_files=True))
+        self.pc.bound_from[point] = str(self.pc.nas / 'old films')  # the folder was changed since
+        self.busy.add(point)
+        self.ran.clear()
+        (row,) = use(self.pc.chosen())
+        self.assertEqual(self.ran[-2:], [['umount', point], closed])
+        self.assertIn(
+            'is still connected to the library (an app has it open). Nothing new is written there.', row['reason']
+        )
+        # Taken back instead: the same.
+        self.ran.clear()
+        use(self.pc.config)
+        self.assertEqual(self.ran[-2:], [['umount', point], closed])
+        self.assertIn('so it was left. Nothing new is written there. Restart the PC', said[-1])
+        # An app is writing a file there this moment: said as it is, never promised.
+        use(self.pc.chosen(new_files=True))
+        self.written.add(point)
+        (row,) = use(self.pc.chosen())
+        self.assertNotIn('Nothing new is written there', row['reason'])
+        self.assertIn('until the restart, new files may still be saved in it', row['reason'])
+        # The check says what the mount itself says, not what was hoped.
+        for writable, words in ((True, 'new files may still be saved in it'), (False, 'Nothing new is written there.')):
+            with mock.patch.object(existing_media, 'takes_new_files', return_value=writable):
+                (state,) = existing_media.available(self.pc.chosen(), **self.pc.how())
+            self.assertFalse(state['ready'])
+            self.assertIn(words, state['reason'])
+
+    def test_a_folder_taken_back_is_disconnected(self):
+        config = self.pc.chosen()
+        self.use(config)
+        point = str(self.pc.media / 'library' / 'existing' / 'movies')
+        self.ran.clear()
+        self.use(self.pc.config)
+        self.assertIn(['umount', point], self.ran)
+        self.assertNotIn(point, self.pc.bound)
 
     def test_a_block_without_its_end_line_stops_before_any_line_is_lost(self):
         mine = 'UUID=7 /mnt/my-backups ext4 defaults 0 2'
@@ -575,7 +723,8 @@ class Jellyfin:
         if method == 'GET':
             return self.libraries
         query = {name: values[0] for name, values in urllib.parse.parse_qs(endpoint.split('?')[1]).items()}
-        self.libraries.append({'Name': query['name'], 'Locations': [query['paths']], 'ItemId': '9'})
+        made = {'Name': query['name'], 'Locations': [query['paths']], 'ItemId': '9'}
+        self.libraries.append({**made, 'CollectionType': query['collectionType']})
         return {}
 
 
@@ -601,7 +750,49 @@ class LibraryTests(unittest.TestCase):
         # Run again: there already, nothing made twice.
         client.calls.clear()
         self.assertEqual(self.libraries(client)[0]['status'], 'pass')
-        self.assertEqual([method for method, _ in client.calls], ['GET'])
+        self.assertEqual({method for method, _ in client.calls}, {'GET'})
+
+    def test_the_folder_in_a_library_of_another_kind_is_not_passed(self):
+        """Review of 0.51.2: the folder of films in a music library passed, on its path."""
+        for kind, said in (('music', 'which is for music, not for movies'), (None, 'which is for mixed content')):
+            mine = {'Name': 'Mine', 'Locations': ['/data/existing/movies/'], 'CollectionType': kind, 'ItemId': '4'}
+            client = Jellyfin([mine])
+            (row,) = self.libraries(client)
+            self.assertEqual(row['status'], 'needs_setup', kind)
+            self.assertIn(said, row['reason'])
+            self.assertIn('remove "Mine" (this deletes no files)', row['reason'])
+            self.assertEqual(client.libraries, [mine])  # theirs: left as it is
+        # Of the right kind (the person's own library for films): passed as before.
+        client = Jellyfin([{**mine, 'CollectionType': 'movies'}])
+        self.assertEqual(self.libraries(client), [{'check': 'jellyfin:existing:movies', 'status': 'pass'}])
+
+    def test_a_library_left_from_a_folder_taken_back_is_said(self):
+        """Deep check 391: the folder taken back (or copied into the library instead)
+        after Jellyfin got its library. Setup disconnects the folder; Jellyfin went on
+        listing its films, none of which played, and nothing said so."""
+        client = Jellyfin()
+        self.assertEqual(self.libraries(client), [{'check': 'jellyfin:existing:movies', 'status': 'pass'}])
+        taken_back = existing_media.without_choice(self.config, 'movies')
+        client.calls.clear()
+        (row,) = self.libraries(client, config=taken_back)
+        self.assertEqual((row['check'], row['status']), ('jellyfin:existing:movies', 'needs_setup'))
+        self.assertIn('Jellyfin still has the library "Movies (your folder)"', row['reason'])
+        self.assertIn('remove "Movies (your folder)" (this deletes no files)', row['reason'])
+        self.assertEqual(len(client.libraries), 1)  # the library is the person's to remove
+        self.assertEqual({method for method, _ in client.calls}, {'GET'})
+        # Removed in Jellyfin: nothing left to say. A library elsewhere is nobody's business.
+        client.libraries[:] = [{'Name': 'Mine', 'Locations': ['/data/movies', '/media/films'], 'ItemId': '2'}]
+        self.assertEqual(self.libraries(client, config=taken_back), [])
+
+    def test_the_library_step_is_reached_once_every_folder_is_taken_back(self):
+        import existing_page
+
+        taken_back = existing_media.without_choice(self.config, 'movies')
+        self.assertIsNone(existing_page.libraries(taken_back))  # never asked: nothing to look for
+        taken_back[existing_page.ANSWERED] = ['movies']
+        client = Jellyfin([{'Name': 'Movies (your folder)', 'Locations': ['/data/existing/movies'], 'ItemId': '9'}])
+        (row,) = existing_page.libraries(taken_back, apply=True)(client)
+        self.assertEqual(row['status'], 'needs_setup')
 
     def test_a_preview_and_a_share_that_is_away_make_nothing(self):
         client = Jellyfin()
@@ -951,6 +1142,18 @@ class Navidrome:
     def __init__(self, admin=True, libraries=True):
         self.admin, self.libraries, self.seen = admin, libraries, []
         self.have = [{'id': 1, 'name': 'Music Library', 'path': '/music'}]
+        # Its users, and the libraries each one who is not an administrator may play
+        # ({user id: [library ids]}); `stuck`: a Navidrome that refuses to change them.
+        self.users, self.may_play, self.stuck = [], {}, False
+
+    def user_libraries(self, asked, user, body):
+        import urllib.error
+
+        if asked.get_method() == 'PUT':
+            if self.stuck or next(x for x in self.users if x['id'] == user)['isAdmin']:
+                raise urllib.error.HTTPError(asked.full_url, 400, 'no', {}, io.BytesIO())
+            self.may_play[user] = body['libraryIds']
+        return Answer([x for x in self.have if x['id'] in self.may_play.get(user, [])])
 
     def open(self, asked, timeout=None):
         import json
@@ -965,6 +1168,10 @@ class Navidrome:
             return Answer({'token': 'tok', 'isAdmin': self.admin})
         if not self.libraries:
             raise urllib.error.HTTPError(asked.full_url, 404, 'no', {}, io.BytesIO())
+        if path == '/api/user':
+            return Answer(self.users)
+        if path.startswith('/api/user/'):
+            return self.user_libraries(asked, path.split('/')[3], body)
         if asked.get_method() == 'POST':
             self.have.append({'id': 2, **body})
         return Answer(self.have)
@@ -980,19 +1187,72 @@ class MusicTests(unittest.TestCase):
         self.config = existing_media.with_choice(self.pc.config, existing_media.entry_for('music', found))
         self.pc.bound[str(self.pc.ssd / 'library/existing/music')] = '78'
 
-    def libraries(self, navidrome, saved, config=None):
+    def libraries(self, navidrome, saved, config=None, listener=None):
         def api(username, password):
             return existing_media.navidrome_api(username, password, 'http://127.0.0.1:4533', navidrome)
 
-        with mock.patch.object(existing_media.account_store, 'get', return_value=saved) as asked:
+        def logins(config, app, verified=False):
+            return listener if app == 'navidrome_listener' else saved
+
+        with mock.patch.object(existing_media.account_store, 'get', side_effect=logins) as asked:
             rows = existing_media.music_libraries(config or self.config, True, api, **self.pc.how())
         return rows, asked
+
+    def with_users(self):
+        """A Navidrome with the administrator, NekoServer's listener (given the one
+        library there was when setup made it) and a user the person made themselves."""
+        navidrome = Navidrome()
+        navidrome.users = [
+            {'id': 'a', 'userName': 'neko', 'isAdmin': True},
+            {'id': 'b', 'userName': 'listener', 'isAdmin': False},
+            {'id': 'c', 'userName': 'guest', 'isAdmin': False},
+        ]
+        navidrome.may_play = {'b': [1], 'c': [1]}
+        return navidrome
+
+    def test_the_listener_may_play_a_folder_added_after_it_was_made(self):
+        """Review of 0.51.2: Navidrome shows a user who is not an administrator only the
+        libraries given to them, and setup gave them once, when it made the listener: the
+        music check (and a phone signed in as the listener) never saw the folder."""
+        navidrome = self.with_users()
+        admin, listener = {'username': 'neko', 'password': 'right'}, {'username': 'listener', 'password': 'x'}
+        rows, _ = self.libraries(navidrome, admin, listener=listener)
+        self.assertEqual(rows, [{'check': 'navidrome:existing:music', 'status': 'pass'}])
+        self.assertIn(('PUT', '/api/user/b/library', {'libraryIds': [1, 2]}, 'Bearer tok'), navidrome.seen)
+        # Only the login NekoServer keeps: the administrator sees everything anyway, and a
+        # user the person made is theirs to decide about.
+        self.assertEqual(navidrome.may_play, {'b': [1, 2], 'c': [1]})
+        # Run again, as on a server that already had the library without it: nothing is
+        # changed twice; a listener that lost it gets it back.
+        navidrome.seen.clear()
+        self.libraries(navidrome, admin, listener=listener)
+        self.assertNotIn('PUT', [method for method, *_ in navidrome.seen])
+        navidrome.may_play['b'] = [1]
+        self.libraries(navidrome, admin, listener=listener)
+        self.assertEqual(navidrome.may_play['b'], [1, 2])
+
+    def test_the_login_the_music_check_uses_may_play_it_too(self):
+        navidrome = self.with_users()
+        saved = existing_media.music_client.credential_path(self.config)
+        saved.parent.mkdir(parents=True)
+        saved.write_text('{"user": "guest"}')
+        self.libraries(navidrome, {'username': 'neko', 'password': 'right'})
+        self.assertEqual(navidrome.may_play, {'b': [1], 'c': [1, 2]})
+
+    def test_a_listener_navidrome_would_not_change_is_a_step_left_with_what_to_do(self):
+        navidrome = self.with_users()
+        navidrome.stuck = True
+        login = {'username': 'neko', 'password': 'right'}
+        (row,), _ = self.libraries(navidrome, login, listener={'username': 'listener', 'password': 'x'})
+        self.assertEqual(row['status'], 'needs_setup')
+        self.assertIn('the login "listener" could not be allowed to play it', row['reason'])
+        self.assertIn('tick the library "Music (your folder)"', row['reason'])
 
     def test_navidrome_is_signed_in_to_as_its_administrator_and_given_the_folder(self):
         navidrome = Navidrome()
         rows, asked = self.libraries(navidrome, {'username': 'neko', 'password': 'right'})
         self.assertEqual(rows, [{'check': 'navidrome:existing:music', 'status': 'pass'}])
-        asked.assert_called_once_with(self.config, 'navidrome', verified=True)
+        asked.assert_any_call(self.config, 'navidrome', verified=True)
         self.assertEqual(navidrome.seen[0], ('POST', '/auth/login', {'username': 'neko', 'password': 'right'}, None))
         added = {'name': 'Music (your folder)', 'path': '/data/existing/music'}
         self.assertIn(('POST', '/api/library', added, 'Bearer tok'), navidrome.seen)

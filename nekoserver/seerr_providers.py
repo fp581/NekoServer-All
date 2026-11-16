@@ -160,15 +160,24 @@ def existing_verified(app, existing, folders, available, languages):
     """The provider that is there already, checked and kept as it is. `folders`: (the
     library's own folder, the folder requests are to be saved in)."""
     library, directory = folders
-    if same_folder(existing.get('activeDirectory', ''), library) and library != directory:
+    has = str(existing.get('activeDirectory', '')).rstrip('/')
+    if has == library and library != directory:
         # Chosen after the provider was made: its folder is the person's to change.
         raise SetupRequired(
             f'Requests are still saved in {library}. To save them in your own folder, open Seerr, Settings, '
             f'Services, {app.capitalize()}, and choose the root folder {directory}'
         )
-    if not same_folder(existing.get('activeDirectory', ''), directory) or not any(
-        p['id'] == existing.get('activeProfileId') for p in available
-    ):
+    if has != directory and OWN_FOLDER.fullmatch(has):
+        # The other way round: new files were to go to a folder of the person's, and the
+        # settings no longer say so (the switch taken back, or another folder chosen for
+        # them). That folder is read-only for the apps now, or not connected at all, so a
+        # request would be downloaded and never reach the library.
+        raise SetupRequired(
+            f'Requests are still saved in {has}, the folder of yours that took new files before. The settings no '
+            f'longer name it for them, so the apps can no longer save there and a request would not arrive. Open '
+            f'Seerr, Settings, Services, {app.capitalize()}, and choose the root folder {directory}'
+        )
+    if has != directory or not any(p['id'] == existing.get('activeProfileId') for p in available):
         raise SetupRequired('Existing provider root/quality profile is not valid; settings preserved')
     if languages and not any(p['id'] == existing.get('activeLanguageProfileId') for p in languages):
         raise SetupRequired('Existing Sonarr language profile is invalid; settings preserved')

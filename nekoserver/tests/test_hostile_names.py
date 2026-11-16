@@ -69,6 +69,19 @@ class LookAlikeShareTests(unittest.TestCase):
         for name in ('Media', 'Música', 'Медиа', 'Photos_2024'):
             self.assertEqual(str(samba.validate_share(name, 'Media')), 'Media', name)
 
+    def test_a_share_name_or_folder_that_cannot_be_used_is_named_with_what_to_do(self):
+        """Deep check 486: "Invalid SMB share name" named neither the share nor the rule, and a
+        folder "Música" was refused as using something other than "letters"."""
+        from modules import samba
+
+        with self.assertRaises(RuntimeError) as said:
+            samba.validate_share('My Photos', 'photos')
+        self.assertIn('The share name "My Photos" cannot be used', str(said.exception))
+        self.assertIn('under "shares" in my-config.json', str(said.exception))
+        with self.assertRaises(RuntimeError) as said:
+            samba.validate_share('Music', 'Música')
+        self.assertIn('only the letters A to Z', str(said.exception))
+
 
 if __name__ == '__main__':
     unittest.main()

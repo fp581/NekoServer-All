@@ -29,6 +29,55 @@ def answers(*values):
     return lambda question='': next(it)
 
 
+class DeletedPhotoTests(unittest.TestCase):
+    """Deep check 501 (week 4 of a household): a photo taken on Tuesday, deleted on Thursday.
+    The guide and the recovery menu went straight to the weekly backups, which do not hold it
+    yet (the photo archive runs on Sundays): the person found nothing, and was never told that
+    Immich keeps it in its Trash for 30 days."""
+
+    def said(self, config):
+        out = []
+        recovery_wizard.restore_section(config, answers('0'), out.append)
+        return '\n'.join(out)
+
+    def test_the_restore_list_says_to_look_in_the_apps_trash_first(self):
+        said = self.said({'media_mount': '/nonexistent/hdd', 'data_mount': '/nonexistent/ssd'})
+        self.assertIn('Look in the app\'s own trash first', said)
+        self.assertIn('"Trash"', said)
+        self.assertIn('"Deleted files"', said)
+        self.assertLess(said.index('trash first'), said.index('What would you like to restore?'))
+
+    def test_a_server_without_immich_or_nextcloud_is_not_told_about_their_trash(self):
+        config = {
+            'media_mount': '/nonexistent/hdd',
+            'data_mount': '/nonexistent/ssd',
+            'media_apps': {'photos': False, 'movies': True, 'music': False},
+            'nextcloud': {'enabled': False},
+        }
+        self.assertNotIn('trash first', self.said(config))
+
+    def test_recovery_md_sends_a_deleted_photo_to_the_trash_first(self):
+        table = doc('RECOVERY.md').split('## Which situation are you in?')[1].split('\n## ')[0]
+        for words, trash in (('deleted photos', "Immich's Trash"), ('lost files in Nextcloud', 'Deleted files')):
+            row = next(line for line in table.splitlines() if words in line)
+            self.assertLess(row.index(trash), row.index('Recovery menu'), row)
+
+
+class FamilyLoginTests(unittest.TestCase):
+    """Deep checks 492 and 507: a second person's phone added to Immich, a child's tablet
+    with a Jellyfin login. No guide said how to give someone an Immich login of their own
+    (the second phone signed in as the owner, and every photo landed in one library), nor how
+    to keep a child to what they may see."""
+
+    def test_the_readme_says_how_to_add_someone_in_each_app(self):
+        part = doc('README.md').split('**Someone else in the family.**')[1].split('\n**')[0]
+        self.assertIn('Create user', part)  # Immich
+        self.assertIn('their own library', part)
+        self.assertIn('Accounts', part)  # Nextcloud
+        self.assertIn('Parental control', part)  # Jellyfin, for a child
+        self.assertIn('Seerr', part)
+
+
 class DeletedFilmTests(unittest.TestCase):
     """Deep check 253: a film deleted by mistake. The recovery menu listed photos, Nextcloud
     files, passwords and settings, and said nothing about films: the beginner looked for a
@@ -91,6 +140,23 @@ class ForgottenBackupPasswordTests(unittest.TestCase):
         self.assertEqual((self.keys / (backup_secrets.KEY_NAME + '.before-T')).read_bytes(), old)
         self.assertTrue((self.keys / (backup_secrets.CERT_NAME + '.before-T')).is_file())
         self.assertIn('sudo bash install.sh', self.out[-1])
+
+    def test_the_key_in_use_stays_in_place_while_the_new_password_is_asked(self):
+        """Review of 0.51.2 (P2): the key was moved aside before the question, so a backup
+        running while the person typed found no key and kept the passwords unencrypted."""
+        old = (self.keys / backup_secrets.KEY_NAME).read_bytes()
+        seen = []
+
+        def typed(prompt=''):
+            seen.append(
+                backup_secrets.configured(self.keys) and (self.keys / backup_secrets.KEY_NAME).read_bytes() == old
+            )
+            return 'second password'
+
+        backup_secrets.new_password(typed, self.out.append, self.keys, 'T', usb_copy=lambda: True)
+        self.assertEqual(seen, [True, True])
+        self.assertTrue(backup_secrets.unlocks('second password', self.keys / backup_secrets.KEY_NAME))
+        self.assertEqual([p.name for p in self.keys.iterdir() if p.name.startswith('.new-key')], [])
 
     def test_without_a_usb_copy_setup_is_not_said_to_make_a_new_list(self):
         """Deep check 360: only the weekly USB copy's step seals a list at setup, so on a

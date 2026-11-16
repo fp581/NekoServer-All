@@ -387,8 +387,8 @@ class Card:
         # /mnt itself too (`sudo mount /dev/sdb1 /mnt` is a usual way to mount a card).
         if not (top == own or any((top + '/').startswith(root) for root in CARD_ROOTS)):
             raise Unusable(
-                '%s is not where a card is mounted. Mount the card under /media or /mnt (as Linux does '
-                'by itself), or run this tool from the card' % show(top)
+                '%s is not where a card is mounted. Mount the card under /media, /run/media or /mnt (a '
+                'desktop does that by itself), or run this tool from the card' % show(top)
             )
         try:
             self.top = open_dir(top)
@@ -529,8 +529,13 @@ def check_copy(card, rec):
 def holds_text(path, text):
     """Whether `path` holds `text`, as plain text (no pattern), with accented letters
     compared as letters: "é" typed on Linux is one character, the same "é" in a name from
-    a Mac or a phone is two (e and an accent), and the search found nothing."""
-    return unicodedata.normalize('NFC', text) in unicodedata.normalize('NFC', path)
+    a Mac or a phone is two (e and an accent), and the search found nothing. Upper and
+    lower case are alike too: "beach" finds "2021/Beach Trip" (deep check 488)."""
+
+    def plain(words):
+        return unicodedata.normalize('NFC', words).casefold()
+
+    return plain(text) in plain(path)
 
 
 def selected(card, search=None, record_ids=None):
@@ -876,8 +881,12 @@ class Progress:
         if mode == 'a':
             self.out = open(self.path, 'a', encoding='utf-8')  # noqa: SIM115 (closed by close())
             return
-        temp = self.path + '.new'
-        with open(temp, 'w', encoding='utf-8') as f:
+        # A new file of a name nobody else has, made only if it is not there (review of
+        # 0.51.2: the fixed name "<progress file>.new" was opened for writing whatever it
+        # was, so a file or link of that name was overwritten).
+        temp = '%s.%s.new' % (self.path, os.urandom(4).hex())
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
             f.write(json.dumps({'format': PROGRESS_FORMAT, 'version': 2}) + '\n')
             for version_id, entry in self.done.items():
                 f.write(json.dumps(dict(entry, version_id=version_id), ensure_ascii=False) + '\n')
@@ -906,11 +915,10 @@ class Progress:
         entry = self._entry(rec['version_id'])
         if entry is None:
             return False
-        try:
-            st = os.stat(entry['path'], dir_fd=dest_fd, follow_symlinks=False)
-        except (OSError, ValueError):
-            return False
-        return stat.S_ISREG(st.st_mode) and st.st_size == rec['byte_size']
+        # Done before only when the file is still there with the record's own bytes (review
+        # of 0.51.2: its size alone was looked at, so a file damaged since, at the same
+        # size, was reported as restored and never copied again).
+        return holds(dest_fd, entry['path'], rec['checksum'])
 
     def at_original(self, rec):
         """(version ID, entry) of another version of rec's file restored under its own name
@@ -1103,10 +1111,14 @@ def one_version(card, rec, dest_fd, choices, chosen):
     replacing_ours = False
     if earlier is not None and entry_age(earlier[1]) is not None:
         earlier_version, earlier_entry = earlier
-        if entry_age(earlier_entry) > age(rec):
+        there = holds(dest_fd, earlier_entry['path'], earlier_entry.get('sha256'))
+        # A newer version restored before counts only while it is still there (review of
+        # 0.51.2: with it deleted or damaged since, this older copy, the best one at hand,
+        # was left on the card as "a newer version is restored").
+        if entry_age(earlier_entry) > age(rec) and there:
             return older(card, rec, dest_fd, choices, earlier_entry['path'])
         # An older version this restore put there itself, unchanged since: replaced.
-        replacing_ours = holds(dest_fd, earlier_entry['path'], earlier_entry.get('sha256'))
+        replacing_ours = there and entry_age(earlier_entry) <= age(rec)
     overwrite = choices.overwrite | {rec['original_relative_path']} if replacing_ours else choices.overwrite
     outcome, where = restore_one(card, rec, dest_fd, choices.rename, overwrite, choices.listing)
     if outcome == 'restored' and replacing_ours:
@@ -1355,7 +1367,8 @@ def cmd_list(card, args, say):
         )
     for where_, why in unusable:
         say(UNUSABLE % (where_, why))
-    say('%d file(s)' % len(records))
+    # In words: "0 file(s)" read like a fault in the tool, not like a count.
+    say('%d %s' % (len(records), 'file' if len(records) == 1 else 'files'))
     return 1 if unusable else 0
 
 
@@ -1417,11 +1430,11 @@ def main(argv=None, say=print):
     sub.add_parser('info', help='what this card is')
     for name, helptext in (('list', 'the files on this card'), ('verify', 'check every file against its record')):
         p = sub.add_parser(name, help=helptext)
-        p.add_argument('--search', help='only paths that contain this text')
+        p.add_argument('--search', help='only paths that contain this text (upper and lower case alike)')
         p.add_argument('--record', action='append', help='only this record ID (may be repeated)')
     p = sub.add_parser('restore', help='restore files into a folder')
     p.add_argument('destination', help='an existing folder')
-    p.add_argument('--search', help='only paths that contain this text')
+    p.add_argument('--search', help='only paths that contain this text (upper and lower case alike)')
     p.add_argument('--record', action='append', help='only this record ID (may be repeated)')
     p.add_argument('--rename', action='store_true', help='a file whose place is taken goes under _renamed/')
     p.add_argument('--overwrite', action='append', help='overwrite this one file (its original path); may be repeated')

@@ -150,6 +150,48 @@ class InstallerFlowTests(unittest.TestCase):
             self.assertEqual(installer.main(['--recover', '--config', str(self.config)]), 130)
         self.assertIn('sudo bash install.sh --recover', printed[-1])
 
+    def test_a_closed_terminal_stops_setup_as_ctrl_c_does(self):
+        """Deep check 457: a closed terminal or a dropped SSH connection (SIGHUP), and a
+        `kill` or the PC shutting down (SIGTERM), ended setup on the spot. Nothing a step
+        tidies in a finally block ran: the USB drive mounted to measure it stayed mounted
+        read-only, where the weekly copy could not use it. Run as a program of its own (the
+        signal ended the whole Python before), with the step stood in for."""
+        import signal
+        import subprocess
+
+        program = (
+            'import os, signal, sys, time\n'
+            f'sys.path.insert(0, {str(ROOT)!r})\n'
+            'import installer\n'
+            'def step(args):\n'
+            '    print("mounted", flush=True)\n'
+            '    try:\n'
+            '        os.kill(os.getpid(), getattr(signal, sys.argv[1]))\n'
+            '        time.sleep(30)\n'
+            '    finally:\n'
+            '        print("unmounted", flush=True)\n'
+            'installer.execute = step\n'
+            'installer.settings_for = lambda args, parser: None\n'
+            'code = installer.main(["--all"])\n'
+            'print("handlers back:", signal.getsignal(signal.SIGHUP) is signal.SIG_DFL, flush=True)\n'
+            'sys.exit(code)\n'
+        )
+        for name in ('SIGHUP', 'SIGTERM'):
+            with self.subTest(name):
+                # SIGHUP is not ignored here, as it is not at a terminal (nohup would hand it on ignored).
+                ran = subprocess.run(
+                    [sys.executable, '-c', program, name],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    check=False,
+                    preexec_fn=lambda: signal.signal(signal.SIGHUP, signal.SIG_DFL),
+                )
+                self.assertEqual(ran.returncode, 130, ran.stderr)
+                self.assertEqual(ran.stdout.splitlines(), ['mounted', 'unmounted', 'handlers back: True'])
+                self.assertIn('continues where it stopped', ran.stderr)
+                self.assertNotIn('Traceback', ran.stderr)
+
     def test_a_slip_in_setups_own_code_says_what_to_do(self):
         """Deep check 291: a KeyError recorded only "'data_ssd'", shown as is on the
         finishing screen and the dashboard."""

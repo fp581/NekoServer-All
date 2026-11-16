@@ -278,7 +278,65 @@ fn configured(app: &str, endpoint: &str, rows: &[Value], selected: &[&str], data
 fn readiness_row(rows: &mut Value, id: &str, state: &str, reason: &str) {
     rows[id] = json!({"result":state,"reason":reason});
 }
-fn provider(data: &Path, key: &str, app: &str) -> Result<bool> {
+/// The folder the settings save new films or shows in, as the apps see it: the person's
+/// own folder chosen for them under "placement" ("save new ones here too"), else the
+/// library's own. The rule of existing_media.new_files_folder, which setup gives Seerr's
+/// provider (tests/fixtures/request_folder_cases.json has the cases both run). None when
+/// the list is not one setup accepts: then the provider's own folder is judged alone.
+fn chosen_folder(cfg: &Value, app: &str) -> Option<String> {
+    let kind = match app {
+        "sonarr" => "tv",
+        "radarr" => "movies",
+        _ => return None,
+    };
+    // Films' and shows' folders are listed in the "movies" row.
+    let entries = match &cfg["placement"]["movies"]["extra"] {
+        Value::Null => vec![],
+        Value::Array(rows) => rows.iter().collect(),
+        _ => return None,
+    };
+    // The (kind, use) pairs listed, and the kinds given a place for new ones: setup
+    // refuses settings that list one twice, or name two places for new ones.
+    let mut seen = vec![];
+    let mut writable = vec![];
+    let mut found = None;
+    for entry in entries {
+        let holds = entry["holds"].as_str()?;
+        let used = entry["use"]
+            .as_str()
+            .filter(|u| ["in_place", "new_files"].contains(u))?;
+        let new_files = match &entry["new_files"] {
+            Value::Null => used == "new_files",
+            Value::Bool(new_files) => *new_files,
+            _ => return None,
+        };
+        let complete = ["path", "mount", "share", "fstype"]
+            .iter()
+            .all(|key| entry[*key].is_string());
+        if !["movies", "tv"].contains(&holds)
+            || seen.contains(&(holds, used))
+            || !complete
+            || (used == "new_files" && !new_files)
+            || (new_files && writable.contains(&holds))
+        {
+            return None;
+        }
+        seen.push((holds, used));
+        if new_files {
+            writable.push(holds);
+        }
+        if holds == kind && new_files {
+            found = Some(if used == "in_place" {
+                format!("/data/existing/{kind}")
+            } else {
+                format!("/data/existing/{kind}-new")
+            });
+        }
+    }
+    Some(found.unwrap_or_else(|| directory(app).to_string()))
+}
+/// `chosen`: the folder the settings save new ones in (chosen_folder), when known.
+fn provider(data: &Path, key: &str, app: &str, chosen: Option<&str>) -> Result<bool> {
     let values = seerr(key, &format!("/settings/{app}"))?;
     let values = array(&values)?;
     if values.iter().any(|v| !v["is4k"].is_boolean()) {
@@ -316,6 +374,13 @@ fn provider(data: &Path, key: &str, app: &str) -> Result<bool> {
     let Some(folder) = request_folder(app, text(&p["activeDirectory"])) else {
         return Ok(false);
     };
+    // A folder chosen for new ones before, and taken back since (setup names it, and
+    // the folder to choose in Seerr instead), no longer takes new files: a request
+    // saved there is downloaded and never arrives. It passed on its path alone (deep
+    // check 429; setup's own check is told the folder since deep check 391).
+    if chosen.is_some_and(|chosen| chosen != folder) {
+        return Ok(false);
+    }
     if p["isDefault"] != true
         || p["hostname"] != app
         || p["port"] != normal_port
@@ -389,7 +454,7 @@ fn music_catalogue(data: &Path) -> Result<&'static str> {
     if m.uid() != 0 || m.mode() & 0o077 != 0 {
         return Err(Error::new("Private music credential required"));
     }
-    let value: Value = serde_json::from_slice(&common::bytes(&path, 64000)?)?;
+    let value = common::json_from(&path, 64000)?;
     let user = text(&value["user"]);
     let salt = text(&value["salt"]);
     let token = text(&value["token"]);
@@ -464,7 +529,7 @@ fn jellyfin_key(data: &Path, saved: &Value, server_id: &str) -> Option<String> {
     (!server_id.is_empty() && linked == server_id && !key.is_empty()).then(|| key.to_string())
 }
 
-fn readiness(data: &Path, selected: &[&str]) -> Value {
+fn readiness(cfg: &Value, data: &Path, selected: &[&str]) -> Value {
     let mut rows = json!({});
     let settings = if selected.contains(&"seerr") {
         common::json(&data.join("appdata/seerr/settings.json"), 2_000_000)
@@ -572,7 +637,7 @@ fn readiness(data: &Path, selected: &[&str]) -> Value {
             let outcome = if key.is_empty() {
                 Ok(false)
             } else {
-                provider(data, key, app)
+                provider(data, key, app, chosen_folder(cfg, app).as_deref())
             };
             readiness_row(
                 &mut rows,
@@ -622,6 +687,21 @@ fn writable_as_expected(app: &str, expected: bool, actual: &Value, checking: boo
     *actual == expected
         || (checking && expected && LIBRARY_WRITERS.contains(&app) && *actual == false)
 }
+/// The app's own data folder (`expected`) is mounted where the app keeps it, writable:
+/// its settings and database are written there. Read-only, the folder was the right one
+/// and the app still could not work, and this passed on the path alone (the review of
+/// 0.51.2 found the same in the acceptance check; deep check 428 here). A monthly update
+/// never makes it read-only (maintenance.rs quarantined leaves /config as it is).
+fn own_data_mounted(app: &str, mounts: &[Value], expected: &Path) -> bool {
+    let target = match app {
+        "seerr" => "/app/config",
+        "navidrome" => "/data",
+        _ => "/config",
+    };
+    mounts.iter().any(|m| {
+        Path::new(text(&m["Source"])) == expected && m["Destination"] == target && m["RW"] == true
+    })
+}
 /// `checking`: a monthly update is checking the apps before it commits, with the
 /// library mounts of the apps that import, move or delete media made read-only.
 /// `music`: the drive that holds the music library and its downloads (setup's choice).
@@ -654,16 +734,7 @@ fn inspect(app: &str, data: &Path, media: &Path, music: &Path, checking: bool) -
         .get("nekoserver-media")
         .is_some();
     let mounts = array(&item["Mounts"])?;
-    let expected = data.join(format!("appdata/{app}"));
-    let appdata = mounts.iter().any(|m| {
-        Path::new(text(&m["Source"])) == expected
-            && m["Destination"]
-                == match app {
-                    "seerr" => "/app/config",
-                    "navidrome" => "/data",
-                    _ => "/config",
-                }
-    });
+    let appdata = own_data_mounted(app, mounts, &data.join(format!("appdata/{app}")));
     let expected_media = match app {
         "jellyfin" => vec![("movies", "/data/movies", false), ("tv", "/data/tv", false)],
         "navidrome" => vec![("music", "/music", false)],
@@ -745,6 +816,23 @@ pub(crate) fn answers(port: u16) -> Option<u16> {
     })();
     result.unwrap_or(None)
 }
+/// The apps to check: those of media.services whose groups are on (common::media_services).
+/// A group switched off at a later setup run (Music, say) stays in the list, its apps
+/// stopped and their data kept: checked anyway, they failed every hour on the dashboard,
+/// and the monthly update, which needs this check to pass, never ran again (deep check 750).
+fn checked_apps(cfg: &Value) -> Result<Vec<&str>> {
+    let listed = cfg["media"]["services"]
+        .as_array()
+        .ok_or_else(|| Error::new("Media services required"))?;
+    if listed.iter().any(|a| !MEDIA_APPS.contains(&text(a))) {
+        return Err(Error::new("Invalid media services"));
+    }
+    let selected = common::media_services(cfg);
+    if selected.is_empty() {
+        return Err(Error::new("Invalid media services"));
+    }
+    Ok(selected)
+}
 pub fn run(a: &Args) -> Result<()> {
     common::require_root()?;
     let config = a.path("config")?;
@@ -770,15 +858,7 @@ pub fn run(a: &Args) -> Result<()> {
     } else {
         common::lock(lock)?
     };
-    let selected = cfg["media"]["services"]
-        .as_array()
-        .ok_or_else(|| Error::new("Media services required"))?
-        .iter()
-        .map(text)
-        .collect::<Vec<_>>();
-    if selected.is_empty() || selected.iter().any(|a| !MEDIA_APPS.contains(a)) {
-        return Err(Error::new("Invalid media services"));
-    }
+    let selected = checked_apps(&cfg)?;
     let mut services = json!({});
     let mut integrations = json!({});
     let checking = a.flag("checking");
@@ -828,7 +908,7 @@ pub fn run(a: &Args) -> Result<()> {
         }
         integrations[app] = row;
     }
-    let readiness = readiness(&data, &selected);
+    let readiness = readiness(&cfg, &data, &selected);
     let mut counts = json!({"pass":0,"warning":0,"fail":0,"needs_setup":0});
     for group in [&services, &integrations, &readiness] {
         for row in group.as_object().unwrap().values() {
@@ -858,6 +938,43 @@ mod tests {
             .iter()
             .map(|(n, v)| json!({"name": n, "value": v}))
             .collect::<Vec<_>>())
+    }
+    /// Deep check 750: Music switched off at a later setup run. Navidrome and Lidarr were
+    /// stopped, still listed, and checked as failed every hour, which also held every
+    /// monthly update back (maintenance needs this check to pass).
+    #[test]
+    fn apps_of_a_group_switched_off_are_not_checked() {
+        let all = json!([
+            "jellyfin",
+            "navidrome",
+            "sonarr",
+            "radarr",
+            "lidarr",
+            "prowlarr",
+            "seerr",
+            "qbittorrent"
+        ]);
+        let cfg =
+            json!({"media": {"services": all}, "media_apps": {"movies": true, "music": false}});
+        assert_eq!(
+            checked_apps(&cfg).unwrap(),
+            [
+                "jellyfin",
+                "sonarr",
+                "radarr",
+                "prowlarr",
+                "seerr",
+                "qbittorrent"
+            ]
+        );
+        // A server from before the groups checks its whole list, as before.
+        let before = json!({"media": {"services": all}});
+        assert_eq!(checked_apps(&before).unwrap().len(), 8);
+        // A name it does not know is still refused, even in a group that is off.
+        let wrong = json!({"media": {"services": ["jellyfin", "plex"]}});
+        assert!(checked_apps(&wrong).is_err());
+        let none = json!({"media": {"services": ["navidrome"]}, "media_apps": {"music": false}});
+        assert!(checked_apps(&none).is_err());
     }
     /// "Save new ones here too": Seerr's provider may save into the person's own folder,
     /// and the readiness check does not call that a changed provider. Anything else is.
@@ -984,6 +1101,51 @@ mod tests {
             );
             assert_eq!(got.as_deref(), case["expected"].as_str(), "case {name}");
             let _ = std::fs::remove_dir_all(&root);
+        }
+    }
+    /// Deep check 429: the folder the settings save new ones in, as setup reads them
+    /// (`tests/test_seerr_folders.py` runs the same cases against Python).
+    #[test]
+    fn the_chosen_folder_matches_the_shared_fixture() {
+        let cases: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/request_folder_cases.json"
+        ))
+        .unwrap();
+        for case in cases.as_array().unwrap() {
+            let cfg = json!({"placement": case["placement"]});
+            for app in ["radarr", "sonarr"] {
+                assert_eq!(
+                    chosen_folder(&cfg, app).as_deref(),
+                    case["expected"][app].as_str(),
+                    "{} ({app})",
+                    case["name"]
+                );
+            }
+        }
+        assert_eq!(chosen_folder(&json!({}), "lidarr"), None);
+    }
+    /// Deep check 428 (the real check run against a stand-in Docker): Radarr's and
+    /// Seerr's own data mounted read-only passed, on its path alone.
+    #[test]
+    fn app_data_the_app_cannot_write_to_is_not_its_data_mounted() {
+        let data = Path::new("/srv/nekoserver/appdata");
+        for (app, target) in [
+            ("radarr", "/config"),
+            ("seerr", "/app/config"),
+            ("navidrome", "/data"),
+        ] {
+            let folder = data.join(app);
+            let mount = |rw: bool| json!([{"Type": "bind", "Source": folder.to_str().unwrap(), "Destination": target, "RW": rw}]);
+            let writable = mount(true);
+            assert!(
+                own_data_mounted(app, writable.as_array().unwrap(), &folder),
+                "{app}"
+            );
+            let read_only = mount(false);
+            assert!(
+                !own_data_mounted(app, read_only.as_array().unwrap(), &folder),
+                "{app}"
+            );
         }
     }
     #[test]

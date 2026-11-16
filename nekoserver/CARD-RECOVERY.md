@@ -26,7 +26,8 @@ What is on a card, and what is not:
 ## 1. Connect the card, read only
 
 On a desktop, insert the card: it opens as a folder, for example `/media/you/CARD`.
-In a terminal you can mount it yourself, read only, so nothing on it can change:
+In a terminal you can mount it yourself (connect it to a folder), read only, so nothing
+on it can change:
 
 ```bash
 lsblk -f                                  # find the card, e.g. sdb1
@@ -55,9 +56,14 @@ python3 NekoBackup/tools/neko-restore.py verify          # every file checked ag
 ```
 
 `verify` reads every file and compares it with the SHA-256 checksum recorded when it was
-copied. It says `ok`, `damaged` or `missing` for each one and changes nothing. Files whose
+copied (a checksum is a fingerprint of a file's content: it no longer matches when even
+one byte changed). It names each file that is `damaged` or `missing`, ends with the
+counts (`ok 4, damaged 0, missing 0, unusable records 0`) and changes nothing. Files whose
 names hold unusual characters are shown with those characters escaped (a line break as
 `\n`), so nothing is hidden.
+
+To look at, check or restore single files, add `--record` with the file's ID from `list`
+(more than once for several files); it works with `list`, `verify` and `restore`.
 
 If a command says it cannot read a file, run it with `sudo` in front.
 

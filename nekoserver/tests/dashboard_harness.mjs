@@ -46,7 +46,9 @@ const CALLS = new Set([
   'ago',
   'outputsBadge',
   'sensorBadge',
-  'temperatureName'
+  'temperatureName',
+  'blockedNext',
+  'appMenu'
 ]);
 /* Calls answered from another function's result, with more of it; the last four run a
    piece of Ask Neko on a page that keeps what is put on it (ASK_PAGE below). */
@@ -57,7 +59,8 @@ const DETAILED = new Set([
   'bugBoxCopy',
   'cutOffEntry',
   'askSignedOut',
-  'askTyped'
+  'askTyped',
+  'askInTurn'
 ]);
 /* What those need of the page script besides the functions above. */
 const ASK_PAGE = [
@@ -178,6 +181,8 @@ const SPECIAL = {
   newlyFinished: argument => argument.map(s => app.newlyFinished(app.validStatus(s))?.id ?? null),
   catFile: argument => app.catFile(argument.mood, argument.small),
   appSpec: argument => app.appSpec(argument.id, argument.app),
+  // What an app's menu says it is (the label its card shows too).
+  appMenu: argument => app.appMenu(argument).subtitle,
   pinRefusal: argument => app.pinRefusal(argument.answer, argument.now),
   // The Fans page's count, with its readings answered (this stand-in page reached none).
   outputsBadge: argument => {
@@ -231,7 +236,9 @@ function keptPage() {
       children: [],
       clicked: null,
       append(...added) {
-        for (const child of added) {
+        for (const given of added) {
+          // A string is a text node (longText puts one between its parts).
+          const child = typeof given === 'string' ? { textContent: given, children: [] } : given;
           child.parentElement = node;
           node.children.push(child);
         }
@@ -314,6 +321,24 @@ SPECIAL.askFlow = async argument => {
   await app.askNeko(argument.typed);
   const entry = app.ASK.log[0];
   return { sent, question: entry.question, shown: shown(byId('ask-log')), report: app.bugReport(entry) };
+};
+// Questions one after the other, each answered as `answers` says ({text} or {failed}):
+// what each one sent to /api/control/ask. argument: {questions, answers}.
+SPECIAL.askInTurn = async argument => {
+  keptPage();
+  let n = -1;
+  const sent = server((path, body) => {
+    if (path === '/api/control/ask') {
+      n += 1;
+      return { ok: true, id: 'a' + n, question: body.question, excerpt: '' };
+    }
+    const said = argument.answers[n];
+    return { text: said.text ?? '', done: !said.failed, failed: said.failed ?? null, repair: null };
+  });
+  for (const question of argument.questions) {
+    await app.askNeko(question);
+  }
+  return sent.filter(([path]) => path === '/api/control/ask').map(([, body]) => body);
 };
 // Approve on an update's card while `waiting` is the version that waits on the server:
 // what each press sends, and the card after it. argument: {shown, waiting}.

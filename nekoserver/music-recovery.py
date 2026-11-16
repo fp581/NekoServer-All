@@ -8,10 +8,9 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import sys
 
-from neko_common import safe_path
+from neko_common import copy_checked_into, safe_path
 from snapshot_restore import failure_reason
 
 # What a drive answers when it cannot hold a file's name: exFAT and FAT refuse " * : < > ?
@@ -49,7 +48,11 @@ def restore(root, snapshot, destination=None):
         with source.open('rb') as stream:
             if source.stat().st_size != row['size'] or hashlib.file_digest(stream, 'sha256').hexdigest() != checksum:
                 raise RuntimeError('Music backup checksum mismatch')
-        verified.append((source, rel, checksum))
+        # The file's date, in lists made since 0.51.3 (older ones restore with today's).
+        mtime = row.get('mtime')
+        if mtime is not None and type(mtime) is not int:
+            raise RuntimeError('Invalid music date')
+        verified.append((source, rel, checksum, mtime))
     if destination is not None:
         dest = safe_path(Path(destination))
         if not dest.is_absolute() or dest.exists() or dest == root or root in dest.parents or dest in root.parents:
@@ -63,9 +66,9 @@ def restore(root, snapshot, destination=None):
         folder = os.open(dest, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         refused = []
         try:
-            for source, rel, checksum in verified:
+            for source, rel, checksum, mtime in verified:
                 try:
-                    write_copy(folder, source, rel, checksum)
+                    write_copy(folder, source, rel, checksum, mtime)
                 except OSError as exc:
                     if exc.errno not in NAME_REFUSED:
                         raise
@@ -96,30 +99,36 @@ def names_refused(refused, total, dest):
     )
 
 
-def write_copy(folder, source, rel, checksum):
+def write_copy(folder, source, rel, checksum, mtime=None):
     """One music file copied to `rel` under the open `folder` (its descriptor): its
-    subfolders made and the file created and read back through that descriptor, then
-    compared with its checksum."""
+    subfolders made, the file created there, read back from the drive and compared with
+    its checksum, and given back its date `mtime` (seconds) when the list has it."""
     for parent in reversed(rel.parents):
         if str(parent) != '.':
             try:
                 os.mkdir(str(parent), 0o700, dir_fd=folder)
             except FileExistsError:
                 pass
-    out = os.open(str(rel), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=folder)
-    with source.open('rb') as inp, os.fdopen(out, 'wb') as stream:
-        shutil.copyfileobj(inp, stream)
-    back = os.open(str(rel), os.O_RDONLY | os.O_NOFOLLOW, dir_fd=folder)
-    with os.fdopen(back, 'rb') as stream:
-        if hashlib.file_digest(stream, 'sha256').hexdigest() != checksum:
+    # Written out to the drive and read back from the drive itself, as every other restore
+    # does (review of 0.51.2: read straight after the write, Linux answered from its
+    # memory, so a drive that did not keep the bytes passed).
+    with source.open('rb') as inp:
+        if copy_checked_into(inp, folder, str(rel), what=str(rel)) != checksum:
+            os.unlink(str(rel), dir_fd=folder)
             raise RuntimeError('Restored music checksum mismatch')
+    if mtime is not None:
+        os.utime(str(rel), (mtime, mtime), dir_fd=folder, follow_symlinks=False)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--backup', required=True)
-    parser.add_argument('--snapshot', required=True)
-    parser.add_argument('--destination')
+    parser.add_argument('--backup', required=True, help='The music backup folder (backups/music on the HDD)')
+    parser.add_argument(
+        '--snapshot',
+        required=True,
+        help='The list of one backup run: a file in that folder\'s snapshots (backups/music/snapshots/...)',
+    )
+    parser.add_argument('--destination', help='Restore into this new folder; left out, the backup is only checked')
     args = parser.parse_args(argv)
     existed = args.destination is not None and os.path.lexists(args.destination)
     try:

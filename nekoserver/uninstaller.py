@@ -131,6 +131,10 @@ SYSTEM_GLOBS = (
     'etc/systemd/system/nekoserver-*.before-*',
     # the longer waits for disks on a network storage box (network_storage.py)
     'etc/udev/rules.d/90-nekoserver-*.rules',
+    # what  sudo systemctl edit nekoserver-...  wrote for one of NekoServer's units (its
+    # override.conf): left behind, the folder named a unit that is gone, and a later
+    # setup's unit of that name would silently run with the old changes
+    'etc/systemd/system/nekoserver-*.d',
 )
 # Setup's own record of its steps and its log, kept on the system disk while the SSD is not
 # mounted (installer.py DEFAULT_STATE, for setup run with sudo): moved to the SSD later,
@@ -1298,12 +1302,42 @@ def remove(plan, chosen, run=run, out=print, rmtree=shutil.rmtree, root='/', cal
     finally:
         jobs.release()
         close_drives(drives)  # before the drives are unmounted: an open folder keeps one busy
+    if 'server' in chosen:
+        _remove_idle_run_folders(plan, out)
     _tidy_system(plan, units, shares and not plan.samba_off, own, run, out)
     if 'mounts' in chosen:
         left += _remove_mounts(plan, system_file(root, FSTAB), call, out)
     if units:
         run(['systemctl', 'daemon-reload'], 120)
     return left
+
+
+def _remove_idle_run_folders(plan, out):
+    """NekoServer's folders in /run that hold nothing but lock files nobody uses any more
+    (/run/nekoserver-dashboard and /run/nekoserver-heartbeat stayed behind, each with its
+    job's lock, until the next restart). The services are stopped by now, so each lock is
+    taken here first: one that a program still holds keeps its file and its folder, so
+    nothing that waits on it ever gets a second lock under the same name."""
+    for folder in sorted(plan.root.glob('run/nekoserver-*')):
+        if folder.is_symlink() or not folder.is_dir():
+            continue
+        held = []
+        try:
+            inside = sorted(folder.iterdir())
+            idle = all(entry.name.endswith(LOCK_SUFFIX) and not entry.is_symlink() for entry in inside)
+            for entry in inside if idle else ():
+                held.append(os.open(entry, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC))
+                fcntl.flock(held[-1], fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if idle:
+                out('  removing ' + str(folder))
+                for entry in inside:
+                    entry.unlink()
+                folder.rmdir()
+        except OSError:
+            pass  # a lock in use, or a file put there meanwhile: the folder stays until the next restart
+        finally:
+            for fd in held:
+                os.close(fd)
 
 
 def _destroy(plan, chosen, out, tools, accounts, drives, jobs):

@@ -55,7 +55,10 @@ class DefaultSettingsTests(unittest.TestCase):
     def test_every_command_uses_the_shared_default(self):
         for name in CLIS:
             text = (ROOT / name).read_text()
-            line = re.search(r"add_argument\(\s*'--config'[^\n]*", text).group(0)
+            # The whole call: its arguments may be on lines of their own (one has help words).
+            line = re.search(r"add_argument\(\s*'--config'.*?(?=\n\s*\w+\.add_argument|\n\s*\w+ = )", text, re.S).group(
+                0
+            )
             self.assertIn('default_settings(', line, name)
             self.assertIn('checked_settings', line, name)
             self.assertNotIn("with_name('config.json')", line, name)

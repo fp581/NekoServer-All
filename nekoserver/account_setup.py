@@ -134,6 +134,25 @@ def check(condition):
         raise RuntimeError('Authenticated account identity/administrator check did not match')
 
 
+class NotRunning(RuntimeError):
+    """The app is not running at all: its step did not start it (a download that failed,
+    a port another program holds). Nothing about its login is known, and nothing in the
+    browser can finish it: it is tried again once its app runs."""
+
+
+class NotAnswering(HTTPFailure):
+    """The app did not answer in time: it may still be starting. After an update an app
+    can take many minutes to update its database first (Jellyfin answers 503 meanwhile,
+    Immich does not answer at all), and that says nothing about its login."""
+
+    def __init__(self, code, seconds):
+        super().__init__(code)
+        self.args = (
+            f'it did not answer within {seconds} seconds; it may still be starting (after an update an app '
+            'can be busy updating its database for a while)',
+        )
+
+
 def wait(app, client, seconds=60):
     endpoint = HEALTH.get(app, '/api/' + ARR.get(app, ('v1', 0))[0] + '/system/status')
     deadline = time.monotonic() + seconds
@@ -144,8 +163,10 @@ def wait(app, client, seconds=60):
         except HTTPFailure as exc:
             if exc.code in (401, 403):
                 return
-            if exc.code not in (0, 502, 503, 500) or time.monotonic() >= deadline:
+            if exc.code not in (0, 502, 503, 500):
                 raise
+            if time.monotonic() >= deadline:
+                raise NotAnswering(exc.code, seconds) from None
             time.sleep(min(2, max(0, deadline - time.monotonic())))
 
 
@@ -243,6 +264,16 @@ def listener(client, entry, administrator, admin_entry):
     return value
 
 
+# The app's "Authentication Required" settings (Settings, General, Security) that still ask
+# for the login: setup chooses "Enabled"; "Disabled for Local Addresses" is the app's
+# other choice, often picked by hand later, and still asks everyone outside the home
+# network. Radarr 7 and Sonarr 5 add "Disabled for Localhost": only the container's own
+# loopback is let in, and setup comes in through Docker's port mapping, so it is asked
+# to sign in too. The password is proved by the sign-in below either way (the app sets
+# its cookie only for the right one).
+SIGN_IN_REQUIRED = ('enabled', 'disabledforlocaladdresses', 'disabledforlocalhost')
+
+
 def arr(client, entry, config, app):
     key_file = safe_path(Path(config['data_mount']) / 'appdata' / app / 'config.xml')
     try:
@@ -277,7 +308,7 @@ def arr(client, entry, config, app):
     check(
         verified.get('username') == entry['username']
         and str(verified.get('authenticationMethod', '')).lower() == 'forms'
-        and str(verified.get('authenticationRequired', '')).lower() == 'enabled'
+        and str(verified.get('authenticationRequired', '')).lower() in SIGN_IN_REQUIRED
     )
     # API-key success is not proof of the selected login password. Use a fresh
     # cookie session without the API key and verify an authenticated page.
@@ -306,7 +337,17 @@ def arr(client, entry, config, app):
     check(isinstance(loaded, dict) and loaded.get('apiKey') == key)
 
 
+QBITTORRENT_LET_IN = (
+    'not tried: qBittorrent lets some computers in without a password (in qBittorrent: Tools, Options, '
+    'Web UI, "Bypass authentication for clients ..."), so the saved password could not be tried; the saved '
+    'login is kept. Untick those for NekoServer to check this login'
+)
+
+
 def qbittorrent(client, entry):
+    """qBittorrent's Web UI login. Returns a note for the setup log, or None."""
+    made = False
+
     def login(username, password):
         reply = client.call('/api/v2/auth/login', 'POST', form={'username': username, 'password': password}, raw=True)
         # qBittorrent 4 answers a good login with "Ok." and a cookie named SID;
@@ -355,13 +396,22 @@ def qbittorrent(client, entry):
         client.call('/api/v2/auth/logout', 'POST', form={}, raw=True)
         client.jar.clear()
         check(login(entry['username'], entry['password']))
+        made = True
     preferences = client.call('/api/v2/app/preferences')
-    check(
-        preferences.get('web_ui_username') == entry['username']
-        and preferences.get('bypass_local_auth') is False
-        and preferences.get('bypass_auth_subnet_whitelist_enabled') is False
+    check(preferences.get('web_ui_username') == entry['username'])
+    # A computer qBittorrent lets in without a password (this one, or one in a network
+    # ticked there: people tick Docker's for their apps) is given a session whatever
+    # password it sends, so the one above proved nothing. Setup switches both off when
+    # it makes the login; switched on again later, they are the person's choice.
+    let_in = (
+        preferences.get('bypass_local_auth') is not False
+        or preferences.get('bypass_auth_subnet_whitelist_enabled') is not False
     )
     client.call('/api/v2/auth/logout', 'POST', form={}, raw=True)
+    if let_in:
+        check(not made)
+        return QBITTORRENT_LET_IN
+    return None
 
 
 def seerr_signed_in_as(client, result, entry):
@@ -373,9 +423,28 @@ def seerr_signed_in_as(client, result, entry):
     check(me.get('id') == 1 and me.get('email', '').casefold() == entry['username'].casefold())
 
 
+SEERR_PASSWORD_OFF = (
+    'not tried: password sign-in is switched off in Seerr (Settings, Users, "Enable Local Sign-In"), '
+    'so Seerr takes no password and the saved one could not be tried; the saved login is kept. Switch it '
+    'on again for NekoServer to check this login'
+)
+
+
 def seerr(client, entry, jellyfin_entry):
+    """Seerr's first user, signed in with the saved email and password. Returns a note
+    for the setup log, or None."""
     login_body = {'email': entry['username'], 'password': entry['password']}
-    result = attempt(lambda: client.call('/api/v1/auth/local', 'POST', login_body))
+    try:
+        result = attempt(lambda: client.call('/api/v1/auth/local', 'POST', login_body))
+    except HTTPFailure as exc:
+        # Seerr answers every password with HTTP 500 ("Password sign-in is disabled")
+        # once "Enable Local Sign-In" is off, which people do to have their users sign in
+        # with Jellyfin only. That is not a wrong password: it can't be tried. (A Seerr
+        # setup is still to make has it on: Seerr starts with it on.)
+        if exc.code != 500 or client.call('/api/v1/settings/public').get('localLogin') is not False:
+            raise
+        check(not entry['allow_create'])
+        return SEERR_PASSWORD_OFF
     if not result:
         allowed(entry)
         check(client.call('/api/v1/settings/public').get('initialized') is False)
@@ -523,7 +592,9 @@ def verify_project(config, app, quarantined=False):
     service = 'immich-server' if project == 'immich' else project
     root = Path(config['data_mount'])
     manifest = safe_path(root / 'compose' / project / 'compose.yaml')
-    check(manifest.is_file())
+    stopped = NotRunning(f'{store.CATALOG[project][0]} is not running: the step that starts it did not finish')
+    if not manifest.is_file():
+        raise stopped  # its step stopped before it was set up at all (Immich's release not found, say)
     ids = docker(
         [
             'ps',
@@ -534,6 +605,10 @@ def verify_project(config, app, quarantined=False):
             'label=com.docker.compose.service=' + service,
         ]
     ).split()
+    if not ids:
+        # Said as what it is: "identity check did not match" sent a beginner to sign in to
+        # an app that never started (then asked to finish it by hand, again and again).
+        raise stopped
     check(len(ids) == 1 and re.fullmatch(r'[a-f0-9]{12,64}', ids[0]))
     values = json.loads(docker(['inspect', ids[0]]))
     check(isinstance(values, list) and len(values) == 1)
@@ -574,8 +649,9 @@ def signs_in(config, app, client_factory=Client):
     installs a new version). Read-only: with `allow_create` off the app checks below never
     make or change an account, and nothing is written to the saved logins. Returns None
     when there is no saved login to try, or it could not be tried (Nextcloud with
-    two-factor sign-in on); raises with the reason (never a password) when
-    the app refuses it."""
+    two-factor sign-in on, Seerr with password sign-in off, qBittorrent letting this PC
+    in without one); raises with the reason
+    (never a password) when the app refuses it."""
     entry = store.get(config, app)
     if not entry:
         return None
@@ -587,24 +663,32 @@ def signs_in(config, app, client_factory=Client):
         if app in ARR:
             arr(client, entry, config, app)
         elif app == 'seerr':
-            seerr(client, entry, None)
+            # Password sign-in switched off in Seerr: the saved one was not tried.
+            if seerr(client, entry, None) == SEERR_PASSWORD_OFF:
+                return None
         elif app == 'nextcloud':
             # Two-factor sign-in on: Nextcloud refuses a plain password, so the saved one
             # was not tried. That is "not known", never "signed in".
             if nextcloud(client, entry, config) == NEXTCLOUD_TWO_FACTOR:
                 return None
         else:
-            {'jellyfin': jellyfin, 'immich': immich, 'navidrome': navidrome, 'qbittorrent': qbittorrent}[app](
+            # Let in without a password (qBittorrent): the saved one was not tried.
+            if {'jellyfin': jellyfin, 'immich': immich, 'navidrome': navidrome, 'qbittorrent': qbittorrent}[app](
                 client, entry
-            )
+            ) == QBITTORRENT_LET_IN:
+                return None
         return True
     finally:
         client.close()
 
 
-def what_to_do(config, app, entry):
-    """What to do about an app that did not take its saved login, in plain words."""
+def what_to_do(config, app, entry, answered=True):
+    """What to do about an app that did not take its saved login, in plain words. An app
+    that did not answer at all (`answered` false) has not refused anything: it is tried
+    again, never re-typed."""
     name = store.APPS[app][0]
+    if not answered:
+        return f'Run  sudo bash install.sh  again once {name} answers: setup then tries its saved login again.'
     try:
         own_account = not entry.get('allow_create') or not store.fresh(config, app)
     except (RuntimeError, OSError):
@@ -619,6 +703,18 @@ def what_to_do(config, app, entry):
 
 
 ODD_ANSWER = 'the app answered in a form setup does not know'
+
+
+def running(config, app):
+    """The app's container runs (whether or not it is the right one: verify_project's
+    other checks say that). False only when it is not running at all."""
+    try:
+        verify_project(config, app)
+    except NotRunning:
+        return False
+    except (RuntimeError, OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError):
+        pass
+    return True
 
 
 def provision(config, apps, output=print, client_factory=Client):
@@ -650,13 +746,13 @@ def provision(config, apps, output=print, client_factory=Client):
 
                 music_client.save(config, music_client.credential(entry['username'], entry['password']))
             elif app == 'seerr':
-                seerr(client, entry, store.get(config, 'jellyfin', verified=True))
+                note = seerr(client, entry, store.get(config, 'jellyfin', verified=True))
             elif app == 'nextcloud':
                 note = nextcloud(client, entry, config)
             else:
-                {'jellyfin': jellyfin, 'immich': immich, 'navidrome': navidrome, 'qbittorrent': qbittorrent}[app](
-                    client, entry
-                )
+                note = {'jellyfin': jellyfin, 'immich': immich, 'navidrome': navidrome, 'qbittorrent': qbittorrent}[
+                    app
+                ](client, entry)
             store.update(config, app, state='verified', allow_create=False)
             output(store.APPS[app][0] + ': ' + (note or 'verified'))
         except (
@@ -668,13 +764,16 @@ def provision(config, apps, output=print, client_factory=Client):
             AttributeError,
             subprocess.SubprocessError,
         ) as exc:
-            store.update(config, app, state='needs_setup')
+            if not isinstance(exc, NotRunning):
+                # (An app that never ran refused nothing: marked so, the next run asked
+                # "did not take the saved login. What now?" of each of them.)
+                store.update(config, app, state='needs_setup')
             pending.append(app)
             # The reason, never the password: the checks' own messages name no values.
             # (A reply of another shape, a list where a record was expected, reaches here
             # as AttributeError: said in words.)
             reason = ODD_ANSWER if isinstance(exc, AttributeError) else str(exc) or type(exc).__name__
-            advice = what_to_do(config, app, entry)
+            advice = what_to_do(config, app, entry, answered=not isinstance(exc, (NotAnswering, NotRunning)))
             output(f'{store.APPS[app][0]}: not verified ({reason}); the saved login is kept. {advice}')
         finally:
             client.close()

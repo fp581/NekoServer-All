@@ -38,8 +38,9 @@ fn compose(file: &Path, project: &str, args: &[&str]) -> Result<String> {
     all.extend_from_slice(args);
     docker(&all)
 }
+/// A JSON file that must be there; a missing or damaged one is named.
 fn load(path: &Path) -> Result<Value> {
-    Ok(serde_json::from_slice(&common::bytes(path, 2_000_000)?)?)
+    common::json_from(path, 2_000_000)
 }
 fn string<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
     v[key]
@@ -57,7 +58,8 @@ fn state_owner() -> u32 {
     unsafe { libc::geteuid() }
 }
 fn private(path: &Path) -> Result<()> {
-    let m = fs::metadata(common::safe(path)?)?;
+    let safe = common::safe(path)?;
+    let m = fs::metadata(&safe).map_err(|e| common::at(e, &safe))?;
     if m.uid() != state_owner() || m.mode() & 0o077 != 0 {
         return Err(Error::new("Private root-owned maintenance state required"));
     }
@@ -1100,8 +1102,34 @@ fn clear_work(data: &Path) {
 pub(crate) fn secrets_key_ready(key_dir: &Path) -> bool {
     key_dir.join(SECRETS_KEY).is_file() && key_dir.join(SECRETS_CERT).is_file()
 }
-fn encrypt_secrets(data: &Path, snapshot: &Path) -> Result<&'static str> {
-    encrypt_secrets_with(data, snapshot, Path::new(SECRETS_KEY_DIR))
+/// The password files of a snapshot, kept the way that was decided when it began
+/// (`sealing`: a backup key was there, so data.tar is written without them). The key is
+/// not looked for a second time: the apps are stopped and data.tar written in between,
+/// which takes long enough for `backup_secrets.py --setup` to make a key (the snapshot's
+/// own advice) or for one to be taken away. Asked again, the two answers could differ:
+/// "encrypted" on a snapshot whose data.tar held every password in plain text, or
+/// "unencrypted_in_data_tar" on one that held them nowhere.
+fn seal_as_decided(
+    data: &Path,
+    snapshot: &Path,
+    key_dir: &Path,
+    sealing: bool,
+) -> Result<&'static str> {
+    if !sealing {
+        return Ok(if sealed_members(data).is_empty() {
+            "none"
+        } else {
+            "unencrypted_in_data_tar"
+        });
+    }
+    match encrypt_secrets_with(data, snapshot, key_dir)? {
+        "unencrypted_in_data_tar" => Err(Error::new(
+            "The backup key was there when this snapshot began and is gone now, so the app \
+             password files would be in no part of it. Nothing was updated. Make the key again \
+             with  sudo python3 backup_secrets.py --setup  (see MONTHLY-MAINTENANCE.md)",
+        )),
+        kept => Ok(kept),
+    }
 }
 pub(crate) fn encrypt_secrets_with(
     data: &Path,
@@ -1119,6 +1147,16 @@ pub(crate) fn encrypt_secrets_with(
     }
     private(&key)?;
     private(&cert)?;
+    // The key and its certificate are read once, as a pair, and go into the snapshot
+    // first; the list is then sealed for the snapshot's own copy of the certificate.
+    // (The certificate was read from the key folder for the sealing and both files copied
+    // from there afterwards: a new backup password chosen in between, which swaps the two
+    // files, left a list sealed for the old certificate beside the new key, and no
+    // password opened it.)
+    let (key_bytes, cert_bytes) = key_pair(&key, &cert)?;
+    let recipient = snapshot.join(SECRETS_CERT);
+    common::atomic(&snapshot.join(SECRETS_KEY), &key_bytes, 0o600)?;
+    common::atomic(&recipient, &cert_bytes, 0o600)?;
     let output = snapshot.join(SECRETS_ARCHIVE);
     let mut archive = std::process::Command::new("tar")
         .args(["--create", "--file", "-", "--acls", "--xattrs", "-C"])
@@ -1127,7 +1165,8 @@ pub(crate) fn encrypt_secrets_with(
         .args(&members)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .spawn()?;
+        .spawn()
+        .map_err(|e| common::not_started(e, "tar"))?;
     let stream = archive
         .stdout
         .take()
@@ -1137,14 +1176,17 @@ pub(crate) fn encrypt_secrets_with(
             "cms", "-encrypt", "-binary", "-aes256", "-outform", "DER", "-out",
         ])
         .arg(&output)
-        .arg(&cert)
+        .arg(&recipient)
         .stdin(stream)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()?;
+        .status()
+        .map_err(|e| common::not_started(e, "openssl"))?;
     let archived = archive.wait()?;
     if !archived.success() || !sealed.success() {
-        let _ = fs::remove_file(&output);
+        for name in [SECRETS_ARCHIVE, SECRETS_KEY, SECRETS_CERT] {
+            let _ = fs::remove_file(snapshot.join(name));
+        }
         return Err(Error::new("Could not encrypt the app password files"));
     }
     fs::set_permissions(
@@ -1152,10 +1194,29 @@ pub(crate) fn encrypt_secrets_with(
         <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
     )?;
     fs::File::open(&output)?.sync_all()?;
-    for (source, name) in [(&key, SECRETS_KEY), (&cert, SECRETS_CERT)] {
-        common::atomic(&snapshot.join(name), &common::bytes(source, 64_000)?, 0o600)?;
-    }
     Ok("encrypted")
+}
+/// The backup key and its certificate, read as the pair they are. A new backup password
+/// (backup_secrets.py --new-password) puts a new certificate and a new key in their
+/// places, one after the other: two reads that agree are of one pair, and reads that
+/// differ are made again a moment later.
+fn key_pair(key: &Path, cert: &Path) -> Result<(Vec<u8>, Vec<u8>)> {
+    let read = || -> Result<(Vec<u8>, Vec<u8>)> {
+        Ok((common::bytes(key, 64_000)?, common::bytes(cert, 64_000)?))
+    };
+    let mut pair = read()?;
+    for _ in 0..20 {
+        let again = read()?;
+        if again == pair {
+            return Ok(pair);
+        }
+        pair = again;
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    Err(Error::new(
+        "The backup key keeps changing (a new backup password is being chosen?), so the app \
+         password files were not sealed. Run this again once that is done",
+    ))
 }
 pub(crate) fn verify(snapshot: &Path) -> Result<Value> {
     private(snapshot)?;
@@ -2299,7 +2360,7 @@ fn scrub_snapshot(snapshot: &Path) -> Result<()> {
         if !model || !fs::symlink_metadata(&path)?.is_file() {
             continue;
         }
-        let mut value: Value = serde_json::from_slice(&common::bytes(&path, 50_000_000)?)?;
+        let mut value = common::json_from(&path, 50_000_000)?;
         let before = value.clone();
         redact(&mut value);
         if value != before {
@@ -4047,9 +4108,9 @@ fn write_snapshot(
     let exclude: &[&str] = if sealing { &SEALED_EXCLUDES } else { &[] };
     tar(data, &paths.0, &snapshot.join("data.tar"), exclude)?;
     tar(media, &paths.1, &snapshot.join("media.tar"), &[])?;
-    let password_files = encrypt_secrets(data, snapshot)?;
+    let password_files = seal_as_decided(data, snapshot, Path::new(SECRETS_KEY_DIR), sealing)?;
     if password_files == "unencrypted_in_data_tar" {
-        println!("Monthly maintenance: no backup key yet, so this snapshot keeps the app password files unencrypted inside data.tar (readable by root only). To encrypt them from now on: sudo python3 backup_secrets.py --setup");
+        println!("Monthly maintenance: there was no backup key when this snapshot began, so it keeps the app password files unencrypted inside data.tar (readable by root only). To encrypt them from now on: sudo python3 backup_secrets.py --setup");
     }
     if sealing {
         // data.tar left these out; keep a private SSD copy so a failed update can be
@@ -4477,7 +4538,7 @@ fn version_of(app: &str, model: &Value, release: Option<&str>, step: Option<(u64
 pub fn check_compose(a: &Args) -> Result<()> {
     if let (Ok(upload), Ok(database)) = (a.path("upload"), a.path("database")) {
         // A snapshot's Immich file (setup's recovery_tools.validate_model asks this).
-        let model: Value = serde_json::from_slice(&common::bytes(&a.path("model")?, 4_000_000)?)?;
+        let model = common::json_from(&a.path("model")?, 4_000_000)?;
         snapshot_ok(&model, &upload, &database)?;
         println!("ok");
         return Ok(());
@@ -4487,7 +4548,7 @@ pub fn check_compose(a: &Args) -> Result<()> {
     if !["immich", "nextcloud"].contains(&app) && !MEDIA.contains(&app) {
         return Err(Error::new("Unknown app"));
     }
-    let model: Value = serde_json::from_slice(&common::bytes(&a.path("model")?, 4_000_000)?)?;
+    let model = common::json_from(&a.path("model")?, 4_000_000)?;
     let data = common::mount_path(string(&cfg, "data_mount")?)?;
     let media = common::mount_path(string(&cfg, "media_mount")?)?;
     valid_model(&model, app, &data, &media, &cfg)?;
@@ -6263,6 +6324,211 @@ mod tests {
         assert!(out.status.success(), "{args:?}");
         out.stdout
     }
+    /// A backup key in `keys`, locked with `password`: the format backup_secrets.py makes
+    /// (fewer rounds, so the tests stay quick).
+    fn backup_key(keys: &Path, password: &str) {
+        let pass = format!("pass:{password}");
+        let plain = sh(
+            &[
+                "openssl",
+                "genpkey",
+                "-algorithm",
+                "RSA",
+                "-pkeyopt",
+                "rsa_keygen_bits:2048",
+            ],
+            None,
+        );
+        let locked = sh(
+            &[
+                "openssl",
+                "pkcs8",
+                "-topk8",
+                "-v2",
+                "aes-256-cbc",
+                "-v2prf",
+                "hmacWithSHA256",
+                "-iter",
+                "1000",
+                "-passout",
+                &pass,
+            ],
+            Some(&plain),
+        );
+        let cert = sh(
+            &[
+                "openssl",
+                "req",
+                "-new",
+                "-x509",
+                "-key",
+                "/dev/stdin",
+                "-passin",
+                &pass,
+                "-subj",
+                "/CN=test",
+                "-days",
+                "1",
+            ],
+            Some(&locked),
+        );
+        for (name, bytes) in [(SECRETS_KEY, &locked), (SECRETS_CERT, &cert)] {
+            fs::write(keys.join(name), bytes).unwrap();
+            fs::set_permissions(
+                keys.join(name),
+                <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+            )
+            .unwrap();
+        }
+    }
+    /// Deep check 458. Whether a backup key is there was asked twice: when the snapshot
+    /// began (which decides whether data.tar holds the password files) and again after
+    /// the apps were stopped and data.tar written (which decided the label, and whether
+    /// an encrypted list was made). A key made in between, as the snapshot's own advice
+    /// says to, gave "encrypted" for a snapshot whose data.tar holds every password in
+    /// plain text; the recovery menu then says the password files "are not in it".
+    #[test]
+    fn password_files_are_kept_as_decided_when_the_snapshot_began() {
+        let root = scratch("decided");
+        let (data, keys) = (root.join("ssd"), root.join("keys"));
+        let snap = root.join("hdd/backups/monthly/700-1");
+        for dir in [keys.clone(), snap.clone()] {
+            fs::DirBuilder::new().mode(0o700).create(dir).unwrap();
+        }
+        for (rel, body) in [
+            (
+                "secrets/accounts/APP-CREDENTIALS.txt",
+                "jellyfin: admin / pw\n",
+            ),
+            ("compose/jellyfin/.env", "TZ=UTC\n"),
+            ("appdata/jellyfin/config.xml", "<x/>\n"),
+        ] {
+            fs::create_dir_all(data.join(rel).parent().unwrap()).unwrap();
+            fs::write(data.join(rel), body).unwrap();
+        }
+        let names = vec!["jellyfin".to_string()];
+        let listed = |archive: &Path| {
+            String::from_utf8(sh(&["tar", "-t", "-f", &archive.to_string_lossy()], None)).unwrap()
+        };
+        // Began without a key: data.tar holds the password files...
+        let sealing = secrets_key_ready(&keys);
+        let (paths, _) = snapshot_paths(&names, &data, sealing);
+        tar(&data, &paths, &snap.join("data.tar"), &[]).unwrap();
+        assert!(listed(&snap.join("data.tar")).contains("secrets/accounts/APP-CREDENTIALS.txt"));
+        // ...and the key is made while it is written. The label still says where they are.
+        backup_key(&keys, "made-meanwhile");
+        assert_eq!(
+            seal_as_decided(&data, &snap, &keys, sealing).unwrap(),
+            "unencrypted_in_data_tar"
+        );
+        assert!(!snap.join(SECRETS_ARCHIVE).exists());
+        // Began with a key (data.tar leaves them out), and the key is gone when they are to
+        // be sealed: the snapshot stops with the reason, never one without the passwords.
+        let snap = root.join("hdd/backups/monthly/800-1");
+        fs::DirBuilder::new().mode(0o700).create(&snap).unwrap();
+        let sealing = secrets_key_ready(&keys);
+        let (paths, _) = snapshot_paths(&names, &data, sealing);
+        tar(&data, &paths, &snap.join("data.tar"), &SEALED_EXCLUDES).unwrap();
+        assert!(!listed(&snap.join("data.tar")).contains("APP-CREDENTIALS"));
+        assert!(!listed(&snap.join("data.tar")).contains(".env"));
+        fs::rename(keys.join(SECRETS_KEY), keys.join("moved-aside")).unwrap();
+        let said = seal_as_decided(&data, &snap, &keys, sealing)
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("backup_secrets.py --setup"), "{said}");
+        // The usual case: the key there throughout.
+        fs::rename(keys.join("moved-aside"), keys.join(SECRETS_KEY)).unwrap();
+        assert_eq!(
+            seal_as_decided(&data, &snap, &keys, sealing).unwrap(),
+            "encrypted"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+    /// Whether the snapshot's own copy of the backup key, with `password`, opens its list.
+    fn opens(snap: &Path, password: &str) -> bool {
+        std::process::Command::new("openssl")
+            .args(["cms", "-decrypt", "-binary", "-inform", "DER", "-in"])
+            .arg(snap.join(SECRETS_ARCHIVE))
+            .arg("-inkey")
+            .arg(snap.join(SECRETS_KEY))
+            .args(["-passin", &format!("pass:{password}"), "-recip"])
+            .arg(snap.join(SECRETS_CERT))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    }
+    /// Deep check 456. A new backup password (backup_secrets.py --new-password) puts a new
+    /// certificate and a new key in the key folder, one after the other. The list was
+    /// sealed for the certificate read from that folder, and the key and certificate were
+    /// copied from it afterwards: a swap in between left a snapshot whose list is sealed
+    /// for the old certificate beside the new key, which no password opens. Run for real,
+    /// with a list large enough that the swap falls inside its sealing.
+    #[test]
+    fn a_new_backup_password_while_the_list_is_sealed_leaves_a_list_that_opens() {
+        let root = scratch("new-password");
+        let (data, keys, newer) = (root.join("ssd"), root.join("keys"), root.join("new-key"));
+        let snap = root.join("hdd/backups/monthly/900-1");
+        for dir in [
+            data.join("secrets/accounts"),
+            keys.clone(),
+            newer.clone(),
+            snap.clone(),
+        ] {
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)
+                .unwrap();
+        }
+        fs::write(
+            data.join("secrets/accounts/APP-CREDENTIALS.txt"),
+            b"jellyfin admin pw\n",
+        )
+        .unwrap();
+        // 64 MB of zeros (they take no room on the drive): sealing them takes a moment.
+        fs::File::create(data.join("secrets/accounts/large"))
+            .unwrap()
+            .set_len(64 << 20)
+            .unwrap();
+        backup_key(&keys, "old-password");
+        backup_key(&newer, "new-password");
+        // The swap, in backup_secrets.new_password's order, once the sealing is under way:
+        // openssl has read the certificate by the time it creates the archive.
+        let (archive, from, to) = (snap.join(SECRETS_ARCHIVE), newer.clone(), keys.clone());
+        let swap = std::thread::spawn(move || {
+            for _ in 0..40_000 {
+                if archive.exists() {
+                    for name in [SECRETS_CERT, SECRETS_KEY] {
+                        fs::rename(from.join(name), to.join(name)).unwrap();
+                    }
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_micros(500));
+            }
+            false
+        });
+        assert_eq!(
+            encrypt_secrets_with(&data, &snap, &keys).unwrap(),
+            "encrypted"
+        );
+        assert!(swap.join().unwrap(), "the key was never swapped");
+        // The key that travels with the snapshot opens its list, with that key's password.
+        assert!(
+            opens(&snap, "old-password") || opens(&snap, "new-password"),
+            "the snapshot's key copy does not open its password list"
+        );
+        // And the folder holds the new pair, whole, for the next snapshot.
+        let next = root.join("hdd/backups/monthly/901-1");
+        fs::DirBuilder::new().mode(0o700).create(&next).unwrap();
+        assert_eq!(
+            encrypt_secrets_with(&data, &next, &keys).unwrap(),
+            "encrypted"
+        );
+        assert!(opens(&next, "new-password"));
+        fs::remove_dir_all(root).unwrap();
+    }
     /// The rollback of an app whose settings are on another drive (0.50.0): its usual
     /// place is a mount and cannot be renamed, and the snapshot's copy is unpacked on the
     /// app drive, which a rename cannot leave. The copy is taken to the app's drive first
@@ -6618,59 +6884,7 @@ mod tests {
             "unencrypted_in_data_tar"
         );
         assert!(fs::read_dir(&snap).unwrap().next().is_none());
-        // Same key format backup_secrets.py creates.
-        let plain = sh(
-            &[
-                "openssl",
-                "genpkey",
-                "-algorithm",
-                "RSA",
-                "-pkeyopt",
-                "rsa_keygen_bits:2048",
-            ],
-            None,
-        );
-        let locked = sh(
-            &[
-                "openssl",
-                "pkcs8",
-                "-topk8",
-                "-v2",
-                "aes-256-cbc",
-                "-v2prf",
-                "hmacWithSHA256",
-                "-iter",
-                "1000",
-                "-passout",
-                "pass:sudo-pw",
-            ],
-            Some(&plain),
-        );
-        let cert = sh(
-            &[
-                "openssl",
-                "req",
-                "-new",
-                "-x509",
-                "-key",
-                "/dev/stdin",
-                "-passin",
-                "pass:sudo-pw",
-                "-subj",
-                "/CN=test",
-                "-days",
-                "1",
-            ],
-            Some(&locked),
-        );
-        for (name, bytes) in [(SECRETS_KEY, &locked), (SECRETS_CERT, &cert)] {
-            fs::write(keys.join(name), bytes).unwrap();
-            fs::set_permissions(
-                keys.join(name),
-                <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
-            )
-            .unwrap();
-        }
+        backup_key(&keys, "sudo-pw");
         assert_eq!(
             encrypt_secrets_with(&data, &snap, &keys).unwrap(),
             "encrypted"

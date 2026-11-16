@@ -231,6 +231,12 @@ def expected_owners(config):
 
 # choose(): the settings file is there but can't be read, so nothing was written.
 UNREADABLE = object()
+# choose() with start: the choices are not the ones the review on the screen was made from.
+CHANGED = object()
+CHANGED_SAID = (
+    'The choices changed after this review was shown, so setup did not start. Look at the review again, '
+    'then press the button.'
+)
 UNREADABLE_SAID = (
     'my-config.json can\'t be read right now (a mistake in it, perhaps a comma), so this switch was not '
     'saved and your file was left as it is. Fix the file, then press the switch again.'
@@ -270,6 +276,9 @@ class Window:
         self.tables = tables
         self.packages = None  # this Linux's package names (family_packages), once asked
         self.started = threading.Event()  # Start was pressed in the window
+        # Counts what changes a review: a switch saved, a page shown anew (show). The window
+        # sends the count of the review on its screen with Start.
+        self.revision = 0
         # Before setup starts: 'apps' (the first page), 'storage' (the drives are being
         # asked for), 'review'. The wizard says which (show); the window's Continue and
         # Back are kept in `button` until the wizard takes them (pressed).
@@ -436,6 +445,7 @@ class Window:
             'stage': self.stage,
             'extras': self._extras(),
             'review': self._review() if phase == 'choose' else None,
+            'revision': self.revision,
             'steps': steps,
             'current': current['id'] if current else None,
             'done': sum(1 for s in here if s['status'] == 'success'),
@@ -457,6 +467,11 @@ class Window:
             self.stage = stage
             self.storage_lines = list(storage_lines)
             self.button = None
+            # A page shown anew is a new review: its drives may be others (Back, then the
+            # storage page again), which the switches' count alone does not show. A window
+            # still showing the review from before (a second behind, its tab asleep) must
+            # not start setup with it, least of all while the drives are being asked.
+            self.revision += 1
 
     def press(self, button):
         """Continue (on the first page) or Back (on the review) pressed in the window.
@@ -493,23 +508,30 @@ class Window:
             return None
         return value if isinstance(value, dict) else None
 
-    def choose(self, changes, start=False):
+    def choose(self, changes, start=False, reviewed=None):
         """Switch extras on or off, saved to the settings file at once (owner kept):
         only the switches change, on the file as it is now. False once setup has
         started; with start, every extra is saved as it stands (explanations.settle: the
         first page was gone through, so no step asks about one again) and setup starts
-        in one step."""
+        in one step. `reviewed`: the revision of the review the person saw; when the
+        choices are no longer those (a switch saved after it, one sent with Start, or
+        another page shown since: Back, the drives asked again), the change is saved and setup does not start (CHANGED), so what installs is
+        always what the review said."""
         by_id = {e['id']: e for e in explanations.EXTRAS}
         chosen = {k: v for k, v in changes.items() if k in by_id and isinstance(v, bool)}
         with self.lock:
             if self.frozen:
                 return False
+            stale = start and reviewed is not None and (reviewed != self.revision or bool(chosen))
             if chosen or start:
                 config = self._saved()
                 if config is None:
                     return UNREADABLE
-                save_choices(self.config_path, config, chosen, settle=start)
+                save_choices(self.config_path, config, chosen, settle=start and not stale)
                 self.config = config
+                self.revision += 1 if chosen else 0
+            if stale:
+                return CHANGED
             if start:
                 self.frozen = True
                 self.started.set()
@@ -538,7 +560,11 @@ class Window:
             return self._fixed_or_ok(self.press(route[len('api/') :]))
         if route == 'api/start':
             choices = body.get('choices') if isinstance(body, dict) else None
-            return self._fixed_or_ok(self.choose(choices if isinstance(choices, dict) else {}, start=True))
+            reviewed = body.get('reviewed') if isinstance(body, dict) else None
+            reviewed = reviewed if type(reviewed) is int else None
+            return self._fixed_or_ok(
+                self.choose(choices if isinstance(choices, dict) else {}, start=True, reviewed=reviewed)
+            )
         if route == 'api/login' and isinstance(body, dict):
             return self.login(body.get('app'))
         if route == 'api/test' and isinstance(body, dict):
@@ -620,6 +646,8 @@ class Window:
     def _fixed_or_ok(taken):
         if taken is UNREADABLE:
             return 409, json.dumps({'ok': False, 'reason': UNREADABLE_SAID}).encode(), JSON
+        if taken is CHANGED:
+            return 409, json.dumps({'ok': False, 'reason': CHANGED_SAID}).encode(), JSON
         if taken:
             return 200, b'{"ok": true}', JSON
         return 409, b'{"ok": false, "reason": "Setup has started, so the choices are fixed."}', JSON

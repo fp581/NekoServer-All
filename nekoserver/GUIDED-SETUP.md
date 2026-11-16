@@ -8,7 +8,7 @@ The technical details (how the setup window works inside, every guided step, run
 
 Have these ready:
 
-- **Your drives plugged in and formatted**: an SSD, an HDD and (if you have one) a USB drive. Setup never formats a drive. It needs at least **20 GB free on the SSD** and **50 GB free on the HDD** to start; **100 GB** and **500 GB** or more are recommended.
+- **Your drives plugged in and formatted** (ext4 is the safe choice): a fast one for the apps (this guide calls it the SSD), a big one for your films and the backups (the HDD) and, if you have one, a USB drive for the offline backup. One drive, or the disk Linux runs from, can also hold everything. Setup never formats a drive. It needs at least **20 GB free on the SSD** and **50 GB free on the HDD** to start; **100 GB** and **500 GB** or more are recommended.
 - **Your phone**, with its app store working.
 - **A PIN you will remember** (6 to 8 digits) for the dashboard.
 - **About an hour**, and the PC connected to the internet.
@@ -49,17 +49,9 @@ Each card has a line **Installs N packages** where it adds some: press it to see
 
 On a PC that already has NekoServer, setup says so before this page: which release is set up and where, or that a setup was cut off and at which step, with the choices that apply (continue, review this update, change apps or settings, restore from a backup).
 
-### 3. Tailscale: reaching your server from anywhere
+### 3. Your drives
 
-Tailscale is a free app that lets your own phone and laptop reach the server privately, at home or away. Setup opens the Tailscale sign-in page in your browser.
-
-1. Create a free account, or sign in (with Google, Microsoft, Apple or GitHub).
-2. Approve this PC when the page asks.
-3. Go back to the terminal and answer `yes` to `Did the Tailscale page say this server is connected?`.
-
-Answer `no` to see the step again and reopen the page.
-
-### 4. Your drives
+The drives are chosen right after the first page, before anything is installed. First, a word on the three media groups of the first page, because they decide which places setup asks for.
 
 #### The media apps: three groups, a yes or no each
 
@@ -75,36 +67,48 @@ You can change your mind. Run `sudo bash install.sh` again and switch the line o
 
 #### Choosing the drives
 
-The drives are chosen after the first page and before the one approval; they are mounted once setup has started. Before the first drive question, setup shows **everything connected to this PC**, numbered. Each drive says what it is (its size, whether it is an SSD, an HDD, an NVMe drive, a USB drive or a disk on the NAS, its model and the name you gave it), what is on it (its filesystem and UUID, where it is open, how full it is), and what it can be used as, or why it cannot be used:
+The drives are chosen after the first page and before the one approval; they are mounted (connected to their folders) once setup has started. Before the first drive question, setup shows **everything connected to this PC**, numbered. Each drive says what it is (its model, its size, whether it is an SSD, an HDD, an NVMe drive, a USB drive or a disk on a NAS (a storage box on your home network), and the name you gave it), what it can be used as or why it cannot be used, and its details (Linux's name for it, how it is formatted, where it is open, how full it is):
 
 ```text
 Everything connected to this PC:
-  1) nvme0n1: 477 GB NVMe SSD, WD SN770
-       Cannot be used: it is the disk Linux runs from, which NekoServer never uses for your files.
-  2) sda1: 466 GB SSD, Samsung SSD 870, named "apps"
-       ext4, UUID 7fde…; not open; about 1 % full
+  1) WD SN770, 477 GB NVMe SSD - the disk Linux runs from
+       Can be the app SSD or the media HDD.
+       Details: nvme0n1
+  2) Samsung SSD 870, 466 GB SSD, named "apps" - ready to use
        Can be the app SSD, the media HDD or the USB backup drive.
-  3) sdb1: 1.8 TB HDD, WDC WD20EZRZ, named "media"
-       ext4, UUID 12ab…; open at /run/media/you/media; about 40 % full, holds files
+       Details: sda1 on sda; ext4, UUID ssd-0001; not open; about 1 % full
+  3) WDC WD20EZRZ, 1.8 TB HDD, named "media" - has files: kept as they are
        Can be the app SSD, the media HDD or the USB backup drive.
-  4) sde: 932 GB HDD, ST1000DM010
-       Cannot be used: it has no filesystem yet. To use it, format it as ext4 yourself …
+       Details: sdb1 on sdb; ext4, UUID hdd-0001; open at /run/media/neko/media; about 40 % full, holds files
+  6) ST1000DM010, 932 GB HDD - can't be used: it has no filesystem yet
 ```
 
-The short names (`sda1`, `sdb1`) are Linux's own and can change at the next start. NekoServer remembers a drive by its UUID, which is shown and which you never have to type. Setup never formats a drive; for a new drive the list gives the command to run yourself.
+The names in the details (`sda1`, `sdb1`) are Linux's own and can change at the next start. NekoServer remembers a drive by its ID (the UUID in the details), which you never have to type. Setup never formats a drive; for a new drive the list gives the command to run yourself.
 
 1. Each question names the role and what goes on that drive, for example `Number of the drive for your apps, photos and music (the app SSD)`. Type the drive's **number** from the list and press Enter. A drive that cannot have that role is in the list with the reason ("not this one: it is too small ..."); choosing it anyway says why and asks again.
-2. Each line comes with a recommended drive, marked in the list: press Enter to take it. Nothing is typed back: choosing a drive formats nothing and changes nothing on it, and setup says the choice back in words (`Drive 2 (sda1: 466 GB SSD, Samsung SSD 870, named "apps") is the app SSD.`).
-3. The same follows for the media HDD, which is the drive every backup goes to (the window's line **Backups**). The disk Linux runs from can be chosen for either (a PC with one drive): setup then keeps that part in a folder of it and says first what that means (if that disk fails, both go together; a full disk stops Linux too).
+2. Each line comes with a recommended drive, marked in the list: press Enter to take it. Nothing is typed back: choosing a drive formats nothing and changes nothing on it, and setup says the choice back in words (`Drive 2 (Samsung SSD 870, 466 GB SSD, named "apps") is the app SSD. Nothing on it is changed by choosing it.`).
+3. The same follows for the media HDD, which is the drive every backup goes to (the window's line **Backups**). The disk Linux runs from can be chosen for either (a PC with one drive): setup then keeps that part in a folder of it and says what that means (if that disk fails, both go together; a full disk stops Linux too).
 4. Then where Immich's photos, the films and shows, the music and Nextcloud's files are kept: the drive of the apps, the backups' drive, or another connected drive of their own, so the backups can be alone on a drive. Enter takes the recommended place. Photos (and music, where its backup is switched on) kept on the backups' drive are told that their backup copy is then on the same drive: it protects against a mistake, not against losing that drive.
-5. On a PC with a spare drive of its own (connected to the PC itself, not a storage box), setup then asks where each group's apps are installed, meaning their settings and databases: Enter keeps them on the drive of NekoServer and your apps; a number puts them on that drive. With that drive away later, such an app does not start over empty, and the others run. An app that is set up is never moved.
+5. The apps themselves (their settings and databases) are installed together, on the drive of NekoServer and your apps. A drive of their own for one group's apps is not offered yet.
 6. Then the removable drive for the offline backup. It is optional: Enter (in the window, **None for now**) leaves it out, saved as your choice, and nothing asks about it again.
 7. Then whether you already have films, shows or music: the folder of each, whether it is used where it is or copied into the library, and whether new ones are saved there too.
 8. **In the setup window** all of this is one page, **Where should NekoServer store your apps and files?**, with a list to choose from on every line and the recommended drive already chosen. A drive that cannot have a role is in the list with the reason and cannot be chosen. Press **Use these drives**.
 
+Then comes the review, and your `yes` (step 2). Everything after this happens once setup has started.
+
+### 4. Tailscale: reaching your server from anywhere
+
+Tailscale is a free app that lets your own phone and laptop reach the server privately, at home or away. Setup opens the Tailscale sign-in page in your browser.
+
+1. Create a free account, or sign in (with Google, Microsoft, Apple or GitHub). Use the account you will also use on your phone.
+2. Press **Connect** when the page asks, to add this PC to your account.
+3. Go back to the terminal and answer `yes` to `Is this server connected to Tailscale?`. Setup checks it itself, too.
+
+Answer `no` to see the step again and reopen the page. If no page opened, the step says what to do instead: run `sudo tailscale up` in a second terminal and open the link it prints.
+
 ### 5. Drive space
 
-Setup checks that the drives have room. If a drive has less than the recommended space, it says so and asks `Continue with these drives anyway?`. Answer `yes` to go on; the drive will just fill up sooner.
+Setup checks that the drives have room. If a drive has less than the recommended space, it says so and asks `One of your drives is small. Go on anyway?`. Answer `yes` to go on; the drive will just fill up sooner.
 
 If a drive is too small (less than 20 GB free on the SSD, or 50 GB on the HDD), setup stops. Free up space on that drive and run `sudo bash install.sh` again. To use a different drive instead: open `my-config.json` (in the same folder as `install.sh`), find the `"storage"` part, and delete the line `"uuid": "…",` under `"data_ssd"` (the SSD) or `"media_hdd"` (the HDD). Save the file and run `sudo bash install.sh` again: it asks for that drive anew.
 
@@ -113,7 +117,11 @@ If a drive is too small (less than 20 GB free on the SSD, or 50 GB on the HDD), 
 Every app gets its own administrator login. Setup asks:
 
 ```text
-Logins for the apps: 1 = NekoServer makes a strong username and password for each app (recommended; you can see them later), 2 = you choose them app by app. Type 1 or 2:
+How would you like to set up your app accounts?
+Each selected app has a separate account. NekoServer stores its required credentials privately so it can connect and check the apps.
+  1) Create strong passwords for me (recommended)
+  2) Choose my own logins
+Type 1 or 2, then press Enter. Enter alone takes the first.
 ```
 
 Type `1` and press Enter (recommended). Setup then makes a long random password for each app and saves it on the server. You never have to remember them: [Seeing an app's password](#seeing-an-apps-password) shows how to look one up.
@@ -135,11 +143,11 @@ These three steps ask a few questions of their own. Since 0.50.0 they are asked 
   - **Recommended.** When NekoServer ships a list of recommended sources, they are a group of their own: one button ticks them in the window, and `r` chooses them in the terminal. The list is a small file (`recommended-indexers.json`) of names from Prowlarr's own catalogue; it is empty until its names have been approved, and then there is no such button.
   - Use only providers and content you are authorized to access.
 
-When you run `sudo bash install.sh` again later, setup shows how you answered the optional questions last time (the media apps, the backup times, the download sources, the indexers, the playback test) and asks `Ask these questions again? [yes/no]`. Answer `no` to keep those answers and move on; `yes` asks them again.
+When you run `sudo bash install.sh` again later, setup shows how you answered the optional questions last time (the media apps, the backup times, the download sources, the indexers, the playback test) and asks `Change any of these answers?`. Answer `no` to keep those answers and move on; `yes` asks them again.
 - **Music** (only if the automatic check did not pass). If setup asks for `Listener username:` and a password, type the login of Navidrome's listener, the account the music check signs in with (not your own login on a server set up with 0.50.0 or later). To see it, open a second terminal (Ctrl+Alt+T) and run the command in [Seeing an app's password](#seeing-an-apps-password) with `show navidrome_listener`.
 - **The shared-folder password.** This is the password other computers at home use to open the shared folders. In the terminal, type it, press Enter, then type it again; nothing appears while you type. In the window it is one page with two hidden fields, which must match before it can be sent. Setup hands the password straight to Samba and keeps no copy.
 
-Setup may also ask you to **play something** in Jellyfin as a test. That is optional: answer `yes` once a video played, or press Ctrl+C to skip it.
+Setup may also ask you to **play something** in Jellyfin as a test. That is optional: answer `yes` once a video played, or press Ctrl+C to skip it (at this one question Ctrl+C skips the test and setup goes on; in the window: **Skip for now**).
 
 ### 9. The dashboard PIN
 
@@ -151,20 +159,22 @@ If you did not switch it off in the window, setup asks whether a TV is connected
 
 ### 11. Your phone
 
-Setup opens a **phone setup page** on the PC with a QR code for each app. Keep it open. For each app, the terminal tells you which phone app to install and what to type.
+**First, two switches in Tailscale** (once). Setup opens a Tailscale settings page in the browser and asks `Did you switch on both settings in Tailscale?`. On that page, switch on **MagicDNS** and **HTTPS Certificates** (the step says where each one is), then answer `yes`. They give each app a safe address of its own; nothing is opened to the internet.
 
-1. **Tailscale first.** Install **Tailscale** on the phone (or scan the first QR code), sign in with the **same account** as in step 3, allow the VPN, and switch it on. Answer `yes` once the phone app says **Connected**.
+Then setup opens a **phone setup page** on the PC with a QR code for each app. Keep it open. For each app, the terminal tells you which phone app to install and what to type.
+
+1. **Tailscale first.** Install **Tailscale** on the phone (or scan the first QR code), sign in with the **same account** as in step 4, allow the VPN (the phone asks whether Tailscale may set up a private connection; it must), and switch it on.
 2. **Then each app**, one at a time: Jellyfin (movies and shows), Seerr (requests), Immich (photos), Navidrome (music), Nextcloud (files) and the dashboard. Scan the app's QR code with the phone camera to open its address, or type the address shown.
 3. **Signing in.** The terminal shows the app's username. To see its password, open a **second terminal** on the PC (Ctrl+Alt+T) and run the command the step shows, for example:
 
    ```bash
-   sudo python3 /srv/nekoserver/installer/releases/v0.51.2/account-setup.py show jellyfin
+   sudo python3 /srv/nekoserver/installer/releases/v0.51.3/account-setup.py show jellyfin
    ```
 
    It shows the username and password on the PC's screen, with a QR code you can scan with the phone to copy the password. Press Enter to hide it again. (Your server may keep its files somewhere other than `/srv/nekoserver`: copy the command exactly as the step shows it.)
 4. **A test away from home.** Turn off Wi-Fi on the phone, keep Tailscale on, and open one of the apps. If it works on mobile data, it works anywhere. Turn Wi-Fi back on.
 
-**One question at the end.** The phone steps are one part: the terminal lists them all in order and asks once, `Is your phone set up, and did an app open on mobile data? [yes/no]`. Answer `yes` when all of it worked. `no` (or Ctrl+D) keeps the phone part for the next run of setup.
+**One question at the end.** The phone steps are one part: the terminal lists them all in order and asks once, `Is your phone set up?` (yes when the apps open on the phone, also with Wi-Fi off). Answer `yes` when all of it worked. `no` (or Ctrl+D) keeps the phone part for the next run of setup.
 
 **In the setup window** the phone part is one page. Each step has its own sliding **yes**: slide it once that step is done (the keyboard works too: Tab to it, Space to slide). **Continue** is there from the start. With every step on yes the phone is confirmed. With some still off, setup goes on, says which steps are left, and keeps them for the next run; the ones you marked are remembered and not asked for again.
 
@@ -172,24 +182,15 @@ The TV steps (Steam, the controller, picture and sound) are one part in the same
 
 ### 12. Your home network
 
-With one network connection, setup uses it and says which, for example:
+Nothing is asked here. Setup finds the connection that links this PC to your router and says which it uses, for example:
 
 ```text
-Home network: enp3s0 · 192.168.1.20 · 192.168.1.0/24
+Home network: using your cable connection, 192.168.1.20
 ```
 
-With more than one (a cable and Wi-Fi, say), it asks which links this PC to your router:
+With more than one (a cable and Wi-Fi, say), it takes the cable. Other devices at home can then open the apps without Tailscale too. Tip: in your router, reserve this address for the server (often called "DHCP reservation" or "static lease"), so it doesn't change after a restart. If the router does give the server another address later, run `sudo bash install.sh` again: setup finds the new one by itself.
 
-```text
-Which network connects this server to your home network (your router)?
-1. enp3s0 · 192.168.1.20 · 192.168.1.0/24
-2. wlan0 · 192.168.1.21 · 192.168.1.0/24
-Choose your home-network interface number:
-```
-
-Type the number and press Enter. Other devices at home can then open the apps without Tailscale too. Tip: in your router, reserve this address for the server (often called "DHCP reservation" or "static lease"), so it doesn't change after a restart.
-
-Setup may then open each app in the browser and ask you to check that it asks for a login. Answer `yes` once you have checked.
+Setup may then open each app in the browser and ask `Could you sign in to Jellyfin?` (and so on for each app). Answer `yes` once you are in.
 
 ### 13. Phone alerts and outage alerts (optional)
 
@@ -220,7 +221,7 @@ If something still needs you, the finishing screen says what. Fix it, then run `
 - **Setup stopped, or you closed the terminal?** Run `sudo bash install.sh` again in the same folder. It continues where it stopped. Steps you already confirmed (Tailscale, the phone, the TV tests) are not asked again, and the optional questions (download sources, indexers, the playback test) are asked again only if you say so.
 - **Upgraded from the dashboard?** The server then runs a newer release than the folder you downloaded. `sudo bash install.sh` in that folder stops and says so: run `git pull` in `NekoServer-All` first, then `sudo bash install.sh` again.
 - **Answered `yes` too early?** If setup can check the result, it shows the step again. If not, the finishing screen lists what is still untested.
-- **Closed the setup window?** Reloading the page in the same browser brings it back. If the browser itself was closed, the address does not open again in a new browser (this keeps other programs out). Just go on in the terminal: every question is asked there too. The window comes back the next time you run `sudo bash install.sh`.
+- **Closed the setup window?** Copy the address the terminal showed (it starts with `http://127.0.0.1:`) into a browser on this PC, from your own account: the window opens again. A window still open elsewhere then says it was opened somewhere else. Or just go on in the terminal: every question is asked there too.
 - **No setup window at all?** On a PC without a desktop, or when no browser could be opened, the terminal shows everything. Nothing is missing.
 
 ## Seeing an app's password
@@ -232,7 +233,7 @@ Your app passwords are saved on the server, and only the administrator can read 
 **Any time later**, to see one app's login on the screen (with a QR code for your phone), run this in a terminal:
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.51.2/account-setup.py show
+sudo python3 /srv/nekoserver/installer/releases/v0.51.3/account-setup.py show
 ```
 
 It lists the saved logins. Type a number to show one. Press Enter to hide it again (the screen is cleared), and press Enter on the list to stop. To go straight to one app, add its name: `show jellyfin`, `show immich`, `show seerr`, `show nextcloud`, or `show navidrome` for music (on a server set up before 0.50.0 the phones' music login is `show navidrome_listener`; the tool says which is which). Check that nobody else can see your screen first.
@@ -258,10 +259,10 @@ The rest of this page is the technical reference for the guided steps.
 Beside the terminal, `sudo bash install.sh` opens a **setup window** in the PC's own browser once the packages are installed and the runtime is built, with setup's first page. It is served by setup itself, on this PC only (`127.0.0.1`, a port chosen at random, behind an address nobody can guess) and only while setup runs. Every question setup asks is asked in both places, and either can answer it. Only the account that runs setup (or root) can open it: another account on the PC that sees its address gets a page saying so.
 
 - **Before setup starts** it shows the first page as cards under headings, each with its switch and, where it adds packages, what it installs. A switch you press is saved to `my-config.json` at once. **Continue** goes on to the storage page and then the review; **Install selected apps** there answers the terminal's question, and typing `yes` in the terminal works the same. Every switch is then saved as it stands, so a step that finds its answer does not ask. Once setup has started (from either place) the choices are fixed for this run: a switch pressed later, or a second press of the button, is refused (`409`) and the settings file is left as setup is writing it.
-- **While it runs** it shows the step under way with a one-line explanation, the packages that step installs with what each one is for, the step's own messages, and the list of all steps with their state. **When setup asks something**, the window asks it too: the terminal's last lines (the numbered drives, the instructions for a phone step) as context, then the question with a text box, Yes/No buttons for a yes/no question, or a password box for a hidden entry (a password or PIN, which the window never shows and the terminal does not echo). A step you confirm yourself (it asks in its own words, such as "Did the Tailscale page say this server is connected?") also has **Skip for now**, which leaves the step pending and lets setup go on, as Ctrl+D in the terminal does. The answer can be given in the window or typed in the terminal, whichever comes first; the other side is told. An answer from the window travels only over this PC's loopback, to setup's own process.
+- **While it runs** it shows the step under way with a one-line explanation, the packages that step installs with what each one is for, the step's own messages, and the list of all steps with their state. **When setup asks something**, the window asks it too: the terminal's last lines (the numbered drives, the instructions for a phone step) as context, then the question with a text box, Yes/No buttons for a yes/no question, or a password box for a hidden entry (a password or PIN, which the window never shows and the terminal does not echo). A step you confirm yourself (it asks in its own words, such as "Is this server connected to Tailscale?") also has **Skip for now**, which leaves the step pending and lets setup go on, as Ctrl+D in the terminal does. The answer can be given in the window or typed in the terminal, whichever comes first; the other side is told. An answer from the window travels only over this PC's loopback, to setup's own process.
 - **Every question is asked in the window too.** Up to 0.49.0 three steps (connecting the media apps, music listener setup and the shared-folder password) asked in the terminal only, and the window said **Answer this step in the terminal**. They now ask in both places. A hidden entry (a password, a PIN) typed in the window goes to setup over this PC's own loopback and is never written to a log or shown again.
 - **At the end** it shows the finishing screen (what is done, what still needs you, your app addresses).
-- **Opening it again.** The page's session lives in a cookie of the browser that opened it first, so a reload in that browser works. Another browser (or the same one after it was closed, which drops the session cookie) gets "This setup window was already opened": a second program that learns the address cannot take the session over. The terminal keeps asking every question meanwhile.
+- **Opening it again.** The page's session lives in a cookie of the browser that opened it first, so a reload in that browser works. The account that opened it first (or root) may load the address again in another browser window: that one gets a new session, and the earlier window says "This setup window is open somewhere else". Any other account gets no session: a second program that learns the address cannot take it over. The terminal keeps asking every question meanwhile.
 
 With Chromium, Chrome, Brave or Edge the page opens as a window of its own, sized for the bottom of the screen; Firefox opens it as a normal window. On a PC without a desktop, or when no browser could be opened, setup prints the window's address instead and goes on in the terminal alone. The page needs no internet connection and loads nothing from outside the PC. The words it shows live in `explanations.py`; the events behind it in `setup_progress.py`; the server in `setup_gui.py`.
 
@@ -271,7 +272,7 @@ During interactive `--apply`, a step that needs a browser, desktop app or phone:
 
 1. Prints the step name, where to do it, what to enter and the result to check.
 2. Opens the appropriate local browser page or installed desktop application as the normal desktop user.
-3. Asks its own question, which says what yes means for that step: `Did the Tailscale page say this server is connected? [yes/no]`, `Could you sign in to every app that opened? [yes/no]`.
+3. Asks its own question, which says what yes means for that step: `Is this server connected to Tailscale?`, `Could you sign in to Jellyfin?` (the words of every question are in `questions.py`).
 4. On **no**, repeats the instructions and opens the step again. An interrupted Tailscale authorization obtains/reopens its current authorization flow.
 5. On **yes**, runs any available automatic verification. If it fails, the step repeats instead of reporting success.
 
@@ -289,7 +290,7 @@ During interactive `--apply`, a step that needs a browser, desktop app or phone:
 - Optional extras (TV, ntfy phone alerts, outage monitor, the AI assistant) are asked once with yes/no. `no` is saved as `"wanted": false` in `my-config.json` and the step counts as done; set it to `true` to set the extra up on a later run.
 - Steps already confirmed are not repeated on a re-run: Tailscale sign-in and HTTPS, the phone walkthrough (for the same app addresses) and each TV hardware test.
 - TV: open Steam, Bluetooth settings when selected, display settings and browser playback; explain main-PC Remote Play and Xbox-controller tests. Hardware results are user-confirmed; package/service checks remain automatic.
-- New ntfy subscriptions and independent heartbeat monitors: open setup guidance, explain the work on the phone/provider, then collect private destination values in hidden console fields. Subscription/recipient choices are yours; the browser handoff sends no test messages.
+- New ntfy subscriptions and independent heartbeat monitors: open setup guidance, explain the work on the phone/provider, then collect the private address in a hidden field (in the terminal or the setup window) and send one test to it: a test message for the alerts ("did it arrive?"), a test check-in for the outage warning. Subscription/recipient choices are yours.
 - `acceptance.py --manual --save`: open relevant app pages and guide witnessed tests with the same yes/no loop. User confirmation never overrides a failed automatic check or performs a destructive restore for you.
 
 ### The order of the steps

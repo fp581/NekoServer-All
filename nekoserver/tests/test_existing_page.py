@@ -7,7 +7,9 @@ also have new ones saved there, or have the folder copied into the library inste
 The checks, the mounting and the library are existing_media's
 (tests/test_existing_media.py); here: the page and where setup acts on the answer."""
 
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +21,7 @@ sys.path.insert(0, str(ROOT))
 import existing_media  # noqa: E402
 import existing_page  # noqa: E402
 import media_libraries  # noqa: E402
+import neko_common  # noqa: E402
 import placement  # noqa: E402
 import questions  # noqa: E402
 
@@ -59,12 +62,52 @@ class PageTests(unittest.TestCase):
         # Answered no: saved as answered, and not asked again.
         ctx = context()
         self.assertTrue(existing_page.ask(ctx, typed('no'), lambda line: None))
-        self.assertEqual(ctx.config, {existing_page.ASKED: True})
+        self.assertEqual(ctx.config, {existing_page.ASKED: True, existing_page.ANSWERED: ['movies', 'tv', 'music']})
         self.assertFalse(existing_page.ask(ctx, never, never))
         # Left (Ctrl+D): nothing saved, asked again next time.
         ctx = context()
         self.assertFalse(existing_page.ask(ctx, mock.Mock(side_effect=EOFError), lambda line: None))
         self.assertNotIn(existing_page.ASKED, ctx.config)
+
+    def test_a_kind_whose_folders_were_all_refused_is_asked_about_again(self):
+        """Review of 0.51.2 (P2): three folders that could not be used ended with "Run setup
+        again to give one", but the question was saved as answered, so it never came."""
+        refused = existing_media.Refused('not_a_folder', path='/mnt/x')
+        ctx = context(media_apps={'music': False})
+        said = []
+        # Films: three folders refused. Shows: Enter alone (none of those), which is an answer.
+        with mock.patch.object(existing_media, 'check', side_effect=refused):
+            self.assertTrue(existing_page.ask(ctx, typed('yes', 'a', 'b', 'c', ''), said.append))
+        self.assertIn('No folder of films is used for now. Run setup again to give one.', said)
+        self.assertEqual(ctx.config[existing_page.ANSWERED], ['tv'])
+        # The next run asks again, about films only.
+        keys = []
+        answers = iter(['yes', ''])
+
+        def asked(text):
+            keys.append(text)
+            return next(answers)
+
+        self.assertTrue(existing_page.ask(ctx, asked, said.append))
+        self.assertEqual(len(keys), 2)
+        self.assertIn('films', keys[1])
+        self.assertNotIn('shows', keys[1])
+        self.assertEqual(ctx.config[existing_page.ANSWERED], ['movies', 'tv'])
+
+    def test_a_kind_switched_on_later_is_asked_about(self):
+        ctx = context(media_apps={'music': False})
+        self.assertTrue(existing_page.ask(ctx, typed('no'), lambda line: None))
+        self.assertEqual(ctx.config[existing_page.ANSWERED], ['movies', 'tv'])
+        never = mock.Mock(side_effect=AssertionError('asked'))
+        self.assertFalse(existing_page.ask(ctx, never, never))
+        # Music switched on since: the question comes for it.
+        ctx.config['media_apps'] = {'music': True}
+        self.assertTrue(existing_page.ask(ctx, typed('no'), lambda line: None))
+        self.assertEqual(ctx.config[existing_page.ANSWERED], ['movies', 'tv', 'music'])
+        # Settings from before the list: every kind this server plays now counts as answered.
+        old = context(media_apps={'music': False}, **{existing_page.ASKED: True})
+        self.assertTrue(existing_page.ask(old, never, never))
+        self.assertEqual(old.config[existing_page.ANSWERED], ['movies', 'tv'])
 
     def test_a_folder_is_checked_said_back_and_saved_in_the_table(self):
         ctx = context()
@@ -127,6 +170,28 @@ class PageTests(unittest.TestCase):
                 existing_page.folder_found(ctx.config, 'movies', 'films', (typed('a', 'b', 'c'), said.append))
             )
         self.assertIn('No folder of films is used for now. Run setup again to give one.', said)
+
+    def test_a_folder_dragged_in_or_copied_from_a_shell_is_the_folder(self):
+        """Deep check 481: a folder dragged into the terminal comes in quotes, one copied
+        from a shell has its spaces escaped, and ~ is the person's home: each was "is not a
+        folder on this PC" (setup runs as root, through sudo)."""
+        import pwd
+
+        with tempfile.TemporaryDirectory() as d:
+            folder = os.path.join(d, "Ana's Films")
+            os.mkdir(folder)
+            ctx = context()
+            for given in (f'"{folder}"', f"'{folder}' ", folder.replace(' ', '\\ ').replace("'", "\\'")):
+                with self.subTest(given=given):
+                    seen = []
+                    with mock.patch.object(existing_media, 'check', side_effect=lambda c, k, f, n: seen.append(f)):
+                        existing_page.folder_found(ctx.config, 'movies', 'films', (typed(given), print))
+                    self.assertEqual(seen, [folder])
+                    self.assertTrue(os.path.isdir(seen[0]))
+        home = pwd.getpwnam('nobody').pw_dir.rstrip('/')
+        self.assertEqual(neko_common.typed_folder('~/Videos', {'SUDO_USER': 'nobody'}), home + '/Videos')
+        self.assertEqual(neko_common.typed_folder('/mnt/tank/films'), '/mnt/tank/films')
+        self.assertEqual(neko_common.typed_folder('~other/x', {'SUDO_USER': 'nobody'}), '~other/x')
 
     def test_the_words(self):
         asked = questions.Q['existing_media']
@@ -255,8 +320,49 @@ class MusicTests(unittest.TestCase):
         with mock.patch.object(existing_media, 'music_libraries', return_value=rows) as made:
             self.assertEqual(existing_page.music_libraries({'a': 1}, True), rows)
         made.assert_called_once_with({'a': 1}, True)
-        source = (ROOT / 'onboard.py').read_text()
-        self.assertIn('existing_page.music_libraries(config, a.apply)', source)
+
+    def music_step(self, rows, **groups):
+        """The Music step on a server with these media groups, Navidrome's own check passing."""
+        from modules import music
+
+        config = {
+            'data_mount': '/srv/x',
+            'media': {'services': ['jellyfin', 'navidrome', 'lidarr']},
+            'media_apps': {'photos': False, 'movies': False, 'music': True, **groups},
+        }
+        ctx = context(**config)
+        ctx.apply = True
+        with (
+            mock.patch.object(music.os, 'geteuid', return_value=0),
+            mock.patch('neko_common.verify_storage'),
+            mock.patch.object(music.music_client, 'check', return_value={'status': 'pass'}),
+            mock.patch.object(music, 'atomic_json'),
+            mock.patch.object(existing_media, 'music_libraries', return_value=rows) as made,
+        ):
+            return music.run(ctx), made, ctx
+
+    def test_a_server_without_jellyfin_gets_it_too(self):
+        """Review of 0.51.2: the library was made with Jellyfin's (onboard.py --libraries,
+        given only with Jellyfin among the apps), so a music-only server never got it."""
+        import neko_common
+
+        rows = [{'check': 'navidrome:existing:music', 'status': 'pass'}]
+        for groups in ({}, {'music_downloads': False}, {'movies': True}):
+            result, made, ctx = self.music_step(rows, **groups)
+            self.assertIsNone(result, groups)
+            made.assert_called_once_with(ctx.config, True)
+        # Navidrome alone: the connecting step is left out altogether, so it can't be there.
+        alone = {'media_apps': {'photos': False, 'movies': False, 'music': True, 'music_downloads': False}}
+        self.assertIn('onboarding', neko_common.media_steps_left_out(alone))
+        self.assertNotIn('existing_page.music_libraries', (ROOT / 'onboard.py').read_text())
+
+    def test_a_folder_navidrome_did_not_take_is_a_step_left_with_its_reason(self):
+        why = 'Navidrome\'s administrator login is not set up yet'
+        result, _, ctx = self.music_step(
+            [{'check': 'navidrome:existing:music', 'status': 'needs_setup', 'reason': why}]
+        )
+        self.assertEqual(result['status'], 'needs_setup')
+        self.assertIn('Your own music folder is not in Navidrome yet: ' + why, result['reason'])
 
 
 class TableTests(unittest.TestCase):
@@ -300,6 +406,79 @@ class SetupTests(unittest.TestCase):
         # The media step calls it before any app is started.
         source = (ROOT / 'modules/media.py').read_text()
         self.assertLess(source.index('existing_page.mount(context)'), source.index('compose_up('))
+
+    def test_a_folder_connected_while_the_apps_run_restarts_the_apps_that_see_it(self):
+        """Deep check 391, tried with real mounts: a folder connected (or switched back to
+        read-only) while the apps run reaches them read-write, whatever the PC's mount
+        says. Only an app started anew sees it as it is."""
+        from modules import media
+
+        ctx = self.with_folder()
+
+        def connects(config, permanent, run, log):
+            run(['mount', '/mnt/nekoserver-media/library/existing/movies'], 120)
+            return [{'holds': 'movies', 'path': '/mnt/tank/films', 'mounted': True, 'reason': None}]
+
+        with (
+            mock.patch.object(existing_media, 'folder_answers', return_value=False),
+            mock.patch.object(existing_media, 'must_run') as ran,
+            mock.patch.object(existing_media, 'use_in_place', side_effect=connects),
+        ):
+            existing_page.mount(ctx)
+        ran.assert_called_once()
+        self.assertTrue(ctx.existing_mounts_changed)
+        manifests = {
+            name: (Path(f'/srv/neko/compose/{name}/compose.yaml'), (ROOT / f'compose/{name}.yaml').read_text())
+            for name in ('jellyfin', 'radarr', 'prowlarr', 'seerr', 'sonarr')
+        }
+        restarted = []
+        with mock.patch.object(media, 'compose_image_override', return_value=[]):
+            done = media.restart_for_own_folders(
+                manifests, ['sonarr: did not start'], ctx.log, lambda argv, timeout: restarted.append(argv)
+            )
+        # The apps that see /data/existing; not the ones that don't, nor one that failed to start.
+        self.assertEqual(done, ['jellyfin', 'radarr'])
+        self.assertEqual(restarted[0][-3:], ['-p', 'neko-jellyfin', 'restart'])
+        self.assertIn('these apps were restarted to see them as they are now', ctx.logs[-1])
+        # Nothing changed: nothing is restarted.
+        with (
+            mock.patch.object(existing_media, 'folder_answers', return_value=False),
+            mock.patch.object(existing_media, 'use_in_place', return_value=[]),
+        ):
+            existing_page.mount(ctx)
+        self.assertFalse(ctx.existing_mounts_changed)
+        source = (ROOT / 'modules/media.py').read_text()
+        self.assertLess(source.index('restart_for_own_folders(manifests'), source.index('stop_unselected(compose_dir'))
+
+    def test_setup_run_again_restarts_no_app_for_a_folder_as_it_was(self):
+        """Deep check 597/610 (the update to 0.51.3, run with real mounts): a folder that is
+        connected already is remounted at every setup run, with the options it has. That
+        was counted as a change, so every setup run and every upgrade restarted the apps
+        that see it (a film playing in Jellyfin stopped, downloads were cut off) and said
+        "Your own folders changed". Only a remount that turns it read-only or back is one."""
+        ctx = self.with_folder()
+        point = '/mnt/nekoserver-media/library/existing/movies'
+        writable = {point: True}
+
+        def remounts(mode):
+            def use_in_place(config, permanent, run, log):
+                run(['mount', '-o', f'remount,bind,{mode}', point], 120)
+                return [{'holds': 'movies', 'path': '/mnt/tank/films', 'mounted': True, 'reason': None}]
+
+            return use_in_place
+
+        def must_run(argv, timeout):
+            writable[argv[-1]] = argv[2].endswith(',rw')
+
+        for mode, change in (('rw', False), ('rw', False), ('ro', True), ('ro', False), ('rw', True)):
+            with (
+                mock.patch.object(existing_media, 'folder_answers', return_value=False),
+                mock.patch.object(existing_media, 'must_run', side_effect=must_run),
+                mock.patch.object(existing_media, 'takes_new_files', side_effect=lambda p: writable[p]),
+                mock.patch.object(existing_media, 'use_in_place', side_effect=remounts(mode)),
+            ):
+                existing_page.mount(ctx)
+            self.assertEqual(ctx.existing_mounts_changed, change, mode)
 
     def test_a_share_that_is_away_is_said_and_never_fails_the_step(self):
         ctx = self.with_folder()

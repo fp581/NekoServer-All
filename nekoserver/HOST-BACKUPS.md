@@ -1,6 +1,21 @@
-# Host, Steam and Samba backups
+# Backups of this PC's own settings, Steam and Samba
 
-This phase adds a Rust nightly `host_backup` worker, separate from media application and photo jobs. Python configures the timer and performs ad hoc verification/staged restoration. New full installations select the module. Upgrades preserve customized profiles: select it explicitly.
+Every night NekoServer copies this PC's own settings to the HDD: the settings setup made on Linux itself (the drives, the dashboard, the fans and lights, the shared folders), your Steam saves and settings, and Samba's accounts (Samba is the program behind the shared folders). The apps' settings and your photos have backups of their own ([APP-BACKUPS.md](APP-BACKUPS.md), [STORAGE.md](STORAGE.md)).
+
+You do nothing for it: it runs by itself an hour after the daily backup time (05:15 unless you chose another time), keeps the newest 3 nights (setup's backups page takes 1 to 7), and the dashboard's Backups page shows how the last run went.
+
+- **Getting something back:** `sudo bash install.sh --recover`, then **Restore something from a backup** and **Steam and Samba settings, from a nightly backup**. It restores into a new folder and replaces nothing ([RECOVERY.md](RECOVERY.md)). The restored folders are called `source0`, `source1` and so on; `restore-report.json` beside them says which original folder each one is. To use a file from them, close the program it belongs to (Steam, say), copy the file back to where it belongs with `sudo cp -a FILE WHERE-IT-BELONGS` (`-a` keeps its owner), and start the program again.
+- **Steam left open at night?** Steam's files are copied only while Steam is closed, because they change while it runs. On such a night everything else is still backed up, and the dashboard shows the run as *partial* with "Steam was open". Close Steam now and then, so its saves are copied.
+- **Game saves somewhere else, or a folder of your own?** Add them under `"extra_paths"` in `"host_backup"` in `my-config.json` (the example below) and run `sudo bash install.sh` again.
+- **What it does not protect against:** the copy is on the HDD, so it survives losing the system disk or the SSD, not losing the HDD itself.
+
+---
+
+## For administrators
+
+The rest of this page is the technical reference.
+
+The nightly `host_backup` worker is part of NekoServer's own program (Rust), separate from the media application and photo jobs. Python configures the timer and performs ad hoc verification/staged restoration. The `full` profile includes the step, and an update adds it to the profiles of an older `my-config.json` (a step you took out yourself stays out).
 
 ```bash
 python3 installer.py --module host_backup --check
@@ -9,7 +24,7 @@ sudo systemctl start nekoserver-host-backup.service
 systemctl status nekoserver-host-backup.timer
 ```
 
-## Scope and setup
+### Scope and setup
 
 Schedule: an hour after the daily backup time setup asked for (05:15 unless you said otherwise: `"daily"` under `"backup_times"`), with missed runs caught up after boot. `host_backup.user` identifies an existing non-root desktop account (`auto` uses the sudo/TV account, then the configured media UID, the first time; after that the same account stays chosen, even when another administrator runs setup. Name the account in `host_backup.user` to change it). Paths/identity are resolved during setup and retained in the private guard. Reapply after moving Steam or adding an external Steam library. **Steam left open** (for Remote Play, say): Steam's files are only copied while Steam is closed, including running games, Wine and Proton, because they change while it runs. On a night Steam is open, everything else (system settings, Samba and the rest) is still backed up, and Steam's files are left out: the run shows as *partial* on the dashboard with "Steam was open", and the snapshot's manifest lists them under `left_out`. They are backed up on the next night Steam is closed. Until then, the newest snapshot that does have them is never deleted by `keep_snapshots` (it is kept on top of that number), so a run of nights with Steam open can't remove the last copy of your saves. The worker never closes Steam, a game or a session, and never logs into Steam. If Steam is started in the middle of a run that is copying its files, that run fails and the next one tries again. A failed process check also fails the run.
 
@@ -38,7 +53,7 @@ Set `host_backup.extra_paths` to explicit absolute save/share directories inside
 
 Use actual existing paths; these are examples. Files changed during enumeration/copy, special files, hardlinks, privileged file modes and nested filesystems are refused. Other actively written applications need their own coordinated backup method; arbitrary extras are file snapshots, not transactional application/database backups. A partial failed copy is left as a hidden `.partial` directory, never published as a completed snapshot; the next run removes it before it checks the free space. An unfinished monthly update does not hold this backup back (the monthly update never rolls these settings back).
 
-## Storage, links and availability
+### Storage, links and availability
 
 Completed snapshots are private, timestamped directories under `<media_mount>/backups/host-user`. Original UID/GID/modes are inventory metadata; ACLs, extended attributes and security labels are not preserved, so ACL-dependent share extras require a separate metadata-aware backup. snapshot directories/files are 0700/0600. Snapshots can contain account databases, API keys and authentication tokens. Do not expose this tree through Samba or the web gateway. Existing public backup roots are refused rather than silently changing permissions.
 
@@ -46,9 +61,9 @@ Files have SHA-256 checksums; both configured drive identities are checked befor
 
 Proton and user data may contain symlinks. The worker records their targets as **inert text files**, never reads through them. Restoration keeps them inert; the report retains their mapping. Review/recreate appropriate links manually when activating a restored prefix. This avoids following a game/user link into unrelated live OS data. The staged prefix is not immediately runnable.
 
-The newest `host_backup.keep_snapshots` complete snapshots (3 on a new server; setup takes 1 to 7) are kept and older ones deleted after each successful run; a count from before 0.50.0 (more than 7, or `0` for every one) stays as it is until you choose a number on setup's backups page. Sockets, FIFOs, devices and nested filesystems are skipped and listed under `skipped` in the manifest instead of failing the backup. A snapshot on the media HDD protects SSD/OS data against their loss, but cannot protect the HDD against its own failure. Copies of HDD share contents on that same HDD are historical copies, not an independent backup. Weekly external photo copying still covers photos only; copy these snapshots to a suitably sized independent device/location separately. This release does not silently fill the 512GB photo disk with Steam/share snapshots.
+The newest `host_backup.keep_snapshots` complete snapshots (3 on a new server; setup takes 1 to 7) are kept and older ones deleted after each successful run; a count from before 0.50.0 (more than 7, or `0` for every one) stays as it is until you choose a number on setup's backups page. Sockets, FIFOs, devices and nested filesystems are skipped and listed under `skipped` in the manifest instead of failing the backup. A snapshot on the media HDD protects SSD/OS data against their loss, but cannot protect the HDD against its own failure. Copies of HDD share contents on that same HDD are historical copies, not an independent backup. Weekly external photo copying still covers photos only; copy these snapshots to a suitably sized independent device/location separately. These snapshots are never copied to the USB drive.
 
-## Verify and rehearse restoration
+### Verify and rehearse restoration
 
 ```bash
 sudo python3 host-recovery.py verify --snapshot /mnt/nekoserver-media/backups/host-user/snapshot-EXAMPLE

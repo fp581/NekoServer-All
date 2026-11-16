@@ -364,6 +364,48 @@ class SourceWizardTests(unittest.TestCase):
             self.assertFalse((Path(d) / 'config').exists())
 
 
+class AlreadyCopiedTests(unittest.TestCase):
+    def test_another_file_of_the_same_size_and_date_is_not_the_copy(self):
+        """Review of 0.51.2 (P2): a file in the library with its original's size and date
+        was "already copied" without a look at its contents, and the source then counted
+        as imported, so a run again skipped it."""
+        import source_import
+
+        with tempfile.TemporaryDirectory() as d:
+            film, copy = Path(d) / 'film.mkv', Path(d) / 'library.mkv'
+            film.write_bytes(b'a' * 3_000_000)
+            for other in (b'a' * 2_999_999 + b'b', b'b' + b'a' * 2_999_999, b'a' * 1_500_000 + b'b' + b'a' * 1_499_999):
+                copy.write_bytes(other)
+                os.utime(copy, ns=(film.stat().st_atime_ns, film.stat().st_mtime_ns))
+                self.assertFalse(source_import.already_copied(film, copy))
+            copy.write_bytes(film.read_bytes())
+            os.utime(copy, ns=(film.stat().st_atime_ns, film.stat().st_mtime_ns))
+            self.assertTrue(source_import.already_copied(film, copy))
+
+
+class RehearsalSqlTests(unittest.TestCase):
+    def test_only_the_dumps_own_statement_is_swapped_never_saved_text(self):
+        """Review of 0.51.2 (P2): the restore rehearsal replaced pg_dump's search_path
+        statement anywhere in the dump, so the same text inside a saved row (an album's
+        description) was changed in the copy it restored."""
+        import recovery_tools
+
+        statement = recovery_tools.SEARCH_PATH_EMPTY
+        dump = [
+            statement + b'\n',
+            b'COPY public.album (id, description) FROM stdin;\n',
+            b'1\t' + statement + b'\n',
+            statement + b'\n',  # a row that is that text alone
+            b'\\.\n',
+            b"INSERT INTO album VALUES (2, 'see " + statement.replace(b"'", b"''") + b"');\n",
+            statement + b'\n',
+        ]
+        staged = list(recovery_tools.staged_sql(dump))
+        self.assertEqual(staged[0], recovery_tools.SEARCH_PATH_PUBLIC + b'\n')
+        self.assertEqual(staged[1:6], dump[1:6])
+        self.assertEqual(staged[6], recovery_tools.SEARCH_PATH_PUBLIC + b'\n')
+
+
 class SourceListPathTests(unittest.TestCase):
     def test_only_a_json_file_is_read_as_the_source_list(self):
         """SonarCloud on PR 87 (path traversal from the command line): source_import read
@@ -2097,6 +2139,14 @@ class ImportLayoutTests(unittest.TestCase):
         with mock.patch.object(source_import.shutil, 'disk_usage', return_value=tiny):
             full = reason(self.entry)
         self.assertIn('the library drive has 4 bytes free', full)
+        # Deep check 483: sizes that round alike say how much is missing.
+        alike = mock.Mock(free=1_499_000_000)
+        with mock.patch.object(source_import.shutil, 'disk_usage', return_value=alike):
+            with mock.patch.object(
+                source_import, 'planned_copies', return_value=[(None, None, mock.Mock(st_size=1_503_000_000))]
+            ):
+                said = reason(self.entry)
+        self.assertIn('it needs 1.5 GB and the library drive has 1.5 GB free (4.0 MB too little)', said)
         noted = reason({'type': 'remote', 'uri': 'nfs://nas/films', 'category': 'movies'})
         self.assertIn('has no folder on this PC yet', noted)
         for said in (full, noted):
@@ -2401,6 +2451,41 @@ class ConnectorRerunTests(unittest.TestCase):
             self.assertIsNone(connect.configure_download_clients(Path('/x'), True, apps=('sonarr',), verify_qbit=False))
         fields = {f['name']: f.get('value') for f in posted[0]['fields']}
         self.assertEqual((fields['tvCategory'], fields['host'], fields['username']), ('tv', 'qbittorrent', 'u'))
+
+    def test_a_typed_qbittorrent_password_is_saved_in_the_apps_and_the_question_says_so(self):
+        """Deep check 411: the question said the password "is used once to connect the apps
+        and is not kept", while it is saved in Sonarr, Radarr and Lidarr (their download
+        client), which is how they reach qBittorrent from then on."""
+        import questions
+
+        connect = load_connector()
+        schema = {
+            'implementation': 'QBittorrent',
+            'fields': [{'name': n} for n in ('host', 'port', 'username', 'password', 'tvCategory')],
+        }
+        posted = []
+
+        def request(app, key, endpoint, method='GET', payload=None, **k):
+            if method == 'POST':
+                posted.append(payload)
+                return payload
+            return {'/downloadclient': [], '/downloadclient/schema': [schema]}[endpoint]
+
+        typed = {'qbit_password': 'typed-secret', 'qbit_user': ''}
+        with (
+            mock.patch.object(connect.account_store, 'get', return_value=None),
+            mock.patch.object(connect.questions, 'ask', side_effect=lambda key, prompt=None: typed[key]),
+            mock.patch.object(connect, 'app_key', return_value='k'),
+            mock.patch.object(connect, 'request', side_effect=request),
+            mock.patch('builtins.print'),
+        ):
+            connect.configure_download_clients(Path('/x'), True, apps=('sonarr',), verify_qbit=False)
+        saved = {f['name']: f.get('value') for f in posted[0]['fields']}
+        self.assertEqual(saved['password'], 'typed-secret')  # kept, in Sonarr
+        hint = questions.Q['qbit_password']['hint']
+        self.assertNotIn('not kept', hint)
+        self.assertIn('Sonarr, Radarr and Lidarr save it', hint)
+        self.assertIn('NekoServer keeps no copy', hint)
 
 
 class JellyfinKeyHeaderTests(unittest.TestCase):

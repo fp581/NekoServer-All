@@ -2,6 +2,7 @@
 """NekoServer modular, standard-library-only orchestration framework."""
 
 import argparse
+import contextlib
 import copy
 import fcntl
 import stat
@@ -38,6 +39,7 @@ from neko_common import (
     BUNDLE_MANIFEST,
     MEDIA_APPS,
     readable_output,
+    stopping_on_hangup,
 )
 
 # The installer's own log lines (a step's status), as against a step's own words.
@@ -326,13 +328,13 @@ def review_backup_counts(config, ask=None, held=None):
     for group in waiting:
         what = backup_plan.COUNTED[group][0]
         keep = backup_plan.count(config, group)[0]
-        kept = backup_plan.kept_words(keep, what)
+        kept = backup_plan.kept_words(keep, what, group)
         said = backup_plan.review(config, group, backup_plan.DEFAULT, held(group) if held else None)
         if ask is not None and ask(f'{said}\nKeep the newest {backup_plan.DEFAULT} {what} from now on?') is True:
             backup_plan.set_count(config, group, backup_plan.DEFAULT)
             lines.append(
-                f'Backups: the newest {backup_plan.DEFAULT} {what} are kept from now on, not {kept}; the older ones '
-                'are removed after the next backup that succeeds, none before'
+                f'Backups: the newest {backup_plan.DEFAULT} {what} are kept from now on, not {kept}. '
+                + backup_plan.rule(group)
             )
         else:
             lines.append(
@@ -972,16 +974,20 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         prog='sudo bash install.sh',
         description='Set up NekoServer on this PC. With no options it runs the guided setup (--wizard).',
-        epilog='The other options are for repairs and checks; README.md shows when each is needed.',
+        epilog='The other options are for repairs and checks; README.md, "Other ways to run setup", lists each one.',
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         '--all', action='store_true', help='Run every step switched on in the settings, without questions'
     )
-    mode.add_argument('--profile', metavar='NAME', help='Run named module profile')
-    mode.add_argument('--module', metavar='NAME', help='Run a module and its dependencies')
+    mode.add_argument('--profile', metavar='NAME', help='Run a named set of steps (a profile, such as remote_access)')
     mode.add_argument(
-        '--retry-failed', action='store_true', help='Retry failed or blocked modules and their dependencies'
+        '--module', metavar='NAME', help='Run one step (a module, such as dashboard) and the steps it needs'
+    )
+    mode.add_argument(
+        '--retry-failed',
+        action='store_true',
+        help='Run again only the steps that failed or waited last time, and the steps they need',
     )
     mode.add_argument(
         '--wizard', action='store_true', help='Guided setup of everything (what `sudo bash install.sh` runs)'
@@ -995,12 +1001,12 @@ def main(argv=None):
     parser.add_argument(
         '--apply',
         action='store_true',
-        help='Allow explicitly supported system changes (requires root for Docker install)',
+        help='Let this run change the system (needs sudo); without it a run only shows what it would do',
     )
     parser.add_argument(
-        '--check', action='store_true', help='Validate configuration and dependency graph without running'
+        '--check', action='store_true', help='Only look: check that the settings file is valid and list the steps'
     )
-    parser.add_argument('--dry-run', action='store_true', help='Preview execution; writes nothing')
+    parser.add_argument('--dry-run', action='store_true', help='Only look: show what a run would do; changes nothing')
     parser.add_argument('--config', help='Settings file (default: my-config.json here, the one the wizard made)')
     parser.add_argument(
         '--state-dir', default=str(DEFAULT_STATE), help='Where setup records which steps are done (rarely needed)'
@@ -1017,23 +1023,28 @@ def main(argv=None):
             parser.error(str(exc))
     if args.apply and (args.check or args.dry_run):
         parser.error('--apply cannot be combined with --check or --dry-run')
+    # A closed terminal or a dropped SSH connection ended setup on the spot, with no
+    # cleanup: the USB drive mounted to measure it stayed mounted read-only (the weekly
+    # copy could not use it), and the step stayed "running". It stops as Ctrl+C does now.
     try:
-        if args.wizard:
-            import wizard
+        with stopping_on_hangup():
+            if args.wizard:
+                import wizard
 
-            return wizard.run(execute, Path(args.state_dir), config=args.config)
-        if args.recover:
-            import recovery_wizard
+                return wizard.run(execute, Path(args.state_dir), config=args.config)
+            if args.recover:
+                import recovery_wizard
 
-            return recovery_wizard.run(config_path=args.config)
-        return execute(args)
+                return recovery_wizard.run(config_path=args.config)
+            return execute(args)
     except KeyboardInterrupt:
         again = 'sudo bash install.sh --recover' if args.recover else 'sudo bash install.sh'
-        print(
-            f'\nStopped. Nothing that was finished is undone. Run  {again}  again '
-            'when you are ready: it continues where it stopped.',
-            file=sys.stderr,
-        )
+        with contextlib.suppress(OSError):  # the terminal may be gone
+            print(
+                f'\nStopped. Nothing that was finished is undone. Run  {again}  again '
+                'when you are ready: it continues where it stopped.',
+                file=sys.stderr,
+            )
         return 130
     except (InstallerError, RuntimeError, ValueError, OSError, KeyError, TypeError) as exc:
         print(f'ERROR: {exc}', file=sys.stderr)

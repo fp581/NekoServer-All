@@ -234,8 +234,12 @@ def load_images(snapshot, manifest):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--snapshot', required=True, type=Path)
-    parser.add_argument('--stage', type=Path)
+    parser.add_argument(
+        '--snapshot', required=True, type=Path, help='The monthly snapshot folder (backups/monthly/RUN on the HDD)'
+    )
+    parser.add_argument(
+        '--stage', type=Path, help='Unpack the checked snapshot into this new folder (nothing live is replaced)'
+    )
     parser.add_argument(
         '--load-images',
         action='store_true',

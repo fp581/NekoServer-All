@@ -383,8 +383,10 @@ fn path_fits(target: &Path) -> bool {
         .max(partial_name("").len());
     folder + 1 + longest <= PATH_MAX
 }
-/// What the job says about files left out by `path_fits` (`what`: "photos and videos").
-fn too_long_said(what: &str, files: &[String]) -> String {
+/// What the job says about files left out by `path_fits` (`what`: "photo or video",
+/// "photos and videos"): one file is said as one (deep check 485: "1 photos and videos
+/// were not backed up ... Move them").
+fn too_long_said((one, many): (&str, &str), files: &[String]) -> String {
     let mut shown = files
         .iter()
         .take(10)
@@ -394,12 +396,18 @@ fn too_long_said(what: &str, files: &[String]) -> String {
     if files.len() > 10 {
         shown += &format!(" and {} more", files.len() - 10);
     }
+    let (were, folders, they, them) = if files.len() == 1 {
+        ("was", "the folder it is in has", "its", "it")
+    } else {
+        ("were", "the folders they are in have", "their", "them")
+    };
     format!(
-        "{} {what} were not backed up because the folders they are in have such long names that their full path in the backup would be longer than Linux allows ({} bytes). Move them into a folder with a shorter path, or shorten the folder names; the next run copies them: {shown}",
-        files.len(),
+        "{} {were} not backed up because {folders} such long names that {they} full path in the backup would be longer than Linux allows ({} bytes). Move {them} into a folder with a shorter path, or shorten the folder names; the next run copies {them}: {shown}",
+        common::plural(files.len(), one, many),
         PATH_MAX + 1
     )
 }
+const PHOTOS: (&str, &str) = ("photo or video", "photos and videos");
 /// Write down the full name behind a shortened version stem (in the folder's NAMES), so
 /// a restore puts the file back under its own name.
 fn remember_name(folder: &Path, stem: &str, name: &str, apply: bool) -> Result<()> {
@@ -1015,6 +1023,26 @@ fn record_kept(
     }
     Ok(())
 }
+/// Note in the checksum list when the original `source` was last changed, for the copy
+/// `kept_copy` just made or compared (its file), or, for a first copy (`target`) the
+/// quick check passed, only where no date is noted yet (copies from before dates were noted).
+/// The saved copy's own date stays the time it was written, which the quick checks go
+/// by; a restore gives the file this date back (D1).
+fn date_kept(ledger: &mut Ledger, root: &Path, kept: &Kept, target: &Path, source: &Path) {
+    let (file, only_missing) = match (&kept.file, &kept.sha256) {
+        (Some(file), Some(_)) => (file.as_path(), false),
+        (None, _) if kept.added == Added::Same && kept.source_sha256.is_none() => (target, true),
+        _ => return,
+    };
+    let (Ok(key), Ok(meta)) = (ledger_key(file, root), fs::metadata(source)) else {
+        return;
+    };
+    let ns = meta
+        .mtime()
+        .saturating_mul(1_000_000_000)
+        .saturating_add(meta.mtime_nsec());
+    ledger.date(&key, ns, only_missing);
+}
 /// Files of a backup tree that are data (not its ledger, notes, partial files or the
 /// folder of damaged copies), with their ledger keys.
 fn tree_files(root: &Path) -> Result<Vec<(String, PathBuf)>> {
@@ -1118,14 +1146,21 @@ fn save_inventory(root: &Path, live: &Inventory, ledger: &Ledger, what: &str) ->
             common::plural(live.len(), "file", "files"),
             path.display()
         ),
-        Ok((path, false)) => println!(
-            "{what}: the {} you have now the same as in the last list ({}), so no new one was written",
-            common::plural(live.len(), "file is", "files are"),
-            path.display()
-        ),
+        Ok((path, false)) => println!("{what}: {}", unchanged_list_said(live.len(), &path)),
         Err(_) => println!("{what}: {}", problem.as_deref().unwrap_or_default()),
     }
     problem
+}
+/// What a run whose files are those of the last list says. Every weekly run printed "the
+/// 100000 files are you have now the same as in the last list" (deep check 729: the
+/// verb was put after the count, before "you have now").
+fn unchanged_list_said(count: usize, list: &Path) -> String {
+    let verb = if count == 1 { "is" } else { "are" };
+    format!(
+        "the {} you have now {verb} the same as in the last list ({}), so no new one was written",
+        common::plural(count, "file", "files"),
+        list.display()
+    )
 }
 /// Note that a run starts copying into the tree at `root` (inventory::begin). When the
 /// note can't be written, the run goes on and is reported incomplete.
@@ -1300,6 +1335,7 @@ fn archive_with(
             }
             if apply {
                 record_kept(&mut ledger, &archive, &kept, &mut report)?;
+                date_kept(&mut ledger, &archive, &kept, &target, path);
             }
             Ok(())
         })?;
@@ -1325,10 +1361,7 @@ fn archive_with(
         );
     }
     if !report.too_long.is_empty() {
-        println!(
-            "Archive: {}",
-            too_long_said("photos and videos", &report.too_long)
-        );
+        println!("Archive: {}", too_long_said(PHOTOS, &report.too_long));
     }
     if replaced > 0 {
         println!("Archive: {} in the way of a file that became a folder (or a folder that became a file); kept in {REPLACED}/{when} at the archive's top", common::plural(replaced, "saved file was", "saved files were"));
@@ -1450,6 +1483,7 @@ fn histories_apart(
             size: fs::metadata(hdd)?.len(),
             verified_at: common::now(),
             how: USB_ONLY.to_string(),
+            mtime_ns: ours.mtime_ns,
         };
         theirs.adopt(&ledger_key(&versioned, dest)?, &entry)?;
     }
@@ -1618,7 +1652,9 @@ fn mirror_on(
             let named = String::from_utf8(common::bytes(path, 4096)?)
                 .map_err(|_| Error::new("Unreadable current-version note"))?;
             let folder = path.parent().unwrap_or(&source);
-            noted.insert(ledger_key(&folder.join(named.trim()), &source)?);
+            // As mark_latest wrote it: trimmed, " song.mp3"'s current copy was never
+            // checked by checksum (deep check 476).
+            noted.insert(ledger_key(&folder.join(&named), &source)?);
             notes.push(path.to_path_buf());
         }
         Ok(())
@@ -1776,10 +1812,7 @@ fn mirror_on(
     }
     report.print("Backup");
     if !report.too_long.is_empty() {
-        println!(
-            "Backup: {}",
-            too_long_said("photos and videos", &report.too_long)
-        );
+        println!("Backup: {}", too_long_said(PHOTOS, &report.too_long));
     }
     if !report.unstorable.is_empty() {
         println!(
@@ -1961,6 +1994,40 @@ fn case_clash(path: &str, seen: &mut std::collections::HashMap<String, String>) 
     }
     None
 }
+/// `shown` (`<user>/<path>`) as the drive spells it: each folder and file name as the
+/// first one kept there wrote it (`seen`), for a name that differs from it only in case.
+fn stored_spelling(shown: &str, seen: &std::collections::HashMap<String, String>) -> String {
+    let mut stored = String::new();
+    for part in shown.split('/') {
+        let here = if stored.is_empty() {
+            part.to_string()
+        } else {
+            format!("{stored}/{part}")
+        };
+        stored = seen.get(&here.to_lowercase()).cloned().unwrap_or(here);
+    }
+    stored
+}
+/// A live file `shown` that clashes on exFAT with the kept name `earlier` may be that
+/// file renamed only in upper/lower case: when `earlier` is no longer among the live
+/// files (`files`, the user's folder), its path as the drive spells it (below
+/// `<user>/`), where its copy is kept. None when both names are live (two files exFAT
+/// would merge). The caller takes it for the same file only while the drive still
+/// holds its content.
+/// Before, such a file was left out every week, and a restore "as of the last backup"
+/// brought back neither name though its content was on the drive (deep check, D8).
+fn renamed_in_case(
+    files: &Path,
+    shown: &str,
+    earlier: &str,
+    seen: &std::collections::HashMap<String, String>,
+) -> Option<PathBuf> {
+    let below_user = |path: &str| path.split_once('/').map(|(_, rest)| rest.to_string());
+    if fs::symlink_metadata(files.join(below_user(earlier)?)).is_ok() {
+        return None;
+    }
+    below_user(&stored_spelling(shown, seen)).map(PathBuf::from)
+}
 /// Names already kept on the USB drive (its files, and those its ledger lists) take
 /// their place in the exFAT check before this week's files: an old `Documents/report.pdf`
 /// that stays on the backup still clashes with a new `documents/report.pdf`.
@@ -2007,6 +2074,8 @@ pub struct CloudCopy {
     pub refused: Vec<String>,
     /// Files skipped because they changed or vanished while being copied (in use).
     pub skipped_files: Vec<String>,
+    /// Files left out because the USB drive has too little room left for them.
+    pub no_room: Vec<String>,
     /// What the checksum checks of the USB copy found.
     pub integrity: Integrity,
 }
@@ -2020,25 +2089,31 @@ impl CloudCopy {
         self
     }
     pub fn complete(&self) -> bool {
-        self.skipped == 0 && self.refused.is_empty()
+        self.skipped == 0 && self.refused.is_empty() && self.no_room.is_empty()
     }
     /// What was left out, for the job report: counts and (up to 50) file names.
     pub fn missing(&self) -> Option<Value> {
         if self.complete() {
             return None;
         }
+        // The files with no room first: they are the ones to act on.
         let files: Vec<&String> = self
-            .skipped_files
+            .no_room
             .iter()
+            .chain(&self.skipped_files)
             .chain(&self.refused)
             .take(50)
             .collect();
-        Some(json!({
+        let mut out = json!({
             "in_use": self.skipped,
             "unsupported_names": self.refused.len(),
             "files": files,
             "reason": "Nextcloud files not copied to the USB drive this week",
-        }))
+        });
+        if !self.no_room.is_empty() {
+            out["no_room"] = json!(self.no_room.len());
+        }
+        Some(out)
     }
 }
 pub fn copy_cloud(
@@ -2049,12 +2124,65 @@ pub fn copy_cloud(
     check: Check,
     internal: Option<&str>,
 ) -> Result<CloudCopy> {
+    copy_cloud_with(
+        cloud,
+        dest,
+        apply,
+        fat_names,
+        check,
+        internal,
+        &common::free_bytes,
+    )
+}
+/// Whether a new file of `size` bytes can't go onto a drive with `free` bytes left.
+fn no_room_for(size: u64, free: u128) -> bool {
+    u128::from(size) > free
+}
+/// What the job says about the files in `files` that the USB drive has no room for.
+fn no_room_said(files: &[String], free: Option<u128>) -> String {
+    let mut shown = files
+        .iter()
+        .take(10)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if files.len() > 10 {
+        shown += &format!(" and {} more", files.len() - 10);
+    }
+    let left = free.map_or(String::new(), |bytes| {
+        if bytes < 1_000_000_000 {
+            format!(" ({} MB is free there)", bytes / 1_000_000)
+        } else {
+            format!(" ({:.1} GB is free there)", bytes as f64 / 1e9)
+        }
+    });
+    format!(
+        "{} not copied because the USB drive has too little room left{left}; every other file was copied. Make room on the drive or use a bigger one, and the next run copies {}: {shown}",
+        common::plural(files.len(), "file was", "files were"),
+        if files.len() == 1 { "it" } else { "them" }
+    )
+}
+/// `copy_cloud`; `free` gives the bytes free on the drive that holds a folder (tests
+/// stand in for a drive that is nearly full).
+fn copy_cloud_with(
+    cloud: &Path,
+    dest: &Path,
+    apply: bool,
+    fat_names: bool,
+    check: Check,
+    internal: Option<&str>,
+    free: &dyn Fn(&Path) -> Result<u128>,
+) -> Result<CloudCopy> {
     let (cloud, dest) = separate(cloud, dest)?;
     let (mut copied, mut versions, mut skipped) = (0, 0, 0);
     let mut refused = vec![];
     let mut clashes = vec![];
     let mut unreadable = vec![];
     let mut too_long = vec![];
+    // Files the drive has no room for: left out and named, like the too-long paths. One
+    // such file used to stop the copy, and every file after it was never copied (D11).
+    let mut no_room = vec![];
+    let (mut renamed, mut taken) = (0, std::collections::HashMap::new());
     let mut seen = std::collections::HashMap::new();
     let mut skipped_files = vec![];
     // The USB copy keeps its own ledger: the Nextcloud files are not on the HDD.
@@ -2137,20 +2265,46 @@ pub fn copy_cloud(
                 return Ok(());
             }
             let shown = format!("{user}/{}", relative.display());
+            let user_files = root.join(&user).join("files");
+            // What the file is called now, and where the drive keeps it: the same,
+            // but for a file renamed only in upper/lower case (renamed_in_case).
+            let named = user_files.join(relative);
+            let mut kept_as = relative.to_path_buf();
             if fat_names {
                 if let Some(earlier) = case_clash(&shown, &mut seen) {
-                    clashes.push(format!("{shown} (same as {earlier} on exFAT)"));
-                    refused.push(shown);
-                    return Ok(());
+                    // The same file under its new spelling only while the drive holds
+                    // exactly its content (asked without copying anything): a file
+                    // with other content there stays a clash, never a merged version.
+                    let same_file = renamed_in_case(&files, &shown, &earlier, &seen)
+                        .filter(|stored| {
+                            kept_copy(path, &user_files.join(stored), false, 0o600, check, None)
+                                .is_ok_and(|kept| kept.added == Added::Same)
+                        })
+                        // ... and one kept file stands for one live file only.
+                        .filter(|stored| {
+                            let spelling = stored.to_string_lossy().to_lowercase();
+                            *taken.entry(spelling).or_insert_with(|| shown.clone()) == shown
+                        });
+                    match same_file {
+                        Some(stored) => {
+                            kept_as = stored;
+                            renamed += 1;
+                        }
+                        None => {
+                            clashes.push(format!("{shown} (same as {earlier} on exFAT)"));
+                            refused.push(shown);
+                            return Ok(());
+                        }
+                    }
                 }
             }
-            let user_files = root.join(&user).join("files");
+            let relative = kept_as.as_path();
             let target = user_files.join(relative);
             if !path_fits(&target) {
                 // Left out and named; its earlier copy (if any) stays in the inventory.
                 too_long.push(shown.clone());
                 refused.push(shown);
-                live.add(&target, &root);
+                live.add_as(&named, &target, &root);
                 return Ok(());
             }
             let in_way = in_the_way(&user_files, relative);
@@ -2167,9 +2321,18 @@ pub fn copy_cloud(
             }
             let key = ledger_key(&target, &root)?;
             let expected = ledger.get(&key).map(|e| e.sha256.clone());
-            let result = kept_copy(path, &target, apply, 0o600, check, expected.as_deref());
+            // A new file bigger than the room left is not even begun (it would be
+            // written for an hour, then fail); one that runs out of room part-way (a
+            // new version, or other files landing meanwhile) is left out the same way.
+            let fits = target.exists()
+                || !no_room_for(fs::metadata(path).map_or(0, |m| m.len()), free(&root)?);
+            let result = if fits {
+                kept_copy(path, &target, apply, 0o600, check, expected.as_deref())
+            } else {
+                Err(std::io::Error::from_raw_os_error(libc::ENOSPC).into())
+            };
             if result.is_ok() || path.exists() {
-                live.add(&target, &root);
+                live.add_as(&named, &target, &root);
             }
             match result {
                 Ok(kept) => {
@@ -2195,8 +2358,10 @@ pub fn copy_cloud(
                     }
                     if apply {
                         record_kept(&mut ledger, &root, &kept, &mut report)?;
+                        date_kept(&mut ledger, &root, &kept, &target, path);
                     }
                 }
+                Err(e) if common::drive_full(&e) => no_room.push(shown),
                 Err(e) if in_use_now(&e, path) => {
                     skipped += 1;
                     skipped_files.push(format!("{user}/{}", relative.display()));
@@ -2233,7 +2398,13 @@ pub fn copy_cloud(
         );
     }
     if !too_long.is_empty() {
-        println!("Nextcloud: {}", too_long_said("files", &too_long));
+        println!("Nextcloud: {}", too_long_said(("file", "files"), &too_long));
+    }
+    if !no_room.is_empty() {
+        println!("Nextcloud: {}", no_room_said(&no_room, free(&root).ok()));
+    }
+    if renamed > 0 {
+        println!("Nextcloud: {} renamed only in upper/lower case since the USB drive (exFAT) saved {}; the drive keeps the earlier spelling, and a restore gives the name of today", common::plural(renamed, "file was", "files were"), if renamed == 1 { "it" } else { "them" });
     }
     let exfat: Vec<&String> = refused
         .iter()
@@ -2259,11 +2430,20 @@ pub fn copy_cloud(
         skipped,
         refused,
         skipped_files,
+        no_room,
         integrity: report,
     })
 }
-/// Weekly Immich database copies kept on the USB drive (newest first; older ones go).
-const USB_DUMPS: u64 = 4;
+/// How many of `what` the USB drive keeps, the newest ones (shared.json "usb_keeps":
+/// setup's backups page says the same numbers).
+fn usb_keeps(what: &str) -> u64 {
+    common::SHARED["usb_keeps"][what]
+        .as_u64()
+        .expect("shared.json names how many the USB drive keeps")
+}
+/// Weekly database copies of an app kept on the USB drive (newest first; older ones go).
+static USB_DUMPS: std::sync::LazyLock<u64> =
+    std::sync::LazyLock::new(|| usb_keeps("database_copies"));
 /// Weekly Nextcloud database copies kept on the HDD and on the USB drive.
 const CLOUD_DUMPS: u64 = 4;
 /// An app whose database the weekly jobs copy: Immich (its own weekly job) and
@@ -2497,7 +2677,7 @@ fn copy_newest_of(kind: &DumpKind, hdd_dumps: &Path, usb: &Path) -> Result<Optio
         format!("{label} version that made the newest database copy ({name}): {version}\nEach copy's own version and checksum are in the .json file next to it.\n{}\n", kind.guide).as_bytes(),
         0o600,
     )?;
-    prune_dumps_of(kind.app, &folder, USB_DUMPS, Some(&name))?;
+    prune_dumps_of(kind.app, &folder, *USB_DUMPS, Some(&name))?;
     println!("USB: {label} database copy {name} ({label} {version})");
     Ok((!problems.is_empty()).then(|| problems.join("; ")))
 }
@@ -2541,7 +2721,8 @@ fn is_dump(app: &str, name: &str) -> bool {
 /// Without it, a server whose SSD and HDD both broke had no password list anywhere.
 const USB_PASSWORDS: &str = "passwords";
 /// How many snapshots' password lists the USB drive keeps (the newest ones).
-const USB_PASSWORD_LISTS: usize = 3;
+static USB_PASSWORD_LISTS: std::sync::LazyLock<usize> =
+    std::sync::LazyLock::new(|| usb_keeps("password_lists") as usize);
 /// A snapshot's password list: each file with the manifest key that records its checksum.
 const SECRETS_FILES: [(&str, &str); 3] = [
     ("secrets", crate::maintenance::SECRETS_ARCHIVE),
@@ -2712,11 +2893,14 @@ fn copy_newest_secrets(sources: &[PathBuf], usb: &Path) -> Result<Option<String>
         &common::bytes(&source.join("manifest.json"), 2_000_000)?,
         0o600,
     )?;
-    keep_newest_lists(&folder, USB_PASSWORD_LISTS)?;
+    keep_newest_lists(&folder, *USB_PASSWORD_LISTS)?;
     let date = chrono::DateTime::from_timestamp_micros(snapshot_stamp(&run).unwrap_or(0) as i64)
         .map(|d| d.format("%Y-%m-%d").to_string())
         .unwrap_or_else(|| run.clone());
-    println!("USB: password list of {date} (encrypted; the recovery menu's \"App password list\" opens it with the backup password)");
+    println!(
+        "USB: password list of {date} (encrypted; the recovery menu's \"{}\" opens it with the backup password)",
+        common::shared("recovery_menu", "password_list")
+    );
     Ok(skipped)
 }
 /// Setup's own password list on the HDD, sealed for the backup key like the monthly
@@ -2794,7 +2978,7 @@ fn seal_passwords_at(data: &Path, lists: &Path, key_dir: &Path, now: f64) -> Res
         let _ = fs::remove_dir_all(common::safe(&folder)?);
         return Err(e);
     }
-    keep_newest_lists(lists, USB_PASSWORD_LISTS)?;
+    keep_newest_lists(lists, *USB_PASSWORD_LISTS)?;
     common::atomic_json(&state, &json!({"run": run, "contents": contents}))?;
     Ok(Sealed::Made(run))
 }
@@ -3142,9 +3326,21 @@ fn gave_way(e: &Error) -> bool {
 fn monthly_check_keeps(e: &Error) -> bool {
     gave_way(e) || !e.to_string().starts_with(INTEGRITY)
 }
-/// The weekly USB copy gave way to the monthly run, which copies the drive itself.
+/// A job gave way to the monthly run: the weekly USB copy (the monthly run copies the
+/// drive itself), or a nightly job that waited its 3 hours for it (MONTHLY_SKIP).
 pub fn yielded(e: &Error) -> bool {
-    e.to_string().starts_with(MONTHLY_YIELD)
+    let said = e.to_string();
+    said.starts_with(MONTHLY_YIELD) || said.starts_with(MONTHLY_SKIP)
+}
+/// Said by a nightly or weekly job that waited its 3 hours while the monthly update
+/// still held the jobs' lock. On the 1st the monthly run keeps that lock for its whole
+/// run (up to 18 hours), so every job of that night failed with an alert, though nothing
+/// was wrong (deep check, D2). Not a failure: no alert, the report stays as it was.
+const MONTHLY_SKIP: &str = "Skipped for the monthly update";
+fn monthly_skip() -> Error {
+    Error::new(&format!(
+        "{MONTHLY_SKIP}: it was still running after this job had waited 3 hours for it, and only one of them runs at a time. Nothing failed and there is nothing to do: this job runs again at its next time"
+    ))
 }
 /// Said when the weekly USB copy finds the monthly run at work: no failure, the drive
 /// gets its copy from the monthly run and the weekly copy runs again next week.
@@ -3362,7 +3558,7 @@ pub fn keep_count(keep: &Value, earlier: &Value, setting: &str) -> (u64, Option<
         _ => (
             0,
             Some(format!(
-                "the number of backups to keep ({setting}.keep_snapshots) is {keep}, not a whole number from 1 to 7, so no older backup was removed; run  sudo bash install.sh  to set it"
+                "the number of backups to keep ({setting}.keep_snapshots) is {keep}, not a whole number from 1 to 7, so no older backup was removed to keep to it; run  sudo bash install.sh  to set it"
             )),
         ),
     }
@@ -3371,16 +3567,60 @@ pub fn keep_count(keep: &Value, earlier: &Value, setting: &str) -> (u64, Option<
 /// While the drive is short, the oldest snapshots are removed first, but the newest
 /// complete one always stays, as the one good backup. Still short: the error `short`
 /// gives (told what is free). Without this a full drive failed every night for good.
+/// Nothing is removed when removing every older snapshot would still not make the room
+/// (a drive filled by something else: the films, say): the backups went, all but one,
+/// for a backup that could not be made anyway (deep check 419).
 /// Returns the names removed, for the report (`short_history`).
 pub fn make_room(root: &Path, needed: u128, short: &dyn Fn(u128) -> String) -> Result<Vec<String>> {
-    make_room_with(root, needed, &|| common::free_bytes(root), short)
+    make_room_with(
+        root,
+        needed,
+        &|| common::free_bytes(root),
+        &|name| tree_bytes(&root.join(name)),
+        short,
+    )
+}
+/// The room removing `folder` gives back: what its files take on the drive. A part that
+/// can't be read counts as nothing, so the room is never overestimated.
+fn tree_bytes(folder: &Path) -> u128 {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| match fs::symlink_metadata(entry.path()) {
+            Ok(meta) if meta.is_dir() => tree_bytes(&entry.path()),
+            Ok(meta) => meta.blocks() as u128 * 512,
+            Err(_) => 0,
+        })
+        .sum()
 }
 fn make_room_with(
     root: &Path,
     needed: u128,
     free: &dyn Fn() -> Result<u128>,
+    size: &dyn Fn(&str) -> u128,
     short: &dyn Fn(u128) -> String,
 ) -> Result<Vec<String>> {
+    let have = free()?;
+    if have >= needed {
+        return Ok(vec![]);
+    }
+    // Every snapshot but the newest could go: is that enough?
+    let found = common::complete_snapshots(root)?;
+    let older = &found[..found.len().saturating_sub(1)];
+    let gain: u128 = older.iter().map(|(_, name)| size(name)).sum();
+    if have.saturating_add(gain) < needed {
+        let kept = if older.is_empty() {
+            "There is no older backup to remove for room (the newest one is always kept)"
+        } else {
+            "No older backup was removed: removing them all (but the newest, which is always kept) would not make that much room"
+        };
+        return Err(Error::new(&format!(
+            "{}. {kept}. Free up space there",
+            short(have)
+        )));
+    }
     let mut removed = vec![];
     loop {
         let have = free()?;
@@ -3389,30 +3629,58 @@ fn make_room_with(
         }
         let found = common::complete_snapshots(root)?;
         let [(_, oldest), _, ..] = found.as_slice() else {
-            return Err(Error::new(&short(have)));
+            // Less came free than the snapshots took (something else is filling the drive).
+            return Err(failed_after_room(root, &removed, Error::new(&short(have))));
         };
         common::remove_snapshot(root, oldest)?;
         println!("Backup: the drive was short of space, so the oldest snapshot ({oldest}) was removed early; the newest ones are kept");
         removed.push(oldest.clone());
     }
 }
+/// The error of a backup that failed after `make_room` had removed snapshots (`removed`)
+/// for it: the reason, and that older backups went for a backup that was not made (review
+/// of 0.51.2: the run failed with only its own reason, and the dashboard still showed the
+/// history as whole). Unchanged when nothing was removed.
+pub fn failed_after_room(root: &Path, removed: &[String], error: Error) -> Error {
+    if removed.is_empty() {
+        return error;
+    }
+    let left = common::complete_snapshots(root)
+        .map(|found| found.len())
+        .unwrap_or(0);
+    Error::new(&format!(
+        "{error}. Before it failed, {} removed to make room on the HDD, so {} left: free space on the HDD",
+        common::plural(removed.len(), "older snapshot was", "older snapshots were"),
+        common::plural(left, "backup is", "backups are"),
+    ))
+}
 /// What the report says when `make_room` removed snapshots (`removed`) and, with the new
 /// one published, `root` holds fewer than the `keep` snapshots the settings ask for: the
 /// run is done in part, so the dashboard shows the history is shorter than believed.
-/// Nothing when the kept number is still there (the removed ones were beyond it).
+/// Nothing when the kept number is still there (the removed ones were beyond it). With
+/// `keep` 0 (every snapshot is kept, or the count was refused) any snapshot removed for
+/// room is one the settings kept: it is said too (deep check 419: such a run ended
+/// "pass", or with "no older backup was removed", the opposite of what it did).
 pub fn short_history(root: &Path, removed: &[String], keep: u64) -> Result<Option<Value>> {
     let left = common::complete_snapshots(root)?.len();
-    if removed.is_empty() || left as u64 >= keep {
+    if removed.is_empty() || (keep > 0 && left as u64 >= keep) {
         return Ok(None);
     }
+    let remain = if keep == 0 {
+        common::plural(left, "snapshot remains", "snapshots remain")
+    } else {
+        format!(
+            "{left} of the {} the settings keep (app_backup.keep_snapshots) remain",
+            common::plural(keep, "snapshot", "snapshots")
+        )
+    };
     let count = common::plural(
         removed.len(),
         "older application snapshot was",
         "older application snapshots were",
     );
     Ok(Some(json!([format!(
-        "the HDD was short of space, so {count} removed to make room for tonight's snapshot; {left} of the {} the settings keep (app_backup.keep_snapshots) remain",
-        common::plural(keep, "snapshot", "snapshots")
+        "the HDD was short of space, so {count} removed to make room for tonight's snapshot; {remain}"
     )])))
 }
 /// Check the drives, take the lock monthly maintenance and the other jobs hold, then
@@ -3468,7 +3736,23 @@ fn ssd_takes_writes(data: &Path) -> Result<()> {
 }
 fn recovery_lock(data: &Path) -> Result<fs::File> {
     let wait = std::time::Duration::from_secs(3 * 3600);
-    common::shared_lock_wait(&data.join("installer/recovery.lock"), wait, wait)
+    recovery_lock_within(&data.join("installer/recovery.lock"), wait, &unit_state)
+}
+/// The jobs' lock, waited for at most `wait`. A wait that ran out while the monthly
+/// update was at work (`state` gives a unit's systemd state) is a skipped night, said
+/// as that (monthly_skip), not a failure.
+fn recovery_lock_within(
+    lock: &Path,
+    wait: std::time::Duration,
+    state: &dyn Fn(&str) -> String,
+) -> Result<fs::File> {
+    common::shared_lock_wait(lock, wait, wait).map_err(|e| {
+        if common::waited_out(&e) && monthly_run_at_work(state) {
+            monthly_skip()
+        } else {
+            e
+        }
+    })
 }
 /// `coordinate` for what needs only the SSD: starting Immich again after its weekly
 /// pause. Immich and the lock live on the SSD, so a HDD that dropped out (the likeliest
@@ -3571,6 +3855,15 @@ pub fn check_drives(a: &crate::Args) -> Result<()> {
         } else {
             checked_drive(&cfg, key, &path)?
         };
+        // --writable (the acceptance check): the drive also takes new files. The right
+        // drive that Linux turned read-only after write errors passed as "mounted", while
+        // every backup and app write on it failed (deep check 431). Without it a
+        // read-only drive still passes: the recovery menu must reach one to check it.
+        if a.flag("writable") {
+            if let Some(why) = no_writes(key, &path, false) {
+                return Err(Error::new(&why));
+            }
+        }
         let shared = seen
             .iter()
             .find(|(other, id)| *id == uuid && !may_share(&cfg, other, key));
@@ -4120,8 +4413,7 @@ fn archive_result(data: &Path, checks: &Integrity, check: Check) -> Result<Optio
         return Err(Error::new(&problem));
     }
     // Files left out make the run incomplete, as a list of files that could not be written does.
-    let too_long =
-        (!checks.too_long.is_empty()).then(|| too_long_said("photos and videos", &checks.too_long));
+    let too_long = (!checks.too_long.is_empty()).then(|| too_long_said(PHOTOS, &checks.too_long));
     Ok(joined(
         [checks.list_problem.clone(), too_long]
             .into_iter()
@@ -4836,15 +5128,20 @@ fn unit_state(unit: &str) -> String {
 /// neither of its services at work (`state` gives a unit's systemd state).
 fn monthly_admission(state: &dyn Fn(&str) -> String, journal: &Path) -> Result<()> {
     no_unfinished_update_at(journal)?;
-    for unit in [
-        "nekoserver-maintenance.service",
-        "nekoserver-maintenance-resume.service",
-    ] {
-        if service_busy(&state(unit)) {
-            return Err(Error::new(MONTHLY_YIELD));
-        }
+    if monthly_run_at_work(state) {
+        return Err(Error::new(MONTHLY_YIELD));
     }
     Ok(())
+}
+/// The monthly run, or the service that finishes one, is at work (`state` gives a
+/// unit's systemd state).
+fn monthly_run_at_work(state: &dyn Fn(&str) -> String) -> bool {
+    [
+        "nekoserver-maintenance.service",
+        "nekoserver-maintenance-resume.service",
+    ]
+    .iter()
+    .any(|unit| service_busy(&state(unit)))
 }
 /// The weekly copy and the monthly run never overlap. The weekly copy checks, holding
 /// the USB drive's lock, that no monthly run has started (also one that started while
@@ -5170,7 +5467,10 @@ fn usb_copy(a: &Args, check: Check, weekly: bool) -> Result<()> {
         // A drive that would not unmount is reported after the copy's own error, which
         // is the one that says what went wrong (and damage still reads as damage: the
         // monthly run stops only for an error that starts with INTEGRITY).
-        let unmounted = if mounted_here {
+        // A drive that dropped out (unplugged, or a USB hub that lost it) is unmounted
+        // already: "umount ... not mounted" was added to the report's reason, pushing
+        // what happened out of the 300 characters the dashboard shows (deep check 528).
+        let unmounted = if mounted_here && common::mounted(&run.dest) {
             success(&["umount", &run.dest.to_string_lossy()], 45)
         } else {
             Ok(())
@@ -5192,14 +5492,25 @@ fn usb_copy(a: &Args, check: Check, weekly: bool) -> Result<()> {
 /// incomplete; damage found by the checksum checks fails it, after everything was copied.
 fn copy_to_usb(run: &UsbRun) -> Result<Option<Value>> {
     let dest = &run.dest;
-    run.still()?;
-    // Also when someone else mounted it: no private copy onto a readable drive.
-    require_private_mount(dest, &run.fstype)?;
-    run.drives()?;
     // From here every folder and file made on the USB drive first checks it is still
     // mounted: unplugged mid-copy, the copy stops instead of filling the system disk
-    // through the empty folder it was mounted on.
-    let _usb = common::expect_drive(dest)?;
+    // through the empty folder it was mounted on. A failure once it is gone says so.
+    // Held before the checks that it is the USB drive, not after: a drive that dropped
+    // out between those checks and the hold left the hold on the system disk's empty
+    // folder, and every photo was copied onto the system disk (deep check 528, on loop
+    // drives: 317 MB there, and each later copy refused the folder as not empty).
+    let usb = common::expect_drive(dest)?;
+    usb.unless_gone((|| {
+        run.still()?;
+        // Also when someone else mounted it: no private copy onto a readable drive.
+        require_private_mount(dest, &run.fstype)?;
+        run.drives()?;
+        copy_onto_usb(run)
+    })())
+}
+/// `copy_to_usb` once the drive is checked and held.
+fn copy_onto_usb(run: &UsbRun) -> Result<Option<Value>> {
+    let dest = &run.dest;
     let mut photos = None;
     if let Some(source) = &run.source {
         common::stage("copying photos and videos to the USB drive");
@@ -5263,7 +5574,7 @@ fn copy_to_usb(run: &UsbRun) -> Result<Option<Value>> {
     let too_long = photos
         .as_ref()
         .filter(|p| !p.too_long.is_empty())
-        .map(|p| too_long_said("photos and videos", &p.too_long));
+        .map(|p| too_long_said(PHOTOS, &p.too_long));
     // A list of files that could not be written makes the backup incomplete too.
     let source_problem = joined(
         [
@@ -6510,6 +6821,41 @@ mod tests {
             "run.answering() {\n        return execute_keeping(Some(&run.data), \"external\""
         ));
     }
+    /// Deep check 528, the weekly copy on loop drives with the USB drive unplugged part-way:
+    /// a step that failed once the drive was gone said its raw error, and the unmount of
+    /// the drive that was no longer mounted added "umount ... not mounted" to the reason.
+    #[test]
+    fn a_usb_drive_unplugged_mid_copy_is_said_as_gone_without_an_unmount_error() {
+        let source = include_str!("backup.rs");
+        let part = |entry: &str| {
+            let start = source.find(entry).unwrap();
+            &source[start..start + source[start..].find("\n}\n").unwrap()]
+        };
+        let copy = part("fn copy_to_usb(run: &UsbRun)");
+        let held = copy.find("let usb = common::expect_drive(dest)?;").unwrap();
+        assert!(copy[held..]
+            .starts_with("let usb = common::expect_drive(dest)?;\n    usb.unless_gone((|| {"));
+        assert!(copy.ends_with("copy_onto_usb(run)\n    })())"), "{copy}");
+        assert!(part("fn usb_copy(a: &Args")
+            .contains("if mounted_here && common::mounted(&run.dest) {"));
+    }
+    /// Deep check 528, on loop drives: the USB drive dropped out just after the copy had
+    /// checked it was mounted and before it held the drive; the hold then took the system
+    /// disk's empty folder for the drive, and every photo was copied onto the system disk.
+    #[test]
+    fn the_usb_drive_is_held_before_it_is_checked() {
+        let source = include_str!("backup.rs");
+        let start = source.find("fn copy_to_usb(run: &UsbRun)").unwrap();
+        let copy = &source[start..start + source[start..].find("\n}\n").unwrap()];
+        let held = copy.find("common::expect_drive(dest)?").unwrap();
+        for check in [
+            "run.still()?",
+            "require_private_mount(dest",
+            "run.drives()?",
+        ] {
+            assert!(held < copy.find(check).unwrap(), "{check}");
+        }
+    }
     #[test]
     fn the_usb_drive_checked_on_a_nas_is_the_device_mounted() {
         let source = include_str!("backup.rs");
@@ -6951,6 +7297,180 @@ mod tests {
         assert_eq!(missing["unsupported_names"], 1);
         assert_eq!(missing["files"], json!(["alice/open.docx", "bob/a:b.txt"]));
     }
+    /// D1: the copies and their restores kept no file dates, so a restored photo without
+    /// EXIF data landed in Immich on the day of the restore. A saved copy's own date
+    /// stays the time it was written (the quick checks go by it); the original's date
+    /// is noted in the checksum list, on the HDD and on the USB drive, for the restore.
+    #[test]
+    fn the_checksum_list_notes_when_each_original_was_last_changed() {
+        let root = scratch("original-dates");
+        // On a real drive when NEKO_DATES_USB names one (mounted, empty).
+        let usb = std::env::var_os("NEKO_DATES_USB").map_or(root.join("usb"), PathBuf::from);
+        let (library, hdd, cloud) = (root.join("immich"), root.join("hdd"), root.join("cloud"));
+        let dated = |path: &Path, body: &[u8], seconds: u64| {
+            write(path, body);
+            let when = std::time::UNIX_EPOCH + Duration::new(seconds, 123_456_789);
+            let file = fs::File::options().write(true).open(path).unwrap();
+            file.set_modified(when).unwrap();
+            (seconds * 1_000_000_000 + 123_456_789) as i64
+        };
+        let noted = |tree: &Path, key: &str| Ledger::read(tree).unwrap().get(key).unwrap().mtime_ns;
+        let photo = library.join("upload/u/scan.jpg");
+        let taken = dated(&photo, b"a scan without EXIF", 1_000_000_000); // 2001
+        archive(&library, &hdd, true, 60, Check::Quick).unwrap();
+        assert_eq!(noted(&hdd, "upload/u/scan.jpg"), Some(taken));
+        // The copy itself is dated when it was written, as the quick check needs.
+        let copy = fs::metadata(hdd.join("upload/u/scan.jpg")).unwrap();
+        assert!(copy.mtime() > 1_700_000_000, "{}", copy.mtime());
+        // The USB mirror of the archive carries the date in its own list.
+        mirror(&hdd, &usb.join("photos"), true, Check::Quick).unwrap();
+        assert_eq!(noted(&usb.join("photos"), "upload/u/scan.jpg"), Some(taken));
+        // Records from before this (no date): the next quick run notes it, on the HDD
+        // and, through the mirror, in the USB drive's list, which keeps its own records.
+        for tree in [hdd.clone(), usb.join("photos")] {
+            let text = fs::read_to_string(tree.join(LEDGER)).unwrap();
+            let old = text.replace(&format!(",\"mtime_ns\":{taken}"), "");
+            assert_ne!(old, text);
+            fs::write(tree.join(LEDGER), old).unwrap();
+            assert_eq!(noted(&tree, "upload/u/scan.jpg"), None);
+        }
+        archive(&library, &hdd, true, 60, Check::Quick).unwrap();
+        mirror(&hdd, &usb.join("photos"), true, Check::Quick).unwrap();
+        assert_eq!(noted(&hdd, "upload/u/scan.jpg"), Some(taken));
+        assert_eq!(noted(&usb.join("photos"), "upload/u/scan.jpg"), Some(taken));
+        // Nextcloud files, and each later version of one with its own date.
+        let letter = cloud.join("alice/files/letter.txt");
+        let first = dated(&letter, b"first", 1_100_000_000);
+        copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        let tree = usb.join("nextcloud");
+        assert_eq!(noted(&tree, "alice/files/letter.txt"), Some(first));
+        let second = dated(&letter, b"second, longer", 1_200_000_000);
+        copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        let ledger = Ledger::read(&tree).unwrap();
+        let version = ledger
+            .entries()
+            .find(|(key, _)| key.contains("letter.neko-"))
+            .unwrap();
+        assert_eq!(version.1.mtime_ns, Some(second));
+        assert_eq!(noted(&tree, "alice/files/letter.txt"), Some(first));
+        let _ = fs::remove_dir_all(root);
+    }
+    /// D8: Photo.jpg renamed to photo.jpg in Nextcloud. exFAT takes both for one name, so
+    /// the renamed file was left out every week as a clash with its own saved copy, and
+    /// the list of that backup named neither: "as of the last backup" restored nothing
+    /// for it, though its content was on the drive.
+    #[test]
+    fn a_file_renamed_only_in_case_stays_backed_up_on_exfat() {
+        let root = scratch("cloud-case-rename");
+        // On a real exFAT drive when NEKO_EXFAT_USB names one (mounted, empty).
+        let usb = std::env::var_os("NEKO_EXFAT_USB").map_or(root.join("usb"), PathBuf::from);
+        let cloud = root.join("cloud");
+        let files = cloud.join("alice/files");
+        write(&files.join("Photo.jpg"), b"photo");
+        write(&files.join("Trips/Rome.txt"), b"rome");
+        let run = || copy_cloud(&cloud, &usb, true, true, Check::Quick, None).unwrap();
+        assert_eq!(run().copied, 2);
+        fs::rename(files.join("Photo.jpg"), files.join("photo.jpg")).unwrap();
+        fs::rename(files.join("Trips"), files.join("trips")).unwrap();
+        let copy = run();
+        assert!(copy.refused.is_empty(), "{:?}", copy.refused);
+        assert!(copy.complete());
+        assert_eq!(copy.copied, 0, "its content is on the drive already");
+        // The drive keeps the earlier spelling, once; the list names the files as
+        // they are called now, each with the checksum of its saved copy.
+        let saved = usb.join("nextcloud/alice/files");
+        assert_eq!(fs::read(saved.join("Photo.jpg")).unwrap(), b"photo");
+        let mut kept: Vec<String> = fs::read_dir(&saved)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        kept.sort();
+        assert_eq!(kept, ["Photo.jpg", "Trips"]);
+        let listed = newest_inventory(&usb.join("nextcloud"));
+        let names: Vec<&String> = listed["files"].as_object().unwrap().keys().collect();
+        assert_eq!(
+            names,
+            ["alice/files/photo.jpg", "alice/files/trips/Rome.txt"]
+        );
+        let row = &listed["files"]["alice/files/photo.jpg"];
+        assert_eq!(row["copy"], "Photo.jpg");
+        assert_eq!(row["sha256"], common::sha(b"photo"));
+        assert_eq!(
+            listed["files"]["alice/files/trips/Rome.txt"]["sha256"],
+            common::sha(b"rome")
+        );
+        // Two live files that differ only in case are still two files exFAT would merge.
+        write(&files.join("PHOTO.jpg"), b"another");
+        let copy = run();
+        assert_eq!(copy.refused, ["alice/PHOTO.jpg"]);
+        assert_eq!((copy.copied, copy.versions), (0, 0));
+        fs::remove_file(files.join("PHOTO.jpg")).unwrap();
+        // Other content under the new spelling is not taken for the same file (it is
+        // named as a clash, as before), so two files never merge into one's versions.
+        write(&files.join("photo.jpg"), b"photo, edited");
+        let copy = copy_cloud(&cloud, &usb, true, true, Check::Full, None).unwrap();
+        assert_eq!(copy.refused, ["alice/photo.jpg"]);
+        assert_eq!(copy.versions, 0);
+        let _ = fs::remove_dir_all(root);
+    }
+    /// D11: a file bigger than the room left on the USB drive stopped the weekly
+    /// Nextcloud copy with "the drive is full", and every file sorting after it was
+    /// never copied. That one file is left out and named; the rest is copied.
+    #[test]
+    fn a_file_too_big_for_the_usb_drive_is_left_out_and_the_rest_is_copied() {
+        let root = scratch("cloud-no-room");
+        let (cloud, usb) = (root.join("cloud"), root.join("usb"));
+        write(&cloud.join("alice/files/a-notes.txt"), b"notes");
+        write(&cloud.join("alice/files/film.mkv"), &[7u8; 5000]);
+        write(&cloud.join("alice/files/z-letter.txt"), b"letter");
+        // A drive with 1000 bytes left: the film can't go there, the two texts can.
+        let nearly_full = |_: &Path| -> Result<u128> { Ok(1000) };
+        let run = || {
+            copy_cloud_with(&cloud, &usb, true, false, Check::Quick, None, &nearly_full).unwrap()
+        };
+        let copy = run();
+        assert_eq!(copy.copied, 2);
+        assert_eq!(copy.no_room, ["alice/film.mkv"]);
+        assert!(!copy.complete(), "a file left out is not a complete copy");
+        let saved = usb.join("nextcloud/alice/files");
+        assert_eq!(fs::read(saved.join("z-letter.txt")).unwrap(), b"letter");
+        assert!(!saved.join("film.mkv").exists());
+        let missing = copy.missing().unwrap();
+        assert_eq!(missing["no_room"], 1);
+        assert_eq!(missing["files"], json!(["alice/film.mkv"]));
+        // Said every week until there is room, never as a failure of the whole copy.
+        assert_eq!(run().no_room, ["alice/film.mkv"]);
+        let said = no_room_said(&copy.no_room, Some(1_500_000_000));
+        assert!(said.starts_with("1 file was not copied because the USB drive has too little room left (1.5 GB is free there)"), "{said}");
+        assert!(
+            said.contains("every other file was copied") && said.ends_with("alice/film.mkv"),
+            "{said}"
+        );
+        // Room again: it is copied like any new file.
+        let copy = copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        assert_eq!((copy.copied, copy.no_room.len()), (1, 0));
+        assert_eq!(fs::read(saved.join("film.mkv")).unwrap().len(), 5000);
+        // On a real drive when NEKO_SMALL_USB names one (mounted, a few MB free): the
+        // drive's own free room decides, and a file that does not fit is left out.
+        if let Some(drive) = std::env::var_os("NEKO_SMALL_USB").map(PathBuf::from) {
+            let free = common::free_bytes(&drive).unwrap() as usize;
+            write(&cloud.join("alice/files/huge.bin"), &vec![1u8; free + 4096]);
+            let copy = copy_cloud(&cloud, &drive, true, false, Check::Quick, None).unwrap();
+            assert_eq!(copy.no_room, ["alice/huge.bin"]);
+            assert_eq!(copy.copied, 3, "the files before and after it are copied");
+            let there = drive.join("nextcloud/alice/files");
+            assert!(there.join("z-letter.txt").is_file() && !there.join("huge.bin").exists());
+        }
+        // The drive filling up while a file is written (the system's own error) leaves
+        // that file out too.
+        let full = Error::from(std::io::Error::from_raw_os_error(libc::ENOSPC));
+        assert!(common::drive_full(&full), "{full}");
+        assert!(no_room_said(&copy.no_room, Some(3_000_000)).contains("(3 MB is free there)"));
+        assert!(!common::drive_full(&Error::new(
+            "Source changed during the copy"
+        )));
+        let _ = fs::remove_dir_all(root);
+    }
     #[test]
     fn changed_files_become_dated_versions_never_overwrites() {
         let root = scratch("versions");
@@ -7017,6 +7537,28 @@ mod tests {
         let note = latest_marker(&usb.join("a.jpg"));
         assert_eq!(fs::read_to_string(note).unwrap(), "a.jpg");
         assert_eq!(names(&usb), names(&hdd));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn the_weekly_mirror_checks_the_current_copy_of_a_name_with_spaces_at_its_ends() {
+        // Deep check 476: the note was trimmed, so " a.jpg"'s current copy was trusted
+        // by its date and size, and same-size damage on the USB drive stayed.
+        let root = scratch("mirror-space");
+        let (src, hdd, usb) = (root.join("src/a"), root.join("hdd"), root.join("usb"));
+        write(&src, b"AAAA");
+        keep(&src, &hdd, "upload/ a.jpg");
+        write(&src, b"BBBB");
+        keep(&src, &hdd, "upload/ a.jpg");
+        mirror(&hdd, &usb, true, Check::Quick).unwrap();
+        let current = fs::read_to_string(latest_marker(&hdd.join("upload/ a.jpg"))).unwrap();
+        assert!(current.starts_with(' '), "{current}");
+        fs::write(usb.join("upload").join(&current), b"ZZZZ").unwrap(); // same size, later
+        let (_, report) = mirror(&hdd, &usb, true, Check::Quick).unwrap();
+        assert_eq!(report.repaired, 1);
+        assert_eq!(
+            fs::read(usb.join("upload").join(&current)).unwrap(),
+            b"BBBB"
+        );
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -8345,6 +8887,22 @@ mod tests {
         fs::create_dir_all(&folder).unwrap();
         folder
     }
+    #[test]
+    fn files_too_deep_are_counted_in_words_that_fit_the_count() {
+        let two = too_long_said(PHOTOS, &["a/1.jpg".into(), "a/2.jpg".into()]);
+        assert!(
+            two.starts_with(
+                "2 photos and videos were not backed up because the folders they are in have"
+            ),
+            "{two}"
+        );
+        assert!(two.contains("Move them into"), "{two}");
+        let one = too_long_said(("file", "files"), &["a/1.txt".into()]);
+        assert!(
+            one.starts_with("1 file was not backed up because the folder it is in has"),
+            "{one}"
+        );
+    }
     /// Deep check plan 337: a file that fits where it is but whose copy (or the partial
     /// copy beside it) would be longer than Linux allows stopped the whole run with "File
     /// name too long", so nothing after it was ever backed up. It is left out and named.
@@ -8383,7 +8941,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(
-            said.contains("1 photos and videos were not backed up"),
+            said.contains("1 photo or video was not backed up because the folder it is in has")
+                && said.contains("Move it into"),
             "{said}"
         );
         // The USB copy of the archive, onto a drive whose folder is longer still.
@@ -8487,9 +9046,12 @@ mod tests {
         // Each snapshot takes 40 of the drive's 130.
         let count = || common::complete_snapshots(&root).unwrap().len() as u128;
         let free = || Ok(130 - 40 * count());
+        let size = |_: &str| 40;
         let short = |have: u128| format!("short: {have} free");
-        assert!(make_room_with(&root, 10, &free, &short).unwrap().is_empty());
-        let removed = make_room_with(&root, 50, &free, &short).unwrap();
+        assert!(make_room_with(&root, 10, &free, &size, &short)
+            .unwrap()
+            .is_empty());
+        let removed = make_room_with(&root, 50, &free, &size, &short).unwrap();
         assert_eq!(removed, ["snapshot-100-1"]);
         assert_eq!(names(&root), ["snapshot-200-1", "snapshot-300-1"]);
         // Two of the seven snapshots the settings keep are left: the run says so (the
@@ -8504,9 +9066,70 @@ mod tests {
         // Nothing removed, or as many left as the settings keep: nothing to say.
         assert_eq!(short_history(&root, &[], 7).unwrap(), None);
         assert_eq!(short_history(&root, &removed, 2).unwrap(), None);
-        let error = make_room_with(&root, 100, &free, &short).unwrap_err();
-        assert_eq!(error.to_string(), "short: 90 free");
+        // Every snapshot is kept (0), or the count was refused (0 too): the one removed
+        // for room was one the settings kept, so it is said (deep check 419).
+        let said = short_history(&root, &removed, 0).unwrap().unwrap();
+        assert_eq!(
+            said[0],
+            "the HDD was short of space, so 1 older application snapshot was removed to make room for tonight's snapshot; 2 snapshots remain"
+        );
+        assert_eq!(short_history(&root, &[], 0).unwrap(), None);
+        // The backup then fails: its reason says the older one went for nothing (review
+        // of 0.51.2), and is left alone when nothing was removed.
+        let failed = failed_after_room(&root, &removed, Error::new("Source changed"));
+        assert_eq!(
+            failed.to_string(),
+            "Source changed. Before it failed, 1 older snapshot was removed to make room on the HDD, so 2 backups are left: free space on the HDD"
+        );
+        let plain = failed_after_room(&root, &[], Error::new("Source changed"));
+        assert_eq!(plain.to_string(), "Source changed");
+        let _ = fs::remove_dir_all(root);
+    }
+    /// Deep check 419: a drive too full even without the older backups (the films fill
+    /// it) lost every backup but the newest, and the run failed all the same.
+    #[test]
+    fn a_drive_too_full_even_without_the_older_backups_keeps_them() {
+        let root = scratch("make-no-room");
+        for name in ["snapshot-100-1", "snapshot-200-1", "snapshot-300-1"] {
+            finished(&root, name);
+        }
+        let count = || common::complete_snapshots(&root).unwrap().len() as u128;
+        let free = || Ok(130 - 40 * count());
+        let size = |_: &str| 40;
+        let short = |have: u128| format!("short: {have} free");
+        // 10 free, 80 more with the two older ones gone: 100 can never be had.
+        let error = make_room_with(&root, 100, &free, &size, &short).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "short: 10 free. No older backup was removed: removing them all (but the newest, which is always kept) would not make that much room. Free up space there"
+        );
+        assert_eq!(names(&root).len(), 3);
+        // 90 can: both older ones go, the newest stays.
+        let removed = make_room_with(&root, 90, &free, &size, &short).unwrap();
+        assert_eq!(removed, ["snapshot-100-1", "snapshot-200-1"]);
+        // Only the newest is left and the drive is short again: nothing more to remove.
+        let error = make_room_with(&root, 100, &free, &size, &short).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with("short: 90 free. There is no older backup to remove"),
+            "{error}"
+        );
         assert_eq!(names(&root), ["snapshot-300-1"]);
+        // Less came free than the snapshots took: the run says what went for it.
+        for name in ["snapshot-100-1", "snapshot-200-1"] {
+            finished(&root, name);
+        }
+        let stuck = || Ok(10u128);
+        let error = make_room_with(&root, 50, &stuck, &size, &short).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "short: 10 free. Before it failed, 2 older snapshots were removed to make room on the HDD, so 1 backup is left: free space on the HDD"
+        );
+        // What a snapshot takes on the drive is measured from its files.
+        fs::write(root.join("snapshot-300-1/big.db"), vec![7u8; 1 << 20]).unwrap();
+        assert!(tree_bytes(&root.join("snapshot-300-1")) >= 1 << 20);
+        assert_eq!(tree_bytes(&root.join("missing")), 0);
         let _ = fs::remove_dir_all(root);
     }
     /// A finished snapshot in `root`, as a job publishes it.
@@ -8633,7 +9256,10 @@ mod tests {
                 )),
                 "{why}"
             );
-            assert!(why.contains("no older backup was removed"), "{why}");
+            assert!(
+                why.contains("no older backup was removed to keep to it"),
+                "{why}"
+            );
         }
         assert_eq!(keep_count(&json!(3651), &yes, "app_backup").0, 0);
         // A refused count removes nothing even from a folder full of snapshots.
@@ -9902,6 +10528,47 @@ mod tests {
         assert!(include_str!("main.rs").contains("if common::postponed(&e) || backup::yielded(&e)"));
         let _ = fs::remove_dir_all(root);
     }
+    /// D2: on the 1st the monthly run holds the jobs' lock for its whole run (up to 18
+    /// hours); the nightly backups waited 3 hours, then failed with an alert. A job that
+    /// waited out the monthly run is skipped for that night and says so: no failure, no
+    /// alert, its report as it was. Waiting out any other job is still a failure.
+    #[test]
+    fn a_nightly_job_that_waited_out_the_monthly_run_is_skipped_not_failed() {
+        let root = scratch("monthly-holds-the-lock");
+        let lock = root.join("recovery.lock");
+        let held = common::lock(&lock).unwrap(); // the monthly run, at work
+        let short = std::time::Duration::from_millis(30);
+        let monthly = |unit: &str| {
+            if unit == "nekoserver-maintenance.service" {
+                "activating".to_string()
+            } else {
+                "inactive".to_string()
+            }
+        };
+        let skipped = recovery_lock_within(&lock, short, &monthly).unwrap_err();
+        let said = skipped.to_string();
+        assert!(said.starts_with("Skipped for the monthly update"), "{said}");
+        assert!(
+            said.contains("Nothing failed") && said.contains("next time"),
+            "{said}"
+        );
+        assert!(yielded(&skipped) && gave_way(&skipped), "{said}");
+        // Its report says what it said before the run.
+        let old = json!({"job":"music","status":"pass","last_success":160.0});
+        let row = running_row("music", 200.0, &old);
+        assert_eq!(settled_report(row, &old, &Err(skipped), &gave_way), old);
+        // Another job (no monthly run at work) held it all that time: a failure, as before.
+        let idle = |_: &str| "inactive".to_string();
+        let failed = recovery_lock_within(&lock, short, &idle).unwrap_err();
+        assert!(
+            common::waited_out(&failed) && !gave_way(&failed),
+            "{failed}"
+        );
+        // The lock free again: taken, whatever the monthly service's state.
+        drop(held);
+        assert!(recovery_lock_within(&lock, short, &monthly).is_ok());
+        let _ = fs::remove_dir_all(root);
+    }
     /// The monthly run tolerates a USB drive it could not check (full, or not mounting),
     /// but the check wrote that over the weekly job's report as "fail".
     #[test]
@@ -9972,5 +10639,16 @@ mod tests {
             checked.find("no_writes(key, path, true)").unwrap()
                 < checked.find("drive_at(").unwrap()
         );
+    }
+    /// Deep check 729: the weekly run with no change since its last list said "the
+    /// 100000 files are you have now the same as in the last list".
+    #[test]
+    fn an_unchanged_list_is_said_in_plain_words() {
+        let list = Path::new("/hdd/archive/.neko-inventory/x.json.gz");
+        assert_eq!(
+            unchanged_list_said(100000, list),
+            "the 100000 files you have now are the same as in the last list (/hdd/archive/.neko-inventory/x.json.gz), so no new one was written"
+        );
+        assert!(unchanged_list_said(1, list).starts_with("the 1 file you have now is the same"));
     }
 }

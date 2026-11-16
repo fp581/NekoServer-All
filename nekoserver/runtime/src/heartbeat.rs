@@ -4,7 +4,7 @@ use crate::{
     Args,
 };
 use serde_json::{json, Value};
-use std::{fs, os::unix::fs::MetadataExt, path::Path};
+use std::{os::unix::fs::MetadataExt, path::Path};
 fn endpoint(value: &str) -> bool {
     regex::Regex::new(
         r"^https://[A-Za-z0-9][A-Za-z0-9.-]*(?::([0-9]{1,5}))?/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*$",
@@ -31,14 +31,16 @@ fn send(cfg: &Value, runtime: &Path) -> Result<()> {
         "Heartbeat delivery failed",
     )
 }
+/// How the heartbeat's settings file is called when it is missing or damaged.
+const WHOSE: &str = "The heartbeat's";
 pub fn run(a: &Args) -> Result<()> {
     common::require_root()?;
     let private = common::safe(&a.path("config")?)?;
-    let m = fs::metadata(&private)?;
+    let m = common::settings_there(&private, WHOSE)?;
     if m.uid() != 0 || m.mode() & 0o077 != 0 {
         return Err(Error::new("Private heartbeat configuration required"));
     }
-    let cfg: Value = serde_json::from_slice(&common::bytes(&private, 64000)?)?;
+    let cfg = common::settings_json(&private, WHOSE, 64000)?;
     let runtime = Path::new("/run/nekoserver-heartbeat");
     common::directory(runtime, 0o755)?;
     let _lock = common::lock(&runtime.join("worker.lock"))?;

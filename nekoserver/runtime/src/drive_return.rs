@@ -548,7 +548,7 @@ pub(crate) fn start_again(cfgpath: &Path, data: &Path, media: &Path, who: &str) 
     }
     // Let go before the jobs' own recovery services run: each takes the lock itself.
     drop(held);
-    let resumed = finish_interrupted_jobs(installed, |unit| {
+    let resumed = finish_interrupted_jobs(installed, cut_off_job, |unit| {
         run_ok(&["systemctl", "start", unit], 3 * 3600).map(|_| ())
     });
     match failed.first() {
@@ -559,17 +559,34 @@ pub(crate) fn start_again(cfgpath: &Path, data: &Path, media: &Path, who: &str) 
     }
 }
 
+/// Whether a job was cut off part-way and left work for recovery service `unit`: its
+/// journal (shared.json names it beside the service) is still there. Asked before the
+/// service runs, since finishing the work removes the journal.
+fn cut_off_job(unit: &str) -> bool {
+    common::SHARED["recovery"]
+        .as_object()
+        .into_iter()
+        .flat_map(|jobs| jobs.values())
+        .find(|job| job["service"] == unit)
+        .and_then(|job| job["journal"].as_str())
+        .is_some_and(|journal| Path::new(journal).exists())
+}
+
 /// A job a drive cut off part-way (the apps it stopped, its journal) is finished now that
 /// both drives are back: each installed recovery service runs, in RESUMES order. Every
-/// one is tried; the first failure is returned, so the run shows as failed.
+/// one is tried; the first failure is returned, so the run shows as failed. Each line
+/// says what was true (`cut_off`): every service used to be said to have "finished what
+/// a cut-off job left", also when no job had been cut off.
 fn finish_interrupted_jobs(
     installed: impl Fn(&str) -> bool,
+    cut_off: impl Fn(&str) -> bool,
     start: impl Fn(&str) -> Result<()>,
 ) -> Result<()> {
     let mut first = None;
     for unit in RESUMES.iter().filter(|u| installed(u)) {
+        let had_work = cut_off(unit);
         match start(unit) {
-            Ok(()) => println!("Drive return: {unit} finished what a cut-off job left"),
+            Ok(()) => println!("{}", resume_line(unit, had_work)),
             Err(e) => {
                 println!("Drive return: {unit} failed ({e})");
                 first.get_or_insert(e);
@@ -577,6 +594,14 @@ fn finish_interrupted_jobs(
         }
     }
     first.map_or(Ok(()), Err)
+}
+/// What is said about a recovery service that ran without error.
+fn resume_line(unit: &str, had_work: bool) -> String {
+    if had_work {
+        format!("Drive return: {unit} finished what a cut-off job left")
+    } else {
+        format!("Drive return: {unit} checked: no job was cut off, nothing to finish")
+    }
 }
 
 #[cfg(test)]
@@ -783,10 +808,14 @@ mod tests {
         use std::cell::RefCell;
         let started = RefCell::new(vec![]);
         let installed = |u: &str| u != "nekoserver-immich-snapshot-resume.service";
-        finish_interrupted_jobs(installed, |u| {
-            started.borrow_mut().push(u.to_string());
-            Ok(())
-        })
+        finish_interrupted_jobs(
+            installed,
+            |_| false,
+            |u| {
+                started.borrow_mut().push(u.to_string());
+                Ok(())
+            },
+        )
         .unwrap();
         assert_eq!(
             *started.borrow(),
@@ -801,6 +830,7 @@ mod tests {
         started.borrow_mut().clear();
         let failed = finish_interrupted_jobs(
             |_| true,
+            |_| false,
             |u| {
                 started.borrow_mut().push(u.to_string());
                 if u == "nekoserver-app-resume.service" {
@@ -816,6 +846,46 @@ mod tests {
             RESUMES.len(),
             "the others are still tried"
         );
+    }
+    /// Every recovery service was said to have "finished what a cut-off job left", six
+    /// lines at every drive return, though no job had been cut off: only a service whose
+    /// journal was there is said to have finished something.
+    #[test]
+    fn a_recovery_service_with_nothing_to_finish_is_not_said_to_have_finished_a_job() {
+        let unit = RESUMES[1];
+        assert!(resume_line(unit, true).ends_with("finished what a cut-off job left"));
+        let idle = resume_line(unit, false);
+        assert!(!idle.contains("finished what"), "{idle}");
+        assert!(
+            idle.contains(unit) && idle.contains("nothing to finish"),
+            "{idle}"
+        );
+        // Every recovery service has its journal in shared.json; with no journal on this
+        // PC (the tests never write under /etc) none counts as cut off.
+        for unit in RESUMES {
+            let known = common::SHARED["recovery"]
+                .as_object()
+                .unwrap()
+                .values()
+                .any(|job| job["service"] == unit && job["journal"].is_string());
+            assert!(known, "{unit} has no journal in shared.json");
+        }
+        assert!(!cut_off_job("nekoserver-no-such-resume.service"));
+        // Asked before the service runs: afterwards the journal is gone.
+        let asked = std::cell::Cell::new(0);
+        finish_interrupted_jobs(
+            |_| true,
+            |_| {
+                asked.set(asked.get() + 1);
+                true
+            },
+            |_| {
+                assert!(asked.get() > 0);
+                asked.set(0);
+                Ok(())
+            },
+        )
+        .unwrap();
     }
     #[test]
     fn the_hdd_power_settings_and_the_dashboard_are_renewed_after_a_remount() {

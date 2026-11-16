@@ -36,6 +36,7 @@ import zlib
 import guided_setup
 import nfs_exports
 from neko_restore import read_at_most
+from neko_common import typed_folder as typed_folder_named
 from neko_common import (
     nextcloud_enabled,
     OPERATION_LOCK,
@@ -45,6 +46,7 @@ from neko_common import (
     media_group,
     location,
     photo_library,
+    music_library,
     FOLDER_FLAGS,
     Destination,
     DestinationGone,  # noqa: F401 (the restores raise it; callers catch it from here)
@@ -56,6 +58,7 @@ from neko_common import (
     backup_files,
     copy_checked,
     copy_checked_into,
+    ledger_dates,
     ensure_room,
     findmnt,
     identity_matches,
@@ -84,6 +87,7 @@ MONTHLY = re.compile(r'^(\d+)-\d+$')
 DRIVE_SECTION = SHARED['recovery_menu']['drive_section']
 CHECK_NAME = SHARED['recovery_menu']['check_drive']
 FIX_NAME = SHARED['recovery_menu']['fix_copies']
+PASSWORD_LIST = SHARED['recovery_menu']['password_list']
 
 # The recovery menu's two parts (its first question).
 SECTIONS = [
@@ -95,9 +99,10 @@ SECTIONS = [
 MENU = [
     ('photos', 'Photos and videos (Immich)'),
     ('cloud', 'Nextcloud files'),
-    ('passwords', 'The list of app passwords (and the apps\' own password files)'),
+    ('passwords', f"{PASSWORD_LIST} (and the apps' own password files)"),
     ('apps', 'App settings, from a nightly backup'),
     ('host', 'Steam and Samba settings, from a nightly backup'),
+    ('music', 'Music files, from the nightly music backup'),
     ('monthly', 'The settings and databases of every app, from a monthly snapshot (for rebuilding a server)'),
 ]
 
@@ -130,6 +135,10 @@ def menu(config):
     }
 
     def offered(key):
+        if key == 'music':
+            # Offered where there is a music backup to restore (it runs only on some
+            # servers: music_backed_up), also after Music was switched off.
+            return bool(music_snapshots(config))
         if on.get(key, True):
             return True
         if key == 'cloud':
@@ -343,10 +352,12 @@ def folder_problem(path, avoid=(), refuse=(), made_later=None):
 def typed_folder(prompt, output):
     """A typed absolute path without '..', or None when the user goes back."""
     while True:
-        typed = prompt(
-            'Type the full name of a NEW folder, for example /home/you/restored-photos '
-            '(Enter alone goes back, with nothing restored): '
-        ).strip()
+        typed = typed_folder_named(
+            prompt(
+                'Type the full name of a NEW folder, for example /home/you/restored-photos '
+                '(Enter alone goes back, with nothing restored): '
+            )
+        )
         if not typed:
             return None
         candidate = Path(typed)
@@ -439,6 +450,15 @@ def retired_copies(root):
     }
 
 
+def original_date(name, folder, changed):
+    """Give the restored file `name` (in the open `folder`, or a path when None) the date
+    its original was last changed (`changed`, ns; None: not noted, the file keeps the
+    time of the restore). A drive that can't hold that date leaves the file as it is."""
+    if changed is not None:
+        with contextlib.suppress(OSError, OverflowError):
+            os.utime(name, ns=(changed, changed), dir_fd=folder, follow_symlinks=False)
+
+
 class Checked:
     """Restores check every file against the backup tree's checksum ledger. A file the
     ledger has no checksum for yet is restored but counted as unverified. A file damaged
@@ -456,6 +476,10 @@ class Checked:
         except RuntimeError as exc:
             # A checksum list the drive lost mid-write: the files are restored unchecked.
             self.sums, self.ledger_problem = {}, str(exc)
+        # When each original was last changed, where the backup noted it: a restored file
+        # gets that date back (a saved copy's own date is when the backup wrote it).
+        # Immich files a photo without EXIF data under its file date.
+        self.dates = ledger_dates(self.root) if self.root else {}
         self.lost = retired_copies(self.root) if self.root else {}
         # Photos the exFAT USB drive can't hold (names it can't store): safe on the HDD.
         self.left_out = left_out(self.root) if self.root else set()
@@ -510,7 +534,7 @@ class Checked:
                 key = None
         expected = expected or self.sums.get(key)
         try:
-            self.write(source, target, expected)
+            self.write(source, target, expected, self.dates.get(key))
         except BackupDamaged:
             self.damaged.append(key or str(source))
             return
@@ -519,12 +543,14 @@ class Checked:
         else:
             self.unverified += 1
 
-    def write(self, source, target, expected):
+    def write(self, source, target, expected, changed=None):
         """Copy `source` to `target` through the restore folder's open folder (copy_checked
         without a begun restore). Raises DestinationGone, with nothing written, once the
-        restore folder is no longer the one opened."""
+        restore folder is no longer the one opened. `changed`: when the original was last
+        changed (ns), given to the restored file once its copy is checked."""
         if self.target is None:
             copy_checked(source, target, expected)
+            original_date(target, None, changed)
             return
         relative = Path(target).relative_to(self.destination)
         self.target.check(self.restored())
@@ -532,6 +558,7 @@ class Checked:
         try:
             with open(source, 'rb') as src:
                 copy_checked_into(src, folder, relative.name, expected, source)
+            original_date(relative.name, folder, changed)
         except BackupDamaged:
             self.keep_damaged(folder, relative.name, relative)
             raise
@@ -765,7 +792,10 @@ def noted_latest(folder, original):
     """The saved copy the weekly backup last saw as current (from its note), or None.
     Backups made before 0.24.3 have no notes; then the newest date wins."""
     try:
-        name = (folder / latest_note(original)).read_text(encoding='utf-8').strip()
+        # The note holds the name exactly as the runtime wrote it (backup.rs mark_latest, no
+        # newline): taken as it is, so a name that starts or ends with a space stays itself
+        # (review of 0.51.2: trimmed, it named another version, or none).
+        name = (folder / latest_note(original)).read_text(encoding='utf-8')
     except (OSError, UnicodeDecodeError):
         return None
     return name if name and '/' not in name else None
@@ -813,7 +843,10 @@ def copy_latest(sources, destination, output=print, checked=None, chosen=None):
     copy_each(checked, destination, [(path, target, None) for path, target, _, _ in chosen])
     several = [(t, when, n) for _, t, when, n in chosen if n > 1]
     if several:
-        output(f'{len(several)} files had more than one version; you get the newest of each:')
+        output(
+            f'{file_count(len(several))} had more than one version; you get '
+            + ('its newest one:' if len(several) == 1 else 'the newest of each:')
+        )
         for target, when, count in sorted(several)[:10]:
             output(f'  {target}: version from {when} ({count} versions on the backup)')
         if len(several) > 10:
@@ -1037,6 +1070,27 @@ def stale_list_options(listed, newest_run, output):
         'restart), or its list of the files you had then could not be written. So it has no such list. '
         f'The newest complete list is from {listed[0][1]} and leaves out every file backed up after it.'
     )
+    return recommend_everything(listed)
+
+
+def damaged_list_options(listed, output):
+    """The choices when the newest backup's list is damaged (a power cut or a failing
+    drive while it was written): said as damaged, not as an empty backup (review of
+    0.51.2), with everything ever kept first, as it has that backup's files."""
+    output(
+        f'\nThe list of files of the newest backup ({listed[0][1]}) is damaged and cannot be read '
+        '(a power cut or a drive error while it was written). Your files from that backup are still '
+        'kept; only the list of which ones you had then is lost. The next weekly copy writes a new one.'
+    )
+    older = next(((path, date) for path, date in listed[1:] if read_inventory(path) is not None), None)
+    options = recommend_everything(listed)[:1]
+    if older:
+        options.append(('older', f'As of {older[1]} (an older list: files backed up after it are left out)'))
+    return options, older
+
+
+def recommend_everything(listed):
+    """Everything ever kept first, as it has the newest backup's files; then the newest list."""
     return [
         (
             'everything',
@@ -1055,9 +1109,13 @@ def restore_scope(listed, prompt, output, newest_run=None):
     if not listed:
         output(NO_INVENTORY)
         return 'everything', None, None
-    earlier = newest_with_files(listed) if not newest_run else None
+    damaged = not newest_run and read_inventory(listed[0][0]) is None
+    earlier = newest_with_files(listed) if not (newest_run or damaged) else None
+    older = None
     if newest_run:
         options = stale_list_options(listed, newest_run, output)
+    elif damaged:
+        options, older = damaged_list_options(listed, output)
     elif earlier:
         output(
             f'The last backup ({listed[0][1]}) lists no files: the folder was empty then, as after a new '
@@ -1071,9 +1129,11 @@ def restore_scope(listed, prompt, output, newest_run=None):
         options = [('last', f'As of the last backup ({listed[0][1]}): only the files you had then (recommended)')]
     if len(listed) > 1:
         options.append(('date', 'As of an earlier backup: choose the date'))
-    if not newest_run:
+    if not (newest_run or damaged):
         options.append(('everything', 'Everything ever kept, also files you deleted or renamed'))
     pick = choose('Which files?', options, prompt, output)
+    if pick == 'older' and older:
+        return 'as_of', older[0], older[1]
     if pick == 'date':
         path = choose('As of which backup?', listed[1:], prompt, output)
         return None if path is None else ('as_of', path, dict(listed)[path])
@@ -1544,10 +1604,28 @@ def part_way(target, output):
         raise
 
 
+@contextlib.contextmanager
+def usb_if_free(config, output):
+    """The USB drive (as Usb opens it), or None, said, when it can't be opened now: the
+    weekly copy holds it, or it is refused. For a restore that has the HDD's backup too,
+    which then goes on with that (the audit of 0.46.2, for the password lists; deep check
+    682 for the photos: on a Sunday the weekly copy can hold the drive for hours, and the
+    photo restore stopped although the HDD's archive needs no USB drive). Only opening the
+    drive is caught: the restore's own failure (a mistyped backup password, deep check 688)
+    was taken for the drive's, said as "The USB drive is not looked at: Wrong password"."""
+    with contextlib.ExitStack() as held:
+        try:
+            usb = held.enter_context(Usb(config))
+        except RuntimeError as exc:
+            output(f'The USB drive is not looked at: {exc}.')
+            usb = None
+        yield usb
+
+
 def restore_photos(config, prompt, output):
     media = Path(config['media_mount'])
     archive = media / config.get('photos', {}).get('archive_dir', ARCHIVE_DIR)
-    with Usb(config) as usb:
+    with usb_if_free(config, output) as usb:
         places = {'hdd': f'The HDD: the weekly copy in {archive}', 'usb': f'The USB drive: the weekly copy in {usb}'}
         sources = [('hdd', places['hdd'])] if archive.is_dir() else []
         if usb and ((usb / 'upload').is_dir() or (usb / 'library').is_dir()):
@@ -1919,17 +1997,10 @@ def restore_passwords(config, prompt, output):
     setup's) and the USB drive's copies, when it is plugged in (the review of 0.46.1: with
     any list on the HDD, a newer one on the USB drive was never offered)."""
     hdd = password_snapshots(config)
-    try:
-        with Usb(config) as usb:
-            runs = newest_first(hdd + usb_password_lists(usb))
-            if runs:
-                return restore_password_list(config, runs, prompt, output)
-    except RuntimeError as exc:
-        # The USB drive busy (the weekly copy) or refused: the HDD's lists all the same
-        # (the audit of 0.46.2).
-        output(f'The USB drive is not looked at: {exc}.')
-        if hdd:
-            return restore_password_list(config, hdd, prompt, output)
+    with usb_if_free(config, output) as usb:
+        runs = newest_first(hdd + usb_password_lists(usb))
+        if runs:
+            return restore_password_list(config, runs, prompt, output)
     output('No password list on the HDD, nor on the USB drive (or it is not plugged in).')
 
 
@@ -2064,6 +2135,106 @@ def restore_nightly(config, kind, prompt, output):
             '(sudo cp -a <file> <where it belongs>), then start the app.',
             'See APP-BACKUPS.md or HOST-BACKUPS.md for the exact steps.',
         )
+
+
+MUSIC_BACKUP = 'backups/music'  # the nightly music backup on the HDD (runtime music_backup.rs)
+MUSIC_SNAPSHOT = re.compile(r'^(\d+)-\d+\.json$')  # one run's list: <microseconds>-<pid>.json
+
+
+def music_snapshots(config):
+    """(path, label) of the nightly music backup's runs on the HDD, newest first."""
+    folder = Path(config['media_mount']) / MUSIC_BACKUP / 'snapshots'
+    found = []
+    for path in folder.iterdir() if folder.is_dir() else ():
+        match = MUSIC_SNAPSHOT.match(path.name)
+        if match and path.is_file() and not path.is_symlink():
+            found.append((int(match[1]), path))
+    return [(path, when(stamp)) for stamp, path in sorted(found, reverse=True)]
+
+
+def music_tool():
+    """music-recovery.py, the music backup's own checked restore (its name has a hyphen)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location('music_recovery', ROOT / 'music-recovery.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def restore_music(config, prompt, output):
+    """The music library as one night's music backup had it, into a new folder, made the
+    media account's (Navidrome and Lidarr run as it), with the line that copies it back.
+    Deep check 675: the menu said music is never backed up, on servers whose nightly music
+    backup ran, and no guide said how to get it back."""
+    runs = music_snapshots(config)
+    if not runs:
+        output('No nightly music backup found on the HDD.')
+        return
+    run = choose('Which night\'s music backup? The newest is first.', runs, prompt, output)
+    if run is None:
+        return
+    try:
+        files = json.loads(run.read_text())['files']
+        size = sum(row['size'] for row in files)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError(
+            f'The list of that night\'s music backup ({run}) cannot be read; choose another night'
+        ) from exc
+    target = restore_target(config, f'music-{stamp()}', prompt, output)
+    if target is None:
+        output(NOTHING_CHANGED)
+        return
+    ensure_room(standing_folder(target), size, RESTORE)
+    library = music_library(config)
+    rows = [
+        ('Restore', dict(MENU)['music']),
+        ('From', f'{run} (the night of {dict(runs)[run]})'),
+        ('Which files', f'your music as that night\'s backup had it: {file_count(len(files))}'),
+        ('Size', f'{size_words(size)} (free space where it goes: {free_space(target)})'),
+        ('Into', f'{target} (a new folder)'),
+        ('Overwritten', f'nothing. Your music library ({library}) stays as it is.'),
+        APPS_KEEP_RUNNING,
+    ]
+    if not review(rows, prompt, output):
+        output(NOTHING_CHANGED)
+        return
+    make_home(config, target)
+    output(COPYING)
+    with part_way(target, output):
+        count = music_tool().restore(Path(config['media_mount']) / MUSIC_BACKUP, run, target)
+    # Navidrome reads the library, and Lidarr writes it, as the media account: files that
+    # stayed root's private ones would be copied back unreadable for them.
+    media = config.get('media', {})
+    uid, gid = int(media.get('uid', 1000)), int(media.get('gid', 1000))
+    if account(uid) is None:
+        handed = no_such_account(uid, target)
+    else:
+        name = account(uid)[0]
+        try:
+            give_to(target, uid, gid)
+            if Path(target).parent == restore_home(config):
+                os.chown(Path(target).parent, 0, gid)
+                os.chmod(Path(target).parent, 0o750)
+            handed = [f'The folder and its files now belong to {name}, the account the music apps run as.']
+        except OSError as exc:
+            handed = [
+                f'They belong to root ({exc.strerror}), so the music apps can\'t read them yet. Run:',
+                f'  sudo chown -R {name}: "{target}"',
+            ]
+    say(
+        output,
+        f'\nDone: {file_count(count)} copied to {target} (checksums verified)',
+        *handed,
+        'To put them back into your music library, without replacing a file that is there now:',
+        f'  sudo cp -a -n {shlex.quote(str(target))}/. {shlex.quote(str(library))}/',
+        '(or copy only the folders you need from it). Navidrome finds them at its next scan, within the hour.',
+        *(
+            (f'Files of your own music folders are under {target / "your-own"}: copy those back to where they were.',)
+            if (Path(target) / 'your-own').is_dir()
+            else ()
+        ),
+    )
 
 
 def restore_monthly(config, prompt, output):
@@ -3330,6 +3501,7 @@ RESTORES = {
     'passwords': restore_passwords,
     'apps': lambda c, p, o: restore_nightly(c, 'apps', p, o),
     'host': lambda c, p, o: restore_nightly(c, 'host', p, o),
+    'music': restore_music,
     'monthly': restore_monthly,
 }
 DRIVE_ACTIONS = {
@@ -3341,7 +3513,7 @@ DRIVE_ACTIONS = {
 
 # The restores whose backups the HDD keeps, and those of them the USB drive may hold too.
 # Without the HDD, "no backup found" would read as "no backup was ever made".
-KEPT_ON_HDD = {'photos', 'passwords', 'apps', 'host', 'monthly'}
+KEPT_ON_HDD = {'photos', 'passwords', 'apps', 'host', 'music', 'monthly'}
 ALSO_ON_USB = {'photos', 'passwords'}
 HDD_AWAY = (
     'The HDD is not mounted at {mount} (or another drive is there), so the backups NekoServer keeps '
@@ -3356,6 +3528,24 @@ NO_MEDIA_BACKUP = (
     'deleted by mistake: search for it again in Radarr or Sonarr (if you use them), or copy it',
     'again from where you got it. Jellyfin\'s own settings (what you watched) are under "App settings".',
 )
+# The same where the nightly music backup ran: music is in the list (deep check 675).
+NO_FILM_BACKUP = (
+    'Films and shows are not backed up, so they are not in this list. A film or show deleted by',
+    'mistake: search for it again in Radarr or Sonarr (if you use them), or copy it again from where',
+    'you got it. Jellyfin\'s own settings (what you watched) are under "App settings". Your music is',
+    'under "Music files", from its nightly backup.',
+)
+
+
+# Immich and Nextcloud keep what was deleted in their own trash for 30 days (their
+# defaults; NekoServer does not change them). It is the quicker way back, and the only one
+# for a photo or file newer than the last weekly backup, which no backup holds yet: the
+# guide and this menu sent the person straight to the backups (deep check 501).
+TRASH_FIRST = (
+    'Deleted a photo or a file in the last 30 days? Look in the app\'s own trash first: in Immich,',
+    '"Trash" in the menu; in Nextcloud, "Deleted files" in Files. Restoring it there puts it back',
+    'where it was, also one newer than the last weekly backup, which no backup holds yet.',
+)
 
 
 def restore_section(config, prompt, output):
@@ -3368,8 +3558,12 @@ def restore_section(config, prompt, output):
         'it once. Nothing is written before that.',
         'A restore brings back files, settings and databases. It does not reinstall Linux or the apps.',
     )
-    if media_group(config, 'movies') or media_group(config, 'music'):
+    if music_snapshots(config):
+        say(output, *NO_FILM_BACKUP)
+    elif media_group(config, 'movies') or media_group(config, 'music'):
         say(output, *NO_MEDIA_BACKUP)
+    if media_group(config, 'photos') or nextcloud_on(config):
+        say(output, *TRASH_FIRST)
     pick = choose('What would you like to restore?', menu(config), prompt, output)
     if pick is None:
         return

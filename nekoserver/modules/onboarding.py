@@ -172,8 +172,11 @@ def remove_stale(ctx, release, config):
     whose Compose file is still on the SSD): Prowlarr's link to it, the qBittorrent
     client in Sonarr, Radarr and Lidarr, Seerr's request provider. Left in place, the apps
     would show errors about it for good. Only connections setup made are removed (by
-    their name and where they point); never a problem for this step, only said."""
-    services = ctx.config.get('media', {}).get('services', [])
+    their name and where they point); never a problem for this step, only said.
+    An app whose group was switched off (Music, say) is stopped the same way while it
+    stays in the list, so it counts as taken out: Prowlarr kept its link to the stopped
+    Lidarr and warned about it for good (deep check 750)."""
+    services = media_services(ctx.config)
     compose = Path(ctx.config['data_mount']) / 'compose'
     removed = [a for a in CONNECTED if a not in services and (compose / a / 'compose.yaml').is_file()]
     for app, (users, what) in BY_HAND.items():
@@ -181,7 +184,7 @@ def remove_stale(ctx, release, config):
             ctx.log(what)
     if not removed:
         return
-    ctx.log('Taking away the connections setup made to apps no longer in media.services: ' + ', '.join(removed))
+    ctx.log('Taking away the connections setup made to apps no longer set up: ' + ', '.join(removed))
     cmd = [sys.executable, str(release / 'media-connect.py'), '--config', str(config), '--remove-stale', '--apply']
     if subprocess.run(cmd, check=False).returncode:
         ctx.log(

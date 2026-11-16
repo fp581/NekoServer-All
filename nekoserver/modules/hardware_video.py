@@ -10,6 +10,7 @@ software, which works, just more slowly.
 
 import json
 from pathlib import Path
+import re
 import subprocess
 
 import gpu
@@ -301,6 +302,13 @@ def configure_jellyfin(entry, method, node, client, video, ours=False, several=F
         client.call('/Sessions/Logout', 'POST')
 
 
+def login_immich(client, entry):
+    session = client.call('/api/auth/login', 'POST', {'email': entry['username'], 'password': entry['password']})
+    if session.get('isAdmin') is not True or not session.get('accessToken'):
+        raise RuntimeError('Saved Immich login is not an administrator')
+    client.headers['Authorization'] = 'Bearer ' + session['accessToken']
+
+
 def immich_cannot(video, method):
     """Why Immich stays in software with this chip, or None: its hardware setting
     encodes too, so it needs a working encoder, and it has no low-power setting for
@@ -320,10 +328,7 @@ def configure_immich(entry, method, node, client, video, ours=False, several=Fal
     unusable = immich_cannot(video, method)
     if unusable:
         return unusable
-    session = client.call('/api/auth/login', 'POST', {'email': entry['username'], 'password': entry['password']})
-    if session.get('isAdmin') is not True or not session.get('accessToken'):
-        raise RuntimeError('Saved Immich login is not an administrator')
-    client.headers['Authorization'] = 'Bearer ' + session['accessToken']
+    login_immich(client, entry)
     try:
         settings = client.call('/api/system-config')
         current = settings.get('ffmpeg', {}).get('accel') or 'disabled'
@@ -415,20 +420,112 @@ NO_ENCODER = 'converts video in software: the chip decodes video but has no work
 LOW_POWER_ONLY = (
     'converts video in software: the chip encodes only in its low-power mode, which Immich does not use with VA-API'
 )
+# The chip NekoServer set the app to is gone (or no longer passes the app's check), so
+# NekoServer took its own setting back. Not "switched off by you": the next run with a
+# working chip switches it on again.
+CHIP_AWAY = (
+    'off for now: the graphics chip it was set to is not usable here any more, so hardware video was switched '
+    'off in the app (it converts video in software); setup switches it on again once the chip works'
+)
 # Results that are an answer (nothing left for you to do), not a step still to finish.
 # A chip that decodes but cannot encode is one too: switching Immich over by hand would
 # only make its video conversions fail.
-ANSWERS = (SOFTWARE, SWITCHED_OFF, LOW_POWER_ONLY, NO_ENCODER)
+ANSWERS = (SOFTWARE, SWITCHED_OFF, LOW_POWER_ONLY, NO_ENCODER, CHIP_AWAY)
 
 
 def decisive(state):
     """What NekoServer last knew for sure about an app's hardware video: turned on (by it
-    or by you), or switched off by you. A run that couldn't tell (the app wasn't running,
-    didn't answer, or the chip check failed this time) is not."""
-    return isinstance(state, str) and (state.startswith(('on', 'kept')) or state == SWITCHED_OFF)
+    or by you), switched off by you, or switched off by NekoServer while the chip is away.
+    A run that couldn't tell (the app wasn't running, didn't answer, or the chip check
+    failed this time) is not."""
+    return isinstance(state, str) and (state.startswith(('on', 'kept')) or state in (SWITCHED_OFF, CHIP_AWAY))
 
 
-def apps_on(config, choices, log, client_factory=None, apps=None, check=probe, before=None):
+def set_by_setup(before):
+    """The method NekoServer itself switched an app to at the last run ("on (qsv)" gives
+    'qsv'), or None: a setting you chose ("kept your setting") is never taken back."""
+    found = re.match(r'on \((\w+)\)', str(before or ''))
+    return found[1] if found else None
+
+
+def jellyfin_back_to_software(entry, client, method):
+    """Jellyfin's hardware acceleration switched off, when it is still what NekoServer set."""
+    login_jellyfin(client, entry)
+    try:
+        encoding = client.call('/System/Configuration/encoding')
+        current = encoding.get('HardwareAccelerationType') or 'none'
+        if current == 'none':
+            return SWITCHED_OFF
+        if current != method:
+            return 'kept your setting (' + current + ')'
+        encoding['HardwareAccelerationType'] = 'none'
+        client.call('/System/Configuration/encoding', 'POST', encoding)
+        return CHIP_AWAY
+    finally:
+        client.call('/Sessions/Logout', 'POST')
+
+
+def immich_back_to_software(entry, client, method):
+    """Immich's hardware acceleration switched off, when it is still what NekoServer set."""
+    login_immich(client, entry)
+    try:
+        settings = client.call('/api/system-config')
+        current = settings.get('ffmpeg', {}).get('accel') or 'disabled'
+        if current == 'disabled':
+            return SWITCHED_OFF
+        if current != method:
+            return 'kept your setting (' + current + ')'
+        settings['ffmpeg']['accel'] = 'disabled'
+        client.call('/api/system-config', 'PUT', settings)
+        return CHIP_AWAY
+    finally:
+        client.call('/api/auth/logout', 'POST')
+
+
+# Said when the app could not be reached to take the setting back.
+STILL_SET = (
+    '{app} is still set to convert video on the graphics chip ({method}), which is not usable here now, and '
+    'could not be reached to switch that off ({why}). Until then a video that has to be converted may not play. '
+    'Run  sudo bash install.sh  again once {app} runs, or switch hardware acceleration off in {app} yourself '
+    '(see HARDWARE-VIDEO.md).'
+)
+
+
+def back_to_software(app, config, before, log, client_factory=None, running=None):
+    """No chip passed this app's check, and the app is still set to the one NekoServer
+    switched it to at an earlier run: Jellyfin does not fall back by itself, it fails to
+    play whatever has to be converted. The setting NekoServer made is taken back (yours
+    never is), and remembered so that a working chip gets it again. Returns the app's
+    state, or None when there is nothing of NekoServer's to take back or the app cannot
+    be asked now (the last known state then stays, and the next run tries again)."""
+    import account_setup
+    import account_store
+
+    method = set_by_setup(before)
+    if not method:
+        return None
+    try:
+        if not (running or container)(*CONTAINERS[app]):
+            return None  # not running: nothing converts video, and nothing can be asked
+    except (OSError, subprocess.SubprocessError):
+        return None
+    entry = account_store.get(config, app) if account_store.enabled(config) else None
+    client = (client_factory or account_setup.Client)(app)
+    try:
+        if not entry:
+            raise RuntimeError('NekoServer keeps no login for it')
+        account_setup.wait(app, client, 60)
+        state = (jellyfin_back_to_software if app == 'jellyfin' else immich_back_to_software)(entry, client, method)
+    except (RuntimeError, OSError, KeyError, ValueError) as exc:
+        log(STILL_SET.format(app=app.capitalize(), method=method, why=exc))
+        return None
+    finally:
+        client.close()
+    log(app.capitalize() + ' hardware video: ' + state)
+    return state
+
+
+def apps_on(config, choices, log, client_factory=None, apps=None, check=probe, before=None, running=None):
     """Switch the selected apps over, each to the first chip (preferred first) that passes
     the video check inside that app's own container; returns {app: what happened}."""
     import account_setup
@@ -439,8 +536,11 @@ def apps_on(config, choices, log, client_factory=None, apps=None, check=probe, b
     for app in selected_apps(config) if apps is None else apps:
         found = next(((choice, video) for choice in choices if (video := check(app, choice[1]))), None)
         if found is None:
-            done[app] = SOFTWARE
-            log(app.capitalize() + ' hardware video: ' + done[app])
+            # A setting NekoServer made for a chip that passed before is taken back.
+            taken_back = back_to_software(app, config, (before or {}).get(app), log, client_factory, running)
+            done[app] = taken_back or SOFTWARE
+            if not taken_back:
+                log(app.capitalize() + ' hardware video: ' + done[app])
             continue
         entry = account_store.get(config, app) if account_store.enabled(config) else None
         if not entry:
@@ -498,6 +598,12 @@ def run(ctx):
         ctx.log('Hardware video: ' + why + '; Jellyfin and Immich convert video in software (works, just slower)')
         # What you chose in the apps is remembered for when the chip is back.
         memory = {k: v for k, v in previous(report).items() if decisive(v)}
+        # An app NekoServer had switched to a chip that is gone now is switched back, or
+        # it would go on asking that chip to convert its video.
+        for app in apps:
+            taken_back = back_to_software(app, ctx.config, memory.get(app), ctx.log)
+            if taken_back:
+                memory[app] = taken_back
         atomic_json(report, {'status': 'software', 'reason': why, 'vendors': vendors, 'memory': memory})
         return
     for vendor in dict.fromkeys(c[0] for c in choices):

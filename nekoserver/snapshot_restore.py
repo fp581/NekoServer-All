@@ -300,10 +300,22 @@ def apply_times(kind, target, rows):
 
 def main(kind, description, argv=None):
     parser = argparse.ArgumentParser(description=description)
-    parser.add_argument('command', choices=('verify', 'restore'))
-    parser.add_argument('--snapshot', required=True)
-    parser.add_argument('--destination')
-    parser.add_argument('--preserve-owners', action='store_true')
+    parser.add_argument(
+        'command',
+        choices=('verify', 'restore'),
+        help='verify: check every file of the snapshot against its checksum (changes nothing); '
+        'restore: check it, then copy it into a new folder',
+    )
+    parser.add_argument(
+        '--snapshot', required=True, help='The snapshot folder, as the backups folder on the HDD names it'
+    )
+    parser.add_argument('--destination', help='With restore: a new folder for the files (its parent must exist)')
+    parser.add_argument(
+        '--preserve-owners',
+        action='store_true',
+        help='With restore: give the files the owners and permissions they had (needs sudo); '
+        'left out, they are private to the account that runs this',
+    )
     args = parser.parse_args(argv)
     if args.command == 'restore' and not args.destination:
         parser.error('restore requires --destination')

@@ -205,9 +205,12 @@ def drive_problem(config, keys):
     """Why the drives under `keys` are not the ones setup chose, or None: the runtime's own
     check (check-drives: UUID, filesystem, Btrfs subvolume, the NAS disk's WWN, no copy
     connected, two filesystems), the one every job makes. This compared the UUID and
-    filesystem only, so it passed a drive every backup refused (the review of 0.47.1)."""
+    filesystem only, so it passed a drive every backup refused (the review of 0.47.1).
+    The SSD and the HDD must also take new files: the right drive that Linux turned
+    read-only after write errors passed as mounted (deep check 431). The USB drive is
+    judged by its identity alone (the recovery menu leaves it mounted read-only)."""
     try:
-        verify_storage(config, keys)
+        verify_storage(config, keys, writable='usb' not in keys)
     except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as exc:
         return str(exc) or 'the drive check could not run'
     return None
@@ -289,11 +292,13 @@ def containers(config, photos=False):
                 )
                 binds = [m for m in v.get('Mounts', []) if isinstance(m, dict) and m.get('Type') == 'bind']
 
-                def bound(source, targets, readonly=False, binds=binds):
+                def bound(source, targets, readonly=False, writable=False, binds=binds):
+                    """`writable`: the app must be able to write there (Docker's "RW")."""
                     return any(
                         m.get('Source') == source
                         and m.get('Destination') in targets
                         and (not readonly or m.get('RW') is False)
+                        and (not writable or m.get('RW') is True)
                         for m in binds
                     )
 
@@ -306,23 +311,34 @@ def containers(config, photos=False):
                         expected = str(Path(config['data_mount']) / 'appdata/immich/postgres')
                     else:
                         expected = None
-                    mounts = expected is None or bound(expected, targets)
+                    # Photos are uploaded and the database written there: read-only, the
+                    # folder would be the right one and Immich still unusable (review of
+                    # 0.51.2: only the paths were checked). The same for an app's own data.
+                    mounts = expected is None or bound(expected, targets, writable=True)
                 else:
                     destination = {'seerr': '/app/config', 'navidrome': DATA}.get(app, '/config')
-                    mounts = bound(str(Path(config['data_mount']) / 'appdata' / app), (destination,))
+                    mounts = bound(str(Path(config['data_mount']) / 'appdata' / app), (destination,), writable=True)
                     if app in ('jellyfin', 'navidrome', 'sonarr', 'radarr', 'lidarr', 'qbittorrent'):
                         library = (
                             files_root(config, 'music' if app in ('navidrome', 'lidarr') else 'movies') / 'library'
                         )
+                        # (folder, where the app sees it, whether the app only reads it)
                         if app == 'jellyfin':
                             needed = [('movies', '/data/movies', True), ('tv', '/data/tv', True)]
                         elif app == 'navidrome':
                             needed = [('music', '/music', True)]
                         else:
                             needed = [('', DATA, False)]
-                        mounts = mounts and all(bound(str(library / rel), (dest,), ro) for rel, dest, ro in needed)
+                        # The others import, rename and download there: read-only (as a
+                        # monthly update checks them, and leaves them when it cannot open
+                        # them up again) they cannot work, though the folder is right.
+                        mounts = mounts and all(
+                            bound(str(library / rel), (dest,), readonly=ro, writable=not ro) for rel, dest, ro in needed
+                        )
                         if app == 'qbittorrent':
-                            mounts = mounts and bound(str(music_downloads(config)), ('/data/downloads/music',))
+                            mounts = mounts and bound(
+                                str(music_downloads(config)), ('/data/downloads/music',), writable=True
+                            )
                 network = v.get('NetworkSettings', {})
                 bindings = network.get('Ports', {})
                 peer = peer_port(v) if app == 'qbittorrent' else None
@@ -348,7 +364,7 @@ def containers(config, photos=False):
         elif starting:
             detail = STARTING
         else:
-            detail = 'Inspect container health, bind mounts, network and published ports locally.'
+            detail = 'Inspect container health, bind mounts (its own data folder must be writable), network and published ports locally.'
         results.append(item('container:' + svc, health.APPS[app][0] + ' / ' + svc, state, detail))
     return results
 
@@ -832,17 +848,19 @@ def inspect(config, profile='full', now=None):
     matched = {}
     for role, name in (('data_ssd', 'Application SSD'), ('media_hdd', 'Media HDD')):
         configured = bool(config['storage'][role].get('uuid'))
-        problem = drive_problem(config, (role,)) if configured else 'not configured'
+        problem = (
+            drive_problem(config, (role,)) if configured else 'No drive is chosen for it yet: run  sudo bash install.sh'
+        )
         matched[role] = problem is None
         add(
             'mount:' + role,
             name,
             verdict(matched[role], configured),
-            'The drive setup chose is mounted (the runtime\'s drive check).'
+            'The drive setup chose is mounted and takes new files (the runtime\'s drive check).'
             if matched[role]
-            else 'Configure and mount the intended drive; no private data is inspected on a mismatch ('
-            + problem
-            + ').',
+            # The runtime's words say what is wrong and what to do (another drive, or the
+            # right one turned read-only), so they come first.
+            else problem.rstrip('.') + '. Nothing on the drive is read until this is fixed.',
         )
     distinct = drive_problem(config, ('data_ssd', 'media_hdd')) if all(matched.values()) else 'not checked'
     drives = distinct is None
@@ -1297,10 +1315,22 @@ def save(config, report):
 def main(argv=None):
     neko_common.readable_output()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--config', type=lambda v: Path(checked_settings(v)), default=default_settings(ROOT))
-    parser.add_argument('--profile', default='full')
-    parser.add_argument('--save', action='store_true')
-    parser.add_argument('--manual', action='store_true')
+    parser.add_argument(
+        '--config',
+        type=lambda v: Path(checked_settings(v)),
+        default=default_settings(ROOT),
+        help=neko_common.SETTINGS_HELP,
+    )
+    parser.add_argument(
+        '--profile', default='full', help='The set of setup steps to check (default: full, the whole server)'
+    )
+    parser.add_argument('--save', action='store_true', help='Save the report on the SSD, for the dashboard')
+    parser.add_argument(
+        '--manual',
+        action='store_true',
+        help='Also ask about the tests you watched yourself (a test restore, say) and record your answers; '
+        'needs --save and a terminal',
+    )
     a = parser.parse_args(argv)
     if a.manual and (not a.save or not sys.stdin.isatty()):
         parser.error('--manual requires --save and an interactive terminal')

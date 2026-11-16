@@ -247,6 +247,25 @@ class OddFileNameTests(unittest.TestCase):
             self.assertEqual(library(d), [b'ok.flac'])
             json.dumps(row)  # the report can be saved
 
+    def test_files_left_out_are_counted_in_words_that_fit_the_count(self):
+        """Deep check 485: "1 files were not copied", and a list cut at ten said nothing of
+        the rest (484)."""
+        import source_import as si
+
+        one = si.with_skipped({}, ['Album/bad.flac'])['reason']
+        self.assertTrue(one.startswith('1 file was not copied because its name could not be used (rename it,'), one)
+        many = si.with_conflicts({}, [f'Show/e{n}.mkv' for n in range(12)])['reason']
+        self.assertTrue(many.startswith('12 files were left out'), many)
+        self.assertTrue(many.endswith('Show/e9.mkv and 2 more'), many)
+        busy = si.with_downloading({}, ['Film.mkv'])['reason']
+        self.assertTrue(
+            busy.startswith(
+                '1 file was still being downloaded (or written) and was not copied: Film.mkv. '
+                'When it has finished, copy it with'
+            ),
+            busy,
+        )
+
 
 class NetworkShareTypeTests(unittest.TestCase):
     """SMB shares mounted as smb3, and shares mounted only when first opened."""

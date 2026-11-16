@@ -1,6 +1,179 @@
 # Changelog
 
-## v0.51.2 — (in progress; the release number is 0.51.2)
+## v0.51.3 — (in progress; the release number is 0.51.3)
+
+Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how NekoServer is used.
+
+### Fixed: from the review of 0.51.2
+- **Changing the folder of films, shows or music you already have now connects the new one.** Setup only changed the options of what was connected, so the folder chosen before stayed in the library while the settings and the checks named the new one: new downloads could have gone to the old folder. The old folder is now disconnected first; when an app still has it open, setup says so (restart, then run setup again) and nothing counts as connected meanwhile. A folder taken back is disconnected too.
+- **A nightly app backup that fails after making room says what it removed.** When the HDD is too full for the next backup, the oldest ones are removed first (the newest always stays). A run that then failed gave only its own reason; it now adds how many older backups went and how many are left. Setup's words about the number of backups said "a backup that fails removes nothing"; they now name this one exception.
+- **Start installs only what the review on the screen said.** Two quick presses of a switch were saved side by side and could arrive the other way round, and a switch saved after the review was drawn changed what Start did. Switches are now saved one after another, and Start is refused with "The choices changed after this review was shown" until the new review has been seen.
+- **A new backup password no longer leaves the backups without a key while you type it.** The key in use was moved aside before the question, so a backup running meanwhile kept the password list unencrypted. The new key is now made beside it and swapped in only when it is whole.
+- **The card restore tool with `--progress` no longer calls a damaged file restored.** A file counted as "done before" by its size alone; it is now checked against its checksum. An older version is restored when the newer one restored before is gone, instead of being left on the card as "a newer version is restored".
+- **A new progress file overwrites nothing beside it**: it was first written as `<name>.new`, whatever was there.
+- **The restore rehearsal changes none of your saved text.** It swapped one of the database copy's own statements anywhere in the copy, so the same words inside an album's description were changed in the rehearsal. Only that statement itself is swapped now.
+- **A media import no longer takes another file of the same size and date for its copy.** Three pieces of both files (start, middle, end) are compared; reading every film whole at every run would take hours.
+- **Restored music is written out and read back from the drive**, like every other restore (it was read back from memory).
+- **Music you already have is connected on a server without Jellyfin.** The step that adds your own music folder to Navidrome sat behind a Jellyfin-only part of setup; the Music step now does it.
+- **Logins that are not administrators can play a music folder added later.** Navidrome shows a regular user only the libraries given to them, and a library added after the login was made was given to nobody. The listener login and the music check's login now get it, at every setup run. If Navidrome refuses, setup says which login and which library to tick.
+- **A folder in a Jellyfin library of the wrong kind no longer passes** (films set up as a music library): the kind is checked with the folder, and setup names the library to remove.
+- **The app check fails an app whose own data folder is read-only** (Immich's photos and database, Jellyfin's settings, Navidrome's database), not only a wrong path.
+- **An app switched off gets no desktop shortcut**, though its files are kept (Nextcloud, and Immich with only its own switch off); a shortcut setup made for it earlier is taken away.
+- **A damaged list of the newest backup's files is said as damaged**, not as "lists no files: the folder was empty then". The recovery menu then recommended an older list, which leaves out the newest backup's files; it now recommends everything ever kept, which has them.
+- **A file whose name starts or ends with a space gets its newest version back.** The note naming the current version was trimmed, so after an edit undone since, an older version was restored.
+- **A kind of media whose folders could not be used is asked about again**, as "Run setup again to give one" said (the question was saved as answered), and films, shows or music switched on later get the question too.
+
+### Fixed: changing a choice after the first setup
+- **A folder of films, shows or music changed, or set to take no new files, while the apps run reaches them as it is now.** Running apps kept seeing it as before, writable too; setup now restarts the apps that see these folders. A Jellyfin library left from a folder taken back (or copied in instead) is named for removal, and Seerr requests still going to a folder that takes no new files are said.
+- **Folders shared before stop being shared when no share is left**; Samba kept sharing them.
+- **The shared folders' password is asked for the account the shares belong to** (a second administrator running setup got a new password every run that Samba never used).
+- **A graphics chip taken out no longer leaves Jellyfin and Immich set to it** (videos that need converting did not play); it is switched back on when the chip returns.
+- **Immich follows a time zone changed after its first setup**, as every other schedule and app already did.
+- **A dashboard PIN asked again and left empty is no longer shown by "Show login".**
+
+### Fixed: a first install of 0.51.3
+- **A server set up with one disk can move its media onto an HDD bought later**, and back. The move refused setup's own line for the folder and said to "disconnect" the system disk.
+- **A films drive from Windows (NTFS, exFAT, FAT) is told how to let the apps own it**: the `uid=` and `gid=` mount options. It was told to change the folder's group or that "the NAS maps every account", neither of which works on such a drive.
+- **On a PC in another language, a package source that does not answer is retried and named.** install.sh read apt's messages in English only, so "W: Fehlschlag beim Holen von" in German went unnoticed.
+- **A weekly job whose first night falls on the 1st is not overdue** before its first run. A server installed on Thursday 25 June 2026 showed weekly app updates as overdue days before they had first run.
+
+### Fixed: loose ends of the everyday checks
+- **APP-BACKUPS.md's restore steps work for an app installed on a drive of its own.** Its `mv` failed with "Device or resource busy" there, and the copy after it mixed the backup into the live settings with nothing kept to go back to.
+- **The shared-folders password is asked only where something is shared.** A server with only Nextcloud chosen was asked for it at every setup run, and it was never used.
+- **Films and music copied into the shared folders can be renamed and upgraded by Radarr and Lidarr.** They belonged to the shared folders' account with read-only access for the apps; they now belong to the media apps' account.
+- **The dashboard says when to plug the USB drive in for its monthly check:** early on the 1st, naming the next run. "The night of the 1st" read as the evening, after the check had already run.
+
+### Fixed: restore drills
+- **Music comes back from its nightly backup through the recovery menu.** Servers with the nightly music backup were told "music is not backed up", the menu had no line for it, and MUSIC.md pointed to steps that did not exist. Restored music now keeps its file dates and is handed to the music apps' account; if that fails, the menu prints the command that does it.
+- **A mistyped backup password is said as such.** It showed as "The USB drive is not looked at: Wrong password…", then "No password list on the HDD, nor on the USB drive" about the list it had just opened.
+- **Photos come back from the HDD while the weekly copy is using the USB drive.** The restore refused even the HDD's copy, and RECOVERY.md said the menu waits when it did not.
+
+### Fixed: setup paths a beginner takes
+- **Films already on the drive you just chose for NekoServer get advice that works.** They were refused as "not permanent: add it in Disks", and doing that stopped the storage step on "fstab already has a line for this drive".
+- **A package source that never answers ends with what to do**, not with apt's own "E: Failed to fetch" lines.
+- **In the setup window, a place on the app SSD or the backups' drive is taken.** It said "Type a number from 1 to 3" and, after three tries, quietly used the recommended place.
+- **An app that never started is said so.** Setup sent you to the browser to "Finish" it at an address that answers nothing, asked again after every "no" for each of 11 apps, and the next run asked about each one's "refused" login. The step now also says Ctrl+D leaves it for later (Ctrl+C stops setup) and gives the full command to finish it.
+- **A first install no longer says "Last time you chose drive 2…"** about a drive picked a minute before.
+
+### Fixed: the server's upkeep over a season
+- **A weekly job skipped for the monthly night no longer shows as overdue.** The weekly app updates never run on the 1st, so when the update day fell on the 1st there were two weeks between runs. The dashboard allowed only 9 days, so it and the phone said "Last success is overdue" days before the next run. The same happened to the weekly USB copy skipped for a long monthly run. A weekly job is now overdue only when its next scheduled run is more than a week late.
+
+### Fixed: files and shared folders every day
+- **An album copied into the Music share during the nightly music backup no longer fails the whole night.** A copy over Samba keeps its old dates, so it looked settled, and the second listing then found it and stopped with "Music library changed during backup". Such files now wait for the next night.
+- **The Media share follows the drive setup put the films on.** With the films on the SSD or another drive, the share showed an empty folder, and films copied into it never reached Jellyfin. Samba now waits for that drive, and the music gets its own share whenever it is not in that library.
+- **NEXTCLOUD.md says who can open a share link:** only people on your home network or your Tailscale, because NekoServer opens nothing to the internet.
+
+### Fixed: watching and listening every day
+- **Music copied in from another computer now reaches Navidrome.** Music is on the SSD by default, but the only share was the media drive's library, so no share held the folder Navidrome plays (and README said *Media* had the music). There is now a *Music* share. It is read-only unless `samba_media_write` is on, and it waits for its drive.
+- **A group of apps switched off later (Music, say) is no longer checked every hour.** Navidrome and Lidarr showed as failed every hour after being stopped, and since the monthly update waits for that check, it was held back for good.
+- **Prowlarr's link to an app of a group switched off is removed**, so it no longer warns about the stopped Lidarr forever.
+
+### Fixed: photos every day
+- **After a broken SSD, RECOVERY.md sends you to rebuild Immich from the weekly database copies on the HDD**, with the exact commands, checked to bring back every account, album and photo. It sent you to upload the photos in the browser, which puts them all in one account and loses albums, faces and the family's logins; and Immich's own restore steps fail on NekoServer's copy.
+- **A drive filling up with the photos on it says that photos deleted in Immich free their room only after 30 days in its Trash**, and how to empty it.
+- **An unchanged weekly or monthly file list is said in a whole sentence.** The log read "the 100000 files are you have now the same as in the last list"; it now reads "the 100000 files you have now are the same as in the last list".
+
+### Fixed: a film from request to the TV
+- **Finished downloads end, so they no longer fill the drive over time.** Sonarr, Radarr and Lidarr remove a finished download only after qBittorrent stops it at a seeding limit, and qBittorrent had none, so every torrent was shared for ever: a film deleted or upgraded still took its space, and with your own folder every film was stored twice. When qBittorrent has no seeding limit of any kind, setup now sets "share ratio 2 or 7 days, then stop" and says so; a limit you set is left as it is.
+- **A film Radarr imports shows in Jellyfin within minutes**, not up to 12 hours later: libraries setup makes now watch their folders, and those made before are switched to it (their other options kept).
+
+### Fixed: Ask Neko's answers
+- **Ask Neko is told what to do about each problem, the urgent ones first**, not only their titles.
+- **"Is everything backed up?" gets a true answer**: backups waiting for a missing drive were given as fine, and jobs that copy nothing were counted as backups.
+- **Ask Neko is given the guides' own steps** for the common how-to questions (a deleted photo, a family member, the TV, updating), is told never to make steps up, and says so for questions NekoServer has nothing to do with.
+- **A follow-up question comes with the one before and its answer.**
+- **Ask Neko answers in the question's language**, and knows how busy the PC and each app are.
+- **A model that doesn't fit in memory is said with what to do.**
+
+### Fixed: the dashboard in a real server's states
+- **With Docker stopped, the apps say "Docker stopped" and Docker's alert is the one thing to fix**, naming the apps and the command that starts it; every app said "Not checked yet" and Needs attention listed twelve items.
+- **A failing drive says it is failing**, that it may stop working, to check the backups and how to move it, and "What should I do?" opens a guide about drive health (it opened the one about connecting a drive).
+- **A nightly backup that failed because Docker was stopped says so**, and how to start it (it said "Application Docker operation failed").
+- **An app stopped by the weekly update night says an update is running**, not "needs attention: choose Restart app".
+
+### Fixed: the update from 0.51.2
+- **Running setup again no longer restarts the media apps** on a server with its own film or music folders: every folder remounted as it already was counted as a change, so a film playing or a download was cut off, and the log said "Your own folders changed".
+- **An update that doesn't fit on the SSD says the SSD is full**, where, and to make room and start again (it showed "[Errno 28] No space left on device"). This helps from the update after 0.51.3.
+
+### Fixed: the first month of a household
+- **A USB drive left unplugged on copy night is a warning, not a 3 am urgent alert.** The weekly copy counted it as an urgent failure, so the phone rang at the highest priority that night and every 12 hours after, until the drive came back. The dashboard's card says the drive was not plugged in, as the alert does.
+- **A 12-hour reminder comes quietly and says "still"**; only a new problem is sent as urgent.
+- **A shared network folder that stops answering reaches the phone** (it was urgent on the dashboard only).
+- **"Phone access needs a Tailscale sign-in"**, true whether the sign-in ran out or was never made ("signed out" was said to a server never signed in).
+- **For a deleted photo or file, the recovery menu and RECOVERY.md look in the app's own trash first** (Immich's Trash, Nextcloud's Deleted files): the weekly backups don't hold a photo from this week yet.
+- **Ask Neko knows when each backup last worked and when it runs next**, so "When were my photos last backed up?" gets a true answer.
+- **README says how to give someone in the family a login of their own**, and how to limit a child's Jellyfin login.
+- **"Restore tried: Not yet" says how to try a restore and record it.**
+
+### Fixed: the phones, TVs and PCs people use
+- **Seerr's "Play on Jellyfin" buttons and alert links open on a phone**: they led to Jellyfin's address inside Docker. Setup now gives Seerr the gateway's Jellyfin address (the Tailscale one first), and keeps one you typed.
+- **Setup and README say how to open the shared folders** from Windows, a Mac, Linux and a Chromebook (Windows never lists them under Network by itself), with the login.
+- **GATEWAY.md has a part for TVs**: most TVs have no Tailscale app, casting from the phone does not reach the server, and Jellyfin's Quick Connect saves typing the password with the remote.
+- **The Immich phone steps say to keep the app open for the first backup**, and which background settings let it go on (iPhones run it rarely in the background; battery-saving Androids never).
+- **NEXTCLOUD.md no longer says a reapplied gateway changes Nextcloud's address** (it has not since 0.21.1).
+
+### Fixed: the apps' and systems' new releases
+- **Radarr 7 (and Sonarr 5) with "Disabled for Localhost" sign-in keeps its login**: setup said the saved login was wrong at every run, and the weekly update lost its login check.
+- **Ubuntu 26.04 with AMD graphics gets its video decoding**: the driver is now part of `mesa-libgallium`, and setup said it was not available.
+
+### Fixed: things that happen to hardware
+- **A USB drive that drops out at the start of the weekly copy no longer gets the photos copied onto the system disk.** The copy checked the drive, then held it; a drive gone in between left it copying into the empty folder on the system disk, and every later weekly copy failed. It now holds the drive before it checks it.
+- **A USB drive unplugged mid-copy is said as gone**, not as a raw "….neko-part is missing", and without an extra "not mounted" line.
+- **A worn SATA SSD is warned about** from 90% of its life used; only an NVMe SSD's wear was read.
+
+### Fixed: names and text with spaces, accents or quotes
+- **Your own folder on a NAS share whose name has a space (`//nas/My Media`) counts as connected**: the minute check read only the first word, so its apps were stopped and kept stopped.
+- **NAS folders named with a space or an accent ("My Films", "Música") are listed and can be typed**; they were left out silently, and typing one was refused as "without spaces".
+- **A folder dragged into the terminal (in quotes), copied from a shell (`My\ Films`) or typed with `~` is that folder**, not "not a folder".
+- **A file whose name starts or ends with a space keeps its current version in the weekly file list and its weekly checksum check** (the same trim as the review's finding).
+- **The card restore tool's search ignores upper and lower case** ("beach" finds "Beach Trip").
+- **A share name or folder Samba cannot take is named, with the rule**; "Música" is a share name.
+- **Counts and sizes said right**: "1 file", lists cut at ten say how many more, and "needs 1.6 GB, the drive has 1.5 GB" instead of two equal numbers.
+
+### Fixed: moments when a protection was off
+- **A closed terminal or a dropped SSH connection stops setup as Ctrl+C does**, so its clean-up runs: the USB drive measured read-only is unmounted again, the terminal's echo comes back, and the step is not left "running". `recover.py snapshot` starts Immich again when it is stopped that way (it stayed off until the next restart).
+- **A review the terminal has gone past cannot start setup from the window** (Back typed in the terminal while the window still showed the earlier review).
+- **The monthly snapshot looks for the backup key once.** A key made while it ran (as its own advice says) labelled the snapshot encrypted while its password files were plain; a key gone meanwhile left the passwords nowhere.
+- **A new backup password chosen while the monthly snapshot seals its password list no longer leaves a list no password opens**: the list is sealed for the key that is copied with it.
+
+### Fixed: checks that said "pass" wrongly
+- **The app check fails Sonarr, Radarr, Lidarr or qBittorrent whose library is read-only** (left so after a monthly check of a slow app failed part-way), and the hourly app check fails app data that is read-only, as setup's check already did.
+- **The app SSD and the media HDD fail the check when Linux turned them read-only** after write errors; only their identity was looked at.
+- **Seerr's request provider check knows which folder takes new files**, so requests still going to a folder that takes none no longer pass.
+
+### Fixed: logins the apps' own settings change
+Each was told "type the login the app has now" at every setup run, though the saved login was right:
+- **Sonarr, Radarr, Lidarr or Prowlarr set to "Disabled for Local Addresses"**: the password is checked by the app's sign-in instead.
+- **Seerr with "Enable Local Sign-In" off**: the login is kept and said as not tried, as for Nextcloud with two-factor on.
+- **qBittorrent with "Bypass authentication" for some computers**: the login is kept and said as not tried; setup's own new login is still checked.
+- **An app still updating its database after an update**: setup says it did not answer in time, and to run setup again once it does.
+
+### Fixed: backups and getting files back
+- **Restored photos and Nextcloud files get the dates their originals had.** The backup now notes when each original was last changed, and the recovery menu sets it on each restored file once its checksum passes; restored photos without EXIF data no longer land on the day of the restore in Immich. Files copied off the drive by hand keep the copy's date (STORAGE.md, RECOVERY.md).
+- **On a full HDD the nightly app backup removes no older backup when that cannot make the room.** It removed them one by one until only the newest was left, and failed anyway (films filling the drive). It now measures first. A night that did remove backups for room says so with any count setting.
+- **When an older app backup is removed is said the same everywhere** (the backups page, the lines after a new count, the guides): after a backup that succeeds, or first when the HDD is too full for the next one. The offline copy's row says what the USB drive keeps (the newest 3 password lists and 4 database copies), not "nothing is ever removed".
+- **The qBittorrent password question says where the password is kept** (in Sonarr, Radarr and Lidarr); it said "used once and not kept".
+- **Nightly backups on the night of the monthly run are skipped, not failed**: they waited 3 hours for it, then failed with an alert.
+- **A file too big for the USB drive's free space is left out and named, and the rest is copied**; every file after it was never copied.
+- **A file renamed only in upper or lower case stays backed up on an exFAT USB drive** (it was left out every week and could not be restored under either name).
+- **A media import keeps a hard-linked file as one file** (it was counted and copied twice), and no longer copies qBittorrent's `.parts` leftovers as media.
+- **Errors name the file or the program they are about** (was "No such file or directory (os error 2)" or a bare "Invalid JSON"), and a job waiting for another says which job holds the lock, in plain words.
+- **A returning drive no longer says every service "finished what a cut-off job left"** when nothing was cut off.
+- **The recovery menu writes the checksum ledger row by row** (38 MB of memory for an 8 MB ledger, now under 1 MB).
+- **`notify --test` keeps the number of alerts still waiting**; the card restore tool's `list` says "1 file", not "1 file(s)"; the dashboard no longer says "this backup can't run" on the upgrade row.
+- **The uninstaller also removes `systemctl edit` overrides of NekoServer's services and its idle folders under /run.**
+
+### Fixed: the guides and the tools' help
+- **README.md and GUIDED-SETUP.md quote the questions, the drive list and the steps as setup has them now** (six questions were in old words; the app updates are weekly, not "on the 1st"; the setup window does open again).
+- **Each guide page starts with what a user does**; the reference is kept under "For administrators" (NOTIFICATIONS, HEARTBEAT, NEXTCLOUD, HOST-BACKUPS, SERVER-OS). False statements about upgrades and a Rust compiler are gone.
+- **APP-BACKUPS.md and HOST-BACKUPS.md give the exact steps the recovery menu sends you there for** (how to put a restored settings file back).
+- **GATEWAY.md says what to do about the browser's warning at the home address.**
+- **Every command and option of the recovery and check tools says what it is in `--help`** (`recover.py` had seven commands without a word), and `install.sh --help` lists options README.md really has.
+- **CARD-RECOVERY.md describes `verify` as it answers, and `--record`.**
+- **The password list is named as the recovery menu shows it**, in messages and guides.
+- **Words a beginner may not know are explained at first use** (mount, UUID, snapshot, checksum, NAS, container, certificate).
+
+## v0.51.2 — 2026-11-15
 
 Fixes only, from a wider review of 0.51.0 and from trying the tools on a fresh Ubuntu 24.04. Nothing changes in how NekoServer is used.
 

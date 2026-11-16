@@ -1,0 +1,73 @@
+[
+  {
+    "name": "no folder of your own",
+    "placement": null,
+    "expected": { "radarr": "/data/movies", "sonarr": "/data/tv" }
+  },
+  {
+    "name": "your films folder takes the new ones too",
+    "placement": {
+      "movies": {
+        "extra": [
+          { "holds": "movies", "use": "in_place", "new_files": true, "path": "/mnt/nas/films", "mount": "", "share": "", "fstype": "ext4" }
+        ]
+      }
+    },
+    "expected": { "radarr": "/data/existing/movies", "sonarr": "/data/tv" }
+  },
+  {
+    "name": "save new ones here too, switched off again",
+    "placement": {
+      "movies": {
+        "extra": [
+          { "holds": "movies", "use": "in_place", "new_files": false, "path": "/mnt/nas/films", "mount": "", "share": "", "fstype": "ext4" }
+        ]
+      }
+    },
+    "expected": { "radarr": "/data/movies", "sonarr": "/data/tv" }
+  },
+  {
+    "name": "a folder of its own for new shows",
+    "placement": {
+      "movies": {
+        "extra": [
+          { "holds": "tv", "use": "new_files", "path": "/mnt/nas/new-shows", "mount": "", "share": "", "fstype": "ext4" }
+        ]
+      }
+    },
+    "expected": { "radarr": "/data/movies", "sonarr": "/data/existing/tv-new" }
+  },
+  {
+    "name": "films used in place, new ones in another folder",
+    "placement": {
+      "movies": {
+        "extra": [
+          { "holds": "movies", "use": "in_place", "new_files": false, "path": "/mnt/nas/films", "mount": "", "share": "", "fstype": "ext4" },
+          { "holds": "movies", "use": "new_files", "new_files": true, "path": "/mnt/nas/new-films", "mount": "", "share": "", "fstype": "ext4" }
+        ]
+      }
+    },
+    "expected": { "radarr": "/data/existing/movies-new", "sonarr": "/data/tv" }
+  },
+  {
+    "name": "two places for new films",
+    "placement": {
+      "movies": {
+        "extra": [
+          { "holds": "movies", "use": "in_place", "new_files": true, "path": "/mnt/nas/films", "mount": "", "share": "", "fstype": "ext4" },
+          { "holds": "movies", "use": "new_files", "new_files": true, "path": "/mnt/nas/new-films", "mount": "", "share": "", "fstype": "ext4" }
+        ]
+      }
+    },
+    "expected": null
+  },
+  {
+    "name": "a folder without its mount",
+    "placement": {
+      "movies": {
+        "extra": [{ "holds": "movies", "use": "in_place", "new_files": true, "path": "/mnt/nas/films", "share": "", "fstype": "ext4" }]
+      }
+    },
+    "expected": null
+  }
+]

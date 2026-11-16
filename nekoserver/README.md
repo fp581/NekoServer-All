@@ -1,4 +1,4 @@
-# NekoServer v0.51.2
+# NekoServer v0.51.3
 
 NekoServer turns a PC running **Arch Linux**, **Nyarch**, **Debian**, **Ubuntu**, **Fedora**, **RHEL** (and Rocky Linux, AlmaLinux) or **openSUSE** into a home media server: your own Netflix-style video library, photo backup from your phone, music streaming, and a private cloud drive. One command sets up the apps, creates their accounts, connects them together, sets up your phone, makes them reachable from anywhere through **Tailscale** (privately, only for your own devices) and schedules backups.
 
@@ -100,7 +100,7 @@ Then the setup wizard shows its first page, **What would you like this server to
 
 On a PC that already has NekoServer, setup first says what it found (the release that is set up, a setup that was cut off and where, or saved answers) and offers the choices that apply.
 
-**Where to store your apps and files** is asked before that yes. Setup lists every drive connected to the PC (size, kind, model, the name you gave it, how full it is) and asks for the drive for NekoServer and your apps, the drive for the backups, where Immich's photos, the films and shows, the music and Nextcloud's files are kept (the drive of the apps, the backups' drive, or a drive of their own), and an optional removable drive for the offline backup. Each line comes with a recommended drive: press Enter to take it, or type another drive's number. No drive's name is typed, and choosing a drive changes nothing on it; setup never formats one. A drive that cannot have a role is in the list with the reason, the sizes in numbers (the apps need at least 20 GB free, the media and backups 50 GB). The disk Linux runs from can be chosen too, so a PC with one drive works; setup says what that means first. (An installation drive for one group's apps is not offered in 0.50.0; it moves to 0.51.x.)
+**Where to store your apps and files** is asked before that yes. Setup lists every drive connected to the PC (size, kind, model, the name you gave it, how full it is) and asks for the drive for NekoServer and your apps, the drive for the backups, where Immich's photos, the films and shows, the music and Nextcloud's files are kept (the drive of the apps, the backups' drive, or a drive of their own), and an optional removable drive for the offline backup. Each line comes with a recommended drive: press Enter to take it, or type another drive's number. No drive's name is typed, and choosing a drive changes nothing on it; setup never formats one. A drive that cannot have a role is in the list with the reason, the sizes in numbers (the apps need at least 20 GB free, the media and backups 50 GB). The disk Linux runs from can be chosen too, so a PC with one drive works; setup says what that means first. (A drive of their own for one group's apps is not offered yet: the apps are installed together, on the apps' drive.)
 
 Then it asks **whether you already have films, shows or music**, and for their folder: used where it is (nothing is copied) or copied into the library, and whether new ones are saved there too.
 
@@ -119,7 +119,7 @@ Once you start, it first lists what it found on this computer (processor, system
 11. **Runs the first checkup and backup**, once every step is done: an app health check, then each backup you set up, straight away instead of the first night, then a check of the whole server. It says which ones finished and names anything that needs a look. This takes a few minutes to an hour, depending on how much is on the drives.
 12. **Shows a finishing screen**: what's done, what needs you first and what waits for it, your app addresses, whether a dashboard PIN is set, and how to see your passwords.
 
-Whenever it needs you, it shows numbered instructions, opens the right page, and asks in the step's own words, such as `Did the Tailscale page say this server is connected? [yes/no]`. Answer `no` to see the step again. Steps that belong together (setting up the phone, trying the TV) are listed as one part with one question at the end.
+Whenever it needs you, it shows numbered instructions, opens the right page, and asks in the step's own words, such as `Is this server connected to Tailscale?`, with a line under it on how to answer (`Type yes or no, then press Enter.`). Answer `no` to see the step again. Steps that belong together (setting up the phone, trying the TV) are listed as one part with one question at the end.
 
 ### Two ways to follow the installation: the terminal and the setup window
 
@@ -171,9 +171,9 @@ cd NekoServer-All/nekoserver
 sudo bash install.sh
 ```
 
-The third line copies your settings into the new folder. If you forget it, setup finds the copy it keeps on the SSD and asks `Use them for this release (yes when updating)?`: answer `yes`. Nothing installed runs from the old folder, so once setup has finished you can delete `NekoServer-All.old`. After this, updates are `git pull` again.
+The third line copies your settings into the new folder. If you forget it, setup finds the copy it keeps on the SSD and copies it in by itself; it says so (`The settings of the server on this PC are in …`). Nothing installed runs from the old folder, so once setup has finished you can delete `NekoServer-All.old`. After this, updates are `git pull` again.
 
-Coming from a release before 0.39.2, where each release had a folder named for its version (`nekoserver-v0.37.3`, say)? After `git pull` the folder is simply `nekoserver`, and your `my-config.json` is still in the old one. Setup finds it there, or the copy it keeps on the SSD, and asks `Use them for this release (yes when updating)?`. Answer `yes`: it copies your settings in. The old folder can then be deleted.
+Coming from a release before 0.39.2, where each release had a folder named for its version (`nekoserver-v0.37.3`, say)? After `git pull` the folder is simply `nekoserver`, and your `my-config.json` is still in the old one. Setup finds it there, or the copy it keeps on the SSD, and copies your settings in by itself; it says where it found them (`The settings of the server on this PC are in …`). The old folder can then be deleted.
 
 ---
 
@@ -202,15 +202,32 @@ Keep a copy somewhere safe, such as a password manager.
 
 These addresses are **private**: they work only on devices signed in to your Tailscale account. Nothing is opened to the public internet, and your router needs no changes.
 
+**On a TV** Tailscale runs on Android TV, Google TV and Apple TV, but not on LG, Samsung or Roku TVs, and casting from the phone does not work: [GATEWAY.md](GATEWAY.md#on-a-tv) says what to do on each.
+
 **On other devices at home** you can also use your server's home address.
 
 > **First, in your router, reserve that address for the server** (the setting is usually called "DHCP reservation" or "static lease"). Otherwise it can change after a restart (or with a new router) and the home addresses and shared folders stop working; the dashboard then says *Home addresses stopped*. Run `sudo bash install.sh` again: it finds the new address by itself and moves them to it.
 
-The home address is, for example, `https://192.168.1.20:8442` for the app menu (ports 8443–8447 for the apps, as above; when another program on the server already uses one of these ports, setup takes a free one from 8450–8499 instead and says so, and the app menu links each app with its right port). The end of setup shows the app menu address. Browsers warn about the certificate the first time, because your server made its own; [GATEWAY.md](GATEWAY.md) explains how to trust it. The Tailscale addresses have normal certificates and never warn.
+The home address is, for example, `https://192.168.1.20:8442` for the app menu (ports 8443–8447 for the apps, as above; when another program on the server already uses one of these ports, setup takes a free one from 8450–8499 instead and says so, and the app menu links each app with its right port). The end of setup shows the app menu address. Browsers warn about the certificate the first time, because your server made its own; [GATEWAY.md](GATEWAY.md#the-warning-at-the-home-address) explains what to do. The Tailscale addresses have normal certificates and never warn.
 
 **The dashboard** shows your apps, backups, drives, alerts and live hardware (processor, memory, graphics, every temperature sensor and fan it can find, network, processes). On the server it is at `http://127.0.0.1:8787` (or **NekoServer Dashboard** in the app menu); on your phone or laptop (Tailscale on) at `https://yourserver.tailXXXX.ts.net:8448`, also on the phone setup page. You can change fan curves and RGB lighting (*Fans & lights*; phones and tablets need the PIN chosen during setup), and restart an app or close a desktop app (these need the PIN on every device). Nothing else can be changed from it. On a phone or tablet, choose *Add to Home Screen* / *Install app* to use it like an app. To keep it on the server only, set `"remote": false` under `"dashboard"`. Sonarr, Radarr, Lidarr, Prowlarr and qBittorrent are only reachable from the server's own browser, on purpose.
 
+**The shared folders** (*Media* with your films and shows, *Music* with the music Navidrome plays, *Photos* with the photo archive; read-only by default, and `"samba_media_write": true` under `"networking"` lets other computers add films and music; with the music placed on the same drive as the films it is in *Media*, under `music`) open from any computer at home. Windows does not list them under *Network* by itself (a Mac may): type the address, with your server's home address instead of `192.168.1.20` (setup's log shows these lines with your own address and username).
+
+- **Windows:** in File Explorer's address bar type `\\192.168.1.20\Media` and press Enter. To keep it as a drive letter, right-click *This PC*, *Map network drive*, and type the same address.
+- **Mac:** in Finder choose *Go*, *Connect to Server*, type `smb://192.168.1.20/Media`, and choose *Registered User*.
+- **Linux** (GNOME Files, Dolphin): press Ctrl+L and type `smb://192.168.1.20/Media`.
+- **Chromebook:** in *Files* choose *More* (⋮), *Services*, *SMB file share*, and type `\\192.168.1.20\Media` as the file share URL.
+
+Sign in with the username of the account that ran setup (`"samba_user"` under `"networking"` names another) and the password you chose for the shared folders in setup. Windows offers to remember it.
+
 **A friend should see your films.** Give them a login of their own in Jellyfin, never yours: open Jellyfin on the server, *Dashboard* → *Users* → **+**, and leave *administrator* off. At your home, they use the home address (`:8443`). From their own home, NekoServer opens nothing to the internet, so they need Tailscale too: in the Tailscale admin console (*Machines*), open this server's menu and choose **Share**, and send them the link; they install Tailscale with a free account of their own, accept it, and open the Jellyfin address ending in `:8443`. Sharing the server lets them reach its other addresses too (each still asks for a login, and the dashboard shows your server's state without one), so share it only with people you trust, or limit them to port 8443 with Tailscale's access rules. (Not tried in NekoServer's own tests yet.)
+
+**Someone else in the family.** Give each person a login of their own, never yours, so their photos and files stay theirs:
+
+- **Photos (Immich):** sign in to Immich with your login, open *Administration* → *Users* → **Create user**. On their phone, in the Immich app, they use the same address with their own login and switch on *Backup*. Their photos go into their own library, and the weekly backups copy every person's photos, theirs too.
+- **Files (Nextcloud):** your picture at the top right, then *Accounts* ([NEXTCLOUD.md](NEXTCLOUD.md)).
+- **Films (Jellyfin):** *Dashboard* → *Users* → **+**, with *administrator* off. For a child, open their user's *Parental control* and choose a *Maximum allowed parental rating*, and under *Access* leave out the libraries they should not see. With a Jellyfin login they can also sign in to Seerr and ask for films; what they ask for waits for you to approve it in Seerr (*Requests*). (Not tried in NekoServer's own tests yet.)
 
 **Renaming the server.** Its name is part of the app addresses (`https://NAME.tailXXXX.ts.net`). Change it in the Tailscale admin console (*Machines* → this server's menu → *Edit machine name*), then run `sudo bash install.sh` again: it gives the apps and the dashboard their addresses under the new name and makes a new phone setup page. Open the new addresses on each phone and computer (the old ones stop working; setup asks you to check the phone again). The home addresses (`https://192.168.1.20:8442`) stay the same.
 
@@ -227,13 +244,16 @@ What is copied, where, and when (times are in your `timezone`):
 | Nextcloud files | USB drive | Sundays |
 | App settings | HDD | Every night |
 | Steam saves and settings, Samba settings, any extra folders you list | HDD | Every night |
-| All app settings, databases and app versions, before updates | HDD | 1st of each month |
-| **Movies, shows and music** | **Not backed up** | |
+| All app settings, databases and app versions (the monthly snapshot) | HDD | 1st of each month |
+| The one app being updated, just before its update | HDD | On the update night (Wednesdays), only when a new version is installed |
+| Music, on servers with the music backup (the music on a drive of its own, a music folder of yours that setup backs up, or `"backup_enabled"` under `"music"`) | HDD | Every night |
+| **Movies and shows**, and music without the music backup | **Not backed up** | |
 
 - **Photos, videos and Nextcloud files are only ever added to the backup.** Nothing on it is overwritten or deleted. If you edit a file, the new version is saved next to the old one with a date in its name.
-- **Old snapshots are cleaned up automatically:** the newest 3 nightly (apps and settings; setup takes 1 to 7), 4 weekly Immich database copies and 3 monthly snapshots are kept. Only database copies that still match the checksum in their note count: a damaged copy, or one without its note, never pushes out a good older one. Change `keep_snapshots` and `database_keep` in `my-config.json` to change the weekly and monthly ones; the nightly count is chosen on setup's backups page.
-- **On the 1st of each month**, at night, the server takes a snapshot, tests that it can be restored, then updates the apps. If an update fails, it goes back to the snapshot automatically. New major versions are only shown on the dashboard until you approve them (see [Optional settings](#optional-settings)).
-- **Weekly copies only add what is new.** Photos already backed up are recognised without being read again, so a weekly run takes minutes, not hours, even for a big library. Any file rewritten or replaced since its copy is compared by content. Once a month, as the first step of the monthly run (before its backup and updates), every copy is compared by checksum.
+- **Old snapshots are cleaned up automatically:** the newest 3 nightly (apps and settings; setup takes 1 to 7), 4 weekly Immich database copies and 3 monthly snapshots are kept. Only database copies that still match the checksum in their note count (a checksum is a fingerprint of a file's content: it no longer matches when even one byte changed): a damaged copy, or one without its note, never pushes out a good older one. Change `keep_snapshots` and `database_keep` in `my-config.json` to change the weekly and monthly ones; the nightly count is chosen on setup's backups page.
+- **On the 1st of each month**, at night, the server checks every backup copy, takes a snapshot of every app and tests that it can be restored. It updates nothing.
+- **App updates come once a week**, on the update night (Wednesday unless you change `update_day`). A new version of an app first waits a week (`settle_days`); then that app alone is stopped, a snapshot of it is taken, and it is updated and checked. If the update fails, the app goes back to its snapshot automatically. New major versions are only shown on the dashboard until you approve them (see [Optional settings](#optional-settings) and [MONTHLY-MAINTENANCE.md](MONTHLY-MAINTENANCE.md)).
+- **Weekly copies only add what is new.** Photos already backed up are recognised without being read again, so a weekly run takes minutes, not hours, even for a big library. Any file rewritten or replaced since its copy is compared by content. Once a month, as the first step of the monthly check (before its snapshot), every copy is compared by checksum.
 - **An incomplete weekly copy is shown as one.** If some Nextcloud files could not be copied (open while copying, or names an exFAT USB drive cannot store, including two names that differ only in upper/lower case, such as `Documents` and `documents`, which exFAT treats as one), the dashboard and phone alerts say *Incomplete* and list them, instead of reporting success.
 
 **Getting something back.** Run `sudo bash install.sh --recover`. A menu asks what you want back (photos, Nextcloud files, the password list, app settings, or a whole monthly snapshot), lists the backups by date, and restores into a **new** folder, so nothing you have now is overwritten. It checks there is enough free space first, and waits if the weekly backup is using the USB drive. It ends by telling you how to put things back. More detail: [RECOVERY.md](RECOVERY.md).
@@ -279,6 +299,24 @@ A shortcut you changed or made yourself with the same name is never replaced. To
 
 `"auto"` means "the user who ran `sudo`", which is you. Only change it if a **different** account on the server should be the TV account; then type that account's username, e.g. `"user": "livingroom"`.
 
+### Other ways to run setup
+
+`sudo bash install.sh` with nothing after it is all most people ever need. The other options are for repairs and checks; the guides name them where they are needed. `bash install.sh --help` lists them too.
+
+| Command | What it does |
+| --- | --- |
+| `sudo bash install.sh` | The guided setup of everything (the same as `--wizard`). |
+| `sudo bash install.sh --recover` | The recovery menu: get things back from your backups ([Backups](#backups)). |
+| `sudo bash install.sh --finish-update` | Finishes a monthly update that an earlier release left unfinished. Setup says so when it is needed. |
+| `bash install.sh --check` | Only looks: checks that your settings file is valid and lists the steps. Nothing is changed, and no password is needed. |
+| `bash install.sh --dry-run` | Only looks: shows what a run would do. Nothing is changed. |
+| `sudo bash install.sh --module NAME --apply` | Runs one step (a module, such as `dashboard` or `notifications`) and the steps it needs. |
+| `sudo bash install.sh --profile NAME --apply` | Runs a named set of steps (a profile, such as `remote_access` for Tailscale and the phone). |
+| `sudo bash install.sh --all --apply` | Runs every step switched on in the settings, without the wizard's questions. |
+| `sudo bash install.sh --retry-failed --apply` | Runs again only the steps that failed or waited last time, and the steps they need. |
+
+`--apply` is what lets a run change anything: without it, `--module`, `--profile`, `--all` and `--retry-failed` only show what they would do. Add `--config FILE` to use a settings file other than `my-config.json` in this folder. `--state-dir FOLDER` moves setup's record of which steps are done; it is for tests and is rarely needed.
+
 ---
 
 ## Uninstalling
@@ -322,6 +360,14 @@ Good to know:
 | Word | Meaning |
 | --- | --- |
 | **Tailscale** | A free app that lets your devices reach your server from anywhere, privately. |
+| **SSD, HDD** | Two kinds of drive: an SSD is fast, an HDD (a hard disk) is slower and usually bigger. In these guides "the SSD" is the drive you chose for the apps and "the HDD" the one for the media and the backups, whatever kind they are. |
+| **Mount** | Connecting a drive to a folder, so its files show up there (`/srv/nekoserver` for the SSD). Setup does it for the drives you chose; "not mounted" means the drive is not connected to its folder. |
+| **UUID** | The ID a drive's filesystem carries. NekoServer remembers each drive by it, because Linux's short names (`sda1`) can change at a restart. You never have to type it. |
+| **Snapshot** | A copy of an app's settings and databases as they were at one moment, kept with its date, so they can be brought back as they were then. |
+| **Checksum** | A fingerprint of a file's content. A backup copy whose checksum no longer matches is damaged. |
+| **NAS** | A storage box on your home network that shares its drives with your computers. |
+| **Docker, container** | Docker is the program that runs the apps; each app runs in a "container", a closed box of its own with everything it needs. |
+| **Samba** | The program behind the shared folders other computers at home can open. |
 | **Module** | One part of the installer (for example `photos` or `dashboard`). |
 | **NEEDS SETUP** | A step needs something from you. The message says what. Fix it and run `sudo bash install.sh` again. |
 | **BLOCKED** | A step waits for another step that has not succeeded yet. |

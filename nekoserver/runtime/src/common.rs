@@ -42,16 +42,72 @@ impl From<std::io::Error> for Error {
         // operation failed: No space left on device (os error 28)" (deep check 217).
         if matches!(e.raw_os_error(), Some(libc::ENOSPC) | Some(libc::EDQUOT)) {
             return Self(format!(
-                "The drive it was writing to is full ({e}): make room on it, or move to a bigger drive"
+                "{DRIVE_FULL} ({e}): make room on it, or move to a bigger drive"
             ));
         }
         Self(format!("Filesystem or process operation failed: {e}"))
     }
 }
+/// How the error of a full drive begins (see From<std::io::Error>).
+const DRIVE_FULL: &str = "The drive it was writing to is full";
+/// Whether `e` says that the drive written to is full.
+pub fn drive_full(e: &Error) -> bool {
+    e.0.starts_with(DRIVE_FULL)
+}
 impl From<serde_json::Error> for Error {
-    fn from(_: serde_json::Error) -> Self {
-        Self::new("Invalid JSON")
+    // The parser's own reason is kept ("expected value at line 1 column 1"); what is read
+    // from a file goes through json_from or settings_json, which name the file too.
+    fn from(e: serde_json::Error) -> Self {
+        Self(format!("Invalid JSON ({e})"))
     }
+}
+/// An I/O error with the file or folder it was about. Without it a job failed with only
+/// "Filesystem or process operation failed: No such file or directory (os error 2)",
+/// and nobody could tell which file (deep check, D3).
+pub fn at(e: std::io::Error, path: &Path) -> Error {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        return Error(format!("{} is missing ({e})", path.display()));
+    }
+    Error(format!("{}, at {}", Error::from(e), path.display()))
+}
+/// The error of a program that could not be started, with its name: a program that is
+/// not installed gave the same "No such file or directory" as a missing file.
+pub fn not_started(e: std::io::Error, program: &str) -> Error {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        return Error(format!(
+            "The program {program} is not installed, so it could not be started ({e}). Run  sudo bash install.sh  again: it installs what NekoServer needs"
+        ));
+    }
+    Error(format!("The program {program} could not be started: {e}"))
+}
+/// What to do about a settings file of NekoServer's own that is missing or damaged.
+const WRITE_ANEW: &str = "Run  sudo bash install.sh  again: it writes the file anew";
+/// A settings file setup wrote is there (`whose`: "The heartbeat's"): its details, or
+/// that it is missing, by name, with what to do.
+pub fn settings_there(path: &Path, whose: &str) -> Result<fs::Metadata> {
+    fs::metadata(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => Error(format!(
+            "{whose} settings file {} is missing. {WRITE_ANEW}",
+            path.display()
+        )),
+        _ => at(e, path),
+    })
+}
+/// A settings file setup wrote, read whole; a missing or damaged one is named.
+pub fn settings_json(path: &Path, whose: &str, limit: usize) -> Result<Value> {
+    settings_there(path, whose)?;
+    serde_json::from_slice(&bytes(path, limit)?).map_err(|e| {
+        Error(format!(
+            "{whose} settings file {} is not valid JSON ({e}): it was changed by hand or is damaged. {WRITE_ANEW}",
+            path.display()
+        ))
+    })
+}
+/// The JSON a file holds, for a file that must hold it; one that does not is named
+/// (a bare "Invalid JSON" said neither which file nor what was wrong with it).
+pub fn json_from(path: &Path, limit: usize) -> Result<Value> {
+    serde_json::from_slice(&bytes(path, limit)?)
+        .map_err(|e| Error(format!("{} is not valid JSON ({e})", path.display())))
 }
 pub type Result<T> = std::result::Result<T, Error>;
 /// The most of a job's report (reports/jobs) that is read back. It is written to fit
@@ -139,6 +195,19 @@ pub fn on_drive(path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+impl DriveHold {
+    /// A job's result, said as the drive being gone when it failed after the held drive
+    /// went away: the check before each write catches most of it, but a drive unplugged
+    /// between that check and the write (or while a file was being read) left only the raw
+    /// error of that step (".neko-part is missing (No such file or directory)"), which
+    /// does not say the drive was disconnected (deep check 528).
+    pub fn unless_gone<T>(&self, result: Result<T>) -> Result<T> {
+        match result {
+            Err(e) => Err(on_drive(&self.0).err().unwrap_or(e)),
+            done => done,
+        }
+    }
 }
 pub fn now() -> f64 {
     SystemTime::now()
@@ -720,7 +789,10 @@ pub fn free_bytes(path: &Path) -> Result<u128> {
 }
 pub fn file(path: &Path) -> Result<File> {
     safe(path)?;
-    if !fs::symlink_metadata(path)?.is_file() {
+    if !fs::symlink_metadata(path)
+        .map_err(|e| at(e, path))?
+        .is_file()
+    {
         return Err(Error::new("Regular file required"));
     }
     let f = open_read_no_links(path)?;
@@ -767,7 +839,7 @@ fn open_read_no_links(path: &Path) -> Result<File> {
             "Symlink path refused: a part of {} became a link",
             path.display()
         ))),
-        _ => Err(err.into()),
+        _ => Err(at(err, path)),
     }
 }
 pub fn bytes(path: &Path, limit: usize) -> Result<Vec<u8>> {
@@ -955,18 +1027,105 @@ pub fn lock(path: &Path) -> Result<File> {
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(path)?;
-    if !f.metadata()?.is_file()
-        || unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0
-    {
-        return Err(Error::new(LOCK_BUSY));
+    if !f.metadata()?.is_file() {
+        // Not another job, and never waited for: something else is where the lock goes.
+        return Err(Error::new(&format!(
+            "{} is not an ordinary file, so it cannot be used as a job's lock: something else was put in its place",
+            path.display()
+        )));
+    }
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(Error::new(&format!(
+            "{LOCK_BUSY}: {} is at work, and only one of these jobs runs at a time. This one did not start; it runs at its next time, or start it again once the other has finished",
+            holder(path)
+        )));
     }
     Ok(f)
 }
-/// What `lock` says when another job holds the lock. Any other failure (the drive turned
-/// read-only, say) is no other job, and waiting hours for it helped nothing.
-const LOCK_BUSY: &str = "Job already running or unsafe lock";
+/// How `lock` begins what it says when another job holds the lock. Any other failure
+/// (the drive turned read-only, say) is no other job, and waiting hours for it helped
+/// nothing. It read "Job already running or unsafe lock" before, which told a beginner
+/// neither which job nor what to do (deep check, D4).
+const LOCK_BUSY: &str = "Another job is running";
 fn busy(e: &Error) -> bool {
-    e.to_string() == LOCK_BUSY
+    e.to_string().starts_with(LOCK_BUSY)
+}
+/// Who holds the lock at `path`, in words: the kernel names the process (/proc/locks)
+/// and its command line says which job it is. "another NekoServer job" when that cannot
+/// be told (a lock taken through an inherited descriptor, as setup's own is).
+fn holder(path: &Path) -> String {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(lock) = fs::metadata(path) else {
+        return ANOTHER_JOB.to_string();
+    };
+    let locks = fs::read_to_string("/proc/locks").unwrap_or_default();
+    lock_holders(&locks, lock.ino())
+        .into_iter()
+        .filter(|pid| holds_lock_on(*pid, lock.dev(), lock.ino()))
+        .find_map(|pid| {
+            let line = fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+            let words: Vec<String> = line
+                .split(|b| *b == 0)
+                .map(|w| String::from_utf8_lossy(w).into_owned())
+                .collect();
+            job_in_words(&words.iter().map(String::as_str).collect::<Vec<_>>())
+        })
+        .unwrap_or_else(|| ANOTHER_JOB.to_string())
+}
+const ANOTHER_JOB: &str = "another NekoServer job";
+/// A NekoServer job named in words from its command line (`nekoserver-runtime
+/// music-backup --config ...`, or one of setup's Python programs); None for any other
+/// program.
+fn job_in_words(command: &[&str]) -> Option<String> {
+    let name = |word: &str| word.rsplit('/').next().unwrap_or("").to_string();
+    if let Some(at) = command.iter().position(|w| name(w) == "nekoserver-runtime") {
+        let job = command.get(at + 1).copied().unwrap_or("");
+        return Some(match job {
+            "maintenance" | "maintenance-resume" => "the monthly update".to_string(),
+            "update-apps" => "an app update".to_string(),
+            "update-check" => "the daily look for new app versions".to_string(),
+            "preservation" => "the nightly photo backup".to_string(),
+            "weekly" => "the weekly USB copy".to_string(),
+            "music-backup" => "the music backup".to_string(),
+            "app-snapshot" | "app-resume" => "the app backup".to_string(),
+            "host-snapshot" | "host-resume" => "the system backup".to_string(),
+            "drive-return" => "the start of the apps after a drive came back".to_string(),
+            "" => ANOTHER_JOB.to_string(),
+            other => format!("{ANOTHER_JOB} ({other})"),
+        });
+    }
+    // Setup and the tools it starts: python3 /path/recover.py ...
+    command
+        .iter()
+        .map(|word| name(word))
+        .find(|word| word.ends_with(".py"))
+        .map(|script| format!("NekoServer's {script} (setup, an upgrade or the recovery menu)"))
+}
+/// What a job says once when it starts to wait for the lock at `path`.
+fn waiting_line(who: &str, max: Duration) -> String {
+    format!(
+        "Waiting for {who} to finish: only one of these jobs runs at a time. This one starts by itself as soon as the other is done (it waits up to {})",
+        plural(max.as_secs().div_ceil(60), "minute", "minutes")
+    )
+}
+/// Whether `e` says that a job waited its whole time for another job's lock.
+pub fn waited_out(e: &Error) -> bool {
+    e.to_string().contains(WAITED_OUT)
+}
+const WAITED_OUT: &str = "was still running after";
+/// What a job fails with when the other job was still at work after `max`.
+fn still_held(path: &Path, max: Duration) -> Error {
+    let who = holder(path);
+    let mut who = who.chars();
+    let who = who
+        .next()
+        .map(|first| first.to_uppercase().chain(who).collect::<String>())
+        .unwrap_or_default();
+    Error::new(&format!(
+        "{who} {WAITED_OUT} {}, so this job did not start (the other one holds {}). It runs at its next time; if the other job never ends, restart the PC",
+        plural(max.as_secs() / 60, "minute", "minutes"),
+        path.display()
+    ))
 }
 /// Shared recovery lock for scheduled jobs: wait for a job that is already running
 /// (polling every 5 s, up to `max`) instead of failing. Scheduled backups and the
@@ -978,16 +1137,12 @@ pub fn lock_wait(path: &Path, max: Duration) -> Result<File> {
         match lock(path) {
             Ok(f) => return Ok(f),
             Err(e) if !busy(&e) => return Err(e),
-            Err(e) => {
+            Err(_) => {
                 if start.elapsed() >= max {
-                    return Err(Error::new(&format!(
-                        "Another NekoServer job still held {} after {}",
-                        path.display(),
-                        plural(max.as_secs() / 60, "minute", "minutes")
-                    )));
+                    return Err(still_held(path, max));
                 }
                 if !announced {
-                    println!("Waiting for another NekoServer job to finish ({e})");
+                    println!("{}", waiting_line(&holder(path), max));
                     announced = true;
                 }
                 thread::sleep(Duration::from_secs(5).min(max));
@@ -1033,7 +1188,7 @@ fn shared_lock_wait_with(
         match lock(path) {
             Ok(f) => return Ok(f),
             Err(e) if !busy(&e) => return Err(e),
-            Err(e) => {
+            Err(_) => {
                 let setup = held_by(path, setup_lock);
                 let limit = if setup { while_setup.min(max) } else { max };
                 if start.elapsed() >= limit {
@@ -1042,22 +1197,16 @@ fn shared_lock_wait_with(
                             "{POSTPONED} (sudo bash install.sh holds the backups' lock, perhaps waiting at a question); this run did not fail and runs again at its next time"
                         ))
                     } else {
-                        Error::new(&format!(
-                            "Another NekoServer job still held {} after {}",
-                            path.display(),
-                            plural(max.as_secs() / 60, "minute", "minutes")
-                        ))
+                        still_held(path, max)
                     });
                 }
                 if !announced {
-                    println!(
-                        "Waiting for {} to finish ({e})",
-                        if setup {
-                            "setup (sudo bash install.sh)"
-                        } else {
-                            "another NekoServer job"
-                        }
-                    );
+                    let who = if setup {
+                        "setup (sudo bash install.sh)".to_string()
+                    } else {
+                        holder(path)
+                    };
+                    println!("{}", waiting_line(&who, limit));
                     announced = true;
                 }
                 thread::sleep(Duration::from_secs(5).min(limit));
@@ -1256,7 +1405,7 @@ pub fn command(args: &[&str], timeout: u64) -> Result<(i32, String)> {
             Ok(())
         });
     }
-    let mut child = cmd.spawn()?;
+    let mut child = cmd.spawn().map_err(|e| not_started(e, args[0]))?;
     let pid = child.id() as i32;
     let stdout = child
         .stdout
@@ -2104,6 +2253,40 @@ mod lock_tests {
         directory(&root.join("gone/backups"), 0o755).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
+    /// Deep check 528, on loop drives: a USB drive unplugged between the check before a
+    /// write and the write failed the weekly copy with ".neko-part is missing (No such
+    /// file or directory)", not saying the drive was gone.
+    #[test]
+    fn a_step_that_fails_after_the_drive_went_away_says_the_drive_is_gone() {
+        use std::os::unix::fs::MetadataExt;
+        let root = scratch("drive-gone-said");
+        let dev = fs::metadata(&root).unwrap().dev();
+        let raw = || -> Result<()> {
+            Err(Error::new(
+                "x.neko-part is missing (No such file or directory (os error 2))",
+            ))
+        };
+        {
+            // The drive is still there: the step's own error is said.
+            let held = expect_device(&root, dev).unwrap();
+            assert!(held
+                .unless_gone(raw())
+                .unwrap_err()
+                .to_string()
+                .contains("neko-part"));
+            assert!(held.unless_gone(Ok(7)).is_ok());
+        }
+        {
+            // Gone meanwhile: that is what is said.
+            let held = expect_device(&root, dev + 1).unwrap();
+            let said = held.unless_gone(raw()).unwrap_err().to_string();
+            assert!(
+                said.contains("is gone (disconnected, or it failed)"),
+                "{said}"
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn the_first_error_stays_first() {
         let first: Result<()> = Err(Error::new("Copy failed: No space left on device"));
@@ -2229,6 +2412,167 @@ mod lock_tests {
         assert_eq!(mount_in_effect(0, "\n"), None);
     }
 
+    /// D3: the music backup, the heartbeat and the notifications failed with only
+    /// "Filesystem or process operation failed: No such file or directory (os error 2)",
+    /// and a damaged file with a bare "Invalid JSON": which file, nobody could tell.
+    #[test]
+    fn a_missing_or_damaged_file_and_a_missing_program_are_named() {
+        let root = scratch("named-files");
+        let gone = root.join("heartbeat.json");
+        let shown = gone.display().to_string();
+        for said in [
+            file(&gone).unwrap_err().to_string(),
+            bytes(&gone, 100).unwrap_err().to_string(),
+            digest(&gone).unwrap_err().to_string(),
+            json_from(&gone, 100).unwrap_err().to_string(),
+        ] {
+            assert!(
+                said.contains(&shown) && said.contains("is missing"),
+                "{said}"
+            );
+            assert!(!said.starts_with("Filesystem or process"), "{said}");
+        }
+        let said = settings_json(&gone, "The heartbeat's", 100)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            said.starts_with(&format!(
+                "The heartbeat's settings file {shown} is missing."
+            )),
+            "{said}"
+        );
+        assert!(said.contains("sudo bash install.sh"), "{said}");
+        // Damaged: the file and the parser's reason, not a bare "Invalid JSON".
+        fs::write(&gone, b"{\"endpoint\": ").unwrap();
+        for said in [
+            settings_json(&gone, "The heartbeat's", 100)
+                .unwrap_err()
+                .to_string(),
+            json_from(&gone, 100).unwrap_err().to_string(),
+        ] {
+            assert!(
+                said.contains(&shown) && said.contains("is not valid JSON ("),
+                "{said}"
+            );
+            assert!(said.contains("line 1"), "{said}");
+        }
+        fs::write(&gone, b"{}").unwrap();
+        assert!(settings_json(&gone, "The heartbeat's", 100).is_ok());
+        // Any other error keeps its reason and gets the path.
+        let other = at(std::io::Error::from_raw_os_error(libc::EACCES), &gone).to_string();
+        assert!(
+            other.contains("Permission denied") && other.ends_with(&shown),
+            "{other}"
+        );
+        // A program that is not installed is named, with what to do.
+        let said = command(&["neko-no-such-program", "x"], 5)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            said.contains("neko-no-such-program is not installed")
+                && said.contains("sudo bash install.sh"),
+            "{said}"
+        );
+        // JSON that came from no file keeps the parser's reason.
+        let bare = Error::from(serde_json::from_str::<Value>("{").unwrap_err()).to_string();
+        assert!(
+            bare.starts_with("Invalid JSON (") && bare.contains("line 1"),
+            "{bare}"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+    /// D4: a job that found the lock taken said "Job already running or unsafe lock",
+    /// also in its "Waiting for another NekoServer job to finish (...)" line. It now says
+    /// which job is at work (when the kernel can tell), that only one runs at a time,
+    /// and what happens next.
+    #[test]
+    fn a_taken_lock_is_said_in_words_with_the_job_that_holds_it() {
+        let root = scratch("lock-words");
+        let path = root.join("recovery.lock");
+        let held = lock(&path).unwrap();
+        let said = lock(&path).unwrap_err().to_string();
+        assert!(busy(&Error::new(&said)), "{said}");
+        assert!(!said.contains("unsafe lock"), "{said}");
+        assert!(
+            said.contains("only one of these jobs runs at a time"),
+            "{said}"
+        );
+        assert!(said.contains("did not start"), "{said}");
+        // Waited out: who, how long, and what to do.
+        let late = lock_wait(&path, Duration::from_millis(20))
+            .unwrap_err()
+            .to_string();
+        assert!(late.contains("was still running after 0 minutes"), "{late}");
+        assert!(late.contains(&path.display().to_string()), "{late}");
+        assert!(late.contains("runs at its next time"), "{late}");
+        let line = waiting_line("the monthly update", Duration::from_secs(3 * 3600));
+        assert!(
+            line.starts_with("Waiting for the monthly update to finish"),
+            "{line}"
+        );
+        assert!(line.contains("up to 180 minutes"), "{line}");
+        drop(held);
+        // The holder's command line says which job it is.
+        let job = |words: &[&str]| job_in_words(words);
+        let runtime = "/opt/nekoserver/runtime/bin/nekoserver-runtime";
+        assert_eq!(
+            job(&[runtime, "maintenance", "--config", "x"]).unwrap(),
+            "the monthly update"
+        );
+        assert_eq!(job(&[runtime, "music-backup"]).unwrap(), "the music backup");
+        assert_eq!(job(&[runtime, "weekly"]).unwrap(), "the weekly USB copy");
+        assert!(job(&["python3", "/opt/nekoserver/recover.py"])
+            .unwrap()
+            .contains("recover.py"));
+        assert_eq!(job(&["sleep", "30"]), None);
+        assert_eq!(job(&[runtime]).unwrap(), "another NekoServer job");
+        assert_eq!(
+            job(&[runtime, "notify"]).unwrap(),
+            "another NekoServer job (notify)"
+        );
+        // A real holder: another process with a job's command line holds the lock.
+        // (python3 holds it itself: a lock taken by the flock command is listed under
+        // that command, which is gone at once.)
+        let mut child = Command::new("python3")
+            .args([
+                "-c",
+                "import fcntl, sys
+f = open(sys.argv[1], 'a')
+fcntl.flock(f, fcntl.LOCK_EX)
+print('held', flush=True)
+sys.stdin.read()",
+            ])
+            .arg(&path)
+            .args(["/opt/nekoserver/runtime/bin/nekoserver-runtime", "weekly"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut ready = [0u8; 5];
+        child
+            .stdout
+            .as_mut()
+            .unwrap()
+            .read_exact(&mut ready)
+            .unwrap();
+        let named = holder(&path);
+        let waited = lock_wait(&path, Duration::from_millis(20))
+            .unwrap_err()
+            .to_string();
+        drop(child.stdin.take());
+        child.wait().unwrap();
+        assert_eq!(named, "the weekly USB copy");
+        assert!(
+            waited.starts_with("The weekly USB copy was still running"),
+            "{waited}"
+        );
+        // Something else in the lock's place is said as that, and not waited for.
+        let folder = root.join("folder.lock");
+        fs::create_dir(&folder).unwrap();
+        let odd = lock_wait(&folder, Duration::from_secs(60)).unwrap_err();
+        assert!(!busy(&odd), "{odd}");
+        let _ = fs::remove_dir_all(root);
+    }
     #[test]
     fn scheduled_jobs_wait_for_the_lock_then_proceed() {
         let path = std::env::temp_dir().join(format!("neko-lock-{}", std::process::id()));
@@ -2286,7 +2630,7 @@ mod lock_tests {
         fs::write(&setup, b"").unwrap();
         let other = shared_lock_wait_with(&shared, &setup, short, short).unwrap_err();
         assert!(
-            !postponed(&other) && other.to_string().contains("still held"),
+            !postponed(&other) && other.to_string().contains("was still running after"),
             "{other}"
         );
         // Setup holds it (the holder has setup's own lock open, as install.sh's programs do).
@@ -2369,7 +2713,8 @@ mod lock_tests {
             shared_lock_wait_with(&path, &root.join("setup.lock"), long, long),
         ] {
             let said = result.unwrap_err().to_string();
-            assert!(!said.contains("Another NekoServer job"), "{said}");
+            assert!(!busy(&Error::new(&said)), "{said}");
+            assert!(!said.contains("was still running"), "{said}");
         }
         assert!(start.elapsed() < Duration::from_secs(5));
         let _ = fs::remove_dir_all(&root);

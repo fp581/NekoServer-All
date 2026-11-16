@@ -120,7 +120,9 @@ class UpgradeTests(unittest.TestCase):
             self.assertEqual((config['app_backup']['keep_snapshots'], config['host_backup']['keep_snapshots']), (14, 0))
             self.assertNotIn(backup_plan.REVIEWED, config)  # still to be asked
             self.assertIn('Backups: the newest 14 nightly app backups stay kept, as before', lines[0])
-            self.assertIn('every one of the nightly settings backups (none is ever removed) stay kept', lines[1])
+            self.assertIn(
+                'every one of the nightly settings backups (none is removed to keep to a number) stay kept', lines[1]
+            )
             self.assertIn('nothing was removed', lines[0])
         # The settings both jobs run with are valid meanwhile, and say the count is the earlier one.
         self.assertEqual(app_backup.keep_snapshots(config), 14)
@@ -145,11 +147,19 @@ class UpgradeTests(unittest.TestCase):
             asked[0],
             'This server keeps the newest 14 nightly app backups. New servers keep 3, and the most that can be '
             'chosen from now on is 7. There are 14 now. If you change it to 3, the 11 oldest are removed, but only '
-            'after the next backup that succeeds. Nothing is removed now, a backup that fails removes nothing, and '
-            'the newest backup always stays. Your photos, videos, films and music are not touched by this number.'
+            'after the next backup that succeeds. Nothing is removed now, and the newest backup always stays. A '
+            'backup that fails removes nothing, with one exception: when the HDD is too full for the next backup, '
+            'the oldest ones are removed first to make room (never the newest, and none when that would not make '
+            'enough room). Your photos, videos, films and music are not touched by this number.'
             '\nKeep the newest 3 nightly app backups from now on?',
         )
-        self.assertIn('are removed after the next backup that succeeds, none before', lines[0])
+        # The settings backups make no room: they are not told of an exception they do not have.
+        self.assertIn('A backup that fails removes nothing. Your photos', asked[1])
+        self.assertIn(
+            'not the newest 14 nightly app backups. An older one is removed only after a new backup has succeeded, '
+            'with one exception: when the HDD is too full',
+            lines[0],
+        )
         self.assertIn('the newest 30 nightly settings backups stay kept, as before', lines[1])
         # Not asked again: the 30 that was kept goes on working, and the page shows it.
         again = installer.review_backup_counts(config, lambda question: self.fail('asked again'))
@@ -208,8 +218,46 @@ class ReviewTests(unittest.TestCase):
         config = older(app=0)
         backup_plan.note_earlier(config)
         said = backup_plan.review(config, 'app_backup', 3, held=40)
-        self.assertIn('This server keeps every one of the nightly app backups (none is ever removed).', said)
+        # Deep check 411: "(none is ever removed)" was said of app backups, which a full HDD
+        # removes to make room, whatever the count.
+        self.assertIn(
+            'This server keeps every one of the nightly app backups (none is removed to keep to a number; only a '
+            'full HDD removes the oldest, to make room).',
+            said,
+        )
         self.assertIn('the 37 oldest are removed', said)
+        self.assertNotIn('ever removed', said)
+        row = backup_plan.table(config)[0]
+        self.assertEqual((row['key'], row['kept']), ('app_backup', said.split('keeps ')[1].split('. New')[0]))
+
+    def test_the_rule_names_its_exception_wherever_it_is_said(self):
+        """Deep check 411: after the review of 0.51.2 only the review of a lower count named
+        the full HDD; the backups page (window and terminal), the line after a new count and
+        the step's log still said an older app backup goes "only after a new backup has
+        succeeded". One sentence now, for the kind it is true of."""
+        import guided_setup
+        import setup_progress
+
+        config = template()
+        app, host = (backup_plan.count_field(config, group) for group in ('app_backup', 'host_backup'))
+        exception = (
+            'with one exception: when the HDD is too full for the next backup, the oldest ones are removed first'
+        )
+        self.assertIn(exception, app['rule'])
+        self.assertEqual(host['rule'], 'An older one is removed only after a new backup has succeeded.')
+        said = []
+        with setup_progress.page('backup_times', {}):
+            guided_setup.ask_backup_counts([app, host], lambda question='': '', said.append)
+        self.assertIn(app['rule'], said[0])
+        self.assertIn(host['rule'], said[1])
+        self.assertNotIn('exception', said[1])
+        for keep in (0, 3):
+            self.assertIn('One exception: when the HDD is too full', app_backup.retention(keep))
+        self.assertNotIn('automatically', app_backup.retention(0))
+        # The window shows the same sentence, not words of its own.
+        window = (ROOT / 'setup-gui/setup.js').read_text(encoding='utf-8')
+        self.assertIn('count.rule', window)
+        self.assertNotIn('removed only after', window)
 
     def test_a_change_inside_one_to_seven_is_reviewed_the_same_way(self):
         config = template()
@@ -314,10 +362,11 @@ class TableTests(unittest.TestCase):
         self.assertEqual([key for key, row in rows.items() if row['group']], list(COUNTED))
         for key in ('photo_archive', 'offline'):
             self.assertIsNone(rows[key]['field'])
-            self.assertEqual(
-                rows[key]['kept'], 'everything, in every version; nothing is ever removed to keep to a number'
-            )
+            self.assertIn('in every version', rows[key]['kept'])
             self.assertIsNone(rows[key]['covers_days'])
+        self.assertEqual(
+            rows['photo_archive']['kept'], 'everything, in every version; nothing is ever removed to keep to a number'
+        )
         for key in ('photo_database', 'monthly'):
             self.assertIsNone(rows[key]['field'])
             self.assertIn('the 1-to-7 number does not apply to it', rows[key]['note'])
@@ -348,6 +397,21 @@ class TableTests(unittest.TestCase):
         self.assertEqual((rows['offline']['drive'], rows['offline']['when']), ('usb', 'every week, Sunday at 03:00'))
         self.assertIsNone(rows['offline']['note'])
         self.assertIn('your photos and videos', rows['offline']['what'])
+        # Deep check 418: the row names the password lists, of which the weekly copy keeps
+        # the newest 3 (and 4 database copies); it said "nothing is ever removed" of it all.
+        self.assertIn('the app password lists', rows['offline']['what'])
+        self.assertEqual(
+            rows['offline']['kept'],
+            'every photo and file, in every version (none is ever removed); of the password lists the newest 3, '
+            'of the database copies the newest 4',
+        )
+        runtime = (ROOT / 'runtime/src/backup.rs').read_text(encoding='utf-8')
+        for what in backup_plan.USB_KEEPS:
+            if not what.startswith('_'):
+                self.assertIn(f'usb_keeps("{what}")', runtime)  # the job keeps to the same numbers
+        import explanations
+
+        self.assertNotIn('nothing is ever deleted', explanations.STEP_EXPLANATIONS['photo_backup'])
         # The backups go to the media drive; the apps are on the SSD: not the same drive.
         self.assertFalse(rows['app_backup']['same_drive'])
         self.assertFalse(rows['photo_archive']['same_drive'])

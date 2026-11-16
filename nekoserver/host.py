@@ -29,7 +29,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 import setup_progress
-from neko_common import atomic_write
+from neko_common import atomic_write, stop_on_hangup
 
 OS_RELEASE = '/etc/os-release'
 # Every system package the apps need outside their containers, by NekoServer's names.
@@ -1159,6 +1159,13 @@ class Debian(PackageLock, Family):
     )
     # Debian's own container packages that would conflict with Docker's.
     conflicts = ('docker.io', 'docker-compose', 'docker-doc', 'podman-docker', 'containerd', 'runc')
+    # A package a newer release folded into another, which only "Provides" the old name:
+    # Mesa 25.2.8-3 and later (Ubuntu 26.04) put the VA drivers in mesa-libgallium.
+    # dpkg-query and apt-cache policy know only real packages, so the old name looked
+    # "not offered" and AMD's video driver was never installed. The new one is asked for
+    # only where the release has no package of the old name (Ubuntu 24.04, Debian 12
+    # and 13 still do).
+    folded = MappingProxyType({'mesa-va-drivers': 'mesa-libgallium'})
 
     def __init__(self, run=run_command, release=None, fetch=_fetch):
         super().__init__(run, release)
@@ -1266,11 +1273,23 @@ class Debian(PackageLock, Family):
         if not self.ready():
             return False
         self.refresh()
-        for name in self.names(wanted):
-            policy = self._call(['apt-cache', 'policy', name], 60).stdout
-            if 'Candidate:' not in policy or 'Candidate: (none)' in policy:
-                return False
-        return True
+        return all(self.offered(name) for name in self.names(wanted))
+
+    def offered(self, name):
+        """apt has a version of this very package to install."""
+        policy = self._call(['apt-cache', 'policy', name], 60).stdout or ''
+        return 'Candidate:' in policy and 'Candidate: (none)' not in policy
+
+    def names(self, wanted):
+        return [self.unfolded(name) for name in super().names(wanted)]
+
+    def unfolded(self, name):
+        """The package to ask for: the one a folded package went into (`folded`), when
+        this release has no package of the old name (installed or offered)."""
+        into = self.folded.get(name)
+        if into is None or not self.ready() or self.has(name) or self.offered(name):
+            return name
+        return into
 
     def sources(self, address):
         """Every apt source file that already uses this repository address (one-line
@@ -2189,7 +2208,7 @@ def main(argv):
     if len(argv) != 1 or argv[0] not in commands:
         print('usage: python3 host.py bootstrap|repair|toolchain', file=sys.stderr)
         return 2
-    before = _stop_on_hangup()
+    before = stop_on_hangup()
     try:
         commands[argv[0]]()
     except KeyboardInterrupt:
@@ -2232,25 +2251,6 @@ def stopped(message, note=None):
             return
         with os.fdopen(handle, 'w', encoding='utf-8') as stream:
             stream.write(message + '\n')
-
-
-HANGUPS = (signal.SIGHUP, signal.SIGTERM)
-
-
-def _stop_on_hangup():
-    """A closed terminal or SSH connection (SIGHUP), or the system shutting down
-    (SIGTERM), stops host.py as Ctrl+C does, so the cleanup in its finally blocks still
-    runs: start protection (policy-rc.d, the masks) lifted once nothing is left to tidy.
-    Only the first one: a second does not cut that cleanup short. Returns the handlers
-    there were before."""
-    stopping = []
-
-    def stop(number, frame):
-        if not stopping:
-            stopping.append(number)
-            raise KeyboardInterrupt
-
-    return {number: signal.signal(number, stop) for number in HANGUPS}
 
 
 if __name__ == '__main__':

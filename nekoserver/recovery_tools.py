@@ -1181,6 +1181,28 @@ def port_in_use(config, port, run=subprocess.run):
     )
 
 
+SEARCH_PATH_EMPTY = b"SELECT pg_catalog.set_config('search_path', '', false);"
+SEARCH_PATH_PUBLIC = b"SELECT pg_catalog.set_config('search_path', 'public, pg_catalog', true);"
+
+
+def staged_sql(lines):
+    """The lines of a database dump for the restore rehearsal: pg_dump's own statement that
+    empties the search path is swapped for one that keeps "public", and nothing else is
+    touched. Only that statement as a whole line of the dump's own SQL is swapped, never the
+    same text inside the saved rows (review of 0.51.2: it was replaced anywhere in the
+    dump, so an album description holding it was changed in the rehearsal's copy)."""
+    in_rows = False  # between "COPY ... FROM stdin;" and "\.": the rows of a table
+    for line in lines:
+        bare = line.rstrip(b'\r\n')
+        if in_rows:
+            in_rows = bare != b'\\.'
+        elif bare.startswith(b'COPY ') and bare.endswith(b' FROM stdin;'):
+            in_rows = True
+        elif bare == SEARCH_PATH_EMPTY:
+            line = SEARCH_PATH_PUBLIC + line[len(bare) :]
+        yield line
+
+
 def restore_test(config, snapshot_path, workspace, port=2284, apply=False, confirm=''):
     mounts(config)
     snapshot_path = safe_path(snapshot_path)
@@ -1245,10 +1267,8 @@ def restore_test(config, snapshot_path, workspace, port=2284, apply=False, confi
                 raise RuntimeError('Snapshot SQL changed after verification')
             with (snapshot_path / 'database.sql').open('rb') as inp, sql.open('xb') as out:
                 os.fchmod(out.fileno(), 0o600)
-                old = b"SELECT pg_catalog.set_config('search_path', '', false);"
-                new = b"SELECT pg_catalog.set_config('search_path', 'public, pg_catalog', true);"
-                for line in inp:
-                    out.write(line.replace(old, new))
+                for line in staged_sql(inp):
+                    out.write(line)
                 out.flush()
                 os.fsync(out.fileno())
             if digest(snapshot_path / 'database.sql') != meta['sha256']['database.sql']:

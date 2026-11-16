@@ -79,9 +79,27 @@ def checked_env(env, upload, db):
     required = ('UPLOAD_LOCATION=' + str(upload), 'DB_DATA_LOCATION=' + str(db))
     if any(r not in content.splitlines() for r in required):
         raise RuntimeError(
-            'Existing Immich paths differ; refusing overwrite. Follow STORAGE.md for a verified migration before applying this layout'
+            'Existing Immich paths differ: Immich on this server keeps its photos or its database in other folders than '
+            f'these settings name (see {env}), so setup changes nothing rather than start Immich on an empty folder. '
+            'To move them, follow STORAGE.md, "Where each app keeps your files" (stop the apps, copy the folder, '
+            'then change the setting), and run setup again'
         )
     return content
+
+
+def follow_timezone(env, content, zone, log):
+    """Immich's time zone (TZ in its .env, which its containers are started with) brought
+    to the one the rest of the server uses now. It was written once, at the first setup:
+    after this PC's zone was set right (or "timezone" changed in the settings) the media
+    apps and every schedule followed, and Immich kept the old one, which it uses for the
+    time of photos that carry none of their own. Only that line is changed; the next
+    start (compose up) gives it to the containers. True when it changed."""
+    if env_value(content, 'TZ') == zone:
+        return False
+    lines = [line for line in content.splitlines() if not line.startswith('TZ=')]
+    atomic_write(env, '\n'.join([*lines, 'TZ=' + zone]) + '\n', 0o600)
+    log(f'Immich: its time zone is now {zone}, as the rest of the server (it was set when Immich was first set up)')
+    return True
 
 
 def localize_manifest(content):
@@ -290,7 +308,7 @@ def _run(ctx):
         # Written last: a compose.yaml means this step finished writing its settings.
         atomic_write(compose, text, 0o640)
     else:
-        checked_env(env, upload, db)
+        follow_timezone(env, checked_env(env, upload, db), host_timezone(cfg), ctx.log)
     ensure_directory(db, 0o700)
     for target in (upload, archive, inbox):
         ensure_directory(target, 0o755)

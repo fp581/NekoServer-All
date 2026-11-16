@@ -5,11 +5,17 @@
 If a supported API cannot finish an account, guided setup now opens its UI, repeats instructions on no, and retries authenticated checks on yes. Normal local email-shaped logins do not imply external email verification. See GUIDED-SETUP.md.
 
 
-The full installer now collects and applies local app credentials. It asks in the terminal before deploying applications:
+Setup makes an account in every app for you. It asks once how, in the terminal and in the setup window, before it installs the apps:
 
 ```text
-Logins for the apps: 1 = NekoServer makes a strong username and password for each app (recommended; you can see them later), 2 = you choose them app by app. Type 1 or 2:
+How would you like to set up your app accounts?
+Each selected app has a separate account. NekoServer stores its required credentials privately so it can connect and check the apps.
+  1) Create strong passwords for me (recommended)
+  2) Choose my own logins
+Type 1 or 2, then press Enter. Enter alone takes the first.
 ```
+
+With 1 you never type or remember a password: "To see one app's login", below, shows any of them later.
 
 With option 2, each app asks whether to generate its login or enter it yourself. Custom passwords are typed with hidden input and confirmed a second time. New passwords must be 12-128 characters with no control characters. Usernames use letters, digits, underscores or hyphens and begin with a letter. Immich and Seerr require an email-shaped login instead of a conventional username.
 
@@ -46,7 +52,7 @@ The text file has a heading for each app/account, its local URL, setup status, u
 **To see one app's login** (to type it on a phone, say), show it on the screen, one app at a time, with a QR code of the password to scan:
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.51.2/account-setup.py show
+sudo python3 /srv/nekoserver/installer/releases/v0.51.3/account-setup.py show
 ```
 
 It lists the saved logins: type a number to show one, Enter to hide it again (the screen is cleared). `show jellyfin` (or `immich`, `seerr`, `nextcloud`, `navidrome`…) goes straight to one; for Navidrome's two logins it says which one is yours. It runs only with sudo and only in a terminal: it refuses to print into a file or another program, so a password never lands in a log. The QR code is drawn by `qrencode`, which gets the password on its input, not its command line (other accounts can read command lines).

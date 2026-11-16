@@ -21,9 +21,26 @@ fn docker(args: &[&str]) -> Result<String> {
     command.extend_from_slice(args);
     let (code, output) = common::command(&command, 120)?;
     if code != 0 {
-        return Err(Error::new("Application Docker operation failed"));
+        return Err(Error::new(&docker_failed(&common::last_stderr())));
     }
     Ok(output)
+}
+/// Why a Docker command of the backup failed, from what Docker said (`said`, its error
+/// output). The card said only "Application Docker operation failed" after a night with
+/// Docker stopped, with nothing to go on (deep check 613).
+fn docker_failed(said: &str) -> String {
+    if said.contains("Cannot connect to the Docker daemon") {
+        return "Docker, which runs the apps, was not running, so the apps' settings were not copied. Start it:  sudo systemctl start docker  (or restart the PC); the next night's backup copies them".to_string();
+    }
+    let said = said.trim().lines().last().unwrap_or("").trim();
+    if said.is_empty() {
+        "Application Docker operation failed".to_string()
+    } else {
+        format!(
+            "Application Docker operation failed: {}",
+            common::sanitize(said)
+        )
+    }
 }
 fn inspect(id: &str) -> Result<Value> {
     if id.len() != 64 || !id.bytes().all(|c| c.is_ascii_hexdigit()) {
@@ -46,7 +63,7 @@ fn resume() -> Result<()> {
     if !path.exists() {
         return Ok(());
     }
-    let v: Value = serde_json::from_slice(&common::bytes(path, 64000)?)?;
+    let v = common::json_from(path, 64000)?;
     if v["format"] != "neko-app-resume-v1" {
         return Err(Error::new("Invalid resume journal"));
     }
@@ -478,12 +495,12 @@ fn current_checkpoint(saved: &Value, version: &str, root: &str) -> Option<Value>
 /// Space kept free on the HDD after a nightly app backup (2 GB, as the settings backup
 /// keeps by default): the HDD also holds the media library and the other backups.
 const RESERVE: u128 = 2 << 30;
-/// The nightly app backup's message when the HDD is too full even after older app
-/// backups were removed (the newest is always kept).
+/// The nightly app backup's message when the HDD is too full: what is free and what is
+/// needed. `backup::make_room` adds what became of the older app backups.
 fn short_of_space(media: &Path, have: u128, needed: u128) -> String {
     let gb = |b: u128| format!("{:.1}", b as f64 / (1u64 << 30) as f64);
     format!(
-        "Not enough space on the HDD ({}) for the nightly app backup: {} GB free, about {} GB needed (the app files plus 2 GB kept free), even after removing older app backups (the newest one is always kept). Free up space there",
+        "Not enough space on the HDD ({}) for the nightly app backup: {} GB free, about {} GB needed (the app files plus 2 GB kept free)",
         media.display(),
         gb(have),
         gb(needed)
@@ -519,6 +536,26 @@ fn library_drives(cfgpath: &Path, data: &Path, media: &Path) -> Vec<PathBuf> {
         }
     }
     drives
+}
+/// What a backup that was made still has to report: a count of backups to keep that was
+/// refused (`refused`), and older backups removed early for room (`short`, from
+/// `backup::short_history`). Both when both happened: the refused count alone said "no
+/// older backup was removed" on a night that had removed some for room.
+fn done_in_part(refused: Option<String>, short: Option<Value>) -> Option<Value> {
+    let mut notes = vec![];
+    if let Some(why) = refused {
+        println!("Application backup: {why}");
+        notes.push(json!(why));
+    }
+    notes.extend(
+        short
+            .as_ref()
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .cloned(),
+    );
+    (!notes.is_empty()).then(|| json!(notes))
 }
 fn snapshot(
     cfgpath: &Path,
@@ -647,51 +684,52 @@ fn snapshot(
             + RESERVE;
         let removed =
             backup::make_room(&root, needed, &|have| short_of_space(media, have, needed))?;
-        let stage = backup::stage_snapshot(&root)?;
-        let payload = &stage.payload;
-        for row in &mut files {
-            let rel = PathBuf::from(row["path"].as_str().unwrap());
-            let target = payload.join(&rel);
-            if row["kind"] == "directory" {
-                common::directory(&target, 0o700)?;
-            } else {
-                common::directory(target.parent().unwrap(), 0o700)?;
-                row["sha256"] = json!(copy_file(&data.join(&rel), &target)?);
+        // From here a failure comes after older snapshots may have been removed for room:
+        // it says so (`failed_after_room`), not only why it failed.
+        let made = (|| -> Result<(u64, Option<String>)> {
+            let stage = backup::stage_snapshot(&root)?;
+            let payload = &stage.payload;
+            for row in &mut files {
+                let rel = PathBuf::from(row["path"].as_str().unwrap());
+                let target = payload.join(&rel);
+                if row["kind"] == "directory" {
+                    common::directory(&target, 0o700)?;
+                } else {
+                    common::directory(target.parent().unwrap(), 0o700)?;
+                    row["sha256"] = json!(copy_file(&data.join(&rel), &target)?);
+                }
             }
-        }
-        // Containers are stopped, but installer and settings files can still have
-        // other writers. List everything again: a file that changed, appeared or went
-        // away since the first listing makes this snapshot inconsistent.
-        unchanged_since_listing(data, names, &devices, &files, &skipped)?;
-        verify_staged(payload, &files)?;
-        let manifest = json!({"format":"neko-media-snapshot-v1","version":VERSION,"created_at":common::now(),"containers":containers,"files":files,"skipped":skipped,"storage":common::json(cfgpath,64000)["storage"]});
-        // 1 to 7 (0.50.0), or the earlier count setup marked; a count that is neither
-        // removes nothing and is reported.
-        let settings = common::json(cfgpath, 64000);
-        let (keep, refused) = backup::keep_count(
-            &settings["app_backup"]["keep_snapshots"],
-            &settings["app_backup"]["earlier"],
-            "app_backup",
-        );
-        backup::publish_snapshot(
-            &root,
-            &stage,
-            &files,
-            || backup::guard(cfgpath, data, media),
-            &manifest,
-            keep,
-            None,
-        )?;
+            // Containers are stopped, but installer and settings files can still have
+            // other writers. List everything again: a file that changed, appeared or went
+            // away since the first listing makes this snapshot inconsistent.
+            unchanged_since_listing(data, names, &devices, &files, &skipped)?;
+            verify_staged(payload, &files)?;
+            let manifest = json!({"format":"neko-media-snapshot-v1","version":VERSION,"created_at":common::now(),"containers":containers,"files":files,"skipped":skipped,"storage":common::json(cfgpath,64000)["storage"]});
+            // 1 to 7 (0.50.0), or the earlier count setup marked; a count that is neither
+            // removes nothing and is reported.
+            let settings = common::json(cfgpath, 64000);
+            let (keep, refused) = backup::keep_count(
+                &settings["app_backup"]["keep_snapshots"],
+                &settings["app_backup"]["earlier"],
+                "app_backup",
+            );
+            backup::publish_snapshot(
+                &root,
+                &stage,
+                &files,
+                || backup::guard(cfgpath, data, media),
+                &manifest,
+                keep,
+                None,
+            )?;
+            Ok((keep, refused))
+        })();
+        let (keep, refused) =
+            made.map_err(|error| backup::failed_after_room(&root, &removed, error))?;
         // Snapshots removed early for room, leaving fewer than the settings keep: the
         // run is done in part, so the dashboard says the history is shorter.
         let short = backup::short_history(&root, &removed, keep)?;
-        Ok(match refused {
-            Some(why) => {
-                println!("Application backup: {why}");
-                Some(json!([why]))
-            }
-            None => short,
-        })
+        Ok(done_in_part(refused, short))
     })();
     let restarted = resume();
     let partial = result.and_then(|partial| restarted.map(|()| partial))?;
@@ -701,6 +739,23 @@ fn snapshot(
 mod tests {
     use super::*;
     use std::os::unix::fs::DirBuilderExt;
+    #[test]
+    fn a_night_with_docker_stopped_says_so_and_what_to_do() {
+        // Deep check 613: the real app-snapshot run with Docker stopped left only
+        // "Application Docker operation failed" on the Backups card.
+        let said = docker_failed("Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n");
+        assert!(
+            said.starts_with("Docker, which runs the apps, was not running"),
+            "{said}"
+        );
+        assert!(said.contains("sudo systemctl start docker"), "{said}");
+        // Anything else Docker says is kept after the old words.
+        assert_eq!(
+            docker_failed("Error response from daemon: No such container: 0123\n"),
+            "Application Docker operation failed: Error response from daemon: No such container: 0123"
+        );
+        assert_eq!(docker_failed(""), "Application Docker operation failed");
+    }
     fn dir(path: &Path) {
         fs::DirBuilder::new()
             .recursive(true)
@@ -810,12 +865,31 @@ mod tests {
         let volume = json!({"Type": "volume", "Source": "/mnt/media/library", "RW": true});
         assert!(!covered(&volume, &own, &[data, media]));
     }
+    /// Deep check 419: with a refused count the night's report was the refusal alone,
+    /// "no older backup was removed", though some had been removed to make room.
+    #[test]
+    fn a_refused_count_does_not_hide_what_was_removed_for_room() {
+        let refused = Some("the count is wrong".to_string());
+        let short = Some(json!(["2 older application snapshots were removed"]));
+        assert_eq!(
+            done_in_part(refused.clone(), short.clone()),
+            Some(json!([
+                "the count is wrong",
+                "2 older application snapshots were removed"
+            ]))
+        );
+        assert_eq!(
+            done_in_part(refused, None),
+            Some(json!(["the count is wrong"]))
+        );
+        assert_eq!(done_in_part(None, short.clone()), short);
+        assert_eq!(done_in_part(None, None), None);
+    }
     #[test]
     fn a_full_hdd_message_says_what_is_free_and_needed() {
         let said = short_of_space(Path::new("/mnt/media"), 1 << 29, 3 << 30);
         assert!(said.contains("HDD (/mnt/media)"), "{said}");
         assert!(said.contains("0.5 GB free, about 3.0 GB needed"), "{said}");
-        assert!(said.contains("newest one is always kept"), "{said}");
     }
     #[test]
     fn the_checkpoint_follows_the_docker_the_os_updated_to() {

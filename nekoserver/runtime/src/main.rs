@@ -61,9 +61,9 @@ impl Args {
 fn main() {
     if let Err(e) = entry() {
         if common::postponed(&e) || backup::yielded(&e) {
-            // Gave way to setup, or the weekly USB copy to the monthly run: said, but not
-            // a failure (systemd and the alerts see a job that ended well, and it runs
-            // again at its next time).
+            // Gave way to setup, or to the monthly run (the weekly USB copy, or a nightly
+            // job that waited 3 hours for it): said, but not a failure (systemd and the
+            // alerts see a job that ended well, and it runs again at its next time).
             println!("{}", common::sanitize(&e.to_string()));
             return;
         }
@@ -126,7 +126,7 @@ fn entry() -> Result<()> {
         | "update-check" => vec!["config"],
         "update-apps" => vec!["config", "app"],
         "check-compose" => vec!["config", "app", "model", "upload", "database"],
-        "check-drives" => vec!["config", "drives"],
+        "check-drives" => vec!["config", "drives", "writable"],
         "job-states" => vec!["config"],
         "notify" => vec!["config", "snapshot", "state", "runtime", "test"],
         "media-health" => vec!["config", "output", "checking"],
@@ -184,6 +184,7 @@ fn entry() -> Result<()> {
             || key == "no-lights"
             || key == "no-fans"
             || key == "checking"
+            || key == "writable"
         {
             "true".into()
         } else {

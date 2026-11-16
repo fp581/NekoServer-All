@@ -84,22 +84,37 @@ pub(crate) fn oldest_first(names: &mut [String]) {
 #[derive(Default)]
 pub(crate) struct Inventory {
     files: BTreeMap<String, String>,
+    /// For a file the tree keeps under another spelling than the one it has now (see
+    /// `add_as`): its name now -> its saved copy's path in the tree.
+    stored: BTreeMap<String, String>,
 }
 impl Inventory {
     /// Note that the live file backed up at `target` (its own name in the tree under
     /// `root`) is current. Nothing is noted when the tree has no copy of it yet.
     pub(crate) fn add(&mut self, target: &Path, root: &Path) {
-        let Some(key) = target
-            .strip_prefix(root)
-            .ok()
-            .and_then(|p| p.to_str())
-            .filter(|k| crate::ledger::valid_path(k))
-        else {
+        self.add_as(target, target, root)
+    }
+    /// `add` for a live file that is now called `named` (a path in the tree) while the
+    /// tree keeps it at `target`: one renamed only in upper/lower case, on a drive that
+    /// takes both spellings for one name (exFAT). The list names it as it is called
+    /// now, so a restore "as of the last backup" brings it back under that name.
+    pub(crate) fn add_as(&mut self, named: &Path, target: &Path, root: &Path) {
+        let key_of = |path: &Path| {
+            path.strip_prefix(root)
+                .ok()
+                .and_then(|p| p.to_str())
+                .filter(|k| crate::ledger::valid_path(k))
+                .map(str::to_string)
+        };
+        let (Some(key), Some(copy)) = (key_of(named), current_copy(target)) else {
             return;
         };
-        if let Some(copy) = current_copy(target) {
-            self.files.insert(key.to_string(), copy);
+        if named != target {
+            if let Some(saved) = key_of(&target.with_file_name(&copy)) {
+                self.stored.insert(key.clone(), saved);
+            }
         }
+        self.files.insert(key, copy);
     }
     pub(crate) fn len(&self) -> usize {
         self.files.len()
@@ -116,7 +131,8 @@ fn current_copy(target: &Path) -> Option<String> {
     )
     .ok()
     .and_then(|b| String::from_utf8(b).ok())
-    .map(|s| s.trim().to_string())
+    // Taken as mark_latest wrote it (no newline): trimmed, " song.mp3" named another
+    // copy or none, and the list gave the file's first, older copy (deep check 476).
     .filter(|n| !n.is_empty() && !n.contains('/') && n != "." && n != "..")
     .filter(|n| fs::symlink_metadata(folder.join(n)).is_ok_and(|m| m.is_file()));
     noted.or_else(|| {
@@ -142,7 +158,8 @@ fn compressed(text: &Text) -> Result<Vec<u8>> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn()?;
+        .spawn()
+        .map_err(|e| common::not_started(e, "gzip"))?;
     let stdin = child
         .stdin
         .take()
@@ -250,9 +267,10 @@ impl<'de> Visitor<'de> for SameRows<'_> {
 fn with_checksums<'a>(root: &Path, inventory: &'a Inventory, ledger: &'a Ledger) -> Listed<'a> {
     let mut out = Listed::new();
     for (key, copy) in &inventory.files {
-        let saved = match key.rsplit_once('/') {
-            Some((folder, _)) => format!("{folder}/{copy}"),
-            None => copy.clone(),
+        let saved = match (inventory.stored.get(key), key.rsplit_once('/')) {
+            (Some(stored), _) => stored.clone(),
+            (None, Some((folder, _))) => format!("{folder}/{copy}"),
+            (None, None) => copy.clone(),
         };
         let sum = ledger
             .get(&saved)
@@ -502,6 +520,21 @@ mod tests {
         fs::remove_file(crate::backup::latest_marker(&target)).unwrap();
         fs::write(crate::backup::latest_marker(&target), b"photo.neko-2.jpg").unwrap();
         assert_eq!(current_copy(&target).as_deref(), Some("photo.neko-2.jpg"));
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn a_name_with_spaces_at_its_ends_keeps_its_current_copy() {
+        let root = std::env::temp_dir().join(format!("neko-note-space-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        for name in [" song.mp3", "song.mp3 "] {
+            let target = root.join(name);
+            fs::write(&target, b"first").unwrap();
+            let newer = format!("{}.neko-2", name);
+            fs::write(root.join(&newer), b"second").unwrap();
+            fs::write(crate::backup::latest_marker(&target), newer.as_bytes()).unwrap();
+            assert_eq!(current_copy(&target), Some(newer));
+        }
         let _ = fs::remove_dir_all(root);
     }
     #[test]

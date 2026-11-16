@@ -211,7 +211,9 @@ class WhereACardMustBeTests(unittest.TestCase):
         elsewhere = Card(self.tmp / 'home' / 'CARD')
         code, said = self.info(elsewhere.top)
         self.assertEqual(code, 2)
-        self.assertIn('is not where a card is mounted. Mount the card under /media or /mnt', said)
+        # Every place a card may be is named (deep check plan 380: /run/media, where Fedora,
+        # Arch and openSUSE desktops mount a card by themselves, was left out).
+        self.assertIn('is not where a card is mounted. Mount the card under /media, /run/media or /mnt', said)
         self.assertIn('or run this tool from the card', said)
 
     def test_a_link_out_of_those_places_is_refused(self):
@@ -233,7 +235,9 @@ class ListAndVerifyTests(Base):
         self.assertEqual(self.run_tool('list'), 0)
         self.assertIn('2002/city\\nnight.png', said_text(self), 'a control character is shown escaped')
         self.assertEqual(self.run_tool('list', SEARCH, 'beach'), 0)
-        self.assertIn('1 file(s)', said_text(self))
+        self.assertEqual(self.said[-1], '1 file', 'a count in words, not "1 file(s)"')
+        self.assertEqual(self.run_tool('list'), 0)
+        self.assertEqual(self.said[-1], '2 files')
         self.assertEqual(self.run_tool('verify'), 0)
         self.assertIn('ok 2, damaged 0, missing 0', said_text(self))
 
@@ -454,6 +458,42 @@ class VersionTests(Base):
                 self.assertEqual(code, 0, said_text(self))
             with self.subTest(first=order[0].identity['sequence_number']):
                 self.assertEqual((dest / DOC).read_bytes(), b'second draft')
+
+    def test_a_restored_file_damaged_or_gone_since_is_restored_again(self):
+        """Review of 0.51.2 (P2): with --progress a file damaged since at the same size was
+        "done before", and an older version was left on the card as "a newer version is
+        restored" though that newer file was gone."""
+        second = Card(self.tmp / 'card2', seq=2, volume=VOLUME_2)
+        version(self.card, self.card.add(DOC, b'first draft'), 1, OLD_TIME, '2001-02-03T04:05:08Z')
+        version(second, second.add(DOC, b'second draft'), 2, NEW_TIME, '2023-11-14T22:13:21Z')
+        progress = str(self.tmp / 'progress.json')
+        newer = [CARD_FLAG, str(second.top), 'restore', str(self.dest), '--progress', progress]
+        self.assertEqual(tool.main(newer, say=self.said.append), 0)
+        # Damaged at the same size: not "done before"; its name is taken by other bytes.
+        (self.dest / DOC).write_bytes(b'SECOND DRAFT')
+        self.said = []
+        self.assertEqual(tool.main(newer, say=self.said.append), 1)
+        self.assertNotIn('done before', said_text(self))
+        # Gone: the older version on the first card is the best at hand, and is restored.
+        (self.dest / DOC).unlink()
+        self.said = []
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', progress), 0, said_text(self))
+        self.assertNotIn('a newer version is restored', said_text(self))
+        self.assertEqual((self.dest / DOC).read_bytes(), b'first draft')
+
+    def test_a_new_progress_file_overwrites_no_file_beside_it(self):
+        """Review of 0.51.2 (P2): the progress file was first written as "<name>.new", opened
+        for writing whatever was there."""
+        self.card.add(A_2001, b'card a')
+        progress = self.tmp / 'progress.json'
+        mine = self.tmp / 'progress.json.new'
+        mine.write_bytes(b'my own file')
+        self.assertEqual(self.run_tool('restore', str(self.dest), '--progress', str(progress)), 0)
+        self.assertEqual(mine.read_bytes(), b'my own file')
+        self.assertEqual(len(progress_done(progress)), 1)
+        self.assertEqual(
+            sorted(p.name for p in self.tmp.glob('progress.json*')), ['progress.json', 'progress.json.new']
+        )
 
     def test_a_file_changed_after_it_was_restored_is_not_replaced(self):
         second = Card(self.tmp / 'card2', seq=2, volume=VOLUME_2)
@@ -774,13 +814,28 @@ class WhereTests(Base):
         for typed in ('München', 'München', '[1]'):
             with self.subTest(typed=typed):
                 self.assertEqual(self.run_tool('list', SEARCH, typed), 0)
-                self.assertIn('1 file(s)', said_text(self))
+                self.assertEqual(self.said[-1], '1 file')
                 self.assertEqual(self.run_tool('where', typed), 0)
                 self.assertIn('(5 bytes)', said_text(self))
         self.assertEqual(self.run_tool('list', SEARCH, '.*'), 0)
-        self.assertIn('0 file(s)', said_text(self))
+        self.assertEqual(self.said[-1], '0 files')
         self.assertEqual(self.run_tool('restore', str(self.dest), SEARCH, 'München'), 0)
         self.assertEqual((self.dest / mac_name).read_bytes(), b'photo', 'restored under its own name')
+
+    def test_a_search_finds_names_in_either_case(self):
+        """Deep check 488: a phone's or a PC's folder is "Beach Trip" or "IMG_0001.JPG";
+        "beach" or "img_0001" found nothing, as if the card did not have them."""
+        name = '2021/Beach Trip/IMG_0001.JPG'
+        self.card.add(name, b'photo')
+        self.snapshot([{'path': name, 'byte_size': 5, 'copies': [{'volume_id': VOLUME, 'state': 'committed'}]}])
+        for typed in ('beach', 'img_0001.jpg', 'BEACH TRIP'):
+            with self.subTest(typed=typed):
+                self.assertEqual(self.run_tool('list', SEARCH, typed), 0)
+                self.assertEqual(self.said[-1], '1 file')
+                self.assertEqual(self.run_tool('where', typed), 0)
+                self.assertIn('(5 bytes)', said_text(self))
+        self.assertEqual(self.run_tool('restore', str(self.dest), SEARCH, 'beach'), 0)
+        self.assertEqual((self.dest / name).read_bytes(), b'photo', 'restored under its own name')
 
     def test_a_tampered_inventory_is_refused(self):
         sid = self.snapshot([{'path': 'x.jpg', 'copies': []}])

@@ -1,4 +1,21 @@
-# Server OS power, logs and memory
+# Keeping the server on: sleep, the hard drive, logs and memory
+
+A server has to answer day and night, so setup changes a few things on Linux itself. You do nothing for them; this page says what changed, so nothing surprises you.
+
+- **The PC no longer goes to sleep.** Not by itself after a while, and not from the desktop's menu. The screen (or the TV) may still go dark; the server keeps running behind it.
+- **A laptop keeps running with its lid closed.** Keep its charger plugged in: on its battery the dashboard says *The server is running on its battery*, and when the battery runs out the PC goes off in the middle of whatever it is doing.
+- **A hard drive inside the PC rests after an hour without use,** to save power and wear. The first film or file after that takes a few seconds longer, while the drive spins up again. Backups, downloads and the apps wake it when they need it. A drive in a USB case, an SSD and a drive on a NAS keep their own settings.
+- **Linux's own log is kept small:** at most 512 MB on the system disk and two weeks back, so it can never fill the disk.
+- **Memory that looks full is normal.** Linux uses spare memory to keep files at hand and gives it back the moment an app needs it. The dashboard counts that memory as free, and warns only when little is really left (about a tenth).
+- **After a power cut** the PC starts again only if its BIOS/UEFI (the settings screen of the PC itself, before Linux starts) is set to switch on when the power comes back. That setting is yours to make; NekoServer cannot.
+
+To change one of these (keep the drive spinning, a bigger log), see the sections below; each names its setting under `"server_os"` in `my-config.json`.
+
+---
+
+## For administrators
+
+The rest of this page is the technical reference.
 
 The `server_os` module adds OS-wide safeguards to the existing GNOME TV power settings. New sample profiles include it. When you update, setup adds the steps a newer release brought to the profiles in your `my-config.json` (and says so in its log); a step you took out of a profile yourself stays out.
 
@@ -7,7 +24,7 @@ python3 installer.py --module server_os --check
 sudo bash install.sh --module server_os --apply
 ```
 
-## Sleep and display
+### Sleep and display
 
 The module masks sleep, suspend, hibernate, hybrid-sleep and suspend-then-hibernate targets, installs a managed sleep policy that disables those operations and sets logind idle action to ignore. Normal desktop/systemd sleep requests are blocked. Display blanking can remain enabled: the TV going dark does not need to suspend the server. The TV module also retains its GNOME AC idle-suspend setting.
 
@@ -23,7 +40,7 @@ systemd-analyze cat-config systemd/logind.conf
 
 This policy covers standard OS sleep paths. Physical shutdown, loss of electricity, kernel failure and privileged direct hardware control remain outside an OS sleep setting. BIOS/UEFI restore-after-power-loss and a UPS are separate hardware setup choices.
 
-## HDD standby
+### HDD standby
 
 Default `server_os.hdd_policy` is `idle`, with `hdd_idle_minutes: 60`. The native worker applies a 60-minute standby timer (`hdparm -S 242`). See STORAGE.md for configurable intervals and wake-up sources. The optional `keep_spinning` policy remains supported. The installer installs hdparm from the system's package repositories when available and deploys a native Rust boot job. That job verifies the configured SSD/HDD UUIDs and filesystems, resolves the media filesystem to its physical parent disk, checks that it is a rotating internal SATA disk and configures only that disk's legacy standby timer (`hdparm -S 0` for `keep_spinning`). It resolves/checks the device again immediately before the command. No guessed `/dev/sda`, blanket drive command, periodic dummy reads or SSD power changes are used.
 
@@ -40,7 +57,7 @@ Keeping a NAS-rated drive spinning may suit an always-on workload and avoid repe
 
 Set `hdd_policy` to `unchanged` if you want manual/vendor power management. Reapplying that choice disables an earlier managed boot job without guessing replacement hardware settings. It does not restore a previous timer already changed in hardware; review the original settings and model guidance explicitly.
 
-## System log bounds
+### System log bounds
 
 Defaults are `SystemMaxUse=512M`, `RuntimeMaxUse=64M`, `MaxRetentionSec=14day` and `SystemKeepFree=1G`. Configure `journal_disk_mb`, `journal_ram_mb` and `journal_retention_days` under `server_os` to change them.
 
@@ -52,13 +69,13 @@ Limits you set yourself are respected. NekoServer's file (`/etc/systemd/journald
 
 `RuntimeMaxUse` bounds journal files stored in the RAM-backed `/run` filesystem, not every byte of the journald process's memory. These limits cover the OS systemd journal. Docker/app logs, media downloads and application caches have separate policies; this release does not impose a new Docker logging driver on existing containers.
 
-## RAM
+### RAM
 
 Linux uses spare RAM for page cache and reclaims it when needed. Low *free* RAM by itself is normal. The dashboard's memory use is already calculated from `MemTotal - MemAvailable`, accounting for memory the kernel expects to reclaim. New warnings begin when available RAM falls to about 10% of total; critical alerts begin around 3%. Background delivery uses the existing debounce/grouping/retry settings and requires a configured ntfy destination.
 
 The module does not install a cache-flushing timer, arbitrary swappiness tuning, automatic app restarts or guessed per-container RAM caps. Existing swap/zram settings remain intact. A genuinely leaking application, too many workloads or large app databases can still exhaust RAM: inspect process/container usage and swap activity, then fix or limit the specific workload. Cache flushing does not repair an application leak and can cause unnecessary I/O.
 
-## Acceptance and reversal
+### Acceptance and reversal
 
 ```bash
 # In the NekoServer folder (it reads your my-config.json). Add --manual to record the

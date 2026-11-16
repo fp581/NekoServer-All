@@ -18,7 +18,7 @@ STEP_EXPLANATIONS = {
     'media': 'Installs Jellyfin (movies and shows), Navidrome (music), Seerr, Sonarr, Radarr, Lidarr, Prowlarr and qBittorrent.',
     'photos': 'Installs Immich, your own photo backup and gallery, with an archive copy of every original.',
     'photo_preservation': 'Schedules a weekly copy of the photo originals and the photo database to the HDD.',
-    'photo_backup': 'Schedules a weekly copy of photos and files to the USB drive (nothing is ever deleted from it).',
+    'photo_backup': 'Schedules a weekly copy of photos and files to the USB drive (no photo or file is ever deleted from it).',
     'nextcloud': 'Installs Nextcloud, your private cloud drive for files.',
     'accounts': 'Creates your account in each app and finishes their first-run setup for you.',
     'hardware_video': "Lets Jellyfin and Immich use the graphics chip, so video plays smoothly.",

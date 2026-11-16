@@ -4,7 +4,7 @@
 import argparse, hashlib, json, os, re, ssl
 from pathlib import Path
 import recovery_tools
-from neko_common import safe_path, checked_settings, default_settings, mount_path
+from neko_common import SETTINGS_HELP, safe_path, checked_settings, default_settings, mount_path
 
 # The system's own folders: never a place for the exported copy.
 SYSTEM_FOLDERS = ('/boot', '/dev', '/etc', '/proc', '/run', '/sys', '/usr', '/var')
@@ -42,9 +42,17 @@ def export(config, destination):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
-        '--config', type=lambda v: Path(checked_settings(v)), default=default_settings(Path(__file__).parent)
+        '--config',
+        type=lambda v: Path(checked_settings(v)),
+        default=default_settings(Path(__file__).parent),
+        help=SETTINGS_HELP,
     )
-    p.add_argument('--export', required=True, type=Path)
+    p.add_argument(
+        '--export',
+        required=True,
+        type=Path,
+        help='A new file to write the certificate to, such as nekoserver-root.crt (an existing file is never replaced)',
+    )
     a = p.parse_args()
     settings = safe_path(Path(a.config).absolute())
     if settings.suffix != '.json' or not settings.is_file():

@@ -410,6 +410,18 @@ def hdd_missing():
 class UserPanelFindingsTests(unittest.TestCase):
     """What the 0.40.1 user panel and Dana found on the dashboard (UP-xx, D10)."""
 
+    def test_a_job_you_start_yourself_is_not_said_to_run_again_by_itself(self):
+        # D14: with a drive missing the upgrade's card said "so this backup can't run"
+        # (the collector's words, collect.rs blocked_words) and "Runs again once the
+        # drive is back"; an upgrade is started by you.
+        away = 'The Media HDD is missing, so NekoServer can’t be upgraded until it is back.'
+        upgrade, nightly = page(
+            ('blockedNext', {'id': 'upgrade', 'scheduled': False, 'blocked': away}),
+            ('blockedNext', {'id': 'archive', 'blocked': HDD_AWAY}),
+        )
+        self.assertEqual(upgrade, 'You can start it once the drive is back.')
+        self.assertEqual(nightly, 'Runs again once the drive is back.')
+
     def test_a_missing_hdd_never_shows_backups_as_ok_and_raises_one_alert(self):
         # UP-03 and UP-04: no "All recent copies OK" or "Checksums match" while the HDD is
         # missing, and the apps it stopped are not eight more items.
@@ -962,6 +974,37 @@ class AskNekoPageTests(unittest.TestCase):
         # Once it is sent (signed in), the box is emptied as before.
         [asked] = page(('askFlow', {'typed': 'Why?', 'kept': 'Why?', 'answer': 'Because.'}))
         self.assertEqual(asked['sent'][0], ['/api/control/ask', {'question': 'Why?'}])
+
+    def test_a_follow_up_is_sent_with_the_question_and_answer_before_it(self):
+        """Deep check 642: "Why did the backup fail?", then "How do I fix that?". Each question
+        reached Neko alone, so it never knew what "that" was."""
+        why = 'Why did the backup fail?'
+        said = 'The Host and user snapshot failed: the HDD is full.'
+        first, second, third = page(
+            (
+                'askInTurn',
+                {'questions': [why, 'How do I fix that?'], 'answers': [{'text': said}, {'text': 'Free space.'}]},
+            ),
+            # An answer that failed is not taken back.
+            (
+                'askInTurn',
+                {'questions': [why, 'And now?'], 'answers': [{'failed': 'Neko is not available'}, {'text': 'x'}]},
+            ),
+            # A long answer in Hebrew, with emoji: cut to what the web service takes, never
+            # inside a character.
+            (
+                'askInTurn',
+                {'questions': ['מה?', 'ואז?'], 'answers': [{'text': 'א\U0001f431' * 1500}, {'text': 'x'}]},
+            ),
+        )
+        self.assertEqual(first[0], {'question': why})
+        self.assertEqual(first[1], {'question': 'How do I fix that?', 'before': {'question': why, 'answer': said}})
+        self.assertNotIn('before', second[1])
+        body = json.dumps(third[1], ensure_ascii=False).encode()
+        self.assertLessEqual(len(body), 4096 - 256)
+        answer = third[1]['before']['answer']
+        self.assertGreater(len(answer), 200)
+        self.assertTrue(('א\U0001f431' * 1500).startswith(answer), 'cut at a whole character')
 
     def test_a_long_question_and_an_empty_one_are_said(self):
         """The deep check: a pasted question over 500 characters was cut without a word (the

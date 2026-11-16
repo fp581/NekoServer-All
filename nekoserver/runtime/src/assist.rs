@@ -33,7 +33,11 @@ const ANSWER_TOKENS: u64 = 700;
 /// How many log lines of an attention item's service are read, and how much of them is kept.
 const LOG_LINES: &str = "40";
 const LOG_CHARS: usize = 6000;
-const SUMMARY_CHARS: usize = 3000;
+const SUMMARY_CHARS: usize = 5000;
+/// How many attention items are given with their own words (the rest by title), and how
+/// much of those words: the longest the collector writes say what to do in about 500.
+const DETAILED_ALERTS: usize = 5;
+const DETAIL_CHARS: usize = 500;
 /// How long an answer may take: the first words may take a while (the model is loaded
 /// into memory first); after that a pause of `next`, or the whole answer taking longer
 /// than `total`, ends it. When the page has not asked for it for `abandon` (it was
@@ -517,40 +521,104 @@ pub fn summary(status: &Value, now: f64) -> String {
             ago(age)
         )
     };
-    format!("{heading}\n{}", readings(status))
+    format!("{heading}\n{}", readings(status, now))
 }
+
+/// When a backup last worked and when it runs next, as the model is told them: "last
+/// success 3 days ago, next run in 4 days". Without them "When were my photos last backed
+/// up?", the first thing a household asks, had no answer but "I do not know" (or a
+/// made-up one), though the dashboard shows both (deep check 510). A time further ahead
+/// than the clock allows is left out: its age is not known.
+fn backup_times(row: &Value, now: f64) -> String {
+    let mut said = vec![];
+    match row["last_success"].as_f64() {
+        Some(t) if t <= now + AHEAD_SECONDS => said.push(format!(
+            "last success {}",
+            if now - t < 60.0 {
+                "just now".to_string()
+            } else {
+                format!("{} ago", ago(now - t))
+            }
+        )),
+        Some(_) => {}
+        None => said.push("no success yet".to_string()),
+    }
+    if let Some(t) = row["timer"]["next_run_at"].as_f64().filter(|t| *t > now) {
+        said.push(format!("next run in {}", ago(t - now)));
+    }
+    if said.is_empty() {
+        String::new()
+    } else {
+        format!("; {}", said.join(", "))
+    }
+}
+
+/// The jobs in the readings' "backups" list that copy nothing (dashboard/app.js
+/// COPIES_NOTHING): the app updates, the daily check for them, the upgrade.
+const COPIES_NOTHING: [&str; 3] = ["updates", "update_check", "upgrade"];
 
 /// A short summary of the readings: what needs attention, the backups, the drives, the
 /// apps. Plain lines, at most SUMMARY_CHARS characters.
-fn readings(status: &Value) -> String {
+fn readings(status: &Value, now: f64) -> String {
     let rows = |key: &str| status[key].as_array().cloned().unwrap_or_default();
     let text = |v: &Value| v.as_str().unwrap_or("").to_string();
     let mut lines = vec![format!(
         "NekoServer {}",
         status["version"].as_str().unwrap_or("?")
     )];
-    let attention = rows("alerts");
+    let mut attention = rows("alerts");
     if !status["alerts"].is_array() {
         lines.push(NO_ATTENTION_LIST.into());
     } else if attention.is_empty() {
         lines.push("Nothing needs attention.".into());
     }
-    for a in &attention {
+    // The urgent ones first: a small model answers in the order it reads, and with ten
+    // things wrong it began with the phone alerts (deep check 622).
+    attention.sort_by_key(|a| a["level"] != "critical");
+    for (n, a) in attention.iter().enumerate() {
+        // With the alert's own words of what happened and what to do: with its title
+        // alone, "What should I do?" had no answer but a made-up one (deep checks 631,
+        // 639). The first few only, so the backups, drives and apps still fit.
+        let detail = Some(text(&a["detail"]))
+            .filter(|d| n < DETAILED_ALERTS && !d.trim().is_empty())
+            .map(|d| format!(": {}", common::shortened(d.trim(), DETAIL_CHARS)))
+            .unwrap_or_default();
         lines.push(format!(
-            "Needs attention: {} ({})",
+            "Needs attention: {} ({}){detail}",
             text(&a["title"]),
             text(&a["level"])
         ));
     }
     for b in rows("backups") {
+        let id = text(&b["id"]);
+        // The upgrade runs only when the person starts it: one never started is no backup
+        // that "never succeeded" (deep check 636: "Is everything backed up?" was answered
+        // with it).
+        if id == "upgrade" && b["last_success"].is_null() && b["last_attempt"].is_null() {
+            continue;
+        }
+        // The jobs that copy nothing are not called backups (the page's COPIES_NOTHING).
+        let kind = if COPIES_NOTHING.contains(&id.as_str()) {
+            "Job"
+        } else {
+            "Backup"
+        };
+        // Waiting for a drive that is away: its time to run comes, and it does not run
+        // (deep check 612: "next run in 6 hours" was all the model was told).
+        let blocked = b["blocked"]
+            .as_str()
+            .map(|why| format!("; {why}"))
+            .unwrap_or_default();
         lines.push(format!(
-            "Backup {}: {}{}",
+            "{kind} {}{}: {}{}{}{blocked}",
             text(&b["name"]),
+            if kind == "Job" { " (not a backup)" } else { "" },
             text(&b["status"]),
             b["reason"]
                 .as_str()
                 .map(|r| format!(" ({r})"))
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            backup_times(&b, now),
         ));
     }
     for s in rows("storage") {
@@ -566,18 +634,55 @@ fn readings(status: &Value) -> String {
             text(&s["status"]),
         ));
     }
+    if let Some(pc) = this_pc(&status["metrics"]) {
+        lines.push(pc);
+    }
     for a in rows("applications") {
         lines.push(format!(
-            "App {}: {}{}",
+            "App {}: {}{}{}",
             text(&a["name"]),
             text(&a["state"]),
             match a["health"].as_str() {
                 Some(h @ ("unhealthy" | "starting")) => format!(", {h}"),
                 _ => String::new(),
-            }
+            },
+            app_use(&a),
         ));
     }
     common::shortened(&lines.join("\n"), SUMMARY_CHARS)
+}
+
+/// How busy the PC is, as Home shows it: "What's using the processor?" and "Why is it so
+/// slow?" had nothing to go on but the low-memory alert (deep check 640).
+fn this_pc(m: &Value) -> Option<String> {
+    let mut said = vec![];
+    if let Some(cpu) = m["cpu_percent"].as_f64() {
+        said.push(format!("processor {cpu:.0}% busy"));
+    }
+    if let Some(memory) = m["memory_percent"].as_f64() {
+        let of = match (m["memory_used"].as_f64(), m["memory_total"].as_f64()) {
+            (Some(used), Some(total)) => format!(" ({:.1} of {:.1} GB)", used / 1e9, total / 1e9),
+            _ => String::new(),
+        };
+        said.push(format!("memory {memory:.0}% used{of}"));
+    }
+    if let Some(t) = m["temperature"].as_f64() {
+        said.push(format!("processor temperature {t:.0} °C"));
+    }
+    (!said.is_empty()).then(|| format!("This PC: {}", said.join(", ")))
+}
+
+/// What an app's containers use together, as Your apps shows it. Docker counts the
+/// processor per core, so a busy app passes 100%: said, so the model does not read
+/// 250% as a mistake.
+fn app_use(a: &Value) -> String {
+    match (a["cpu_percent"].as_f64(), a["memory_used"].as_f64()) {
+        (Some(cpu), Some(memory)) => format!(
+            ", using {cpu:.0}% processor (100% is one core) and {:.1} GB memory",
+            memory / 1e9
+        ),
+        _ => String::new(),
+    }
 }
 
 /// The attention item `id` from the readings: (its title and detail, the service or app
@@ -733,6 +838,20 @@ pub fn offered(cfg: &Value, status: &Value, data: &Path) -> Vec<(String, String)
     out
 }
 
+/// What the guides say about the things a household asks most that no reading answers,
+/// in their words (deep checks 634, 635, 637, 638 and 648: with nothing to go on the model
+/// could only say it did not know, or make steps up). Each line is checked against its
+/// guide (the_guides_say_what_neko_is_told).
+pub const GUIDES: &[&str] = &[
+    "A photo or video deleted by mistake: first look in Immich's Trash (in the menu of the app or the website), which keeps it for 30 days; Restore puts it back. Older than that, or emptied from the Trash: in a terminal on the server, sudo bash install.sh --recover, then 1. Restore something from a backup, then Photos and videos (Immich) (RECOVERY.md).",
+    "A Nextcloud file deleted by mistake: first look in Nextcloud's Deleted files (in Files, at the bottom left); older: plug in the USB drive, then the recovery menu as above, Nextcloud files (RECOVERY.md).",
+    "Films, shows and music are not backed up: one deleted is found again in Radarr (films), Sonarr (shows) or Lidarr (music), or copied again from where it came from.",
+    "Someone else in the family gets a login of their own in each app, never yours: in Immich, Administration, Users, Create user; in Nextcloud, your picture at the top right, then Accounts; in Jellyfin, Dashboard, Users, + with administrator off (for a child, Parental control) (README.md, \"Someone else in the family\").",
+    "The apps update by themselves one night a week; the dashboard's Updates page, Apps, has Update now. NekoServer itself: the Updates page, NekoServer, Upgrade NekoServer (with the PIN); or in a terminal in the NekoServer-All/nekoserver folder: git pull, then sudo bash install.sh (README.md, \"Updating to a newer release\").",
+    "A film on a TV: LG, Samsung and Roku TVs cannot reach the server (they have no Tailscale app): plug in a box or stick that has one, or connect the server to the TV with an HDMI cable. Casting from the phone does not work: use the Jellyfin app on the TV or stick, with the Jellyfin address ending in :8443 (GATEWAY.md, \"On a TV\").",
+    "The dashboard's Help page has step-by-step guides.",
+];
+
 /// The messages for Ollama: what Neko is and may do, then the question with the readings
 /// and the item. Every part that comes from the server has had its secrets taken out.
 pub fn messages(
@@ -747,10 +866,19 @@ pub fn messages(
         .map(|(id, what)| format!("- {id}: {what}"))
         .collect::<Vec<_>>()
         .join("\n");
+    let guides = GUIDES
+        .iter()
+        .map(|line| format!("- {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let system = format!(
         "You are Neko, the helper in the dashboard of a NekoServer home server. Answer in plain, short words for a \
-         person who is not a computer expert. Use only the readings and log lines given; when they do not say, say \
-         you do not know. You cannot run commands or change anything yourself.\n\
+         person who is not a computer expert, in the language the question is written in (the readings below are \
+         in English; keep the names of apps, pages and buttons as they are written there). Use only the readings, \
+         the log lines and the guides given; when they do not say, say you do not know, and never make steps up. \
+         For a question that is not about this server or its apps, say in one sentence that you can only help with \
+         the server. You cannot run commands or change anything yourself.\n\
+         What the guides say:\n{guides}\n\
          If one of these fixes would help, end your answer with exactly one line \"ACTION: <id>\" naming it, and \
          nothing else on that line; otherwise write no ACTION line:\n{list}\n\
          If the problem looks like a bug in NekoServer itself, end with a part that starts \"BUG REPORT:\": what \
@@ -767,6 +895,42 @@ pub fn messages(
         }
     }
     json!([{"role": "system", "content": system}, {"role": "user", "content": user}])
+}
+
+/// The longest earlier answer taken back with a follow-up question.
+const EARLIER_ANSWER_CHARS: usize = 2500;
+
+/// The question before this one and Neko's answer to it, as the page sends them with a
+/// follow-up ("before": {"question", "answer"}): plain text, each cut to its length.
+/// The page sends only the last whole answer of its own chat.
+pub fn earlier(value: &Value) -> Option<(String, String)> {
+    let question = question(&value["question"])?;
+    let answer: String = value["answer"]
+        .as_str()?
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n')
+        .take(EARLIER_ANSWER_CHARS)
+        .collect();
+    (!answer.is_empty()).then_some((question, answer))
+}
+
+/// `messages` with the question before and its answer in front of the new question, so
+/// a follow-up ("And how do I do that?", "What does that mean?") is understood: each
+/// question was sent alone, and the model never knew what "that" was (deep check 642).
+/// Their secrets are taken out as everything else's.
+pub fn follow_up(mut messages: Value, earlier: (&str, &str), known: &[String]) -> Value {
+    if let Some(list) = messages.as_array_mut() {
+        let at = list.len().saturating_sub(1);
+        list.splice(
+            at..at,
+            [
+                json!({"role": "user", "content": redact(earlier.0, known)}),
+                json!({"role": "assistant", "content": redact(earlier.1, known)}),
+            ],
+        );
+    }
+    messages
 }
 
 /* ---------- repairs ---------- */
@@ -1339,6 +1503,10 @@ pub const CUT_OFF: &str = "the answer was cut off before it ended; ask again";
 pub const LENGTH_LIMIT: &str =
     "the answer reached its length limit before it ended, so it is not whole; ask again about one thing at a time";
 
+/// Said when the model could not have the memory it needs: free memory comes back when
+/// the apps need less, and a smaller model needs less (ASSISTANT.md, "Changing your mind").
+pub const MEMORY: &str = "the model needs more memory than is free for it now, so it was stopped; ask again in a while, when your apps need less. If it keeps happening, choose a smaller model (ASSISTANT.md, \"Changing your mind\")";
+
 /// Ollama's error in words a person can act on.
 fn plain_error(said: &str) -> String {
     let lower = said.to_lowercase();
@@ -1346,7 +1514,8 @@ fn plain_error(said: &str) -> String {
         "its model is not there yet (it may still be downloading; setup run again fetches it)"
             .into()
     } else if lower.contains("memory") || lower.contains("killed") {
-        "the model needs more memory than it may have here, so it was stopped".into()
+        // What to do, as a person can (deep check 646): it said only that it was stopped.
+        MEMORY.into()
     } else if lower.contains("while running the model") || lower.contains("unexpectedly stopped") {
         // Its runner was ended under it: on the 0.49.0 gate the kernel took the memory
         // back for the apps (the model goes first), and Ollama said only "unexpected".
@@ -1810,12 +1979,166 @@ mod tests {
             "backups": [{"id": "host", "name": "Host and user snapshot", "status": "fail", "reason": "No space left"}],
             "storage": [{"name": "Media HDD", "status": "mounted", "total": 20_000_000_000u64, "used": 8_000_000_000u64}],
             "applications": [{"name": "Jellyfin", "state": "running", "health": "unhealthy"}]});
-        let s = readings(&status);
+        let s = readings(&status, 1_800_000_000.0);
         assert!(s.contains("NekoServer 0.49.0"));
         assert!(s.contains("Needs attention: Host and user snapshot failed (critical)"));
         assert!(s.contains("Backup Host and user snapshot: fail (No space left)"));
         assert!(s.contains("Drive Media HDD: mounted, 12.0 GB free"));
         assert!(s.contains("App Jellyfin: running, unhealthy"));
+    }
+
+    /// Deep check 510 (Ask Neko: "When were my photos last backed up?"): the model was
+    /// given each backup's state only, never when it last worked or runs next, so it could
+    /// only say it did not know, or make a time up.
+    #[test]
+    fn the_summary_says_when_each_backup_last_worked_and_runs_next() {
+        let now = 1_800_000_000.0;
+        let status = json!({"backups": [
+            {"name": "Photo archive", "status": "pass", "last_success": now - 3.0 * 86_400.0,
+             "timer": {"next_run_at": now + 4.0 * 86_400.0}},
+            {"name": "USB copy (photos and files)", "status": "fail", "reason": "Plug it in", "last_success": null,
+             "timer": {"next_run_at": now + 5.0 * 3600.0}},
+            {"name": "Host and user snapshot", "status": "pass", "last_success": now + 7200.0}]});
+        let s = readings(&status, now);
+        assert!(
+            s.contains("Backup Photo archive: pass; last success 3 days ago, next run in 4 days"),
+            "{s}"
+        );
+        assert!(
+            s.contains("Backup USB copy (photos and files): fail (Plug it in); no success yet, next run in 5 hours"),
+            "{s}"
+        );
+        // Stamped by a clock that was ahead: no age is made up for it.
+        assert!(
+            s.contains("Backup Host and user snapshot: pass\n")
+                || s.ends_with("Backup Host and user snapshot: pass"),
+            "{s}"
+        );
+    }
+
+    /// Deep checks 612 and 636, with the real collector on loop drives: with the HDD away
+    /// every backup read "pass; next run in 6 hours" (the collector's "it can't run until
+    /// the HDD is back" was left out), and "Is everything backed up?" was answered from
+    /// the app updates and an upgrade never started ("no success yet"), all called
+    /// backups.
+    #[test]
+    fn the_summary_says_which_backups_wait_and_which_jobs_are_no_backups() {
+        let now = 1_800_000_000.0;
+        let waiting = "The Media HDD is missing, so this backup can't run until it is back.";
+        let status = json!({"backups": [
+            {"id": "host", "name": "Host and user snapshot", "status": "pass", "last_success": now - 3600.0,
+             "timer": {"next_run_at": now + 6.0 * 3600.0}, "blocked": waiting},
+            {"id": "updates", "name": "Weekly app updates", "status": "pass", "last_success": now - 3600.0},
+            {"id": "maintenance", "name": "Monthly check and snapshot", "status": "pass", "last_success": now - 3600.0},
+            {"id": "upgrade", "name": "NekoServer upgrade", "status": "unknown", "reason": "No recorded successful run",
+             "last_success": null, "last_attempt": null}]});
+        let s = readings(&status, now);
+        assert!(
+            s.contains(&format!("Backup Host and user snapshot: pass; last success 60 minutes ago, next run in 6 hours; {waiting}")),
+            "{s}"
+        );
+        assert!(
+            s.contains("Job Weekly app updates (not a backup): pass"),
+            "{s}"
+        );
+        assert!(!s.contains("Backup Weekly app updates"), "{s}");
+        // The monthly run makes a snapshot: a backup.
+        assert!(s.contains("Backup Monthly check and snapshot: pass"), "{s}");
+        assert!(!s.contains("NekoServer upgrade"), "{s}");
+        // An upgrade that ran is said, as a job.
+        let ran = json!({"backups": [{"id": "upgrade", "name": "NekoServer upgrade", "status": "fail",
+            "reason": "Failed: download", "last_success": null, "last_attempt": now - 60.0}]});
+        assert!(readings(&ran, now)
+            .contains("Job NekoServer upgrade (not a backup): fail (Failed: download)"));
+    }
+
+    /// Deep checks 622, 631 and 639, with the real collector on loop drives: the model was
+    /// given each alert's title only ("Media HDD is almost full"), never what to do, and
+    /// with ten things wrong the list began with the phone alerts, the urgent ones after.
+    #[test]
+    fn the_summary_says_what_to_do_about_the_urgent_things_first() {
+        let now = 1_800_000_000.0;
+        let fail = |id: &str, name: &str| {
+            json!({"id": id, "name": name, "status": "fail",
+            "reason": "Failed while writing the snapshot: No space left on device.", "last_success": now - 3.0 * 86_400.0})
+        };
+        // The readings of deep check 622, with the collector's own alerts for them.
+        let mut status = json!({"generated_at": now,
+            "notifications": {"status": "fail"},
+            "battery": {"discharging": true, "percent": 23.0},
+            "tailscale": {"state": "NeedsLogin", "signed_in_before": true},
+            "metrics": {"memory_percent": 98.0},
+            "storage": [{"id": "media_hdd", "name": "Media HDD", "status": "mounted", "used_percent": 98.0,
+                "total": 4e12, "used": 3.92e12}],
+            "applications": [{"id": "jellyfin", "name": "Jellyfin", "state": "exited", "health": "unknown"},
+                {"id": "immich", "name": "Immich", "state": "running", "health": "unhealthy"},
+                {"id": "seerr", "name": "Seerr", "state": "restarting", "health": "unknown"}],
+            "backups": [fail("host", "Host and user snapshot"), fail("applications", "Media application snapshot"),
+                fail("database", "Immich database"), fail("archive", "Photo archive")]});
+        status["alerts"] = collect::alerts(&status);
+        assert!(status["alerts"].as_array().unwrap().len() >= 10);
+        assert_eq!(
+            status["alerts"][0]["level"], "warning",
+            "the collector's own order"
+        );
+        let s = summary(&status, now);
+        let attention: Vec<&str> = s
+            .lines()
+            .filter(|l| l.starts_with("Needs attention:"))
+            .collect();
+        let urgent = attention
+            .iter()
+            .take_while(|l| l.contains("(critical)"))
+            .count();
+        assert!(
+            attention[urgent..]
+                .iter()
+                .all(|l| !l.contains("(critical)")),
+            "{s}"
+        );
+        assert!(urgent >= 5, "{s}");
+        // What to do, in the alert's own words.
+        assert!(
+            s.contains("Needs attention: Media HDD is almost full (critical): "),
+            "{s}"
+        );
+        assert!(s.contains("sudo tailscale up"), "{s}");
+        // And the rest still fits.
+        assert!(s.contains("Drive Media HDD: mounted, 80.0 GB free"), "{s}");
+        assert!(s.contains("App Seerr: restarting"), "{s}");
+        assert!(s.contains("Backup Photo archive: fail"), "{s}");
+    }
+
+    /// Deep check 640 ("What's using the CPU?"): the readings have the PC's processor,
+    /// memory and temperature and each app's use, as Home and Your apps show them; the
+    /// model was given none of it.
+    #[test]
+    fn the_summary_says_how_busy_the_pc_and_each_app_is() {
+        let status = json!({
+            "metrics": {"cpu_percent": 87.4, "memory_percent": 61.0, "memory_used": 9.5e9,
+                "memory_total": 15.6e9, "temperature": 78.6, "uptime_seconds": 3600},
+            "applications": [
+                {"name": "Jellyfin", "state": "running", "health": "healthy", "cpu_percent": 312.5, "memory_used": 1.2e9},
+                {"name": "Immich", "state": "running", "health": "healthy", "cpu_percent": 0.4, "memory_used": 8.0e8},
+                {"name": "Seerr", "state": "exited", "health": "unknown", "cpu_percent": null, "memory_used": null}]});
+        let s = readings(&status, 0.0);
+        assert!(
+            s.contains("This PC: processor 87% busy, memory 61% used (9.5 of 15.6 GB), processor temperature 79 °C"),
+            "{s}"
+        );
+        assert!(
+            s.contains(
+                "App Jellyfin: running, using 312% processor (100% is one core) and 1.2 GB memory"
+            ),
+            "{s}"
+        );
+        assert!(s.contains("App Immich: running, using 0% processor"), "{s}");
+        assert!(
+            s.contains("App Seerr: exited\n") || s.ends_with("App Seerr: exited"),
+            "{s}"
+        );
+        // Nothing read: no line made up.
+        assert!(!readings(&json!({"metrics": {"cpu_percent": null}}), 0.0).contains("This PC"));
     }
 
     /// Review of 0.49.0: an unreadable status file became {} and the model was told
@@ -1915,19 +2238,19 @@ mod tests {
         );
         assert!(row.get("total").is_some() && row.get("used").is_some());
         assert!(row.get("free").is_none(), "the collector gives no \"free\"");
-        let not_mounted = readings(&json!({"storage": [row.clone()]}));
+        let not_mounted = readings(&json!({"storage": [row.clone()]}), 0.0);
         assert!(
             not_mounted.contains("Drive Media HDD: mounted, ? free"),
             "{not_mounted}"
         );
         row["total"] = json!(2_000_000_000_000u64);
         row["used"] = json!(1_487_500_000_000u64);
-        let s = readings(&json!({"storage": [row]}));
+        let s = readings(&json!({"storage": [row]}), 0.0);
         assert!(s.contains("Drive Media HDD: mounted, 512.5 GB free"), "{s}");
         // A reading that makes no sense (more used than there is) is never a negative.
         let odd =
             json!({"storage": [{"name": "SSD", "status": "mounted", "total": 10, "used": 20}]});
-        assert!(readings(&odd).contains("Drive SSD: mounted, 0.0 GB free"));
+        assert!(readings(&odd, 0.0).contains("Drive SSD: mounted, 0.0 GB free"));
     }
 
     #[test]
@@ -2145,6 +2468,113 @@ mod tests {
         assert!(system.contains("BUG REPORT:"));
         assert!(system.contains("cannot run commands"));
         assert!(!system.contains("restart_app"));
+    }
+
+    /// Deep checks 634, 635, 637, 638 and 648: "How do I get a deleted photo back?", "How
+    /// do I add a family member?", "How do I update NekoServer?", "Why is the TV not
+    /// playing this film?" had nothing in the prompt to answer from, so a correct answer
+    /// was not possible. The guides' own steps are given now, and each one is checked
+    /// against its guide here, so the two cannot drift apart.
+    #[test]
+    fn the_guides_say_what_neko_is_told() {
+        let guide = |name: &str| {
+            std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(name))
+                .unwrap()
+        };
+        let checks: [(&str, &[&str]); 6] = [
+            (
+                "RECOVERY.md",
+                &[
+                    "Trash",
+                    "30 days",
+                    "1. Restore something from a backup",
+                    "Photos and videos (Immich)",
+                ],
+            ),
+            (
+                "RECOVERY.md",
+                &["Deleted files", "at the bottom left", "Nextcloud files"],
+            ),
+            (
+                "RECOVERY.md",
+                &["not backed up", "Radarr", "Sonarr", "Lidarr"],
+            ),
+            (
+                "README.md",
+                &[
+                    "Someone else in the family",
+                    "Administration",
+                    "Create user",
+                    "Accounts",
+                    "Parental control",
+                ],
+            ),
+            (
+                "README.md",
+                &[
+                    "Updating to a newer release",
+                    "git pull",
+                    "sudo bash install.sh",
+                ],
+            ),
+            (
+                "GATEWAY.md",
+                &[
+                    "On a TV",
+                    "LG",
+                    "Samsung",
+                    "Roku",
+                    "HDMI cable",
+                    "Casting from the phone",
+                    ":8443",
+                ],
+            ),
+        ];
+        for (n, (file, words)) in checks.iter().enumerate() {
+            let text = guide(file);
+            for word in *words {
+                assert!(GUIDES[n].contains(word), "{n}: {word} not in {}", GUIDES[n]);
+                assert!(text.contains(word), "{file} no longer says {word}");
+            }
+        }
+        assert!(guide("RECOVERY.md").contains("sudo bash install.sh --recover"));
+        let dashboard = guide("DASHBOARD.md");
+        for word in [
+            "**NekoServer**",
+            "**Upgrade NekoServer** (with the PIN)",
+            "**Update now**",
+            "Step-by-step guides",
+        ] {
+            assert!(
+                dashboard.contains(word),
+                "DASHBOARD.md no longer says {word}"
+            );
+        }
+        // Every line is in the prompt, with the rule to keep to them.
+        let m = messages("How do I add my son?", "", None, &[], &[]);
+        let system = m[0]["content"].as_str().unwrap();
+        for line in GUIDES {
+            assert!(system.contains(line), "{line}");
+        }
+        assert!(system.contains("never make steps up"), "{system}");
+        assert!(system.contains("not about this server"), "{system}");
+    }
+
+    /// Deep check 641: a question in Hebrew, Spanish or German came with English
+    /// instructions and English readings, and nothing said which language to answer in, so
+    /// a small model answered in English.
+    #[test]
+    fn the_model_is_told_to_answer_in_the_questions_language() {
+        let m = messages("¿Está bien mi servidor?", "", None, &[], &[]);
+        let system = m[0]["content"].as_str().unwrap();
+        assert!(
+            system.contains("in the language the question is written in"),
+            "{system}"
+        );
+        assert!(m[1]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("¿Está bien mi servidor?"));
     }
 
     /// A stand-in for Ollama: answers one request with `reply` (status line, headers and
@@ -2495,6 +2925,12 @@ mod tests {
             .0
             .unwrap_err()
             .contains("more memory"));
+        // As Ollama says it when the model does not fit at all: what to do is said too.
+        let (address, _) = fake_ollama(Some("HTTP/1.0 500 Internal Server Error\r\n\r\n{\"error\":\"model requires more system memory (5.5 GiB) than is available (3.1 GiB)\"}".into()));
+        let why = collect(&address, &LIMITS).0.unwrap_err();
+        assert!(why.contains("ask again in a while"), "{why}");
+        assert!(why.contains("choose a smaller model"), "{why}");
+        assert!(include_str!("../../ASSISTANT.md").contains("## Changing your mind"));
         // Killed by the kernel for the apps' sake, as on the 0.49.0 gate.
         let (address, _) = fake_ollama(Some(format!(
             "HTTP/1.0 200 OK\r\n\r\n{body}\n{{\"error\":\"an error was encountered while running the model: unexpected EOF\"}}\n"

@@ -555,6 +555,50 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 409)
         return json.loads(caught.exception.read())
 
+    def test_start_installs_only_what_the_review_on_the_screen_said(self):
+        """Review of 0.51.2 (P2): a switch saved after the review was drawn (a slow save, a
+        second tab) changed what Start installs, though the review said otherwise."""
+        shown = self.state()['revision']
+        self.assertEqual(self.post('api/choose', {'tv': True}), {'ok': True})
+        self.assertEqual(self.state()['revision'], shown + 1)
+        # Start from the older review: not started, and said.
+        said = self.refused('api/start', {'choices': {}, 'reviewed': shown})
+        self.assertIn('The choices changed after this review was shown', said['reason'])
+        self.assertFalse(self.window.started.is_set())
+        # A switch that comes with Start is saved, and shown in the next review first.
+        said = self.refused('api/start', {'choices': {'tv': False}, 'reviewed': shown + 1})
+        self.assertIn('Look at the review again', said['reason'])
+        self.assertFalse(self.window.started.is_set())
+        self.assertFalse(json.loads(self.settings.read_text())['tv']['wanted'])
+        # The review as it is now: setup starts.
+        self.assertEqual(self.post('api/start', {'choices': {}, 'reviewed': self.state()['revision']}), {'ok': True})
+        self.assertTrue(self.window.started.is_set())
+
+    def test_start_from_a_review_setup_has_left_does_not_start(self):
+        """Deep check 456: Back typed in the terminal, other drives chosen, and the window
+        (a second behind, or its tab asleep) still showed the first review. Its button
+        started setup at once: while the drives were still being asked, or with drives the
+        review on the screen never named. The switches were the same, so the count of
+        their changes alone did not tell the two reviews apart."""
+        self.window.show('review', ['Apps and their data: the drive ending in AAAA'])
+        shown = self.state()['revision']
+        # Back, typed in the terminal: the first page again, then the drives are asked.
+        self.window.show('apps')
+        self.window.show('storage')
+        said = self.refused('api/start', {'choices': {}, 'reviewed': shown})
+        self.assertIn('Look at the review again', said['reason'])
+        self.assertFalse(self.window.started.is_set())
+        self.assertFalse(self.window.frozen)
+        # The new review names another drive: the old one's button still does not start it.
+        self.window.show('review', ['Apps and their data: the drive ending in BBBB'])
+        self.refused('api/start', {'choices': {}, 'reviewed': shown})
+        self.assertFalse(self.window.started.is_set())
+        # The review as the window shows it now: setup starts.
+        state = self.state()
+        self.assertEqual(state['review']['sections'][-1]['lines'], ['Apps and their data: the drive ending in BBBB'])
+        self.assertEqual(self.post('api/start', {'choices': {}, 'reviewed': state['revision']}), {'ok': True})
+        self.assertTrue(self.window.started.is_set())
+
     def test_a_late_choice_after_the_start_cannot_change_the_saved_settings(self):
         self.post('api/start', {'choices': {'tv': False}})
         # The installer saves what it found (the SSD) while setup runs...

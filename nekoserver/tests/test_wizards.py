@@ -758,6 +758,21 @@ class CapacityTests(unittest.TestCase):
             # monthly checksum check compares everything).
             self.assertEqual(capacity.pending_bytes(usb, pairs, mirror=('upload',)), 40)
 
+    def test_the_current_copy_of_a_name_with_a_space_at_its_start_is_checked_too(self):
+        # Deep check 476: its note was trimmed, so the estimate trusted the damaged copy
+        # the weekly mirror writes again.
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            archive, usb = root / 'hdd/photos/archive', root / 'usb'
+            (archive / 'upload').mkdir(parents=True)
+            (usb / 'upload').mkdir(parents=True)
+            (archive / 'upload/ clip.mp4').write_bytes(b'A' * 40)
+            (archive / 'upload/. clip.mp4.neko-latest').write_text(' clip.mp4')
+            (usb / 'upload/. clip.mp4.neko-latest').write_text(' clip.mp4')
+            (usb / 'upload/ clip.mp4').write_bytes(b'Z' * 40)  # damaged, same size, newer
+            pairs = [(archive / 'upload', 'upload')]
+            self.assertEqual(capacity.pending_bytes(usb, pairs, mirror=('upload',)), 40)
+
     def test_a_same_size_edit_needs_room_again(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
@@ -924,6 +939,19 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertIn(rebuild, '\n'.join(out))
         # Other accounts never get in (the restore itself is given to the person's own).
         self.assertEqual((self.media / 'restored').stat().st_mode & 0o007, 0)
+
+    def test_photos_come_from_the_hdd_while_the_weekly_copy_holds_the_usb_drive(self):
+        """Deep check 682, on loop drives: with the weekly copy at work (it holds the USB
+        drive, for hours on a big first copy), the photo restore stopped with "the weekly
+        backup is using the USB drive right now", although the HDD's archive needs none."""
+        self.write('hdd/photos/archive/library/b.heic', b'photo2')
+        busy = RuntimeError('the weekly backup is using the USB drive right now')
+        with mock.patch.object(recovery_wizard.Usb, '__enter__', side_effect=busy):
+            out = []
+            recovery_wizard.restore_photos(self.config, answers('1', '2', '1', 'yes'), out.append)
+        restored = next((self.media / 'restored').iterdir())
+        self.assertEqual((restored / 'library/b.heic').read_bytes(), b'photo2')
+        self.assertIn('The USB drive is not looked at: the weekly backup is using the USB drive', out[0])
 
     def test_the_rebuild_command_follows_photos_on_the_media_drive(self):
         """The 0.46.0 review, H08: RECOVERY.md sent the photos to the SSD's library even when
@@ -1127,6 +1155,22 @@ class RecoveryWizardTests(unittest.TestCase):
         restored = self.restore_newest()
         self.assertEqual((restored / 'report.txt').read_bytes(), b'edit')
         self.assertEqual((restored / 'report.neko-20261022T120000Z.txt').read_bytes(), b'a file of its own')
+
+    def test_a_name_that_starts_with_a_space_keeps_its_note(self):
+        """Review of 0.51.2 (P2): the current-version note was trimmed, so for " song.mp3"
+        it named no saved copy and an edit undone since (A -> B -> A) restored B."""
+        files = 'usb/nextcloud/alice/files/'
+        self.write(files + ' song.mp3', b'first take')
+        self.write(files + ' song.neko-20261022T130000Z.mp3', b'second take')
+        self.write(files + '. song.mp3.neko-latest', b' song.mp3')
+        self.write(
+            files + '.neko-names.json',
+            json.dumps(
+                {'format': 'neko-names-v1', 'names': {}, 'versions': {' song.neko-20261022T130000Z.mp3': ' song.mp3'}}
+            ).encode(),
+        )
+        restored = self.restore_newest()
+        self.assertEqual((restored / ' song.mp3').read_bytes(), b'first take')
 
     def test_an_undone_edit_restores_the_content_the_backup_last_saw(self):
         # AAAA -> BBBB -> AAAA: the backup kept BBBB as a dated version and noted that
@@ -2146,6 +2190,28 @@ class RecoveryWizardTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'on another NAS disk than setup chose'):
                 usb.open()
 
+    def test_a_mistyped_backup_password_is_said_as_such_not_as_a_missing_list(self):
+        """Deep check 688, on loop drives: the wrong password's error was caught as the USB
+        drive's, so the menu said "The USB drive is not looked at: Wrong password ..." and
+        then "No password list on the HDD, nor on the USB drive" of the list just opened."""
+        usb = self.root / 'usb'
+        self.write('usb/passwords/100-1/manifest.json', b'{"format":"neko-maintenance-v1"}')
+        self.write('usb/passwords/100-1/secrets.tar.cms', b'sealed')
+        wrong = RuntimeError('Wrong password for this backup; nothing was restored')
+        with (
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None) as left,
+            mock.patch.object(backup_secrets, 'asked_restore', side_effect=wrong),
+            mock.patch.object(recovery_wizard, 'new_folder', return_value=self.root / 'out'),
+        ):
+            out = []
+            with self.assertRaisesRegex(RuntimeError, 'Wrong password'):
+                recovery_wizard.restore_passwords(self.config, answers('1', 'yes'), out.append)
+        said = '\n'.join(out)
+        self.assertNotIn('not looked at', said)
+        self.assertNotIn('No password list', said)
+        left.assert_called_once()  # the drive is let go all the same
+
     def test_no_password_list_anywhere_is_said(self):
         with (
             mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=None),
@@ -2201,6 +2267,27 @@ class RecoveryWizardTests(unittest.TestCase):
         left = list((restored / 'src').iterdir())
         self.assertEqual(len(left), 1, 'only the file copied whole')
         self.assertEqual(left[0].read_bytes(), (self.root / 'src' / left[0].name).read_bytes())
+
+    def test_a_new_folder_typed_with_its_home_or_quotes_is_taken(self):
+        """Deep check 481: "~/restored" and a quoted path were "Please type a full path
+        starting with /" (the menu runs as root, through sudo)."""
+        import pwd
+
+        home = pwd.getpwnam('nobody').pw_dir.rstrip('/')
+        with mock.patch.dict(os.environ, {'SUDO_USER': 'nobody'}):
+            got = recovery_wizard.typed_folder(lambda _: '~/restored photos', print)
+        self.assertEqual(got, Path(home + '/restored photos'))
+        got = recovery_wizard.typed_folder(lambda _: "'/media/ana/USB/restored'", print)
+        self.assertEqual(got, Path('/media/ana/USB/restored'))
+
+    def test_one_file_with_several_versions_is_said_as_one(self):
+        """Deep check 485: "1 files had more than one version; you get the newest of each"."""
+        self.write('src/report.txt', b'first')
+        self.write('src/report.neko-20261022T120000Z.txt', b'second')
+        self.write('src/.report.txt.neko-latest', b'report.neko-20261022T120000Z.txt')
+        said = []
+        recovery_wizard.copy_latest([('src', self.root / 'src')], self.root / 'restored', output=said.append)
+        self.assertIn('1 file had more than one version; you get its newest one:', said)
 
     def test_a_password_list_from_a_snapshot_without_a_backup_key(self):
         import tarfile

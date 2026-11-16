@@ -65,6 +65,7 @@
 
   let stopped = false; // this window was opened again elsewhere: it asks nothing more
   let saving = Promise.resolve(); // the last switch on its way to setup's server
+  let reviewed = null; // which choices the review on the screen shows (the server's count of them)
 
   async function save(changes) {
     try {
@@ -174,7 +175,10 @@
         switches[extra.id] = input.checked;
         chosen[extra.id] = input.checked;
         showCards();
-        saving = save({ [extra.id]: input.checked });
+        // One after another: two quick presses sent side by side could arrive the other
+        // way round, and the one pressed first would be the one saved.
+        const change = { [extra.id]: input.checked };
+        saving = saving.then(() => save(change));
       });
       if (extra.installs.length) node.append(...installsOf(extra));
       if (parent) parent.node.append(node);
@@ -229,7 +233,10 @@
     $('start').disabled = true;
     $('start').textContent = 'Starting…';
     try {
-      const answer = await post('api/start', { choices: chosen });
+      // Every switch saved first; then setup starts only if its choices are still the
+      // ones this review was made from (`reviewed`), or it says so and shows the new review.
+      await saving;
+      const answer = await post('api/start', { choices: chosen, reviewed });
       if (answer.ok === false) startAgain(answer.reason);
     } catch {
       startAgain('');
@@ -519,7 +526,10 @@
           count.least +
           ' to ' +
           count.most +
-          '. An older one is removed only after a new backup has succeeded. This never deletes your photos, films or music.' +
+          '. ' +
+          // When an older one goes, exceptions included: setup's own sentence (backup_plan.rule).
+          count.rule +
+          ' This never deletes your photos, films or music.' +
           (count.review ? ' ' + count.review + ' Leave it empty to leave them as they are.' : '')
       );
     });
@@ -1403,7 +1413,10 @@
     if (!built) buildChoices(state.extras);
     for (const extra of state.extras) if (!(extra.id in chosen)) switches[extra.id] = extra.on;
     showCards();
-    if (state.review) showReview(state.review);
+    if (state.review) {
+      showReview(state.review);
+      reviewed = state.revision ?? null;
+    }
     stage = state.stage === 'review' ? 'review' : 'apps';
     showStage();
   }

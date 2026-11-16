@@ -1821,19 +1821,61 @@ class ExclusionTests(unittest.TestCase):
         setup.chmod(0o644)
         held = uninstaller.hold_setup_locks((str(setup),))
         self.addCleanup(lambda: [os.close(fd) for fd in held])
-        self.plan = self.system.plan()
-        self.remove({'server'})
-        for kept in (
-            '/run/nekoserver-setup.lock',
-            '/run/nekoserver-install.lock',
-            '/run/nekoserver-packages.lock',
-            '/run/nekoserver-heartbeat/worker.lock',
-        ):
-            self.assertTrue(self.at(kept).exists(), kept)
+        # A heartbeat check-in still at work holds its lock.
+        with self.at('/run/nekoserver-heartbeat/worker.lock').open() as worker:
+            fcntl.flock(worker, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.plan = self.system.plan()
+            self.remove({'server'})
+            for kept in (
+                '/run/nekoserver-setup.lock',
+                '/run/nekoserver-install.lock',
+                '/run/nekoserver-packages.lock',
+                '/run/nekoserver-heartbeat/worker.lock',
+            ):
+                self.assertTrue(self.at(kept).exists(), kept)
         self.assertFalse(self.at('/run/nekoserver-heartbeat/status.json').exists())
         self.assertFalse(self.at('/run/nekoserver-control').exists())
         with setup.open() as installer, self.assertRaises(BlockingIOError):  # install.sh started now: it must wait
             fcntl.flock(installer, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    # ---- D6: what an uninstall left behind on a real PC
+    def test_overrides_made_with_systemctl_edit_go_with_the_units(self):
+        # `sudo systemctl edit nekoserver-app-backup.service` writes this folder. It stayed,
+        # naming a unit that was gone (and a later setup's unit would have run with it).
+        mine = self.system.write('/etc/systemd/system/nekoserver-app-backup.service.d/override.conf', '[Service]\n')
+        timer = self.system.write('/etc/systemd/system/nekoserver-maintenance.timer.d/override.conf', '[Timer]\n')
+        other = self.system.write('/etc/systemd/system/other.service.d/override.conf', '[Service]\n')
+        self.plan = self.system.plan()
+        listed = [str(p) for p in self.plan.groups['server']['paths']]
+        self.assertIn(str(mine.parent), listed, 'the plan shows it before anything goes')
+        self.remove({'server'})
+        self.assertFalse(mine.parent.exists())
+        self.assertFalse(timer.parent.exists())
+        self.assertTrue(other.exists(), "another program's override is not NekoServer's")
+        self.assertTrue(self.at('/etc/systemd/system/docker.service.d').is_dir(), "Docker's own folder stays")
+
+    def test_run_folders_left_with_only_an_unused_lock_go_too(self):
+        for path in (
+            '/run/nekoserver-dashboard/collector.lock',
+            '/run/nekoserver-dashboard/status.json',
+            '/run/nekoserver-heartbeat/worker.lock',
+            '/run/nekoserver-heartbeat/status.json',
+            '/run/nekoserver-notifications/worker.lock',
+        ):
+            self.system.write(path, '')
+        with self.at('/run/nekoserver-notifications/worker.lock').open() as at_work:
+            fcntl.flock(at_work, fcntl.LOCK_EX | fcntl.LOCK_NB)  # an alert still being sent
+            self.plan = self.system.plan()
+            self.remove({'server'})
+        self.assertFalse(self.at('/run/nekoserver-dashboard').exists())
+        self.assertFalse(self.at('/run/nekoserver-heartbeat').exists())
+        self.assertTrue(self.at('/run/nekoserver-notifications/worker.lock').exists(), 'a lock in use stays')
+        self.assertTrue(self.at('/run/nekoserver-setup.lock').exists(), "setup's own lock stays")
+        # Only with NekoServer itself: its jobs still run when only data was chosen.
+        self.system.write('/run/nekoserver-heartbeat/worker.lock', '')
+        self.plan = self.system.plan()
+        uninstaller._remove_idle_run_folders(self.plan, self.shown.append)
+        self.assertFalse(self.at('/run/nekoserver-heartbeat').exists())
 
 
 class NoContainersHintTests(unittest.TestCase):

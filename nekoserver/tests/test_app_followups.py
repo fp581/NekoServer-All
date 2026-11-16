@@ -4,6 +4,7 @@ download apps, and qBittorrent's automatic mode switched on only for Lidarr."""
 
 import importlib.util
 import json
+import errno
 import os
 import sys
 import tempfile
@@ -158,6 +159,72 @@ class SymlinkSafeImportTests(unittest.TestCase):
         self.assertIn(source_import.AGAIN, result['reason'])
         self.assertFalse((self.media / 'library/music/Album/track2.flac.!qB').exists())
 
+    def test_a_file_with_two_names_is_counted_once_and_kept_as_a_link(self):
+        # D13: a hard-linked file (a download that Sonarr or Radarr linked into another
+        # folder) was counted twice for room and copied twice.
+        (self.source / 'Seeding').mkdir()
+        os.link(self.source / 'Album/track.flac', self.source / 'Seeding/track.flac')
+        with mock.patch.object(source_import, 'stable_inodes', return_value=True):
+            preview = source_import.copy_source(self.entry, self.media, apply=False)
+            self.assertEqual((preview['new_files'], preview['bytes'], preview['hard_links']), (2, 5, 1))
+            self.assertIn('takes no room of its own', preview['reason'])
+            result = source_import.copy_source(self.entry, self.media, apply=True)
+        self.assertEqual((result['copied'], result['bytes'], result['hard_links']), (2, 5, 1))
+        first, second = (self.media / 'library/music' / name for name in ('Album/track.flac', 'Seeding/track.flac'))
+        self.assertEqual(second.read_bytes(), b'track')
+        self.assertEqual(first.stat().st_ino, second.stat().st_ino, 'one file under two names, as in the source')
+        self.assertEqual(second.stat().st_mtime_ns, 2_000_000_000)
+        self.assertNotEqual(first.stat().st_ino, (self.source / 'Album/track.flac').stat().st_ino)
+        with mock.patch.object(source_import, 'stable_inodes', return_value=True):
+            # A second run finds both; a name added later links to the copy made earlier.
+            self.assertEqual(source_import.copy_source(self.entry, self.media, apply=True)['copied'], 0)
+            os.link(self.source / 'Album/track.flac', self.source / 'Third.flac')
+            later = source_import.copy_source(self.entry, self.media, apply=True)
+        self.assertEqual((later['copied'], later['bytes'], later['hard_links']), (1, 0, 1))
+        self.assertEqual((self.media / 'library/music/Third.flac').stat().st_ino, first.stat().st_ino)
+
+    def test_a_second_name_is_copied_where_it_cannot_be_linked(self):
+        (self.source / 'Seeding').mkdir()
+        os.link(self.source / 'Album/track.flac', self.source / 'Seeding/track.flac')
+        # A library drive without hard links (exFAT answers "not permitted").
+        refused = OSError(errno.EPERM, 'Operation not permitted')
+        with (
+            mock.patch.object(source_import, 'stable_inodes', return_value=True),
+            mock.patch.object(source_import.os, 'link', side_effect=refused),
+            mock.patch.object(
+                source_import,
+                'rename_at',
+                side_effect=lambda folder, old, new: os.rename(old, new, src_dir_fd=folder, dst_dir_fd=folder),
+            ),
+        ):
+            result = source_import.copy_source(self.entry, self.media, apply=True)
+        self.assertEqual(result['copied'], 2)
+        self.assertEqual(self.copied(), [b'track', b'track'])
+        # Where inode numbers are not kept (FAT, SMB) two names are never taken for one file.
+        (self.media / 'library/music/Seeding/track.flac').unlink()
+        with mock.patch.object(source_import, 'stable_inodes', return_value=False):
+            plain = source_import.copy_source(self.entry, self.media, apply=False)
+        self.assertNotIn('hard_links', plain)
+        self.assertEqual(plain['bytes'], 5)
+
+    def test_a_download_programs_own_leftover_is_not_imported_as_media(self):
+        # D7: qBittorrent keeps the pieces of files you did not choose in a hidden
+        # ".<torrent>.parts" file beside the download. It was copied into the library.
+        leftover = 'Album/.0123456789abcdef0123456789abcdef01234567.parts'
+        (self.source / leftover).write_bytes(b'pieces')
+        for apply in (False, True):
+            result = source_import.copy_source(self.entry, self.media, apply=apply)
+            self.assertEqual(result['new_files'], 1, 'only the track is planned')
+            self.assertEqual(result['bytes'], 5)
+            self.assertEqual(result['download_leftovers'], 1)
+            self.assertIn(leftover, result['reason'])
+            # Not "still being downloaded": it never finishes, and nothing is left to do.
+            self.assertNotIn('still_downloading', result)
+            self.assertNotIn(source_import.AGAIN, result['reason'])
+        self.assertEqual(result['copied'], 1)
+        self.assertEqual(self.copied(), [b'track'])
+        self.assertEqual(result['status'], 'copied')
+
 
 class FakeArr:
     """Prowlarr and the Arr apps' API, as media-connect.py's request() sees it."""
@@ -295,6 +362,38 @@ class RemovedAppConnectionTests(unittest.TestCase):
                 run.reset_mock()
                 onboarding.remove_stale(ctx, Path(d) / 'release', Path(d) / 'config.json')
                 run.assert_not_called()
+
+    def test_an_app_whose_group_was_switched_off_counts_as_taken_out(self):
+        """Deep check 750: Music switched off at a later setup run. Lidarr was stopped but
+        stayed in media.services, so Prowlarr kept its link to it and warned for good."""
+        from modules import onboarding
+
+        every = ['jellyfin', 'navidrome', 'sonarr', 'radarr', 'lidarr', 'prowlarr', 'seerr', 'qbittorrent']
+        music_off = {'media': {'services': every}, 'media_apps': {'movies': True, 'music': False}}
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / 'compose/lidarr').mkdir(parents=True)
+            (Path(d) / 'compose/lidarr/compose.yaml').write_text('services: {}\n')
+            ctx = mock.Mock(config={'data_mount': d, **music_off}, log=mock.Mock())
+            with mock.patch.object(onboarding.subprocess, 'run', return_value=mock.Mock(returncode=0)) as run:
+                onboarding.remove_stale(ctx, Path(d) / 'release', Path(d) / 'config.json')
+            self.assertIn('--remove-stale', run.call_args.args[0])
+            ctx.log.assert_any_call('Taking away the connections setup made to apps no longer set up: lidarr')
+        # media-connect itself (what that command runs) leaves Lidarr out of the apps set up.
+        with (
+            tempfile.NamedTemporaryFile('w', suffix='.json') as settings,
+            mock.patch.object(self.connect, 'read_settings', return_value={'data_mount': '/srv', **music_off}),
+            mock.patch.object(self.connect.os.path, 'ismount', return_value=True),
+            mock.patch.object(self.connect, 'remove_stale') as removing,
+            mock.patch('builtins.print'),
+        ):
+            settings.write('{}')
+            settings.flush()
+            argv = ['--config', settings.name, '--remove-stale', '--apply', '--data-root', '/']
+            self.assertEqual(self.connect.main(argv), 0)
+        root, selected, apply = removing.call_args.args
+        self.assertNotIn('lidarr', selected)
+        self.assertNotIn('navidrome', selected)
+        self.assertIn('prowlarr', selected)
 
 
 class QbittorrentLoginPassedOnTests(unittest.TestCase):

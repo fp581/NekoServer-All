@@ -74,6 +74,23 @@ class ChangesTests(unittest.TestCase):
         self.assertEqual(now[existing_page.COPIES], [{'holds': 'music', 'path': '/mnt/tank/music'}])
         self.assertEqual(drive_table.PLACES_AHEAD, {'photos': 'ssd'})
 
+    def test_a_drive_chosen_in_this_run_is_not_said_as_chosen_last_time(self):
+        # A first install's storage step said "Last time you chose drive 2 ... as the app
+        # SSD. It is used again." of the drive picked a minute before (the Ubuntu lab).
+        self.addCleanup(drive_table.ROLES_AHEAD.clear)
+        table = [{'number': 2, 'uuid': 'u1'}]
+        now = settings()
+        chosen = {'settings': {'storage': ({'data_ssd': {'uuid': 'u1', 'fstype': 'ext4'}}, [])}, 'places': {}}
+        storage.keep_ahead(now, chosen)
+        said = []
+        with mock.patch.object(drive_table, 'brief', return_value='drive 2 (Samsung SSD 870)'):
+            storage.said_last_time(table, 'u1', 'data_ssd', said.append)
+            self.assertEqual(said, ['As chosen before the approval, drive 2 (Samsung SSD 870) is the app SSD.'])
+            # A rerun whose page kept the saved drives: chosen at an earlier run.
+            storage.keep_ahead(now, {'settings': {}, 'places': {}})
+            storage.said_last_time(table, 'u1', 'data_ssd', said.append)
+        self.assertEqual(said[1], 'Last time you chose drive 2 (Samsung SSD 870) as the app SSD. It is used again.')
+
 
 class AskedAheadTests(unittest.TestCase):
     def setUp(self):
@@ -257,6 +274,7 @@ class WindowStageTests(unittest.TestCase):
         window = setup_gui.Window.__new__(setup_gui.Window)
         window.lock = __import__('threading').Lock()
         window.frozen, window.stage, window.button, window.storage_lines = False, 'apps', None, []
+        window.revision = 0
         return window
 
     def test_a_button_counts_only_on_its_own_page_and_once(self):
