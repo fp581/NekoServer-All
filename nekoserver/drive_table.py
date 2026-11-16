@@ -43,6 +43,8 @@ PLACES_AHEAD = {}
 INSTALL_AHEAD = {}
 # ... and that the backups page was asked then ({'asked': True}): not asked again in the run.
 TIMES_AHEAD = {}
+# ... and the app SSD and the media HDD chosen there in this run: {'data_ssd': its UUID, ...}.
+ROLES_AHEAD = {}
 # The UUIDs of drives the storage page chose for files or installs while it asks the
 # offline drive (not in the settings until the approval).
 TAKEN_AHEAD = []
@@ -990,8 +992,12 @@ def none_chosen(skippable, stopped):
 
 
 def last_time(row, key):
-    """What a rerun says about a drive chosen before."""
+    """What a rerun says about a drive chosen before. One chosen on the storage page of
+    this very run is said as that: "Last time you chose" puzzled a first install, where
+    the choice was a minute old and there was no last time."""
     chosen = brief(row)
+    if ROLES_AHEAD.get(key) == row['uuid']:
+        return f'As chosen before the approval, {chosen} is {role(key)}.'
     return f'Last time you chose {chosen} as {role(key)}. It is used again.'
 
 

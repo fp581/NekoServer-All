@@ -1856,6 +1856,12 @@ def keep_ahead(config, chosen):
     drive_table.PLACES_AHEAD.update(chosen['places'])
     drive_table.INSTALL_AHEAD.clear()
     drive_table.INSTALL_AHEAD.update(chosen.get('installs') or {})
+    drive_table.ROLES_AHEAD.clear()
+    if 'storage' in chosen['settings']:
+        # The page chose (or changed) the drives in this run: the storage step says so.
+        drive_table.ROLES_AHEAD.update(
+            {key: (config.get('storage', {}).get(key) or {}).get('uuid') for key in ('data_ssd', 'media_hdd')}
+        )
 
 
 def wished_places(context, inventory):
