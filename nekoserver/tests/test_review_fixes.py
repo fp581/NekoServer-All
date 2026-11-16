@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -381,6 +382,42 @@ class AlreadyCopiedTests(unittest.TestCase):
             copy.write_bytes(film.read_bytes())
             os.utime(copy, ns=(film.stat().st_atime_ns, film.stat().st_mtime_ns))
             self.assertTrue(source_import.already_copied(film, copy))
+
+    def test_a_source_changed_outside_the_compared_pieces_is_not_already_imported(self):
+        """Review of 0.51.3: only three 1 MiB pieces were compared, so a film edited after
+        its copy was made (a tag or subtitle track rewritten in the middle, its old date
+        put back by the program) counted as already imported and stayed out of date."""
+        import source_import
+
+        with tempfile.TemporaryDirectory() as d:
+            film, copy = Path(d) / 'film.mkv', Path(d) / 'library.mkv'
+            film.write_bytes(b'a' * 9_000_000)
+            copy.write_bytes(film.read_bytes())
+            os.utime(copy, ns=(film.stat().st_atime_ns, film.stat().st_mtime_ns))
+            self.assertTrue(source_import.already_copied(film, copy))
+            date = film.stat().st_mtime_ns
+            time.sleep(0.01)  # the edit comes after the copy, as it does in real life
+            with film.open('r+b') as edited:
+                edited.seek(2_000_000)  # outside the start, middle and end pieces
+                edited.write(b'b')
+            os.utime(film, ns=(date, date))
+            self.assertFalse(source_import.already_copied(film, copy))
+
+    def test_a_network_share_is_compared_whole(self):
+        """On a NAS the file times come from its own clock, so the copy's change time says
+        nothing about whether the source changed: the whole file is compared."""
+        import source_import
+
+        with tempfile.TemporaryDirectory() as d:
+            film, copy = Path(d) / 'film.mkv', Path(d) / 'library.mkv'
+            copy.write_bytes(b'a' * 2_000_000 + b'b' + b'a' * 6_999_999)
+            film.write_bytes(b'a' * 9_000_000)  # written after the copy: its change time is newer
+            os.utime(copy, ns=(film.stat().st_atime_ns, film.stat().st_mtime_ns))
+            # The copy's change time is now newer than the film's, as for an unchanged source.
+            local = {os.stat(d).st_dev: True}
+            self.assertTrue(source_import.already_copied(film, copy, clocks=local))  # pieces only
+            on_nas = {os.stat(d).st_dev: False}
+            self.assertFalse(source_import.already_copied(film, copy, clocks=on_nas))
 
 
 class RehearsalSqlTests(unittest.TestCase):
