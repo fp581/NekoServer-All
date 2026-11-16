@@ -13,13 +13,25 @@ When a change went wrong (a setting you regret, a library that got muddled), bri
 
    ```bash
    sudo docker stop neko-jellyfin-jellyfin-1
-   sudo mv /srv/nekoserver/appdata/jellyfin /srv/nekoserver/appdata/jellyfin.before
-   sudo cp -a FOLDER/appdata/jellyfin /srv/nekoserver/appdata/
+   sudo mv /srv/nekoserver/appdata/jellyfin /srv/nekoserver/appdata/jellyfin.before &&
+     sudo cp -a FOLDER/appdata/jellyfin /srv/nekoserver/appdata/
    sudo docker start neko-jellyfin-jellyfin-1
    ```
 
    For another app, write its name in place of `jellyfin` everywhere (`sonarr`, `radarr`, `lidarr`, `prowlarr`, `seerr`, `navidrome`, `qbittorrent`). `/srv/nekoserver` is your SSD's folder. `cp -a` keeps each file's owner, which the app needs.
-3. Open the app and check it. When all is well, delete the settings you put aside (`sudo rm -r /srv/nekoserver/appdata/jellyfin.before`) and the restore folder. If it is not, stop the app again and move the `.before` folder back.
+
+   **If `mv` says "Device or resource busy"** (then nothing was copied, and the app started again with its present settings): the app is installed on a drive of its own (a server whose `my-config.json` has `"install"`), and its folder on the SSD only shows that drive's folder. `grep appdata/jellyfin /etc/fstab` prints a line that starts with the app's folder on that drive, for example `/mnt/nekoserver-drives/big/nekoserver/appdata/jellyfin`. With that folder in place of `ONDRIVE`:
+
+   ```bash
+   sudo docker stop neko-jellyfin-jellyfin-1
+   sudo umount /srv/nekoserver/appdata/jellyfin &&
+     sudo mv ONDRIVE ONDRIVE.before &&
+     sudo cp -a FOLDER/appdata/jellyfin ONDRIVE
+   sudo mount /srv/nekoserver/appdata/jellyfin
+   sudo docker start neko-jellyfin-jellyfin-1
+   ```
+
+3. Open the app and check it. When all is well, delete the settings you put aside (`sudo rm -r /srv/nekoserver/appdata/jellyfin.before`, or `sudo rm -r ONDRIVE.before` for an app on a drive of its own) and the restore folder. If it is not, stop the app again and move the `.before` folder back (on a drive of its own: `umount` first, as above, and `mount` again after).
 
 Only the `appdata` folder is copied back. The `compose` folder in the restore is for reference: never start an app from it.
 

@@ -437,6 +437,64 @@ class RestoredSettingsTests(unittest.TestCase):
         self.assertIn('sudo cp -a FILE WHERE-IT-BELONGS', doc('HOST-BACKUPS.md'))
         self.assertIn('(APP-BACKUPS.md#putting-one-apps-settings-back)', doc('RECOVERY.md'))
 
+    def follow_the_steps(self, on_its_drive):
+        """The guide's commands run as written (docker left out) in a private mount
+        namespace: Jellyfin's settings on the SSD, or on a drive of its own, mounted at
+        /srv/nekoserver/appdata/jellyfin by setup's /etc/fstab line."""
+        import os
+        import shutil
+        import subprocess
+        import tempfile
+
+        if os.geteuid() != 0 or not shutil.which('unshare'):
+            self.skipTest('needs root and unshare for a private mount')
+        steps = doc('APP-BACKUPS.md').split("## Putting one app's settings back")[1].split('\n## ')[0]
+        blocks = re.findall(r'```bash\n(.*?)```', steps, re.S)
+        with tempfile.TemporaryDirectory(dir='/var/tmp') as d:
+            top = Path(d)
+            ssd, restore = top / 'ssd', top / 'restore'
+            ondrive = top / 'drives/big/nekoserver/appdata/jellyfin'
+            fstab = top / 'fstab'
+            for folder in (ssd / 'appdata/jellyfin', restore / 'appdata/jellyfin', ondrive):
+                folder.mkdir(parents=True)
+            present = ondrive if on_its_drive else ssd / 'appdata/jellyfin'
+            (present / 'library.db').write_text('present')
+            (present / 'made-after-the-backup').write_text('present')
+            (restore / 'appdata/jellyfin/library.db').write_text('restored')
+            target = ssd / 'appdata/jellyfin'
+            fstab.write_text(
+                storage.installed_line(str(ondrive), str(target), str(top / 'drives/big'), str(ssd)) + '\n'
+            )
+
+            def shell(block):
+                found = subprocess.run(['grep', 'appdata/jellyfin', str(fstab)], capture_output=True, text=True)
+                lines = [line for line in block.replace('sudo ', '').splitlines() if 'docker ' not in line]
+                text = '\n'.join(lines).replace('/srv/nekoserver', str(ssd)).replace('FOLDER', str(restore))
+                return text.replace('ONDRIVE', found.stdout.split()[0])
+
+            # mount(8) reads this fstab in place of the PC's; setup's line is mounted first.
+            script = [f'mount() {{ command mount -T {fstab} "$@"; }}', f'mount {target}' if on_its_drive else '']
+            script.append(shell(blocks[0]).replace('mv ', f'mv 2>{top}/said ', 1))
+            # As the guide says: the other commands only where mv said the folder is busy.
+            busy = [shell(block) for block in blocks[1:] if 'umount' in block] or ['false']
+            script.append(f'if grep -q "Device or resource busy" {top}/said; then\n' + '\n'.join(busy) + '\nfi')
+            script.append(f'ls -A {target}')
+            done = subprocess.run(['unshare', '-m', 'bash', '-c', '\n'.join(script)], capture_output=True, text=True)
+            self.assertEqual(done.stdout.split(), ['library.db'], done.stderr)
+            self.assertEqual((present.parent / 'jellyfin.before' / 'made-after-the-backup').read_text(), 'present')
+            self.assertEqual((present.parent / 'jellyfin.before' / 'library.db').read_text(), 'present')
+            self.assertEqual((present / 'library.db').read_text(), 'restored')
+
+    def test_the_steps_put_the_settings_back_with_the_app_on_the_ssd(self):
+        self.follow_the_steps(on_its_drive=False)
+
+    def test_the_steps_put_the_settings_back_with_the_app_on_a_drive_of_its_own(self):
+        """Deep check 791: with Jellyfin installed on a drive of its own, its folder on the
+        SSD is a mount point; `mv` refused it ("Device or resource busy"), and the `cp`
+        after it poured the backup into the present settings: files made since stayed
+        mixed in, and nothing was put aside to go back to."""
+        self.follow_the_steps(on_its_drive=True)
+
     def test_the_containers_and_folders_of_the_steps_are_the_ones_setup_makes(self):
         """The app's container is its Compose project and service (neko-<app>, <app>), and
         its settings are appdata/<app> on the SSD, as the snapshot keeps them."""
