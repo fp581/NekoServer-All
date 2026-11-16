@@ -74,8 +74,11 @@ def finish_pending(ctx, pending):
                 'below this list in the terminal, shows them.',
                 'For an email verification explicitly requested by the app, open your email app '
                 'and approve the message. Local email-shaped logins usually do not need this.',
-                'If the saved credentials are wrong, leave this step pending with Ctrl+C, '
-                'then rerun account-setup.py to enter the current login.',
+                # Ctrl+C stops all of setup here (the line under the steps says so); Ctrl+D is
+                # what leaves this one for later. account-setup.py alone named no command.
+                'If the saved login is wrong (the app has an account of its own), leave this step for later with '
+                'Ctrl+D, then run  sudo bash install.sh  again and choose c when it asks about this app, to type '
+                'the login the app has now.',
                 'Return here and answer yes. The installer retries the authenticated account check.',
             ],
             [('url', 'http://127.0.0.1:' + str(port) + '/')],

@@ -288,6 +288,10 @@ class StepTests(unittest.TestCase):
         self.assertEqual(by_title['Finish Jellyfin administrator'][0], ['jellyfin'])
         self.assertIn('"Show login" in the setup window', by_title['Finish Jellyfin administrator'][1])
         self.assertNotIn('APP-CREDENTIALS.txt', by_title['Finish Jellyfin administrator'][1])
+        # Ctrl+C stops setup at this step (guided_setup.KEYS): it never "leaves it pending".
+        self.assertNotIn('pending with Ctrl+C', by_title['Finish Jellyfin administrator'][1])
+        self.assertIn('for later with Ctrl+D', by_title['Finish Jellyfin administrator'][1])
+        self.assertIn('choose c when it asks about this app', by_title['Finish Jellyfin administrator'][1])
         # The phone is one part (0.50.0): each of its steps names the login it means.
         [(title, steps)] = parts
         self.assertEqual(title, 'Use your apps away from home')
