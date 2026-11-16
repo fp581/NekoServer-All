@@ -91,6 +91,17 @@ class FamilyLoginTests(unittest.TestCase):
             self.assertIn(where, part)
         self.assertIn('account-setup.py show', part)
 
+    def test_the_readme_says_what_to_remove_when_a_phone_is_lost(self):
+        """Deep check 864: a family member's phone lost, with Tailscale and the apps signed
+        in. No guide said what to remove: the phone kept the server's addresses (and an
+        unlocked dashboard) until someone thought of the Tailscale console."""
+        part = doc('README.md').split('**A phone was lost or stolen.**')[1].split('\n**')[0]
+        self.assertIn('Tailscale admin console', part)
+        self.assertIn('**Remove**', part)
+        self.assertLess(part.index('Tailscale'), part.index('Immich'))
+        for where in ('*Authorized devices*', '*Devices & sessions*', '*Dashboard* → *Devices*'):
+            self.assertIn(where, part)
+
 
 class LoginsAfterARestoreTests(unittest.TestCase):
     """Deep checks 865 and 870: after a new SSD, setup makes new logins for the new, empty

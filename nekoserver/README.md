@@ -231,6 +231,8 @@ Sign in with the username of the account that ran setup (`"samba_user"` under `"
 
 **Someone forgot their password.** You give them a new one with your login; nobody else's is changed, and NekoServer's own saved logins stay as they are. In Immich: *Administration* → *Users* → the person → **Reset password** (Immich shows the new one: tell it to them). In Jellyfin: *Dashboard* → *Users* → the person → *Password*. In Nextcloud: *Accounts* → the person's row → **Edit**, then type a new password. Your own login is shown by `account-setup.py show` ([ACCOUNT-SETUP.md](ACCOUNT-SETUP.md)).
 
+**A phone was lost or stolen.** First, in the Tailscale admin console (*Machines*), open the phone's menu and choose **Remove**: away from your home it then reaches none of the server's addresses, the dashboard included. Then sign it out of the apps it had: in Immich, signed in with its owner's login, the picture at the top right, *Account Settings* → *Authorized devices*; in Nextcloud, the same way, *Personal settings* → *Security* → *Devices & sessions*; in Jellyfin, with your login, *Dashboard* → *Devices*. Change the passwords that were saved in its browser.
+
 **Renaming the server.** Its name is part of the app addresses (`https://NAME.tailXXXX.ts.net`). Change it in the Tailscale admin console (*Machines* → this server's menu → *Edit machine name*), then run `sudo bash install.sh` again: it gives the apps and the dashboard their addresses under the new name and makes a new phone setup page. Open the new addresses on each phone and computer (the old ones stop working; setup asks you to check the phone again). The home addresses (`https://192.168.1.20:8442`) stay the same.
 
 ---
