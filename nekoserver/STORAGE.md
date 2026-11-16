@@ -33,6 +33,16 @@ The first table says, for each kind of file, where it lives and how it is backed
 
 Navidrome, Lidarr and the qBittorrent music category use the drive chosen for music. Local imports route music there and videos to the media drive. Incomplete downloads may use the configured shared temporary folder. A finished download is shared until it has been uploaded twice, or for 7 days, then qBittorrent stops it and Sonarr, Radarr or Lidarr remove it from the downloads folder (the film, show or album stays in the library). Without such a limit a download is shared for good and its files are never removed. Setup sets it only while qBittorrent has no seeding limit: a limit of your own (qBittorrent, *Tools*, *Options*, *BitTorrent*, *Seeding Limits*) is kept; keep its action at *Stop torrent*, as the apps remove only stopped downloads. No watched-video migration between SSD/HDD is performed.
 
+## Backup cards
+
+With **Backup cards** switched on (setup's first page, under Storage), Immich's original
+photos and videos and each person's Nextcloud files are also copied onto SD cards or USB
+sticks you keep somewhere else: a numbered set, filled a little more every night one of them
+is plugged in (an hour after the other nightly jobs), add-only, each file checked against its
+checksum. You choose the cards on the dashboard's Backup cards page; NekoServer never formats
+or erases one. How to use them, what happens when a card is full and how to get files back:
+[BACKUP-CARDS.md](BACKUP-CARDS.md); without the server: [CARD-RECOVERY.md](CARD-RECOVERY.md).
+
 ## Where each app keeps your files
 
 Setup asks once, after the drives are chosen, where four things go: **Immich's photos and videos**, **the films and shows** (with their downloads), **the music library** (with its downloads: Lidarr moves finished downloads into the library, which only works on one drive) and **Nextcloud's files**. For each, you choose the SSD (faster), the media drive (more room) or another drive connected to this PC, of their own. The better one for this server is offered first, and Enter takes it:

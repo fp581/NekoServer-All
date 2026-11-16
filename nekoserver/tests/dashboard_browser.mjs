@@ -48,6 +48,35 @@ const CHECKS = {
         title.top + 1 < actions.bottom;
       return [document.documentElement.scrollWidth, document.documentElement.clientWidth, overlap];
     });
+  },
+  /* The words of the element `id` on page `route`. */
+  async pageText(browser, { route, id }) {
+    const page = await open(browser, route);
+    return page.evaluate(n => document.getElementById(n).innerText, id);
+  },
+  /* The Backup cards page against a stand-in control service: whether it is in the menu,
+     what it says of the set, the drives it finds when asked, and an enrolment through its
+     dialog (the privacy tick, then the button): the dialog's title and the message after. */
+  async cardsPage(browser, { width }) {
+    const page = await open(browser, 'cards', width);
+    const nav = await page.evaluate(() => !document.getElementById('nav-cards').hidden);
+    const set = await page.evaluate(() => document.getElementById('cards-set').innerText);
+    await page.getByRole('button', { name: 'Look for cards' }).click();
+    await page.waitForSelector('#cards-drives article');
+    const drives = await page.evaluate(() =>
+      [...document.querySelectorAll('#cards-drives article')].map(a => a.innerText.replace(/\s+/g, ' ').trim())
+    );
+    await page.getByRole('button', { name: 'Use this as card 2 of the set' }).click();
+    const dialog = await page.evaluate(() => document.getElementById('dialog-title').textContent);
+    await page.locator('#cards-ack').check();
+    await page.getByRole('button', { name: 'Use this as card 2', exact: true }).click();
+    await page.waitForFunction(() => !document.getElementById('toast').hidden);
+    const toast = await page.evaluate(() => document.getElementById('toast').textContent);
+    const widths = await page.evaluate(() => [
+      document.documentElement.scrollWidth,
+      document.documentElement.clientWidth
+    ]);
+    return { nav, set, drives, dialog, toast, widths };
   }
 };
 

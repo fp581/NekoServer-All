@@ -256,10 +256,6 @@ impl Volume {
         self.root.room()
     }
 
-    pub fn device(&self) -> u64 {
-        self.root_stat.dev
-    }
-
     /// A source root that is on the card, or that holds the card's folder, overlaps it.
     /// On a mounted card the device decides; a test folder shares its device with
     /// everything else, so there only the paths do.

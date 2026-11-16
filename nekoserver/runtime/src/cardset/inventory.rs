@@ -10,11 +10,21 @@
 //! Nothing is ever overwritten; both go through `staging/` and a no-replace rename.
 //!
 //! A snapshot is historical knowledge, never proof that another card is healthy now.
+//!
+//! How many there are (0.52.0; archive format 1, section 6, a compatible addition): a
+//! card keeps its newest few snapshots (`checkpoint`'s `keep`; three in NekoServer). An
+//! older one is removed through `staging/`, its header first, then its version list,
+//! each renamed into staging under the names an interrupted snapshot has there
+//! (`<id>.inventory.tmp`, `<id>.versions.tmp`), which recovery removes. A removal cut off
+//! leaves at most a version list without its header, which readers already skip, and
+//! the newest snapshots whole. Readers already take the newest valid snapshot, so a card
+//! with fewer of them reads the same, with every format 1 reader. A new snapshot is
+//! written only when the catalogue changed since the one last written to that card.
 use super::catalogue::{Catalogue, CopyState, VersionRow};
 use super::error::{CardError, Kind, Res};
 use super::format::{self, Fields};
 use super::fsat::Dir;
-use super::store::{self, SourceRow, Store, VolumeState};
+use super::store::{self, InventoryMark, SourceRow, Store, VolumeState};
 use super::volume::Volume;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -66,6 +76,7 @@ pub struct Header {
     pub sha256: String,
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
 /// A copy as a snapshot lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CopyEntry {
@@ -75,6 +86,7 @@ pub struct CopyEntry {
     pub last_verified_at: Option<String>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
 /// One line of the version list. A snapshot carries no dates of the source file: a
 /// version learnt from it has none (0), so a normal run looks at that file again.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -309,6 +321,95 @@ pub fn write(vol: &Volume, store: &mut Store, through: &str) -> Res<String> {
     Ok(id)
 }
 
+/// What a checkpoint did on the card.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Checkpoint {
+    /// A new snapshot, with this ID; the older ones past `keep` were removed.
+    Written(String),
+    /// Nothing changed since this snapshot, which is still on the card whole.
+    Unchanged(String),
+}
+
+/// A step of removing an old snapshot, for the crash tests (`prune`).
+pub type Step<'a> = &'a mut dyn FnMut(&str) -> Res<()>;
+
+/// The checkpoint of a run: a new snapshot when the catalogue changed since the last one
+/// written to this card (or that one is no longer whole on it), then only the newest
+/// `keep` snapshots stay.
+pub fn checkpoint(vol: &Volume, store: &mut Store, through: &str, keep: usize) -> Res<Checkpoint> {
+    let (epoch_id, content) = store.content()?;
+    if let Some(mark) = store.inventory_mark(vol.volume_id())? {
+        let same = mark.epoch_id == epoch_id && mark.content == content;
+        if same
+            && read(vol)?
+                .valid
+                .iter()
+                .any(|h| h.snapshot_id == mark.snapshot_id)
+        {
+            return Ok(Checkpoint::Unchanged(mark.snapshot_id));
+        }
+    }
+    let snapshot_id = write(vol, store, through)?;
+    let mark = InventoryMark {
+        epoch_id,
+        content,
+        snapshot_id: snapshot_id.clone(),
+    };
+    store.mark_inventory(vol.volume_id(), &mark)?;
+    prune(vol, keep, &mut |_| Ok(()))?;
+    Ok(Checkpoint::Written(snapshot_id))
+}
+
+/// Remove every snapshot of this card but the newest `keep` (newest by when it was
+/// written), and any version list left without its header, each through staging/ (see
+/// the top of this file). `step` is called after each change, so a test can cut it off.
+pub fn prune(vol: &Volume, keep: usize, step: Step) -> Res<()> {
+    let found = read(vol)?;
+    let mut valid = found.valid;
+    valid.sort_by(|a, b| {
+        (b.exported_at.as_str(), b.revision).cmp(&(a.exported_at.as_str(), a.revision))
+    });
+    let Some(inventory) = vol.existing(&vol.nb, format::INVENTORY)? else {
+        return Ok(());
+    };
+    for old in valid.iter().skip(keep.max(1)) {
+        let id = &old.snapshot_id;
+        // The header first: from then on the snapshot is no longer one a reader takes.
+        set_aside(
+            vol,
+            &inventory,
+            &format!("{id}{HEADER_SUFFIX}"),
+            &format!("{id}.inventory.tmp"),
+            step,
+        )?;
+        set_aside(
+            vol,
+            &inventory,
+            &format!("{id}{VERSIONS_SUFFIX}"),
+            &format!("{id}.versions.tmp"),
+            step,
+        )?;
+    }
+    for name in &found.headless {
+        if let Some(id) = name.strip_suffix(VERSIONS_SUFFIX) {
+            set_aside(vol, &inventory, name, &format!("{id}.versions.tmp"), step)?;
+        }
+    }
+    Ok(())
+}
+
+/// Move `name` out of inventory/ into staging/ as `temp`, then remove it there.
+fn set_aside(vol: &Volume, inventory: &Dir, name: &str, temp: &str, step: Step) -> Res<()> {
+    vol.confirm()?;
+    inventory.rename_noreplace(name, &vol.staging, temp)?;
+    inventory.sync()?;
+    vol.staging.sync()?;
+    step(name)?;
+    vol.staging.unlink(temp)?;
+    vol.staging.sync()?;
+    step(temp)
+}
+
 fn opt_time(f: &Fields, name: &str) -> Res<Option<String>> {
     match f.0.get(name) {
         Some(Value::Null) => Ok(None),
@@ -456,6 +557,7 @@ fn check_versions(inventory: &Dir, header: &Header) -> Res<()> {
     Ok(())
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
 fn version_line(bytes: &[u8]) -> Res<VersionLine> {
     let map = format::parse_bounded(bytes, LINE_LIMIT, 3)?;
     let f = Fields(&map);
@@ -524,6 +626,7 @@ pub fn read(vol: &Volume) -> Res<Found> {
     Ok(found)
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
 /// Each line of a snapshot's version list, handed to `each`. The list was checked
 /// against its header by `read`; a line that does not parse now stops the reading.
 pub fn each_version(

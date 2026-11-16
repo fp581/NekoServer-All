@@ -27,6 +27,7 @@ from pathlib import Path
 import pwd
 import re
 import shlex
+import shutil
 import signal
 import stat
 import subprocess
@@ -38,6 +39,7 @@ import nfs_exports
 from neko_restore import read_at_most
 from neko_common import typed_folder as typed_folder_named
 from neko_common import (
+    cards_enabled,
     nextcloud_enabled,
     OPERATION_LOCK,
     SHARED,
@@ -88,6 +90,7 @@ DRIVE_SECTION = SHARED['recovery_menu']['drive_section']
 CHECK_NAME = SHARED['recovery_menu']['check_drive']
 FIX_NAME = SHARED['recovery_menu']['fix_copies']
 PASSWORD_LIST = SHARED['recovery_menu']['password_list']
+FROM_CARDS = SHARED['recovery_menu']['cards']
 
 # The recovery menu's two parts (its first question).
 SECTIONS = [
@@ -104,6 +107,7 @@ MENU = [
     ('host', 'Steam and Samba settings, from a nightly backup'),
     ('music', 'Music files, from the nightly music backup'),
     ('monthly', 'The settings and databases of every app, from a monthly snapshot (for rebuilding a server)'),
+    ('cards', f'{FROM_CARDS}: photos, videos and documents from an SD card or USB stick of the set'),
 ]
 
 # Section 3: a check and a repair are different actions, and so is fixing backup copies.
@@ -135,6 +139,10 @@ def menu(config):
     }
 
     def offered(key):
+        if key == 'cards':
+            # Offered while backup cards are on, and after, while the server keeps a set.
+            data = config.get('data_mount')
+            return cards_enabled(config) or bool(data and (Path(data) / SHARED['cards']['folder']).is_dir())
         if key == 'music':
             # Offered where there is a music backup to restore (it runs only on some
             # servers: music_backed_up), also after Music was switched off.
@@ -1667,12 +1675,23 @@ def restore_photos(config, prompt, output):
         'To get them back into Immich: open Immich in a browser, click "Upload" and choose',
         'files from that folder (for thousands of files, the Immich command-line uploader is',
         'faster: see https://immich.app/docs/features/command-line-interface).',
+        # Every person's photos come back together; uploaded with the administrator's
+        # login, a family member's photos would land in the administrator's library.
+        *PHOTOS_OF_EACH_PERSON,
         f'Your current Immich library ({photo_library(config)}) was not touched.',
         'Rebuilding Immich after losing its drive (RECOVERY.md, "Rebuild Immich from the',
         'USB drive")? Then put both folders into the library Immich uses instead:',
         f'  sudo cp -a {shlex.quote(str(target / "upload"))} {shlex.quote(str(target / "library"))} '
         f'{shlex.quote(str(photo_library(config)))}/',
     )
+
+
+PHOTOS_OF_EACH_PERSON = (
+    'Each person in Immich has a folder of their own in it (in upload and in library),',
+    'named with their Immich user ID: in Immich, Administration, Users, open the person;',
+    'the ID is the end of the page\'s address. Upload a person\'s photos signed in to Immich',
+    'with THEIR login: uploaded with yours, they go into your library, not theirs.',
+)
 
 
 def report_restore(checked, target, output):
@@ -1905,6 +1924,10 @@ def restore_cloud(config, prompt, output):
         *ready,
         'To put them back: open Nextcloud in a browser (or the desktop app) and upload the',
         'files you need. Your current Nextcloud files were not touched.',
+        # Uploaded with the administrator's login, a family member's files would go into
+        # the administrator's own files, not back to them.
+        f'Upload them signed in to Nextcloud as {user}: uploaded with another login, they go',
+        'into that account\'s files, not back to theirs.',
     )
 
 
@@ -1950,18 +1973,82 @@ def plain_password_list(run):
     )
 
 
-def archive_problem(run, name):
-    """Why a monthly snapshot's `<name>.tar` can't be trusted (its checksum is missing or
-    doesn't match the one recorded in its manifest), or None."""
+def recorded_checksum(run, name):
+    """The checksum a monthly snapshot's manifest recorded for its `<name>.tar`, or None."""
     try:
         expected = json.loads((Path(run) / MANIFEST).read_text())['sha256'][name]
     except (OSError, ValueError, KeyError, TypeError):
-        expected = None
-    if not isinstance(expected, str) or len(expected) != 64:
+        return None
+    return expected if isinstance(expected, str) and len(expected) == 64 else None
+
+
+# What a monthly snapshot made without a backup key keeps in data.tar of the files that
+# hold passwords (the same ones a key would have encrypted: maintenance.rs
+# SEALED_EXCLUDES and sealed_members): the account list is always there; each app's
+# Compose .env and Nextcloud's config.php only for the apps installed.
+PASSWORD_FILES = ('secrets/accounts',)
+APP_PASSWORD_FILES = ('compose/*/.env', 'appdata/nextcloud/html/config/config.php')
+
+
+def not_found_only(said, optional):
+    """Whether tar's complaints are only that some of the `optional` names were not in
+    the archive (an app not installed has no .env)."""
+    lines = [line for line in said.splitlines() if line.strip()]
+    missing = [f'tar: {name}: Not found in archive' for name in optional]
+    return all(line in missing or line.startswith('tar: Exiting with failure status') for line in lines)
+
+
+def take_out_checked(run, name, members, target, optional=()):
+    """Take `members` (and those of `optional` that are there; tar patterns) out of a
+    monthly snapshot's `<name>.tar` into `target` (a new, empty folder), using only bytes
+    that match the checksum recorded when the snapshot was made.
+    The archive is opened once and the same bytes are both checked and unpacked: checked
+    first and unpacked by name afterwards, a file replaced in between (another job writing
+    to the HDD, a drive failing) was unpacked unchecked and the menu said "Done" over
+    changed passwords. Unpacked into a hidden folder first and moved into place only when
+    the checksum matched. Returns why nothing was taken out, or None."""
+    expected = recorded_checksum(run, name)
+    if expected is None:
         return f'This snapshot has no checksum for its {name}.tar.'
-    with (Path(run) / (name + '.tar')).open('rb') as stream:
-        if hashlib.file_digest(stream, 'sha256').hexdigest() != expected:
-            return f'The {name}.tar in this snapshot is damaged (checksum mismatch).'
+    unpacking = Path(target) / '.unpacking'
+    unpacking.mkdir(mode=0o700)
+    digest = hashlib.sha256()
+    with (
+        open(os.open(Path(run) / f'{name}.tar', os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC), 'rb') as archive,
+        open(os.open(unpacking / 'tar-errors', os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600), 'w+') as errors,
+    ):
+        tar = subprocess.Popen(
+            ['tar', '--extract', '--file', '-', '--directory', str(unpacking), '--no-same-owner', '--wildcards']
+            + list(members)
+            + list(optional),
+            stdin=subprocess.PIPE,
+            stderr=errors,
+        )
+        for chunk in iter(lambda: archive.read(1024 * 1024), b''):
+            digest.update(chunk)
+            if tar.stdin and not tar.stdin.closed:
+                try:
+                    tar.stdin.write(chunk)
+                except BrokenPipeError:
+                    tar.stdin.close()  # tar stopped early; the rest is still checked
+        if not tar.stdin.closed:
+            try:
+                tar.stdin.close()
+            except BrokenPipeError:
+                pass
+        failed = tar.wait()
+        errors.seek(0)
+        said = errors.read().strip()
+    if digest.hexdigest() != expected:
+        shutil.rmtree(unpacking)
+        return f'The {name}.tar in this snapshot is damaged (checksum mismatch).'
+    if failed and not (not_found_only(said, optional) and all((unpacking / m).exists() for m in members)):
+        shutil.rmtree(unpacking)
+        return 'Could not take the password list out of that snapshot: ' + (said or 'tar failed')
+    os.unlink(unpacking / 'tar-errors')
+    for entry in os.listdir(unpacking):
+        os.rename(unpacking / entry, Path(target) / entry)
+    os.rmdir(unpacking)
     return None
 
 
@@ -2033,33 +2120,16 @@ def restore_password_list(config, runs, prompt, output):
         output(NOTHING_CHANGED)
         return
     if not sealed:
-        # The archive is checked against the checksum recorded when the snapshot was
-        # made before anything is taken out of it: a changed byte would change a password.
-        problem = archive_problem(run, 'data')
-        if problem:
-            output(problem + ' Nothing was restored. Use another monthly snapshot.')
-            return
+        # Only bytes that match the checksum recorded when the snapshot was made are
+        # taken out: a changed byte would change a password.
         target.mkdir(mode=0o700)
         with part_way(target, output):
-            result = subprocess.run(
-                [
-                    'tar',
-                    '--extract',
-                    '--file',
-                    str(run / 'data.tar'),
-                    '--directory',
-                    str(target),
-                    '--no-same-owner',
-                    'secrets/accounts',
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        if result.returncode:
-            output('Could not take the password list out of that snapshot: ' + (result.stderr.strip() or 'tar failed'))
+            problem = take_out_checked(run, 'data', PASSWORD_FILES, target, APP_PASSWORD_FILES)
+        if problem:
+            shutil.rmtree(target)
+            output(problem + ' Nothing was restored. Use another monthly snapshot.')
             return
-        say(output, f'\nDone. Open it with:  sudo cat {target}/secrets/accounts/APP-CREDENTIALS.txt')
+        say(output, *password_list_done(target))
         return
     import backup_secrets
 
@@ -2067,12 +2137,24 @@ def restore_password_list(config, runs, prompt, output):
     # question went to the terminal only, and the setup window waited with no question.
     with part_way(target, output):
         backup_secrets.asked_restore(run, target, out=output)
-    say(
-        output,
-        f'\nDone. Open it with:  sudo cat {target}/secrets/accounts/APP-CREDENTIALS.txt',
-        f'The apps\' own password files are there too: {target}/compose/<app>/.env and',
-        f'{target}/appdata/nextcloud/html/config/config.php (for rebuilding from a monthly snapshot).',
-    )
+    say(output, *password_list_done(target))
+
+
+def password_list_done(target):
+    """What a finished password list restore says: where the list is, and the apps' own
+    password files that came with it (each app's .env, Nextcloud's config.php), as the
+    menu promised. Said the same for an encrypted and an unencrypted snapshot; a snapshot
+    without a backup key took only the list out, so the Nextcloud guide's way to the old
+    config.php led nowhere (review of 0.51.3)."""
+    lines = [f'\nDone. Open it with:  sudo cat {target}/secrets/accounts/APP-CREDENTIALS.txt']
+    envs = sorted(Path(target).glob('compose/*/.env'))
+    config_php = Path(target) / 'appdata/nextcloud/html/config/config.php'
+    if envs or config_php.is_file():
+        lines.append('The apps\' own password files are there too (for rebuilding from a monthly snapshot):')
+        lines += [f'  {path}' for path in envs]
+        if config_php.is_file():
+            lines.append(f'  {config_php}')
+    return lines
 
 
 def restore_nightly(config, kind, prompt, output):
@@ -3495,6 +3577,111 @@ def run(prompt=input, output=print, config_path=None):
         return menu_loop(config, prompt, output)
 
 
+# ---- from backup cards (0.52.0): the restore tool every card carries ----------------------
+# The release's own copy of the tool: the same program as NekoBackup/tools/neko-restore.py
+# on the card. The one on the card is never run here as root: anyone who held the card
+# could have changed it.
+RESTORE_TOOL = ROOT / 'neko_restore.py'
+NO_CARD = (
+    'No backup card is plugged in and mounted. Plug one in: on the desktop it opens by itself. '
+    'Without a desktop, mount it read-only (lsblk -f shows its name, sdb1 say):',
+    '  sudo mkdir -p /mnt/card && sudo mount -o ro /dev/sdb1 /mnt/card',
+    'then choose this again.',
+)
+
+
+def unescaped(field):
+    """A mount point as /proc/self/mounts writes it ("My\\040Card" for "My Card")."""
+    return re.sub(r'\\([0-7]{3})', lambda m: chr(int(m.group(1), 8)), field)
+
+
+def plugged_cards(mounts='/proc/self/mounts'):
+    import neko_restore  # where it reads a card with --card: mounted there only
+
+    """The folders where a backup card is mounted now: a NekoBackup folder with its
+    identity.json at the top of a mount under /media, /run/media or /mnt."""
+    try:
+        lines = Path(mounts).read_text().splitlines()
+    except OSError:
+        return []
+    found = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        where = unescaped(parts[1])
+        if where.startswith(neko_restore.CARD_ROOTS) and (Path(where) / 'NekoBackup' / 'identity.json').is_file():
+            found.append(where)
+    return sorted(set(found))
+
+
+def card_tool(card, *args, capture=True):
+    """The restore tool on `card`: (exit status, what it said). 0: all fine; 1: something
+    was damaged, missing, skipped or not restored (its lines say what); 2: the card or
+    the command could not be used."""
+    done = subprocess.run(
+        [sys.executable, str(RESTORE_TOOL), '--card', str(card), *args],
+        capture_output=capture,
+        text=True,
+        timeout=None,
+        check=False,
+    )
+    return done.returncode, ((done.stdout or '') + (done.stderr or '')).strip()
+
+
+def restore_from_cards(config, prompt, output, mounts='/proc/self/mounts'):
+    """The files of one backup card, into a new folder, with the tool the card carries
+    (CARD-RECOVERY.md is the way without NekoServer). Nothing on the card or on the
+    server is changed; a file whose place is taken is skipped, never overwritten."""
+    cards = plugged_cards(mounts)
+    if not cards:
+        say(output, *NO_CARD)
+        return
+    card = cards[0] if len(cards) == 1 else choose('Which card?', [(c, c) for c in cards], prompt, output)
+    if card is None:
+        return
+    status, info = card_tool(card, 'info')
+    if status == 2:
+        output('That card cannot be read: ' + (info.splitlines()[-1] if info else 'the tool said nothing'))
+        return
+    say(output, '', info)
+    word = prompt('Only files whose folder or name holds this word (press Enter for every file on the card): ')
+    word = (word or '').strip()
+    target = restore_target(config, f'card-{stamp()}', prompt, output)
+    if target is None:
+        output(NOTHING_CHANGED)
+        return
+    rows = [
+        ('Restore', FROM_CARDS),
+        ('From', f'the card mounted at {card}'),
+        ('Which files', f'those with "{word}" in their folder or name' if word else 'every file on this card'),
+        ('Into', f'{target} (a new folder; each file is checked against its checksum)'),
+        ('Overwritten', 'nothing. Nothing on the card or in your apps is changed.'),
+        APPS_KEEP_RUNNING,
+    ]
+    if not review(rows, prompt, output):
+        output(NOTHING_CHANGED)
+        return
+    make_home(config, target)
+    Path(target).mkdir(parents=True, exist_ok=True)
+    output(COPYING)
+    args = ['restore', str(target), *(['--search', word] if word else [])]
+    with part_way(target, output):
+        status, _ = card_tool(card, *args, capture=False)
+    if status == 0:
+        say(
+            output,
+            f'\nDone: the files are in {target}.',
+            'The other cards of the set hold the rest: plug in the next one and choose this again.',
+        )
+    else:
+        say(
+            output,
+            f'\nThe restore into {target} finished, but not every file came back: the lines above say which and why.',
+            'Files whose place was taken were skipped, never overwritten (CARD-RECOVERY.md, "Restore").',
+        )
+
+
 RESTORES = {
     'photos': restore_photos,
     'cloud': restore_cloud,
@@ -3503,6 +3690,7 @@ RESTORES = {
     'host': lambda c, p, o: restore_nightly(c, 'host', p, o),
     'music': restore_music,
     'monthly': restore_monthly,
+    'cards': restore_from_cards,
 }
 DRIVE_ACTIONS = {
     'check': check_read_only,

@@ -197,7 +197,8 @@ const JOB_UNITS = {
   maintenance: 'nekoserver-maintenance.service',
   updates: 'nekoserver-updates.service',
   update_check: 'nekoserver-update-check.service',
-  upgrade: 'nekoserver-upgrade-resume.service'
+  upgrade: 'nekoserver-upgrade-resume.service',
+  cards: 'nekoserver-cards.service'
 };
 /* The service a job runs as: the status says (the weekly photo schedule runs the
    database copy, an upgrade runs as nekoserver-upgrade@<release>), else the usual one. */
@@ -243,6 +244,7 @@ const ROUTES = {
   processes: 'Processes',
   health: 'Server health',
   updates: 'Updates',
+  cards: 'Backup cards',
   attention: 'Needs attention',
   help: 'Help'
 };
@@ -250,7 +252,7 @@ const ROUTES = {
 const LIVE_ROUTES = new Set(['home', 'hardware', 'sensors']);
 /* Pages whose buttons change something: they read whether this device may (the PIN).
  * Ask Neko is one: asking and approving a fix need the PIN. */
-const CONTROL_ROUTES = new Set(['cooling', 'apps', 'processes', 'home', 'ask']);
+const CONTROL_ROUTES = new Set(['cooling', 'apps', 'processes', 'home', 'ask', 'cards']);
 /* Short, stable error codes. E10-E42 come from the server; E01, E02 and E12 are
  * noticed by this page. DASHBOARD.md lists the same table. */
 const ERRORS = {
@@ -321,6 +323,7 @@ const state = {
   mine: new Set(),
   shown: new Set(), // app actions started here, and those already announced
   upgradeAsked: null, // the reading shown when an upgrade was started here
+  cardsLook: null, // the Backup cards page's last look at the drives plugged in
   routed: false // a page has been shown (its sections, and only they, visible)
 };
 const savedFavorites = readStore('favorites', []);
@@ -1082,8 +1085,10 @@ function renderChrome() {
     $('version').textContent = 'NekoServer v' + s.version;
   }
   renderCounts(s);
-  // Ask Neko is in the menu only on a server that has the assistant.
+  // Ask Neko is in the menu only on a server that has the assistant, Backup cards only
+  // while they are switched on.
   $('nav-ask').hidden = !assistantSetUp(s);
+  $('nav-cards').hidden = !cardsOn(s);
   $('footer-status').textContent = s ? 'Readings from ' + ago(s.generated_at) : 'Waiting for readings';
 }
 
@@ -2310,6 +2315,21 @@ function backupCard(job, fresh) {
   if (job.reason) {
     card.append(longText('reason', text(job.reason)));
   }
+  if (job.id === 'cards') {
+    // The set itself: which card is in, what is on the cards and what waits for one.
+    for (const line of cardsSummary(cardSet())) {
+      card.append(el('p', '', line));
+    }
+    const row = el('div', 'update-actions');
+    row.append(
+      keyed(button('Write to the card now', writeNow, 'button small'), 'backup-cards-write'),
+      keyed(
+        button('Backup cards page', () => (location.hash = '#cards'), 'button small secondary'),
+        'backup-cards-page'
+      )
+    );
+    card.append(row);
+  }
   card.append(
     keyed(
       button('Help & logs', () => showGuide('backup', jobUnit(job)), 'text-button'),
@@ -2428,6 +2448,186 @@ function renderBackups() {
     s.integrity.map(check => integrityRow(check, fresh, monthlyNext(s)))
   );
   put('restore-status', [restoreBox(s)]);
+}
+
+/* ---------- backup cards (0.52.0) ---------- */
+/* Backup cards are switched on (setup's first page): the readings carry the set. */
+function cardsOn(s = state.status) {
+  return object(s?.cards).enabled === true;
+}
+/* The set as the server last saw it (cards/status.json through the readings), or as the
+ * page's own look at the drives found it, whichever is newer. */
+function cardSet(s = state.status, looked = state.cardsLook) {
+  const read = object(object(s?.cards).set),
+    seen = object(looked?.set);
+  return count(seen.updated_at) > count(read.updated_at) ? seen : read;
+}
+/* What the set is, in a few lines: which card is in, how many files are on the cards and
+ * how many wait for one, when a card was last written. The Backups page says the same. */
+function cardsSummary(set, now = Date.now() / 1000) {
+  const cards = list(set.cards);
+  if (!cards.length) {
+    return ['No card is set up yet. Plug in an empty SD card or USB stick and choose it on the Backup cards page.'];
+  }
+  const inside = cards.filter(c => c.plugged === true).map(c => c.number);
+  const lines = [
+    inside.length
+      ? (inside.length === 1 ? 'Card ' : 'Cards ') +
+        inside.join(' and ') +
+        (inside.length === 1 ? ' is' : ' are') +
+        ' in.'
+      : 'No card of the set is in. ' + plural(cards.length, 'card') + ' in the set.'
+  ];
+  if (numeric(set.files_on_cards)) {
+    lines.push(
+      plural(set.files_on_cards, 'file') +
+        ' on the cards, ' +
+        plural(count(set.files_waiting), 'file') +
+        ' waiting for a card.'
+    );
+  }
+  lines.push(numeric(set.last_write_at) ? 'Last written ' + ago(set.last_write_at) + '.' : 'Not written to yet.');
+  if (numeric(set.full_card)) {
+    lines.push('Card ' + set.full_card + ' is full: put in a new card (it becomes card ' + (set.full_card + 1) + ').');
+  }
+  return lines;
+}
+/* One card of the set, in a line. */
+function cardLine(c) {
+  return joined([
+    'Card ' + c.number,
+    c.plugged ? 'in now' : 'not in',
+    plural(count(c.files), 'file'),
+    c.full ? 'full' : '',
+    c.state && c.state !== 'in_use' ? c.state.replaceAll('_', ' ') : ''
+  ]);
+}
+/* What the page offers for one drive plugged in: a card of the set, one that can become
+ * the next card, or why not (the server's words). */
+function driveOffer(d, next) {
+  const name = joined([text(d.label, 'A drive'), d.size ? bytes(d.size) : '', text(d.fstype)]);
+  if (numeric(d.card)) {
+    return { name, said: 'Card ' + d.card + ' of your set.', action: null };
+  }
+  if (d.usable === true) {
+    return {
+      name,
+      said: 'Empty: it can be card ' + next + ' of the set.',
+      action: 'Use this as card ' + next + ' of the set'
+    };
+  }
+  return { name, said: text(d.why, 'It cannot be a backup card.'), action: null };
+}
+async function lookForCards() {
+  const answer = await postControl('cards-list');
+  if (answer.ok) {
+    state.cardsLook = answer;
+    renderCards();
+    return;
+  }
+  if (answer.error === 'E43' && state.control?.access?.pin_set) {
+    unlockDialog(
+      lookForCards,
+      'BACKUP CARDS',
+      'Choosing and writing backup cards needs your PIN on every device, the server too.'
+    );
+    return;
+  }
+  toast(controlMessage(answer));
+}
+function enrolDialog(d, next) {
+  const tick = el('input');
+  tick.type = 'checkbox';
+  tick.id = 'cards-ack';
+  const label = el(
+    'label',
+    'field check',
+    'I understand the copies on the cards are not encrypted: anyone holding a card can read them.'
+  );
+  label.prepend(tick);
+  const go = button(
+    'Use this as card ' + next,
+    async () => {
+      const answer = await postControl('cards-enrol', { mount: d.mount, number: next, acknowledged: tick.checked });
+      $('dialog').close();
+      if (answer.ok) {
+        toast(text(answer.message, 'The card is ready.'));
+        await lookForCards();
+        return;
+      }
+      toast(controlMessage(answer));
+    },
+    'button'
+  );
+  const cancel = button('Cancel', () => $('dialog').close(), 'button secondary');
+  const row = el('div', 'dialog-actions');
+  row.append(go, cancel);
+  openDialog('BACKUP CARDS', 'Use this card as card ' + next + '?', [
+    el(
+      'p',
+      '',
+      'NekoServer adds a NekoBackup folder to it and copies your photos and documents into it, a little more each night it is plugged in. Nothing on it is erased; the card is never formatted.'
+    ),
+    label,
+    row
+  ]);
+  requestAnimationFrame(() => cancel.focus());
+}
+async function writeNow() {
+  const answer = await postControl('cards-write');
+  if (answer.ok) {
+    toast(text(answer.message, 'Writing to the card now.'));
+    return;
+  }
+  if (answer.error === 'E43' && state.control?.access?.pin_set) {
+    unlockDialog(
+      writeNow,
+      'BACKUP CARDS',
+      'Choosing and writing backup cards needs your PIN on every device, the server too.'
+    );
+    return;
+  }
+  toast(controlMessage(answer));
+}
+function renderCards() {
+  const s = state.status;
+  if (!s) {
+    return;
+  }
+  if (!cardsOn(s)) {
+    put('cards-set', [
+      empty(
+        "Backup cards are off. Switch them on on setup's first page, under Storage (run setup again on the server)."
+      )
+    ]);
+    put('cards-drives', []);
+    return;
+  }
+  const set = cardSet(s);
+  const box = el('div', 'callout');
+  box.append(el('strong', '', text(set.set_name, 'Your backup cards')));
+  for (const line of cardsSummary(set)) {
+    box.append(el('p', '', line));
+  }
+  box.append(keyed(button('Write to the card now', writeNow, 'button small'), 'cards-write'));
+  const rows = list(set.cards).map(c => el('p', 'row', cardLine(c)));
+  put('cards-set', [box, ...rows]);
+  const look = state.cardsLook;
+  const found = look
+    ? list(look.drives).map(d => {
+        const offer = driveOffer(d, count(look.next_number) || 1);
+        const row = el('article', 'card');
+        row.append(el('strong', '', offer.name), el('p', offer.action ? '' : 'reason', offer.said));
+        if (offer.action) {
+          row.append(button(offer.action, () => enrolDialog(d, count(look.next_number) || 1), 'button small'));
+        }
+        return row;
+      })
+    : [];
+  put('cards-drives', [
+    ...(look && !found.length ? [empty('No card or USB stick is plugged in and mounted.')] : found),
+    keyed(button(look ? 'Look again' : 'Look for cards', lookForCards, 'button small secondary'), 'cards-look')
+  ]);
 }
 
 /* ---------- hardware ---------- */
@@ -5286,6 +5486,9 @@ function moreMenu() {
     if (id === 'ask' && !assistantSetUp()) {
       continue;
     }
+    if (id === 'cards' && !cardsOn()) {
+      continue;
+    }
     const a = el('a', id === state.route ? 'nav active' : 'nav', name);
     a.href = '#' + id;
     a.addEventListener('click', () => $('dialog').close());
@@ -5350,6 +5553,7 @@ const PAGES = {
   processes: renderProcesses,
   health: renderHealth,
   updates: renderUpdates,
+  cards: renderCards,
   help: renderHelp
 };
 function render() {

@@ -27,6 +27,8 @@ Seerr, Sonarr, Radarr, Lidarr, Prowlarr and qBittorrent are set up with the medi
 
 Also included: shared folders on your home network (Samba) and, if you want them, watching on a TV connected to the server (Steam Big Picture) and phone alerts when something fails (ntfy).
 
+**What you can switch on** (setup's first page): a TV connected to the server, phone alerts, outage alerts, the AI assistant, drives in a NAS, and **backup cards**: a copy of your photos and documents on SD cards or USB sticks you keep somewhere else, filled a little more each night one is plugged in ([BACKUP-CARDS.md](BACKUP-CARDS.md)). Each is off until you switch it on.
+
 ---
 
 ## What you need
@@ -229,6 +231,10 @@ Sign in with the username of the account that ran setup (`"samba_user"` under `"
 - **Files (Nextcloud):** your picture at the top right, then *Accounts* ([NEXTCLOUD.md](NEXTCLOUD.md)).
 - **Films (Jellyfin):** *Dashboard* → *Users* → **+**, with *administrator* off. For a child, open their user's *Parental control* and choose a *Maximum allowed parental rating*, and under *Access* leave out the libraries they should not see. With a Jellyfin login they can also sign in to Seerr and ask for films; what they ask for waits for you to approve it in Seerr (*Requests*). (Not tried in NekoServer's own tests yet.)
 
+**Someone forgot their password.** You give them a new one with your login; nobody else's is changed, and NekoServer's own saved logins stay as they are. In Immich: *Administration* → *Users* → the person → **Reset password** (Immich shows the new one: tell it to them). In Jellyfin: *Dashboard* → *Users* → the person → *Password*. In Nextcloud: *Accounts* → the person's row → **Edit**, then type a new password. Your own login is shown by `account-setup.py show` ([ACCOUNT-SETUP.md](ACCOUNT-SETUP.md)).
+
+**A phone was lost or stolen.** First, in the Tailscale admin console (*Machines*), open the phone's menu and choose **Remove**: away from your home it then reaches none of the server's addresses, the dashboard included. Then sign it out of the apps it had: in Immich, signed in with its owner's login, the picture at the top right, *Account Settings* → *Authorized devices*; in Nextcloud, the same way, *Personal settings* → *Security* → *Devices & sessions*; in Jellyfin, with your login, *Dashboard* → *Devices*. Change the passwords that were saved in its browser.
+
 **Renaming the server.** Its name is part of the app addresses (`https://NAME.tailXXXX.ts.net`). Change it in the Tailscale admin console (*Machines* → this server's menu → *Edit machine name*), then run `sudo bash install.sh` again: it gives the apps and the dashboard their addresses under the new name and makes a new phone setup page. Open the new addresses on each phone and computer (the old ones stop working; setup asks you to check the phone again). The home addresses (`https://192.168.1.20:8442`) stay the same.
 
 ---
@@ -247,6 +253,7 @@ What is copied, where, and when (times are in your `timezone`):
 | All app settings, databases and app versions (the monthly snapshot) | HDD | 1st of each month |
 | The one app being updated, just before its update | HDD | On the update night (Wednesdays), only when a new version is installed |
 | Music, on servers with the music backup (the music on a drive of its own, a music folder of yours that setup backs up, or `"backup_enabled"` under `"music"`) | HDD | Every night |
+| Photos and videos (Immich) and Nextcloud files, with **Backup cards** switched on | SD cards or USB sticks you keep somewhere else | Every night a card of the set is plugged in |
 | **Movies and shows**, and music without the music backup | **Not backed up** | |
 
 - **Photos, videos and Nextcloud files are only ever added to the backup.** Nothing on it is overwritten or deleted. If you edit a file, the new version is saved next to the old one with a date in its name.
@@ -256,7 +263,7 @@ What is copied, where, and when (times are in your `timezone`):
 - **Weekly copies only add what is new.** Photos already backed up are recognised without being read again, so a weekly run takes minutes, not hours, even for a big library. Any file rewritten or replaced since its copy is compared by content. Once a month, as the first step of the monthly check (before its snapshot), every copy is compared by checksum.
 - **An incomplete weekly copy is shown as one.** If some Nextcloud files could not be copied (open while copying, or names an exFAT USB drive cannot store, including two names that differ only in upper/lower case, such as `Documents` and `documents`, which exFAT treats as one), the dashboard and phone alerts say *Incomplete* and list them, instead of reporting success.
 
-**Getting something back.** Run `sudo bash install.sh --recover`. A menu asks what you want back (photos, Nextcloud files, the password list, app settings, or a whole monthly snapshot), lists the backups by date, and restores into a **new** folder, so nothing you have now is overwritten. It checks there is enough free space first, and waits if the weekly backup is using the USB drive. It ends by telling you how to put things back. More detail: [RECOVERY.md](RECOVERY.md).
+**Getting something back.** Run `sudo bash install.sh --recover`. A menu asks what you want back (photos, Nextcloud files, the password list, app settings, a whole monthly snapshot, or the files on a backup card), lists the backups by date, and restores into a **new** folder, so nothing you have now is overwritten. It checks there is enough free space first, and waits if the weekly backup is using the USB drive. It ends by telling you how to put things back. More detail: [RECOVERY.md](RECOVERY.md).
 
 ---
 
@@ -382,6 +389,7 @@ Good to know:
 | --- | --- |
 | What is tested, experimental or not supported | [SUPPORT.md](SUPPORT.md) |
 | Drive layout and backup details | [STORAGE.md](STORAGE.md) |
+| Backup cards (SD cards and USB sticks kept elsewhere) | [BACKUP-CARDS.md](BACKUP-CARDS.md) |
 | App accounts and passwords | [ACCOUNT-SETUP.md](ACCOUNT-SETUP.md) |
 | Each guided step | [GUIDED-SETUP.md](GUIDED-SETUP.md) |
 | Home and remote access, certificates | [GATEWAY.md](GATEWAY.md) |

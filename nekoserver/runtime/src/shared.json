@@ -81,6 +81,20 @@
     "_about": "How an exFAT backup drive is mounted: with Linux's own exFAT driver (-i: no mount.exfat helper). Arch's fuse-exfat installs one, and through FUSE the drive's options no longer show who may read it, so every backup refused it as readable by everyone (deep check plan 207). The runtime (backup.rs) and setup (neko_common) take it from here.",
     "arguments": ["-i", "-t", "exfat"]
   },
+  "cards": {
+    "_about": "Backup cards (0.52.0): the runtime's card job and the control service (cards.rs), setup (modules/backup_cards.py, neko_common) and the dashboard's Backup cards page read these. What the server knows of the set is in <folder> on the app SSD: the catalogue (the cards stay the authority) and the status the dashboard shows.",
+    "folder": "cards",
+    "catalogue": "catalogue.sqlite",
+    "status": "status.json",
+    "job": "cards",
+    "service": "nekoserver-cards.service",
+    "timer": "nekoserver-cards.timer",
+    "set_name": "NekoServer cards",
+    "restore_tool": "neko-restore.py",
+    "filesystems": ["ext4", "exfat"],
+    "keep_inventories": 3,
+    "reminder_days": 30
+  },
   "setup_lock": "/run/nekoserver-setup.lock",
   "operation_lock": "/run/nekoserver-operation.lock",
   "recovery_menu": {
@@ -88,7 +102,8 @@
     "drive_section": "Check or repair a drive",
     "check_drive": "Check a drive that stopped taking new files",
     "password_list": "The list of app passwords",
-    "fix_copies": "Fix damaged backup copies"
+    "fix_copies": "Fix damaged backup copies",
+    "cards": "From backup cards"
   },
   "release_tag": "v?([0-9]{1,6})\\.([0-9]{1,6})\\.([0-9]{1,6})(-?[Bb]eta)?",
   "immich_targets": {
@@ -213,6 +228,10 @@
       "tailnet": 8447
     }
   ],
+  "gateway_start": {
+    "_about": "How long the home-network gateway's start check (startup.rs wait_for_lan) waits for this server's home-network address to appear before it refuses. After a power cut the PC is up before the router hands out addresses again; refused at once, the gateway used up its tries and the home addresses stayed down until someone started it. The gateway's unit (gateway_tools.unit) gives the check this long.",
+    "address_wait_seconds": 240
+  },
   "cats": {
     "_about": "The dashboard's cats (DASHBOARD.md, \"The cat\"): each mood has a big animation (\"home\": Home's status cat, the Processes cat, and the stand-in when a small one can't be fetched), a small animation and a still (\"pages\"). The runtime serves exactly these files, setup installs them.",
     "home": ["happy", "playful", "resting", "sleeping", "curious", "afraid", "listening", "breezy", "grooming"],

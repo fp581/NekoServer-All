@@ -331,11 +331,16 @@ def shared_folders(config):
     (existing_media.py), as the runtime checks them: what it holds, the folder and the
     share it is on, where it is mounted into the library, and the apps that see it."""
     import existing_media
-    from neko_common import media_services
+    from neko_common import media_group, media_services
 
     found = []
     for entry in existing_media.extras(config):
         if entry['fstype'] not in existing_media.NETWORK:
+            continue
+        # A folder of a group switched off (Movies and shows, say) is no app's: its own
+        # apps are stopped. Guarded all the same, its share going away stopped an app
+        # another group still uses (qBittorrent, kept for Music: review of 0.51.3).
+        if not media_group(config, existing_media.category_of(entry['holds'])[0]):
             continue
         found.append(
             {
@@ -383,6 +388,12 @@ def storage_config(config):
         # The person's own folders on a network share, used where they are (0.50.0): the
         # apps that see one stay stopped while it does not answer (shared_folders.rs).
         found['shared_folders'] = shares
+    from neko_common import cards_settings
+
+    cards = cards_settings(config)
+    if cards:
+        # Backup cards switched on (0.52.0): what the card job copies (runtime cards.rs).
+        found['cards'] = cards
     nas = config.get('network_storage') or {}
     if nas.get('wanted') is True:
         # The NAS check logs in again once the NAS answers (runtime nas_watch.rs).
@@ -466,6 +477,10 @@ def acceptance_checks(config, modules):
         jobs += [('nekoserver-music-backup.service', code, 'music-backup', True)]
     if 'photo_backup' in modules:
         jobs += [('nekoserver-photo-backup.service', code, 'weekly', True)]
+    from neko_common import SHARED, cards_enabled
+
+    if 'backup_cards' in modules and cards_enabled(config):
+        jobs += [(SHARED['cards']['service'], code, 'cards', True)]
     for unit, binary, command, guard in jobs:
         good = False
         try:

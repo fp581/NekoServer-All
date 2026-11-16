@@ -2330,6 +2330,119 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertEqual((target / 'secrets/accounts/APP-CREDENTIALS.txt').read_bytes(), b'jellyfin: admin / pw')
         self.assertFalse((target / 'appdata').exists())  # only the password list
 
+        # Review of 0.51.3: the archive was checked, then unpacked by name, so one replaced
+        # in between (another job writing to the HDD) was unpacked unchecked, with "Done".
+        # Here it is replaced as soon as its checksum has been read.
+        changed = good.replace(b'admin / pw', b'admin / XX')
+        swapped = []
+
+        def swap():
+            if not swapped:
+                swapped.append(True)
+                (run / 'data.tar.new').write_bytes(changed)
+                os.replace(run / 'data.tar.new', run / 'data.tar')
+
+        real_digest, real_sha256 = hashlib.file_digest, hashlib.sha256
+
+        def file_digest(stream, name):
+            found = real_digest(stream, name)
+            swap()
+            return found
+
+        class Swapping:
+            def __init__(self):
+                self.real = real_sha256()
+
+            def update(self, data):
+                self.real.update(data)
+                swap()
+
+            def hexdigest(self):
+                return self.real.hexdigest()
+
+        (run / 'data.tar').write_bytes(good)
+        target = self.root / 'passwords-swapped'
+        out = []
+        with (
+            mock.patch.object(recovery_wizard.hashlib, 'file_digest', file_digest),
+            mock.patch.object(recovery_wizard.hashlib, 'sha256', Swapping),
+        ):
+            recovery_wizard.restore_passwords(self.config, answers('1', '2', str(target), '1', 'yes'), out.append)
+        self.assertTrue(swapped)
+        said = '\n'.join(out)
+        if (target / 'secrets/accounts/APP-CREDENTIALS.txt').exists():
+            # What was checked is what was unpacked: the archive as it was when opened.
+            self.assertEqual((target / 'secrets/accounts/APP-CREDENTIALS.txt').read_bytes(), b'jellyfin: admin / pw')
+            self.assertIn('Done.', said)
+        else:
+            self.assertIn('damaged (checksum mismatch)', said)
+            self.assertNotIn('Done.', said)
+        self.assertFalse((target / '.unpacking').exists())
+
+    def test_a_snapshot_without_a_backup_key_gives_back_the_apps_password_files_too(self):
+        """Review of 0.51.3: the menu promises the list "and the apps' own password files",
+        and the Nextcloud guide sends you there for the old config.php, but from a snapshot
+        made without a backup key only secrets/accounts was taken out of data.tar."""
+        import hashlib
+        import tarfile
+
+        source = self.root / 'ssd'
+        files = {
+            'secrets/accounts/APP-CREDENTIALS.txt': b'jellyfin: admin / pw',
+            'compose/nextcloud/.env': b'NEXTCLOUD_ADMIN_PASSWORD=nc',
+            'compose/immich/.env': b'DB_PASSWORD=im',
+            'compose/jellyfin/compose.yaml': b'services: {}',
+            'appdata/nextcloud/html/config/config.php': b"<?php $CONFIG = ['secret' => 's'];",
+            'appdata/nextcloud/html/index.php': b'<?php',
+        }
+        for rel, body in files.items():
+            self.write(f'ssd/{rel}', body)
+        run = self.media / 'backups/monthly/100-1'
+        run.mkdir(parents=True)
+        with tarfile.open(run / 'data.tar', 'w') as archive:
+            for rel in ('compose', 'appdata', 'secrets/accounts'):
+                archive.add(source / rel, arcname=rel)
+        (run / 'manifest.json').write_text(
+            json.dumps(
+                {
+                    'format': 'neko-maintenance-v1',
+                    'password_files': 'unencrypted_in_data_tar',
+                    'paths': {'data': ['compose', 'appdata', 'secrets/accounts'], 'media': []},
+                    'sha256': {'data': hashlib.sha256((run / 'data.tar').read_bytes()).hexdigest()},
+                }
+            )
+        )
+        target = self.root / 'passwords'
+        out = []
+        recovery_wizard.restore_passwords(self.config, answers('1', '2', str(target), '1', 'yes'), out.append)
+        said = '\n'.join(out)
+        for rel in (
+            'secrets/accounts/APP-CREDENTIALS.txt',
+            'compose/nextcloud/.env',
+            'compose/immich/.env',
+            'appdata/nextcloud/html/config/config.php',
+        ):
+            self.assertEqual((target / rel).read_bytes(), files[rel], rel)
+            self.assertIn(str(target / rel) if rel != 'secrets/accounts/APP-CREDENTIALS.txt' else 'Done.', said)
+        # Only the password files: nothing else of the apps' settings.
+        self.assertFalse((target / 'compose/jellyfin/compose.yaml').exists())
+        self.assertFalse((target / 'appdata/nextcloud/html/index.php').exists())
+
+        # A server without Nextcloud or Immich has no .env nor config.php: the list alone.
+        for rel in ('compose', 'appdata'):
+            shutil.rmtree(source / rel)
+        with tarfile.open(run / 'data.tar', 'w') as archive:
+            archive.add(source / 'secrets/accounts', arcname='secrets/accounts')
+        manifest = json.loads((run / 'manifest.json').read_text())
+        manifest['sha256']['data'] = hashlib.sha256((run / 'data.tar').read_bytes()).hexdigest()
+        (run / 'manifest.json').write_text(json.dumps(manifest))
+        target = self.root / 'passwords-list-only'
+        out = []
+        recovery_wizard.restore_passwords(self.config, answers('1', '2', str(target), '1', 'yes'), out.append)
+        self.assertIn('Done.', '\n'.join(out))
+        self.assertTrue((target / 'secrets/accounts/APP-CREDENTIALS.txt').is_file())
+        self.assertNotIn('password files are there too', '\n'.join(out))
+
     def test_menu_back_and_needs_sudo(self):
         with mock.patch('os.geteuid', return_value=1000):
             self.assertEqual(recovery_wizard.run(answers(), lambda s: None), 2)

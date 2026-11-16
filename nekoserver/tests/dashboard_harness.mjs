@@ -48,7 +48,11 @@ const CALLS = new Set([
   'sensorBadge',
   'temperatureName',
   'blockedNext',
-  'appMenu'
+  'appMenu',
+  'cardsOn',
+  'cardsSummary',
+  'cardLine',
+  'driveOffer'
 ]);
 /* Calls answered from another function's result, with more of it; the last four run a
    piece of Ask Neko on a page that keeps what is put on it (ASK_PAGE below). */
