@@ -472,9 +472,9 @@ def move_legacy(folder, media, category, guard=None):
 
 SAMPLE = 1024 * 1024  # bytes of each piece same_samples compares
 
-# Network filesystems: their file times come from the NAS's own clock, so whether the
-# source changed after its copy was made can't be told from them (see already_copied).
-NETWORK = ('cifs', 'smb3', 'nfs', 'nfs4', '9p', 'fuse.sshfs')
+# Network filesystems (neko_common.NETWORK_FILESYSTEMS): their file times come from the
+# NAS's own clock, so whether the source changed after its copy was made can't be told
+# from them (see already_copied).
 
 
 def same_samples(first, second, size):
@@ -500,7 +500,7 @@ def same_clock(path, clocks):
     a network share's). Asked once per drive: `clocks` keeps the answers."""
     drive = os.stat(path).st_dev
     if drive not in clocks:
-        clocks[drive] = (findmnt('FSTYPE', path, '--target') or '') not in NETWORK
+        clocks[drive] = (findmnt('FSTYPE', path, '--target') or '') not in neko_common.NETWORK_FILESYSTEMS
     return clocks[drive]
 
 

@@ -7,7 +7,16 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from neko_common import VERSION, app_ports, atomic_write, local_opener, mount_path, safe_path
+from neko_common import (
+    NETWORK_FILESYSTEMS,
+    VERSION,
+    app_ports,
+    atomic_write,
+    findmnt,
+    local_opener,
+    mount_path,
+    safe_path,
+)
 
 PORTS = app_ports(('jellyfin', 'seerr', 'sonarr', 'radarr'))
 LIBRARIES = (('movies', 'Movies', 'movies'), ('tv', 'TV Shows', 'tvshows'))
@@ -112,24 +121,65 @@ def matching(values, category, name, kind):
 # is switched on (said in the log).
 WATCHED = {'EnableRealtimeMonitor': True}
 
+# Real time monitoring waits for the kernel's notices of new files, which a network share
+# (NETWORK_FILESYSTEMS) does not give for files another computer puts on the NAS
+# (Jellyfin's own troubleshooting page says so); review of 0.51.3: setup promised "as soon
+# as they arrive" for a library on an NFS share all the same.
+# How often Jellyfin's "Scan Media Library" runs when a library is on a share (Jellyfin's
+# own is every 12 hours), in its ticks of 100 ns.
+HOURLY_TICKS = 60 * 60 * 10_000_000
+
+
+def on_a_share(path):
+    """Whether the folder at `path` (on this PC) is on a network share."""
+    return (findmnt('FSTYPE', str(path), '--target') or '') in NETWORK_FILESYSTEMS
+
+
+def scan_every_hour(client, log=print):
+    """On a server with a library on a share: Jellyfin's library scan every hour, unless it
+    already runs at least as often. Files put on the NAS from another computer then appear
+    within the hour instead of within 12. Jellyfin's other triggers for that task (a daily
+    time, say) are kept."""
+    tasks = client.call('/ScheduledTasks')
+    task = next((x for x in tasks or [] if isinstance(x, dict) and x.get('Key') == 'RefreshLibrary'), None)
+    if not task or not task.get('Id'):
+        return
+    triggers = [x for x in task.get('Triggers') or [] if isinstance(x, dict)]
+    intervals = [x.get('IntervalTicks') for x in triggers if x.get('Type') == 'IntervalTrigger']
+    if any(isinstance(ticks, int) and 0 < ticks <= HOURLY_TICKS for ticks in intervals):
+        return
+    kept = [x for x in triggers if x.get('Type') != 'IntervalTrigger']
+    client.call(
+        f"/ScheduledTasks/{task['Id']}/Triggers",
+        'POST',
+        kept + [{'Type': 'IntervalTrigger', 'IntervalTicks': HOURLY_TICKS}],
+    )
+    log(
+        'jellyfin: the library scan now runs every hour (it ran every 12 hours), because a library is on a network '
+        'share: a share does not tell Jellyfin of a file put on the NAS from another computer'
+    )
+
 
 def new_library_options():
     """The body of Jellyfin's "add a library" call: real time monitoring on."""
     return {'LibraryOptions': dict(WATCHED)}
 
 
-def watch_library(client, library, log=print):
+def watch_library(client, library, log=print, on_share=False):
     """Switch real time monitoring on in a library setup made, when Jellyfin says it is
-    off. A library whose options Jellyfin does not give is left as it is."""
+    off. A library whose options Jellyfin does not give is left as it is. `on_share`: the
+    library's folder is on a network share, where it can't be counted on (scan_every_hour)."""
     options = library.get('LibraryOptions')
     if not isinstance(options, dict) or options.get('EnableRealtimeMonitor') is not False:
         return
     payload = {'Id': library['ItemId'], 'LibraryOptions': {**options, **WATCHED}}
     client.call('/Library/VirtualFolders/LibraryOptions', 'POST', payload)
-    log(
-        f'jellyfin: real time monitoring switched on for the library "{library.get("Name", "")}": '
-        'new films and episodes now appear as soon as they arrive, not at the next scan (every 12 hours)'
+    said = (
+        'it is on a network share, so a new film or episode may appear only at the next library scan (every hour)'
+        if on_share
+        else 'new films and episodes now appear as soon as they arrive, not at the next scan (every 12 hours)'
     )
+    log(f'jellyfin: real time monitoring switched on for the library "{library.get("Name", "")}": {said}')
 
 
 def sign_in(client, user, secret):
@@ -169,11 +219,14 @@ def jellyfin(client, media, apply, username, password):
     sign_in(client, user, password('Jellyfin administrator password: '))
     results = [row('jellyfin:administrator', 'pass')]
     ids = []
+    shared = False
     for category, name, kind in LIBRARIES:
         try:
             host = safe_path(Path(media) / 'library' / category)
             if not host.is_dir():
                 raise SetupRequired('Expected HDD library folder is missing')
+            on_share = on_a_share(host)
+            shared = shared or on_share
             existing = matching(folders(client), category, name, kind)
             if not existing and not apply:
                 results.append(row('jellyfin:' + category, 'needs_setup', 'Preview: library would be created'))
@@ -187,7 +240,7 @@ def jellyfin(client, media, apply, username, password):
                 if not existing:
                     raise RuntimeError('Library creation was not retained')
             if apply:
-                watch_library(client, existing)
+                watch_library(client, existing, on_share=on_share)
             ids.append(str(existing['ItemId']))
             results.append(row('jellyfin:' + category, 'pass'))
         except SetupRequired as exc:
@@ -196,7 +249,18 @@ def jellyfin(client, media, apply, username, password):
             results.append(
                 row('jellyfin:' + category, 'fail', 'Library API/path check failed; existing settings preserved')
             )
+    if apply and shared:
+        try:
+            scan_every_hour(client)
+        except (RuntimeError, ValueError, TypeError, KeyError):
+            results.append(row('jellyfin:scan', 'needs_setup', SCAN_NOT_SET))
     return results, info['Id'], ids
+
+
+SCAN_NOT_SET = (
+    'A library is on a network share, where Jellyfin is not told of new files, and its library scan could not be '
+    'set to every hour. In Jellyfin open Dashboard, Scheduled tasks, Scan media library and add a trigger every hour'
+)
 
 
 def seerr_key(root):

@@ -1134,12 +1134,15 @@ def jellyfin_library(client, config, entry, kind, apply, how):
             )
         return bool(found)
 
+    on_share = entry['fstype'] in NETWORK
     values = media_libraries.folders(client)
     if there(values):
         if apply:
             for library in values:
                 if path in [str(p).rstrip('/') for p in library['Locations']] and library.get('ItemId'):
-                    media_libraries.watch_library(client, library)
+                    media_libraries.watch_library(client, library, on_share=on_share)
+            if on_share:
+                media_libraries.scan_every_hour(client)
         return media_libraries.row(check_name, 'pass')
     if any(str(x.get('Name', '')).casefold() == name.casefold() for x in values):
         raise media_libraries.SetupRequired(NAME_TAKEN.format(app='Jellyfin', name=name))
@@ -1151,6 +1154,8 @@ def jellyfin_library(client, config, entry, kind, apply, how):
     )
     if not there(media_libraries.folders(client)):
         raise RuntimeError('Library creation was not retained')
+    if on_share:
+        media_libraries.scan_every_hour(client)
     return media_libraries.row(check_name, 'pass')
 
 
