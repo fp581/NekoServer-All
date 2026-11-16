@@ -80,6 +80,8 @@ The explicit test sends a labelled test message and records whether the provider
 | Media app unavailable/unhealthy | Wait through the configured debounce to avoid brief restart interruptions |
 | Failed/stale media connection checks | Report the media connection audit status; no raw API response is sent |
 | Missing, malformed or stale dashboard monitoring | Report monitoring unavailability and retain previously reported problems |
+| Backup cards ([BACKUP-CARDS.md](BACKUP-CARDS.md)): a card full (*Card N is full: put in a new card*), or a copy onto a card that stopped | A warning, never urgent: nothing on the cards is lost |
+| Backup cards switched on, and no card of the set written for 30 days | A quiet reminder, sent at the low priority (no sound or vibration) even the first time |
 | Previously reported problem confirmed healthy | Group a recovery notice with other eligible updates |
 
 Default timings are a 60-second worker interval, 180-second debounce, 5-minute minimum between normal batches and a 12-hour repeat interval for persistent problems. Set `notifications.debounce_seconds`, `notifications.minimum_interval_seconds` and `notifications.repeat_seconds` in your installer config and reapply the module. Repeats and escalation join a single batch. The batch's ntfy priority is 5 when it holds a critical problem that is new or newly critical, 3 for other news (recoveries included), and 2 (no sound or vibration) when it holds only repeats, whose lines start with `still`. Brief problems that were never delivered produce no recovery message.

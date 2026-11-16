@@ -27,6 +27,8 @@ Seerr, Sonarr, Radarr, Lidarr, Prowlarr and qBittorrent are set up with the medi
 
 Also included: shared folders on your home network (Samba) and, if you want them, watching on a TV connected to the server (Steam Big Picture) and phone alerts when something fails (ntfy).
 
+**What you can switch on** (setup's first page): a TV connected to the server, phone alerts, outage alerts, the AI assistant, drives in a NAS, and **backup cards**: a copy of your photos and documents on SD cards or USB sticks you keep somewhere else, filled a little more each night one is plugged in ([BACKUP-CARDS.md](BACKUP-CARDS.md)). Each is off until you switch it on.
+
 ---
 
 ## What you need
@@ -251,6 +253,7 @@ What is copied, where, and when (times are in your `timezone`):
 | All app settings, databases and app versions (the monthly snapshot) | HDD | 1st of each month |
 | The one app being updated, just before its update | HDD | On the update night (Wednesdays), only when a new version is installed |
 | Music, on servers with the music backup (the music on a drive of its own, a music folder of yours that setup backs up, or `"backup_enabled"` under `"music"`) | HDD | Every night |
+| Photos and videos (Immich) and Nextcloud files, with **Backup cards** switched on | SD cards or USB sticks you keep somewhere else | Every night a card of the set is plugged in |
 | **Movies and shows**, and music without the music backup | **Not backed up** | |
 
 - **Photos, videos and Nextcloud files are only ever added to the backup.** Nothing on it is overwritten or deleted. If you edit a file, the new version is saved next to the old one with a date in its name.
@@ -260,7 +263,7 @@ What is copied, where, and when (times are in your `timezone`):
 - **Weekly copies only add what is new.** Photos already backed up are recognised without being read again, so a weekly run takes minutes, not hours, even for a big library. Any file rewritten or replaced since its copy is compared by content. Once a month, as the first step of the monthly check (before its snapshot), every copy is compared by checksum.
 - **An incomplete weekly copy is shown as one.** If some Nextcloud files could not be copied (open while copying, or names an exFAT USB drive cannot store, including two names that differ only in upper/lower case, such as `Documents` and `documents`, which exFAT treats as one), the dashboard and phone alerts say *Incomplete* and list them, instead of reporting success.
 
-**Getting something back.** Run `sudo bash install.sh --recover`. A menu asks what you want back (photos, Nextcloud files, the password list, app settings, or a whole monthly snapshot), lists the backups by date, and restores into a **new** folder, so nothing you have now is overwritten. It checks there is enough free space first, and waits if the weekly backup is using the USB drive. It ends by telling you how to put things back. More detail: [RECOVERY.md](RECOVERY.md).
+**Getting something back.** Run `sudo bash install.sh --recover`. A menu asks what you want back (photos, Nextcloud files, the password list, app settings, a whole monthly snapshot, or the files on a backup card), lists the backups by date, and restores into a **new** folder, so nothing you have now is overwritten. It checks there is enough free space first, and waits if the weekly backup is using the USB drive. It ends by telling you how to put things back. More detail: [RECOVERY.md](RECOVERY.md).
 
 ---
 
@@ -386,6 +389,7 @@ Good to know:
 | --- | --- |
 | What is tested, experimental or not supported | [SUPPORT.md](SUPPORT.md) |
 | Drive layout and backup details | [STORAGE.md](STORAGE.md) |
+| Backup cards (SD cards and USB sticks kept elsewhere) | [BACKUP-CARDS.md](BACKUP-CARDS.md) |
 | App accounts and passwords | [ACCOUNT-SETUP.md](ACCOUNT-SETUP.md) |
 | Each guided step | [GUIDED-SETUP.md](GUIDED-SETUP.md) |
 | Home and remote access, certificates | [GATEWAY.md](GATEWAY.md) |
