@@ -2754,7 +2754,16 @@ pub(crate) fn alerts(s: &Value) -> Value {
         );
     }
     // Alerts that fail to reach anyone are still said on the page.
-    if s["notifications"]["status"] == "fail" {
+    // The alert server not reached at all (the internet down for a day, say) is told
+    // apart: setup run then could only fail its downloads too (deep check 879).
+    if s["notifications"]["status"] == "fail" && s["notifications"]["reason"] == "unreachable" {
+        add(
+            "notifications:delivery".into(),
+            "warning",
+            "Phone alerts are not being delivered".into(),
+            "This server could not reach your alert server: its internet connection is probably down (check the router), or its clock is wrong (check it with  timedatectl). The alerts wait and are sent by themselves once it is reached again. If the internet works, run  sudo bash install.sh  again: it sends a test message.",
+        );
+    } else if s["notifications"]["status"] == "fail" {
         add(
             "notifications:delivery".into(),
             "warning",
@@ -3253,7 +3262,10 @@ fn notification_status(now: f64) -> Value {
     if delivery_late(timer["active"] == true, saved["generated_at"].as_f64(), now) {
         status = "stale";
     }
-    json!({"status":status,"timer":timer,"last_success":common::shown_time(&saved["last_success"],now),"last_attempt":num(&saved["last_attempt"],0.0,now+30.0),"pending":num(&saved["pending"],0.0,100.0)})
+    // Why the last alerts were not sent (notify.rs why_not_sent), when they were not.
+    let reason = Some(text(&saved["reason"]))
+        .filter(|r| status == "fail" && ["unreachable", "refused"].contains(r));
+    json!({"status":status,"reason":reason,"timer":timer,"last_success":common::shown_time(&saved["last_success"],now),"last_attempt":num(&saved["last_attempt"],0.0,now+30.0),"pending":num(&saved["pending"],0.0,100.0)})
 }
 /// A laptop running on its battery (the charger unplugged, or a power cut): when it runs
 /// out the PC goes off at once, in the middle of a backup if it comes to that, and nothing
@@ -4647,6 +4659,26 @@ mod os_tests {
         );
         assert_eq!(shown[0]["level"], "warning");
         assert!(!text(&shown[0]["detail"]).contains("bob/a:b.txt"));
+    }
+    /// Deep check 879: the internet down for a day. "Run setup again" for alerts that did
+    /// not reach the alert server could only fail too; the page says to check the internet.
+    #[test]
+    fn phone_alerts_not_reaching_the_alert_server_point_at_the_internet() {
+        let said = |reason: Value| {
+            let shown = alerts(&json!({"notifications": {"status": "fail", "reason": reason}}));
+            assert_eq!(shown[0]["id"], "notifications:delivery");
+            text(&shown[0]["detail"]).to_string()
+        };
+        let offline = said(json!("unreachable"));
+        assert!(
+            offline.contains("internet connection is probably down"),
+            "{offline}"
+        );
+        assert!(offline.contains("sent by themselves"), "{offline}");
+        for refused in [json!("refused"), Value::Null] {
+            let detail = said(refused);
+            assert!(detail.contains("asks for the topic's address"), "{detail}");
+        }
     }
     /// Deep check 249 ("I changed my router"): the PC got another address at home, the
     /// home gateway and the shared folders stopped answering, and the page was all green.

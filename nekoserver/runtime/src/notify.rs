@@ -560,11 +560,21 @@ fn plan(
     }
     (state, events)
 }
+/// Why the last message was not sent: "unreachable" (the alert server was not reached at
+/// all: the internet down, say) or "refused" (it answered no); null when it was sent.
+/// The dashboard's advice follows it (collect.rs alerts).
+fn why_not_sent(sent: &Result<()>) -> Value {
+    match sent {
+        Ok(()) => Value::Null,
+        Err(e) if common::unreached(e) => json!("unreachable"),
+        Err(_) => json!("refused"),
+    }
+}
 fn report(runtime: &Path, state: &Value, now: f64, pending: usize) -> Result<()> {
     common::atomic(
         &runtime.join("delivery.json"),
         &serde_json::to_vec(
-            &json!({"format":"neko-delivery-v1","generated_at":now,"status":state["delivery_status"].as_str().unwrap_or("unknown"),"last_success":state["last_success"],"last_attempt":state["last_attempt"],"next_attempt":state["next_attempt"],"pending":pending}),
+            &json!({"format":"neko-delivery-v1","generated_at":now,"status":state["delivery_status"].as_str().unwrap_or("unknown"),"reason":state["delivery_reason"],"last_success":state["last_success"],"last_attempt":state["last_attempt"],"next_attempt":state["next_attempt"],"pending":pending}),
         )?,
         0o644,
     )
@@ -685,6 +695,7 @@ pub fn run(a: &Args) -> Result<()> {
             3,
         );
         let mut state = after_test(old, result.is_ok(), now);
+        state["delivery_reason"] = why_not_sent(&result);
         state["destination"] = json!(destination);
         common::atomic_json(&path, &state)?;
         report(&runtime, &state, now, still_waiting(&runtime))?;
@@ -719,7 +730,9 @@ pub fn run(a: &Args) -> Result<()> {
         }
         message.push_str("Review the local dashboard and service logs for details.");
         state["last_attempt"] = json!(now);
-        if send(&cfg, &runtime, &message, urgency).is_ok() {
+        let sent = send(&cfg, &runtime, &message, urgency);
+        state["delivery_reason"] = why_not_sent(&sent);
+        if sent.is_ok() {
             for (id, recovered, level) in &events {
                 if *recovered {
                     state["entries"].as_object_mut().unwrap().remove(id);
@@ -774,6 +787,22 @@ mod tests {
             &after_test(sent, true, 1000.0)["next_attempt"],
             1000.0
         ));
+    }
+    /// Deep check 879: with the internet down for a day the dashboard told the person to
+    /// run setup again, as for an alert server that refuses the topic or token. A server
+    /// not reached at all (here a port nothing listens on, with the real curl) is told apart.
+    #[test]
+    fn an_alert_server_not_reached_is_told_from_one_that_refuses() {
+        let runtime =
+            std::env::temp_dir().join(format!("neko-notify-unreached-{}", std::process::id()));
+        common::directory(&runtime, 0o700).unwrap();
+        let cfg = json!({"endpoint": "https://127.0.0.1:48001/neko-test", "token": ""});
+        let sent = send(&cfg, &runtime, "test", 3);
+        std::fs::remove_dir_all(&runtime).unwrap();
+        assert_eq!(why_not_sent(&sent), json!("unreachable"), "{sent:?}");
+        let refused = Err(Error::new("Notification delivery failed"));
+        assert_eq!(why_not_sent(&refused), json!("refused"));
+        assert_eq!(why_not_sent(&Ok(())), Value::Null);
     }
     /// D9: `notify --test` wrote "pending 0" to the delivery record while alerts were
     /// still waiting to be sent (a test sends none of them).
