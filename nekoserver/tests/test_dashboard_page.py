@@ -1252,6 +1252,12 @@ class MediaFoldersPageTests(unittest.TestCase):
             flow['formSent'][-1],
             {'change': 'add', 'kind': 'movies', 'path': '/mnt/nas/new films', 'how': 'in_place', 'downloads': True},
         )
+        # A slash at the end (as a terminal completes a folder) names the same folder: the
+        # server refused it as "Type the folder as a full path, starting with /".
+        (slash,) = page(
+            ('mediaFlow', {'result': media_result(), 'add': {'path': '/mnt/nas/films//', 'downloads': False}})
+        )
+        self.assertEqual(slash['formSent'][-1]['path'], '/mnt/nas/films')
         # A folder that is copied takes no new downloads: the box goes off with it.
         (copy,) = page(
             ('mediaFlow', {'result': media_result(), 'add': {'path': '/mnt/old', 'downloads': True, 'how': 'copy'}})

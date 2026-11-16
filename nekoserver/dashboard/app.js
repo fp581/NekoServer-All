@@ -5686,7 +5686,10 @@ function mediaForm(kinds) {
     }
     // A folder that is copied is not connected: new downloads can't go there.
     const downloads = f.how === 'in_place' && !downloadsBox.disabled && f.downloads;
-    const body = { change: 'add', kind: f.kind, path: f.path.trim(), how: f.how, downloads };
+    // A path typed with a slash at its end (as a terminal completes it) names the same
+    // folder: it was refused as "Type the folder as a full path, starting with /".
+    const typed = f.path.trim().replace(/(.)\/+$/, '$1');
+    const body = { change: 'add', kind: f.kind, path: typed, how: f.how, downloads };
     if (!backup.hidden) {
       body.backup = f.backup;
     }
