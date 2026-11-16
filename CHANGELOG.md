@@ -9,6 +9,10 @@
 - **Copying a folder into the library shows how far it is.** The copy still starts at once, and backups wait for it; the page now shows the files and the size copied of the total, and says that backups wait until it is done. A reload, or another phone or PC, shows the same.
 - **Music on a NAS added on the page is asked "Back this up too?"**, in setup's words, and the answer is saved as setup saves it. The scheduled jobs' own copies of your folders (the music backup's list, the apps that wait for a share) are brought up to date at once, so a change made on the page counts from the next run, not from the next setup run.
 - **A change that half-fails says which step did not finish**, why, and what to do (for example "Jellyfin's library was not updated: it did not answer. Check that Jellyfin runs, then run setup again"), marked Partly done. Nothing is undone. Before, it said only "Run setup again", and a folder that could not be connected after the settings were saved was even shown as "Not changed".
+- **The Media folders page refuses a folder inside, around or the same as one already connected** (the apps would list every film twice), and names the one it overlaps.
+- **After sending new downloads elsewhere, the page says that Sonarr, Radarr and Lidarr keep what they already have in its old folder**, and how to move it in the app.
+- **A page left open on another device changes only the folder it shows**: a folder added since in the same place is never taken away or retargeted ("Press Look again").
+- **A folder typed with a slash at its end is the same folder; a very big folder in the picker says there are more; Ask Neko knows how a new drive or NAS folder is added.**
 
 ### Fixed: from the review of 0.51.3
 - **A password list restored from a snapshot made without a backup key is the one that was checked.** The archive was checked against its recorded checksum and then unpacked by name, so one replaced in between (another job writing to the HDD, a failing drive) was unpacked unchecked, with "Done" over changed passwords. It is now opened once; the same bytes are checked and unpacked, and moved into place only when they match.
