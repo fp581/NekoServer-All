@@ -1,6 +1,13 @@
 # Changelog
 
-## v0.51.3 — (in progress; the release number is 0.51.3)
+## v0.52.0 — (in progress)
+
+### Fixed: a household's people
+- **A restored photo library says whose folder is whose.** Each person's photos come back in a folder named with their Immich user ID, and the menu now says to upload each one with that person's own login; uploaded with the admin's, a child's photos went into the admin's account. The same for each person's Nextcloud files.
+- **After putting back a database copy or an app's settings, the guides say the old login is back** and to choose `c` in setup to take it from the restored password list.
+- **README says how to replace a family member's forgotten password, and what to remove when a phone is lost.**
+
+## v0.51.3 — 2026-11-16
 
 Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how NekoServer is used.
 
