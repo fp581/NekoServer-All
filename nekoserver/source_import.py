@@ -640,6 +640,31 @@ def link_copy(current, dest, stat, first, uid, gid, guard=None):
     return True
 
 
+def hard_links_work(folder):
+    """Whether the library drive at `folder` (or the nearest folder above it that is
+    there) takes hard links: a file is made and linked there, and both are removed.
+    False when that can't be tried (no right to write there, say), so room is never
+    counted short."""
+    place = Path(folder)
+    while not place.is_dir() and place != place.parent:
+        place = place.parent
+    probe = place / f'.neko-link-test-{os.getpid()}'
+    second = place / f'.neko-link-test-{os.getpid()}-2'
+    try:
+        os.close(os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600))
+    except OSError:
+        return False
+    try:
+        os.link(probe, second, follow_symlinks=False)
+    except OSError:
+        return False
+    else:
+        os.unlink(second)
+        return True
+    finally:
+        os.unlink(probe)
+
+
 def configured_folder(source):
     """The folder the source list names, whether or not it is there now."""
     value = source.get('mounted_path') if source.get('type') == 'remote' else source.get('path')
@@ -677,7 +702,13 @@ def copy_source(source, media, apply=False, uid=None, gid=None, guard=None):
         return legacy_left(left, folder, media, category)
     conflicts, downloading, leftovers, links = [], [], [], []
     entries = planned_copies(folder, target, apply, conflicts, downloading, leftovers, links)
+    # On a library drive that takes no hard links (exFAT, some NAS shares), each further
+    # name is copied as a file of its own, so its room is counted too (review of 0.51.3:
+    # it was counted once and said to take no room of its own).
+    linkable = not links or hard_links_work(target)
     required = sum(stat.st_size for _, _, stat in entries)
+    if not linkable:
+        required += sum(stat.st_size for _, _, stat, _ in links)
     free = shutil.disk_usage(media).free
     if required > free:
         raise Said(
@@ -685,7 +716,8 @@ def copy_source(source, media, apply=False, uid=None, gid=None, guard=None):
             f'Nothing was copied: it needs {size_words(required)} and the library drive has {size_words(free)} free '
             f'({size_words(required - free)} too little). Free some room or take this folder out of the source list'
         )
-    skipped = copy_entries(entries, folder, uid, gid, guard, links) if apply else []
+    copied_again = []
+    skipped = copy_entries(entries, folder, uid, gid, guard, links, copied_again) if apply else []
     copied = len(entries) + len(links) - len(skipped) if apply else 0
     result = {
         'status': 'copied' if apply else 'preview',
@@ -695,7 +727,9 @@ def copy_source(source, media, apply=False, uid=None, gid=None, guard=None):
         'destination': str(target),
     }
     result = with_downloading(with_skipped(with_conflicts(result, conflicts), skipped), downloading)
-    return with_links(with_leftovers(result, leftovers), links)
+    if not apply and not linkable:
+        copied_again = [stat for _, _, stat, _ in links]
+    return with_links(with_leftovers(result, leftovers), links, copied_again)
 
 
 def shown_name(path):
@@ -704,23 +738,41 @@ def shown_name(path):
     return os.fsencode(str(path)).decode('utf-8', 'backslashreplace')
 
 
-def copy_entries(entries, folder, uid, gid, guard, links=()):
+def copy_entries(entries, folder, uid, gid, guard, links=(), copied_again=None):
     """Copy each planned file, then give each further name of a file with several names
     (`links`, see planned_copies) its hard link; returns the ones skipped because their
     name could not be used (relative to the source), so one odd name never stops the
-    whole source."""
+    whole source. A further name that could not be linked is copied, its stat added to
+    `copied_again`; when the drive has no room left for that copy, the import stops with
+    how much is missing."""
     skipped, stable = [], {}
     for current, dest, stat, first in [(*entry, None) for entry in entries] + list(links):
         if stat.st_dev not in stable:
             stable[stat.st_dev] = stable_inodes(current.parent)
         try:
             if first is None or not link_copy(current, dest, stat, first, uid, gid, guard):
+                if first is not None:
+                    room_for_one_more(first.parent, stat.st_size)
+                    if copied_again is not None:
+                        copied_again.append(stat)
                 import_file(current, dest, stat, uid, gid, guard, stable[stat.st_dev])
         except UnicodeError:
             skipped.append(shown_name(current.relative_to(folder)))
         except SourceChanged:
             raise SourceChanged(shown_name(current.relative_to(folder))) from None
     return skipped
+
+
+def room_for_one_more(folder, size):
+    """Said (Said) when the library drive has no room for one more copy of `size` bytes:
+    a further name the drive would not link, copied instead."""
+    free = shutil.disk_usage(folder).free
+    if size > free:
+        raise Said(
+            f'Copying stopped: the library drive does not take hard links, so a file the source holds under two '
+            f'names needs {size_words(size)} more and the drive has {size_words(free)} free. The files before it '
+            'were copied. Free some room, then copy again'
+        )
 
 
 def first_ten(names):
@@ -783,16 +835,30 @@ def with_leftovers(result, leftovers):
     return result
 
 
-def with_links(result, links):
-    """The report row, saying that files with several names were counted and kept once."""
-    if links:
-        result['hard_links'] = len(links)
-        count = neko_common.file_count(len(links))
-        said = (
+def with_links(result, links, copied_again=()):
+    """The report row, saying what became of files with several names: kept once (a link
+    in the library, no room of its own), or copied again where the library drive takes no
+    hard links (`copied_again`: their stats), with the room that takes."""
+    if not links:
+        return result
+    result['hard_links'] = len(links) - len(copied_again)
+    said = []
+    if len(links) > len(copied_again):
+        count = neko_common.file_count(len(links) - len(copied_again))
+        said.append(
             f'Kept once in the library: {count} that the source holds under a second name (hard links, as download '
             'programs and Sonarr or Radarr make them). Each second name is a link there too and takes no room of its own'
         )
-        result['reason'] = result['reason'] + '. ' + said if result.get('reason') else said
+    if copied_again:
+        result['copied_twice'] = len(copied_again)
+        count = neko_common.file_count(len(copied_again))
+        room = size_words(sum(stat.st_size for stat in copied_again))
+        said.append(
+            f'Copied again: {count} that the source holds under a second name, because the library drive does not '
+            f'take hard links. Each second name is a copy of its own and takes room ({room} in all, counted above)'
+        )
+    for line in said:
+        result['reason'] = result['reason'] + '. ' + line if result.get('reason') else line
     return result
 
 
