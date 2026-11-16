@@ -1975,9 +1975,26 @@ def recorded_checksum(run, name):
     return expected if isinstance(expected, str) and len(expected) == 64 else None
 
 
-def take_out_checked(run, name, member, target):
-    """Take `member` out of a monthly snapshot's `<name>.tar` into `target` (a new, empty
-    folder), using only bytes that match the checksum recorded when the snapshot was made.
+# What a monthly snapshot made without a backup key keeps in data.tar of the files that
+# hold passwords (the same ones a key would have encrypted: maintenance.rs
+# SEALED_EXCLUDES and sealed_members): the account list is always there; each app's
+# Compose .env and Nextcloud's config.php only for the apps installed.
+PASSWORD_FILES = ('secrets/accounts',)
+APP_PASSWORD_FILES = ('compose/*/.env', 'appdata/nextcloud/html/config/config.php')
+
+
+def not_found_only(said, optional):
+    """Whether tar's complaints are only that some of the `optional` names were not in
+    the archive (an app not installed has no .env)."""
+    lines = [line for line in said.splitlines() if line.strip()]
+    missing = [f'tar: {name}: Not found in archive' for name in optional]
+    return all(line in missing or line.startswith('tar: Exiting with failure status') for line in lines)
+
+
+def take_out_checked(run, name, members, target, optional=()):
+    """Take `members` (and those of `optional` that are there; tar patterns) out of a
+    monthly snapshot's `<name>.tar` into `target` (a new, empty folder), using only bytes
+    that match the checksum recorded when the snapshot was made.
     The archive is opened once and the same bytes are both checked and unpacked: checked
     first and unpacked by name afterwards, a file replaced in between (another job writing
     to the HDD, a drive failing) was unpacked unchecked and the menu said "Done" over
@@ -1994,7 +2011,9 @@ def take_out_checked(run, name, member, target):
         open(os.open(unpacking / 'tar-errors', os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600), 'w+') as errors,
     ):
         tar = subprocess.Popen(
-            ['tar', '--extract', '--file', '-', '--directory', str(unpacking), '--no-same-owner', member],
+            ['tar', '--extract', '--file', '-', '--directory', str(unpacking), '--no-same-owner', '--wildcards']
+            + list(members)
+            + list(optional),
             stdin=subprocess.PIPE,
             stderr=errors,
         )
@@ -2016,7 +2035,7 @@ def take_out_checked(run, name, member, target):
     if digest.hexdigest() != expected:
         shutil.rmtree(unpacking)
         return f'The {name}.tar in this snapshot is damaged (checksum mismatch).'
-    if failed:
+    if failed and not (not_found_only(said, optional) and all((unpacking / m).exists() for m in members)):
         shutil.rmtree(unpacking)
         return 'Could not take the password list out of that snapshot: ' + (said or 'tar failed')
     os.unlink(unpacking / 'tar-errors')
@@ -2098,12 +2117,12 @@ def restore_password_list(config, runs, prompt, output):
         # taken out: a changed byte would change a password.
         target.mkdir(mode=0o700)
         with part_way(target, output):
-            problem = take_out_checked(run, 'data', 'secrets/accounts', target)
+            problem = take_out_checked(run, 'data', PASSWORD_FILES, target, APP_PASSWORD_FILES)
         if problem:
             shutil.rmtree(target)
             output(problem + ' Nothing was restored. Use another monthly snapshot.')
             return
-        say(output, f'\nDone. Open it with:  sudo cat {target}/secrets/accounts/APP-CREDENTIALS.txt')
+        say(output, *password_list_done(target))
         return
     import backup_secrets
 
@@ -2111,12 +2130,24 @@ def restore_password_list(config, runs, prompt, output):
     # question went to the terminal only, and the setup window waited with no question.
     with part_way(target, output):
         backup_secrets.asked_restore(run, target, out=output)
-    say(
-        output,
-        f'\nDone. Open it with:  sudo cat {target}/secrets/accounts/APP-CREDENTIALS.txt',
-        f'The apps\' own password files are there too: {target}/compose/<app>/.env and',
-        f'{target}/appdata/nextcloud/html/config/config.php (for rebuilding from a monthly snapshot).',
-    )
+    say(output, *password_list_done(target))
+
+
+def password_list_done(target):
+    """What a finished password list restore says: where the list is, and the apps' own
+    password files that came with it (each app's .env, Nextcloud's config.php), as the
+    menu promised. Said the same for an encrypted and an unencrypted snapshot; a snapshot
+    without a backup key took only the list out, so the Nextcloud guide's way to the old
+    config.php led nowhere (review of 0.51.3)."""
+    lines = [f'\nDone. Open it with:  sudo cat {target}/secrets/accounts/APP-CREDENTIALS.txt']
+    envs = sorted(Path(target).glob('compose/*/.env'))
+    config_php = Path(target) / 'appdata/nextcloud/html/config/config.php'
+    if envs or config_php.is_file():
+        lines.append('The apps\' own password files are there too (for rebuilding from a monthly snapshot):')
+        lines += [f'  {path}' for path in envs]
+        if config_php.is_file():
+            lines.append(f'  {config_php}')
+    return lines
 
 
 def restore_nightly(config, kind, prompt, output):

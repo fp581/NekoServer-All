@@ -244,7 +244,7 @@ Monthly snapshots store the account inventory encrypted (see MONTHLY-MAINTENANCE
 sudo python3 backup_secrets.py --restore /ABSOLUTE/BACKUP/RUN --to /ABSOLUTE/NEW-DIRECTORY
 ```
 
-A snapshot made without a backup key holds the list unencrypted in `data.tar` instead (marked *not encrypted* in the list). The easiest way to get it back from either kind is `sudo bash install.sh --recover`, then **1. Restore something from a backup** and **The list of app passwords**: it copies `secrets/accounts/` into a new folder and asks for the backup password only when the snapshot is encrypted.
+A snapshot made without a backup key holds the list unencrypted in `data.tar` instead (marked *not encrypted* in the list). The easiest way to get it back from either kind is `sudo bash install.sh --recover`, then **1. Restore something from a backup** and **The list of app passwords**: it copies `secrets/accounts/`, each app's `compose/<app>/.env` and Nextcloud's `appdata/nextcloud/html/config/config.php` into a new folder, says where each one is, and asks for the backup password only when the snapshot is encrypted.
 
 ### Rebuild Immich from the USB drive
 
