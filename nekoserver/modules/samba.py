@@ -12,7 +12,9 @@ from neko_common import (
     findmnt,
     immich_wanted,
     last_words,
+    location,
     media_group,
+    music_library,
     SYSTEMD_UNITS,
 )
 
@@ -75,9 +77,11 @@ def same_names(shares):
     return [names for names in seen.values() if len(names) > 1]
 
 
-def share_config(settings, media, user):
+def share_config(settings, media, user, music=None):
+    """NekoServer's share file. `music`: the share of the music folder when it is not on
+    the media drive ({'Music': its folder}, music_share)."""
     shares = settings.get('shares', {})
-    if not shares:
+    if not shares and not music:
         raise RuntimeError('At least one share is required')
     for names in same_names(shares):
         raise RuntimeError(
@@ -108,19 +112,40 @@ def share_config(settings, media, user):
         '   server min protocol = SMB2_10',
         '',
     ]
-    for name, rel in shares.items():
-        p = validate_share(name, rel)
+    folders = {name: media / validate_share(name, rel) for name, rel in shares.items()}
+    for name, path in {**folders, **(music or {})}.items():
         out += [
             f'[{name}]',
-            f'   path = {media / p}',
+            f'   path = {path}',
             '   browseable = yes',
             '   guest ok = no',
             f'   valid users = {user}',
-            f'   read only = {"no" if name == "Media" and settings.get("samba_media_write", False) else "yes"}',
+            f'   read only = {"no" if writable(name, settings) else "yes"}',
             '   follow symlinks = no',
             '',
         ]
     return '\n'.join(out)
+
+
+MUSIC_SHARE = 'Music'
+
+
+def writable(name, settings):
+    """The films and the music take new files from other computers with "samba_media_write"."""
+    return name in ('Media', MUSIC_SHARE) and bool(settings.get('samba_media_write', False))
+
+
+def music_share(config):
+    """{'Music': the folder Navidrome plays} when the music is not on the media drive (it
+    is on the SSD by default), else {}. The Media share is the media drive's library, so
+    with the music elsewhere it held no music at all, and an album copied into it from
+    another computer never reached Navidrome (deep check 736). A share of yours named
+    Music stays the only one of that name."""
+    if not media_group(config, 'music') or location(config, 'music') == 'media':
+        return {}
+    if any(name.lower() == MUSIC_SHARE.lower() for name in config.get('networking', {}).get('shares', {})):
+        return {}
+    return {MUSIC_SHARE: music_library(config)}
 
 
 # With "bind interfaces only", smbd listens only on the addresses tailscale0 has when it
@@ -134,11 +159,14 @@ TAILNET_ADDRESS = (
 )
 
 
-def storage_guard(media, unit, mode, tailscale):
+def storage_guard(media, unit, mode, tailscale, also=()):
     """Samba's drop-in: it runs only with the media HDD mounted, stops when the HDD goes,
-    and in tailnet mode starts once the Tailscale address is there (or a minute passed)."""
+    and in tailnet mode starts once the Tailscale address is there (or a minute passed).
+    `also`: other shared folders (the music on the SSD), whose drives must be mounted too,
+    or a share would show (and take files into) the empty folder on the system disk."""
+    mounts = ' '.join(str(path) for path in (media, *also))
     text = (
-        f'# Managed by NekoServer\n[Unit]\nRequiresMountsFor={media}\nBindsTo={unit}\n'
+        f'# Managed by NekoServer\n[Unit]\nRequiresMountsFor={mounts}\nBindsTo={unit}\n'
         f'After={unit} {tailscale if mode == "tailnet" else "network-online.target"}\n'
     )
     if mode == 'tailnet':
@@ -377,7 +405,8 @@ def run(context):
     service = family.service('samba')
     settings = context.config.get('networking', {})
     settings = dict(settings, shares=wanted_shares(context.config))
-    if not settings['shares']:
+    music = music_share(context.config)
+    if not settings['shares'] and not music:
         # Folders shared at an earlier run stop being shared, as one taken out of several does.
         stop_sharing(service, context.log)
         context.log(
@@ -431,6 +460,12 @@ def run(context):
             raise RuntimeError(
                 f'Share directory missing: {path}. Create it, or take the "{name}" share out of "shares" under "networking" in my-config.json'
             )
+    for name, path in music.items():
+        path = safe_path(path)
+        if path.is_symlink():
+            raise RuntimeError(f'Share directory is a link, not a folder: {path}')
+        if not path.is_dir():
+            waiting.append(f'{name} ({path}, made by the media apps step)')
     if waiting:
         return {
             'status': 'needs_setup',
@@ -441,7 +476,7 @@ def run(context):
     remember_service(service, managed)
     if not shutil.which('smbd'):
         family.install(['samba'])
-    desired = share_config(settings, media, user)
+    desired = share_config(settings, media, user, music)
     # Safest: don't modify a pre-existing unmanaged Samba installation.
     if main.exists() and not includes_ours(main.read_text()):
         unmanaged_config(main, family, context.log)
@@ -456,7 +491,7 @@ def run(context):
     call(['testparm', '-s', str(main)], timeout=30)
     unit = call(['systemd-escape', '--path', '--suffix=mount', str(media)])
     override = SYSTEMD_UNITS / (service + '.d') / '10-nekoserver-storage.conf'
-    content = storage_guard(media, unit, mode, family.service('tailscale'))
+    content = storage_guard(media, unit, mode, family.service('tailscale'), music.values())
     if override.exists() and not safe_path(override).read_text().startswith('# Managed by NekoServer\n'):
         raise RuntimeError('Unmanaged Samba storage guard')
     atomic_write(override, content, 0o644)
@@ -499,7 +534,7 @@ def run(context):
         # (shares of your own use it) is never on this list, and stays.
         remember_account(user)
     context.log(f'Samba configured for {mode}, authenticated user {user}; existing password preserved')
-    for line in how_to_open(mode, settings.get('lan_ip'), user, settings['shares']):
+    for line in how_to_open(mode, settings.get('lan_ip'), user, {**settings['shares'], **music}):
         context.log(line)
 
 

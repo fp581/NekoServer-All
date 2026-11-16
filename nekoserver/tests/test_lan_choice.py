@@ -171,7 +171,11 @@ class LanChoiceTests(unittest.TestCase):
 
     def test_samba_chooses_the_lan_itself_instead_of_waiting_for_the_gateway(self):
         ctx, _ = self.ctx(lan_ip='auto', lan_cidr='auto')
-        ctx.config.update(networking={'share_mode': 'lan', 'shares': {'Media': '.'}}, media_mount='/nonexistent')
+        ctx.config.update(
+            networking={'share_mode': 'lan', 'shares': {'Media': '.'}},
+            media_mount='/nonexistent',
+            data_mount='/nonexistent-ssd',
+        )
         asked = []
 
         def choose(context):
@@ -202,7 +206,7 @@ class LanChoiceTests(unittest.TestCase):
         )
         # With nobody to choose, Samba says how to finish instead of pointing at the gateway.
         ctx, _ = self.ctx(lan_ip='auto', lan_cidr='auto')
-        ctx.config.update(networking={'share_mode': 'lan', 'shares': {'Media': '.'}})
+        ctx.config.update(networking={'share_mode': 'lan', 'shares': {'Media': '.'}}, data_mount='/nonexistent-ssd')
         with (
             mock.patch.object(samba.os, 'geteuid', return_value=0),
             mock.patch.object(samba.host, 'current'),
@@ -240,6 +244,7 @@ class SambaWaitsForItsFoldersTests(unittest.TestCase):
             ctx = SimpleNamespace(
                 config={
                     'media_mount': media,
+                    'data_mount': media + '/ssd',
                     'gateway': {'lan_ip': '192.168.1.20', 'lan_cidr': '192.168.1.0/24'},
                     'networking': {'share_mode': 'lan', 'shares': shares},
                     'photos': {'deploy_immich': True},
@@ -476,19 +481,98 @@ class SambaSharesTests(unittest.TestCase):
         self.assertEqual(samba.wanted_shares(config), {'Media': 'library', 'Photos': 'my-pictures'})
 
 
+class SambaMusicShareTests(unittest.TestCase):
+    """Deep check 736: the music is on the SSD by default, and the Media share is the
+    media drive's library, so no share held the folder Navidrome plays. README said
+    *Media* had the music; an album copied into it never reached Navidrome."""
+
+    def config(self, **more):
+        import json
+
+        config = json.loads((ROOT / 'config.json').read_text())
+        config.update({'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media', **more})
+        config['networking'].update(lan_ip='192.168.1.20', lan_cidr='192.168.1.0/24')
+        return config
+
+    def shared(self, config):
+        """{share name: (folder, read only)} of the share file setup writes."""
+        settings = dict(config['networking'], shares=samba.wanted_shares(config))
+        text = samba.share_config(settings, Path(config['media_mount']), 'neko', samba.music_share(config))
+        found, name = {}, None
+        for line in text.splitlines():
+            if line.startswith('[') and line != '[global]':
+                name = line[1:-1]
+            elif name and line.startswith('   path = '):
+                found[name] = [Path(line.split(' = ', 1)[1])]
+            elif name and line.startswith('   read only = '):
+                found[name].append(line.endswith('yes'))
+        return found
+
+    def test_the_folder_navidrome_plays_is_shared(self):
+        from neko_common import music_library
+
+        config = self.config()
+        folders = {name: path for name, (path, _) in self.shared(config).items()}
+        played = music_library(config)
+        self.assertTrue(any(played == path or path in played.parents for path in folders.values()), folders)
+        self.assertEqual(folders['Music'], Path('/srv/nekoserver/library/music'))
+        self.assertTrue(self.shared(config)['Music'][1])  # read-only by default, as the others
+        config['networking']['samba_media_write'] = True
+        self.assertFalse(self.shared(config)['Music'][1])  # the same switch as for the films
+        # Samba waits for the SSD as it does for the HDD: never the empty folder under it.
+        guard = samba.storage_guard('/mnt/m', 'mnt-m.mount', 'lan', 'tailscaled.service', [folders['Music']])
+        self.assertIn('RequiresMountsFor=/mnt/m /srv/nekoserver/library/music\n', guard)
+
+    def test_music_on_the_media_drive_is_in_the_media_share(self):
+        config = self.config(locations={'music': 'media'})
+        self.assertEqual(samba.music_share(config), {})
+        self.assertEqual(self.shared(config)['Media'][0], Path('/mnt/nekoserver-media/library'))
+
+    def test_no_music_share_without_music_or_beside_one_of_yours(self):
+        config = self.config()
+        config['media_apps'] = {'music': False}
+        self.assertEqual(samba.music_share(config), {})
+        config = self.config()
+        config['networking']['shares']['music'] = 'songs'
+        self.assertEqual(samba.music_share(config), {})
+
+    def test_the_music_share_waits_for_the_media_step(self):
+        with tempfile.TemporaryDirectory() as media:
+            (Path(media) / 'library').mkdir()
+            config = self.config(media_mount=media, data_mount=media + '/ssd')
+            ctx = SimpleNamespace(config=config, log=print, apply=True)
+            with (
+                mock.patch.object(samba.os, 'geteuid', return_value=0),
+                mock.patch.object(samba.host, 'current'),
+                mock.patch.object(samba.network_access, 'choose_lan', return_value=True),
+                mock.patch.object(samba.network_access, 'verify_lan'),
+                mock.patch.object(samba, 'samba_account', return_value='neko'),
+                mock.patch.object(samba.pwd, 'getpwnam'),
+                mock.patch.object(samba, 'findmnt', return_value=media),
+                mock.patch.object(samba, 'immich_wanted', return_value=False),
+            ):
+                result = samba.run(ctx)
+        self.assertEqual(result['status'], 'needs_setup')
+        self.assertIn('Music (' + media + '/ssd/library/music, made by the media apps step)', result['reason'])
+
+
 class SambaHowToOpenTests(unittest.TestCase):
     """Deep check 558-560: Windows never lists the shares under "Network" by itself
     (Windows finds servers there through WS-Discovery or NetBIOS, both of which this Samba
     leaves out), and no guide or line of setup said what to type instead, on Windows, a
     Mac or Linux: a person who looked under Network found nothing."""
 
-    def run_to_the_end(self, mode='lan'):
+    def run_to_the_end(self, mode='lan', **more):
+        """What setup said; the share file it wrote is kept in self.written."""
         logged = []
         with tempfile.TemporaryDirectory() as d:
             media = Path(d, 'media')
             (media / 'library').mkdir(parents=True)
+            (Path(d) / 'ssd/library/music').mkdir(parents=True)
             ctx = SimpleNamespace(
                 config={
+                    'data_mount': str(Path(d) / 'ssd'),
+                    **more,
                     'media_mount': str(media),
                     'gateway': {'lan_ip': '192.168.1.20', 'lan_cidr': '192.168.1.0/24'},
                     'networking': {'share_mode': mode, 'tailnet_only': True, 'shares': {'Media': 'library'}},
@@ -501,7 +585,7 @@ class SambaHowToOpenTests(unittest.TestCase):
             pdbedit = mock.Mock(returncode=0, stdout='neko:1000:\n')
             with (
                 mock.patch.object(samba.os, 'geteuid', return_value=0),
-                mock.patch.object(samba.host, 'current'),
+                mock.patch.object(samba.host, 'current') as family,
                 mock.patch.object(samba.network_access, 'choose_lan', return_value=True),
                 mock.patch.object(samba.network_access, 'verify_lan'),
                 mock.patch.object(samba, 'samba_account', return_value='neko'),
@@ -518,7 +602,10 @@ class SambaHowToOpenTests(unittest.TestCase):
                 mock.patch.object(samba, 'call', return_value='mnt-media.mount'),
                 mock.patch.object(samba.subprocess, 'run', return_value=pdbedit),
             ):
+                family.return_value.service.side_effect = lambda name: name + '.service'
                 self.assertIsNone(samba.run(ctx))
+            self.written = Path(d, 'etc/samba/nekoserver.conf').read_text().replace(d, '<tmp>')
+            self.guard = Path(d, 'units/samba.service.d/10-nekoserver-storage.conf').read_text().replace(d, '<tmp>')
         return '\n'.join(logged)
 
     def test_setup_says_what_to_type_on_each_computer(self):
@@ -528,6 +615,17 @@ class SambaHowToOpenTests(unittest.TestCase):
         self.assertEqual(said.count('smb://192.168.1.20/Media'), 2)  # Mac, Linux
         self.assertIn('Sign in as neko', said)
         self.assertIn('"SMB file share"', said)  # deep check 567: a Chromebook
+
+    def test_a_whole_run_shares_the_music_navidrome_plays(self):
+        """Deep check 736, through the whole step: the music on the SSD (the default)."""
+        said = self.run_to_the_end(media_apps={'movies': True, 'music': True})
+        self.assertIn('[Music]\n   path = <tmp>/ssd/library/music\n', self.written)
+        self.assertIn('Shares: Media, Music.', said)
+        self.assertIn('RequiresMountsFor=<tmp>/media <tmp>/ssd/library/music\n', self.guard)
+        # The music on the media drive: it is in the Media share already.
+        said = self.run_to_the_end(media_apps={'music': True}, locations={'music': 'media'})
+        self.assertNotIn('[Music]', self.written)
+        self.assertIn('Shares: Media.', said)
 
     def test_over_tailscale_it_names_the_address_to_use(self):
         lines = samba.how_to_open('tailnet', None, 'neko', {'Media': 'library'})
