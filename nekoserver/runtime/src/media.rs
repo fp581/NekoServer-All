@@ -816,6 +816,23 @@ pub(crate) fn answers(port: u16) -> Option<u16> {
     })();
     result.unwrap_or(None)
 }
+/// The apps to check: those of media.services whose groups are on (common::media_services).
+/// A group switched off at a later setup run (Music, say) stays in the list, its apps
+/// stopped and their data kept: checked anyway, they failed every hour on the dashboard,
+/// and the monthly update, which needs this check to pass, never ran again (deep check 750).
+fn checked_apps(cfg: &Value) -> Result<Vec<&str>> {
+    let listed = cfg["media"]["services"]
+        .as_array()
+        .ok_or_else(|| Error::new("Media services required"))?;
+    if listed.iter().any(|a| !MEDIA_APPS.contains(&text(a))) {
+        return Err(Error::new("Invalid media services"));
+    }
+    let selected = common::media_services(cfg);
+    if selected.is_empty() {
+        return Err(Error::new("Invalid media services"));
+    }
+    Ok(selected)
+}
 pub fn run(a: &Args) -> Result<()> {
     common::require_root()?;
     let config = a.path("config")?;
@@ -841,15 +858,7 @@ pub fn run(a: &Args) -> Result<()> {
     } else {
         common::lock(lock)?
     };
-    let selected = cfg["media"]["services"]
-        .as_array()
-        .ok_or_else(|| Error::new("Media services required"))?
-        .iter()
-        .map(text)
-        .collect::<Vec<_>>();
-    if selected.is_empty() || selected.iter().any(|a| !MEDIA_APPS.contains(a)) {
-        return Err(Error::new("Invalid media services"));
-    }
+    let selected = checked_apps(&cfg)?;
     let mut services = json!({});
     let mut integrations = json!({});
     let checking = a.flag("checking");
@@ -929,6 +938,43 @@ mod tests {
             .iter()
             .map(|(n, v)| json!({"name": n, "value": v}))
             .collect::<Vec<_>>())
+    }
+    /// Deep check 750: Music switched off at a later setup run. Navidrome and Lidarr were
+    /// stopped, still listed, and checked as failed every hour, which also held every
+    /// monthly update back (maintenance needs this check to pass).
+    #[test]
+    fn apps_of_a_group_switched_off_are_not_checked() {
+        let all = json!([
+            "jellyfin",
+            "navidrome",
+            "sonarr",
+            "radarr",
+            "lidarr",
+            "prowlarr",
+            "seerr",
+            "qbittorrent"
+        ]);
+        let cfg =
+            json!({"media": {"services": all}, "media_apps": {"movies": true, "music": false}});
+        assert_eq!(
+            checked_apps(&cfg).unwrap(),
+            [
+                "jellyfin",
+                "sonarr",
+                "radarr",
+                "prowlarr",
+                "seerr",
+                "qbittorrent"
+            ]
+        );
+        // A server from before the groups checks its whole list, as before.
+        let before = json!({"media": {"services": all}});
+        assert_eq!(checked_apps(&before).unwrap().len(), 8);
+        // A name it does not know is still refused, even in a group that is off.
+        let wrong = json!({"media": {"services": ["jellyfin", "plex"]}});
+        assert!(checked_apps(&wrong).is_err());
+        let none = json!({"media": {"services": ["navidrome"]}, "media_apps": {"music": false}});
+        assert!(checked_apps(&none).is_err());
     }
     /// "Save new ones here too": Seerr's provider may save into the person's own folder,
     /// and the readiness check does not call that a changed provider. Anything else is.
