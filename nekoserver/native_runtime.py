@@ -477,6 +477,10 @@ def acceptance_checks(config, modules):
         jobs += [('nekoserver-music-backup.service', code, 'music-backup', True)]
     if 'photo_backup' in modules:
         jobs += [('nekoserver-photo-backup.service', code, 'weekly', True)]
+    from neko_common import SHARED, cards_enabled
+
+    if 'backup_cards' in modules and cards_enabled(config):
+        jobs += [(SHARED['cards']['service'], code, 'cards', True)]
     for unit, binary, command, guard in jobs:
         good = False
         try:

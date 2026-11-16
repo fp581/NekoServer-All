@@ -2257,7 +2257,9 @@ MONTHLY_DEFAULT = '02:30'  # the monthly check on the 1st, and the weekly app up
 # How far from the daily time each nightly job starts (minutes), so they never start in
 # the same minute: the music copy first, then the app snapshot, then this PC's own
 # settings. The Immich database copy of the old daily photo schedule went two hours before.
-NIGHTLY_OFFSETS = {'music': -30, 'app': 0, 'host': 60, 'photo_database': -120}
+NIGHTLY_OFFSETS = {'music': -30, 'app': 0, 'host': 60, 'photo_database': -120, 'cards': 120}
+# The backup cards (0.52.0) go an hour after the last of them (this PC's settings), so the
+# copy onto a card never waits for the jobs' lock behind a nightly backup.
 # In the weekly photo schedule the Immich database copy goes just before the USB copy,
 # which takes it along (Sunday 02:15 before 03:00, as it always was).
 DATABASE_BEFORE_USB = 45
@@ -2399,8 +2401,9 @@ def _own_time(config, section, key, default):
 
 def job_times(config):
     """When each scheduled job runs, as its timer is written: app (the media apps'
-    snapshot), music, host (this PC's own settings), photo_database (the daily Immich
-    database copy of the old photo schedule), photo_database_weekly and
+    snapshot), music, host (this PC's own settings), cards (the backup cards, 0.52.0),
+    photo_database (the daily Immich database copy of the old photo schedule),
+    photo_database_weekly and
     photo_database_weekly_day (the same copy just before the USB copy: the day before it
     when the 45 minutes cross midnight), usb_day and usb (the USB copy), monthly (the
     monthly check and the weekly app updates). From "backup_times" when setup asked for
@@ -2423,6 +2426,9 @@ def job_times(config):
             'app': _own_time(config, 'app_backup', 'time', DAILY_DEFAULT),
             'music': _own_time(config, 'music', 'backup_time', '03:45'),
             'host': _own_time(config, 'host_backup', 'time', '05:15'),
+            'cards': minutes_later(
+                _own_time(config, 'host_backup', 'time', '05:15'), NIGHTLY_OFFSETS['cards'] - NIGHTLY_OFFSETS['host']
+            ),
             'photo_database': database,
             'photo_database_weekly': weekly,
             'photo_database_weekly_day': weekly_day,
@@ -2435,6 +2441,7 @@ def job_times(config):
         'app': minutes_later(chosen['daily'], NIGHTLY_OFFSETS['app']),
         'music': minutes_later(chosen['daily'], NIGHTLY_OFFSETS['music']),
         'host': minutes_later(chosen['daily'], NIGHTLY_OFFSETS['host']),
+        'cards': minutes_later(chosen['daily'], NIGHTLY_OFFSETS['cards']),
         'photo_database': minutes_later(chosen['daily'], NIGHTLY_OFFSETS['photo_database']),
         'photo_database_weekly': minutes_later(chosen['weekly'], before_usb),
         'photo_database_weekly_day': day_before_if_wrapped(chosen['weekly_day'], chosen['weekly'], before_usb),

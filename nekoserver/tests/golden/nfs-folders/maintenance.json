@@ -228,6 +228,7 @@
       "notifications",
       "heartbeat",
       "host_backup",
+      "backup_cards",
       "maintenance"
     ],
     "network": [

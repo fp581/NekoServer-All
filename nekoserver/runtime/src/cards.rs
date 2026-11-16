@@ -12,6 +12,20 @@ use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub mod drives;
+pub mod job;
+pub mod status;
+
+/// A fact of shared.json's "cards" block (setup reads the same).
+pub fn fact(key: &str) -> &'static str {
+    common::shared("cards", key)
+}
+
+/// Backup cards are switched on: setup said so in the settings it wrote for the jobs.
+pub fn enabled(cfg: &Value) -> bool {
+    cfg["cards"]["enabled"] == true
+}
+
 /// The kinds of source archive format 1 knows (format.rs, inventory.rs).
 const IMMICH: &str = "immich-originals";
 const NEXTCLOUD: &str = "nextcloud-files";

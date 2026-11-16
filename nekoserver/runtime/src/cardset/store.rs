@@ -501,6 +501,40 @@ impl Store {
         Ok((epoch, revision))
     }
 
+    /// The backup set this catalogue is of, (its ID, its name), once one was started: the
+    /// server keeps one set (0.52.0), started when its first card is enrolled.
+    pub fn backup_set(&self) -> Res<Option<(String, String)>> {
+        let id: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'backup_set_id'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| db("backup set", e))?;
+        match id {
+            Some(id) => Ok(Some((id, self.meta("set_display_name")?))),
+            None => Ok(None),
+        }
+    }
+
+    /// The backup set of this catalogue: the one it has, or a new one named `name`.
+    pub fn start_set(&mut self, name: &str) -> Res<(String, String)> {
+        if let Some(set) = self.backup_set()? {
+            return Ok(set);
+        }
+        let tx = self.begin_tx()?;
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES ('backup_set_id', ?1), ('set_display_name', ?2)",
+            params![format::new_uuid()?, name],
+        )
+        .map_err(|e| db("backup set", e))?;
+        tx.commit().map_err(|e| db("commit", e))?;
+        self.backup_set()?
+            .ok_or_else(|| CardError::new(Kind::Invalid, "the backup set was not kept"))
+    }
+
     /// The catalogue's epoch and its change counter (`CONTENT_TRIGGERS`).
     pub fn content(&self) -> Res<(String, u64)> {
         let counted = self.meta("content")?.parse().map_err(|_| {

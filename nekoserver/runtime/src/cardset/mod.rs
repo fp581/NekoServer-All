@@ -41,7 +41,7 @@ pub mod store;
 pub mod volume;
 
 #[cfg(test)]
-mod testkit;
+pub mod testkit;
 #[cfg(test)]
 mod tests_accept;
 #[cfg(test)]

@@ -3,8 +3,6 @@ mod apps;
 mod array_health;
 mod assist;
 mod backup;
-// Called by the card job from the next part on (0.52.0, backup cards).
-#[cfg_attr(not(test), allow(dead_code))]
 mod cards;
 mod cardset;
 mod collect;
@@ -116,7 +114,7 @@ fn entry() -> Result<()> {
         return serve::hardware();
     }
     if mode == "--help" || mode.is_empty() {
-        println!("nekoserver-runtime {VERSION}\nCommands: serve, control, hardware, collect, archive, copy, preservation, weekly, database, media-health, music-backup, app-snapshot, app-resume, notify, hdd-policy, host-snapshot, host-resume, immich-resume, cloud-resume, seal-passwords, heartbeat, storage-guard, gateway-guard, drive-return, nas-watch, maintenance, maintenance-resume, update-check, update-apps, check-compose, check-drives, job-states\nUse COMMAND --help for options.");
+        println!("nekoserver-runtime {VERSION}\nCommands: serve, control, hardware, collect, archive, copy, preservation, weekly, database, media-health, music-backup, cards, app-snapshot, app-resume, notify, hdd-policy, host-snapshot, host-resume, immich-resume, cloud-resume, seal-passwords, heartbeat, storage-guard, gateway-guard, drive-return, nas-watch, maintenance, maintenance-resume, update-check, update-apps, check-compose, check-drives, job-states\nUse COMMAND --help for options.");
         return Ok(());
     }
     let allowed = match mode.as_str() {
@@ -126,7 +124,7 @@ fn entry() -> Result<()> {
             vec!["config"]
         }
         "music-backup" | "app-snapshot" | "app-resume" | "maintenance" | "maintenance-resume"
-        | "update-check" => vec!["config"],
+        | "update-check" | "cards" => vec!["config"],
         "update-apps" => vec!["config", "app"],
         "check-compose" => vec!["config", "app", "model", "upload", "database"],
         "check-drives" => vec!["config", "drives", "writable"],
@@ -211,6 +209,7 @@ fn entry() -> Result<()> {
         "job-states" => collect::job_states(&a),
         "hdd-policy" => os_policy::run(&a),
         "music-backup" => music_backup::run(&a),
+        "cards" => cards::job::run(&a),
         "notify" => notify::run(&a),
         "storage-guard" => startup::run(&a, false),
         "gateway-guard" => startup::run(&a, true),

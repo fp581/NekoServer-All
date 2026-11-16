@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT))
 import explanations  # noqa: E402
 import native_runtime  # noqa: E402
 import neko_common  # noqa: E402
-from modules import dashboard  # noqa: E402
+from modules import backup_cards, dashboard  # noqa: E402
 
 SSD_UUID = '1a2b3c4d-0001-4000-8000-00000000aaaa'
 HDD_UUID = '1a2b3c4d-0002-4000-8000-00000000bbbb'
@@ -87,6 +87,61 @@ class UpgradeTests(unittest.TestCase):
         without_nextcloud = switched_on(settings_0513())
         without_nextcloud['nextcloud']['enabled'] = False
         self.assertEqual(self.written(without_nextcloud)[0]['cards']['nextcloud'], False)
+
+
+class Ctx:
+    def __init__(self, config, apply=False):
+        self.config, self.apply, self.said = config, apply, []
+
+    def log(self, line):
+        self.said.append(line)
+
+
+class ScheduleTests(unittest.TestCase):
+    """The nightly run: an hour after the other nightly jobs, the job's own service (which
+    the dashboard's "Write to the card now" starts too), nothing while switched off."""
+
+    def test_the_cards_go_an_hour_after_the_last_nightly_job(self):
+        cfg = switched_on(settings_0513())
+        times = neko_common.job_times(cfg)
+        self.assertEqual(cfg['backup_times']['daily'], '04:15')
+        self.assertEqual((times['host'], times['cards']), ('05:15', '06:15'))
+        units = backup_cards.definitions(cfg, '/rt/nekoserver-runtime', '/etc/nekoserver-backups/storage.json')
+        self.assertEqual(set(units), {'nekoserver-cards.service', 'nekoserver-cards.timer'})
+        self.assertIn('OnCalendar=*-*-* 06:15:00 ', units['nekoserver-cards.timer'])
+        self.assertIn(
+            'ExecStart=/rt/nekoserver-runtime cards --config /etc/nekoserver-backups/storage.json',
+            units['nekoserver-cards.service'],
+        )
+        # A settings file from before 0.48.0 (each job its own time): after this PC's settings.
+        old = switched_on(settings_0513())
+        del old['backup_times']
+        old['host_backup']['time'] = '23:30'
+        self.assertEqual(neko_common.job_times(old)['cards'], '00:30')
+
+    def test_switched_off_nothing_is_written_and_an_old_schedule_is_retired(self):
+        ctx = Ctx(settings_0513(), apply=True)
+        with mock.patch('os.geteuid', return_value=0), mock.patch('modules._schedules.retire') as retire:
+            backup_cards.run(ctx)
+        retired = [p.name for p in retire.call_args[0][0]]
+        self.assertEqual(retired, ['nekoserver-cards.timer', 'nekoserver-cards.service'])
+        self.assertIn('Backup cards: off', ctx.said[0])
+        dry = Ctx(switched_on(settings_0513()))
+        backup_cards.run(dry)
+        self.assertIn('every night at 06:15', dry.said[0])
+
+    def test_a_server_from_0513_gets_the_step_which_does_nothing_until_switched_on(self):
+        from config_checks import merge_profiles
+
+        template = json.loads((ROOT / 'config.json').read_text())
+        old = settings_0513()
+        old['profiles']['full'].remove('backup_cards')  # the profile as 0.51.3 saved it
+        old['profile_steps_known'] = {'full': list(old['profiles']['full'])}
+        lines, _ = merge_profiles(old, template)
+        self.assertTrue(any('backup_cards' in line for line in lines), lines)
+        self.assertIn('backup_cards', old['profiles']['full'])
+        with mock.patch.object(neko_common, 'server_exists', return_value=True):
+            self.assertIs(neko_common.cards_enabled(old), False)
 
 
 if __name__ == '__main__':
