@@ -401,6 +401,25 @@ class MediaFoldersTests(unittest.TestCase):
         self.assertEqual(odd['state'], 'refused')
         self.assertIn('full path', odd['message'])
 
+    def test_a_folder_inside_or_around_a_connected_one_is_refused(self):
+        # Deep check 836: the NAS share connected after its films folder (or a film's
+        # folder after the films) was bound on its own too, so every film showed twice.
+        self.add(downloads=False)
+        before = self.pc.settings()
+        words = {'other': str(self.pc.films), 'other_words': 'films'}
+        for path, kind, said in (
+            (self.pc.nas, 'movies', media_locations.HAS_INSIDE),
+            (self.pc.films / 'Alien (1979)', 'movies', media_locations.INSIDE),
+            (self.pc.films / 'Alien (1979)', 'tv', media_locations.INSIDE),
+            (self.pc.films, 'tv', media_locations.OTHER_KIND),
+        ):
+            answer = self.add(path, kind=kind, downloads=False)
+            wanted = said.format(path=path, words=media_locations.WORDS[kind], **words)
+            self.assertEqual((answer['state'], answer['message']), ('refused', wanted), path)
+            self.assertEqual(self.pc.settings(), before, path)
+        # A folder beside it is fine.
+        self.assertEqual(self.add(self.pc.shows, kind='tv', downloads=False)['state'], 'done')
+
     def test_a_share_that_does_not_answer_is_refused_without_waiting_for_it(self):
         # A share that stopped answering holds every look at its folders. Seen for real
         # (a FUSE share whose server never answered): the run waited in the kernel for

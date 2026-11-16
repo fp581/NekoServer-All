@@ -92,6 +92,22 @@ NO_DOWNLOADS = (
 ALREADY = existing_page.ALREADY  # setup says the same
 NOT_CONNECTED = 'That folder is not connected for your {words} (any more). Nothing was changed.'
 KEPT = 'The files in {path} were not touched: nothing was deleted, moved or changed there.'
+# A folder inside a connected one, one that has a connected one in it, or one connected
+# for another kind: the apps would list the same files twice (or as the wrong kind).
+INSIDE = (
+    '{path} is inside {other}, which is connected already for your {other_words}, so the apps would show what is '
+    'in it twice. Nothing was changed. {other} is used as it is; to use only parts of it, take it away first and '
+    'then add those folders one by one.'
+)
+HAS_INSIDE = (
+    '{path} has {other} in it, which is connected already for your {other_words}, so the apps would show what is '
+    'in that twice. Nothing was changed. Take {other} away first, then add {path}.'
+)
+OTHER_KIND = (
+    '{path} is connected already for your {other_words}, so it is not connected for your {words} too: the apps '
+    'would show the same files in both. Nothing was changed. Keep your {words} in a folder of their own, and add '
+    'that one.'
+)
 NOT_SAVED = 'The settings could not be saved ({why}), so nothing was changed.'
 ONLY_SSD = 'The settings copy on the SSD was saved; {path} was not there to save in, so setup there has the old choice.'
 
@@ -273,6 +289,22 @@ def answering(path):
         raise Refusal(AWAY)
 
 
+def overlapping(config, kind, real):
+    """Refusal when `real` is, holds, or lies in a folder connected already (of any kind):
+    each would be bound into the library on its own, and Jellyfin, Navidrome and the
+    others list every file under both (deep check 836: a drive added, then the films
+    folder on it, showed every film twice)."""
+    for entry in existing_media.extras(config):
+        other, named = entry['path'], {'path': real, 'other': entry['path'], 'words': WORDS[kind]}
+        named['other_words'] = WORDS[entry['holds']]
+        if other == real:
+            raise Refusal(OTHER_KIND.format(**named))
+        if existing_media.within(real, other):
+            raise Refusal(INSIDE.format(**named))
+        if existing_media.within(other, real):
+            raise Refusal(HAS_INSIDE.format(**named))
+
+
 def add(config, asked, out):
     """Connect a folder (or have it copied). Returns the kinds whose apps are to be told."""
     kind, words = asked['kind'], WORDS[asked['kind']]
@@ -287,6 +319,7 @@ def add(config, asked, out):
     real = os.path.realpath(asked['path'])
     if any(entry['path'] in (asked['path'], real) for entry in entries.values()):
         raise Refusal(ALREADY.format(path=real, words=words))
+    overlapping(config, kind, real)
     if existing_media.is_full(config, kind):
         raise Refusal(existing_media.full_words(kind))
     try:
