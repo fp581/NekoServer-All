@@ -2330,6 +2330,55 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertEqual((target / 'secrets/accounts/APP-CREDENTIALS.txt').read_bytes(), b'jellyfin: admin / pw')
         self.assertFalse((target / 'appdata').exists())  # only the password list
 
+        # Review of 0.51.3: the archive was checked, then unpacked by name, so one replaced
+        # in between (another job writing to the HDD) was unpacked unchecked, with "Done".
+        # Here it is replaced as soon as its checksum has been read.
+        changed = good.replace(b'admin / pw', b'admin / XX')
+        swapped = []
+
+        def swap():
+            if not swapped:
+                swapped.append(True)
+                (run / 'data.tar.new').write_bytes(changed)
+                os.replace(run / 'data.tar.new', run / 'data.tar')
+
+        real_digest, real_sha256 = hashlib.file_digest, hashlib.sha256
+
+        def file_digest(stream, name):
+            found = real_digest(stream, name)
+            swap()
+            return found
+
+        class Swapping:
+            def __init__(self):
+                self.real = real_sha256()
+
+            def update(self, data):
+                self.real.update(data)
+                swap()
+
+            def hexdigest(self):
+                return self.real.hexdigest()
+
+        (run / 'data.tar').write_bytes(good)
+        target = self.root / 'passwords-swapped'
+        out = []
+        with (
+            mock.patch.object(recovery_wizard.hashlib, 'file_digest', file_digest),
+            mock.patch.object(recovery_wizard.hashlib, 'sha256', Swapping),
+        ):
+            recovery_wizard.restore_passwords(self.config, answers('1', '2', str(target), '1', 'yes'), out.append)
+        self.assertTrue(swapped)
+        said = '\n'.join(out)
+        if (target / 'secrets/accounts/APP-CREDENTIALS.txt').exists():
+            # What was checked is what was unpacked: the archive as it was when opened.
+            self.assertEqual((target / 'secrets/accounts/APP-CREDENTIALS.txt').read_bytes(), b'jellyfin: admin / pw')
+            self.assertIn('Done.', said)
+        else:
+            self.assertIn('damaged (checksum mismatch)', said)
+            self.assertNotIn('Done.', said)
+        self.assertFalse((target / '.unpacking').exists())
+
     def test_menu_back_and_needs_sudo(self):
         with mock.patch('os.geteuid', return_value=1000):
             self.assertEqual(recovery_wizard.run(answers(), lambda s: None), 2)
