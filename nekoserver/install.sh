@@ -33,8 +33,10 @@ retrying() {
   output=$(mktemp)
   while :; do
     # (In a || list, so a failure here is judged below instead of ending the script.)
+    # In English, as host.py runs them: the patterns above read what they say, and on a
+    # PC in German apt says "Fehlschlag beim Holen von" (deep check 829).
     {
-      "$@" 2>&1 | tee "$output"
+      LC_ALL=C LANGUAGE=C "$@" 2>&1 | tee "$output"
       code=${PIPESTATUS[0]}
     } || true
     if ((code != 0 && waited < 600)) && grep -qiE "$busy_pattern" "$output"; then
