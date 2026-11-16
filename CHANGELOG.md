@@ -31,6 +31,14 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 - **Immich follows a time zone changed after its first setup**, as every other schedule and app already did.
 - **A dashboard PIN asked again and left empty is no longer shown by "Show login".**
 
+### Fixed: Ask Neko's answers
+- **Ask Neko is told what to do about each problem, the urgent ones first**, not only their titles.
+- **"Is everything backed up?" gets a true answer**: backups waiting for a missing drive were given as fine, and jobs that copy nothing were counted as backups.
+- **Ask Neko is given the guides' own steps** for the common how-to questions (a deleted photo, a family member, the TV, updating), is told never to make steps up, and says so for questions NekoServer has nothing to do with.
+- **A follow-up question comes with the one before and its answer.**
+- **Ask Neko answers in the question's language**, and knows how busy the PC and each app are.
+- **A model that doesn't fit in memory is said with what to do.**
+
 ### Fixed: the dashboard in a real server's states
 - **With Docker stopped, the apps say "Docker stopped" and Docker's alert is the one thing to fix**, naming the apps and the command that starts it; every app said "Not checked yet" and Needs attention listed twelve items.
 - **A failing drive says it is failing**, that it may stop working, to check the backups and how to move it, and "What should I do?" opens a guide about drive health (it opened the one about connecting a drive).
