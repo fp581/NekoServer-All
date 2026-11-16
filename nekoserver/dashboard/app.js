@@ -1976,6 +1976,28 @@ function sendQuestion() {
   ASK.item = null;
   void askNeko(question, item);
 }
+/* The last question of this chat that Neko answered whole, and its answer, sent with the
+ * next question so a follow-up ("And how do I do that?") is understood: each question
+ * reached Neko alone before (deep check 642). The answer is cut to what fits in a request
+ * the web service takes (serve.rs MAX_BODY, 4096 bytes) with the new question. */
+const ASK_BODY = 4096;
+const EARLIER_CHARS = 2500; // what the server keeps of it (assist.rs EARLIER_ANSWER_CHARS)
+function earlierExchange(asked) {
+  const last = ASK.log.filter(e => text(e.answer).trim() && !e.error).at(-1);
+  if (!last) {
+    return null;
+  }
+  // Cut by characters, never inside one (half an emoji is not JSON the server reads).
+  let answer = Array.from(text(last.answer).trim()).slice(0, EARLIER_CHARS);
+  const before = () => ({ question: text(last.question), answer: answer.join('') });
+  while (
+    answer.length &&
+    new TextEncoder().encode(JSON.stringify({ ...asked, before: before() })).length > ASK_BODY - 256
+  ) {
+    answer = answer.slice(0, Math.floor(answer.length * 0.8));
+  }
+  return answer.length && text(last.question) ? before() : null;
+}
 async function askNeko(question, item) {
   if (!signedIn()) {
     askUnlock(() => askNeko(question, item));
@@ -1989,11 +2011,13 @@ async function askNeko(question, item) {
   }
   // Said with the question in the history too: the box (and its note) is emptied now.
   const entry = { question, answer: '', cut: askTooLong(question) ? 'Neko read only the start of this question.' : '' };
+  const asked = item ? { question, item } : { question };
+  const before = earlierExchange(asked);
   ASK.log.push(entry);
   ASK.busy = true;
   renderAsk();
   try {
-    const started = await postControl('ask', item ? { question, item } : { question });
+    const started = await postControl('ask', before ? { ...asked, before } : asked);
     if (started.error === 'E43') {
       // The PIN session ran out meanwhile: ask for the PIN, then the same question again.
       ASK.log.pop();

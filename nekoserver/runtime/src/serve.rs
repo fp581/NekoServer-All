@@ -272,6 +272,8 @@ pub fn control_request(op: &str, body: &Value, who: &Who, token: Option<&str>) -
         "tag",
         "question",
         "item",
+        // Ask Neko's question before a follow-up, and its answer (assist::earlier).
+        "before",
         "action",
     ] {
         if let Some(v) = body.get(key) {
@@ -1163,6 +1165,16 @@ mod tests {
             request,
             json!({"op": "app_restart", "local": false, "app": "immich", "pid": 5, "start": 6, "token": "t"})
         );
+    }
+    /// Deep check 642, run through this service on the lab: the page sent the question
+    /// before a follow-up, and it was dropped here, so the model still got it alone.
+    #[test]
+    fn a_follow_up_reaches_the_control_service_with_the_question_before() {
+        let before = json!({"question": "Why did it fail?", "answer": "The HDD is full."});
+        let body = json!({"question": "How do I fix that?", "before": before.clone()});
+        let request = control_request("app_ask", &body, &Who::default(), Some("t"));
+        assert_eq!(request["before"], before, "{request}");
+        assert_eq!(request["question"], "How do I fix that?");
     }
     #[test]
     fn the_source_of_a_forwarded_request_is_what_tailscale_added() {

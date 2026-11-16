@@ -59,7 +59,8 @@ const DETAILED = new Set([
   'bugBoxCopy',
   'cutOffEntry',
   'askSignedOut',
-  'askTyped'
+  'askTyped',
+  'askInTurn'
 ]);
 /* What those need of the page script besides the functions above. */
 const ASK_PAGE = [
@@ -235,7 +236,9 @@ function keptPage() {
       children: [],
       clicked: null,
       append(...added) {
-        for (const child of added) {
+        for (const given of added) {
+          // A string is a text node (longText puts one between its parts).
+          const child = typeof given === 'string' ? { textContent: given, children: [] } : given;
           child.parentElement = node;
           node.children.push(child);
         }
@@ -318,6 +321,24 @@ SPECIAL.askFlow = async argument => {
   await app.askNeko(argument.typed);
   const entry = app.ASK.log[0];
   return { sent, question: entry.question, shown: shown(byId('ask-log')), report: app.bugReport(entry) };
+};
+// Questions one after the other, each answered as `answers` says ({text} or {failed}):
+// what each one sent to /api/control/ask. argument: {questions, answers}.
+SPECIAL.askInTurn = async argument => {
+  keptPage();
+  let n = -1;
+  const sent = server((path, body) => {
+    if (path === '/api/control/ask') {
+      n += 1;
+      return { ok: true, id: 'a' + n, question: body.question, excerpt: '' };
+    }
+    const said = argument.answers[n];
+    return { text: said.text ?? '', done: !said.failed, failed: said.failed ?? null, repair: null };
+  });
+  for (const question of argument.questions) {
+    await app.askNeko(question);
+  }
+  return sent.filter(([path]) => path === '/api/control/ask').map(([, body]) => body);
 };
 // Approve on an update's card while `waiting` is the version that waits on the server:
 // what each press sends, and the card after it. argument: {shown, waiting}.

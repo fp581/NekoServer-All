@@ -1019,13 +1019,17 @@ fn ask(
         });
     let known = assist::known_secrets(cfg, data);
     let repairs = assist::offered(cfg, status, data);
-    let messages = assist::messages(
+    let mut messages = assist::messages(
         &question,
         &assist::summary(status, common::now()),
         about.as_ref().map(|(w, l)| (w.as_str(), l.as_str())),
         &repairs,
         &known,
     );
+    // A follow-up: the page's last question and Neko's answer to it come first.
+    if let Some((asked, said)) = assist::earlier(&request["before"]) {
+        messages = assist::follow_up(messages, (&asked, &said), &known);
+    }
     let excerpt = about
         .map(|(words, log)| assist::redact(&format!("{words}\n{log}"), &known))
         .unwrap_or_default();
@@ -1771,6 +1775,60 @@ mod tests {
         let web = include_str!("serve.rs");
         assert!(web.contains(r#""question": ready["question"]"#));
         let _ = fs::remove_dir_all(&data);
+    }
+
+    /// Deep check 642: "Why did the backup fail?", then "How do I fix that?". Each
+    /// question reached the model alone, so it never knew what "that" was. The page's last
+    /// question and answer now come before the new one, with their secrets taken out.
+    #[test]
+    fn a_follow_up_question_comes_with_the_one_before_and_its_answer() {
+        let data = std::env::temp_dir().join(format!("neko-ask-follow-{}", std::process::id()));
+        let spoken = ["Blue", "-Horse-", "77"].concat();
+        let earlier = json!({"question": format!("Why did the backup fail? my password is {spoken}"),
+            "answer": "The Host and user snapshot failed: the HDD is full."});
+        let ready = ask(
+            &json!({}),
+            &data,
+            &json!({"generated_at": common::now(), "alerts": []}),
+            "qwen3.5:4b",
+            &json!({"question": "How do I fix that?", "before": earlier}),
+            Instant::now() + assist::PREPARE,
+        );
+        assert_eq!(ready["ok"], true, "{ready}");
+        let m = ready["messages"].as_array().unwrap();
+        let roles: Vec<&str> = m.iter().map(|m| m["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, ["system", "user", "assistant", "user"], "{ready}");
+        assert!(m[1]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("Why did the backup fail?"));
+        assert_eq!(
+            m[2]["content"],
+            "The Host and user snapshot failed: the HDD is full."
+        );
+        let new = m[3]["content"].as_str().unwrap();
+        assert!(
+            new.starts_with("How do I fix that?") && new.contains("The dashboard now"),
+            "{new}"
+        );
+        assert!(!ready.to_string().contains(&spoken), "{ready}");
+        // A first question, or a "before" that is not one, is asked alone, as before.
+        for before in [
+            json!(null),
+            json!({"question": "x"}),
+            json!("x"),
+            json!({"question": "", "answer": "y"}),
+        ] {
+            let alone = ask(
+                &json!({}),
+                &data,
+                &json!({"generated_at": common::now(), "alerts": []}),
+                "qwen3.5:4b",
+                &json!({"question": "Is it fine?", "before": before}),
+                Instant::now() + assist::PREPARE,
+            );
+            assert_eq!(alone["messages"].as_array().unwrap().len(), 2, "{before}");
+        }
     }
 
     /// What the control service itself does with the readings' age and a log that is

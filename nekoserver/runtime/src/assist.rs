@@ -897,6 +897,42 @@ pub fn messages(
     json!([{"role": "system", "content": system}, {"role": "user", "content": user}])
 }
 
+/// The longest earlier answer taken back with a follow-up question.
+const EARLIER_ANSWER_CHARS: usize = 2500;
+
+/// The question before this one and Neko's answer to it, as the page sends them with a
+/// follow-up ("before": {"question", "answer"}): plain text, each cut to its length.
+/// The page sends only the last whole answer of its own chat.
+pub fn earlier(value: &Value) -> Option<(String, String)> {
+    let question = question(&value["question"])?;
+    let answer: String = value["answer"]
+        .as_str()?
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n')
+        .take(EARLIER_ANSWER_CHARS)
+        .collect();
+    (!answer.is_empty()).then_some((question, answer))
+}
+
+/// `messages` with the question before and its answer in front of the new question, so
+/// a follow-up ("And how do I do that?", "What does that mean?") is understood: each
+/// question was sent alone, and the model never knew what "that" was (deep check 642).
+/// Their secrets are taken out as everything else's.
+pub fn follow_up(mut messages: Value, earlier: (&str, &str), known: &[String]) -> Value {
+    if let Some(list) = messages.as_array_mut() {
+        let at = list.len().saturating_sub(1);
+        list.splice(
+            at..at,
+            [
+                json!({"role": "user", "content": redact(earlier.0, known)}),
+                json!({"role": "assistant", "content": redact(earlier.1, known)}),
+            ],
+        );
+    }
+    messages
+}
+
 /* ---------- repairs ---------- */
 
 /// A repair the person may approve: its id, exactly what it does, and a warning when
