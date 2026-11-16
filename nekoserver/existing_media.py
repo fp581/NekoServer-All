@@ -547,12 +547,14 @@ def backed_up(config):
 # A download is saved in the library's own downloads folder (/data/downloads), then the
 # importer (Radarr, Sonarr, Lidarr) puts it into the folder for new files. The person's
 # folder is a mount of its own inside /data, and Linux makes no hard link from one mount
-# to another, even on one drive: the importer copies the file and removes the download.
-# So a hard link is never promised here; the room is needed twice until the copy is done.
+# to another, even on one drive: the importer copies the file. The download is removed
+# only once qBittorrent stops sharing it (qbit_setup.SHARE_LIMITS: up to 7 days), so a
+# hard link is never promised here; the room is needed twice until then.
 
 COPIED_TWICE = (
-    'New {what} are downloaded to {downloads} first and then copied into {path}; the download is removed after '
-    'the copy. Each one needs room in both places for that moment, and the copy takes as long as the file is big.'
+    'New {what} are downloaded to {downloads} first and then copied into {path}. The download is removed from '
+    'there once qBittorrent has finished sharing it (after up to 7 days), so each one needs room in both places '
+    'until then, and the copy takes as long as the file is big.'
 )
 
 
