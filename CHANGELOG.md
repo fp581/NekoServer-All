@@ -2,6 +2,17 @@
 
 ## v0.52.0 — (in progress)
 
+### Fixed: from the review of 0.51.3
+- **A password list restored from a snapshot made without a backup key is the one that was checked.** The archive was checked against its recorded checksum and then unpacked by name, so one replaced in between (another job writing to the HDD, a failing drive) was unpacked unchecked, with "Done" over changed passwords. It is now opened once; the same bytes are checked and unpacked, and moved into place only when they match.
+- **A film edited after it was imported is no longer taken for "already imported".** Only three pieces of it were compared, so a change elsewhere (a program rewriting a tag and putting the old date back) was missed. A source file written to since its copy was made, or on a network share, is now compared whole.
+- **On a library drive without hard links, a file the source holds under two names is counted twice for room.** It was copied twice but counted once, and the report said the second name "takes no room of its own". The drive is now tried first; the second names are counted, said as copied again, and a copy that would not fit stops with how much room is missing.
+
+### Fixed: the home around the server
+- **After a power cut, home addresses come back by themselves.** The PC was up before the router gave out addresses, so the home-address gateway used its tries in about a minute and stayed off until started by hand (and the dashboard said to reconnect drives). It now waits up to four minutes for the address.
+- **With the internet down, "Phone alerts are not being delivered" says the internet is probably down** (or the clock is wrong) and that the alerts go out by themselves once it is back, instead of telling you to run setup.
+- **The daily update check says plainly when the download site was not reached**: check the internet and whether the router's parental controls block it, before Docker's own words.
+- **A server switched off at the wall every night is told why its monthly check and update nights are overdue**: they need it on overnight.
+
 ### Fixed: a household's people
 - **A restored photo library says whose folder is whose.** Each person's photos come back in a folder named with their Immich user ID, and the menu now says to upload each one with that person's own login; uploaded with the admin's, a child's photos went into the admin's account. The same for each person's Nextcloud files.
 - **After putting back a database copy or an app's settings, the guides say the old login is back** and to choose `c` in setup to take it from the restored password list.
