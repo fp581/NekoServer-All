@@ -44,7 +44,13 @@ The apps' settings and databases stay on the SSD. (A drive of their own for one 
 
 A place that already holds files stays where it is: servers set up before 0.46.0 keep photos and music on the SSD. Changing `"locations"` by hand while the files are still on the other drive stops setup, because the app would start with an empty folder. Moving them is a job of its own: stop the apps, copy the folder with `rsync -aHAX`, then change the setting.
 
-**Adding a drive later** (a second HDD because the films no longer fit, say). On a server that is set up, setup does not ask again where the films, the photos, the music or Nextcloud's files go: they stay where they are. NekoServer does not spread one kind of files over two drives, so a second drive beside the first gives Jellyfin no room. Put a bigger drive in place of the full one instead: connect it, make its filesystem, and `migrate.py` copies everything onto it and switches over, leaving the old drive as it was ([Moving to a bigger drive](#moving-to-a-bigger-drive), below).
+**Adding a drive later** (a second HDD because the films no longer fit, say). On a server that is set up, setup does not ask again where the films, the photos, the music or Nextcloud's files go: they stay where they are. NekoServer does not spread its own library of one kind over two drives, so a second drive beside the first gives the library no room (a folder of films you keep there yourself can be connected as it is: see the next part). Put a bigger drive in place of the full one instead: connect it, make its filesystem, and `migrate.py` copies everything onto it and switches over, leaving the old drive as it was ([Moving to a bigger drive](#moving-to-a-bigger-drive), below).
+
+### Folders of films, shows and music you already have
+
+Folders of yours (on another drive of this PC, or on a NAS) can be used where they are, beside NekoServer's library: setup asks for them, and the dashboard's **Media folders** page adds or takes one away later ([DASHBOARD.md](DASHBOARD.md#media-folders)). Each kind (films, shows, music) can have up to 8 such folders. So a film collection already spread over two drives can stay where it is; what NekoServer downloads still goes to one place.
+
+Each folder is connected under `library/existing` on its group's drive and seen by every app at `/data/existing/<name>`: `movies`, `tv` or `music` for the first, `movies-new` for a folder that 0.51 used only for new downloads, then `movies-2`, `movies-3` and so on. A folder keeps its name for as long as it is connected, so taking one away never moves the others in Jellyfin, Navidrome, Sonarr, Radarr or Lidarr. Nothing in your folders is changed, and they are not in NekoServer's backups (except music on a NAS, when you said yes to backing it up: see [MUSIC.md](MUSIC.md)); keep your own copy of them.
 
 ## Drives on a network storage box (NAS)
 

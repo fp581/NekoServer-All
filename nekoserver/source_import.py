@@ -683,7 +683,10 @@ def legacy_left(left, folder, media, category):
     }
 
 
-def copy_source(source, media, apply=False, uid=None, gid=None, guard=None):
+def copy_source(source, media, apply=False, uid=None, gid=None, guard=None, progress=None):
+    """One source copied (or previewed) into `media`'s library: its report row.
+    `progress(files_done, bytes_done, files_total, bytes_total)`, when given, is told
+    before the first file and after each one (the dashboard shows it, copy_entries)."""
     category = source.get('category')
     if category not in ('movies', 'tv', 'music'):
         raise RuntimeError('Invalid media category')
@@ -717,7 +720,7 @@ def copy_source(source, media, apply=False, uid=None, gid=None, guard=None):
             f'({size_words(required - free)} too little). Free some room or take this folder out of the source list'
         )
     copied_again = []
-    skipped = copy_entries(entries, folder, uid, gid, guard, links, copied_again) if apply else []
+    skipped = copy_entries(entries, folder, uid, gid, guard, links, progress, copied_again) if apply else []
     copied = len(entries) + len(links) - len(skipped) if apply else 0
     result = {
         'status': 'copied' if apply else 'preview',
@@ -738,15 +741,22 @@ def shown_name(path):
     return os.fsencode(str(path)).decode('utf-8', 'backslashreplace')
 
 
-def copy_entries(entries, folder, uid, gid, guard, links=(), copied_again=None):
+def copy_entries(entries, folder, uid, gid, guard, links=(), progress=None, copied_again=None):
     """Copy each planned file, then give each further name of a file with several names
     (`links`, see planned_copies) its hard link; returns the ones skipped because their
     name could not be used (relative to the source), so one odd name never stops the
     whole source. A further name that could not be linked is copied, its stat added to
     `copied_again`; when the drive has no room left for that copy, the import stops with
-    how much is missing."""
+    how much is missing. `progress`: told the files and bytes done of the total, before
+    the first file and after each one (a hard link takes no bytes; a further name copied
+    instead adds its size to both)."""
     skipped, stable = [], {}
-    for current, dest, stat, first in [(*entry, None) for entry in entries] + list(links):
+    planned = [(*entry, None) for entry in entries] + list(links)
+    files_total, bytes_total = len(planned), sum(stat.st_size for _, _, stat in entries)
+    bytes_done = 0
+    if progress:
+        progress(0, 0, files_total, bytes_total)
+    for done, (current, dest, stat, first) in enumerate(planned, 1):
         if stat.st_dev not in stable:
             stable[stat.st_dev] = stable_inodes(current.parent)
         try:
@@ -755,11 +765,16 @@ def copy_entries(entries, folder, uid, gid, guard, links=(), copied_again=None):
                     room_for_one_more(first.parent, stat.st_size)
                     if copied_again is not None:
                         copied_again.append(stat)
+                    bytes_total += stat.st_size
+                    first = None  # copied: its bytes count as done below
                 import_file(current, dest, stat, uid, gid, guard, stable[stat.st_dev])
         except UnicodeError:
             skipped.append(shown_name(current.relative_to(folder)))
         except SourceChanged:
             raise SourceChanged(shown_name(current.relative_to(folder))) from None
+        bytes_done += stat.st_size if first is None else 0
+        if progress:
+            progress(done, bytes_done, files_total, bytes_total)
     return skipped
 
 
@@ -933,7 +948,7 @@ def not_mounted_yet(source, finished):
     }
 
 
-def import_one(source, root, apply, owner, guard, finished, again=False):
+def import_one(source, root, apply, owner, guard, finished, again=False, progress=None):
     """One source copied into `root`'s library: its row for the report. A finished
     import is recorded in `finished`, and not done again unless asked (`again`): Sonarr,
     Radarr or Lidarr may since have renamed or replaced those files in the library, and a
@@ -945,7 +960,7 @@ def import_one(source, root, apply, owner, guard, finished, again=False):
             'reason': f'Copied before; not copied again (to copy what is new in it, in the NekoServer folder: {AGAIN})',
         }
     try:
-        result = copy_source(source, root, apply, *owner, guard)
+        result = copy_source(source, root, apply, *owner, guard, progress)
     except NotMountedYet:
         return not_mounted_yet(source, finished)
     except SourceGone:
@@ -975,7 +990,7 @@ def import_one(source, root, apply, owner, guard, finished, again=False):
     return result
 
 
-def run(config, sources, apply=False, verify=None, again=False):
+def run(config, sources, apply=False, verify=None, again=False, progress=None):
     media = neko_common.mount_path(config['media_mount'])
     data = neko_common.mount_path(config['data_mount'])
     if not os.path.ismount(media) or not os.path.ismount(data):
@@ -997,7 +1012,7 @@ def run(config, sources, apply=False, verify=None, again=False):
     guards = {root: DriveGuard(root) for root in {data, media, music, films}} if apply else {}
     for index, source in enumerate(sources):
         root = music if source.get('category') == 'music' else films
-        result = import_one(source, root, apply, owner, guards.get(root), finished, again)
+        result = import_one(source, root, apply, owner, guards.get(root), finished, again, progress)
         # Inventory may contain private URLs; reports never serialize source entries.
         rows.append(dict(source_number=index + 1, category=source.get('category'), **result))
     if verify:

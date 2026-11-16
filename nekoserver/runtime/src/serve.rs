@@ -252,6 +252,15 @@ fn ask_control(socket: &Path, request: &Value) -> std::result::Result<Value, &'s
         .ok_or("E21")
 }
 
+const MEDIA_FIELDS: [&str; 7] = [
+    "change",
+    "kind",
+    "path",
+    "how",
+    "downloads",
+    "target",
+    "use",
+];
 /// The request the control service gets: only the fields it knows, plus who is asking.
 /// `local` is decided here, never taken from the page.
 pub fn control_request(op: &str, body: &Value, who: &Who, token: Option<&str>) -> Value {
@@ -278,6 +287,15 @@ pub fn control_request(op: &str, body: &Value, who: &Who, token: Option<&str>) -
     ] {
         if let Some(v) = body.get(key) {
             request[key] = v.clone();
+        }
+    }
+    // The Media folders page's fields, for its own requests only (media_folders.rs
+    // checks each one).
+    if op.starts_with("app_media_") {
+        for key in MEDIA_FIELDS {
+            if let Some(v) = body.get(key) {
+                request[key] = v.clone();
+            }
         }
     }
     if let Some(t) = token {
@@ -768,6 +786,9 @@ fn control(
             "ask" => "app_ask",
             "assist-check" => "app_assist_check",
             "assist-run" => "app_assist_run",
+            "media-state" => "app_media_state",
+            "media-change" => "app_media_change",
+            "media-browse" => "app_media_browse",
             _ => return Err("E40"),
         },
         _ => return Err("E42"),
@@ -1165,6 +1186,18 @@ mod tests {
             request,
             json!({"op": "app_restart", "local": false, "app": "immich", "pid": 5, "start": 6, "token": "t"})
         );
+        // The Media folders page's fields reach its own requests, and no others.
+        let body = json!({"change": "add", "kind": "tv", "path": "/mnt/nas/tv", "how": "in_place",
+            "downloads": false, "target": "library", "use": "in_place", "local": true, "run": "x"});
+        let request = control_request("app_media_change", &body, &Who::default(), Some("t"));
+        assert_eq!(
+            request,
+            json!({"op": "app_media_change", "local": false, "change": "add", "kind": "tv",
+                "path": "/mnt/nas/tv", "how": "in_place", "downloads": false, "target": "library",
+                "use": "in_place", "token": "t"})
+        );
+        let request = control_request("app_restart", &body, &Who::default(), None);
+        assert_eq!(request, json!({"op": "app_restart", "local": false}));
     }
     /// Deep check 642, run through this service on the lab: the page sent the question
     /// before a follow-up, and it was dropped here, so the model still got it alone.
@@ -1656,6 +1689,27 @@ mod tests {
             r#"{"device":"d"}"#,
         );
         assert_eq!(seen(&reply)["local"], false);
+        // The Media folders page's three requests reach the control service by their names.
+        for (path, op) in [
+            ("media-state", "app_media_state"),
+            ("media-change", "app_media_change"),
+            ("media-browse", "app_media_browse"),
+        ] {
+            let reply = post(
+                &format!("/api/control/{path}"),
+                &local,
+                &here,
+                "X-Neko-Token: t\r\n",
+                r#"{"change":"look","path":"/mnt"}"#,
+            );
+            let request = seen(&reply);
+            assert_eq!(request["op"], op, "{reply}");
+            assert_eq!(
+                (request["change"].as_str(), request["path"].as_str()),
+                (Some("look"), Some("/mnt"))
+            );
+        }
+        assert!(post("/api/control/media-delete", &local, &here, "", "{}").contains("\"E40\""));
         // Coded refusals keep their HTTP status.
         assert!(post(
             "/api/control/unlock",

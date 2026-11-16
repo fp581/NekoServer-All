@@ -345,6 +345,7 @@ class SettingsTests(unittest.TestCase):
                     'mount': str(self.pc.nas),
                     'share': 'nas:/tank',
                     'fstype': 'nfs4',
+                    'slot': 'movies',
                 }
             ],
         )
@@ -354,7 +355,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(existing_media.extras(changed)[0]['path'], str(self.pc.films))
         self.assertEqual(existing_media.extras(self.pc.config), [])
 
-    def test_one_folder_for_each_kind_and_a_new_choice_takes_the_olds_place(self):
+    def test_a_kind_has_several_folders_each_under_a_slot_of_its_own(self):
         (self.pc.nas / 'shows').mkdir()
         self.pc.config = self.pc.chosen()
         found, _ = self.pc.check(folder=self.pc.nas / 'shows', new_files=True, category='tv')
@@ -363,18 +364,117 @@ class SettingsTests(unittest.TestCase):
         (self.pc.nas / 'more-films').mkdir()
         found, _ = self.pc.check(folder=self.pc.nas / 'more-films')
         again = existing_media.with_choice(both, existing_media.entry_for('movies', found))
+        # 0.51 took the first films' place ("take one away first" on the page): now both stay.
         self.assertEqual(
-            sorted((e['holds'], Path(e['path']).name) for e in existing_media.extras(again)),
-            [('movies', 'more-films'), ('tv', 'shows')],
+            [(e['holds'], Path(e['path']).name, e['slot']) for e in existing_media.extras(again)],
+            [('movies', 'films', 'movies'), ('tv', 'shows', 'tv'), ('movies', 'more-films', 'movies-2')],
         )
+        self.assertEqual(
+            [line.split()[1] for line in existing_media.fstab_lines(again)],
+            [str(self.pc.media / 'library/existing' / name) for name in ('movies', 'tv', 'movies-2')],
+        )
+        # The same folder chosen again is changed where it is, under its own slot.
+        found, _ = self.pc.check(folder=self.pc.nas / 'more-films', new_files=True)
+        writable = existing_media.with_choice(again, existing_media.entry_for('movies', found, True))
+        self.assertEqual(
+            [(e['slot'], e['new_files']) for e in existing_media.extras(writable)],
+            [('movies', False), ('tv', True), ('movies-2', True)],
+        )
+        self.assertEqual(existing_media.new_files_folder(writable, 'movies'), '/data/existing/movies-2')
         fewer = existing_media.without_choice(again, 'tv')
-        self.assertEqual([e['holds'] for e in existing_media.extras(fewer)], ['movies'])
+        self.assertEqual([e['holds'] for e in existing_media.extras(fewer)], ['movies', 'movies'])
         # Where new files go, as the apps see it: the existing folder only when chosen.
         self.assertEqual(existing_media.new_files_folder(again, 'tv'), '/data/existing/tv')
         self.assertEqual(existing_media.new_files_folder(again, 'movies'), '/data/movies')
         self.assertEqual(existing_media.new_files_folder(self.pc.config, 'music'), '/data/music')
         left_out = existing_media.not_backed_up(self.pc.config)
         self.assertEqual([row[:2] for row in left_out], [('movies', str(self.pc.films))])
+
+    def folder(self, name):
+        """Another folder of films on the share, checked and ready to be added."""
+        (self.pc.nas / name).mkdir(exist_ok=True)
+        return self.pc.check(folder=self.pc.nas / name)[0]
+
+    def settings_of_0_51_3(self):
+        """Settings as 0.51.3 saved them: films used in place, read-only, and a folder of
+        their own for new films; no "slot" in either entry."""
+        config = dict(self.pc.config)
+        (self.pc.nas / 'new-films').mkdir()
+        old = {'mount': str(self.pc.nas), 'share': 'nas:/tank', 'fstype': 'nfs4'}
+        table = placement.table(config)
+        table['movies']['extra'] = [
+            {'path': str(self.pc.films), 'holds': 'movies', 'use': 'in_place', 'new_files': False, **old},
+            {'path': str(self.pc.nas / 'new-films'), 'holds': 'movies', 'use': 'new_files', 'new_files': True, **old},
+        ]
+        config['placement'] = table
+        return config
+
+    def test_settings_saved_by_0_51_3_keep_their_folders_where_the_apps_have_them(self):
+        config = self.settings_of_0_51_3()
+        library = self.pc.media / 'library' / 'existing'
+        # Read as 0.51.3 read them: the same mount points, the same paths in the apps.
+        self.assertEqual([e['slot'] for e in existing_media.extras(config)], ['movies', 'movies-new'])
+        self.assertEqual(
+            [line.split()[1] for line in existing_media.fstab_lines(config)],
+            [str(library / 'movies'), str(library / 'movies-new')],
+        )
+        self.assertEqual(existing_media.new_files_folder(config, 'movies'), '/data/existing/movies-new')
+        self.assertEqual(
+            [existing_media.library_name(e) for e in existing_media.extras(config)],
+            ['Movies (your folder)', 'Movies (new, your folder)'],
+        )
+        # A third folder (refused by 0.51.3) gets a slot of its own; the two keep theirs.
+        more = existing_media.with_choice(config, existing_media.entry_for('movies', self.folder('old-films')))
+        self.assertEqual([e['slot'] for e in existing_media.extras(more)], ['movies', 'movies-new', 'movies-2'])
+        self.assertEqual(existing_media.library_name(existing_media.extras(more)[2]), 'Movies (your folder 2)')
+        self.assertEqual(existing_media.new_files_folder(more, 'movies'), '/data/existing/movies-new')
+        # Taking the first away moves no other folder: the apps' libraries stay valid.
+        fewer = existing_media.without_choice(more, 'movies', 'movies')
+        self.assertEqual([e['slot'] for e in existing_media.extras(fewer)], ['movies-new', 'movies-2'])
+        self.assertEqual(
+            [line.split()[1] for line in existing_media.fstab_lines(fewer)],
+            [str(library / 'movies-new'), str(library / 'movies-2')],
+        )
+        # The next folder takes the first free slot (the kind's own again), never one in use.
+        again = existing_media.with_choice(fewer, existing_media.entry_for('movies', self.folder('films-3')))
+        self.assertEqual([e['slot'] for e in existing_media.extras(again)], ['movies-new', 'movies-2', 'movies'])
+
+    def test_a_kind_has_at_most_the_folders_shared_json_says(self):
+        cap = existing_media.SHARED['media_folders']['folders_per_kind']
+        self.assertEqual(existing_media.FOLDERS_PER_KIND, cap)
+        config = self.pc.config
+        for number in range(cap):
+            self.assertFalse(existing_media.is_full(config, 'movies'))
+            config = existing_media.with_choice(config, existing_media.entry_for('movies', self.folder(f'f{number}')))
+        self.assertTrue(existing_media.is_full(config, 'movies'))
+        self.assertFalse(existing_media.is_full(config, 'tv'))
+        self.assertEqual(len({e['slot'] for e in existing_media.extras(config)}), cap)
+        with self.assertRaises(RuntimeError) as caught:
+            existing_media.with_choice(config, existing_media.entry_for('movies', self.folder('one-too-many')))
+        self.assertIn(f'more than {cap}', str(caught.exception))
+        said = existing_media.full_words('movies')
+        self.assertIn(f'{cap} folders connected already', said)
+        self.assertIn('Take one away first', said)
+
+    def test_a_slot_or_a_folder_given_twice_is_refused(self):
+        config = existing_media.with_choice(self.pc.chosen(), existing_media.entry_for('movies', self.folder('more')))
+        first, second = config['placement']['movies']['extra']
+        for changed in (
+            [first, {**second, 'slot': 'movies'}],  # one slot for two folders
+            [first, {**second, 'path': first['path']}],  # one folder twice
+            [first, {**second, 'slot': 'tv-2'}],  # another kind's
+            [first, {**second, 'slot': '../movies'}],
+            [first, {**second, 'slot': 'movies-0'}],
+            [first, {**second, 'slot': 'movies-100'}],
+        ):
+            bad = existing_media.without_choice(config, 'movies')
+            bad['placement']['movies']['extra'] = changed
+            with self.assertRaises(RuntimeError, msg=changed):
+                existing_media.extras(bad)
+        for name in ('movies', 'movies-new', 'movies-2', 'movies-99'):
+            self.assertTrue(existing_media.is_slot('movies', name), name)
+        with self.assertRaises(RuntimeError):
+            existing_media.mount_point(config, 'movies', 'in_place')
 
     def test_what_the_settings_file_says_is_not_trusted(self):
         good = self.pc.chosen()
@@ -477,7 +577,14 @@ class MountTests(unittest.TestCase):
         earlier = self.pc.fstab.read_text()
         rows = self.use(config)
         point = self.pc.media / 'library' / 'existing' / 'movies'
-        mounted = {'holds': 'movies', 'use': 'in_place', 'path': str(self.pc.films), 'mounted': True, 'reason': None}
+        mounted = {
+            'holds': 'movies',
+            'use': 'in_place',
+            'slot': 'movies',
+            'path': str(self.pc.films),
+            'mounted': True,
+            'reason': None,
+        }
         self.assertEqual(rows, [mounted])
         self.assertEqual(self.ran, [['systemctl', 'daemon-reload'], ['mount', str(point)]])
         written = self.pc.fstab.read_text()
@@ -955,19 +1062,38 @@ class NewFilesTests(unittest.TestCase):
 
     def test_there_is_one_place_for_new_files(self):
         config = self.both()
-        # The films' folder made writable after all: it takes the new files, the other goes.
+        # The films' folder made writable after all: it takes the new files. The folder
+        # that took only the new ones stays connected, used where it is and read-only
+        # (0.51 disconnected it: the films in it left the library), under its own slot.
+        self.assertEqual(existing_media.download_only(config, 'movies')['path'], str(self.new))
         again = self.pc.chosen(new_files=True)['placement']['movies']['extra'][0]
         one = existing_media.with_choice(config, again)
-        self.assertEqual([(e['use'], e['new_files']) for e in existing_media.extras(one)], [('in_place', True)])
+        self.assertEqual(
+            [(e['use'], e['new_files'], e['slot']) for e in existing_media.extras(one)],
+            [('in_place', True, 'movies'), ('in_place', False, 'movies-new')],
+        )
+        self.assertIsNone(existing_media.download_only(one, 'movies'))
         self.assertEqual(existing_media.new_files_folder(one, 'movies'), '/data/existing/movies')
-        # And back: a folder of their own takes them from the films' folder.
+        library = self.pc.media / 'library' / 'existing'
+        self.assertIn(f'{self.new} {library / "movies-new"} none bind,ro,nofail', existing_media.fstab_lines(one)[1])
+        said = existing_media.stays_words(existing_media.download_only(config, 'movies'))
+        self.assertIn('stays connected, used where it is (read-only)', said)
+        self.assertIn('the movies in it stay in your library', said)
+        # And back: a folder of their own takes them from the films' folder, in its place.
         found, _ = self.pc.check(folder=self.new, new_files=True)
         back = existing_media.with_choice(one, existing_media.entry_for('movies', found, use=existing_media.NEW))
         self.assertEqual(
-            [(e['use'], e['new_files']) for e in existing_media.extras(back)],
-            [('in_place', False), ('new_files', True)],
+            [(e['use'], e['new_files'], e['slot']) for e in existing_media.extras(back)],
+            [('in_place', False, 'movies'), ('new_files', True, 'movies-new')],
         )
-        only = existing_media.without_choice(back, 'movies', existing_media.NEW)
+        # New files to the library: both stay connected, read-only.
+        library_only = existing_media.without_new_files(back, 'movies')
+        self.assertEqual(
+            [(e['use'], e['new_files'], e['slot']) for e in existing_media.extras(library_only)],
+            [('in_place', False, 'movies'), ('in_place', False, 'movies-new')],
+        )
+        self.assertEqual(existing_media.new_files_folder(library_only, 'movies'), '/data/movies')
+        only = existing_media.without_choice(back, 'movies', 'movies-new')
         self.assertEqual([e['use'] for e in existing_media.extras(only)], ['in_place'])
         self.assertEqual(existing_media.new_files_folder(only, 'movies'), '/data/movies')
 
@@ -998,8 +1124,8 @@ class NewFilesTests(unittest.TestCase):
         self.assertIsNone(existing_media.new_files_ready(self.pc.config, 'movies', **how))
         with self.assertRaises(Away):  # chosen, not mounted into the library yet
             existing_media.new_files_ready(config, 'movies', **how)
-        for use in existing_media.USES:
-            self.pc.bound[str(existing_media.mount_point(config, 'movies', use))] = '80'
+        for name in ('movies', 'movies-new'):
+            self.pc.bound[str(existing_media.mount_point(config, 'movies', name))] = '80'
         self.assertEqual(existing_media.new_files_ready(config, 'movies', **how), '/data/existing/movies-new')
         del self.pc.mounts[str(self.pc.nas)]  # the share goes away
         with self.assertRaises(Away) as caught:
@@ -1008,8 +1134,8 @@ class NewFilesTests(unittest.TestCase):
 
     def test_jellyfin_gets_a_library_for_the_new_ones_too(self):
         config = self.both()
-        for use in existing_media.USES:
-            self.pc.bound[str(existing_media.mount_point(config, 'movies', use))] = '80'
+        for name in ('movies', 'movies-new'):
+            self.pc.bound[str(existing_media.mount_point(config, 'movies', name))] = '80'
         client = Jellyfin()
         rows = existing_media.jellyfin_libraries(client, config, True, **self.pc.how())
         self.assertEqual(
@@ -1086,7 +1212,7 @@ class RootFolderTests(unittest.TestCase):
         found, _ = self.pc.check(folder=self.pc.nas / 'music', new_files=True, category='music')
         config = existing_media.with_choice(config, existing_media.entry_for('music', found, True))
         for entry in existing_media.extras(config):
-            self.pc.bound[str(existing_media.mount_point(config, entry['holds'], entry['use']))] = '81'
+            self.pc.bound[str(existing_media.mount_point(config, entry['holds'], entry['slot']))] = '81'
         return config
 
     def test_each_app_gets_the_persons_folder_beside_nekoservers_own(self):

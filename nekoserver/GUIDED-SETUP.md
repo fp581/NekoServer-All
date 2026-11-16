@@ -91,7 +91,7 @@ The names in the details (`sda1`, `sdb1`) are Linux's own and can change at the 
 4. Then where Immich's photos, the films and shows, the music and Nextcloud's files are kept: the drive of the apps, the backups' drive, or another connected drive of their own, so the backups can be alone on a drive. Enter takes the recommended place. Photos (and music, where its backup is switched on) kept on the backups' drive are told that their backup copy is then on the same drive: it protects against a mistake, not against losing that drive.
 5. The apps themselves (their settings and databases) are installed together, on the drive of NekoServer and your apps. A drive of their own for one group's apps is not offered yet.
 6. Then the removable drive for the offline backup. It is optional: Enter (in the window, **None for now**) leaves it out, saved as your choice, and nothing asks about it again.
-7. Then whether you already have films, shows or music: the folder of each, whether it is used where it is or copied into the library, and whether new ones are saved there too.
+7. Then whether you already have films, shows or music: the folder of each (and any other folder of the same kind, up to 8, until you answer **That is all**), whether it is used where it is or copied into the library, and whether new ones are saved there too.
 8. **In the setup window** all of this is one page, **Where should NekoServer store your apps and files?**, with a list to choose from on every line and the recommended drive already chosen. A drive that cannot have a role is in the list with the reason and cannot be chosen. Press **Use these drives**.
 
 Then comes the review, and your `yes` (step 2). Everything after this happens once setup has started.

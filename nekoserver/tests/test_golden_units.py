@@ -347,7 +347,11 @@ def rendered(cfg, facts, tmp):
     out.update(
         dashboard.units(data, code, dashboard.COLLECTOR_SETTINGS, port, interval, facts.get('public_host'), True)
     )
-    out.update(dashboard.control_units(code, lighting, control, data, proxyd=dashboard.PROXYD_PLACES[0]))
+    # The settings file setup was run from: the Media folders page saves its changes there too.
+    settings = Path('/home/amy/NekoServer All/nekoserver/my-config.json')
+    out.update(
+        dashboard.control_units(code, lighting, control, data, proxyd=dashboard.PROXYD_PLACES[0], settings=settings)
+    )
     out['dashboard-config.json'] = as_json(tmp, dashboard.collector_settings(cfg, smart, interval))
     # The LAN gateway's service.
     out['nekoserver-gateway-lan.service'] = gateway_tools.unit(

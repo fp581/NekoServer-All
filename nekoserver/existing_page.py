@@ -39,6 +39,24 @@ ANSWERED = 'existing_media_answered'
 # [{"holds": "movies", "path": "/mnt/tank/films"}].
 COPIES = 'existing_media_copy'
 IN_PLACE = 'They are used where they are; nothing is copied or changed.'
+ALREADY = '{path} is already connected for your {words}.'  # the dashboard's page says the same
+# The music backup question's answer, said back (here and on the dashboard's page).
+BACKED_UP = {True: 'copied each night with the music backup.', False: 'not backed up by NekoServer.'}
+
+
+def backup_question():
+    """The question setup asks about music on a NAS ("Back this up too?"), in its own
+    words, for the dashboard's Media folders page to ask the same: {'title', 'hint',
+    'choices': [{'backup': True/False, 'label'}]}, the first one being Enter's."""
+    asked = questions.words('existing_backup', what='music')
+    labels = dict(asked['choices'])
+    return {
+        'title': asked['title'],
+        'hint': asked['hint'],
+        'choices': [{'backup': True, 'label': labels[FIRST]}, {'backup': False, 'label': labels[SECOND]}],
+    }
+
+
 COPIED_LATER = 'They are copied into the NekoServer library once its drive is ready; your folder is kept as it is.'
 
 
@@ -96,22 +114,27 @@ def picked(key, asking, **values):
         output('Type 1 or 2.')
 
 
-def folder_found(config, kind, words, asking, key='existing_folder', new_files=False, tries=3, gave_up=None):
+NO_FOLDER = 'No folder of {words} is used for now. Run setup again to give one.'
+NO_OTHER = 'No other folder of {words} is added for now. The dashboard\'s Media folders page can add one later.'
+
+
+def folder_found(config, kind, words, asking, key='existing_folder', new_files=False, tries=3, gave_up=None, **values):
     """A folder that passed the check for this kind (what existing_media.check returned),
     or None when there is none: Enter alone, the window's Skip, or `tries` folders that
     cannot be used. A folder that cannot be used says why, in existing_media's words, and
     is asked for again. `asking`: (prompt, output). `gave_up`: a list that gets the kind
-    when the tries ran out, so the kind is asked about again at the next run."""
+    when the tries ran out, so the kind is asked about again at the next run. `values`:
+    more words for the question."""
     prompt, output = asking
     for _ in range(tries):
-        folder = typed_folder(typed(key, prompt, what=words))
+        folder = typed_folder(typed(key, prompt, what=words, **values))
         if not folder:
             return None
         try:
             return existing_media.check(config, kind, folder, new_files)
         except existing_media.Refused as refused:
             output(str(refused))
-    output(f'No folder of {words} is used for now. Run setup again to give one.')
+    output((NO_OTHER if key == 'existing_more_folder' else NO_FOLDER).format(words=words))
     if gave_up is not None:
         gave_up.append(kind)
     return None
@@ -154,36 +177,72 @@ def on_network_share(found):
 
 
 def one_kind(config, kind, words, asking):
-    """One kind's answers, put into the settings: its folder, how it is used, and where
-    new ones are saved. False when no folder typed could be used: not answered yet."""
-    prompt, output = asking
+    """One kind's answers, put into the settings: its folders (the first one, then any
+    other one until Enter alone), how each is used, and where new ones are saved. False
+    when no folder typed could be used: not answered yet."""
     gave_up = []
     found = folder_found(config, kind, words, asking, gave_up=gave_up)
     if found is None:
         return not gave_up
+    while found:
+        one_folder(config, kind, words, found, asking)
+        found = another_folder(config, kind, words, asking)
+    return True
+
+
+def connected(config, kind):
+    """The folders of this kind the settings connect."""
+    return [entry for entry in existing_media.extras(config) if entry['holds'] == kind]
+
+
+def another_folder(config, kind, words, asking):
+    """Any other folder of the kind (what existing_media.check returned), or None for
+    Enter alone. One that is connected already is said, and another one asked for."""
+    _, output = asking
+    while True:
+        found = folder_found(
+            config, kind, words, asking, key='existing_more_folder', cap=existing_media.FOLDERS_PER_KIND
+        )
+        if found is None or found['path'] not in [entry['path'] for entry in connected(config, kind)]:
+            return found
+        output(ALREADY.format(path=found['path'], words=words))
+
+
+def one_folder(config, kind, words, found, asking):
+    """One folder's answers, put into the settings: used where it is (with where new ones
+    go and, for music on a NAS, whether it is backed up), or copied into the library. A
+    kind that has all its folders takes no more used where they are (the dashboard's
+    page says the same words)."""
+    prompt, output = asking
     where = f" ({found['share']})" if on_network_share(found) and found['share'] != found['path'] else ''
     if picked('existing_use', asking, what=words) == SECOND:
         wanted = {'holds': kind, 'path': found['path']}
         config[COPIES] = [*[c for c in config.get(COPIES) or [] if c != wanted], wanted]
         output(f"Your {words}: {found['path']}{where}. {COPIED_LATER}")
-        return True
+        return
+    if existing_media.is_full(config, kind):
+        output(existing_media.full_words(kind))
+        return
     output(f"Your {words}: {found['path']}{where}. {IN_PLACE}")
     entries = [existing_media.entry_for(kind, found)]
     if downloads(config, kind) and questions.yes_no('existing_new_files', prompt, output, what=words):
         entries = with_new_files(config, kind, words, found, asking)
+    if len(connected(config, kind)) + len(entries) > existing_media.FOLDERS_PER_KIND:
+        # No room for a folder of its own for the new ones: this folder is used, read-only.
+        entries = entries[:1]
+        output(existing_media.full_words(kind) + f' New {words} are saved in the NekoServer library.')
     if kind == 'music' and on_network_share(found):
         # On a network share (G7, the user's decision): asked once whether the music
         # backup copies it too; yes unless "No". Films and shows have no NekoServer backup
         # job, so they are not asked about and stay listed as not backed up.
         backed_up = picked('existing_backup', asking, what=words) == FIRST
         entries = [{**entry, 'backup': backed_up} for entry in entries]
-        output(
-            f'Your {words}: '
-            + ('copied each night with the music backup.' if backed_up else 'not backed up by NekoServer.')
-        )
+        output(f'Your {words}: {BACKED_UP[backed_up]}')
+    staying = existing_media.download_only(config, kind) if any(e['new_files'] for e in entries) else None
     for entry in entries:
         config['placement'] = existing_media.with_choice(config, entry)['placement']
-    return True
+    if staying and existing_media.download_only(config, kind) != staying:
+        output(existing_media.stays_words(staying))  # as the dashboard's page says it
 
 
 def answered_kinds(config):
@@ -238,7 +297,10 @@ def mount(ctx):
     never fails the step."""
     config = ctx.config
     wanted = existing_media.extras(config)
-    if not wanted:
+    # With the last folder taken back (on the dashboard's Media folders page, say), the
+    # lines setup wrote before are still there: use_in_place takes them out and
+    # disconnects what they connected.
+    if not wanted and not existing_media.connected_before():
         return []
     permanent = []
     for entry in wanted:
@@ -309,7 +371,9 @@ def copy(ctx):
         kind, path = (folder.get('holds'), folder.get('path')) if isinstance(folder, dict) else (None, None)
         try:
             ctx.log(copy_said(existing_media.copy_preview(config, kind, path)))
-            row = existing_media.copy_now(config, kind, path)
+            # The dashboard's page shows how far the copy is (media_locations.CopyProgress).
+            told = {'progress': ctx.copy_progress(kind, path)} if hasattr(ctx, 'copy_progress') else {}
+            row = existing_media.copy_now(config, kind, path, **told)
         except (RuntimeError, OSError, TypeError) as problem:
             ctx.log(f'Your own folder {path} was not copied: {problem}. Setup tries again at its next run.')
             left.append(folder)

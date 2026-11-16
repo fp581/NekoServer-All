@@ -1,5 +1,5 @@
 //! The person's own folders on a network share (NFS, SMB), used where they are (0.50.0,
-//! existing_media.py). Setup mounts each into the library (library/existing/<kind>), and
+//! existing_media.py). Setup mounts each into the library (library/existing/<slot>), and
 //! the apps that see it bind that folder. When the share does not answer (the NAS is off
 //! when the PC starts, say), the library's folder is the empty one left in its place:
 //! Jellyfin would show an empty library, and Radarr could start writing there.
@@ -91,7 +91,7 @@ fn share_of(cfg: &Value, entry: &Value) -> Option<Share> {
     })
 }
 
-/// `point` is <one of NekoServer's drives>/library/existing/<kind>: where setup mounts the
+/// `point` is <one of NekoServer's drives>/library/existing/<slot>: where setup mounts the
 /// person's folders, and nowhere else (this runs `mount` on it).
 fn in_a_library(cfg: &Value, point: &Path) -> bool {
     let mut drives: Vec<PathBuf> = ["data_mount", "media_mount"]
@@ -107,8 +107,8 @@ fn in_a_library(cfg: &Value, point: &Path) -> bool {
         .file_name()
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("");
-    let plain = !kind.is_empty() && kind.bytes().all(|b| b.is_ascii_lowercase() || b == b'-');
-    plain
+    // One of the slots setup names these folders by (movies, movies-new, movies-2 ...).
+    crate::media_folders::is_any_slot(kind)
         && drives
             .iter()
             .any(|d| point.parent() == Some(d.join("library").join("existing").as_path()))
@@ -370,9 +370,19 @@ mod tests {
             .len(),
             1
         );
+        // 0.52: a second folder of films, under a slot of its own.
+        assert_eq!(
+            listed(&settings(
+                "/mnt/nekoserver-media/library/existing/movies-2",
+                apps.clone()
+            ))
+            .len(),
+            1
+        );
         // Anything else is never mounted or stopped for.
         for point in [
             "/etc/fstab",
+            "/mnt/nekoserver-media/library/existing/films-old",
             "/mnt/nekoserver-media/library/movies",
             "/mnt/nekoserver-media/library/existing/../../x",
             "/mnt/nekoserver-drives/d4/library/existing/movies",

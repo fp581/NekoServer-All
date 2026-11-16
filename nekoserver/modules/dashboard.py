@@ -248,7 +248,7 @@ def socket_proxyd(places=None):
 UPDATES_FOLDER = 'backups/updates'
 
 
-def control_units(code, lighting, fans=True, data=None, proxyd=None):
+def control_units(code, lighting, fans=True, data=None, proxyd=None, settings=None):
     """The root control service (fans, lights, and restarting or closing apps from the
     dashboard) and, with lighting, OpenRGB's server and the link to it. The control
     service runs whenever the dashboard is installed: with fan control switched off it
@@ -303,7 +303,43 @@ def control_units(code, lighting, fans=True, data=None, proxyd=None):
     }
     if lighting:
         found.update(lighting_units(proxyd or socket_proxyd() or PROXYD_PLACES[0]))
+    if data:
+        found[MEDIA_FOLDERS] = media_folders_unit(data, settings)
     return found
+
+
+# The dashboard's Media folders page (media_locations.py): its changes are made as root by
+# this one-off service, which the control service starts (control.rs, shared.json).
+MEDIA_FOLDERS = SHARED['media_folders']['unit']
+
+
+def unit_word(value):
+    """A path as one word of a unit's ExecStart (quoted; systemd's % doubled)."""
+    return '"' + str(value).replace('%', '%%') + '"'
+
+
+def media_folders_unit(data, settings=None):
+    """The one-off service that makes a change of the Media folders page: this release's
+    media_locations.py, kept on the SSD with the settings, the code setup uses for the
+    same choice. `settings`: the settings file setup was run from, saved too, so the
+    next setup run has the same folders (left out when its name can't be one word of a
+    unit: a quote, a backslash or a control character in it)."""
+    bundle = Path(data) / 'installer/releases' / ('v' + VERSION)
+    facts = SHARED['media_folders']
+    request = Path(facts['folder']) / facts['request']
+    also = ''
+    settings = settings if isinstance(settings, (str, Path)) else None
+    plain = settings and not any(c in str(settings) for c in '"\\') and str(settings).isprintable()
+    if plain and Path(settings) != bundle / 'config.json':
+        also = ' --also ' + unit_word(settings)
+    return (
+        '[Unit]\nDescription=NekoServer change your media folders (from the dashboard)\n'
+        + f'RequiresMountsFor={data}\nAfter=docker.service\n'
+        # A copy into the library takes as long as the files are big: never cut off.
+        + '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=infinity\n'
+        + f'ExecStart=/usr/bin/python3 -Es {bundle}/media_locations.py run --config {bundle}/config.json '
+        + f'--request {request}{also}\n'
+    )
 
 
 def lighting_units(proxyd):
@@ -715,7 +751,7 @@ def install_smart(cfg, log):
     family.install(['smartmontools'])
 
 
-def prepare_control(code, definitions, lighting, log, fans=True, data=None):
+def prepare_control(code, definitions, lighting, log, fans=True, data=None, settings=None):
     """The control group and OpenRGB; lighting is left out when OpenRGB, or systemd's
     socket proxy that leads to it, can't be had. Returns whether lighting is on."""
     control_group()
@@ -727,7 +763,7 @@ def prepare_control(code, definitions, lighting, log, fans=True, data=None):
         return lighting
     for unit in LIGHTING_UNITS:
         definitions.pop(unit, None)
-    definitions.update(control_units(code, False, fans, data))
+    definitions.update(control_units(code, False, fans, data, settings=settings))
     return False
 
 
@@ -908,11 +944,13 @@ def run(ctx):
     control, lighting = control_options(cfg)
     # The control service always runs: app controls need it even with fan control off.
     definitions = units(data, code, config, port, interval, public, True)
-    definitions.update(control_units(code, lighting, control, data))
+    # The settings file setup runs from (the Media folders page saves its changes there too).
+    settings = getattr(ctx, 'original_config_path', None)
+    definitions.update(control_units(code, lighting, control, data, settings=settings))
     folders = (code.parent, code, code / 'dashboard')
     check_existing(payloads, definitions, folders)
     install_smart(cfg, ctx.log)
-    lighting = prepare_control(code, definitions, lighting, ctx.log, control, data)
+    lighting = prepare_control(code, definitions, lighting, ctx.log, control, data, settings)
     write_files(folders, payloads, definitions)
     atomic_json(config, collector_settings(cfg, smart, interval))
     safe_path(data / 'dashboard-state').mkdir(mode=0o700, exist_ok=True)

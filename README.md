@@ -66,6 +66,8 @@ Afterwards one page helps you **connect your phone**, and the last page says wha
 
 Run `sudo bash install.sh` again at any time: it keeps your answers and asks only about what is new. On a server that is set up it says so: nothing changes until you approve.
 
+**Films, shows or music you already have** can be used where they are (nothing is copied or changed) or copied into the library, up to 8 folders of each kind. After setup, the dashboard's **Media folders** page adds more, takes one away and chooses where new downloads go ([DASHBOARD.md](nekoserver/DASHBOARD.md)).
+
 ## Backups
 
 - **Every night**: the apps' settings and databases, and this PC's own settings. The newest **3** of each are kept; you can choose any number from **1 to 7**. An older one is removed only after a new one has succeeded, with one exception: when the HDD is too full for the next app backup, the oldest app backups are removed first to make room (never the newest). Music kept on a drive of its own is copied every night too.

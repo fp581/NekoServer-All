@@ -107,7 +107,8 @@ fn sources(cfg: &serde_json::Value, library: PathBuf) -> Result<Vec<(String, Pat
             .parent()
             .is_some_and(|p| p.ends_with("library/existing"))
             && path.file_name().and_then(std::ffi::OsStr::to_str) == Some(slot);
-        if !(slot == "music" || slot == "music-new") || !under_existing {
+        // Any slot of music: "music", "music-new", "music-2" ... (existing_media.slot_of).
+        if !crate::media_folders::is_slot("music", slot) || !under_existing {
             return Err(Error::new("Invalid music folder to back up"));
         }
         found.push((format!("{OWN}/{slot}/"), path));
@@ -279,6 +280,16 @@ mod tests {
         let elsewhere =
             json!({"music_extra": [{"slot": "music", "path": top.join("library/music")}]});
         assert!(sources(&elsewhere, library.clone()).is_err());
+        // 0.52: a second music folder has a slot of its own; another kind's never passes.
+        let second = top.join("library/existing/music-2");
+        let more = json!({"music_extra": [{"slot": "music-2", "path": second}]});
+        assert_eq!(
+            sources(&more, library.clone()).unwrap()[1],
+            ("your-own/music-2/".to_string(), second.clone())
+        );
+        let films = top.join("library/existing/movies-2");
+        let other = json!({"music_extra": [{"slot": "movies-2", "path": films}]});
+        assert!(sources(&other, library.clone()).is_err());
         // With its share away, the run stops before anything is listed or saved.
         assert!(own_folders_there(&from, &|_| true).is_ok());
         let said = own_folders_there(&from, &|path| path != own.as_path())

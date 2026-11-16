@@ -348,7 +348,7 @@ def shared_folders(config):
                 'path': entry['path'],
                 'mount': entry['mount'],
                 'share': entry['share'],
-                'point': str(existing_media.mount_point(config, entry['holds'], entry['use'])),
+                'point': str(existing_media.mount_point(config, entry['holds'], entry['slot'])),
                 'apps': [app for app in SHARE_APPS[entry['holds']] if app in media_services(config)],
             }
         )
@@ -395,8 +395,13 @@ def storage_config(config):
     return found
 
 
+# The backups' own copy of storage_config (the music backup reads the music folders to
+# copy from it, the photo copies the drives).
+BACKUP_GUARD = Path('/etc/nekoserver-backups/storage.json')
+
+
 def backup_guard(config):
-    path = safe_path('/etc/nekoserver-backups/storage.json')
+    path = safe_path(BACKUP_GUARD)
     atomic_json(path, storage_config(config))
     return path
 

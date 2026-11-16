@@ -24,7 +24,7 @@ def asked(kind, found, typed_answers):
     answers = iter(typed_answers)
     kept, said = [], []
     with (
-        mock.patch.object(existing_page, 'folder_found', return_value=found),
+        mock.patch.object(existing_page, 'folder_found', side_effect=[found, None]),  # then "that is all"
         mock.patch.object(
             existing_page, 'typed', side_effect=lambda key, prompt, **v: kept.append(key) or next(answers)
         ),
@@ -79,7 +79,7 @@ class FollowedTests(unittest.TestCase):
             },
         }
         table = copy.deepcopy(placement.table(config))
-        table['music']['extra'] = [{**entry, 'new_files': False}]
+        table['music']['extra'] = [{**entry, 'new_files': False, 'slot': 'music'}]
         config['placement'] = table
         return config
 

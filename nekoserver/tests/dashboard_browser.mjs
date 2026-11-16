@@ -32,10 +32,51 @@ const CHECKS = {
     await page.evaluate(kind => load(kind), reload);
     return { before, after: await page.evaluate(name) };
   },
+  /* The Media folders page with the keyboard alone: a folder picked from the list the
+     server gives (Enter on each), then typed over, "New downloads go there" ticked with
+     Space and the form sent with Enter. Returns the folder box after the pick, and the
+     name of the control that had focus at each step. */
+  async mediaKeyboard(browser, { width }) {
+    const page = await open(browser, 'media', width);
+    await page.waitForSelector('#media-path');
+    const focused = () =>
+      page.evaluate(() => {
+        const n = document.activeElement;
+        return n && n !== document.body ? n.id || (n.getAttribute('aria-label') || n.textContent).trim() : '';
+      });
+    const reach = async wanted => {
+      for (let i = 0; i < 80 && (await focused()) !== wanted; i++) {
+        await page.keyboard.press('Tab');
+      }
+      return focused();
+    };
+    const steps = [await reach('media-pick')];
+    await page.keyboard.press('Enter'); // the drives and shares
+    await page.waitForSelector('.media-list button');
+    steps.push(await focused());
+    await page.keyboard.press('Enter'); // into the first one
+    await page.waitForSelector('#media-use');
+    steps.push(await focused());
+    await page.keyboard.press('Enter'); // "Use /mnt/nas": back in the box
+    const picked = await page.inputValue('#media-path');
+    steps.push(await focused());
+    await page.keyboard.press('End');
+    await page.keyboard.type('/new films');
+    steps.push(await reach('media-downloads'));
+    await page.keyboard.press('Space');
+    steps.push(await reach('Connect folder'));
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(500);
+    return { picked, steps };
+  },
   /* How wide the page is at `width`: [its scroll width, the window's, whether the page's
      title and the buttons beside it overlap]. */
   async pageWidth(browser, { route, width }) {
     const page = await open(browser, route, width);
+    if (route === 'media') {
+      // Signed in, the folders and the form come with the server's answer.
+      await page.waitForSelector('#media-path', { timeout: 3000 }).catch(() => undefined);
+    }
     return page.evaluate(() => {
       const words = document.createRange(); // the title's words, not its box
       words.selectNodeContents(document.getElementById('page-title'));

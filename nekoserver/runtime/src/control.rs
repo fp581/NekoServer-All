@@ -15,7 +15,7 @@ use crate::{
     apps, assist,
     common::{self, Error, Result},
     fans::{self, Controller, Setting},
-    openrgb, Args,
+    media_folders, openrgb, Args,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -750,17 +750,21 @@ pub struct Service {
     config: Option<PathBuf>,
     pub actions: Arc<apps::Actions>,
     host: Arc<apps::Host>,
+    /// The dashboard's Media folders page (media_folders.rs): one change at a time.
+    media: media_folders::Folders,
 }
 /// What setup switched on besides lighting.
 pub struct Options {
     pub fans: bool,
     pub config: Option<PathBuf>,
+    pub media: media_folders::Folders,
 }
 impl Default for Options {
     fn default() -> Self {
         Options {
             fans: true,
             config: None,
+            media: media_folders::Folders::default(),
         }
     }
 }
@@ -787,6 +791,7 @@ impl Service {
             config: options.config,
             actions: Arc::default(),
             host: Arc::default(),
+            media: options.media,
         })
     }
     fn lights_status(&self) -> Value {
@@ -934,6 +939,12 @@ fn app_control(service: &Arc<Service>, op: &str, request: &Value) -> Value {
             None => refuse("E42", "App controls are switched off on this server"),
             Some(config) => assistant(service, config, op, request),
         },
+        // The Media folders page (media_folders.rs): its changes are made as root by
+        // media_locations.py, in a service of their own, so closing the page stops nothing.
+        "app_media_state" | "app_media_change" | "app_media_browse" => match &service.config {
+            None => refuse("E42", "App controls are switched off on this server"),
+            Some(config) => media_request(service, config, op, request),
+        },
         "desktop_close" | "desktop_force" => match process() {
             Some((pid, start)) => apps::Close {
                 host: service.host.clone(),
@@ -949,6 +960,20 @@ fn app_control(service: &Arc<Service>, op: &str, request: &Value) -> Value {
     }
 }
 
+/// A request of the Media folders page (the PIN is already checked). A change needs the
+/// app SSD: the code that makes it, and the settings, are kept there.
+fn media_request(service: &Arc<Service>, config: &Path, op: &str, request: &Value) -> Value {
+    let cfg = common::json(config, 64000);
+    if op == "app_media_change" {
+        let connected = common::mount_path(cfg["data_mount"].as_str().unwrap_or(""))
+            .and_then(|data| crate::backup::guard_data(config, &data));
+        if connected.is_err() {
+            return refuse("E47", "The app SSD is not connected, so your media folders can't be changed now. Nothing was changed. Connect it (or restart the server), then try again.");
+        }
+    }
+    media_folders::answer(&service.media, op, request, &cfg)
+        .unwrap_or_else(|| refuse("E42", "Request not supported"))
+}
 /// Ask Neko's three requests (the PIN is already checked). The app SSD must be the one
 /// setup chose, and the assistant set up on it.
 fn assistant(service: &Arc<Service>, config: &Path, op: &str, request: &Value) -> Value {
@@ -1611,6 +1636,7 @@ pub fn run(a: &Args) -> Result<()> {
             .contains_key("config")
             .then(|| a.path("config"))
             .transpose()?,
+        media: media_folders::Folders::default(),
     };
     // An app restart cut off part-way (the service stopped by force, or the computer
     // restarted): its parts run again once no backup or update needs the apps stopped.
@@ -1993,6 +2019,66 @@ mod tests {
     }
 
     #[test]
+    fn media_folders_need_the_pin_the_settings_and_the_app_ssd() {
+        let board = fans::tests::Board::new("media-folders");
+        let config = board.0.join("config");
+        let run_dir = board.0.join("run");
+        fs::create_dir_all(&config).unwrap();
+        fs::create_dir_all(&run_dir).unwrap();
+        // The dashboard's settings name an app SSD that is not mounted here.
+        let settings = board.0.join("dashboard.json");
+        fs::write(&settings, r#"{"data_mount": "/srv/nekoserver-not-here"}"#).unwrap();
+        let started = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen = started.clone();
+        let run: media_folders::Runner = Arc::new(move |args: &[&str]| {
+            seen.lock().unwrap().push(args.join(" "));
+            (3, "inactive".into())
+        });
+        let controller = Controller::new(fans::discover(&board.hwmon()), BTreeMap::new());
+        let s = Service::with(
+            Fans::new(controller, config.clone(), run_dir),
+            Lighting::new(json!({}), 1, config),
+            Gate::new(Some(pin_record("2468", "salt"))),
+            false,
+            Options {
+                fans: false,
+                config: Some(settings),
+                media: media_folders::Folders::new(board.0.join("media-folders"), run),
+            },
+        );
+        let change = json!({"op": "app_media_change", "change": "look", "local": true});
+        let browse = json!({"op": "app_media_browse", "local": true});
+        // On the server itself too: like every app control, it needs the PIN.
+        for request in [&change, &browse] {
+            assert_eq!(answer(&s, request)["error"], "E43", "{request}");
+        }
+        let token = answer(&s, &json!({"op": "unlock", "pin": "2468"}))["token"].clone();
+        let mut change = change.clone();
+        change["token"] = token.clone();
+        // The SSD the change's code and settings are on is not there: refused, and said.
+        let refused = answer(&s, &change);
+        assert_eq!(refused["error"], "E47");
+        assert!(refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("app SSD is not connected"));
+        assert!(started.lock().unwrap().iter().all(|a| !a.contains("start")));
+        // Looking needs no SSD: the last answer (none yet) and whether one is at work.
+        let state = answer(&s, &json!({"op": "app_media_state", "token": token}));
+        assert_eq!(
+            state,
+            json!({"ok": true, "working": false, "result": null, "progress": null})
+        );
+        let places = answer(&s, &json!({"op": "app_media_browse", "token": token}));
+        assert_eq!(places["ok"], true, "{places}");
+        let outside = answer(
+            &s,
+            &json!({"op": "app_media_browse", "token": token, "path": "/etc"}),
+        );
+        assert_eq!(outside["error"], "E42");
+    }
+
+    #[test]
     fn with_fan_control_off_no_fan_is_ever_taken_over() {
         let board = fans::tests::Board::new("no-fans");
         let config = board.0.join("config");
@@ -2009,6 +2095,7 @@ mod tests {
             Options {
                 fans: false,
                 config: None,
+                ..Options::default()
             },
         );
         for op in ["fan", "detect", "detect_cancel"] {
