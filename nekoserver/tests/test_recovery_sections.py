@@ -349,6 +349,25 @@ class ReviewTests(Server, unittest.TestCase):
         self.write('usb/nextcloud/alice/files/todo.txt', b'todo')
         self.write('ssd/photos/immich-library/upload/live.jpg', b'live')
 
+    def test_a_family_members_nextcloud_files_are_said_to_go_back_with_their_login(self):
+        """Deep check 853: a family member's Nextcloud files restored. The menu said only
+        "upload the files you need": uploaded with the administrator's login (the one at
+        hand), they went into the administrator's files, not back to theirs."""
+        self.write('usb/nextcloud/Mary Smith/files/homework.odt', b'homework')
+        users = recovery_wizard.cloud_users(self.root / 'usb')
+        typed = str(users.index('Mary Smith') + 1)
+        recovery_wizard.restore_cloud(self.config, self.watching(typed, '1', '1', 'yes'), self.out.append)
+        said = self.said()
+        restored = next((self.media / 'restored').iterdir())
+        self.assertTrue((restored / 'files/homework.odt').is_file())
+        ending = said[said.index('To put them back') :].replace('\n', ' ')
+        self.assertIn('signed in to Nextcloud as Mary Smith', ending)
+        self.assertIn('not back to theirs', ending)
+        row = next(
+            line for line in (ROOT / 'RECOVERY.md').read_text().splitlines() if 'I lost files in Nextcloud' in line
+        )
+        self.assertIn('signed in with the login of the person whose files they are', row)
+
     def test_the_review_names_the_exact_backup_folder_and_what_stays_untouched(self):
         """Also T32: the exact source and target of a restore are shown before it."""
         recovery_wizard.restore_photos(self.config, self.watching('1', '1', '1', 'yes'), self.out.append)

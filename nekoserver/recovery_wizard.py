@@ -1916,6 +1916,10 @@ def restore_cloud(config, prompt, output):
         *ready,
         'To put them back: open Nextcloud in a browser (or the desktop app) and upload the',
         'files you need. Your current Nextcloud files were not touched.',
+        # Uploaded with the administrator's login, a family member's files would go into
+        # the administrator's own files, not back to them.
+        f'Upload them signed in to Nextcloud as {user}: uploaded with another login, they go',
+        'into that account\'s files, not back to theirs.',
     )
 
 
