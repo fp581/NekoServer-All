@@ -31,6 +31,12 @@ Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how
 - **Immich follows a time zone changed after its first setup**, as every other schedule and app already did.
 - **A dashboard PIN asked again and left empty is no longer shown by "Show login".**
 
+### Fixed: a first install of 0.51.3
+- **A server set up with one disk can move its media onto an HDD bought later**, and back. The move refused setup's own line for the folder and said to "disconnect" the system disk.
+- **A films drive from Windows (NTFS, exFAT, FAT) is told how to let the apps own it**: the `uid=` and `gid=` mount options. It was told to change the folder's group or that "the NAS maps every account", neither of which works on such a drive.
+- **On a PC in another language, a package source that does not answer is retried and named.** install.sh read apt's messages in English only, so "W: Fehlschlag beim Holen von" in German went unnoticed.
+- **A weekly job whose first night falls on the 1st is not overdue** before its first run. A server installed on Thursday 25 June 2026 showed weekly app updates as overdue days before they had first run.
+
 ### Fixed: loose ends of the everyday checks
 - **APP-BACKUPS.md's restore steps work for an app installed on a drive of its own.** Its `mv` failed with "Device or resource busy" there, and the copy after it mixed the backup into the live settings with nothing kept to go back to.
 - **The shared-folders password is asked only where something is shared.** A server with only Nextcloud chosen was asked for it at every setup run, and it was never used.
