@@ -81,6 +81,19 @@
     "_about": "How an exFAT backup drive is mounted: with Linux's own exFAT driver (-i: no mount.exfat helper). Arch's fuse-exfat installs one, and through FUSE the drive's options no longer show who may read it, so every backup refused it as readable by everyone (deep check plan 207). The runtime (backup.rs) and setup (neko_common) take it from here.",
     "arguments": ["-i", "-t", "exfat"]
   },
+  "cards": {
+    "_about": "Backup cards (0.52.0): the runtime's card job and the control service (cards.rs), setup (modules/backup_cards.py, neko_common) and the dashboard's Backup cards page read these. What the server knows of the set is in <folder> on the app SSD: the catalogue (the cards stay the authority) and the status the dashboard shows.",
+    "folder": "cards",
+    "catalogue": "catalogue.sqlite",
+    "status": "status.json",
+    "job": "cards",
+    "service": "nekoserver-cards.service",
+    "timer": "nekoserver-cards.timer",
+    "set_name": "NekoServer cards",
+    "filesystems": ["ext4", "exfat"],
+    "keep_inventories": 3,
+    "reminder_days": 30
+  },
   "setup_lock": "/run/nekoserver-setup.lock",
   "operation_lock": "/run/nekoserver-operation.lock",
   "recovery_menu": {

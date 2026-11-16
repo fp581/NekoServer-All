@@ -3,6 +3,9 @@ mod apps;
 mod array_health;
 mod assist;
 mod backup;
+// Called by the card job from the next part on (0.52.0, backup cards).
+#[cfg_attr(not(test), allow(dead_code))]
+mod cards;
 mod cardset;
 mod collect;
 mod common;
