@@ -4597,38 +4597,26 @@ mod os_tests {
     /// make up a missed night, and the page said only "Last success is overdue".
     #[test]
     fn a_night_only_job_overdue_says_the_server_must_be_on_at_night() {
-        let data = std::env::temp_dir().join(format!("neko-off-nights-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&data);
-        fs::create_dir_all(data.join("reports/jobs")).unwrap();
-        let cfg = json!({"data_mount": data.to_string_lossy()});
-        let now = 100.0 * 86400.0;
-        for key in ["maintenance", "updates", "applications"] {
-            let saved = json!({"status": "pass", "last_success": 10.0 * 86400.0, "started_at": 10.0 * 86400.0});
-            fs::write(
-                data.join(format!("reports/jobs/{key}.json")),
-                saved.to_string(),
-            )
-            .unwrap();
-        }
-        let rows = backups(&cfg, now, true, None);
-        let reason = |key: &str| {
-            let row = rows
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|r| r["id"] == key)
-                .unwrap();
-            assert_eq!(row["status"], "stale", "{row}");
-            text(&row["reason"]).to_string()
-        };
+        // The reason itself: backups() also asks systemd about each timer, and on a PC
+        // with systemd but without NekoServer's timers (the CI runner) every row says
+        // "Its schedule is gone" first.
         for key in ["maintenance", "updates"] {
-            let said = reason(key);
-            assert!(said.starts_with("Last success is overdue"), "{said}");
-            assert!(said.contains("switched off at night"), "{said}");
+            for said in [
+                "Last success is overdue",
+                "No successful run since it was set up",
+            ] {
+                let reason = overdue_reason(key, said);
+                assert!(reason.starts_with(said), "{reason}");
+                assert!(reason.contains("switched off at night"), "{reason}");
+            }
         }
         // A nightly backup catches up when the PC is on: no such advice.
-        assert_eq!(reason("applications"), "Last success is overdue");
-        fs::remove_dir_all(&data).unwrap();
+        for key in ["applications", "archive", "external"] {
+            assert_eq!(
+                overdue_reason(key, "Last success is overdue"),
+                "Last success is overdue"
+            );
+        }
     }
     /// Deep check 496/497 (a household's second week): the USB drive was taken away, the
     /// Sunday copy found it missing, and the phone got an urgent alert at 3 am, repeated
