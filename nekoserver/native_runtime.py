@@ -343,7 +343,7 @@ def shared_folders(config):
                 'path': entry['path'],
                 'mount': entry['mount'],
                 'share': entry['share'],
-                'point': str(existing_media.mount_point(config, entry['holds'], entry['use'])),
+                'point': str(existing_media.mount_point(config, entry['holds'], entry['slot'])),
                 'apps': [app for app in SHARE_APPS[entry['holds']] if app in media_services(config)],
             }
         )

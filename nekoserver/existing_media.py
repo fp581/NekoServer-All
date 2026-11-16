@@ -7,10 +7,10 @@ person's. Copying instead goes through source_import.py, which keeps the source.
 
 How a folder reaches the apps without a hand edit:
   the person's folder --(bind mount, /etc/fstab, made from the settings)-->
-  <the group's drive>/library/existing/<category>
-  --(the Compose files' fixed line)--> /data/existing/<category> in every app.
+  <the group's drive>/library/existing/<slot> (movies, movies-2 ...: slot_of)
+  --(the Compose files' fixed line)--> /data/existing/<slot> in every app.
 The apps that write (Sonarr, Radarr, Lidarr, qBittorrent) mount library/ as /data, so they
-see the same /data/existing/<category>: no path mappings anywhere. The bind mount is
+see the same /data/existing/<slot>: no path mappings anywhere. The bind mount is
 read-only unless new files are to be saved there.
 
 The page calls: check(), copy_preview(), with_choice() / without_choice(), then setup
@@ -38,6 +38,7 @@ import placement
 import source_import
 from neko_common import (
     EXTRA_MOUNTS,
+    SHARED,
     app_port,
     atomic_json,
     atomic_write,
@@ -445,18 +446,27 @@ def check(
 # my-config.json, in the group's row of the placement table:
 #   "placement": {"movies": {..., "extra": [
 #       {"path": "/mnt/tank/films", "holds": "movies", "use": "in_place", "new_files": false,
-#        "mount": "/mnt/tank", "share": "nas:/tank", "fstype": "nfs4"},
-#       {"path": "/mnt/big/new-films", "holds": "movies", "use": "new_files", "new_files": true, ...}]}}
-# For each of movies, tv and music: one folder used where it is ("in_place"), and at most
-# one place new files are saved: that folder itself ("new_files": true), or a folder of
-# its own for them ("use": "new_files", when the first is read-only), or neither (new
-# files go to NekoServer's own library). "mount", "share" and "fstype" are what the folder
-# was on when it was chosen: later checks want the same thing mounted there.
+#        "mount": "/mnt/tank", "share": "nas:/tank", "fstype": "nfs4", "slot": "movies"},
+#       {"path": "/mnt/usb/old-films", "holds": "movies", "use": "in_place", ..., "slot": "movies-2"},
+#       {"path": "/mnt/big/new-films", "holds": "movies", "use": "new_files", "new_files": true, ...,
+#        "slot": "movies-new"}]}}
+# For each of movies, tv and music: up to FOLDERS_PER_KIND folders used where they are
+# ("in_place"), and at most one place new files are saved: one of those folders itself
+# ("new_files": true), or a folder of its own for them ("use": "new_files", when the
+# others are read-only), or neither (new files go to NekoServer's own library). "mount",
+# "share" and "fstype" are what the folder was on when it was chosen: later checks want
+# the same thing mounted there. "slot": the folder's name under library/existing (see
+# slot_of); settings saved by 0.51 have none, and mean the names 0.51 gave.
+
+FACTS = SHARED['media_folders']
+FOLDERS_PER_KIND = FACTS['folders_per_kind']
+FULL = FACTS['full']  # the dashboard's page and setup say the same
 
 
 def entry_for(category, found, new_files=False, use=IN_PLACE):
     """The settings entry for a folder check() passed (`found`: what check() returned).
-    `use`: IN_PLACE, or NEW for a folder of its own that only takes the new files."""
+    `use`: IN_PLACE, or NEW for a folder of its own that only takes the new files. Its
+    slot is given when it is put into the settings (with_choice)."""
     if use not in USES:
         raise RuntimeError(f'Not a way to use a folder: {use!r}')
     new_files = bool(new_files) or use == NEW
@@ -473,38 +483,67 @@ def entry_for(category, found, new_files=False, use=IN_PLACE):
     }
 
 
+def full_words(category):
+    """What is said when a kind has all the folders it may have."""
+    return FULL.format(words=WHAT[category], cap=FOLDERS_PER_KIND)
+
+
+def is_full(config, category):
+    """The kind has as many folders as it may have: another one is refused."""
+    return sum(1 for e in extras(config) if e['holds'] == category) >= FOLDERS_PER_KIND
+
+
+def free_slot(entries, category, use):
+    """The slot of a folder newly put into the settings: the one 0.51 gave the first
+    folder of its use ("movies", "movies-new") when no folder of the kind has it, else
+    "<kind>-2", "<kind>-3" ..., the first one no folder has. Slots are never moved up
+    when a folder is taken away: the others keep theirs."""
+    taken = {slot_of(e) for e in entries if e.get('holds') == category}
+    for name in (slot(category, use), *(f'{category}-{n}' for n in range(2, 100))):
+        if name not in taken:
+            return name
+    raise RuntimeError(full_words(category))
+
+
 def with_choice(config, entry):
-    """A copy of the settings with this folder for its category and use (it takes the
-    place of an earlier one). There is one place for new files: a folder that takes them
-    ends an earlier choice for them (the other folder stays used, read-only)."""
+    """A copy of the settings with this folder for its category. A folder that is there
+    already (the same path) is changed where it is and keeps its slot; another one is
+    added, with a slot of its own. There is one place for new files: a folder that takes
+    them ends an earlier choice for them (the other folder stays used, read-only)."""
     row = category_of(entry['holds'])[0]
     changed = copy.deepcopy(config)
     table = copy.deepcopy(placement.table(config))
+    listed = table[row].get('extra') or []
+    mine = [e for e in listed if isinstance(e, dict) and e.get('holds') == entry['holds']]
+    same = next((e for e in mine if e.get('path') == entry['path']), None)
+    wanted = {**entry, 'slot': slot_of(same) if same else free_slot(mine, entry['holds'], entry['use'])}
     kept = []
-    for other in table[row].get('extra') or []:
-        if not isinstance(other, dict) or other.get('holds') != entry['holds']:
+    for other in listed:
+        if other is same:
+            kept.append(wanted)
+        elif not isinstance(other, dict) or other.get('holds') != entry['holds']:
             kept.append(other)
-        elif other.get('use') == entry['use'] or (entry['new_files'] and other.get('use') == NEW):
-            continue  # replaced, or a folder that was only for the new files
+        elif entry['new_files'] and other.get('use') == NEW:
+            continue  # a folder that was only for the new files
         elif entry['new_files']:
             kept.append({**other, 'new_files': False})
         else:
             kept.append(other)
-    table[row]['extra'] = [*kept, dict(entry)]
+    table[row]['extra'] = kept if same else [*kept, wanted]
     changed['placement'] = table
     extras(changed)  # refused here rather than at the next start
     return changed
 
 
-def without_choice(config, category, use=None):
-    """A copy of the settings without the folders for `category` (only the one used as
-    `use`, when given)."""
+def without_choice(config, category, name=None):
+    """A copy of the settings without the folders for `category` (only the one whose
+    slot is `name`, when given). The others keep their slots."""
     row = category_of(category)[0]
     changed = copy.deepcopy(config)
     if isinstance(changed.get('placement'), dict) and isinstance(changed['placement'].get(row), dict):
         listed = changed['placement'][row].get('extra') or []
         changed['placement'][row]['extra'] = [
-            e for e in listed if e.get('holds') != category or (use is not None and e.get('use') != use)
+            e for e in listed if e.get('holds') != category or (name is not None and slot_of(e) != name)
         ]
     return changed
 
@@ -535,13 +574,19 @@ def usable_saved_path(config, holds, path):
 
 def checked_extra(config, row, entry, seen, writable):
     """One "extra" folder of a row, as far as a settings file can be trusted. `seen`:
-    the (kind, use) pairs taken already; `writable`: the kinds that have their place for
-    new files. Both are added to."""
+    {kind: the slots and paths taken already}; `writable`: the kinds that have their
+    place for new files. Both are added to."""
     if not isinstance(entry, dict) or entry.get('use') not in USES:
         raise RuntimeError(f'An "extra" folder of "{row}" in my-config.json has no "use" NekoServer knows')
     holds, path, use = entry.get('holds'), entry.get('path'), entry['use']
-    if holds not in CATEGORIES or CATEGORIES[holds][0] != row or (holds, use) in seen:
-        raise RuntimeError(f'"holds" of an "extra" folder of "{row}" in my-config.json is wrong or given twice')
+    if holds not in CATEGORIES or CATEGORIES[holds][0] != row:
+        raise RuntimeError(f'"holds" of an "extra" folder of "{row}" in my-config.json is wrong')
+    name = entry.get('slot', slot(holds, use))
+    taken = seen.setdefault(holds, {'slots': set(), 'paths': set()})
+    if not is_slot(holds, name) or name in taken['slots'] or path in taken['paths']:
+        raise RuntimeError(f'An "extra" folder for {holds} in my-config.json is given twice, or its "slot" is wrong')
+    if len(taken['slots']) >= FOLDERS_PER_KIND:
+        raise RuntimeError(f'my-config.json names more than {FOLDERS_PER_KIND} "extra" folders for {holds}')
     new_files = entry.get('new_files', use == NEW)
     if not isinstance(path, str) or type(new_files) is not bool or (use == NEW and not new_files):
         raise RuntimeError(f'The "extra" folder for {holds} in my-config.json needs "path" and "new_files"')
@@ -551,19 +596,20 @@ def checked_extra(config, row, entry, seen, writable):
     if missing:
         raise RuntimeError(f'The "extra" folder for {holds} in my-config.json needs "{missing[0]}"')
     usable_saved_path(config, holds, path)
-    seen.add((holds, use))
+    taken['slots'].add(name)
+    taken['paths'].add(path)
     if new_files:
         writable.add(holds)
-    return {**entry, 'new_files': new_files}
+    return {**entry, 'new_files': new_files, 'slot': name}
 
 
 def extras(config):
     """The person's folders, from the settings, each checked as far as a settings file can
-    be trusted: [{'path', 'holds', 'use', 'new_files', 'mount', 'share', 'fstype'}]."""
+    be trusted: [{'path', 'holds', 'use', 'new_files', 'mount', 'share', 'fstype', 'slot'}]."""
     saved = config.get('placement')
     if not isinstance(saved, dict):
         return []
-    seen, writable = set(), set()
+    seen, writable = {}, set()
     return [
         checked_extra(config, row, entry, seen, writable)
         for row in ('movies', 'music')
@@ -572,28 +618,52 @@ def extras(config):
 
 
 def slot(category, use=IN_PLACE):
-    """The folder's name under library/existing and /data/existing: the kind, or
-    "<kind>-new" for a folder that only takes the new files."""
+    """The slot 0.51 gave a folder of this use: the kind, or "<kind>-new" for a folder
+    that only takes the new files. The first folder of each use still gets it
+    (free_slot), and settings without "slot" mean it."""
     category_of(category)
     if use not in USES:
         raise RuntimeError(f'Not a way to use a folder: {use!r}')
     return category if use == IN_PLACE else category + '-new'
 
 
-def mount_point(config, category, use=IN_PLACE):
-    """Where the folder for `category` is mounted on this PC: library/existing/<slot>
-    on its group's drive."""
+def is_slot(category, name):
+    """Whether `name` is a slot a folder of this kind may have: "movies", "movies-new",
+    "movies-2" ... (shared.json media_folders.slot_suffix, which the runtime reads too)."""
+    return isinstance(name, str) and re.fullmatch(re.escape(category) + FACTS['slot_suffix'], name) is not None
+
+
+def slot_of(entry):
+    """A folder's name under library/existing and /data/existing: as saved, or the one
+    0.51 gave (settings saved by 0.51 have none). Kept for as long as the folder is
+    connected, so the apps' libraries and root folders stay where they are."""
+    return entry.get('slot') or slot(entry['holds'], entry['use'])
+
+
+def checked_slot(category, name):
+    """`name` (the kind itself when None), refused unless it is a slot of this kind."""
+    category_of(category)
+    name = category if name is None else name
+    if not is_slot(category, name):
+        raise RuntimeError(f'Not a name for a folder of {category}: {name!r}')
+    return name
+
+
+def mount_point(config, category, name=None):
+    """Where the folder for `category` whose slot is `name` (the kind itself when not
+    given) is mounted on this PC: library/existing/<slot> on its group's drive."""
+    name = checked_slot(category, name)
     root = os.path.realpath(files_root(config, category_of(category)[0]))
-    point = os.path.realpath(os.path.join(root, 'library', EXISTING, slot(category, use)))
+    point = os.path.realpath(os.path.join(root, 'library', EXISTING, name))
     # Under the group's own drive, whatever the settings say.
     if not point.startswith(root + os.sep):
         raise RuntimeError(f'The folder for existing {category} would be outside {root}')
     return Path(point)
 
 
-def container_path(category, use=IN_PLACE):
-    """Where every app sees the folder for `category`."""
-    return f'{CONTAINER}/{slot(category, use)}'
+def container_path(category, name=None):
+    """Where every app sees the folder for `category` whose slot is `name`."""
+    return f'{CONTAINER}/{checked_slot(category, name)}'
 
 
 def new_files_entry(config, category):
@@ -605,11 +675,12 @@ def new_files_entry(config, category):
 
 def new_files_folder(config, category):
     """The ONE folder new films, shows or music are saved in, as the apps see it: the
-    person's folder when one was chosen for them (/data/existing/movies, or
-    /data/existing/movies-new), else the library's own (/data/movies, /data/tv,
-    /data/music). Sonarr's, Radarr's and Lidarr's root folder, and Seerr's."""
+    person's folder when one was chosen for them (/data/existing/movies,
+    /data/existing/movies-new, /data/existing/movies-2 ...), else the library's own
+    (/data/movies, /data/tv, /data/music). Sonarr's, Radarr's and Lidarr's root folder,
+    and Seerr's."""
     entry = new_files_entry(config, category)
-    return container_path(category, entry['use']) if entry else f'/data/{category}'
+    return container_path(category, entry['slot']) if entry else f'/data/{category}'
 
 
 def not_backed_up(config):
@@ -627,7 +698,7 @@ def backed_up(config):
     """The person's music folders the music backup copies too (G7): [{'slot', 'path'}],
     'path' where setup mounts it (mount_point), as the runtime's music copy reads them."""
     return [
-        {'slot': slot(e['holds'], e['use']), 'path': str(mount_point(config, e['holds'], e['use']))}
+        {'slot': e['slot'], 'path': str(mount_point(config, e['holds'], e['slot']))}
         for e in extras(config)
         if e['holds'] == 'music' and e.get('backup') is True
     ]
@@ -667,7 +738,7 @@ def new_files_ready(config, category, **how):
     entry = new_files_entry(config, category)
     if entry is None:
         return None
-    row = next(r for r in available(config, **how) if (r['holds'], r['use']) == (category, entry['use']))
+    row = next(r for r in available(config, **how) if (r['holds'], r['slot']) == (category, entry['slot']))
     if not row['ready']:
         raise Away(row['reason'])
     return row['container']
@@ -683,7 +754,7 @@ def fstab_lines(config):
     the mount point as it is (root's, closed to the apps) instead of an empty folder."""
     lines = []
     for entry in extras(config):
-        point = mount_point(config, entry['holds'], entry['use'])
+        point = mount_point(config, entry['holds'], entry['slot'])
         mode = 'rw' if entry['new_files'] else 'ro'
         source, root = escaped(entry['path']), escaped(point.parents[2])
         needs = f'x-systemd.requires-mounts-for={source},x-systemd.requires-mounts-for={root}'
@@ -862,14 +933,21 @@ def mounted_row(config, entry, tools, log):
     """One of the person's folders mounted where the apps see it (read-only unless it
     takes the new files), or left for the next start when it is away: its row."""
     run, find, kind, mounted = tools
-    point = mount_point(config, entry['holds'], entry['use'])
+    point = mount_point(config, entry['holds'], entry['slot'])
     # Mounted already (the kernel's table says so): never looked at, it may be the share itself.
     if mounted(point) is None and not point.is_dir():
         point.mkdir(parents=True, mode=0o500)
         # Root's and closed: the apps cannot write into the bare folder. Once mounted, the
         # folder they see is the share's own, whatever this one's mode.
         os.chmod(point, 0o500)
-    row = {'holds': entry['holds'], 'use': entry['use'], 'path': entry['path'], 'mounted': False, 'reason': None}
+    row = {
+        'holds': entry['holds'],
+        'use': entry['use'],
+        'slot': entry['slot'],
+        'path': entry['path'],
+        'mounted': False,
+        'reason': None,
+    }
     if not still_there(entry, find, kind):
         row['reason'] = away_words(entry)
         log(row['reason'])
@@ -917,7 +995,7 @@ def available(config, find=findmnt, kind=source_import.share_type, mounted=sourc
     rows = []
     for entry in extras(config):
         there = still_there(entry, find, kind)
-        point = mount_point(config, entry['holds'], entry['use'])
+        point = mount_point(config, entry['holds'], entry['slot'])
         other = there and mounted(point) is not None and not same_folder(point, entry['path'])
         bound = mounted(point) is not None and not other
         reason = None
@@ -933,8 +1011,9 @@ def available(config, find=findmnt, kind=source_import.share_type, mounted=sourc
             {
                 'holds': entry['holds'],
                 'use': entry['use'],
+                'slot': entry['slot'],
                 'path': entry['path'],
-                'container': container_path(entry['holds'], entry['use']),
+                'container': container_path(entry['holds'], entry['slot']),
                 'new_files': entry['new_files'],
                 'ready': there and bound,
                 'reason': reason,
@@ -968,15 +1047,20 @@ TOO_OLD = (
 
 
 def library_name(entry):
-    """What the library for one of the person's folders is called in the app."""
+    """What the library for one of the person's folders is called in the app, after its
+    slot (so it never changes): "Movies (your folder)", "Movies (new, your folder)" for
+    the folder 0.51 made for new files only, "Movies (your folder 2)" for a second one."""
     name = category_of(entry['holds'])[1]
-    return name if entry['use'] == IN_PLACE else name.replace('(your folder)', '(new, your folder)')
+    number = entry['slot'][len(entry['holds']) + 1 :]
+    if number == 'new':
+        return name.replace('(your folder)', '(new, your folder)')
+    return name.replace('(your folder)', f'(your folder {number})') if number else name
 
 
 def ready_row(config, entry, how):
     """Away unless this one folder is there now."""
     for row in available(config, **how):
-        if (row['holds'], row['use']) == (entry['holds'], entry['use']) and not row['ready']:
+        if (row['holds'], row['slot']) == (entry['holds'], entry['slot']) and not row['ready']:
             raise Away(row['reason'])
 
 
@@ -996,9 +1080,9 @@ def library_row(check_name, make, too_old=()):
 
 def jellyfin_library(client, config, entry, kind, apply, how):
     """Jellyfin's library for one folder: there already, or made and read back."""
-    name, check_name = library_name(entry), f"jellyfin:existing:{slot(entry['holds'], entry['use'])}"
+    name, check_name = library_name(entry), f"jellyfin:existing:{entry['slot']}"
     ready_row(config, entry, how)
-    path = container_path(entry['holds'], entry['use'])
+    path = container_path(entry['holds'], entry['slot'])
 
     def there(values):
         """A library has the folder. Of the right kind, or said: Jellyfin reads films
@@ -1049,7 +1133,7 @@ def jellyfin_libraries(client, config, apply=False, **how):
         kind = category_of(entry['holds'])[2]
         if kind is None:
             continue
-        check_name = f"jellyfin:existing:{slot(entry['holds'], entry['use'])}"
+        check_name = f"jellyfin:existing:{entry['slot']}"
         rows.append(
             library_row(
                 check_name, lambda entry=entry, kind=kind: jellyfin_library(client, config, entry, kind, apply, how)
@@ -1076,12 +1160,16 @@ def jellyfin_left_over(client, config):
     whose folder it cannot open), none of them plays, and after "copy instead" every film
     is listed twice. The library is the person's to remove (it holds what they watched),
     so it is said, with where."""
-    used = {container_path(entry['holds'], entry['use']) for entry in extras(config)}
+    used = {container_path(entry['holds'], entry['slot']) for entry in extras(config)}
     rows = []
     for value in media_libraries.folders(client):
         for place in sorted({str(location).rstrip('/') for location in value['Locations']}):
             slot_name = place[len(CONTAINER) + 1 :]
-            if place.startswith(CONTAINER + '/') and place not in used and re.fullmatch(r'[a-z]+(-new)?', slot_name):
+            if (
+                place.startswith(CONTAINER + '/')
+                and place not in used
+                and any(is_slot(kind, slot_name) for kind in CATEGORIES)
+            ):
                 said = LEFT_OVER.format(name=value.get('Name', ''))
                 rows.append(media_libraries.row(f'jellyfin:existing:{slot_name}', 'needs_setup', said))
     return rows
@@ -1130,8 +1218,8 @@ def navidrome_share(call, library, name, listeners):
 def navidrome_one(call, config, entry, apply, how, listeners=()):
     """Navidrome's library for one music folder: there already, or made and read back;
     then the listeners are allowed to play it."""
-    name, path = library_name(entry), container_path('music', entry['use'])
-    check_name = f"navidrome:existing:{slot('music', entry['use'])}"
+    name, path = library_name(entry), container_path('music', entry['slot'])
+    check_name = f"navidrome:existing:{entry['slot']}"
     ready_row(config, entry, how)
     listed = navidrome_listed(call)
 
@@ -1164,7 +1252,7 @@ def navidrome_library(call, config, apply=False, listeners=(), **how):
     for entry in extras(config):
         if entry['holds'] != 'music':
             continue
-        check_name = f"navidrome:existing:{slot('music', entry['use'])}"
+        check_name = f"navidrome:existing:{entry['slot']}"
         rows.append(
             library_row(
                 check_name,

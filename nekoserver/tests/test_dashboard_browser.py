@@ -84,6 +84,7 @@ def media_answer():
         'target': 'library',
         'folders': [
             {
+                'slot': 'movies',
                 'use': 'in_place',
                 'path': '/mnt/nas/a-very-long-shared-folder-name-from-the-nas/films',
                 'new_files': False,
@@ -92,9 +93,10 @@ def media_answer():
             }
         ],
         'copies': [],
-        'room': {'in_place': False, 'new_files': True},
+        'room': 7,
+        'full': None,
     }
-    shows = {**films, 'kind': 'tv', 'words': 'shows', 'folders': [], 'room': {'in_place': True, 'new_files': True}}
+    shows = {**films, 'kind': 'tv', 'words': 'shows', 'folders': [], 'room': 8}
     result = {'format': 'neko-media-folders-v1', 'state': 'done', 'message': 'Done.', 'notes': [], 'next': []}
     return {'ok': True, 'working': False, 'result': {**result, 'kinds': [films, shows]}}
 

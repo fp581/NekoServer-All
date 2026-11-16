@@ -62,6 +62,72 @@
     "expected": null
   },
   {
+    "name": "0.52: a folder only for new films that takes none, beside two others",
+    "placement": {
+      "movies": {
+        "extra": [
+          { "holds": "movies", "use": "in_place", "new_files": false, "path": "/mnt/nas/films", "mount": "", "share": "", "fstype": "ext4", "slot": "movies" },
+          { "holds": "movies", "use": "new_files", "new_files": false, "path": "/mnt/nas/old", "mount": "", "share": "", "fstype": "ext4", "slot": "movies-new" },
+          { "holds": "movies", "use": "in_place", "new_files": true, "path": "/mnt/nas/kids", "mount": "", "share": "", "fstype": "ext4", "slot": "movies-2" }
+        ]
+      }
+    },
+    "expected": null
+  },
+  {
+    "name": "0.52: a second films folder takes the new ones, the first keeps its slot",
+    "placement": {
+      "movies": {
+        "extra": [
+          { "holds": "movies", "use": "in_place", "new_files": false, "path": "/mnt/nas/films", "mount": "", "share": "", "fstype": "ext4" },
+          { "holds": "movies", "use": "in_place", "new_files": true, "path": "/mnt/nas/kids", "mount": "", "share": "", "fstype": "ext4", "slot": "movies-2" },
+          { "holds": "tv", "use": "in_place", "new_files": false, "path": "/mnt/nas/shows", "mount": "", "share": "", "fstype": "ext4", "slot": "tv-3" }
+        ]
+      }
+    },
+    "expected": { "radarr": "/data/existing/movies-2", "sonarr": "/data/tv" }
+  },
+  {
+    "name": "0.52: one slot for two folders",
+    "placement": {
+      "movies": {
+        "extra": [
+          { "holds": "movies", "use": "in_place", "new_files": false, "path": "/mnt/nas/films", "mount": "", "share": "", "fstype": "ext4", "slot": "movies-2" },
+          { "holds": "movies", "use": "in_place", "new_files": false, "path": "/mnt/nas/kids", "mount": "", "share": "", "fstype": "ext4", "slot": "movies-2" }
+        ]
+      }
+    },
+    "expected": null
+  },
+  {
+    "name": "0.52: a slot of another kind",
+    "placement": {
+      "movies": {
+        "extra": [{ "holds": "tv", "use": "in_place", "new_files": true, "path": "/mnt/nas/shows", "mount": "", "share": "", "fstype": "ext4", "slot": "movies-2" }]
+      }
+    },
+    "expected": null
+  },
+  {
+    "name": "0.52: more films folders than one kind may have",
+    "placement": {
+      "movies": {
+        "extra": [
+          { "holds": "movies", "use": "in_place", "new_files": false, "path": "/mnt/nas/f1", "mount": "", "share": "", "fstype": "ext4", "slot": "movies" },
+          { "holds": "movies", "use": "in_place", "new_files": false, "path": "/mnt/nas/f2", "mount": "", "share": "", "fstype": "ext4", "slot": "movies-2" },
+          { "holds": "movies", "use": "in_place", "new_files": false, "path": "/mnt/nas/f3", "mount": "", "share": "", "fstype": "ext4", "slot": "movies-3" },
+          { "holds": "movies", "use": "in_place", "new_files": false, "path": "/mnt/nas/f4", "mount": "", "share": "", "fstype": "ext4", "slot": "movies-4" },
+          { "holds": "movies", "use": "in_place", "new_files": false, "path": "/mnt/nas/f5", "mount": "", "share": "", "fstype": "ext4", "slot": "movies-5" },
+          { "holds": "movies", "use": "in_place", "new_files": false, "path": "/mnt/nas/f6", "mount": "", "share": "", "fstype": "ext4", "slot": "movies-6" },
+          { "holds": "movies", "use": "in_place", "new_files": false, "path": "/mnt/nas/f7", "mount": "", "share": "", "fstype": "ext4", "slot": "movies-7" },
+          { "holds": "movies", "use": "in_place", "new_files": false, "path": "/mnt/nas/f8", "mount": "", "share": "", "fstype": "ext4", "slot": "movies-8" },
+          { "holds": "movies", "use": "in_place", "new_files": false, "path": "/mnt/nas/f9", "mount": "", "share": "", "fstype": "ext4", "slot": "movies-9" }
+        ]
+      }
+    },
+    "expected": null
+  },
+  {
     "name": "a folder without its mount",
     "placement": {
       "movies": {

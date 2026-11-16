@@ -59,7 +59,9 @@ FACTS = SHARED['media_folders']
 FORMAT = FACTS['format']
 FOLDER = Path(FACTS['folder'])
 KINDS = tuple(FACTS['kinds'])
-CHANGES, HOW, USES, TARGETS = (tuple(FACTS[key]) for key in ('changes', 'how', 'uses', 'targets'))
+CHANGES, HOW = (tuple(FACTS[key]) for key in ('changes', 'how'))
+# A remove or target request names a folder by its slot (existing_media.slot_of);
+# "library" is NekoServer's own library.
 LIBRARY, IN_PLACE, NEW = 'library', existing_media.IN_PLACE, existing_media.NEW
 LONGEST_REQUEST = 8192
 WORDS = {kind: words for kind, _, words in existing_page.KINDS}  # films, shows, music
@@ -87,15 +89,7 @@ NO_DOWNLOADS = (
     'This server does not find and download new {words} (switched off in setup), so there is no place for new '
     'downloads to choose. Connect the folder without it.'
 )
-ALREADY = '{path} is already connected for your {words}.'
-ONE_EACH = (
-    'Your {words} already use {other} where it is. NekoServer connects one folder of {words} where it is, and one '
-    'more for new downloads only. Take {other} away first, or choose "Copy its files into the library" for this one.'
-)
-BOTH_TAKEN = (
-    'Your {words} already use {other} where it is and {new} for new downloads. Take one of them away first, or '
-    'choose "Copy its files into the library".'
-)
+ALREADY = existing_page.ALREADY  # setup says the same
 NOT_CONNECTED = 'That folder is not connected for your {words} (any more). Nothing was changed.'
 KEPT = 'The files in {path} were not touched: nothing was deleted, moved or changed there.'
 NEW_ONLY_LEAVES = (
@@ -152,13 +146,14 @@ def checked_request(raw):
         if asked['how'] == 'copy' and asked['downloads']:
             raise Refusal('A folder that is copied is not connected, so new downloads cannot go there.')
     elif change == 'remove':
-        if raw.get('use') not in USES:
+        if not existing_media.is_slot(asked['kind'], raw.get('slot')):
             raise Refusal('Which folder? Reload the page and try again.')
-        asked['use'] = raw['use']
+        asked['slot'] = raw['slot']
     elif change == 'target':
-        if raw.get('target') not in TARGETS:
+        wanted = raw.get('target')
+        if wanted != LIBRARY and not existing_media.is_slot(asked['kind'], wanted):
             raise Refusal('Where should new downloads go? Reload the page and try again.')
-        asked['target'] = raw['target']
+        asked['target'] = wanted
     return asked
 
 
@@ -204,15 +199,15 @@ def kind_state(config, kind, rows):
         for c in config.get(existing_page.COPIES) or []
         if isinstance(c, dict) and c.get('holds') == kind and isinstance(c.get('path'), str)
     ]
-    uses = {row['use'] for row in mine}
     return {
         'kind': kind,
         'words': WORDS[kind],
         'library': str(library_folder(config, kind)),
         'downloads': downloads,
-        'target': (target['use'] if target else LIBRARY) if downloads else None,
+        'target': (target['slot'] if target else LIBRARY) if downloads else None,
         'folders': [
             {
+                'slot': row['slot'],
                 'use': row['use'],
                 'path': row['path'],
                 'new_files': row['new_files'],
@@ -222,8 +217,9 @@ def kind_state(config, kind, rows):
             for row in mine
         ],
         'copies': copies,
-        # What another folder may still be added as (one used in place, one for new downloads).
-        'room': {IN_PLACE: IN_PLACE not in uses, NEW: downloads and NEW not in uses},
+        # How many more folders may be connected, and what is said when there is no room.
+        'room': max(0, existing_media.FOLDERS_PER_KIND - len(mine)),
+        'full': existing_media.full_words(kind) if len(mine) >= existing_media.FOLDERS_PER_KIND else None,
     }
 
 
@@ -237,8 +233,8 @@ def page_state(config, available=None):
 
 
 def entries_of(config, kind):
-    """{use: the saved entry} of this kind's folders."""
-    return {entry['use']: entry for entry in existing_media.extras(config) if entry['holds'] == kind}
+    """{slot: the saved entry} of this kind's folders, in the settings' order."""
+    return {entry['slot']: entry for entry in existing_media.extras(config) if entry['holds'] == kind}
 
 
 def answered(config, kind):
@@ -284,33 +280,25 @@ def add(config, asked, out):
     real = os.path.realpath(asked['path'])
     if any(entry['path'] in (asked['path'], real) for entry in entries.values()):
         raise Refusal(ALREADY.format(path=real, words=words))
+    if existing_media.is_full(config, kind):
+        raise Refusal(existing_media.full_words(kind))
     try:
-        if IN_PLACE not in entries:
-            found = existing_media.check(config, kind, asked['path'], asked['downloads'])
-            answer = found['new_files'] or {}
-            if asked['downloads'] and not answer.get('ok'):
-                # As setup does: the folder is still used (read-only), and why new downloads
-                # can't go there is said; they go where they went before.
-                out['notes'].append(answer.get('reason') or 'New downloads cannot be saved there.')
-            elif asked['downloads']:
-                out['notes'].append(answer['note'])
-            entry = existing_media.entry_for(kind, found, new_files=bool(answer.get('ok')))
-        elif asked['downloads'] and NEW not in entries:
-            found = existing_media.check(config, kind, asked['path'], True)
-            if not found['new_files']['ok']:
-                raise Refusal(found['new_files']['reason'])
-            out['notes'].append(found['new_files']['note'])
-            entry = existing_media.entry_for(kind, found, use=NEW)
-        elif NEW in entries:
-            raise Refusal(BOTH_TAKEN.format(words=words, other=entries[IN_PLACE]['path'], new=entries[NEW]['path']))
-        else:
-            raise Refusal(ONE_EACH.format(words=words, other=entries[IN_PLACE]['path']))
+        found = existing_media.check(config, kind, asked['path'], asked['downloads'])
     except existing_media.Refused as refused:
         raise Refusal(str(refused)) from None
+    answer = found['new_files'] or {}
+    if asked['downloads'] and not answer.get('ok'):
+        # As setup does: the folder is still used (read-only), and why new downloads
+        # can't go there is said; they go where they went before.
+        out['notes'].append(answer.get('reason') or 'New downloads cannot be saved there.')
+    elif asked['downloads']:
+        out['notes'].append(answer['note'])
+    entry = existing_media.entry_for(kind, found, new_files=bool(answer.get('ok')))
+    leaving = next((e for e in entries.values() if e['use'] == NEW), None) if entry['new_files'] else None
     config['placement'] = existing_media.with_choice(config, entry)['placement']
     answered(config, kind)
-    if entry['new_files'] and NEW in entries and entry['use'] == IN_PLACE:
-        out['notes'].append(NEW_ONLY_LEAVES.format(path=entries[NEW]['path'], words=words))
+    if leaving:
+        out['notes'].append(NEW_ONLY_LEAVES.format(path=leaving['path'], words=words))
     out['message'] = f'Your {words} in {entry["path"]} are connected, used where they are.'
     if entry['new_files']:
         out['message'] += f' New {words} are saved there from now on.'
@@ -349,10 +337,10 @@ def remove(config, asked, out):
     """Take a folder away: out of the settings, so setup's own code disconnects it. Its
     files are never touched."""
     kind, words = asked['kind'], WORDS[asked['kind']]
-    entry = entries_of(config, kind).get(asked['use'])
+    entry = entries_of(config, kind).get(asked['slot'])
     if not entry:
         raise Refusal(NOT_CONNECTED.format(words=words))
-    config.update(existing_media.without_choice(config, kind, asked['use']))
+    config.update(existing_media.without_choice(config, kind, asked['slot']))
     out['message'] = f'{entry["path"]} is taken away from your {words}. ' + KEPT.format(path=entry['path'])
     if entry['new_files']:
         out['notes'].append(f'New {words} are saved in the NekoServer library ({library_folder(config, kind)}) now.')
@@ -360,30 +348,30 @@ def remove(config, asked, out):
 
 
 def target(config, asked, out):
-    """Where new downloads of a kind go: NekoServer's library, the folder used where it
-    is (checked for writing as the apps' account first), or the folder for new ones."""
+    """Where new downloads of a kind go: NekoServer's library, or one of the folders used
+    where they are (checked for writing as the apps' account first)."""
     kind, words = asked['kind'], WORDS[asked['kind']]
     if not existing_page.downloads(config, kind):
         raise Refusal(NO_DOWNLOADS.format(words=words))
     entries = entries_of(config, kind)
-    now = next((use for use, entry in entries.items() if entry['new_files']), LIBRARY)
+    now = next((name for name, entry in entries.items() if entry['new_files']), LIBRARY)
     wanted = asked['target']
     if wanted == now:
         out['message'] = f'New {words} already go there; nothing was changed.'
         return []
     if wanted != LIBRARY and wanted not in entries:
         raise Refusal(NOT_CONNECTED.format(words=words))
-    if wanted == NEW:
-        raise Refusal(NOT_CONNECTED.format(words=words))  # a folder for new ones always takes them
-    leaving = entries.get(NEW)
+    leaving = next((e for e in entries.values() if e['use'] == NEW), None)
     if wanted == LIBRARY:
-        changed = existing_media.without_choice(config, kind, NEW)
-        if IN_PLACE in entries:
-            changed = existing_media.with_choice(changed, {**entries[IN_PLACE], 'new_files': False})
+        changed = config
+        if leaving:
+            changed = existing_media.without_choice(changed, kind, leaving['slot'])
+        if now != LIBRARY and entries[now]['use'] == IN_PLACE:
+            changed = existing_media.with_choice(changed, {**entries[now], 'new_files': False})
         config.update(changed)
         out['message'] = f'New {words} are saved in the NekoServer library ({library_folder(config, kind)}) now.'
     else:
-        old = entries[IN_PLACE]
+        old = entries[wanted]
         answering(old['path'])
         try:
             found = existing_media.check(config, kind, old['path'], True)

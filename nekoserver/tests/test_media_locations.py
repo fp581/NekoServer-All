@@ -245,6 +245,18 @@ def tree(folder):
     }
 
 
+class GuideTests(unittest.TestCase):
+    def test_the_guides_say_the_limit_shared_json_sets(self):
+        cap = existing_media.FOLDERS_PER_KIND
+        for guide, said in (
+            ('DASHBOARD.md', f'Each kind can have up to {cap} folders of yours connected'),
+            ('STORAGE.md', f'Each kind (films, shows, music) can have up to {cap} such folders'),
+            ('GUIDED-SETUP.md', f'up to {cap}, until you answer **That is all**'),
+        ):
+            self.assertIn(said, (ROOT / guide).read_text(encoding='utf-8'), guide)
+        self.assertNotIn('one folder used where it is, and one more', (ROOT / 'DASHBOARD.md').read_text())
+
+
 class RequestPathTests(unittest.TestCase):
     def test_only_a_json_request_is_read_and_its_folder_is_where_it_really_is(self):
         """SonarCloud on PR 89: the request's path comes from the command line, and the
@@ -295,13 +307,22 @@ class MediaFoldersTests(unittest.TestCase):
         )
         # The page shows it ready, and the place for new films.
         films = self.kind(answer)
-        self.assertEqual(films['target'], 'in_place')
+        self.assertEqual(films['target'], 'movies')
         self.assertEqual(
             films['folders'],
-            [{'use': 'in_place', 'path': str(self.pc.films), 'new_files': True, 'ready': True, 'reason': None}],
+            [
+                {
+                    'slot': 'movies',
+                    'use': 'in_place',
+                    'path': str(self.pc.films),
+                    'new_files': True,
+                    'ready': True,
+                    'reason': None,
+                }
+            ],
         )
         self.assertEqual(films['library'], str(self.pc.media / 'library' / 'movies'))
-        self.assertEqual(films['room'], {'in_place': False, 'new_files': True})
+        self.assertEqual((films['room'], films['full']), (existing_media.FOLDERS_PER_KIND - 1, None))
         self.assertEqual(tree(self.pc.nas), before, 'nothing of the person was changed')
         self.assertFalse((self.pc.control / 'request.json').exists(), 'the request was taken')
 
@@ -345,7 +366,7 @@ class MediaFoldersTests(unittest.TestCase):
             for asked in (
                 {'change': 'add', 'kind': 'tv', 'path': str(self.pc.shows), 'how': 'in_place', 'downloads': False},
                 {'change': 'add', 'kind': 'tv', 'path': str(self.pc.shows), 'how': 'copy', 'downloads': False},
-                {'change': 'target', 'kind': 'movies', 'target': 'in_place'},
+                {'change': 'target', 'kind': 'movies', 'target': 'movies'},
             ):
                 with self.subTest(asked=asked):
                     answer = self.pc.ask(**asked)
@@ -354,28 +375,83 @@ class MediaFoldersTests(unittest.TestCase):
         self.assertEqual(looked[-1], (['test', '-d', f'{self.pc.films}/.'], media_locations.LOOK_SECONDS))
         self.assertEqual(len(looked), 3)
 
-    def test_one_folder_is_used_where_it_is_and_one_more_only_for_new_downloads(self):
+    def big_drive(self, *names):
+        """Folders of films on another drive of this PC (mounted, in /etc/fstab)."""
+        big = self.pc.top / 'big'
+        if str(big) not in self.pc.load_state()['mounts']:
+            self.pc.state['mounts'][str(big)] = ['/dev/sdd1', 'ext4']
+            self.pc.save_state()
+            with open(self.pc.fstab, 'a') as fstab:
+                fstab.write(f'UUID=4 {big} ext4 defaults,nofail 0 2\n')
+        for name in names:
+            (big / name).mkdir(parents=True)
+        return [big / name for name in names]
+
+    def test_settings_saved_by_0_51_3_are_shown_and_kept_as_they_were(self):
+        # 0.51.3 saved one folder used where it is and one only for new downloads, with no
+        # "slot": they are where 0.51.3 put them, and a third folder changes neither.
+        (new,) = self.big_drive('new-films')
         self.add(downloads=False)
-        other = self.pc.top / 'big' / 'films'
-        other.mkdir(parents=True)
-        self.pc.state['mounts'][str(self.pc.top / 'big')] = ['/dev/sdd1', 'ext4']
-        self.pc.save_state()
-        with open(self.pc.fstab, 'a') as fstab:
-            fstab.write(f'UUID=4 {self.pc.top / "big"} ext4 defaults,nofail 0 2\n')
-        refused = self.add(other, downloads=False)
-        self.assertEqual(refused['state'], 'refused')
-        self.assertIn('NekoServer connects one folder of films where it is', refused['message'])
-        added = self.add(other, downloads=True)
+        old = {'mount': str(self.pc.top / 'big'), 'share': '/dev/sdd1', 'fstype': 'ext4'}
+        for which in (self.pc.kept, self.pc.own):
+            saved = self.pc.settings(which)
+            films = saved['placement']['movies']['extra']
+            films[0].pop('slot')
+            films.append({'path': str(new), 'holds': 'movies', 'use': 'new_files', 'new_files': True, **old})
+            which.write_text(json.dumps(saved))
+        before = self.pc.settings()
+        look = self.pc.ask(change='look')
+        self.assertEqual(
+            [(f['slot'], f['use'], f['new_files']) for f in self.kind(look)['folders']],
+            [('movies', 'in_place', False), ('movies-new', 'new_files', True)],
+        )
+        self.assertEqual(self.kind(look)['target'], 'movies-new')
+        self.assertEqual(self.pc.settings(), before, 'a look changes nothing')
+        (third,) = self.big_drive('more-films')
+        added = self.add(third, downloads=False)
+        self.assertEqual(added['state'], 'done', added)
+        extra = self.pc.settings()['placement']['movies']['extra']
+        self.assertEqual(extra[:2], before['placement']['movies']['extra'], 'the two of 0.51.3 are as they were')
+        self.assertEqual(extra[2]['slot'], 'movies-2')
+        self.assertEqual(self.pc.load_state()['bound'][self.pc.point(slot='movies-2')], str(third))
+        fstab = self.pc.fstab.read_text()
+        self.assertIn(f'{self.pc.films} {self.pc.point()} none bind,ro,nofail', fstab)
+        self.assertIn(f'{new} {self.pc.point(slot="movies-new")} none bind,rw,nofail', fstab)
+
+    def test_a_kind_takes_more_folders_used_where_they_are_up_to_its_limit(self):
+        self.add(downloads=False)
+        cap = existing_media.FOLDERS_PER_KIND
+        others = self.big_drive(*(f'films-{n}' for n in range(2, cap + 2)))
+        added = self.add(others[0], downloads=False)
         self.assertEqual(added['state'], 'done', added)
         films = self.kind(added)
         self.assertEqual(
-            [(f['use'], f['new_files']) for f in films['folders']], [('in_place', False), ('new_files', True)]
+            [(f['slot'], f['use'], f['new_files']) for f in films['folders']],
+            [('movies', 'in_place', False), ('movies-2', 'in_place', False)],
         )
-        self.assertEqual(films['target'], 'new_files')
-        self.assertEqual(self.pc.load_state()['bound'][self.pc.point(slot='movies-new')], str(other))
-        self.assertIn(('jellyfin', '/data/existing/movies-new'), self.pc.told)
-        full = self.add(self.pc.shows, downloads=True)
-        self.assertIn('Take one of them away first', full['message'])
+        self.assertEqual(self.pc.load_state()['bound'][self.pc.point(slot='movies-2')], str(others[0]))
+        self.assertIn(f'{others[0]} {self.pc.point(slot="movies-2")} none bind,ro,nofail', self.pc.fstab.read_text())
+        # New downloads to the second: the first stays as it is, read-only.
+        downloads = self.pc.ask(change='target', kind='movies', target='movies-2')
+        self.assertEqual(downloads['state'], 'done', downloads)
+        self.assertEqual(self.kind(downloads)['target'], 'movies-2')
+        self.assertIn(('root folders', '/data/existing/movies-2'), self.pc.told)
+        for other in others[1 : cap - 1]:
+            self.assertEqual(self.add(other, downloads=False)['state'], 'done')
+        films = self.kind(self.pc.ask(change='look'))
+        self.assertEqual((len(films['folders']), films['room']), (cap, 0))
+        self.assertEqual(films['full'], existing_media.full_words('movies'))
+        # One more is refused in the words setup says too, and nothing changes.
+        before = self.pc.settings()
+        full = self.add(others[-1], downloads=False)
+        self.assertEqual((full['state'], full['message']), ('refused', existing_media.full_words('movies')))
+        self.assertEqual(self.pc.settings(), before)
+        # Taking one away moves no other folder: each keeps its slot, and its place in the apps.
+        taken = self.pc.ask(change='remove', kind='movies', slot='movies')
+        self.assertEqual(taken['state'], 'done', taken)
+        slots = [f['slot'] for f in self.kind(taken)['folders']]
+        self.assertEqual(slots, [f'movies-{n}' for n in range(2, cap + 1)])
+        self.assertEqual(self.kind(taken)['target'], 'movies-2')
 
     def test_where_new_downloads_go_is_changed_and_the_folder_follows(self):
         self.add(downloads=True)
@@ -390,21 +466,21 @@ class MediaFoldersTests(unittest.TestCase):
         self.assertEqual(self.pc.told[-2:], [('root folders', '/data/movies'), ('seerr', '/data/movies')])
         # Back: checked for writing as the apps' account first.
         self.pc.refusals[str(self.pc.films)] = {'write': 'write Read-only file system'}
-        refused = self.pc.ask(change='target', kind='movies', target='in_place')
+        refused = self.pc.ask(change='target', kind='movies', target='movies')
         self.assertEqual(refused['state'], 'refused')
         self.assertIn('read-only here', refused['message'])
         self.pc.refusals.clear()
-        back = self.pc.ask(change='target', kind='movies', target='in_place')
+        back = self.pc.ask(change='target', kind='movies', target='movies')
         self.assertEqual(back['state'], 'done', back)
-        self.assertEqual(self.kind(back)['target'], 'in_place')
+        self.assertEqual(self.kind(back)['target'], 'movies')
         self.assertIn([self.pc.point(), 'remount,bind,rw'], self.pc.load_state()['remounts'])
-        same = self.pc.ask(change='target', kind='movies', target='in_place')
+        same = self.pc.ask(change='target', kind='movies', target='movies')
         self.assertIn('already go there', same['message'])
 
     def test_a_folder_taken_away_is_disconnected_and_its_files_are_never_touched(self):
         self.add(downloads=True)
         before = tree(self.pc.nas)
-        answer = self.pc.ask(change='remove', kind='movies', use='in_place')
+        answer = self.pc.ask(change='remove', kind='movies', slot='movies')
         self.assertEqual(answer['state'], 'done', answer)
         self.assertIn('is taken away from your films', answer['message'])
         self.assertIn('were not touched: nothing was deleted', answer['message'])
@@ -417,7 +493,7 @@ class MediaFoldersTests(unittest.TestCase):
         self.assertEqual(self.pc.load_state()['bound'], {})
         self.assertEqual(tree(self.pc.nas), before)
         self.assertEqual(self.kind(answer)['folders'], [])
-        again = self.pc.ask(change='remove', kind='movies', use='in_place')
+        again = self.pc.ask(change='remove', kind='movies', slot='movies')
         self.assertIn('not connected for your films', again['message'])
 
     def test_a_folder_an_app_holds_open_says_a_restart_is_needed(self):
@@ -425,7 +501,7 @@ class MediaFoldersTests(unittest.TestCase):
         self.pc.load_state()
         self.pc.state['busy'] = [self.pc.point()]
         self.pc.save_state()
-        answer = self.pc.ask(change='remove', kind='movies', use='in_place')
+        answer = self.pc.ask(change='remove', kind='movies', slot='movies')
         self.assertEqual(answer['state'], 'done')
         # Said where the page shows the next steps, not only in the log.
         (step,) = answer['next']

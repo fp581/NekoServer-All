@@ -42,6 +42,23 @@ fn listed(key: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// Whether `name` is a slot a folder of `kind` may have: the folder's name under
+/// library/existing and /data/existing ("movies", "movies-new", "movies-2" ...), as
+/// existing_media.is_slot says it (shared.json media_folders.slot_suffix).
+pub fn is_slot(kind: &str, name: &str) -> bool {
+    let suffix = fact("slot_suffix");
+    let plain = !kind.is_empty() && kind.bytes().all(|b| b.is_ascii_lowercase());
+    plain && regex::Regex::new(&format!("^{kind}{suffix}$")).is_ok_and(|rule| rule.is_match(name))
+}
+/// Whether `name` is a slot of one of the kinds the page knows.
+pub fn is_any_slot(name: &str) -> bool {
+    listed("kinds").iter().any(|kind| is_slot(kind, name))
+}
+/// How many folders one kind may have connected (shared.json).
+pub fn folders_per_kind() -> usize {
+    facts()["folders_per_kind"].as_u64().unwrap_or(8) as usize
+}
+
 /// A request younger than this whose service has not started yet is still on its way;
 /// an older one was never taken (the service could not start) and is replaced.
 const ON_ITS_WAY: Duration = Duration::from_secs(60);
@@ -216,10 +233,20 @@ pub fn checked(request: &Value) -> std::result::Result<Value, &'static str> {
             asked["how"] = json!(how);
             asked["downloads"] = json!(downloads);
         }
-        "remove" => asked["use"] = json!(one_of("use", "uses").ok_or("Which folder?")?),
+        // A folder is named by its slot; new downloads go to one, or to "library".
+        "remove" => {
+            let slot = request["slot"]
+                .as_str()
+                .filter(|s| is_slot(&kind, s))
+                .ok_or("Which folder?")?;
+            asked["slot"] = json!(slot);
+        }
         _ => {
-            asked["target"] =
-                json!(one_of("target", "targets").ok_or("Where should new downloads go?")?)
+            let target = request["target"]
+                .as_str()
+                .filter(|t| *t == "library" || is_slot(&kind, t))
+                .ok_or("Where should new downloads go?")?;
+            asked["target"] = json!(target);
         }
     }
     Ok(asked)
@@ -482,12 +509,38 @@ mod tests {
         }
         let copy = json!({"change": "add", "kind": "music", "path": "/mnt/m", "how": "copy", "downloads": true});
         assert!(checked(&copy).unwrap_err().contains("copied"));
-        assert!(checked(&json!({"change": "remove", "kind": "tv", "use": "everything"})).is_err());
+        // A folder is named by its slot, of the kind asked about.
+        for slot in [
+            "everything",
+            "movies-2",
+            "tv-0",
+            "tv-100",
+            "../tv",
+            "tv-new2",
+            "",
+        ] {
+            assert!(
+                checked(&json!({"change": "remove", "kind": "tv", "slot": slot})).is_err(),
+                "{slot}"
+            );
+        }
+        for slot in ["tv", "tv-new", "tv-2", "tv-99"] {
+            assert_eq!(
+                checked(&json!({"change": "remove", "kind": "tv", "slot": slot})).unwrap(),
+                json!({"change": "remove", "kind": "tv", "slot": slot})
+            );
+        }
+        assert!(checked(&json!({"change": "remove", "kind": "tv", "use": "in_place"})).is_err());
         assert!(checked(&json!({"change": "target", "kind": "tv", "target": "/srv"})).is_err());
-        assert_eq!(
-            checked(&json!({"change": "target", "kind": "tv", "target": "library"})).unwrap(),
-            json!({"change": "target", "kind": "tv", "target": "library"})
-        );
+        assert!(checked(&json!({"change": "target", "kind": "tv", "target": "in_place"})).is_err());
+        for target in ["library", "tv-3"] {
+            assert_eq!(
+                checked(&json!({"change": "target", "kind": "tv", "target": target})).unwrap(),
+                json!({"change": "target", "kind": "tv", "target": target})
+            );
+        }
+        assert!(is_any_slot("music-new") && !is_any_slot("photos") && !is_any_slot("Movies"));
+        assert_eq!(folders_per_kind(), 8);
         assert_eq!(
             checked(&json!({"change": "look", "kind": "x"})).unwrap(),
             json!({"change": "look"})
@@ -499,7 +552,7 @@ mod tests {
     #[test]
     fn a_change_is_written_for_root_and_its_service_started_once() {
         let (f, systemd, folder) = folders("start");
-        let asked = json!({"op": "app_media_change", "change": "remove", "kind": "tv", "use": "in_place", "token": "x"});
+        let asked = json!({"op": "app_media_change", "change": "remove", "kind": "tv", "slot": "tv", "token": "x"});
         let started = f.change(&asked);
         assert_eq!(started["ok"], true, "{started}");
         let written: Value =
@@ -508,7 +561,7 @@ mod tests {
         assert_eq!(id.len(), 16);
         assert_eq!(
             written,
-            json!({"change": "remove", "kind": "tv", "use": "in_place", "id": id})
+            json!({"change": "remove", "kind": "tv", "slot": "tv", "id": id})
         );
         let mode = fs::metadata(folder.join("request.json"))
             .unwrap()

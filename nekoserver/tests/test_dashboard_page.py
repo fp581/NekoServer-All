@@ -1157,12 +1157,20 @@ def media_result(**parts):
         'words': 'films',
         'library': '/mnt/nekoserver-media/library/movies',
         'downloads': True,
-        'target': 'in_place',
+        'target': 'movies',
         'folders': [
-            {'use': 'in_place', 'path': '/mnt/nas/films', 'new_files': True, 'ready': True, 'reason': None},
+            {
+                'slot': 'movies',
+                'use': 'in_place',
+                'path': '/mnt/nas/films',
+                'new_files': True,
+                'ready': True,
+                'reason': None,
+            },
         ],
         'copies': [],
-        'room': {'in_place': False, 'new_files': True},
+        'room': 7,
+        'full': None,
     }
     music = {
         'kind': 'music',
@@ -1172,6 +1180,7 @@ def media_result(**parts):
         'target': None,
         'folders': [
             {
+                'slot': 'music',
                 'use': 'in_place',
                 'path': '/mnt/usb/music',
                 'new_files': False,
@@ -1180,7 +1189,8 @@ def media_result(**parts):
             }
         ],
         'copies': [],
-        'room': {'in_place': False, 'new_files': False},
+        'room': 7,
+        'full': None,
     }
     return {
         'format': 'neko-media-folders-v1',
@@ -1226,8 +1236,12 @@ class MediaFoldersPageTests(unittest.TestCase):
         self.assertEqual(shown.count('New downloads go here'), 1)
         self.assertIn('Add a folder', flow['form'])
         self.assertIn('Pick a folder', flow['form'])
-        # Films use a folder where it is already: the form says what another one can be.
-        self.assertIn('this one can only take the new downloads', flow['form'])
+        self.assertIn('Nothing in the folder is copied, moved or changed', flow['form'])
+        # A kind with all its folders: the form says so, in the server's (and setup's) words.
+        full = media_result()
+        full['kinds'][0] = {**full['kinds'][0], 'room': 0, 'full': 'Your films have 8 folders connected already.'}
+        (flow,) = page(('mediaFlow', {'result': full}))
+        self.assertIn('Your films have 8 folders connected already.', flow['form'])
 
     def test_the_form_sends_the_folder_how_and_whether_new_downloads_go_there(self):
         (flow,) = page(

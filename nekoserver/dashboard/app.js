@@ -5409,7 +5409,7 @@ function mediaFolderRow(kind, f) {
     actions.append(
       button('Send new downloads here', () =>
         mediaChange(
-          { change: 'target', kind: kind.kind, target: 'in_place' },
+          { change: 'target', kind: kind.kind, target: f.slot },
           'Checking that new ' + kind.words + ' can be saved in ' + f.path + '…'
         )
       )
@@ -5432,7 +5432,7 @@ function confirmTakeAway(kind, f) {
       MEDIA_KEPT +
       ' An app that has a file open there keeps it until it restarts; the page says so if a restart is needed.',
     'Take it away',
-    () => void mediaChange({ change: 'remove', kind: kind.kind, use: f.use }, 'Disconnecting ' + f.path + '…')
+    () => void mediaChange({ change: 'remove', kind: kind.kind, slot: f.slot }, 'Disconnecting ' + f.path + '…')
   );
 }
 function mediaKindCard(kind) {
@@ -5616,14 +5616,8 @@ function mediaForm(kinds) {
       [
         [copying, 'Its files are copied into the NekoServer library; your folder is kept as it is.'],
         [!kind.downloads, 'This server does not download new ' + kind.words + '.'],
-        [
-          !kind.room.in_place && !kind.room.new_files,
-          'Your ' + kind.words + ' have both their folders already: take one away first, or copy this one.'
-        ],
-        [
-          !kind.room.in_place,
-          'Your ' + kind.words + ' use a folder where it is already: this one can only take the new downloads.'
-        ]
+        // The server's words (shared.json media_folders.full), as setup says them.
+        [!kind.room, text(kind.full)]
       ],
       'Nothing in the folder is copied, moved or changed: the apps read it where it is.'
     );

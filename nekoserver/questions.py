@@ -340,6 +340,17 @@ Q = {
         'how': 'Type the folder, then press Enter. Enter alone when you have none.',
         'example': {'what': 'films'},
     },
+    'existing_more_folder': {
+        'screen': YOUR_MEDIA,
+        'title': 'Is any other folder holding your {what}?',
+        'hint': 'Your {what} can be in up to {cap} folders, each one used where it is. Nothing in them is changed.',
+        'kind': 'text',
+        'send': USE_FOLDER,
+        'skip': '',
+        'skip_label': 'That is all',
+        'how': 'Type the folder, then press Enter. Enter alone when there are no more.',
+        'example': {'what': 'films', 'cap': 8},
+    },
     'existing_use': {
         'screen': YOUR_MEDIA,
         'title': 'How should this server use your {what}?',
