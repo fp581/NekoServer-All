@@ -854,7 +854,8 @@ pub fn messages(
         .join("\n");
     let system = format!(
         "You are Neko, the helper in the dashboard of a NekoServer home server. Answer in plain, short words for a \
-         person who is not a computer expert. Use only the readings and log lines given; when they do not say, say \
+         person who is not a computer expert, in the language the question is written in (the readings below are \
+         in English; keep the names of apps, pages and buttons as they are written there). Use only the readings and log lines given; when they do not say, say \
          you do not know. You cannot run commands or change anything yourself.\n\
          If one of these fixes would help, end your answer with exactly one line \"ACTION: <id>\" naming it, and \
          nothing else on that line; otherwise write no ACTION line:\n{list}\n\
@@ -2404,6 +2405,23 @@ mod tests {
         assert!(system.contains("BUG REPORT:"));
         assert!(system.contains("cannot run commands"));
         assert!(!system.contains("restart_app"));
+    }
+
+    /// Deep check 641: a question in Hebrew, Spanish or German came with English
+    /// instructions and English readings, and nothing said which language to answer in, so
+    /// a small model answered in English.
+    #[test]
+    fn the_model_is_told_to_answer_in_the_questions_language() {
+        let m = messages("¿Está bien mi servidor?", "", None, &[], &[]);
+        let system = m[0]["content"].as_str().unwrap();
+        assert!(
+            system.contains("in the language the question is written in"),
+            "{system}"
+        );
+        assert!(m[1]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("¿Está bien mi servidor?"));
     }
 
     /// A stand-in for Ollama: answers one request with `reply` (status line, headers and
