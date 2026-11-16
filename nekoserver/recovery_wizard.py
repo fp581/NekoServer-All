@@ -1667,12 +1667,23 @@ def restore_photos(config, prompt, output):
         'To get them back into Immich: open Immich in a browser, click "Upload" and choose',
         'files from that folder (for thousands of files, the Immich command-line uploader is',
         'faster: see https://immich.app/docs/features/command-line-interface).',
+        # Every person's photos come back together; uploaded with the administrator's
+        # login, a family member's photos would land in the administrator's library.
+        *PHOTOS_OF_EACH_PERSON,
         f'Your current Immich library ({photo_library(config)}) was not touched.',
         'Rebuilding Immich after losing its drive (RECOVERY.md, "Rebuild Immich from the',
         'USB drive")? Then put both folders into the library Immich uses instead:',
         f'  sudo cp -a {shlex.quote(str(target / "upload"))} {shlex.quote(str(target / "library"))} '
         f'{shlex.quote(str(photo_library(config)))}/',
     )
+
+
+PHOTOS_OF_EACH_PERSON = (
+    'Each person in Immich has a folder of their own in it (in upload and in library),',
+    'named with their Immich user ID: in Immich, Administration, Users, open the person;',
+    'the ID is the end of the page\'s address. Upload a person\'s photos signed in to Immich',
+    'with THEIR login: uploaded with yours, they go into your library, not theirs.',
+)
 
 
 def report_restore(checked, target, output):
