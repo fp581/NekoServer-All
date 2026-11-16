@@ -331,11 +331,16 @@ def shared_folders(config):
     (existing_media.py), as the runtime checks them: what it holds, the folder and the
     share it is on, where it is mounted into the library, and the apps that see it."""
     import existing_media
-    from neko_common import media_services
+    from neko_common import media_group, media_services
 
     found = []
     for entry in existing_media.extras(config):
         if entry['fstype'] not in existing_media.NETWORK:
+            continue
+        # A folder of a group switched off (Movies and shows, say) is no app's: its own
+        # apps are stopped. Guarded all the same, its share going away stopped an app
+        # another group still uses (qBittorrent, kept for Music: review of 0.51.3).
+        if not media_group(config, existing_media.category_of(entry['holds'])[0]):
             continue
         found.append(
             {

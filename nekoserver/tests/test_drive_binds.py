@@ -173,6 +173,21 @@ class SharedFolderTests(unittest.TestCase):
             self.assertIn('shared_folders', native_runtime.storage_config(self.config()))
             self.assertNotIn('shared_folders', native_runtime.storage_config(self.config(fstype='ext4')))
 
+    def test_a_folder_of_a_group_switched_off_stops_no_app_of_another(self):
+        """Review of 0.51.3: with Movies and shows switched off later, its NAS folder
+        stayed in the settings and was still guarded; of its apps only qBittorrent (kept
+        for Music) was left running, so the films' share going away stopped the music
+        downloads."""
+        import native_runtime
+
+        config = self.config(services=('navidrome', 'lidarr', 'prowlarr', 'qbittorrent'))
+        config['media_apps'] = {'photos': True, 'movies': False, 'music': True}
+        self.assertEqual(native_runtime.shared_folders(config), [])
+        self.assertNotIn('shared_folders', native_runtime.storage_config(config))
+        # With the group on, the same folder is guarded with its apps.
+        config['media_apps']['movies'] = True
+        self.assertEqual(native_runtime.shared_folders(config)[0]['apps'], ['qbittorrent'])
+
     def test_the_every_minute_check_runs_on_a_server_with_one(self):
         self.assertTrue(server_os.on_a_nas(self.config()))
         self.assertFalse(server_os.on_a_nas(self.config(fstype='ext4')))
