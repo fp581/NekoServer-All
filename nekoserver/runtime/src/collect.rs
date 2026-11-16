@@ -1501,14 +1501,15 @@ fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
         let start = num(&saved["started_at"], 0.0, now + 60.0);
         // Never succeeded: due one interval (plus a day) after its schedule was set up.
         let installed = timer_installed_at(unit);
+        let (timer, known) = timer_of(unit);
         let stale = if status == "running" {
             // A run with no start time can't be judged as fresh.
             start.as_f64().is_none_or(|t| now - t > max)
         } else {
-            first_overdue(success.as_f64(), installed, now, max)
+            let weekly = weekly || ["updates", "external"].contains(&key);
+            job_overdue(weekly, success.as_f64(), installed, &timer, now, max)
         };
         let state = overdue_state(status, stale);
-        let (timer, known) = timer_of(unit);
         if let Some(why) = retired(cfg, key) {
             out.push(json!({"id":key,"name":name,"status":"disabled","last_success":success,"last_attempt":start,"timer":timer,"reason":why,"restore":[]}));
             continue;
@@ -1628,6 +1629,34 @@ fn timer_installed_at(unit: &str) -> Option<f64> {
 }
 /// Overdue: the last success is older than the interval, or there never was one and a
 /// day's grace after the first run was due (one interval after set-up) has passed.
+const WEEK: f64 = 7.0 * 86400.0;
+/// A weekly job (`max` its usual allowance) whose one week left out was its schedule's own
+/// doing: the app updates never run on the 1st (that night is the monthly check's), and a
+/// weekly job that gave way to a long monthly run is skipped, with no alert. Two weeks
+/// between successes are then normal, and it is overdue only once its next run is more
+/// than a week later than usual (seen over a season: the update night on Wed 1 July went
+/// to the monthly check, and "Weekly app updates: Last success is overdue" reached the
+/// phone on the 3rd, five days before its next night).
+fn week_left_out(success: Option<f64>, next_run: Option<f64>, now: f64, max: f64) -> bool {
+    match (success, next_run) {
+        (Some(last), Some(next)) => next > now && next - last <= max + WEEK,
+        _ => false,
+    }
+}
+/// Whether a job that is not running now is overdue: its last success (or, never
+/// successful, its schedule's setting up) too long ago, unless it is a weekly job whose
+/// schedule left one week out.
+fn job_overdue(
+    weekly: bool,
+    success: Option<f64>,
+    installed: Option<f64>,
+    timer: &Value,
+    now: f64,
+    max: f64,
+) -> bool {
+    first_overdue(success, installed, now, max)
+        && !(weekly && week_left_out(success, timer["next_run_at"].as_f64(), now, max))
+}
 fn first_overdue(success: Option<f64>, installed: Option<f64>, now: f64, max: f64) -> bool {
     match success {
         Some(t) => now - t > max,
@@ -4162,6 +4191,34 @@ mod os_tests {
             day
         ));
         assert!(first_overdue(Some(now - 2.0 * day), None, now, day));
+    }
+    /// Deep check 771/772 (a season of weekly updates on Wednesdays): the night of Wed
+    /// 1 July is the monthly check's, so the updates ran on 24 June and 8 July. On 3 July
+    /// the job was "overdue" (9 days allowed), on the page and on the phone.
+    #[test]
+    fn a_week_the_schedule_leaves_out_is_not_overdue() {
+        let day = 86400.0;
+        let june_24 = 1_782_268_200.0; // Wed 24 June 2026, 02:30 UTC
+        let (july_3, july_8) = (june_24 + 9.5 * day, june_24 + 14.0 * day);
+        let max = 777600.0; // the weekly updates' allowance (JOBS)
+        let next = |at: f64| json!({"next_run_at": at});
+        let ran = Some(june_24);
+        assert!(!job_overdue(true, ran, None, &next(july_8), july_3, max));
+        // Two weeks left out (8 July missed too) is overdue, as is a schedule not known.
+        let (july_10, july_15) = (june_24 + 16.0 * day, june_24 + 21.0 * day);
+        assert!(job_overdue(true, ran, None, &next(july_15), july_10, max));
+        assert!(job_overdue(true, ran, None, &json!({}), july_3, max));
+        // A next run that is already past (the timer did not move on) proves nothing.
+        assert!(job_overdue(
+            true,
+            ran,
+            None,
+            &next(july_3 - 60.0),
+            july_3,
+            max
+        ));
+        // A job that is not weekly keeps its own allowance.
+        assert!(job_overdue(false, ran, None, &next(july_8), july_3, max));
     }
     #[test]
     fn a_check_that_could_not_run_since_the_last_report_makes_it_stale() {
