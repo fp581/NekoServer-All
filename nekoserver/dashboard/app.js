@@ -780,26 +780,30 @@ function arrayShown(a) {
     .filter(Boolean);
   return text(a.name, 'Drive array') + (names.length ? ' (' + names.join(', ') + ')' : '');
 }
+// A drive array that lost a drive, and (while it rebuilds) how far the rebuild is.
+function arrayLostIssues(a, shown, reason, add) {
+  add(
+    'array-lost:' + a.id,
+    shown + (a.status === 'rebuilding' ? ' has one copy fewer' : ' has lost a drive'),
+    reason,
+    'storage',
+    'critical'
+  );
+  if (a.status === 'rebuilding') {
+    add(
+      'array-rebuild:' + a.id,
+      shown + ' is rebuilding' + (numeric(a.progress) ? ' (' + a.progress + ' % done)' : ''),
+      'Keep the computer on and every drive connected until it finishes.',
+      'storage'
+    );
+  }
+}
 function arrayIssues(s, add) {
   for (const a of list(s.arrays)) {
     const shown = arrayShown(a),
       reason = text(a.reason, 'Look at Server health → Drives.');
     if (a.status === 'degraded' || a.status === 'rebuilding') {
-      add(
-        'array-lost:' + a.id,
-        shown + (a.status === 'rebuilding' ? ' has one copy fewer' : ' has lost a drive'),
-        reason,
-        'storage',
-        'critical'
-      );
-      if (a.status === 'rebuilding') {
-        add(
-          'array-rebuild:' + a.id,
-          shown + ' is rebuilding' + (numeric(a.progress) ? ' (' + a.progress + ' % done)' : ''),
-          'Keep the computer on and every drive connected until it finishes.',
-          'storage'
-        );
-      }
+      arrayLostIssues(a, shown, reason, add);
     } else if (a.status === 'failing' || a.status === 'warning') {
       add(
         'array-errors:' + a.id,
@@ -1972,7 +1976,8 @@ function askUnlock(
 function askTooLong(question, s = state.status) {
   const limit = Number(object(s?.assistant).question_chars),
     length = [...question].length;
-  if (!(limit > 0) || length <= limit) {
+  // No number from the server (NaN) counts as no limit, as a zero or a negative one does.
+  if (Number.isNaN(limit) || limit <= 0 || length <= limit) {
     return '';
   }
   return (
@@ -2009,7 +2014,7 @@ function sendQuestion() {
 const ASK_BODY = 4096;
 const EARLIER_CHARS = 2500; // what the server keeps of it (assist.rs EARLIER_ANSWER_CHARS)
 function earlierExchange(asked) {
-  const last = ASK.log.filter(e => text(e.answer).trim() && !e.error).at(-1);
+  const last = ASK.log.findLast(e => text(e.answer).trim() && !e.error);
   if (!last) {
     return null;
   }
@@ -2483,6 +2488,14 @@ function cardSet(s = state.status, looked = state.cardsLook) {
     seen = object(looked?.set);
   return count(seen.updated_at) > count(read.updated_at) ? seen : read;
 }
+/* Which cards of the set are plugged in ("Cards 1 and 2 are in."), or that none is. */
+function cardsInside(inside, total) {
+  if (!inside.length) {
+    return 'No card of the set is in. ' + plural(total, 'card') + ' in the set.';
+  }
+  const one = inside.length === 1;
+  return (one ? 'Card ' : 'Cards ') + inside.join(' and ') + (one ? ' is' : ' are') + ' in.';
+}
 /* What the set is, in a few lines: which card is in, how many files are on the cards and
  * how many wait for one, when a card was last written. The Backups page says the same. */
 function cardsSummary(set, now = Date.now() / 1000) {
@@ -2491,14 +2504,7 @@ function cardsSummary(set, now = Date.now() / 1000) {
     return ['No card is set up yet. Plug in an empty SD card or USB stick and choose it on the Backup cards page.'];
   }
   const inside = cards.filter(c => c.plugged === true).map(c => c.number);
-  const lines = [
-    inside.length
-      ? (inside.length === 1 ? 'Card ' : 'Cards ') +
-        inside.join(' and ') +
-        (inside.length === 1 ? ' is' : ' are') +
-        ' in.'
-      : 'No card of the set is in. ' + plural(cards.length, 'card') + ' in the set.'
-  ];
+  const lines = [cardsInside(inside, cards.length)];
   if (numeric(set.files_on_cards)) {
     lines.push(
       plural(set.files_on_cards, 'file') +
@@ -3942,6 +3948,17 @@ function noProcessesRow() {
   tr.append(td);
   return tr;
 }
+/* The Processes badge: the error, how many run (all of them, also past the 5000 listed:
+ * the server counts every one), or "Waiting" before the first list came. */
+function processCount(p, rows) {
+  if (state.processError) {
+    return state.processError;
+  }
+  if (!state.processes) {
+    return 'Waiting';
+  }
+  return (numeric(p.count) ? p.count : rows.length) + ' running';
+}
 function renderProcesses() {
   const p = object(state.processes),
     rows = list(p.rows);
@@ -3950,12 +3967,7 @@ function renderProcesses() {
   shown.sort(PROCESS_SORTS[$('process-sort').value] || PROCESS_SORTS.cpu);
   const pages = Math.max(1, Math.ceil(shown.length / 50));
   state.processPage = Math.min(state.processPage, pages - 1);
-  setBadge(
-    'process-count',
-    state.processError ? 'warning' : 'neutral',
-    // All running, also past the 5000 listed (the server counts every one).
-    state.processError || (state.processes ? (numeric(p.count) ? p.count : rows.length) + ' running' : 'Waiting')
-  );
+  setBadge('process-count', state.processError ? 'warning' : 'neutral', processCount(p, rows));
   const page = shown.slice(state.processPage * 50, (state.processPage + 1) * 50);
   put('process-rows', page.length ? page.map(processRow) : [noProcessesRow()]);
   $('process-page').textContent = 'Page ' + (state.processPage + 1) + ' of ' + pages;
@@ -5955,7 +5967,7 @@ function mediaForm(kinds) {
     const downloads = f.how === 'in_place' && !downloadsBox.disabled && f.downloads;
     // A path typed with a slash at its end (as a terminal completes it) names the same
     // folder: it was refused as "Type the folder as a full path, starting with /".
-    const typed = f.path.trim().replace(/(.)\/+$/, '$1');
+    const typed = withoutEndSlashes(f.path.trim());
     const body = { change: 'add', kind: f.kind, path: typed, how: f.how, downloads };
     if (!backup.hidden) {
       body.backup = f.backup;
@@ -5964,6 +5976,18 @@ function mediaForm(kinds) {
   });
   form.append(kindField, pathField, pick, browse, how, backup, go);
   return form;
+}
+/* A path without the slashes at its end (as a terminal completes it), keeping the
+ * character before them: "/" stays "/". Exactly what replace(/(.)\/+$/, '$1') did, a
+ * line break before the slashes included, without its backtracking. */
+const LINE_BREAKS = ['\n', '\r', ' ', ' '];
+function withoutEndSlashes(path) {
+  let start = path.length;
+  while (start > 0 && path[start - 1] === '/') {
+    start--;
+  }
+  const kept = start === 0 || LINE_BREAKS.includes(path[start - 1]) ? start + 1 : start;
+  return path.slice(0, Math.min(kept, path.length));
 }
 /* The music backup question, in setup's own words (the server sends them: existing_page
  * backup_question). The answer counts only for a folder on a NAS, as in setup. */
@@ -5987,6 +6011,58 @@ function mediaBackupField(asked) {
   );
   return box;
 }
+/* The top of the folder list: where it is, with "Use <folder>" and "Up" (or, at the top,
+ * what the list shows). */
+function browseTop(answer, here, box) {
+  if (!here) {
+    return [el('p', 'hint', 'Drives and shared folders connected to this server:')];
+  }
+  const top = el('div', 'update-actions');
+  const use = button('Use ' + here, () => {
+    MEDIA.form.path = here;
+    MEDIA.path.value = here;
+    box.replaceChildren();
+    MEDIA.path.focus();
+  });
+  use.id = 'media-use';
+  top.append(
+    use,
+    button(answer.parent ? 'Up' : 'Back to the drives', () => void mediaBrowse(text(answer.parent)))
+  );
+  return [el('p', 'hint', 'In ' + here + ':'), top];
+}
+/* The mark before a folder's name: a shared folder (⇄), a drive (▣), or none. */
+function folderMark(f) {
+  if (f.share) {
+    return '⇄ ';
+  }
+  return f.mount ? '▣ ' : '';
+}
+/* The folders in the list, each a button that opens it; or why there is none. */
+function browseFolders(answer, here) {
+  const folders = list(answer.folders);
+  if (!folders.length) {
+    return hint(
+      firstOf(
+        [
+          // Only part of a very big folder is read: its folders may be in the rest.
+          [here && answer.more, 'No folders among the first names looked at.'],
+          [here, 'No folders in it.']
+        ],
+        'No drive or shared folder is connected under /mnt, /media or /srv.'
+      )
+    );
+  }
+  const listing = el('ul', 'media-list');
+  for (const f of folders) {
+    const item = el('li'),
+      open = button(folderMark(f) + text(f.name), () => void mediaBrowse(text(f.path)));
+    open.setAttribute('aria-label', 'Open ' + text(f.path));
+    item.append(open);
+    listing.append(item);
+  }
+  return listing;
+}
 /* The folders to pick from: the server lists them (the page never reads the disk). */
 async function mediaBrowse(path) {
   const answer = await postControl('media-browse', path ? { path } : {});
@@ -5999,48 +6075,8 @@ async function mediaBrowse(path) {
   if (!box?.isConnected) {
     return;
   }
-  const nodes = [];
   const here = text(answer.path);
-  if (here) {
-    const top = el('div', 'update-actions');
-    const use = button('Use ' + here, () => {
-      MEDIA.form.path = here;
-      MEDIA.path.value = here;
-      box.replaceChildren();
-      MEDIA.path.focus();
-    });
-    use.id = 'media-use';
-    top.append(
-      use,
-      button(answer.parent ? 'Up' : 'Back to the drives', () => void mediaBrowse(text(answer.parent)))
-    );
-    nodes.push(el('p', 'hint', 'In ' + here + ':'), top);
-  } else {
-    nodes.push(el('p', 'hint', 'Drives and shared folders connected to this server:'));
-  }
-  const folders = list(answer.folders);
-  const listing = el('ul', 'media-list');
-  for (const f of folders) {
-    const item = el('li'),
-      open = button((f.share ? '⇄ ' : f.mount ? '▣ ' : '') + text(f.name), () => void mediaBrowse(text(f.path)));
-    open.setAttribute('aria-label', 'Open ' + text(f.path));
-    item.append(open);
-    listing.append(item);
-  }
-  nodes.push(
-    folders.length
-      ? listing
-      : hint(
-          firstOf(
-            [
-              // Only part of a very big folder is read: its folders may be in the rest.
-              [here && answer.more, 'No folders among the first names looked at.'],
-              [here, 'No folders in it.']
-            ],
-            'No drive or shared folder is connected under /mnt, /media or /srv.'
-          )
-        )
-  );
+  const nodes = [...browseTop(answer, here, box), browseFolders(answer, here)];
   if (answer.more) {
     nodes.push(hint('There are more: type the rest of the path in the box.'));
   }
