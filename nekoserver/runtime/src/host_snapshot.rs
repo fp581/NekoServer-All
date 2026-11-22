@@ -785,3 +785,101 @@ mod tests {
         assert!(sources(&cfg, Path::new("/media")).is_err());
     }
 }
+/// The short functions 0.52.2 split out of `snapshot` (Sonar S3776): those that need no
+/// root, Samba or Docker.
+#[cfg(test)]
+mod split_helpers {
+    use super::*;
+
+    #[test]
+    fn a_snapshot_needs_room_for_its_files_and_the_chosen_reserve() {
+        let root = std::env::temp_dir().join(format!("neko-host-room-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let gib = 1024u64 * 1024 * 1024;
+        let files = [
+            json!({"size": 10}),
+            json!({"size": 20}),
+            json!({"kind": "directory"}),
+        ];
+        let cfg = |reserve: Value| json!({"host_backup": {"minimum_free_bytes": reserve}});
+        let media = Path::new("/mnt/media");
+        let said = |r: Result<()>| r.unwrap_err().to_string();
+        assert_eq!(
+            said(room_for(&json!({}), &root, &files, media)),
+            "Free-space reserve required"
+        );
+        for reserve in [gib - 1, 1024 * gib + 1] {
+            assert_eq!(
+                said(room_for(&cfg(json!(reserve)), &root, &files, media)),
+                "Invalid free-space reserve"
+            );
+        }
+        let huge = [json!({"size": u64::MAX}), json!({"size": 1})];
+        assert_eq!(
+            said(room_for(&cfg(json!(gib)), &root, &huge, media)),
+            "Snapshot too large"
+        );
+        // More than any drive holds: the message names the drive.
+        let big = [json!({"size": u64::MAX / 2})];
+        assert!(said(room_for(&cfg(json!(gib)), &root, &big, media)).contains("/mnt/media"));
+        if common::free_bytes(&root).unwrap() > 2 * gib as u128 {
+            room_for(&cfg(json!(gib)), &root, &files, media).unwrap();
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_copy_keeps_each_file_and_link_and_notices_a_change_meanwhile() {
+        let root = std::env::temp_dir().join(format!("neko-host-copy-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let source = root.join("gateway");
+        fs::create_dir_all(source.join("caddy")).unwrap();
+        fs::write(source.join("caddy/a.crt"), "cert").unwrap();
+        std::os::unix::fs::symlink("a.crt", source.join("caddy/current")).unwrap();
+        let selected: Vec<Source> = vec![("source1".into(), source.clone(), false, false)];
+        let (mut files, missing, _) = inventory(&selected).unwrap();
+        let payload = root.join("payload");
+        copy_files(&mut files, &selected, &payload).unwrap();
+        let row = |path: &str| files.iter().find(|r| r["path"] == path).unwrap().clone();
+        assert!(payload.join("source1/caddy").is_dir());
+        assert_eq!(
+            fs::read(payload.join("source1/caddy/a.crt")).unwrap(),
+            b"cert"
+        );
+        assert_eq!(
+            row("source1/caddy/a.crt")["sha256"],
+            common::digest(&source.join("caddy/a.crt")).unwrap()
+        );
+        // A link is kept as a small file of its target.
+        assert_eq!(
+            fs::read(payload.join("source1/caddy/current")).unwrap(),
+            b"a.crt"
+        );
+        assert_eq!(row("source1/caddy/current")["size"], 5);
+        // Listed again: the same (the checksums and the links' sizes aside).
+        unchanged_while_copied(&files, &missing, &selected).unwrap();
+        // A file written meanwhile: the run is not kept, and the file is named.
+        fs::write(source.join("caddy/a.crt"), "a new cert").unwrap();
+        let said = unchanged_while_copied(&files, &missing, &selected)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            said.starts_with("Host inventory changed during snapshot: "),
+            "{said}"
+        );
+        assert!(
+            said.contains(&source.join("caddy/a.crt").display().to_string()),
+            "{said}"
+        );
+        // An optional source that went away meanwhile is named too.
+        let gone = vec![("source2".to_string(), root.join("steam"), true, false)];
+        let with_gone: Vec<Source> = selected.iter().cloned().chain(gone).collect();
+        let (files, missing, _) = inventory(&with_gone).unwrap();
+        assert_eq!(missing, ["source2"]);
+        assert!(unchanged_while_copied(&files, &[], &with_gone)
+            .unwrap_err()
+            .to_string()
+            .contains("source2"));
+        fs::remove_dir_all(root).unwrap();
+    }
+}
