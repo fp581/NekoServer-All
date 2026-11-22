@@ -22,7 +22,10 @@ jobs:
 
       - name: Folders and settings as setup makes them
         run: |
-          root="$RUNNER_TEMP/neko"
+          # Where NekoServer keeps its data (never under /home: its services cannot see it).
+          root=/srv/nekoserver
+          sudo mkdir -p "$root"
+          sudo chown "$(id -u):$(id -g)" "$root"
           mkdir -p "$root"/appdata/{jellyfin,sonarr,seerr} "$root"/library/{movies,tv,existing}
           # Setup mounts the person's own folders under library/existing (shared, so the
           # apps' rslave binds see them).
