@@ -194,10 +194,15 @@ def set_up_jellyfin(root):
     check(media_libraries.readiness_key_path(root).read_text().strip() != '', "NekoServer's Jellyfin key saved")
     # Setup's own library step: Movies, then TV Shows. The films make Jellyfin's scan of
     # Movies still run while TV Shows is added, as with a person's many films.
+    traced = TracedClient('jellyfin')
     results, _server, _ids = media_libraries.jellyfin(
-        TracedClient('jellyfin'), root, True, lambda _: ADMIN['Username'], lambda _: ADMIN['Pw']
+        traced, root, True, lambda _: ADMIN['Username'], lambda _: ADMIN['Pw']
     )
     check(all(r['status'] == 'pass' for r in results), "setup's library step makes Movies and TV Shows", results)
+    # Signing in again from the same device (setup's) signed the earlier session out:
+    # the rest goes on with setup's.
+    jellyfin = Client('jellyfin')
+    jellyfin.headers['X-Emby-Token'] = traced.headers['X-Emby-Token']
     try:
         show = wait_for('Jellyfin finds the show with its TVDB ID', lambda: the_show_in_jellyfin(jellyfin, user))
     except Failed as exc:
