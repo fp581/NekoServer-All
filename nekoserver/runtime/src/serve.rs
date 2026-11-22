@@ -284,6 +284,10 @@ pub fn control_request(op: &str, body: &Value, who: &Who, token: Option<&str>) -
         // Ask Neko's question before a follow-up, and its answer (assist::earlier).
         "before",
         "action",
+        // The Backup cards page: the card's folder, its number, and the privacy tick.
+        "mount",
+        "number",
+        "acknowledged",
     ] {
         if let Some(v) = body.get(key) {
             request[key] = v.clone();
@@ -789,6 +793,9 @@ fn control(
             "media-state" => "app_media_state",
             "media-change" => "app_media_change",
             "media-browse" => "app_media_browse",
+            "cards-list" => "cards_list",
+            "cards-enrol" => "cards_enrol",
+            "cards-write" => "cards_write",
             _ => return Err("E40"),
         },
         _ => return Err("E42"),

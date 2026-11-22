@@ -449,8 +449,9 @@ class StepTests(unittest.TestCase):
             self.assertIn('cloud', keys)
             Path(hdd, 'backups/media-applications/snapshot-1-1').mkdir(parents=True)
             self.assertIn('apps', [key for key, _ in recovery_wizard.menu(config)])
-        # Everything but the music backup's line, which is there only with such a backup.
-        everything = [item for item in recovery_wizard.MENU if item[0] != 'music']
+        # Everything but the music backup's line, which is there only with such a backup,
+        # and the backup cards' line, there only with backup cards.
+        everything = [item for item in recovery_wizard.MENU if item[0] not in ('music', 'cards')]
         self.assertEqual(recovery_wizard.menu(settings()), everything)
 
 

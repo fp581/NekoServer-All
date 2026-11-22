@@ -388,6 +388,12 @@ def storage_config(config):
         # The person's own folders on a network share, used where they are (0.50.0): the
         # apps that see one stay stopped while it does not answer (shared_folders.rs).
         found['shared_folders'] = shares
+    from neko_common import cards_settings
+
+    cards = cards_settings(config)
+    if cards:
+        # Backup cards switched on (0.52.0): what the card job copies (runtime cards.rs).
+        found['cards'] = cards
     nas = config.get('network_storage') or {}
     if nas.get('wanted') is True:
         # The NAS check logs in again once the NAS answers (runtime nas_watch.rs).
@@ -476,6 +482,10 @@ def acceptance_checks(config, modules):
         jobs += [('nekoserver-music-backup.service', code, 'music-backup', True)]
     if 'photo_backup' in modules:
         jobs += [('nekoserver-photo-backup.service', code, 'weekly', True)]
+    from neko_common import SHARED, cards_enabled
+
+    if 'backup_cards' in modules and cards_enabled(config):
+        jobs += [(SHARED['cards']['service'], code, 'cards', True)]
     for unit, binary, command, guard in jobs:
         good = False
         try:

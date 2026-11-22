@@ -844,6 +844,21 @@ pub fn answer(service: &Arc<Service>, request: &Value) -> Value {
         }
         _ => {}
     }
+    // The Backup cards page (0.52.0): every one of its requests needs the PIN, on the
+    // server too, like the app controls: it writes onto a card plugged into the server.
+    if op.starts_with("cards_") {
+        if !gate.pin_set() {
+            return refuse(
+                "E43",
+                "The Backup cards page needs a PIN. Run setup in a terminal on the server to choose one",
+            );
+        }
+        if !gate.signed_in(request) {
+            return coded("E43");
+        }
+        drop(gate);
+        return crate::cards::page::answer(service.config.as_deref(), &restore_tool(), op, request);
+    }
     if op.starts_with("app_") || op.starts_with("desktop_") {
         if !gate.pin_set() {
             return refuse(
@@ -887,6 +902,18 @@ pub fn answer(service: &Arc<Service>, request: &Value) -> Value {
             .map_or_else(|_| unavailable(), |mut l| l.change(request)),
         _ => refuse("E42", "Request not supported"),
     }
+}
+
+/// The release's restore tool, which setup puts beside this program (modules/dashboard.py)
+/// and enrolment writes onto every backup card.
+fn restore_tool() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| {
+            p.parent()
+                .map(|d| d.join(crate::cards::fact("restore_tool")))
+        })
+        .unwrap_or_default()
 }
 
 /// Restart a server app, or close a desktop app (the PIN is already checked).
@@ -2076,6 +2103,45 @@ mod tests {
             &json!({"op": "app_media_browse", "token": token, "path": "/etc"}),
         );
         assert_eq!(outside["error"], "E42");
+    }
+
+    #[test]
+    fn the_backup_cards_page_always_needs_the_pin_and_the_switch_on() {
+        let board = fans::tests::Board::new("cards-pin");
+        let ops = ["cards_list", "cards_enrol", "cards_write"];
+        let none = service(&board, None, 1);
+        for op in ops {
+            let refused = answer(&none, &json!({"op": op, "local": true}));
+            assert_eq!(refused["error"], "E43");
+            assert!(refused["message"]
+                .as_str()
+                .unwrap()
+                .contains("Backup cards page needs a PIN"));
+        }
+        let s = service(&board, Some("2468"), 1);
+        for op in ops {
+            assert_eq!(
+                answer(&s, &json!({"op": op, "local": true}))["error"],
+                "E43",
+                "{op}"
+            );
+        }
+        let token = answer(&s, &json!({"op": "unlock", "pin": "2468"}))["token"].clone();
+        // Unlocked, with no settings saying the cards are on: nothing is looked at.
+        for op in ops {
+            let r = answer(&s, &json!({"op": op, "token": token}));
+            assert!(
+                r["message"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("Backup cards are switched off"),
+                "{op}"
+            );
+        }
+        assert_eq!(
+            answer(&s, &json!({"op": "cards_format", "token": token}))["error"],
+            "E42"
+        );
     }
 
     #[test]

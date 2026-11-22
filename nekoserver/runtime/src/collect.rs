@@ -1323,6 +1323,19 @@ fn failed_advice(unit: &str) -> &'static str {
 }
 /// Why a job is intentionally not part of this server now (its app or backup switched
 /// off), or None when its schedule is expected.
+/// The backup cards' job (0.52.0), listed only while they are switched on: a server
+/// without them shows the jobs it always had. Never overdue: it writes only when a card
+/// is plugged in, and a set left unwritten has its own reminder (alerts).
+pub(crate) const CARDS_JOB: (&str, &str, &str, f64) =
+    ("cards", "Backup cards", "nekoserver-cards", f64::MAX);
+/// Every monitored job of this server: JOBS, and the cards' job when it is on.
+pub(crate) fn jobs_of(cfg: &Value) -> Vec<(&'static str, &'static str, &'static str, f64)> {
+    let mut all = JOBS.to_vec();
+    if crate::cards::enabled(cfg) {
+        all.push(CARDS_JOB);
+    }
+    all
+}
 fn retired(cfg: &Value, key: &str) -> Option<&'static str> {
     let immich = common::immich_wanted(cfg);
     match key {
@@ -1447,7 +1460,7 @@ fn schedule_stopped(timer: &Value, known: bool, ever_ran: bool) -> Option<String
 /// than "Passed", and gets no alert of its own (the drive's alert is the one to act on).
 fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
     let mut out = vec![];
-    for (key, name, unit, base_max) in JOBS {
+    for (key, name, unit, base_max) in jobs_of(cfg) {
         let weekly =
             cfg["photos"]["backup_schedule"] == "weekly" && ["archive", "database"].contains(&key);
         let report_key = if weekly { "database" } else { key };
@@ -2729,6 +2742,36 @@ fn unavailable_detail(status: &str, stopped: &str) -> String {
         (false, false) => format!("Not connected, or not the drive chosen at setup. Stopped until it is back, so nothing is written in its place: {stopped}. Reconnect it: the apps then start again by themselves within a minute. If they do not, restart the PC."),
     }
 }
+/// The quiet reminder of the backup cards (0.52.0): no card of the set written for
+/// `reminder_days` (shared.json) while they are switched on. The phone gets it without a
+/// sound (notify.rs QUIET); a card plugged in overnight ends it.
+pub(crate) const CARDS_QUIET: &str = "cards:quiet";
+pub(crate) fn cards_reminder_days() -> f64 {
+    common::SHARED["cards"]["reminder_days"]
+        .as_f64()
+        .unwrap_or(30.0)
+}
+fn cards_reminder(s: &Value) -> Option<(&'static str, String, String)> {
+    let set = &s["cards"]["set"];
+    if s["cards"]["enabled"] != true || set["cards"].as_array().is_none_or(|c| c.is_empty()) {
+        return None;
+    }
+    let days = common::SHARED["cards"]["reminder_days"]
+        .as_f64()
+        .unwrap_or(30.0);
+    let since = set["last_write_at"]
+        .as_f64()
+        .or_else(|| set["started_at"].as_f64())?;
+    let now = s["generated_at"].as_f64()?;
+    if now - since < days * 86400.0 {
+        return None;
+    }
+    Some((
+        CARDS_QUIET,
+        format!("Backup cards: no card written for {days:.0} days"),
+        "Your newest photos and documents are not on a card yet. Plug a card of the set into the server and leave it in overnight, or press Write to the card now on the Backups page. Then keep it somewhere else again.".to_string(),
+    ))
+}
 pub(crate) fn alerts(s: &Value) -> Value {
     let mut out = vec![];
     let mut add = |id: String, level: &str, title: String, detail: &str| {
@@ -3128,14 +3171,21 @@ pub(crate) fn alerts(s: &Value) -> Value {
             }
             if ["fail", "stale", "partial"].contains(&text(&j["status"])) {
                 let away = j["usb_away"] == true;
+                // The backup cards are a copy kept elsewhere, besides the backups: nothing
+                // they hold is lost when a run stops (a card taken out, a card full), so
+                // their alert is a warning; a full card says which one to put in.
+                let cards = j["id"] == "cards";
+                let full = s["cards"]["set"]["full_card"].as_u64().filter(|_| cards);
                 add(
                     format!("backup:{}", text(&j["id"])),
-                    if j["status"] == "fail" && !away {
+                    if j["status"] == "fail" && !away && !cards {
                         "critical"
                     } else {
                         "warning"
                     },
-                    if away {
+                    if let Some(n) = full {
+                        crate::cards::job::full_words(n)
+                    } else if away {
                         format!("{}: the USB drive was not plugged in", text(&j["name"]))
                     } else if j["rolled_back"] == true {
                         format!(
@@ -3151,6 +3201,9 @@ pub(crate) fn alerts(s: &Value) -> Value {
                 );
             }
         }
+    }
+    if let Some((id, title, detail)) = cards_reminder(s) {
+        add(id.into(), "warning", title, &detail);
     }
     // The monthly schedule exists, but no backup password was chosen: each snapshot
     // holds the app password files unencrypted until one is.
@@ -3477,6 +3530,9 @@ pub fn run(a: &Args) -> Result<()> {
         json!([])
     };
     result["integrity"] = integrity(data, ok, away, text(&cfg["photos"]["external_backup_uuid"]));
+    if let Some(cards) = crate::cards::status::reading(&cfg, data, ok) {
+        result["cards"] = cards; // backup cards switched on (0.52.0)
+    }
     result["backup_key"] = json!(backup_key_ready());
     result["backup_place"] = backup_place(&cfg);
     let (localtime, etc_timezone) = (Path::new("/etc/localtime"), Path::new("/etc/timezone"));
@@ -6060,5 +6116,122 @@ mod round_two_tests {
             assert!(detail(true, used).contains("Empty trash"), "{used}");
             assert!(!detail(false, used).contains("Immich"), "{used}");
         }
+    }
+
+    /// Backup cards (0.52.0): their job is a row of the Backups page like the others,
+    /// with what it left out, and the set comes with the readings; neither is there
+    /// while the switch is off, so a server without them reads as before.
+    #[test]
+    fn the_backup_cards_are_listed_like_the_other_jobs_only_while_switched_on() {
+        let data = std::env::temp_dir().join(format!("neko-cards-row-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&data);
+        fs::create_dir_all(data.join("reports/jobs")).unwrap();
+        fs::create_dir_all(data.join("cards")).unwrap();
+        let off = json!({"data_mount": data.to_string_lossy()});
+        let on = json!({"data_mount": data.to_string_lossy(), "cards": {"enabled": true}});
+        let ids = |cfg: &Value| -> Vec<String> {
+            backups(cfg, 1000.0, true, None)
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| text(&r["id"]).to_string())
+                .collect()
+        };
+        assert!(!ids(&off).contains(&"cards".to_string()));
+        assert_eq!(ids(&on).last().map(String::as_str), Some("cards"));
+        assert_eq!(crate::cards::status::reading(&off, &data, true), None);
+        // As the job records a run that filled the newest card (backup::execute_with).
+        let saved = json!({"job": "cards", "status": "partial", "started_at": 900.0, "last_partial": 950.0,
+            "missing": ["Card 2 is full: put in a new card (it becomes card 3)"]});
+        fs::write(data.join("reports/jobs/cards.json"), saved.to_string()).unwrap();
+        let rows = backups(&on, 1000.0, true, None);
+        let row = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "cards")
+            .unwrap();
+        assert_eq!(row["status"], "partial");
+        assert_eq!(
+            row["reason"],
+            "Card 2 is full: put in a new card (it becomes card 3)"
+        );
+        assert_eq!(row["unit"], "nekoserver-cards.service");
+        let status = json!({"format": "neko-cards-v1", "set_name": "NekoServer cards", "full_card": 2, "cards": []});
+        fs::write(data.join("cards/status.json"), status.to_string()).unwrap();
+        let reading = crate::cards::status::reading(&on, &data, true).unwrap();
+        assert_eq!(reading["set"]["full_card"], 2);
+        // The app SSD away: the set is not read, and not said to be empty either.
+        assert_eq!(
+            crate::cards::status::reading(&on, &data, false).unwrap()["set"],
+            json!({})
+        );
+        let _ = fs::remove_dir_all(&data);
+    }
+
+    /// Backup cards (0.52.0): a full card is one warning that names the card to put in,
+    /// a run that stopped is a warning too (nothing on the cards is lost), and a set
+    /// left unwritten for 30 days gets a quiet reminder, only while the switch is on.
+    #[test]
+    fn a_full_card_and_a_set_left_unwritten_are_warnings_that_say_what_to_do() {
+        let day = 86400.0;
+        let row = |status: &str| {
+            json!({"id": "cards", "name": "Backup cards", "status": status,
+            "reason": "Card 2 is full: put in a new card (it becomes card 3)"})
+        };
+        let set = |full: Value, last: f64| {
+            json!({"enabled": true, "set": {"cards": [{"number": 2}],
+            "full_card": full, "last_write_at": last, "started_at": 0.0}})
+        };
+        let now = 100.0 * day;
+        let shown = alerts(
+            &json!({"generated_at": now, "backups": [row("partial")], "cards": set(json!(2), now - day)}),
+        );
+        let shown = shown.as_array().unwrap();
+        assert_eq!(shown.len(), 1, "{shown:?}");
+        assert_eq!(shown[0]["id"], "backup:cards");
+        assert_eq!(shown[0]["level"], "warning");
+        assert_eq!(
+            shown[0]["title"],
+            "Card 2 is full: put in a new card (it becomes card 3)"
+        );
+        let pulled = alerts(
+            &json!({"generated_at": now, "backups": [row("fail")], "cards": set(Value::Null, now - day)}),
+        );
+        assert_eq!(
+            (pulled[0]["level"].as_str(), pulled[0]["title"].as_str()),
+            (Some("warning"), Some("Backup cards needs attention"))
+        );
+        // The reminder: after 30 days without a card written, not before, not when off.
+        let quiet = |s: Value| -> Vec<String> {
+            alerts(&s)
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| text(&a["id"]).to_string())
+                .collect()
+        };
+        assert_eq!(
+            quiet(json!({"generated_at": now, "cards": set(Value::Null, now - 31.0 * day)})),
+            ["cards:quiet"]
+        );
+        assert!(
+            quiet(json!({"generated_at": now, "cards": set(Value::Null, now - 29.0 * day)}))
+                .is_empty()
+        );
+        let never = json!({"enabled": true, "set": {"cards": [{"number": 1}], "started_at": now - 40.0 * day}});
+        assert_eq!(
+            quiet(json!({"generated_at": now, "cards": never})),
+            ["cards:quiet"]
+        );
+        assert!(quiet(json!({"generated_at": now})).is_empty());
+        let none_yet = json!({"enabled": true, "set": {"cards": [], "started_at": 0.0}});
+        assert!(
+            quiet(json!({"generated_at": now, "cards": none_yet})).is_empty(),
+            "no card enrolled yet"
+        );
+        let said =
+            alerts(&json!({"generated_at": now, "cards": set(Value::Null, now - 31.0 * day)}));
+        assert!(text(&said[0]["detail"]).contains("leave it in overnight"));
     }
 }

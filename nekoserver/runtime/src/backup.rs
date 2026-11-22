@@ -1926,7 +1926,7 @@ fn replace_damaged(source: &Path, target: &Path, quarantine: &Path) -> Result<()
 /// named by `instanceid` in its config.php on the SSD, or, when that cannot be read, a
 /// name of the form Nextcloud gives it (`appdata_oc` and 10 lowercase letters and
 /// digits). Only that folder is Nextcloud's: a user named `appdata_alice` is a user.
-fn nextcloud_internal(data: &Path) -> Option<String> {
+pub(crate) fn nextcloud_internal(data: &Path) -> Option<String> {
     let config = common::bytes(
         &data.join("appdata/nextcloud/html/config/config.php"),
         1_000_000,
@@ -1939,12 +1939,12 @@ fn nextcloud_internal(data: &Path) -> Option<String> {
 }
 /// A file Nextcloud is still receiving: `<name>.ocTransferId<digits>.part`. Any other
 /// name ending in .part is a user's own file and is backed up (capacity.py agrees).
-fn nextcloud_upload_in_progress(name: &str) -> bool {
+pub(crate) fn nextcloud_upload_in_progress(name: &str) -> bool {
     regex::Regex::new(r"\.ocTransferId[0-9]+\.part$")
         .unwrap()
         .is_match(name)
 }
-fn is_nextcloud_internal(name: &str, known: Option<&str>) -> bool {
+pub(crate) fn is_nextcloud_internal(name: &str, known: Option<&str>) -> bool {
     match known {
         Some(own) => name == own,
         None => regex::Regex::new(r"^appdata_oc[a-z0-9]{10}$")

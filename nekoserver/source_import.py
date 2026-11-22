@@ -472,16 +472,12 @@ def move_legacy(folder, media, category, guard=None):
 
 SAMPLE = 1024 * 1024  # bytes of each piece same_samples compares
 
-# Network filesystems (neko_common.NETWORK_FILESYSTEMS): their file times come from the
-# NAS's own clock, so whether the source changed after its copy was made can't be told
-# from them (see already_copied).
-
 
 def same_samples(first, second, size):
     """Whether two files of the same `size` hold the same bytes at their start, middle and
-    end (all of them when they are small). Used only for a source file that has not been
-    written to since its copy was made (see already_copied): then a copy cut off and filled
-    up, or another file put in its place, differs in one of these pieces."""
+    end (all of them when they are small): a quick first look (see already_copied), which
+    finds most different files (a copy cut off and filled up, another file put in its
+    place) without reading them whole."""
     places = sorted({0, max(0, size // 2 - SAMPLE // 2), max(0, size - SAMPLE)})
     try:
         with first.open('rb') as one, second.open('rb') as two:
@@ -495,42 +491,23 @@ def same_samples(first, second, size):
     return True
 
 
-def same_clock(path, clocks):
-    """Whether the file times of the filesystem at `path` come from this PC's clock (not
-    a network share's). Asked once per drive: `clocks` keeps the answers."""
-    drive = os.stat(path).st_dev
-    if drive not in clocks:
-        clocks[drive] = (findmnt('FSTYPE', path, '--target') or '') not in neko_common.NETWORK_FILESYSTEMS
-    return clocks[drive]
-
-
-def written_since_copied(want, have, clocks, current):
-    """Whether the source file may have been written to after `have`, its copy, was made.
-    Any write to a file moves its change time (ctime), even when a program puts its old
-    date (mtime) back; the copy's change time is when it was made. On a network share the
-    times come from another clock, so it always may have been."""
-    return not same_clock(current.parent, clocks) or want.st_ctime_ns > have.st_ctime_ns
-
-
-def already_copied(current, dest, apply=False, clocks=None):
+def already_copied(current, dest, apply=False):
     """True when `dest` is the copy of `current` an earlier run made; False when it is a
-    different file (never replaced). Same size and date (copies keep their original's
-    date), and the source not written to since the copy was made: three pieces of both are
-    compared (same_samples), not the whole film again. Written to since (review of 0.51.3:
-    a change outside those pieces was taken for "already imported"), or a copy from before
-    0.39.5 (another date): the whole contents decide, and a match takes its original's
-    date, so the next run doesn't read both again."""
+    different file (never replaced). Same size, the same three pieces (same_samples, a
+    quick first look), then the whole contents: only reading both whole sees a difference
+    anywhere in them, a source changed after its copy was made (review of 0.51.3) or a copy
+    damaged on the library drive (review of 0.52), both taken for "already imported" when
+    only the pieces were compared. This is asked only when an import runs again (`--again`)
+    or carries on after being cut off. A match from before 0.39.5 (another date) takes its
+    original's date."""
     if dest.is_symlink() or not dest.is_file():
         return False  # a symlink there is never "the copy"
     have, want = dest.stat(), current.stat()
     if have.st_size != want.st_size:
         return False
-    same_date = have.st_mtime_ns == want.st_mtime_ns
-    if same_date and not written_since_copied(want, have, {} if clocks is None else clocks, current):
-        return same_samples(current, dest, want.st_size)
-    if digest(current) != digest(dest):
+    if not same_samples(current, dest, want.st_size) or digest(current) != digest(dest):
         return False
-    if apply and not same_date:
+    if apply and have.st_mtime_ns != want.st_mtime_ns:
         os.utime(dest, ns=(have.st_atime_ns, want.st_mtime_ns), follow_symlinks=False)
     return True
 
@@ -563,7 +540,7 @@ def planned_copies(folder, target, apply=False, conflicts=None, downloading=None
         raise IncompleteSource(
             [Path(p).relative_to(folder).as_posix() if Path(p).is_relative_to(folder) else '.' for p, _ in exc.problems]
         ) from None
-    entries, first, stable, clocks = [], {}, {}, {}
+    entries, first, stable = [], {}, {}
     for found_path, _ in sorted(found):
         current = safe_path(found_path)
         dest = safe_path(target / current.relative_to(folder))
@@ -571,7 +548,7 @@ def planned_copies(folder, target, apply=False, conflicts=None, downloading=None
         stat = current.lstat()
         same_file = several_names(stat, current, stable) if links is not None else None
         if dest.exists() or dest.is_symlink():
-            if note_conflict(current, dest, folder, apply, conflicts, clocks) and same_file:
+            if note_conflict(current, dest, folder, apply, conflicts) and same_file:
                 first.setdefault(same_file, dest)  # copied by an earlier run: linked to as well
             continue
         if same_file in first:
@@ -593,10 +570,10 @@ def several_names(stat, current, stable):
     return (stat.st_dev, stat.st_ino) if stable[stat.st_dev] else None
 
 
-def note_conflict(current, dest, folder, apply, conflicts, clocks=None):
+def note_conflict(current, dest, folder, apply, conflicts):
     """A file already at `dest`: an earlier copy of `current` (nothing to do: True), or a
     different file, kept and noted in `conflicts` (raised when no list is kept)."""
-    if already_copied(current, dest, apply, clocks):
+    if already_copied(current, dest, apply):
         return True
     if conflicts is None:
         raise RuntimeError('Existing imported file differs; refusing overwrite')

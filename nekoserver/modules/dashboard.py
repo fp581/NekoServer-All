@@ -7,6 +7,8 @@ from pathlib import Path
 import host
 import setup_progress
 from neko_common import (
+    cards_enabled,
+    cards_settings,
     nextcloud_enabled,
     SHARED,
     immich_wanted,
@@ -248,7 +250,7 @@ def socket_proxyd(places=None):
 UPDATES_FOLDER = 'backups/updates'
 
 
-def control_units(code, lighting, fans=True, data=None, proxyd=None, settings=None):
+def control_units(code, lighting, fans=True, data=None, proxyd=None, settings=None, cards=False):
     """The root control service (fans, lights, and restarting or closing apps from the
     dashboard) and, with lighting, OpenRGB's server and the link to it. The control
     service runs whenever the dashboard is installed: with fan control switched off it
@@ -295,6 +297,7 @@ def control_units(code, lighting, fans=True, data=None, proxyd=None, settings=No
         'NoNewPrivileges=yes\nProtectHome=yes\nProtectSystem=strict\nReadWritePaths='
         + str(CONTROL_CONFIG)
         + (' -' + str(Path(data) / 'installer') + ' -' + str(Path(data) / UPDATES_FOLDER) if data else '')
+        + (cards_paths(data) if cards and data else '')
         + '\nPrivateTmp=yes\nProtectKernelModules=yes\nProtectControlGroups=yes\n'
         # CAP_KILL: closing an app someone opened on the desktop (their own user's process).
         # The computer's own loopback only: the apps answer there; nothing else is reached.
@@ -340,6 +343,15 @@ def media_folders_unit(data, settings=None):
         + f'ExecStart=/usr/bin/python3 -Es {bundle}/media_locations.py run --config {bundle}/config.json '
         + f'--request {request}{also}\n'
     )
+
+
+def cards_paths(data):
+    """With backup cards on (0.52.0), the Backup cards page enrols a card through this
+    service: the set's folder on the SSD, and the folders a card is mounted under (a
+    desktop mounts one under /run/media or /media, a person under /mnt), each only if
+    it is there. Without the switch the unit stays as it was."""
+    folder = Path(data) / SHARED['cards']['folder']
+    return ' -' + str(folder) + ' -/media -/run/media -/mnt'
 
 
 def lighting_units(proxyd):
@@ -618,6 +630,9 @@ def collector_settings(cfg, smart, interval=60):
     clean['runtime'] = {'backend': cfg.get('runtime', {}).get('backend')}
     clean['gateway'] = {k: cfg.get('gateway', {}).get(k) for k in ('services', 'lan_ip', 'lan_cidr')}
     clean['nextcloud'] = {'enabled': nextcloud_enabled(cfg)}
+    cards = cards_settings(cfg)
+    if cards:
+        clean['cards'] = cards  # backup cards switched on: the Backups page shows the set
     # The TV step's choice (guided_setup.wanted saves it as tv.wanted): with its report on the
     # SSD, it decides whether the page offers Steam Big Picture.
     clean['tv'] = {'wanted': cfg.get('tv', {}).get('wanted')}
@@ -751,7 +766,7 @@ def install_smart(cfg, log):
     family.install(['smartmontools'])
 
 
-def prepare_control(code, definitions, lighting, log, fans=True, data=None, settings=None):
+def prepare_control(code, definitions, lighting, log, fans=True, data=None, settings=None, cards=False):
     """The control group and OpenRGB; lighting is left out when OpenRGB, or systemd's
     socket proxy that leads to it, can't be had. Returns whether lighting is on."""
     control_group()
@@ -763,7 +778,7 @@ def prepare_control(code, definitions, lighting, log, fans=True, data=None, sett
         return lighting
     for unit in LIGHTING_UNITS:
         definitions.pop(unit, None)
-    definitions.update(control_units(code, False, fans, data, settings=settings))
+    definitions.update(control_units(code, False, fans, data, settings=settings, cards=cards))
     return False
 
 
@@ -940,17 +955,22 @@ def run(ctx):
     payloads = asset_payloads(project, code)
     payloads[code / native_runtime.NAME] = native_runtime.payload(project, cfg)
     payloads[code / (native_runtime.NAME + native_runtime.RECORD_SUFFIX)] = record_payload(project)
+    cards = cards_enabled(cfg)
+    if cards:
+        # The release's restore tool, beside the control service: enrolment writes it
+        # onto every backup card (runtime cards/page.rs).
+        payloads[code / SHARED['cards']['restore_tool']] = (project / 'neko_restore.py').read_bytes()
     public = tailnet_name(cfg, public_host_of(installed_unit()))
     control, lighting = control_options(cfg)
     # The control service always runs: app controls need it even with fan control off.
     definitions = units(data, code, config, port, interval, public, True)
     # The settings file setup runs from (the Media folders page saves its changes there too).
     settings = getattr(ctx, 'original_config_path', None)
-    definitions.update(control_units(code, lighting, control, data, settings=settings))
+    definitions.update(control_units(code, lighting, control, data, settings=settings, cards=cards))
     folders = (code.parent, code, code / 'dashboard')
     check_existing(payloads, definitions, folders)
     install_smart(cfg, ctx.log)
-    lighting = prepare_control(code, definitions, lighting, ctx.log, control, data, settings)
+    lighting = prepare_control(code, definitions, lighting, ctx.log, control, data, settings, cards)
     write_files(folders, payloads, definitions)
     atomic_json(config, collector_settings(cfg, smart, interval))
     safe_path(data / 'dashboard-state').mkdir(mode=0o700, exist_ok=True)
@@ -959,6 +979,8 @@ def run(ctx):
     # the service starts, so it is made first, as the daily update check would make it.
     for folder in ('backups', UPDATES_FOLDER):
         safe_path(data / folder).mkdir(mode=0o700, exist_ok=True)
+    if cards:
+        safe_path(data / SHARED['cards']['folder']).mkdir(mode=0o700, exist_ok=True)  # the backup cards' set
     start_services(definitions, code, True, ctx.log, fans=control)
     if not answers(port):
         raise RuntimeError(

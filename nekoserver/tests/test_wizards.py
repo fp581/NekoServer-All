@@ -2443,6 +2443,32 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertTrue((target / 'secrets/accounts/APP-CREDENTIALS.txt').is_file())
         self.assertNotIn('password files are there too', '\n'.join(out))
 
+        # Review of 0.52: on a PC in German, tar says the missing .env is "Nicht im Archiv
+        # gefunden", which was not read as "not there": the list was refused as damaged. A
+        # stand-in tar speaks German unless told LC_ALL=C (this PC has no German tar).
+        tools = self.root / 'german-tar'
+        tools.mkdir()
+        (tools / 'tar').write_text(
+            '#!/bin/sh\n'
+            'if [ "$LC_ALL" = C ]; then exec /usr/bin/tar "$@"; fi\n'
+            '/usr/bin/tar "$@" 2>&1 >/dev/null | sed "s/Not found in archive/Nicht im Archiv gefunden/; '
+            's/Exiting with failure status due to previous errors/Beende mit Fehlerstatus aufgrund vorheriger Fehler/" >&2\n'
+            'exit 2\n'
+        )
+        (tools / 'tar').chmod(0o755)
+        target = self.root / 'passwords-in-german'
+        out = []
+        german = {
+            'PATH': f'{tools}:{os.environ["PATH"]}',
+            'LANG': 'de_DE.UTF-8',
+            'LANGUAGE': 'de',
+            'LC_ALL': 'de_DE.UTF-8',
+        }
+        with mock.patch.dict(os.environ, german):
+            recovery_wizard.restore_passwords(self.config, answers('1', '2', str(target), '1', 'yes'), out.append)
+        self.assertIn('Done.', '\n'.join(out))
+        self.assertTrue((target / 'secrets/accounts/APP-CREDENTIALS.txt').is_file())
+
     def test_menu_back_and_needs_sudo(self):
         with mock.patch('os.geteuid', return_value=1000):
             self.assertEqual(recovery_wizard.run(answers(), lambda s: None), 2)

@@ -60,6 +60,9 @@
           <a class="nav" href="#media" data-route="media"
             ><span class="nav-icon" aria-hidden="true">▤</span><span class="nav-text">Media folders</span></a
           >
+          <a class="nav" href="#cards" data-route="cards" id="nav-cards" hidden
+            ><span class="nav-icon" aria-hidden="true">▤</span><span class="nav-text">Backup cards</span></a
+          >
           <a class="nav" href="#attention" data-route="attention"
             ><span class="nav-icon" aria-hidden="true">◇</span><span class="nav-text">Needs attention</span
             ><b class="count" data-count="issues">—</b></a
@@ -460,6 +463,23 @@
           </header>
           <div id="media-folders"></div>
           <div id="media-add"></div>
+        </section>
+
+        <!-- BACKUP CARDS -->
+        <section class="panel" data-page="cards">
+          <header class="section-head">
+            <div>
+              <span class="eyebrow">A COPY YOU KEEP ELSEWHERE</span>
+              <h2>Backup cards</h2>
+              <p>
+                SD cards and USB sticks that hold a copy of your photos and documents. Plug one in, and NekoServer adds
+                what is new each night; keep the cards somewhere else, away from the server.
+              </p>
+            </div>
+          </header>
+          <div id="cards-set"></div>
+          <h3>Cards and USB sticks plugged in</h3>
+          <div id="cards-drives" class="card-grid two"></div>
         </section>
 
         <!-- HELP -->

@@ -2,9 +2,9 @@
 //!
 //! The on-card format and the commit protocol are those of
 //! `plans/0.51.0-archive-format-v1.md` ("archive format 1"); the step names D1 to D8 in
-//! the comments are that document's. This step builds the engine and its crash tests
-//! only: nothing calls it yet (the job, the control operations and the dashboard come
-//! later), hence the `dead_code` allowance below.
+//! the comments are that document's. The card job, the Backup cards page and the status
+//! the dashboard shows (`crate::cards`, 0.52.0) call it; the few parts nothing calls yet
+//! (the rebuild of a lost catalogue, the search) say so where they are.
 //!
 //! Parts:
 //! - `error`: the engine's own error, with a kind the job can act on.
@@ -23,7 +23,6 @@
 //! - `inventory`: the set inventory snapshot written onto each card at a checkpoint.
 //! - `rebuild`: the catalogue rebuilt from the cards and their inventories.
 //! - `lock`: one writer per backup set.
-#![allow(dead_code)]
 
 pub mod catalogue;
 pub mod commit;
@@ -41,7 +40,7 @@ pub mod store;
 pub mod volume;
 
 #[cfg(test)]
-mod testkit;
+pub mod testkit;
 #[cfg(test)]
 mod tests_accept;
 #[cfg(test)]
@@ -50,6 +49,8 @@ mod tests_catalogue;
 mod tests_crash;
 #[cfg(test)]
 mod tests_format;
+#[cfg(test)]
+mod tests_growth;
 #[cfg(test)]
 mod tests_loop;
 #[cfg(test)]

@@ -403,21 +403,23 @@ class AlreadyCopiedTests(unittest.TestCase):
             os.utime(film, ns=(date, date))
             self.assertFalse(source_import.already_copied(film, copy))
 
-    def test_a_network_share_is_compared_whole(self):
-        """On a NAS the file times come from its own clock, so the copy's change time says
-        nothing about whether the source changed: the whole file is compared."""
+    def test_a_copy_damaged_outside_the_compared_pieces_is_not_already_imported(self):
+        """Review of 0.52: with the source untouched since its copy was made, only the three
+        pieces were compared, so a copy damaged on the library drive elsewhere (a failing
+        disk, a bit flipped) passed as the film and was never copied again. Damage leaves the
+        copy's date and change time as they were: only reading it whole can see it."""
         import source_import
 
         with tempfile.TemporaryDirectory() as d:
             film, copy = Path(d) / 'film.mkv', Path(d) / 'library.mkv'
+            film.write_bytes(b'a' * 9_000_000)
             copy.write_bytes(b'a' * 2_000_000 + b'b' + b'a' * 6_999_999)
-            film.write_bytes(b'a' * 9_000_000)  # written after the copy: its change time is newer
             os.utime(copy, ns=(film.stat().st_atime_ns, film.stat().st_mtime_ns))
-            # The copy's change time is now newer than the film's, as for an unchanged source.
-            local = {os.stat(d).st_dev: True}
-            self.assertTrue(source_import.already_copied(film, copy, clocks=local))  # pieces only
-            on_nas = {os.stat(d).st_dev: False}
-            self.assertFalse(source_import.already_copied(film, copy, clocks=on_nas))
+            # The copy was written last, as a copy made after its source is: the source
+            # looks untouched since, which was when only the pieces were compared.
+            self.assertGreater(copy.stat().st_ctime_ns, film.stat().st_ctime_ns)
+            self.assertTrue(source_import.same_samples(film, copy, 9_000_000))
+            self.assertFalse(source_import.already_copied(film, copy))
 
 
 class RehearsalSqlTests(unittest.TestCase):
@@ -2074,13 +2076,16 @@ class ImportLayoutTests(unittest.TestCase):
         self.assertIn('Show A', result['reason'])
         self.assertTrue((legacy / 'Show A/e1.mkv').exists())  # nothing lost
 
-    def test_a_rerun_does_not_read_files_copied_before(self):
+    def test_a_rerun_copies_nothing_it_copied_before(self):
+        """A rerun (--again) copies nothing already there. Since the review of 0.52 it
+        reads those files whole to say so (already_copied): a copy damaged on the library
+        drive is only seen that way."""
         import source_import
 
         source_import.copy_source(self.entry, self.media, apply=True)
-        with mock.patch.object(source_import, 'digest', side_effect=AssertionError('read again')):
-            result = source_import.copy_source(self.entry, self.media, apply=True)
+        result = source_import.copy_source(self.entry, self.media, apply=True)
         self.assertEqual(result['copied'], 0)
+        self.assertEqual(result.get('kept_library_version', 0), 0)
 
     def test_a_different_file_of_the_same_name_is_never_replaced(self):
         import source_import
@@ -2102,8 +2107,8 @@ class ImportLayoutTests(unittest.TestCase):
         copy.write_bytes(b'b one')  # made by an earlier release, its own date
         source_import.copy_source(self.entry, self.media, apply=True)
         self.assertEqual(copy.stat().st_mtime_ns, (self.source / 'Show B/e1.mkv').stat().st_mtime_ns)
-        with mock.patch.object(source_import, 'digest', side_effect=AssertionError('read again')):
-            source_import.copy_source(self.entry, self.media, apply=True)
+        again = source_import.copy_source(self.entry, self.media, apply=True)
+        self.assertEqual(again['copied'], 0)
 
     def test_an_earlier_import_moves_up_with_its_drive_unplugged(self):
         import shutil

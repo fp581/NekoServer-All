@@ -332,6 +332,7 @@ class WindowPackageTests(unittest.TestCase):
                 'heartbeat': {'wanted': False},
                 'assistant': {'wanted': False},
                 'network_storage': {'wanted': False},
+                'cards': {'enabled': False},
             },
         )
 

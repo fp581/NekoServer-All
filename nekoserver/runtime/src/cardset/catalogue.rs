@@ -91,6 +91,7 @@ pub trait Catalogue {
     fn version_count(&self) -> Res<u64>;
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // the catalogue contract in memory, for the tests
 /// The catalogue contract kept in memory.
 #[derive(Debug, Default, Clone)]
 pub struct Memory {

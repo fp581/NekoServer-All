@@ -1243,7 +1243,7 @@ class ReadyToStartTests(unittest.TestCase):
         said = []
         with self.pipe('maybe\nno\n') as stdin, mock.patch('sys.stdout'):
             self.assertFalse(wizard.wait_to_start(self.path, builtins.input, said.append, window, stdin))
-        self.assertIn('Type the number of a line (1 to 11), press Enter to go on, or type no to stop.', said)
+        self.assertIn('Type the number of a line (1 to 12), press Enter to go on, or type no to stop.', said)
         window.choose.assert_not_called()
         with self.pipe('\ny\n') as stdin, mock.patch('sys.stdout'):
             self.assertTrue(wizard.wait_to_start(self.path, builtins.input, lambda line: None, window, stdin))
