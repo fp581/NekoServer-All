@@ -2127,7 +2127,11 @@ fn media(report: Option<&MediaReport>) -> Value {
 /// When a file was last changed, in seconds since 1970; None when that can't be read.
 fn modified_at(path: &Path) -> Option<f64> {
     let time = fs::metadata(path).ok()?.modified().ok()?;
-    Some(time.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs_f64())
+    Some(
+        time.duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs_f64(),
+    )
 }
 /// The restore rehearsals' reports in `folder` (at most 100), each with when it was written.
 fn rehearsal_reports(folder: &Path) -> Vec<(f64, PathBuf)> {

@@ -4828,7 +4828,11 @@ fn keep_dump(data: &Path, media: &Path, created: &Path, keep: u64) -> Result<()>
         data.join("backups/immich-database"),
         media.join("backups/immich-database"),
     ] {
-        prune_dumps(&folder, keep, created.file_name().and_then(std::ffi::OsStr::to_str))?;
+        prune_dumps(
+            &folder,
+            keep,
+            created.file_name().and_then(std::ffi::OsStr::to_str),
+        )?;
     }
     Ok(())
 }
