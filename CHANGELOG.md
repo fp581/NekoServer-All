@@ -35,6 +35,7 @@
 
 ### Fixed: found by testing with the real apps
 - **Shows already on the drive appear in Jellyfin right after setup.** Setup makes the Movies library, then TV Shows. Jellyfin starts no scan for a library added while another scan is still running, and the running scan passes the new library over: with many films, the shows waited up to 12 hours for Jellyfin's next scheduled scan. Setup now asks Jellyfin to look through each library it makes.
+- **Setup no longer says the TV library failed when Jellyfin is busy.** While Jellyfin scans many films, adding the TV library can take longer than setup waited for an answer (12 seconds), and setup reported it as failed though Jellyfin went on and added it. Setup now waits up to 2 minutes for Jellyfin to list it.
 
 ### Fixed: from the review of 0.51.3
 - **A password list restored from a snapshot made without a backup key is the one that was checked.** The archive was checked against its recorded checksum and then unpacked by name, so one replaced in between (another job writing to the HDD, a failing drive) was unpacked unchecked, with "Done" over changed passwords. It is now opened once; the same bytes are checked and unpacked, and moved into place only when they match.
