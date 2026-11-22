@@ -1,0 +1,66 @@
+# Favourite shows and search in Jellyfin, against the real Jellyfin, Sonarr and Seerr
+# (nekoserver/lab/real_apps.py says what it checks). The apps are started from
+# NekoServer's own Compose files; this needs the internet, which GitHub's runners have.
+# Like ci.yml, it runs when a pull request opens, not on every change to one.
+name: Real apps
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-apps:
+    name: Favourite shows and search in Jellyfin (real apps)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Folders and settings as setup makes them
+        run: |
+          # Where NekoServer keeps its data (never under /home: its services cannot see it).
+          root=/srv/nekoserver
+          sudo mkdir -p "$root"
+          sudo chown "$(id -u):$(id -g)" "$root"
+          mkdir -p "$root"/appdata/{jellyfin,sonarr,seerr} "$root"/library/{movies,tv,existing}
+          # Setup mounts the person's own folders under library/existing (shared, so the
+          # apps' rslave binds see them).
+          sudo mount --bind "$root/library/existing" "$root/library/existing"
+          sudo mount --make-rshared "$root/library/existing"
+          {
+            echo "NEKO_ROOT=$root"
+            echo "NEKO_DATA=$root"
+            echo "NEKO_MEDIA=$root"
+            echo "NEKO_UID=$(id -u)"
+            echo "NEKO_GID=$(id -g)"
+            echo "NEKO_TZ=UTC"
+            echo "NEKO_BIND=127.0.0.1"
+          } >>"$GITHUB_ENV"
+
+      - name: ffmpeg, to make the show's episodes
+        run: command -v ffmpeg || (sudo apt-get update -q && sudo apt-get install -yq ffmpeg)
+
+      - name: Start Jellyfin, Sonarr and Seerr from NekoServer's Compose files
+        run: |
+          docker network create nekoserver-media
+          docker compose -p neko-jellyfin -f nekoserver/compose/jellyfin.yaml -f nekoserver/lab/real-apps-no-gpu.yaml up -d
+          docker compose -p neko-sonarr -f nekoserver/compose/sonarr.yaml up -d
+          docker compose -p neko-seerr -f nekoserver/compose/seerr.yaml up -d
+          docker ps --format '{{.Names}} {{.Image}} {{.Status}}'
+
+      - name: Run both features against them
+        working-directory: nekoserver
+        run: python3 lab/real_apps.py "$NEKO_ROOT"
+
+      - name: The apps' logs, when something failed
+        if: failure()
+        run: |
+          for app in jellyfin sonarr seerr; do
+            echo "::group::$app"
+            docker logs --tail 300 "neko-$app-$app-1" 2>&1 || true
+            echo "::endgroup::"
+          done

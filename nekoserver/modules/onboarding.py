@@ -2,6 +2,7 @@
 
 import guided_setup
 import json
+import os
 import time
 import account_store
 import setup_progress
@@ -9,13 +10,16 @@ import subprocess
 import sys
 from pathlib import Path
 from neko_common import (
+    SYSTEMD_UNITS,
     VERSION,
     app_port,
+    check_units,
     atomic_json,
     apps_to_connect,
     media_services,
     remember_answer,
     safe_path,
+    write_units,
 )
 
 DEPENDENCIES = ['media', 'recovery']
@@ -57,7 +61,11 @@ def run(ctx):
         ctx.log(
             'Connecting the apps: Movies and shows and the downloads are switched off, so there is nothing to connect'
         )
+        follow_favourite_shows(ctx)
         return
+    # First, on every setup run and upgrade: the job then runs this release's copy of
+    # itself, also when connecting the apps does not pass this time.
+    follow_favourite_shows(ctx)
     docker_running()
     if account_store.enabled(ctx.config) and 'accounts' in getattr(ctx, 'plan', ()):
         required = account_store.selected(ctx.config, ['media'])
@@ -135,6 +143,51 @@ def run(ctx):
     witness_playback(ctx)
 
 
+# Favourite shows keep coming (favourite_shows.py): every hour, a show someone favourited in
+# Jellyfin that Sonarr does not follow is given to Sonarr for its new episodes.
+FAVOURITES = 'nekoserver-favourite-shows'
+FAVOURITES_TIMER = FAVOURITES + '.timer'
+FAVOURITES_SERVICE = FAVOURITES + '.service'
+
+
+def favourite_units(data, release):
+    """{name: text} of the hourly job's service and timer."""
+    return {
+        FAVOURITES_SERVICE: '[Unit]\nDescription=NekoServer favourite shows keep coming\n'
+        f'RequiresMountsFor={data}\nAfter=docker.service\n'
+        '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=10min\n'
+        f'ExecStart=/usr/bin/python3 -Es {release}/favourite_shows.py run --config {release}/config.json\n',
+        FAVOURITES_TIMER: '[Unit]\nDescription=NekoServer favourite shows keep coming\n'
+        f'[Timer]\nOnBootSec=15min\nOnUnitInactiveSec=60min\nUnit={FAVOURITES_SERVICE}\n'
+        '[Install]\nWantedBy=timers.target\n',
+    }
+
+
+def follow_favourite_shows(ctx, run=subprocess.run):
+    """The hourly job set up where Jellyfin and Sonarr both are, and taken away where
+    they are not (an app switched off since). Setup runs as root; anything else (a dry
+    look) only says what would be done."""
+    services = media_services(ctx.config)
+    wanted = 'jellyfin' in services and 'sonarr' in services
+    if os.geteuid() != 0:
+        ctx.log('Favourite shows keep coming: ' + ('set up when setup runs as root' if wanted else 'not needed'))
+        return
+    units = [SYSTEMD_UNITS / name for name in (FAVOURITES_TIMER, FAVOURITES_SERVICE)]
+    if not wanted:
+        from modules._schedules import remove
+
+        remove(units, run, ctx.log)
+        return
+    data = safe_path(ctx.config['data_mount'])
+    release = data / 'installer' / 'releases' / ('v' + VERSION)
+    definitions = favourite_units(data, release)
+    check_units(definitions, 'favourite shows')
+    write_units(definitions)
+    for command in (['systemctl', 'daemon-reload'], ['systemctl', 'enable', '--now', FAVOURITES_TIMER]):
+        run(command, check=True, capture_output=True, text=True, timeout=60)
+    ctx.log('Favourite shows keep coming: every hour, a show favourited in Jellyfin gets its new episodes (Sonarr)')
+
+
 def connected_before(ctx):
     """Whether an earlier run finished connecting the apps (True when that is not known)."""
     previous = getattr(ctx, 'previous', None)
@@ -203,14 +256,17 @@ CONNECTOR = (
 def first_problem(config):
     """The first check onboarding's report (reports/onboarding.json on the SSD) did not
     pass, with its reason; a failed one before one still to set up. Tests only a person
-    can do (a real playback) are left out: they never hold setup up."""
-    from media_readiness import WITNESSED
+    can do (a real playback) and extras (media_readiness.REPORTED_ONLY) are left out:
+    they never hold setup up."""
+    from media_readiness import REPORTED_ONLY
 
     try:
         rows = json.loads((Path(config['data_mount']) / 'reports' / 'onboarding.json').read_text()).get('checks', [])
     except (OSError, ValueError, AttributeError):
         rows = []
-    rows = [r for r in rows if isinstance(r, dict) and r.get('status') != 'pass' and r.get('check') not in WITNESSED]
+    rows = [
+        r for r in rows if isinstance(r, dict) and r.get('status') != 'pass' and r.get('check') not in REPORTED_ONLY
+    ]
     for wanted in ('fail', 'needs_setup'):
         row = next((r for r in rows if r.get('status') == wanted), None)
         if row is not None:

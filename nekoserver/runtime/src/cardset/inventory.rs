@@ -346,6 +346,9 @@ pub fn checkpoint(vol: &Volume, store: &mut Store, through: &str, keep: usize) -
                 .iter()
                 .any(|h| h.snapshot_id == mark.snapshot_id)
         {
+            // Nothing new to write, but a cleanup an earlier run did not finish (a power
+            // cut, the card taken out) is finished now: the card keeps only `keep`.
+            prune(vol, keep, &mut |_| Ok(()))?;
             return Ok(Checkpoint::Unchanged(mark.snapshot_id));
         }
     }

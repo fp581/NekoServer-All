@@ -22,7 +22,7 @@ Setup's first page asks one thing: *What would you like this server to do?* Each
 | 🐈 **Ask Neko** | A local AI assistant in the dashboard (off unless you switch it on) |
 | 💾 **Backup cards** | A copy of your photos and Nextcloud files on SD cards or USB sticks you keep somewhere else, filled a little more each night one is plugged in; each card can be read on any Linux computer with nothing installed (off unless you switch it on) |
 
-Always set up, whatever you choose: the **dashboard** (with a PIN), **backups** with a monthly checkup, **private access from your own devices** through Tailscale, and **shared folders** on your home network.
+Always set up, whatever you choose: the **dashboard** (with a PIN, in two themes: Moonlit Neko with its cat, or a quiet Professional one, each light or dark), **backups** with a monthly checkup, **private access from your own devices** through Tailscale, and **shared folders** on your home network.
 
 Any combination works, including none of the apps. Switching something off later stops it and keeps its data.
 
@@ -68,6 +68,10 @@ Afterwards one page helps you **connect your phone**, and the last page says wha
 Run `sudo bash install.sh` again at any time: it keeps your answers and asks only about what is new. On a server that is set up it says so: nothing changes until you approve.
 
 **Films, shows or music you already have** can be used where they are (nothing is copied or changed) or copied into the library, up to 8 folders of each kind. After setup, the dashboard's **Media folders** page adds more, takes one away and chooses where new downloads go ([DASHBOARD.md](nekoserver/DASHBOARD.md)).
+
+**Favourite shows keep coming.** Mark a show as a favourite in Jellyfin, and Sonarr downloads the episodes you are missing and each new one when it airs, also for shows from your own folders ([guide](nekoserver/README.md)).
+
+**Search and request in Jellyfin.** Jellyfin's search also finds films and shows you don't have, with a button to ask for them; they download and arrive in your library, like a streaming app with your own storage. In a browser and the Jellyfin phone apps, not on TV apps ([guide](nekoserver/README.md)).
 
 ## Backups
 

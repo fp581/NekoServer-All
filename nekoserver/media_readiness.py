@@ -14,6 +14,10 @@ WITNESSED = frozenset(
         'qbittorrent:authenticated_playback_or_transfer',
     }
 )
+# Checks of extras, reported but never holding setup up either: searching and asking for
+# films in Jellyfin (jellyfin_requests.py) waits on a plugin made outside NekoServer, while
+# Seerr works without it.
+REPORTED_ONLY = WITNESSED | {'jellyfin:search_and_request'}
 
 
 class ReadClient(Client):

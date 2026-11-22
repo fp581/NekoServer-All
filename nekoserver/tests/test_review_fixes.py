@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import tempfile
+import urllib.parse
 import time
 import unittest
 from pathlib import Path
@@ -2024,6 +2025,107 @@ class LibraryScanTests(unittest.TestCase):
             results, _, ids = media_libraries.jellyfin(Fake(), media, True, lambda _: 'admin', lambda _: 'pw')
         self.assertEqual(len(ids), 2, results)
         self.assertTrue(all('refreshLibrary=true' in e for e in made))
+
+    def test_a_library_added_while_a_scan_runs_is_scanned_too(self):
+        """Found with the real Jellyfin 12.4 (lab/real_apps.py): a library added while a
+        library scan runs starts no scan of its own (LibraryManager.StartScanInBackground),
+        and the running scan passes it over. Setup adds Movies, whose scan may still run
+        (many films), then TV Shows: the shows waited 12 hours for the next scan."""
+        import media_libraries
+
+        jellyfin = {'made': [], 'scan_running': False, 'looked_through': []}
+
+        class Jellyfin:
+            def __init__(self):
+                self.headers = {}
+
+            def call(self, endpoint, method='GET', payload=None):
+                path, _, query = endpoint.partition('?')
+                asked = dict(urllib.parse.parse_qsl(query))
+                if path == '/System/Info/Public':
+                    return {'Id': 'server', 'StartupWizardCompleted': True}
+                if path == '/Users/AuthenticateByName':
+                    return {'AccessToken': 't', 'User': {'Policy': {'IsAdministrator': True}}}
+                if path == '/Library/VirtualFolders' and method == 'POST':
+                    jellyfin['made'].append(asked)
+                    if not jellyfin['scan_running']:  # a scan starts, and is still running for the next
+                        jellyfin['scan_running'] = True
+                        jellyfin['looked_through'].append(asked['name'])
+                    return {}
+                if path == '/Library/VirtualFolders':
+                    return [
+                        {
+                            'Name': a['name'],
+                            'Locations': [a['paths']],
+                            'CollectionType': a['collectionType'],
+                            'ItemId': 'id-' + a['name'],
+                        }
+                        for a in jellyfin['made']
+                    ]
+                if path.startswith('/Items/') and path.endswith('/Refresh') and method == 'POST':
+                    self.refreshed = asked
+                    jellyfin['looked_through'].append(urllib.parse.unquote(path.split('/')[2]).removeprefix('id-'))
+                    return {}
+                return {}
+
+        client = Jellyfin()
+        with tempfile.TemporaryDirectory() as media:
+            for category in ('movies', 'tv'):
+                (Path(media) / 'library' / category).mkdir(parents=True)
+            media_libraries.jellyfin(client, media, True, lambda _: 'admin', lambda _: 'pw')
+        self.assertIn('TV Shows', jellyfin['looked_through'])
+        self.assertEqual(client.refreshed['metadataRefreshMode'], 'Default')
+
+    def test_a_library_jellyfin_is_slow_to_add_is_waited_for(self):
+        """Found with the real Jellyfin 12.4 (lab/real_apps.py): while it scanned 40 films,
+        adding TV Shows took longer than setup waits for a call (12 seconds), and setup
+        said the library failed though Jellyfin went on and added it."""
+        import media_libraries
+
+        made, clock = [], {'now': 0.0}
+
+        class Jellyfin:
+            def __init__(self):
+                self.headers = {}
+
+            def call(self, endpoint, method='GET', payload=None):
+                path, _, query = endpoint.partition('?')
+                asked = dict(urllib.parse.parse_qsl(query))
+                if path == '/System/Info/Public':
+                    return {'Id': 'server', 'StartupWizardCompleted': True}
+                if path == '/Users/AuthenticateByName':
+                    return {'AccessToken': 't', 'User': {'Policy': {'IsAdministrator': True}}}
+                if path == '/Library/VirtualFolders' and method == 'POST':
+                    made.append({**asked, 'listed_at': clock['now'] + (20 if asked['name'] == 'TV Shows' else 0)})
+                    if asked['name'] == 'TV Shows':
+                        raise RuntimeError('jellyfin: unavailable or incompatible API response')  # timed out
+                    return {}
+                if path == '/Library/VirtualFolders':
+                    # Listed at once (as the real Jellyfin 12.4 did), its ID only once added.
+                    return [
+                        {
+                            'Name': m['name'],
+                            'Locations': [m['paths']],
+                            'CollectionType': m['collectionType'],
+                            **({'ItemId': m['name']} if m['listed_at'] <= clock['now'] else {}),
+                        }
+                        for m in made
+                    ]
+                return {}
+
+        def sleep(seconds):
+            clock['now'] += seconds
+
+        with (
+            tempfile.TemporaryDirectory() as media,
+            mock.patch('time.monotonic', side_effect=lambda: clock['now']),
+            mock.patch('time.sleep', sleep),
+        ):
+            for category in ('movies', 'tv'):
+                (Path(media) / 'library' / category).mkdir(parents=True)
+            results, _, ids = media_libraries.jellyfin(Jellyfin(), media, True, lambda _: 'admin', lambda _: 'pw')
+        self.assertEqual([r['status'] for r in results], ['pass'] * 3, results)
+        self.assertEqual(ids, ['Movies', 'TV Shows'])
 
 
 class ImportLayoutTests(unittest.TestCase):

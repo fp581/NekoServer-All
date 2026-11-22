@@ -1,0 +1,6 @@
+# For .github/workflows/real-apps.yml: GitHub's runners have no graphics device
+# (/dev/dri), so Jellyfin is started without one. Everything else is compose/jellyfin.yaml
+# as NekoServer runs it.
+services:
+  jellyfin:
+    devices: !reset []

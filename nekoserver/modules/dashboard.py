@@ -44,6 +44,10 @@ ASSETS = (
     'index.html',
     'theme.css',
     'style.css',
+    # The Professional theme: its look and its font (ATKINSON-LICENSE.txt beside them).
+    'professional.css',
+    'atkinson-latin.woff2',
+    'atkinson-latin-ext.woff2',
     'app.js',
     'sw.js',
     'logo.svg',

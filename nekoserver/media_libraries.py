@@ -3,6 +3,7 @@
 import getpass
 import account_store
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -165,6 +166,69 @@ def new_library_options():
     return {'LibraryOptions': dict(WATCHED)}
 
 
+# How long Jellyfin may take to add a library while it is busy (below).
+ADDING_WAIT = 120
+
+
+def added(client, category, name, kind):
+    """The library once Jellyfin has added it, else None. Listed while still being added,
+    it has no ID yet ("Jellyfin library ID missing", seen with Jellyfin 12.4)."""
+    try:
+        return matching(folders(client), category, name, kind)
+    except RuntimeError:
+        return None
+
+
+def add_library(client, category, name, kind):
+    """Add the library and return it as Jellyfin lists it. While Jellyfin scans the
+    library made just before (many films), adding the next one can take longer than a
+    call is waited for (12 seconds; seen with Jellyfin 12.4 and 40 films, lab/real_apps.py).
+    Jellyfin goes on adding it, so its list of libraries is looked at until it has it."""
+    query = urllib.parse.urlencode(
+        {'name': name, 'collectionType': kind, 'paths': '/data/' + category, 'refreshLibrary': 'true'}
+    )
+    try:
+        client.call('/Library/VirtualFolders?' + query, 'POST', new_library_options())
+    except RuntimeError as exc:
+        if str(exc) != 'jellyfin: unavailable or incompatible API response':
+            raise
+        deadline = time.monotonic() + ADDING_WAIT
+        while not added(client, category, name, kind):
+            if time.monotonic() >= deadline:
+                raise RuntimeError('Library creation was not retained') from None
+            time.sleep(5)
+    existing = matching(folders(client), category, name, kind)
+    if not existing:
+        raise RuntimeError('Library creation was not retained')
+    return existing
+
+
+def scan_new_library(client, library, log=print):
+    """Jellyfin looks through a library setup has just made, so the files already in it
+    are listed now. Adding a library starts a library scan only when none is running
+    (Jellyfin 12.4, LibraryManager.StartScanInBackground: "an active scan already
+    handles library structure changes"); but a scan already running, of the library
+    made just before or Jellyfin's own, read the list of libraries before this one was
+    added and passes it over until the next scheduled scan, 12 hours later. A refresh of
+    the library itself (POST /Items/{id}/Refresh) goes in Jellyfin's refresh queue, apart
+    from the scan, and looks through its folder (ProviderManager.RefreshCollectionFolderChildren)."""
+    query = urllib.parse.urlencode(
+        {
+            'metadataRefreshMode': 'Default',
+            'imageRefreshMode': 'Default',
+            'replaceAllMetadata': 'false',
+            'replaceAllImages': 'false',
+        }
+    )
+    try:
+        client.call(f'/Items/{urllib.parse.quote(str(library["ItemId"]))}/Refresh?' + query, 'POST')
+    except RuntimeError:
+        log(
+            f'jellyfin: the new library "{library.get("Name", "")}" is listed at Jellyfin\'s next library scan; '
+            'to see its files now, scan it in Jellyfin (Dashboard, Libraries)'
+        )
+
+
 def watch_library(client, library, log=print, on_share=False):
     """Switch real time monitoring on in a library setup made, when Jellyfin says it is
     off. A library whose options Jellyfin does not give is left as it is. `on_share`: the
@@ -232,13 +296,8 @@ def jellyfin(client, media, apply, username, password):
                 results.append(row('jellyfin:' + category, 'needs_setup', 'Preview: library would be created'))
                 continue
             if not existing:
-                query = urllib.parse.urlencode(
-                    {'name': name, 'collectionType': kind, 'paths': '/data/' + category, 'refreshLibrary': 'true'}
-                )
-                client.call('/Library/VirtualFolders?' + query, 'POST', new_library_options())
-                existing = matching(folders(client), category, name, kind)
-                if not existing:
-                    raise RuntimeError('Library creation was not retained')
+                existing = add_library(client, category, name, kind)
+                scan_new_library(client, existing)
             if apply:
                 watch_library(client, existing, on_share=on_share)
             ids.append(str(existing['ItemId']))
@@ -382,6 +441,19 @@ def ensure_readiness_key(client, root, log=print):
         log('Jellyfin: NekoServer\'s key was revoked or replaced in Jellyfin; saved its current key')
 
 
+def search_and_request_rows(jellyfin, root, apply, wanted):
+    """Jellyfin Enhanced's rows (jellyfin_requests.py): a step left for later or one that
+    failed is said with why; never one that stops the rest of setup."""
+    import jellyfin_requests
+
+    try:
+        return jellyfin_requests.connect(jellyfin, root, apply, wanted)
+    except SetupRequired as exc:
+        return [row(jellyfin_requests.CHECK, 'needs_setup', str(exc))]
+    except (RuntimeError, ValueError, TypeError, KeyError) as exc:
+        return [row(jellyfin_requests.CHECK, 'fail', f'Jellyfin Enhanced could not be set up: {exc}')]
+
+
 def configure(
     root,
     media,
@@ -391,9 +463,12 @@ def configure(
     username=input,
     password=getpass.getpass,
     more=None,
+    search_and_request=True,
 ):
     """`more`: called with Jellyfin's signed-in client for further libraries (the
-    person's own folders, existing_page.libraries); its rows are added to the results."""
+    person's own folders, existing_page.libraries); its rows are added to the results.
+    `search_and_request`: Jellyfin Enhanced set up and connected to Seerr once Seerr is
+    linked (jellyfin_requests.py; onboarding.search_and_request_in_jellyfin)."""
     if 'jellyfin' not in apps:
         return [row('media_libraries', 'needs_setup', 'Jellyfin is required for this library workflow')]
     stored = account_store.get({'data_mount': str(root)}, 'jellyfin', verified=True)
@@ -425,6 +500,7 @@ def configure(
                     results.append(row('seerr:setup', 'fail', 'Seerr authenticated link/library API checks failed'))
             finally:
                 sr.close()
+            results += search_and_request_rows(jf, root, apply, search_and_request)
         return results
     finally:
         jf.close()

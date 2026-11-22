@@ -1245,6 +1245,7 @@ pub(crate) const STARTUP: &[(&str, &str)] = &[
     ("nekoserver-updates.timer", "Weekly app updates"),
     ("nekoserver-update-check.timer", "Daily update check"),
     ("nekoserver-media-health.timer", "App health checks"),
+    ("nekoserver-favourite-shows.timer", "Favourite shows"),
     ("nekoserver-heartbeat.timer", "Outside heartbeat"),
     ("nekoserver-notifications.timer", "Phone notifications"),
 ];

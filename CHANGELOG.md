@@ -1,6 +1,38 @@
 # Changelog
 
-## v0.52.0 — (in progress)
+## v0.52.1 — (in progress; the release number is 0.52.1)
+
+### Added: favourite shows keep coming
+- **A show marked as a favourite in Jellyfin gets its missing episodes and its new ones.** Every hour NekoServer looks at each Jellyfin user's favourite shows; one Sonarr does not follow yet is given to Sonarr, watching every new episode and season, with the quality Seerr's requests use. An hour later, once Sonarr has the show's list of episodes, the episodes that aired and that Jellyfin does not have are searched for (specials left out). What Jellyfin has is what counts, so nothing you have is downloaded again, also from a folder of yours the download apps can't see. Nothing is removed when a show stops being a favourite. This closes the gap for shows from your own folders, which Sonarr did not know.
+- **New episodes land beside the old ones** where Sonarr may save (NekoServer's library, or a folder of yours chosen for new downloads). For a show in a folder of yours that the apps may only read, they go to the library's TV folder, and the run's account (`reports/media/favourite-shows.json`) says so for that show.
+- **It keeps working through upgrades and app updates.** Every setup run and upgrade writes the job again, so it runs the installed release, also when connecting the apps does not pass that time. A look that fails (an app not answering, or its API changed by an update) is kept in the account with why, and tried again the next hour; the dashboard lists the job under *Starts by itself*.
+
+### Added: search and request in Jellyfin
+- **Jellyfin's search also finds films and shows you don't have**, with a button to ask for them; Seerr has them downloaded and they arrive in Jellyfin. In a browser and the official Jellyfin phone apps (not the TV apps). Each Jellyfin user is added to Seerr the first time they search, so requests are in their name.
+- **Setup does it all, when Jellyfin and Seerr are both set up**: it adds the Jellyfin Enhanced plugin's repository to Jellyfin, installs the plugin by its ID, restarts Jellyfin once for it, and connects it to Seerr on the apps' own network with Seerr's key. A run that only checks changes nothing; one with everything set already changes nothing either.
+- **It never holds setup up.** When Jellyfin has no build of the plugin for its version (or can't reach its repository), or Jellyfin does not run it, setup's last page says so and the rest finishes: Seerr works as before, and the next setup run tries again. `"search_and_request_in_jellyfin": false` under `"onboarding"` leaves it out.
+
+### Added: a Professional theme
+- **Settings → Theme: Moonlit Neko or Professional.** Professional is a calm panel with no cat: grey-green neutrals, one blue for what you can press, colour only where there is a status, and plain words. It has a dark and a light mode, like Moonlit Neko, which stays exactly as it was and is still the one a new dashboard starts with. DASHBOARD.md, "Themes", shows both.
+- **Every status has a shape as well as a colour in it**: a circle for fine, a triangle for needs you, a square for broken, a ring for not known yet, on the dots, the badges and Home's verdict.
+- **Its colours are measured**: every text colour reads at 4.5:1 or more on every surface in both modes (WCAG 2.2), and the status colours differ in lightness too, not only in hue. A test reads them from the stylesheet, so a change is measured again.
+- **Its font, Atkinson Hyperlegible Next, comes with the dashboard** (SIL Open Font License), so the page still loads nothing from elsewhere.
+
+### Fixed: found by testing with the real apps
+- **Shows already on the drive appear in Jellyfin right after setup.** Setup makes the Movies library, then TV Shows. Jellyfin starts no scan for a library added while another scan is still running, and the running scan passes the new library over: with many films, the shows waited up to 12 hours for Jellyfin's next scheduled scan. Setup now asks Jellyfin to look through each library it makes.
+- **Setup no longer says the TV library failed when Jellyfin is busy.** While Jellyfin scans many films, adding the TV library can take longer than setup waited for an answer (12 seconds), and setup reported it as failed though Jellyfin went on and added it. Setup now waits up to 2 minutes for Jellyfin to list it.
+
+### Fixed: from the review of 0.52
+- **A backup-card run with only an older, full card plugged in no longer says Passed.** The newest card had room but was not there, so new photos were on no card and the run looked finished. It now says "Card 1 is full: 2 files wait for card 2. Plug in card 2", and the run counts as partly done.
+- **A file too big for one card goes onto a bigger card plugged in beside it.** The writer stopped after the first card, and did the same every night after.
+- **A cleanup of old inventories cut off on a card (a power cut, the card taken out) is finished by the next run**, also when nothing new was written. Before, the card kept more than the three newest.
+- **The restore tool no longer leaves a newer version on the card because of an old progress entry.** With a file deleted and restored from another card since, the progress file named two versions under one name; the tool looked at the one no longer there, and skipped the newest as "a file is there already".
+- **Media folders: a look at a change at work that does not get an answer (a network hiccup) is tried again.** The page stopped looking and said "Working on it" for ever.
+- **Media folders: settings saved in one copy but not the other are put back.** Setup's own copy kept a change the page called "Not changed", and the next setup run made it. If a copy cannot be put back, the page says which one has the new choice.
+- **Media folders: an app that could not be restarted is said, not "Done".** A folder switched to read-only stays writable for an app that runs until it restarts; the page now says Partly done, why, and to restart the server or run setup again.
+- **The hourly check of the apps gets a download folder changed on the Media folders page at once.** It kept its own old copy of the settings, and reported a right Seerr folder as wrong until setup ran again.
+
+## v0.52.0 — 2026-11-22
 
 ### Added: Media folders page
 - **A Media folders page on the dashboard.** After setup, at any time: for films, shows and music it shows NekoServer's own library and each folder of yours connected to it (Ready, or why not), and where new downloads go. Add a folder (type it, or pick one from the drives and shares the PC has mounted), use it where it is or copy its files into the library, send new downloads to a folder or back to the library, or take a folder away. Your files are never deleted, moved or changed. It needs the PIN on every device, and the change is made by the same code setup uses.

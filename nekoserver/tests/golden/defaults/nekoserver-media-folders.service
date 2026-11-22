@@ -6,4 +6,4 @@ After=docker.service
 Type=oneshot
 UMask=0077
 TimeoutStartSec=infinity
-ExecStart=/usr/bin/python3 -Es /srv/nekoserver/installer/releases/v0.51.3/media_locations.py run --config /srv/nekoserver/installer/releases/v0.51.3/config.json --request /run/nekoserver-control/media-folders/request.json --also "/home/amy/NekoServer All/nekoserver/my-config.json"
+ExecStart=/usr/bin/python3 -Es /srv/nekoserver/installer/releases/v0.52.1/media_locations.py run --config /srv/nekoserver/installer/releases/v0.52.1/config.json --request /run/nekoserver-control/media-folders/request.json --also "/home/amy/NekoServer All/nekoserver/my-config.json"
