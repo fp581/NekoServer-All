@@ -35,6 +35,7 @@ class Apps:
         self.sonarr_episodes = {}  # Sonarr's list of a show's episodes, once it has one
         self.jellyfin_episodes = {}  # the episodes Jellyfin has of a show, by its ID
         self.monitored, self.searched = [], []
+        self.still_adding = set()  # shows Sonarr has not finished adding (it lists their addOptions)
 
     def factory(self, app):
         apps = self
@@ -73,7 +74,10 @@ class Apps:
                 return {'Items': self.favourites[asked['userId']]}
         if app == 'sonarr':
             if path == '/series' and method == 'GET':
-                return [{'tvdbId': int(t), 'id': n} for n, t in enumerate(self.sonarr_has, 1)]
+                return [
+                    {'tvdbId': int(t), 'id': n, 'addOptions': {'monitor': 'future'} if t in self.still_adding else None}
+                    for n, t in enumerate(self.sonarr_has, 1)
+                ]
             if path == '/episode':
                 tvdb = self.sonarr_has[int(asked['seriesId']) - 1]
                 return self.sonarr_episodes.get(tvdb, [])
@@ -167,6 +171,24 @@ class FavouriteShowsTests(unittest.TestCase):
         # Asked for once: the next run leaves the show to Sonarr.
         self.run_job(now)
         self.assertEqual(len(self.apps.searched), 1)
+
+    def test_episodes_are_asked_for_only_once_sonarr_has_finished_adding_the_show(self):
+        """Sonarr lists a new show's episodes, scans its folder, and only then sets which
+        it watches from the add options ("future": aired ones off). Watched before that,
+        they would be switched off again (seen with the real Sonarr 4.0.20, lab/real_apps.py)."""
+        self.apps.favourites['u1'] = [show('Severance', SEVERANCE)]
+        self.apps.lookup[SEVERANCE] = 'Severance'
+        self.run_job()
+        self.apps.still_adding.add(SEVERANCE)
+        self.apps.sonarr_episodes[SEVERANCE] = [
+            {'id': 4, 'seasonNumber': 1, 'episodeNumber': 4, 'airDateUtc': '2022-02-18T02:00:00Z', 'hasFile': False}
+        ]
+        waiting = self.run_job(1_800_000_000)
+        self.assertEqual((waiting['filled'], self.apps.monitored, self.apps.searched), ([], [], []))
+        self.apps.still_adding.clear()  # Sonarr's post-add actions are done
+        done = self.run_job(1_800_000_000)
+        self.assertEqual(self.apps.monitored, [{'episodeIds': [4], 'monitored': True}])
+        self.assertEqual(done['filled'], [{'title': 'Severance', 'episodes': 1}])
 
     def test_a_show_taken_out_of_sonarr_before_its_episodes_were_asked_for_is_let_go(self):
         self.apps.favourites['u1'] = [show('Severance', SEVERANCE)]
