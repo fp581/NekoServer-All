@@ -871,9 +871,6 @@ class MediaFoldersTests(unittest.TestCase):
                 }
             )
         )
-        # The request in between (self.add) was taken, so this write makes the file anew,
-        # as the umask says (0664 for neko): the control service's own file is 0600.
-        path.chmod(0o600)
         media_locations.run(self.pc.kept, path, self.pc.own, steps=self.pc.steps(), lock=busy)
         said = json.loads((self.pc.control / 'result.json').read_text())
         self.assertEqual(said['message'], media_locations.BACKUP_RUNNING)
