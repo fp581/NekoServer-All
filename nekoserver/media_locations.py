@@ -43,6 +43,7 @@ from neko_common import (
     SHARED,
     answered_within,
     atomic_json,
+    atomic_write,
     checked_settings,
     default_settings,
     files_root,
@@ -113,6 +114,10 @@ OTHER_KIND = (
     'that one.'
 )
 NOT_SAVED = 'The settings could not be saved ({why}), so nothing was changed.'
+HALF_SAVED = (
+    'The settings could not be saved ({why}), and {paths} could not be put back as it was: it has the new '
+    'choice. Run setup again to make the folders match it.'
+)
 ONLY_SSD = 'The settings copy on the SSD was saved; {path} was not there to save in, so setup there has the old choice.'
 
 
@@ -666,7 +671,7 @@ def jobs(config, out):
     music backup did not copy a music folder it was told to back up, and the apps were
     not stopped while a new folder's share was away."""
     import native_runtime
-    from modules import app_backup, host_backup, server_os
+    from modules import app_backup, host_backup, media_monitor, server_os
     from neko_common import refresh_settings
 
     log = out['log'].append
@@ -679,6 +684,9 @@ def jobs(config, out):
         refresh_settings(target, settings(), log, label)
     app_backup.refresh(config, log)
     host_backup.refresh(config, log)
+    # The hourly check of the apps compares their download folders with its own copy:
+    # the old one reported a folder changed here as wrong until setup ran (review of 0.52).
+    media_monitor.refresh(config, log)
 
 
 def tell_apps(ctx, kinds, settings, out, steps=None):
@@ -704,10 +712,16 @@ def tell_apps(ctx, kinds, settings, out, steps=None):
             out['next'].append(line)
     out['connected'] = [row['path'] for row in rows if row.get('mounted')]
     if getattr(ctx, 'existing_mounts_changed', False):
+        logged = len(out['log'])
         try:
             out['restarted'] = steps['restart'](manifests(config), [], ctx.log)
         except Exception as exc:
             failed(out, 'restart', exc)
+        # An app not restarted still sees the folders as before (one switched to
+        # read-only stays writable for it): a step not done, never only a log line.
+        for line in out['log'][logged:]:
+            if ': not restarted (' in line:
+                failed(out, 'restart', line.split(';')[0])
     if config.get(existing_page.COPIES):
         logged = len(out['log'])
         try:
@@ -809,10 +823,37 @@ class Settings:
         return self.context.config
 
     def save(self):
+        """Both copies, or neither: a copy saved before the other failed is put back as it
+        was (review of 0.52: setup's copy kept the change the page said was not made, and
+        the next setup run made it)."""
+        copies = [p for p in (self.context.original_config_path, self.path) if p is not None]
+        before = {path: path.read_bytes() if path.is_file() else None for path in copies}
         try:
             self.context.persist_config()
         except (OSError, RuntimeError) as exc:
+            changed = put_back(before)
+            if changed:
+                raise Refusal(HALF_SAVED.format(why=exc, paths=', '.join(map(str, changed)))) from None
             raise Refusal(NOT_SAVED.format(why=exc)) from None
+
+
+def put_back(before):
+    """Each settings file as it was (bytes, owner and mode kept). Returns the ones that
+    still have the new choice: they could not be put back."""
+    changed = []
+    for path, old in before.items():
+        try:
+            if old is None:
+                with contextlib.suppress(FileNotFoundError):
+                    path.unlink()
+            elif path.read_bytes() != old:
+                st = path.stat()
+                atomic_write(path, old, mode=stat.S_IMODE(st.st_mode))
+                if os.geteuid() == 0:
+                    os.chown(path, st.st_uid, st.st_gid, follow_symlinks=False)
+        except (OSError, RuntimeError):
+            changed.append(path)
+    return changed
 
 
 def change(settings, asked, folder, out, steps=None, lock=apps_lock):

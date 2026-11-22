@@ -481,6 +481,31 @@ class VersionTests(Base):
         self.assertNotIn('a newer version is restored', said_text(self))
         self.assertEqual((self.dest / DOC).read_bytes(), b'first draft')
 
+    def test_an_entry_whose_file_was_replaced_since_does_not_keep_out_a_newer_version(self):
+        """Review of 0.52: the progress file can name two versions restored under the
+        file's name (the first deleted since, the second restored in its place). The tool
+        looked at the first in ID order, whose file is not there any more, found the
+        second's bytes under the name, and left the newest version on its card."""
+        middle = Card(self.tmp / 'card2', seq=2, volume=VOLUME_2)
+        newest = Card(self.tmp / 'card3', seq=3, volume='00000000-0000-4000-8000-000000000003')
+        version(self.card, self.card.add(DOC, b'first draft'), 1, OLD_TIME, '2001-02-03T04:05:08Z')
+        version(middle, middle.add(DOC, b'second draft'), 2, 1300000000000000000, '2011-03-13T07:06:40Z')
+        version(newest, newest.add(DOC, b'third draft'), 3, NEW_TIME, '2023-11-14T22:13:21Z')
+        progress = str(self.tmp / 'progress.json')
+
+        def restore_from(card):
+            self.said = []
+            code = tool.main([CARD_FLAG, str(card.top), 'restore', str(self.dest), '--progress', progress],
+                             say=self.said.append)  # fmt: skip
+            self.assertEqual(code, 0, said_text(self))
+
+        restore_from(self.card)
+        (self.dest / DOC).unlink()  # deleted by the person
+        restore_from(middle)
+        self.assertEqual((self.dest / DOC).read_bytes(), b'second draft')
+        restore_from(newest)
+        self.assertEqual((self.dest / DOC).read_bytes(), b'third draft')
+
     def test_a_new_progress_file_overwrites_no_file_beside_it(self):
         """Review of 0.51.2 (P2): the progress file was first written as "<name>.new", opened
         for writing whatever was there."""

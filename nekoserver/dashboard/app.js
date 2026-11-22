@@ -5558,6 +5558,10 @@ async function mediaState() {
     }
   } else if (answer.error === 'E43') {
     MEDIA.answer = null;
+  } else if (object(MEDIA.answer).working) {
+    // One look that did not get an answer (a network hiccup, the server busy) while a
+    // change is at work: look again, or the page says "Working on it" for ever.
+    MEDIA.timer = setTimeout(() => void mediaState(), MEDIA_POLL);
   }
   if (state.route === 'media') {
     withFocus(renderMedia);

@@ -401,6 +401,27 @@ class MediaFoldersTests(unittest.TestCase):
         self.assertEqual(odd['state'], 'refused')
         self.assertIn('full path', odd['message'])
 
+    def test_settings_that_could_not_be_saved_in_one_copy_are_changed_in_neither(self):
+        """Review of 0.52: setup's own copy was saved first; when the copy on the SSD then
+        could not be, the page said "nothing was changed", and the next setup run made the
+        change from the copy that had it."""
+        import installer
+
+        saved = installer.atomic_json
+        before = {which: which.read_bytes() for which in (self.pc.kept, self.pc.own)}
+
+        def ssd_full(path, payload):
+            if Path(path) == self.pc.kept:
+                raise OSError(28, 'No space left on device')
+            saved(path, payload)
+
+        with mock.patch.object(installer, 'atomic_json', ssd_full):
+            answer = self.add()
+        self.assertEqual(answer['state'], 'refused', answer)
+        self.assertIn('nothing was changed', answer['message'])
+        for which, content in before.items():
+            self.assertEqual(which.read_bytes(), content, which)
+
     def test_a_folder_inside_or_around_a_connected_one_is_refused(self):
         # Deep check 836: the NAS share connected after its films folder (or a film's
         # folder after the films) was bound on its own too, so every film showed twice.
@@ -592,6 +613,30 @@ class MediaFoldersTests(unittest.TestCase):
         apps.assert_called_once()
         host.assert_called_once()
         self.assertIn('Backups: settings brought up to date', out['log'])
+
+    def test_the_hourly_media_check_gets_the_new_folders_at_once(self):
+        """Review of 0.52: the hourly check of the apps kept its own copy of the settings
+        until setup ran again, so a download folder changed on the page (Seerr's, say)
+        was reported as wrong though it was right."""
+        import native_runtime
+        from modules import app_backup, host_backup, server_os
+
+        config = self.pc.config
+        monitor = Path(config['data_mount']) / 'scripts' / 'config.json'
+        monitor.parent.mkdir(parents=True, exist_ok=True)
+        monitor.write_text('{"placement": "as it was before the change"}')  # the check is installed
+        out = {'log': []}
+        missing = self.pc.top / 'not-installed.json'
+        with (
+            mock.patch.object(native_runtime, 'BACKUP_GUARD', missing),
+            mock.patch.object(server_os, 'DRIVE_SETTINGS', missing),
+            mock.patch.object(server_os, 'HDD_GUARD', missing),
+            mock.patch.object(app_backup, 'refresh'),
+            mock.patch.object(host_backup, 'refresh'),
+        ):
+            media_locations.jobs(config, out)
+        self.assertEqual(json.loads(monitor.read_text()), config)
+        self.assertIn('Media monitor: settings brought up to date', out['log'])
 
     def test_a_change_that_half_fails_names_the_step_and_what_to_do(self):
         # The owner's decision 5 on PR 89: it said only "Run setup again" (in a note), and
@@ -863,6 +908,32 @@ class MediaFoldersTests(unittest.TestCase):
         # Switched to read-only is a change the apps must be restarted for.
         self.pc.ask(change='target', kind='movies', target='library')
         self.assertGreater(len([c for c in self.pc.calls() if c.startswith('docker compose')]), len(restarts))
+
+    def test_an_app_that_could_not_be_restarted_is_said_not_done(self):
+        """Review of 0.52: a folder switched to read-only stays writable for an app that
+        runs until it is restarted; a restart that failed was only a line in the log, and
+        the page said Done."""
+        from modules import media
+
+        def refused(command, **_):
+            raise RuntimeError('docker: the daemon did not answer')
+
+        def restart_refused(found, failed, log):
+            return media.restart_for_own_folders(found, failed, log, refused)
+
+        own = self.pc.steps
+
+        def steps():
+            return {**own(), 'restart': restart_refused}
+
+        with mock.patch.object(self.pc, 'steps', steps):
+            answer = self.add(downloads=False)
+        self.assertEqual(answer['state'], 'partial', answer)
+        self.assertIn('restart', answer['failed'])
+        said = ' '.join(answer['next'])
+        self.assertIn('were not restarted', said)
+        self.assertIn('the daemon did not answer', said)
+        self.assertIn('Restart the server, or run setup again.', said)
 
     def test_copy_into_the_library_is_setups_copy_with_the_folder_kept(self):
         copied, seen = [], []
