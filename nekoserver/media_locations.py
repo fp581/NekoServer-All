@@ -159,33 +159,48 @@ def checked_request(raw):
         raise Refusal('Choose films, shows or music.')
     asked['kind'] = raw['kind']
     if change == 'add':
-        if not plain_path(raw.get('path')):
-            raise Refusal('Type the folder as a full path, starting with / (for example /mnt/nas/films).')
-        if raw.get('how') not in HOW or type(raw.get('downloads')) is not bool:
-            raise Refusal('Choose whether to use the folder where it is or copy it, and where new downloads go.')
-        asked.update(path=raw['path'], how=raw['how'], downloads=raw['downloads'])
-        if asked['how'] == 'copy' and asked['downloads']:
-            raise Refusal('A folder that is copied is not connected, so new downloads cannot go there.')
-        # Setup's "Back this up too?", for music used where it is (used only on a NAS).
-        if 'backup' in raw and type(raw['backup']) is not bool:
-            raise Refusal('Should the music backup copy it too? Reload the page and try again.')
-        if 'backup' in raw and asked['kind'] == 'music' and asked['how'] == 'in_place':
-            asked['backup'] = raw['backup']
-    elif change == 'remove':
+        return checked_add(raw, asked)
+    if change in ('remove', 'target'):
+        return checked_slot_change(raw, asked)
+    return asked
+
+
+def checked_slot_change(raw, asked):
+    """checked_request for a folder taken away ('remove') or made the place for new
+    downloads ('target'), with the folder the page showed under that slot."""
+    if asked['change'] == 'remove':
         if not existing_media.is_slot(asked['kind'], raw.get('slot')):
             raise Refusal('Which folder? Reload the page and try again.')
         asked['slot'] = raw['slot']
-    elif change == 'target':
+    else:
         wanted = raw.get('target')
         if wanted != LIBRARY and not existing_media.is_slot(asked['kind'], wanted):
             raise Refusal('Where should new downloads go? Reload the page and try again.')
         asked['target'] = wanted
     # The folder the page showed under that slot (a slot is given again to a folder added
     # after one was taken away): checked against the settings by shown_there.
-    if change in ('remove', 'target') and 'path' in raw:
+    if 'path' in raw:
         if not plain_path(raw['path']):
             raise Refusal('Which folder? Reload the page and try again.')
         asked['path'] = raw['path']
+    return asked
+
+
+def checked_add(raw, asked):
+    """checked_request for a folder added: its path, how it is used, where new downloads
+    go, and for music used where it is, whether the music backup copies it."""
+    if not plain_path(raw.get('path')):
+        raise Refusal('Type the folder as a full path, starting with / (for example /mnt/nas/films).')
+    if raw.get('how') not in HOW or type(raw.get('downloads')) is not bool:
+        raise Refusal('Choose whether to use the folder where it is or copy it, and where new downloads go.')
+    asked.update(path=raw['path'], how=raw['how'], downloads=raw['downloads'])
+    if asked['how'] == 'copy' and asked['downloads']:
+        raise Refusal('A folder that is copied is not connected, so new downloads cannot go there.')
+    # Setup's "Back this up too?", for music used where it is (used only on a NAS).
+    if 'backup' in raw and type(raw['backup']) is not bool:
+        raise Refusal('Should the music backup copy it too? Reload the page and try again.')
+    if 'backup' in raw and asked['kind'] == 'music' and asked['how'] == 'in_place':
+        asked['backup'] = raw['backup']
     return asked
 
 
@@ -228,6 +243,10 @@ def kind_state(config, kind, rows):
     # The music backup's answer for each folder (None: never asked, not on a NAS).
     backup = {e['slot']: e.get('backup') for e in existing_media.extras(config) if e['holds'] == kind}
     downloads = existing_page.downloads(config, kind)
+    # Where new downloads go: one of the person's folders, or the library (None: no downloads).
+    new_go_to = None
+    if downloads:
+        new_go_to = target['slot'] if target else LIBRARY
     copies = [
         c['path']
         for c in config.get(existing_page.COPIES) or []
@@ -238,7 +257,7 @@ def kind_state(config, kind, rows):
         'words': WORDS[kind],
         'library': str(library_folder(config, kind)),
         'downloads': downloads,
-        'target': (target['slot'] if target else LIBRARY) if downloads else None,
+        'target': new_go_to,
         'folders': [
             {
                 'slot': row['slot'],
@@ -357,6 +376,23 @@ def kept_by_the_app(config, kind, old, out):
     out['notes'].append(said)
 
 
+def folder_that_can_be_added(config, kind, asked):
+    """existing_media.check's answer for a folder to use where it is; Refusal for one that
+    is connected already, inside or around one that is, one too many, or one the check
+    turns down."""
+    words = WORDS[kind]
+    real = os.path.realpath(asked['path'])
+    if any(entry['path'] in (asked['path'], real) for entry in entries_of(config, kind).values()):
+        raise Refusal(ALREADY.format(path=real, words=words))
+    overlapping(config, kind, real)
+    if existing_media.is_full(config, kind):
+        raise Refusal(existing_media.full_words(kind))
+    try:
+        return existing_media.check(config, kind, asked['path'], asked['downloads'])
+    except existing_media.Refused as refused:
+        raise Refusal(str(refused)) from None
+
+
 def add(config, asked, out):
     """Connect a folder (or have it copied). Returns the kinds whose apps are to be told."""
     kind, words = asked['kind'], WORDS[asked['kind']]
@@ -367,17 +403,7 @@ def add(config, asked, out):
     answering(asked['path'])
     if asked['how'] == 'copy':
         return copy_in(config, kind, asked['path'], out)
-    entries = entries_of(config, kind)
-    real = os.path.realpath(asked['path'])
-    if any(entry['path'] in (asked['path'], real) for entry in entries.values()):
-        raise Refusal(ALREADY.format(path=real, words=words))
-    overlapping(config, kind, real)
-    if existing_media.is_full(config, kind):
-        raise Refusal(existing_media.full_words(kind))
-    try:
-        found = existing_media.check(config, kind, asked['path'], asked['downloads'])
-    except existing_media.Refused as refused:
-        raise Refusal(str(refused)) from None
+    found = folder_that_can_be_added(config, kind, asked)
     answer = found['new_files'] or {}
     if asked['downloads'] and not answer.get('ok'):
         # As setup does: the folder is still used (read-only), and why new downloads
@@ -560,6 +586,7 @@ def manifests(config):
     return found
 
 
+ROOT_FOLDERS = 'root folders'  # the step that gives Sonarr, Radarr and Lidarr their folders
 # A step after the settings were saved that did not finish (the owner's decision 5 on PR
 # 89: nothing is undone): (what was not done, what to do), said with why on the page.
 STEP_FAILED = {
@@ -581,7 +608,7 @@ STEP_FAILED = {
         "Navidrome's library was not updated",
         'Check that Navidrome runs (Your apps), then run setup again.',
     ),
-    'root folders': (
+    ROOT_FOLDERS: (
         'The folder for new downloads in Sonarr, Radarr or Lidarr was not updated',
         'Check that they run (Your apps), then run setup again.',
     ),
@@ -647,11 +674,11 @@ def root_folders(config, settings, out, run=subprocess.run):
     try:
         done = run(argv, capture_output=True, text=True, timeout=600, check=False)
     except (OSError, subprocess.SubprocessError) as exc:
-        failed(out, 'root folders', exc)
+        failed(out, ROOT_FOLDERS, exc)
         return
     if done.returncode:
         said = [line for line in (done.stdout or '').splitlines() if 'incomplete' in line or 'skipped' in line]
-        failed(out, 'root folders', '; '.join(said[-3:]) or 'see the service log')
+        failed(out, ROOT_FOLDERS, '; '.join(said[-3:]) or 'see the service log')
 
 
 def seerr(config, out):
@@ -696,6 +723,16 @@ def tell_apps(ctx, kinds, settings, out, steps=None):
     with why and what to do (failed), and never stops the next one; nothing is undone."""
     config, apps = ctx.config, set(media_services(ctx.config))
     steps = steps or STEPS
+    bind_folders(ctx, steps, out)
+    if getattr(ctx, 'existing_mounts_changed', False):
+        restart_apps(ctx, steps, out)
+    if config.get(existing_page.COPIES):
+        copy_waiting(ctx, steps, out)
+    tell_each_app(config, kinds, settings, out, steps, apps)
+
+
+def bind_folders(ctx, steps, out):
+    """tell_apps' first step: the folders bound as the settings say, with why one is not."""
     logged = len(out['log'])
     try:
         rows = steps['mount'](ctx)
@@ -711,32 +748,43 @@ def tell_apps(ctx, kinds, settings, out, steps=None):
         if 'still connected' in line and line not in out['next']:
             out['next'].append(line)
     out['connected'] = [row['path'] for row in rows if row.get('mounted')]
-    if getattr(ctx, 'existing_mounts_changed', False):
-        logged = len(out['log'])
-        try:
-            out['restarted'] = steps['restart'](manifests(config), [], ctx.log)
-        except Exception as exc:
-            failed(out, 'restart', exc)
-        # An app not restarted still sees the folders as before (one switched to
-        # read-only stays writable for it): a step not done, never only a log line.
-        for line in out['log'][logged:]:
-            if ': not restarted (' in line:
-                failed(out, 'restart', line.split(';')[0])
-    if config.get(existing_page.COPIES):
-        logged = len(out['log'])
-        try:
-            left = steps['copy'](ctx)
-        except Exception as exc:
-            left = [exc]
-        if left:
-            said = [line for line in out['log'][logged:] if 'was not copied' in line]
-            failed(out, 'copy', said[-1] if said else left[-1])
+
+
+def restart_apps(ctx, steps, out):
+    """The media apps restarted, as a folder they see changed; one not restarted is said."""
+    logged = len(out['log'])
+    try:
+        out['restarted'] = steps['restart'](manifests(ctx.config), [], ctx.log)
+    except Exception as exc:
+        failed(out, 'restart', exc)
+    # An app not restarted still sees the folders as before (one switched to
+    # read-only stays writable for it): a step not done, never only a log line.
+    for line in out['log'][logged:]:
+        if ': not restarted (' in line:
+            failed(out, 'restart', line.split(';')[0])
+
+
+def copy_waiting(ctx, steps, out):
+    """The folders waiting to be copied into the library, copied; one that was not is said."""
+    logged = len(out['log'])
+    try:
+        left = steps['copy'](ctx)
+    except Exception as exc:
+        left = [exc]
+    if left:
+        said = [line for line in out['log'][logged:] if 'was not copied' in line]
+        failed(out, 'copy', said[-1] if said else left[-1])
+
+
+def tell_each_app(config, kinds, settings, out, steps, apps):
+    """Each app that uses these kinds given its library and folders (and the backups'
+    own list); one app's trouble is said and never stops the next."""
     wanted = [
         ('jobs', True, lambda: steps['jobs'](config, out)),
         ('jellyfin', set(kinds) & set(FILMS_AND_SHOWS) and 'jellyfin' in apps, lambda: steps['jellyfin'](config, out)),
         ('navidrome', 'music' in kinds and 'navidrome' in apps, lambda: steps['navidrome'](config, out)),
         (
-            'root folders',
+            ROOT_FOLDERS,
             any(ARR[k] in apps for k in kinds),
             lambda: steps['root_folders'](config, settings, out),
         ),
