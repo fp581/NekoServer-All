@@ -1378,11 +1378,15 @@ pub(crate) fn shortened(text: &str, max: usize) -> String {
     }
     kept
 }
-/// The last part of a command's error output (stderr), sanitized; kept so a failure
-/// can say why instead of only that it failed.
-static LAST_STDERR: Mutex<String> = Mutex::new(String::new());
+thread_local! {
+    /// The last part of the error output (stderr) of the last command this thread ran,
+    /// sanitized; kept so a failure can say why instead of only that it failed. One for
+    /// each thread: a single one for the whole program was replaced by another thread's
+    /// command in between, and a failure named that command's reason instead of its own.
+    static LAST_STDERR: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
 pub fn last_stderr() -> String {
-    LAST_STDERR.lock().map(|s| s.clone()).unwrap_or_default()
+    LAST_STDERR.with(|last| last.borrow().clone())
 }
 /// Turn a failed command into an error that names the program and its reason.
 pub fn failed(args: &[&str], code: i32, what: &str) -> Error {
@@ -1479,9 +1483,7 @@ pub fn command(args: &[&str], timeout: u64) -> Result<(i32, String)> {
     let output = joined(read, Duration::from_secs(5))
         .ok_or_else(|| Error::new("Command output did not finish"))??;
     let tail = joined(errors, Duration::from_secs(5)).unwrap_or_default();
-    if let Ok(mut last) = LAST_STDERR.lock() {
-        *last = sanitize(&String::from_utf8_lossy(&tail));
-    }
+    LAST_STDERR.with(|last| *last.borrow_mut() = sanitize(&String::from_utf8_lossy(&tail)));
     if output.len() > 2_000_000 {
         return Err(Error::new("Oversized command output"));
     }
@@ -2141,6 +2143,29 @@ mod lock_tests {
             error.contains("sh exited with 3") && error.contains("No space left on device"),
             "{error}"
         );
+    }
+    /// Each thread's failure names its own command's error output. It was one value for the
+    /// whole program, so a command run by another thread in between replaced it: seen on
+    /// CI, where cargo runs the tests on many threads and the test above got "sh exited with
+    /// 3" without its "No space left on device". The control service and the dashboard run
+    /// commands on several threads too.
+    #[test]
+    fn a_failure_names_its_own_commands_output_not_another_threads() {
+        use std::sync::Barrier;
+        let ran = Arc::new(Barrier::new(2));
+        let other_ran = Arc::new(Barrier::new(2));
+        let (r, o) = (ran.clone(), other_ran.clone());
+        let other = thread::spawn(move || {
+            r.wait(); // after the first thread's command
+            command(&["sh", "-c", "echo 'another program' >&2; exit 1"], 10).unwrap();
+            o.wait();
+        });
+        let (code, _) = command(&["sh", "-c", "echo 'disk full' >&2; exit 3"], 10).unwrap();
+        ran.wait();
+        other_ran.wait(); // the other thread's command has run in between
+        let error = failed(&["sh"], code, "Copy failed").to_string();
+        other.join().unwrap();
+        assert!(error.contains("(disk full)"), "{error}");
     }
     use super::*;
     fn private(path: &Path) {
