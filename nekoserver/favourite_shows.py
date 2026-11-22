@@ -219,13 +219,17 @@ def main(argv=None):
     parser.add_argument('--config', required=True)
     args = parser.parse_args(argv)
     config = read_settings(args.config)
+    report = safe_path(config['data_mount']) / REPORT
     try:
         account = run_once(config, factory=Client)
     except (RuntimeError, OSError, ValueError) as exc:
         # The apps not answering (stopped for a backup, say): the next hour tries again.
+        # Kept in the account too, so a look that keeps failing (an app's API changed in
+        # an update, say) is seen there, not only in the journal.
+        atomic_json(report, {'format': FORMAT, 'at': time.time(), 'failed': str(exc)})
         print(f'Favourite shows: not looked at this time: {exc}')
         return 1
-    atomic_json(safe_path(config['data_mount']) / REPORT, account)
+    atomic_json(report, account)
     print(said(account))
     for show in account['followed']:
         if show.get('apart'):

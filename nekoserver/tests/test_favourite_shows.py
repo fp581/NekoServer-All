@@ -238,7 +238,8 @@ class FavouriteShowsTests(unittest.TestCase):
         self.assertEqual(
             printed, ['Favourite shows: not looked at this time: jellyfin: unavailable or incompatible API response']
         )
-        self.assertFalse((self.data / favourite_shows.REPORT).exists())
+        kept = json.loads((self.data / favourite_shows.REPORT).read_text())
+        self.assertEqual(kept['failed'], 'jellyfin: unavailable or incompatible API response')
 
 
 if __name__ == '__main__':
@@ -275,6 +276,30 @@ class ScheduleTests(unittest.TestCase):
         self.ctx.config['media']['services'] = services
         with mock.patch.object(self.onboarding, 'media_services', lambda config: config['media']['services']):
             self.onboarding.follow_favourite_shows(self.ctx, run=lambda cmd, **_: self.ran.append(' '.join(cmd)))
+
+    def test_every_setup_run_and_upgrade_writes_this_releases_job_even_when_connecting_fails(self):
+        """An upgrade's setup whose connection check did not pass left the job running the
+        previous release's copy of itself."""
+        ctx = self.ctx
+        ctx.apply = True
+        real = self.onboarding.follow_favourite_shows
+
+        def job_step(ctx):
+            real(ctx, run=lambda cmd, **_: self.ran.append(' '.join(cmd)))
+
+        ctx.config['onboarding'] = {}
+        with (
+            mock.patch.object(self.onboarding, 'media_services', lambda config: ['jellyfin', 'sonarr']),
+            mock.patch.object(self.onboarding, 'apps_to_connect', lambda config: True),
+            mock.patch.object(self.onboarding, 'follow_favourite_shows', side_effect=job_step) as job,
+            mock.patch.object(self.onboarding, 'docker_running', side_effect=RuntimeError('Docker is not running')),
+            mock.patch.object(self.onboarding.subprocess, 'run'),
+        ):
+            with self.assertRaises(RuntimeError):
+                self.onboarding.run(ctx)
+        job.assert_called_once()
+        release = Path(ctx.config['data_mount']) / 'installer/releases'
+        self.assertIn(str(release), (self.units / 'nekoserver-favourite-shows.service').read_text())
 
     def test_it_runs_every_hour_where_jellyfin_and_sonarr_both_are_and_goes_when_one_does_not(self):
         self.step(['jellyfin', 'seerr', 'sonarr'])

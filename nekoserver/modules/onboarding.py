@@ -63,6 +63,9 @@ def run(ctx):
         )
         follow_favourite_shows(ctx)
         return
+    # First, on every setup run and upgrade: the job then runs this release's copy of
+    # itself, also when connecting the apps does not pass this time.
+    follow_favourite_shows(ctx)
     docker_running()
     if account_store.enabled(ctx.config) and 'accounts' in getattr(ctx, 'plan', ()):
         required = account_store.selected(ctx.config, ['media'])
@@ -137,7 +140,6 @@ def run(ctx):
             + '. Finish it in the app, then retry this step',
         }
     ctx.log('Onboarding configuration checks complete')
-    follow_favourite_shows(ctx)
     witness_playback(ctx)
 
 
