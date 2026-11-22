@@ -84,7 +84,7 @@ class ComposeBindTests(unittest.TestCase):
         source = (ROOT / 'modules' / 'media.py').read_text(encoding='utf-8')
         made = source.index("ensure_directory(drive / 'library' / 'existing', 0o755)")
         self.assertLess(source.index('for drive in dict.fromkeys((films, music)):'), made)
-        self.assertLess(made, source.index('            compose_up('))
+        self.assertLess(made, source.index('        compose_up(base, name, context.log)'))  # deployed(), after them
 
 
 class DriveReturnUnitTests(unittest.TestCase):

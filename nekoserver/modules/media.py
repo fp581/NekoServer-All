@@ -222,6 +222,146 @@ def library_folder(target, uid, gid, log=print, root=0):
         log(f'{target} was made by Docker, closed to the apps: it is the apps\' now')
 
 
+def mounts_checked(context, data, media):
+    """The SSD and the media drive are mounted, each a drive of its own, and the folders
+    of the person's own are mounted before any app starts."""
+    src_data, src_media = check_mount(data), check_mount(media)
+    # Folders of the person's own, used where they are: mounted before any app starts.
+    import existing_page
+
+    existing_page.mount(context)
+    if src_data == src_media:
+        raise RuntimeError('Data and media appear to share the same filesystem')
+    verify_storage(context.config)
+    context.log(f'Dedicated mounts verified: SSD={src_data}, HDD={src_media}')
+
+
+def checked_ids(config, settings):
+    """(uid, gid, time zone, bind address) the apps run with, each checked."""
+    uid, gid = int(settings.get('uid', 1000)), int(settings.get('gid', 1000))
+    tz, bind = host_timezone(config), settings.get('bind_ip', '127.0.0.1')
+    if uid <= 0 or gid <= 0 or not re.fullmatch(r'[A-Za-z0-9_+./-]+', tz):
+        raise RuntimeError('Invalid uid, gid, or timezone')
+    if bind != '127.0.0.1':
+        raise RuntimeError('Media UIs must stay localhost-only behind the configured gateway')
+    return uid, gid, tz, bind
+
+
+def prepared_manifests(selected, compose_dir, values, settings):
+    """Every app's Compose file as this server needs it, and the unedited copies of ours
+    that it replaces: ({app: (file, content)}, {app: (backup, previous content)}).
+    Nothing is written. `values`: what the templates are filled in with."""
+    project_root = Path(__file__).resolve().parents[1]
+    manifests = {}
+    migrations = {}
+    for name in selected:
+        dest = compose_dir / name / 'compose.yaml'
+        safe_path(dest)
+        if dest.is_symlink():
+            raise RuntimeError(f'Refusing symlink manifest: {dest}')
+        template = (project_root / 'compose' / f'{name}.yaml').read_text(encoding='utf-8')
+        rendered = render(template, *values)
+        desired = adapt_to_host(name, rendered, peer_port=torrent_port(settings))
+        if dest.exists() and dest.read_text(encoding='utf-8') != desired:
+            # Replace only an unedited copy of ours.
+            migrations[name] = replacement(dest, rendered)
+        manifests[name] = (dest, desired)
+    return manifests, migrations
+
+
+def refuse_linked_folders(selected, configs, compose_dir):
+    """No app's settings folder or Compose folder is a link."""
+    for name in selected:
+        for path in (configs / name, compose_dir / name):
+            safe_path(path)
+            if path.is_symlink():
+                raise RuntimeError(f'Refusing symlink path: {path}')
+
+
+def library_folders(context, drives, uid, gid):
+    """The library folders of the films and shows and of the music (`drives`: the drive
+    of each), made where they are missing, never a link."""
+    films, music = drives
+    ensure_directory(films / 'library', 0o755)
+    ensure_directory(music / 'library', 0o755)
+    # Where the person's own folders are mounted (existing_media.py): there before the apps
+    # start, since their Compose files never let Docker make a missing folder.
+    for drive in dict.fromkeys((films, music)):
+        ensure_directory(drive / 'library' / 'existing', 0o755)
+    # The music folders setup decided (neko_common, from shared.json's locations).
+    for target in (music_library(context.config), music_downloads(context.config)):
+        library_folder(safe_path(target), uid, gid, context.log)
+    for folder in ('movies', 'tv', 'downloads'):
+        target = films / 'library' / folder
+        safe_path(target)
+        if target.is_symlink():
+            raise RuntimeError(f'Refusing symlink media directory: {target}')
+        library_folder(target, uid, gid, context.log)
+
+
+def app_folders(selected, configs, uid, gid, log):
+    """Each app's settings folder, made for the configured user."""
+    # No recursive chown: preserve existing users and files. Create fresh appdata owned by configured user.
+    for name in selected:
+        target = configs / name
+        app_folder(configs, target, uid, gid)
+        safe_path(target)
+        if target.is_symlink():
+            raise RuntimeError(f'Refusing symlink appdata: {target}')
+        if name == 'seerr':
+            adopt_seerr_folder(target, uid, gid, log)
+
+
+def deployed(context, name, manifest, migration, new_definitions):
+    """One app started from its Compose file (written when it is new, or replaces an
+    unedited copy of ours, `migration`); why it did not start, or None."""
+    dest, content = manifest
+    ensure_directory(dest.parent, 0o750)
+    # Rerun is permitted only for identical manifests. Never overwrite local edits.
+    if migration is not None:
+        backup, previous = migration
+        if not backup.exists():
+            atomic_write(backup, previous, 0o640)
+        atomic_write(dest, content, 0o640)
+    elif not dest.exists():
+        atomic_write(dest, content, 0o640)
+    remember(dest, content)
+    try:
+        run_cmd(
+            [
+                'docker',
+                'compose',
+                '-f',
+                str(dest),
+                '-p',
+                f'neko-{name}',
+                *compose_image_override(dest),
+                'config',
+                '-q',
+            ],
+            timeout=30,
+        )
+        verify_storage(context.config)
+        base = ['docker', 'compose', '-f', str(dest), '-p', f'neko-{name}', *compose_image_override(dest)]
+        compose_up(base, name, context.log)
+        if name == 'prowlarr' and new_definitions:
+            # Already running from an earlier run: it sees a new definition only after a restart.
+            run_cmd([*base, 'restart'], timeout=120)
+        context.log(f'Deployed {name} (localhost only); project neko-{name}')
+    except Exception as exc:
+        context.log(f'{name} failed: {exc}. Manifest preserved: {dest}; others will continue.')
+        return str(exc) if str(exc).startswith(name) else f'{name}: {exc}'
+    return None
+
+
+def not_started(failed):
+    """Why some apps did not start, for the finishing screen too, not only the log."""
+    reasons = ' | '.join(failed)
+    if 'run setup again' not in reasons:
+        reasons += '. Fix that, then run setup again'
+    return f'Some apps did not start. {reasons} (the apps that started are kept)'
+
+
 def _run(context):
     settings = context.config.get('media', {})
     if not context.apply:
@@ -241,28 +381,14 @@ def _run(context):
     media = Path(context.config['media_mount'])
     if data == media or str(data) == '/' or str(media) == '/':
         raise RuntimeError('Data and media must be distinct dedicated mounts')
-    src_data, src_media = check_mount(data), check_mount(media)
-    # Folders of the person's own, used where they are: mounted before any app starts.
-    import existing_page
-
-    existing_page.mount(context)
-    if src_data == src_media:
-        raise RuntimeError('Data and media appear to share the same filesystem')
-    verify_storage(context.config)
-    context.log(f'Dedicated mounts verified: SSD={src_data}, HDD={src_media}')
+    mounts_checked(context, data, media)
     if not shutil.which('docker'):
         raise RuntimeError('Docker missing')
     # Docker gets up to two minutes to answer, as the photos step gives it. One try of 20
     # seconds failed this whole step on a PC still busy right after building the runtime
     # (a small VM, the 0.47.10 round), and setup told the user to run it again.
     run_cmd(['docker', 'info', '--format', '{{.ServerVersion}}'], timeout=120)
-    uid, gid = int(settings.get('uid', 1000)), int(settings.get('gid', 1000))
-    tz, bind = host_timezone(context.config), settings.get('bind_ip', '127.0.0.1')
-    if uid <= 0 or gid <= 0 or not re.fullmatch(r'[A-Za-z0-9_+./-]+', tz):
-        raise RuntimeError('Invalid uid, gid, or timezone')
-    if bind != '127.0.0.1':
-        raise RuntimeError('Media UIs must stay localhost-only behind the configured gateway')
-    project_root = Path(__file__).resolve().parents[1]
+    uid, gid, tz, bind = checked_ids(context.config, settings)
     compose_dir = data / 'compose'
     # The drive that holds the films, the shows and their downloads ("locations": the
     # media drive unless placed elsewhere): what the apps are given as their library.
@@ -271,53 +397,16 @@ def _run(context):
     music = files_root(context.config, 'music')
     configs = data / 'appdata'
     # Check ALL destinations first; never clobber previously customized manifests.
-    manifests = {}
-    migrations = {}
-    for name in selected:
-        dest = compose_dir / name / 'compose.yaml'
-        safe_path(dest)
-        if dest.is_symlink():
-            raise RuntimeError(f'Refusing symlink manifest: {dest}')
-        template = (project_root / 'compose' / f'{name}.yaml').read_text(encoding='utf-8')
-        values = (data, films, uid, gid, tz, bind, music)
-        rendered = render(template, *values)
-        desired = adapt_to_host(name, rendered, peer_port=torrent_port(settings))
-        if dest.exists() and dest.read_text(encoding='utf-8') != desired:
-            # Replace only an unedited copy of ours.
-            migrations[name] = replacement(dest, rendered)
-        manifests[name] = (dest, desired)
-    for name in selected:
-        for path in (configs / name, compose_dir / name):
-            safe_path(path)
-            if path.is_symlink():
-                raise RuntimeError(f'Refusing symlink path: {path}')
+    values = (data, films, uid, gid, tz, bind, music)
+    manifests, migrations = prepared_manifests(selected, compose_dir, values, settings)
+    refuse_linked_folders(selected, configs, compose_dir)
     context.log('Prepared all media Compose manifests without touching existing projects')
-    ensure_directory(films / 'library', 0o755)
-    ensure_directory(music / 'library', 0o755)
-    # Where the person's own folders are mounted (existing_media.py): there before the apps
-    # start, since their Compose files never let Docker make a missing folder.
-    for drive in dict.fromkeys((films, music)):
-        ensure_directory(drive / 'library' / 'existing', 0o755)
-    # The music folders setup decided (neko_common, from shared.json's locations).
-    for target in (music_library(context.config), music_downloads(context.config)):
-        library_folder(safe_path(target), uid, gid, context.log)
-    for folder in ('movies', 'tv', 'downloads'):
-        target = films / 'library' / folder
-        safe_path(target)
-        if target.is_symlink():
-            raise RuntimeError(f'Refusing symlink media directory: {target}')
-        library_folder(target, uid, gid, context.log)
+    library_folders(context, (films, music), uid, gid)
     # Folders the person chose to copy into the library: now that its folders are there.
+    import existing_page
+
     existing_page.copy(context)
-    # No recursive chown: preserve existing users and files. Create fresh appdata owned by configured user.
-    for name in selected:
-        target = configs / name
-        app_folder(configs, target, uid, gid)
-        safe_path(target)
-        if target.is_symlink():
-            raise RuntimeError(f'Refusing symlink appdata: {target}')
-        if name == 'seerr':
-            adopt_seerr_folder(target, uid, gid, context.log)
+    app_folders(selected, configs, uid, gid, context.log)
     # The download sources NekoServer adds to Prowlarr's catalogue (Torrentio), in its
     # custom definitions folder before it starts; Prowlarr reads that folder only then.
     new_definitions = custom_indexers.install(data, uid, gid, context.log) if 'prowlarr' in selected else []
@@ -326,50 +415,14 @@ def _run(context):
     )
     failed = []
     for name, (dest, content) in manifests.items():
-        ensure_directory(dest.parent, 0o750)
-        # Rerun is permitted only for identical manifests. Never overwrite local edits.
-        if name in migrations:
-            backup, previous = migrations[name]
-            if not backup.exists():
-                atomic_write(backup, previous, 0o640)
-            atomic_write(dest, content, 0o640)
-        elif not dest.exists():
-            atomic_write(dest, content, 0o640)
-        remember(dest, content)
-        try:
-            run_cmd(
-                [
-                    'docker',
-                    'compose',
-                    '-f',
-                    str(dest),
-                    '-p',
-                    f'neko-{name}',
-                    *compose_image_override(dest),
-                    'config',
-                    '-q',
-                ],
-                timeout=30,
-            )
-            verify_storage(context.config)
-            base = ['docker', 'compose', '-f', str(dest), '-p', f'neko-{name}', *compose_image_override(dest)]
-            compose_up(base, name, context.log)
-            if name == 'prowlarr' and new_definitions:
-                # Already running from an earlier run: it sees a new definition only after a restart.
-                run_cmd([*base, 'restart'], timeout=120)
-            context.log(f'Deployed {name} (localhost only); project neko-{name}')
-        except Exception as exc:
-            context.log(f'{name} failed: {exc}. Manifest preserved: {dest}; others will continue.')
-            failed.append(str(exc) if str(exc).startswith(name) else f'{name}: {exc}')
+        problem = deployed(context, name, (dest, content), migrations.get(name), new_definitions)
+        if problem is not None:
+            failed.append(problem)
     if getattr(context, 'existing_mounts_changed', False):
         restart_for_own_folders(manifests, failed, context.log)
     stop_unselected(compose_dir, selected, context.log)
     if failed:
-        # The reason belongs on the finishing screen too, not only in the log.
-        reasons = ' | '.join(failed)
-        if 'run setup again' not in reasons:
-            reasons += '. Fix that, then run setup again'
-        raise RuntimeError(f'Some apps did not start. {reasons} (the apps that started are kept)')
+        raise RuntimeError(not_started(failed))
     context.log(
         'Media stack deployed. Run the onboarding module to connect accounts, libraries and API keys; verify actual playback.'
     )
