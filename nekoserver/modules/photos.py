@@ -222,6 +222,77 @@ def switch_off(ctx, folder, run=subprocess.run, journal=None):
     )
 
 
+def start_cut_off_setup_again(ctx, compose, db):
+    """Setup stopped between Immich's two files (releases up to 0.24.1 wrote compose.yaml
+    first). Without a database there is nothing the missing .env could unlock, so this
+    step starts again; with one, its password is unknown and a person must look."""
+    if has_files(db):
+        raise RuntimeError('Immich has a database but its .env file is missing; files preserved for inspection')
+    ctx.log('Finishing an Immich setup that was interrupted')
+    compose.unlink()
+
+
+def immich_release(ctx, env, wanted, places):
+    """The Immich release to set up: the one an interrupted setup wrote in `env` already
+    (.env is written first and compose.yaml last: its version and database password are
+    kept), else the one `wanted` names. `places`: (the upload folder, the database's)."""
+    if not env.exists():
+        ver = resolve_immich_version(wanted)
+        ctx.log(f'Pinned Immich release: {ver}')
+        return ver
+    upload, db = places
+    ver = env_value(checked_env(env, upload, db), 'IMMICH_VERSION')
+    if not version_ok(ver):
+        raise RuntimeError('Existing Immich .env has no valid IMMICH_VERSION; file preserved for inspection')
+    ctx.log(f'Finishing an interrupted Immich setup (release {ver})')
+    return ver
+
+
+def write_immich_files(cfg, ver, files, folders):
+    """Immich's folders made and its two files written: the upstream compose file of
+    release `ver`, unmodified but for its port (localize_manifest), and its .env (kept
+    when there is one). `files`: (their folder, compose.yaml, .env); `folders`: (the
+    database's, the upload library, the archive, the inbox)."""
+    data = Path(cfg['data_mount'])
+    compose_dir, compose, env = files
+    db, upload, archive, inbox = folders
+    # Network is required to obtain an upstream version-compatible manifest.
+    content = fetch(IMMICH_COMPOSE.format(version=ver), f'Downloading Immich {ver}\'s compose file', 200000)
+    if b'immich-server' not in content or b'DB_DATA_LOCATION' not in content:
+        raise RuntimeError('Unexpected upstream Immich manifest')
+    verify_storage(cfg)
+    # Allow storage and port values from a restricted .env; keep upstream manifest unmodified.
+    ensure_directory(data / 'appdata', 0o755)
+    ensure_directory(data / 'appdata/immich', 0o700)
+    ensure_directory(compose_dir, 0o700)
+    ensure_directory(db, 0o700)
+    for target in (upload, archive, inbox):
+        ensure_directory(target, 0o755)
+    # The upstream file binds 2283 to all host IPs; localize it explicitly.
+    text = localize_manifest(content)
+    if not env.exists():
+        atomic_write(env, new_env(upload, db, ver, host_timezone(cfg)), 0o600)
+    # Written last: a compose.yaml means this step finished writing its settings.
+    atomic_write(compose, text, 0o640)
+
+
+def new_env(upload, db, ver, timezone):
+    """Immich's .env for a new install: its folders, its release, a new database password."""
+    return (
+        'UPLOAD_LOCATION='
+        + str(upload)
+        + '\nDB_DATA_LOCATION='
+        + str(db)
+        + '\nIMMICH_VERSION='
+        + ver
+        + '\nDB_PASSWORD='
+        + secrets.token_hex(24)
+        + '\nDB_USERNAME=postgres\nDB_DATABASE_NAME=immich\nTZ='
+        + timezone
+        + '\n'
+    )
+
+
 def _run(ctx):
     cfg = ctx.config
     opts = cfg.get('photos', {})
@@ -257,56 +328,10 @@ def _run(ctx):
     compose = safe_path(compose_dir / 'compose.yaml')
     env = safe_path(compose_dir / '.env')
     if compose.exists() and not env.exists():
-        # Setup stopped between the two files (releases up to 0.24.1 wrote compose.yaml
-        # first). Without a database there is nothing the missing .env could unlock, so
-        # start this step again; with one, its password is unknown and a person must look.
-        if has_files(db):
-            raise RuntimeError('Immich has a database but its .env file is missing; files preserved for inspection')
-        ctx.log('Finishing an Immich setup that was interrupted')
-        compose.unlink()
+        start_cut_off_setup_again(ctx, compose, db)
     if not compose.exists():
-        if env.exists():
-            # .env is written first and compose.yaml last, so this is an interrupted setup:
-            # keep its version and database password and fetch the matching compose file.
-            ver = env_value(checked_env(env, upload, db), 'IMMICH_VERSION')
-            if not version_ok(ver):
-                raise RuntimeError('Existing Immich .env has no valid IMMICH_VERSION; file preserved for inspection')
-            ctx.log(f'Finishing an interrupted Immich setup (release {ver})')
-        else:
-            ver = resolve_immich_version(ver)
-            ctx.log(f'Pinned Immich release: {ver}')
-        # Network is required to obtain an upstream version-compatible manifest.
-        content = fetch(IMMICH_COMPOSE.format(version=ver), f'Downloading Immich {ver}\'s compose file', 200000)
-        if b'immich-server' not in content or b'DB_DATA_LOCATION' not in content:
-            raise RuntimeError('Unexpected upstream Immich manifest')
-        verify_storage(cfg)
-        # Allow storage and port values from a restricted .env; keep upstream manifest unmodified.
-        ensure_directory(data / 'appdata', 0o755)
-        ensure_directory(data / 'appdata/immich', 0o700)
-        ensure_directory(compose_dir, 0o700)
-        ensure_directory(db, 0o700)
-        for target in (upload, archive, inbox):
-            ensure_directory(target, 0o755)
-        # The upstream file binds 2283 to all host IPs; localize it explicitly.
-        text = localize_manifest(content)
-        if not env.exists():
-            atomic_write(
-                env,
-                'UPLOAD_LOCATION='
-                + str(upload)
-                + '\nDB_DATA_LOCATION='
-                + str(db)
-                + '\nIMMICH_VERSION='
-                + ver
-                + '\nDB_PASSWORD='
-                + secrets.token_hex(24)
-                + '\nDB_USERNAME=postgres\nDB_DATABASE_NAME=immich\nTZ='
-                + host_timezone(cfg)
-                + '\n',
-                0o600,
-            )
-        # Written last: a compose.yaml means this step finished writing its settings.
-        atomic_write(compose, text, 0o640)
+        ver = immich_release(ctx, env, ver, (upload, db))
+        write_immich_files(cfg, ver, (compose_dir, compose, env), (db, upload, archive, inbox))
     else:
         follow_timezone(env, checked_env(env, upload, db), host_timezone(cfg), ctx.log)
     ensure_directory(db, 0o700)

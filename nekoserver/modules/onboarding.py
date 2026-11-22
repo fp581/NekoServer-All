@@ -50,6 +50,42 @@ def docker_running(run=subprocess.run):
         raise RuntimeError(DOCKER_DOWN)
 
 
+def logins_not_verified(ctx):
+    """In a run that sets up the accounts: a media app whose saved login is not verified yet."""
+    if not (account_store.enabled(ctx.config) and 'accounts' in getattr(ctx, 'plan', ())):
+        return False
+    required = account_store.selected(ctx.config, ['media'])
+    return any(not account_store.get(ctx.config, app, verified=True) for app in required)
+
+
+def connected_with_you(ctx, settings, cmd):
+    """The connecting program run with someone at the terminal: it makes the connections
+    and asks what only a person can say. Returns its exit code."""
+    cmd = [*cmd, '--configure', '--apply']
+    services = media_services(ctx.config)
+    if settings.get('configure_libraries', True) and 'jellyfin' in services:
+        cmd.append('--libraries')
+    if settings.get('configure_request_providers', True) and 'seerr' in services and set(services) & {'sonarr', 'radarr'}:
+        cmd.append('--request-providers')
+    # Media a person already has is asked on setup's storage page (existing_page.py),
+    # used where it is or copied: the connecting step no longer asks for "sources".
+    optional = []
+    if settings.get('configure_indexers', True) and 'prowlarr' in services:
+        optional.append('indexers')
+    if not playback_record(ctx.config).exists():
+        optional.append('playback')
+    ctx.optional_kept = guided_setup.optional_kept(ctx, optional)
+    cmd += ['--' + question for question in optional if question not in ctx.optional_kept + ['playback']]
+    # With the lock backups and monthly updates take: a nightly backup stopping the apps
+    # while they are being connected would fail them half-way.
+    from recovery_tools import lock
+
+    # Inside setup's own process (setup_progress.run_program): its questions about
+    # download sources and sign-ins are asked in the setup window too.
+    with lock(ctx.config):
+        return setup_progress.run_program(cmd[1], cmd[2:])
+
+
 def run(ctx):
     settings = ctx.config.get('onboarding', {})
     if not ctx.apply or not settings.get('enabled', True):
@@ -67,13 +103,11 @@ def run(ctx):
     # itself, also when connecting the apps does not pass this time.
     follow_favourite_shows(ctx)
     docker_running()
-    if account_store.enabled(ctx.config) and 'accounts' in getattr(ctx, 'plan', ()):
-        required = account_store.selected(ctx.config, ['media'])
-        if any(not account_store.get(ctx.config, app, verified=True) for app in required):
-            return {
-                'status': 'needs_setup',
-                'reason': 'Complete local media account setup before connecting applications',
-            }
+    if logins_not_verified(ctx):
+        return {
+            'status': 'needs_setup',
+            'reason': 'Complete local media account setup before connecting applications',
+        }
     release = safe_path(Path(ctx.config['data_mount']) / 'installer' / 'releases' / ('v' + VERSION))
     script = release / 'onboard.py'
     if not script.is_file():
@@ -84,33 +118,7 @@ def run(ctx):
         raise RuntimeError('Onboarding wait must be 0..600 seconds')
     cmd = [sys.executable, str(script), '--config', str(config), '--wait', str(wait)]
     if sys.stdin.isatty():
-        cmd += ['--configure', '--apply']
-        services = media_services(ctx.config)
-        if settings.get('configure_libraries', True) and 'jellyfin' in services:
-            cmd.append('--libraries')
-        if (
-            settings.get('configure_request_providers', True)
-            and 'seerr' in services
-            and set(services) & {'sonarr', 'radarr'}
-        ):
-            cmd.append('--request-providers')
-        # Media a person already has is asked on setup's storage page (existing_page.py),
-        # used where it is or copied: the connecting step no longer asks for "sources".
-        optional = []
-        if settings.get('configure_indexers', True) and 'prowlarr' in services:
-            optional.append('indexers')
-        if not playback_record(ctx.config).exists():
-            optional.append('playback')
-        ctx.optional_kept = guided_setup.optional_kept(ctx, optional)
-        cmd += ['--' + question for question in optional if question not in ctx.optional_kept + ['playback']]
-        # With the lock backups and monthly updates take: a nightly backup stopping the apps
-        # while they are being connected would fail them half-way.
-        from recovery_tools import lock
-
-        # Inside setup's own process (setup_progress.run_program): its questions about
-        # download sources and sign-ins are asked in the setup window too.
-        with lock(ctx.config):
-            result = setup_progress.run_program(cmd[1], cmd[2:])
+        result = connected_with_you(ctx, settings, cmd)
     else:
         cmd.append('--report-only')
         result = subprocess.run(cmd, check=False).returncode
