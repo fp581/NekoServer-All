@@ -1677,3 +1677,151 @@ mod split_helpers {
         assert_eq!(state["entries"], json!({"mount:media": {}}));
     }
 }
+
+/// Tests the mutation pass of 0.52.2 asked for (G6): when a problem or a recovery is
+/// due, what proves a drive recovered, and the message's words.
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+
+    const NOW: f64 = 100_000.0;
+
+    /// A first sighting dated later than now (a clock put back) counts from now: with no
+    /// wait it is sent at once, never held back by a time still to come.
+    #[test]
+    fn a_problem_first_seen_in_the_future_counts_from_now() {
+        let mut entries =
+            json!({"app:x":{"first_seen":NOW + 5000.0,"last_sent":null,"sent_level":null}});
+        assert!(problem_due(
+            &mut entries,
+            "app:x",
+            "warning",
+            NOW,
+            (0, 43200)
+        ));
+    }
+
+    /// A message sent later than now (the clock put back) does not hold the next one back.
+    #[test]
+    fn a_message_sent_in_the_future_does_not_hold_the_next_back() {
+        let mut entries =
+            json!({"app:x":{"first_seen":0.0,"last_sent":NOW + 5000.0,"sent_level":"warning"}});
+        assert!(problem_due(
+            &mut entries,
+            "app:x",
+            "warning",
+            NOW,
+            (300, 43200)
+        ));
+    }
+
+    /// One sent a moment ago waits for the repeat; once the repeat has passed it goes
+    /// again, and one that became urgent goes at once.
+    #[test]
+    fn a_problem_just_sent_waits_for_the_repeat() {
+        let entry = |sent: f64, level: &str| json!({"app:x":{"first_seen":0.0,"last_sent":sent,"sent_level":level}});
+        let times = (300, 43200);
+        assert!(!problem_due(
+            &mut entry(NOW - 10.0, "warning"),
+            "app:x",
+            "warning",
+            NOW,
+            times
+        ));
+        assert!(problem_due(
+            &mut entry(NOW - 43200.0, "warning"),
+            "app:x",
+            "warning",
+            NOW,
+            times
+        ));
+        assert!(problem_due(
+            &mut entry(NOW - 10.0, "warning"),
+            "app:x",
+            "critical",
+            NOW,
+            times
+        ));
+        assert!(!problem_due(
+            &mut entry(NOW - 10.0, "critical"),
+            "app:x",
+            "critical",
+            NOW,
+            times
+        ));
+    }
+
+    /// A recovery dated later than now counts from now, and the date kept is now.
+    #[test]
+    fn a_recovery_cleared_in_the_future_counts_from_now() {
+        let mut entry = json!({"cleared_at":NOW + 5000.0});
+        assert!(recovery_due(&mut entry, NOW, 0));
+        assert_eq!(entry["cleared_at"], json!(NOW));
+        let mut entry = json!({"cleared_at":NOW - 10.0});
+        assert!(!recovery_due(&mut entry, NOW, 300));
+        assert!(recovery_due(&mut entry, NOW + 290.0, 300));
+    }
+
+    /// A drive is recovered only when it is mounted, writable, not waiting and without
+    /// errors; its space only when it was read, its SMART only when it passed.
+    #[test]
+    fn a_drive_is_recovered_only_on_full_evidence() {
+        let drives = ["good", "ro", "waiting", "errors", "nospace", "gone"];
+        let mut unknown: BTreeSet<String> = ["mount", "space", "smart"]
+            .iter()
+            .flat_map(|kind| drives.iter().map(move |d| format!("{kind}:{d}")))
+            .collect();
+        let s = json!({"storage":[
+            {"id":"good","status":"mounted","used_percent":40,"fs_errors":0,"smart":{"status":"pass"}},
+            {"id":"ro","status":"mounted","read_only":true,"used_percent":40,"smart":{"status":"fail"}},
+            {"id":"waiting","status":"mounted","waiting":true,"used_percent":40},
+            {"id":"errors","status":"mounted","fs_errors":3,"used_percent":40},
+            {"id":"nospace","status":"mounted","smart":{"status":"pass"}},
+            {"id":"gone","status":"missing","used_percent":40,"smart":{"status":"pass"}}
+        ]});
+        recovered_drives(&s, &mut unknown);
+        let left: BTreeSet<String> = [
+            "mount:ro",
+            "space:ro",
+            "smart:ro",
+            "mount:waiting",
+            "space:waiting",
+            "smart:waiting",
+            "mount:errors",
+            "space:errors",
+            "smart:errors",
+            "space:nospace",
+            "mount:gone",
+            "space:gone",
+            "smart:gone",
+        ]
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
+        assert_eq!(unknown, left);
+    }
+
+    /// Each line of the message: "still" only for a reminder of a problem, never for a
+    /// recovery, even of a problem sent before.
+    #[test]
+    fn still_is_said_only_for_a_reminder() {
+        let entries = json!({
+            "memory-pressure":{"last_sent":1.0,"sent_level":"warning"},
+            "temperature":{"last_sent":1.0,"sent_level":"warning"},
+            "media-stale":{"last_sent":null}
+        });
+        let events = vec![
+            ("memory-pressure".to_string(), false, "warning".to_string()),
+            ("temperature".to_string(), true, "warning".to_string()),
+            ("media-stale".to_string(), false, "critical".to_string()),
+        ];
+        assert_eq!(
+            health_message(&events, &entries),
+            "NekoServer health update\n\
+             still warning: Available RAM is low\n\
+             RECOVERED: CPU temperature is high\n\
+             critical: Media connection checks are stale\n\
+             Review the local dashboard and service logs for details."
+        );
+    }
+}

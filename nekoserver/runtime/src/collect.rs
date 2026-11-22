@@ -6877,3 +6877,167 @@ mod job_pins {
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+/// Tests the mutation pass of 0.52.2 asked for (G6): the split-out readers and alerts.
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+
+    fn folder(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("neko-collect-split-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// What sensor_temperature makes of the chip file `file` holding `value`.
+    fn reading(chip: &Path, file: &str, value: &str) -> Option<(f64, Option<f64>)> {
+        fs::write(chip.join(file), value).unwrap();
+        let entry = fs::read_dir(chip)
+            .unwrap()
+            .flatten()
+            .find(|e| e.file_name() == file)
+            .unwrap();
+        let read = sensor_temperature(chip, &entry);
+        fs::remove_file(chip.join(file)).unwrap();
+        read
+    }
+
+    /// Only a temp*_input file is a temperature, from -10 °C to 150 °C, with the chip's
+    /// critical limit only when it is from 40 °C to 150 °C.
+    #[test]
+    fn a_sensor_counts_only_as_a_real_temperature_input() {
+        let chip = folder("sensor");
+        fs::write(chip.join("temp1_crit"), "100000").unwrap();
+        assert_eq!(
+            reading(&chip, "temp1_input", "45000"),
+            Some((45.0, Some(100.0)))
+        );
+        assert_eq!(
+            reading(&chip, "temp1_input", "-5000"),
+            Some((-5.0, Some(100.0)))
+        );
+        assert_eq!(reading(&chip, "temp1_input", "151000"), None);
+        assert_eq!(reading(&chip, "temp1_input", "-11000"), None);
+        assert_eq!(reading(&chip, "temp1_max", "45000"), None);
+        assert_eq!(reading(&chip, "fan1_input", "45000"), None);
+        fs::write(chip.join("temp1_crit"), "200000").unwrap();
+        assert_eq!(reading(&chip, "temp1_input", "45000"), Some((45.0, None)));
+        let _ = fs::remove_dir_all(&chip);
+    }
+
+    fn record(project: &str, service: &str) -> Container {
+        let labels = [
+            (
+                "com.docker.compose.project".to_string(),
+                project.to_string(),
+            ),
+            (
+                "com.docker.compose.service".to_string(),
+                service.to_string(),
+            ),
+        ];
+        (labels.into_iter().collect(), json!({}))
+    }
+
+    /// An app is its own one container (Immich's is its server); none is set up, unknown
+    /// or missing; two are ambiguous.
+    #[test]
+    fn an_app_is_found_only_as_its_own_one_container() {
+        assert_eq!(compose_service("immich"), "immich-server");
+        assert_eq!(compose_service("jellyfin"), "jellyfin");
+        let state = |records: &[Container], app: &str, code: i32, data: Option<&Path>| {
+            app_state(records, app, (code, data), (&[], 0.0))
+                .0
+                .to_string()
+        };
+        let immich = [record("neko-immich", "immich-server")];
+        let one = state(&immich, "immich", 0, None);
+        assert!(one != "missing" && one != "ambiguous", "{one}");
+        let elsewhere = [record("neko-jellyfin", "immich-server")];
+        assert_eq!(state(&elsewhere, "immich", 0, None), "missing");
+        let database = [record("neko-immich", "database")];
+        assert_eq!(state(&database, "immich", 0, None), "missing");
+        assert_eq!(state(&[], "immich", 1, None), "unknown");
+        let data = folder("apps");
+        assert_eq!(state(&[], "jellyfin", 0, Some(&data)), "not_set_up");
+        fs::create_dir_all(data.join("compose/jellyfin")).unwrap();
+        fs::write(data.join("compose/jellyfin/compose.yaml"), "").unwrap();
+        assert_eq!(state(&[], "jellyfin", 0, Some(&data)), "missing");
+        assert_eq!(state(&[], "jellyfin", 1, Some(&data)), "unknown");
+        let twice = [
+            record("neko-jellyfin", "jellyfin"),
+            record("neko-jellyfin", "jellyfin"),
+        ];
+        assert_eq!(state(&twice, "jellyfin", 0, None), "ambiguous");
+        let _ = fs::remove_dir_all(&data);
+    }
+
+    /// A media app chosen at setup counts whatever the rest of the settings say.
+    #[test]
+    fn a_chosen_media_app_counts_on_its_own() {
+        assert!(chosen_app(&json!({}), &["jellyfin"], "jellyfin"));
+        assert!(!chosen_app(&json!({}), &[], "jellyfin"));
+        assert!(chosen_app(
+            &json!({"nextcloud":{"enabled":true}}),
+            &[],
+            "nextcloud"
+        ));
+        assert!(!chosen_app(
+            &json!({"nextcloud":{"enabled":true}}),
+            &[],
+            "jellyfin"
+        ));
+        let photos = json!({"photos":{"deploy_immich":true}});
+        assert!(chosen_app(&photos, &[], "immich"));
+        assert!(!chosen_app(&photos, &[], "jellyfin"));
+    }
+
+    fn alerts(add: impl Fn(&mut Alerts)) -> Vec<(String, String)> {
+        let mut out = Alerts(Vec::new());
+        add(&mut out);
+        out.0
+            .iter()
+            .map(|a| (text(&a["id"]).to_string(), text(&a["title"]).to_string()))
+            .collect()
+    }
+
+    /// A lost drive is said; a warning only with a mismatch or from ERRORS_ALERTED
+    /// errors on.
+    #[test]
+    fn an_array_warns_only_on_real_trouble() {
+        let array = |status: &str, mismatches: u64, errors: u64| {
+            json!({"id":"hdd","name":"Media drives","status":status,"reason":"r",
+                   "mismatches":mismatches,"members":[{"errors":errors},{"errors":0}]})
+        };
+        let said = |a: Value| alerts(|out| array_alert(out, &a));
+        assert_eq!(
+            said(array("degraded", 0, 0)),
+            vec![(
+                "array-lost:hdd".to_string(),
+                "Media drives has lost a drive".to_string()
+            )]
+        );
+        let limit = crate::array_health::ERRORS_ALERTED;
+        assert_eq!(said(array("warning", 0, limit)).len(), 1);
+        assert_eq!(said(array("warning", 1, 0)).len(), 1);
+        assert!(said(array("warning", 0, limit - 1)).is_empty());
+        assert!(said(array("warning", 0, 0)).is_empty());
+    }
+
+    /// Filesystem errors are said for a data drive from one error on, never for the
+    /// system drive.
+    #[test]
+    fn filesystem_errors_are_said_from_the_first_one() {
+        let said = |id: &str, errors: u64| {
+            let d = json!({"id":id,"name":"App SSD","status":"mounted","fs_errors":errors});
+            alerts(|out| drive_state_alert(out, &d, ""))
+                .into_iter()
+                .any(|(_, title)| title.ends_with("has filesystem errors"))
+        };
+        assert!(said("data", 1));
+        assert!(!said("data", 0));
+        assert!(!said("os", 1));
+    }
+}

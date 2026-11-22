@@ -945,3 +945,39 @@ mod split_helpers {
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+/// Tests the mutation pass of 0.52.2 asked for (G6): the free-space reserve's bounds.
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    /// The reserve setup chose is taken from 1 GiB to 1 TiB; outside that it is refused
+    /// before the drive is even looked at.
+    #[test]
+    fn the_reserve_is_taken_from_one_gib_to_one_tib() {
+        let root = std::env::temp_dir();
+        let reserve = |bytes: u64| json!({"host_backup":{"minimum_free_bytes":bytes}});
+        let said = |bytes: u64| {
+            room_for(&reserve(bytes), &root, &[], &root)
+                .err()
+                .map(|e| e.to_string())
+        };
+        for refused in [GIB / 2, GIB - 1, 1024 * GIB + 1, 2048 * GIB] {
+            assert_eq!(
+                said(refused).as_deref(),
+                Some("Invalid free-space reserve"),
+                "{refused}"
+            );
+        }
+        // Taken: whether this computer has that much room is another question.
+        for taken in [GIB, 2 * GIB, 1024 * GIB] {
+            assert_ne!(
+                said(taken).as_deref(),
+                Some("Invalid free-space reserve"),
+                "{taken}"
+            );
+        }
+    }
+}

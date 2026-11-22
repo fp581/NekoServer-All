@@ -11007,3 +11007,34 @@ mod tests {
         assert!(unchanged_list_said(1, list).starts_with("the 1 file you have now is the same"));
     }
 }
+
+/// Tests the mutation pass of 0.52.2 asked for (G6): the USB drive's checksum list.
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+
+    /// An unreadable checksum list on the USB drive is never written over: a real run moves
+    /// it aside (kept), a dry run leaves it exactly where it is.
+    #[test]
+    fn an_unreadable_usb_list_is_moved_aside_only_by_a_real_run() {
+        let dest = std::env::temp_dir().join(format!("neko-usb-ledger-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dest);
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(dest.join(LEDGER), b"not a checksum list").unwrap();
+        let aside = |dest: &Path| -> Vec<String> {
+            fs::read_dir(dest)
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .filter(|n| n.starts_with(&format!("{LEDGER}.unreadable-")))
+                .collect()
+        };
+        assert!(open_usb_ledger(&dest, false).unwrap().is_none());
+        assert_eq!(fs::read(dest.join(LEDGER)).unwrap(), b"not a checksum list");
+        assert!(aside(&dest).is_empty());
+        assert!(open_usb_ledger(&dest, true).unwrap().is_none());
+        assert!(!dest.join(LEDGER).exists());
+        assert_eq!(aside(&dest).len(), 1);
+        let _ = fs::remove_dir_all(&dest);
+    }
+}

@@ -1387,3 +1387,72 @@ mod tests {
         );
     }
 }
+
+/// Tests the mutation pass of 0.52.2 asked for (G6): the split-out sensor readers.
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+
+    fn folder(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("neko-live-split-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A temperature's limits are shown only when the chip gives a real one: above zero
+    /// and at most 200 °C.
+    #[test]
+    fn a_temperature_limit_is_shown_only_when_it_is_real() {
+        let chip = folder("limits");
+        fs::write(chip.join("temp1_input"), "45000").unwrap();
+        fs::write(chip.join("temp1_max"), "85000").unwrap();
+        fs::write(chip.join("temp1_crit"), "250000").unwrap();
+        let row = sensor_row(&chip, "temp1_input", "Processor", "coretemp").unwrap();
+        assert_eq!(row["value"], 45.0);
+        assert_eq!(row["max"], 85.0);
+        assert!(row.get("crit").is_none(), "{row}");
+        fs::write(chip.join("temp1_max"), "0").unwrap();
+        fs::write(chip.join("temp1_crit"), "200000").unwrap();
+        let row = sensor_row(&chip, "temp1_input", "Processor", "coretemp").unwrap();
+        assert!(row.get("max").is_none(), "{row}");
+        assert_eq!(row["crit"], 200.0);
+        let _ = fs::remove_dir_all(&chip);
+    }
+
+    /// A thermal zone is shown from -40 °C to 200 °C (a cold one at 20 °C too); beyond
+    /// that it is no reading.
+    #[test]
+    fn a_thermal_zone_is_shown_only_within_real_temperatures() {
+        let thermal = folder("zones");
+        for (zone, temp) in [
+            ("thermal_zone0", "20000"),
+            ("thermal_zone1", "-39000"),
+            ("thermal_zone2", "-41000"),
+            ("thermal_zone3", "201000"),
+        ] {
+            fs::create_dir_all(thermal.join(zone)).unwrap();
+            fs::write(thermal.join(zone).join("temp"), temp).unwrap();
+            fs::write(thermal.join(zone).join("type"), "acpitz").unwrap();
+        }
+        let mut shown: Vec<_> = thermal_zones(&thermal)
+            .iter()
+            .map(|row| {
+                (
+                    row["id"].as_str().unwrap().to_string(),
+                    row["value"].as_f64().unwrap(),
+                )
+            })
+            .collect();
+        shown.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            shown,
+            vec![
+                ("thermal_zone0".to_string(), 20.0),
+                ("thermal_zone1".to_string(), -39.0)
+            ]
+        );
+        let _ = fs::remove_dir_all(&thermal);
+    }
+}
