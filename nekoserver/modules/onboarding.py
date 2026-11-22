@@ -65,7 +65,11 @@ def connected_with_you(ctx, settings, cmd):
     services = media_services(ctx.config)
     if settings.get('configure_libraries', True) and 'jellyfin' in services:
         cmd.append('--libraries')
-    if settings.get('configure_request_providers', True) and 'seerr' in services and set(services) & {'sonarr', 'radarr'}:
+    if (
+        settings.get('configure_request_providers', True)
+        and 'seerr' in services
+        and set(services) & {'sonarr', 'radarr'}
+    ):
         cmd.append('--request-providers')
     # Media a person already has is asked on setup's storage page (existing_page.py),
     # used where it is or copied: the connecting step no longer asks for "sources".

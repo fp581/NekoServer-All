@@ -45,9 +45,13 @@ def tailnet_row(config, row):
             state = 'needs_setup'
         else:
             state = 'pass' if valid else 'fail'
-        return row('routes', state, problem or 'Private owned HTTPS routes must match selected apps; Funnel is forbidden.')
+        return row(
+            'routes', state, problem or 'Private owned HTTPS routes must match selected apps; Funnel is forbidden.'
+        )
     except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-        return row('routes', 'needs_setup', 'Inspect Tailscale login, HTTPS permission and private route ownership locally.')
+        return row(
+            'routes', 'needs_setup', 'Inspect Tailscale login, HTTPS permission and private route ownership locally.'
+        )
 
 
 def lan_rows(config, row):

@@ -550,7 +550,9 @@ def correct_unverified(config, app, entry, value, asking):
         output('Press Enter alone, or type c.')
     if answer == 'c':
         username, password = existing_login(config, app, value, prompt, password_prompt, output)
-        entry.update(username=username, password=password, state='planned', source='custom-existing', allow_create=False)
+        entry.update(
+            username=username, password=password, state='planned', source='custom-existing', allow_create=False
+        )
         save(config, value)
 
 

@@ -312,56 +312,6 @@ def app_folders(selected, configs, uid, gid, log):
             adopt_seerr_folder(target, uid, gid, log)
 
 
-def deployed(context, name, manifest, migration, new_definitions):
-    """One app started from its Compose file (written when it is new, or replaces an
-    unedited copy of ours, `migration`); why it did not start, or None."""
-    dest, content = manifest
-    ensure_directory(dest.parent, 0o750)
-    # Rerun is permitted only for identical manifests. Never overwrite local edits.
-    if migration is not None:
-        backup, previous = migration
-        if not backup.exists():
-            atomic_write(backup, previous, 0o640)
-        atomic_write(dest, content, 0o640)
-    elif not dest.exists():
-        atomic_write(dest, content, 0o640)
-    remember(dest, content)
-    try:
-        run_cmd(
-            [
-                'docker',
-                'compose',
-                '-f',
-                str(dest),
-                '-p',
-                f'neko-{name}',
-                *compose_image_override(dest),
-                'config',
-                '-q',
-            ],
-            timeout=30,
-        )
-        verify_storage(context.config)
-        base = ['docker', 'compose', '-f', str(dest), '-p', f'neko-{name}', *compose_image_override(dest)]
-        compose_up(base, name, context.log)
-        if name == 'prowlarr' and new_definitions:
-            # Already running from an earlier run: it sees a new definition only after a restart.
-            run_cmd([*base, 'restart'], timeout=120)
-        context.log(f'Deployed {name} (localhost only); project neko-{name}')
-    except Exception as exc:
-        context.log(f'{name} failed: {exc}. Manifest preserved: {dest}; others will continue.')
-        return str(exc) if str(exc).startswith(name) else f'{name}: {exc}'
-    return None
-
-
-def not_started(failed):
-    """Why some apps did not start, for the finishing screen too, not only the log."""
-    reasons = ' | '.join(failed)
-    if 'run setup again' not in reasons:
-        reasons += '. Fix that, then run setup again'
-    return f'Some apps did not start. {reasons} (the apps that started are kept)'
-
-
 def _run(context):
     settings = context.config.get('media', {})
     if not context.apply:
@@ -426,6 +376,56 @@ def _run(context):
     context.log(
         'Media stack deployed. Run the onboarding module to connect accounts, libraries and API keys; verify actual playback.'
     )
+
+
+def deployed(context, name, manifest, migration, new_definitions):
+    """One app started from its Compose file (written when it is new, or replaces an
+    unedited copy of ours, `migration`); why it did not start, or None."""
+    dest, content = manifest
+    ensure_directory(dest.parent, 0o750)
+    # Rerun is permitted only for identical manifests. Never overwrite local edits.
+    if migration is not None:
+        backup, previous = migration
+        if not backup.exists():
+            atomic_write(backup, previous, 0o640)
+        atomic_write(dest, content, 0o640)
+    elif not dest.exists():
+        atomic_write(dest, content, 0o640)
+    remember(dest, content)
+    try:
+        run_cmd(
+            [
+                'docker',
+                'compose',
+                '-f',
+                str(dest),
+                '-p',
+                f'neko-{name}',
+                *compose_image_override(dest),
+                'config',
+                '-q',
+            ],
+            timeout=30,
+        )
+        verify_storage(context.config)
+        base = ['docker', 'compose', '-f', str(dest), '-p', f'neko-{name}', *compose_image_override(dest)]
+        compose_up(base, name, context.log)
+        if name == 'prowlarr' and new_definitions:
+            # Already running from an earlier run: it sees a new definition only after a restart.
+            run_cmd([*base, 'restart'], timeout=120)
+        context.log(f'Deployed {name} (localhost only); project neko-{name}')
+    except Exception as exc:
+        context.log(f'{name} failed: {exc}. Manifest preserved: {dest}; others will continue.')
+        return str(exc) if str(exc).startswith(name) else f'{name}: {exc}'
+    return None
+
+
+def not_started(failed):
+    """Why some apps did not start, for the finishing screen too, not only the log."""
+    reasons = ' | '.join(failed)
+    if 'run setup again' not in reasons:
+        reasons += '. Fix that, then run setup again'
+    return f'Some apps did not start. {reasons} (the apps that started are kept)'
 
 
 # The place in the apps where the person's own folders are seen (existing_media.CONTAINER).

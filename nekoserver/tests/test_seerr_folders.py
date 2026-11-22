@@ -141,7 +141,10 @@ class ChoiceTakenBackTests(unittest.TestCase):
             for verify_only in (False, True):
                 seerr = Seerr([made(OWN)], roots=(OWN, wanted))
                 movies = radarr((OWN, wanted))
-                with self.subTest(wanted=wanted, verify_only=verify_only), mock.patch.object(sp, 'app_key', return_value='key'):
+                with (
+                    self.subTest(wanted=wanted, verify_only=verify_only),
+                    mock.patch.object(sp, 'app_key', return_value='key'),
+                ):
                     with self.assertRaises(sp.SetupRequired) as said:
                         sp.provider(seerr, movies, '/srv', 'radarr', not verify_only, verify_only, wanted)
                 self.assertIn(f'Requests are still saved in {OWN}', str(said.exception))

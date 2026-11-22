@@ -1130,7 +1130,9 @@ def has_library(values, path, kind, entry):
             WRONG_KIND.format(
                 path=entry['path'],
                 name=wrong.get('Name', ''),
-                has={'tvshows': 'shows'}.get(wrong.get('CollectionType'), wrong.get('CollectionType') or 'mixed content'),
+                has={'tvshows': 'shows'}.get(
+                    wrong.get('CollectionType'), wrong.get('CollectionType') or 'mixed content'
+                ),
                 what=WHAT[entry['holds']],
             )
         )
