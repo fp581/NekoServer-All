@@ -220,7 +220,7 @@ def fill(sonarr, jellyfin, series_id, wanted, now):
 
 def fill_missing(root, sonarr, jellyfin, account, now):
     """Each show given to Sonarr whose missing episodes are still to be asked for: asked
-    for once Sonarr has its list. A show taken out of Sonarr since is let go."""
+    for once Sonarr has finished adding it. A show taken out of Sonarr since is let go."""
     state = safe_path(root / TO_FILL)
     try:
         to_fill = json.loads(state.read_text())
@@ -228,13 +228,19 @@ def fill_missing(root, sonarr, jellyfin, account, now):
         to_fill = {}
     if not isinstance(to_fill, dict) or not to_fill:
         return
-    ids = {str(r.get('tvdbId')): r.get('id') for r in sonarr.call('/series') or [] if isinstance(r, dict)}
+    series = {str(r.get('tvdbId')): r for r in sonarr.call('/series') or [] if isinstance(r, dict)}
     for tvdb, wanted in list(to_fill.items()):
-        if tvdb not in ids or not isinstance(wanted, dict):
+        if tvdb not in series or not isinstance(wanted, dict):
             del to_fill[tvdb]
             continue
+        if series[tvdb].get('addOptions') is not None:
+            # Sonarr is still adding it: once it has scanned the show's folder, it sets
+            # which episodes it watches from the add options (aired ones off) and only
+            # then drops them (Sonarr's SeriesScannedHandler). Episodes watched before
+            # that would be switched off again: the next run.
+            continue
         try:
-            asked = fill(sonarr, jellyfin, ids[tvdb], wanted, now)
+            asked = fill(sonarr, jellyfin, series[tvdb].get('id'), wanted, now)
         except (RuntimeError, OSError) as exc:  # tried again next hour
             account['not_filled'].append({'title': wanted.get('title', ''), 'why': str(exc)})
             continue
