@@ -203,6 +203,7 @@ def scan_new_library(client, library, log=print):
     added and passes it over until the next scheduled scan, 12 hours later. A refresh of
     the library itself (POST /Items/{id}/Refresh) goes in Jellyfin's refresh queue, apart
     from the scan, and looks through its folder (ProviderManager.RefreshCollectionFolderChildren)."""
+    return  # THROWAWAY: switched off, to see the real-apps test without it
     query = urllib.parse.urlencode(
         {
             'metadataRefreshMode': 'Default',
