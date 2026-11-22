@@ -27,6 +27,16 @@ HEALTH = {
     'seerr': '/api/v1/status',
     'nextcloud': '/status.php',
 }
+# Navidrome's sign-in, and its list of users (the administrator's).
+NAVIDROME_LOGIN = '/auth/login'
+NAVIDROME_USERS = '/api/user/'
+# What Seerr tells anyone: whether it is set up, and whether password sign-in is on.
+SEERR_PUBLIC = '/api/v1/settings/public'
+
+
+def arr_endpoint(app, path):
+    """A path of a media manager's API (Sonarr, Radarr, Lidarr, Prowlarr): /api/<its version><path>."""
+    return '/api/' + ARR.get(app, ('v1', 0))[0] + path
 
 
 class HTTPFailure(RuntimeError):
@@ -154,7 +164,7 @@ class NotAnswering(HTTPFailure):
 
 
 def wait(app, client, seconds=60):
-    endpoint = HEALTH.get(app, '/api/' + ARR.get(app, ('v1', 0))[0] + '/system/status')
+    endpoint = HEALTH.get(app, arr_endpoint(app, '/system/status'))
     deadline = time.monotonic() + seconds
     while True:
         try:
@@ -222,11 +232,11 @@ def immich(client, entry):
 
 def navidrome(client, entry):
     body = {'username': entry['username'], 'password': entry['password']}
-    result = attempt(lambda: client.call('/auth/login', 'POST', body))
+    result = attempt(lambda: client.call(NAVIDROME_LOGIN, 'POST', body))
     if not result:
         allowed(entry)
         client.call('/auth/createAdmin', 'POST', body)  # Upstream refuses if any user exists.
-        result = client.call('/auth/login', 'POST', body)
+        result = client.call(NAVIDROME_LOGIN, 'POST', body)
     check(result.get('username') == entry['username'] and result.get('isAdmin') is True and result.get('token'))
     client.headers['X-ND-Authorization'] = 'Bearer ' + result['token']
 
@@ -234,20 +244,20 @@ def navidrome(client, entry):
 def listener(client, entry, administrator, admin_entry):
     navidrome(administrator, admin_entry)
     body = {'username': entry['username'], 'password': entry['password']}
-    value = attempt(lambda: client.call('/auth/login', 'POST', body))
+    value = attempt(lambda: client.call(NAVIDROME_LOGIN, 'POST', body))
     if not value:
         allowed(entry)
-        users = administrator.call('/api/user/')
+        users = administrator.call(NAVIDROME_USERS)
         check(isinstance(users, list))
         check(not any(user.get('userName') == entry['username'] for user in users))
         libraries = administrator.call('/api/library/')
         check(isinstance(libraries, list) and libraries)
         administrator.call(
-            '/api/user/',
+            NAVIDROME_USERS,
             'POST',
             {'userName': entry['username'], 'name': entry['username'], 'password': entry['password'], 'isAdmin': False},
         )
-        value = client.call('/auth/login', 'POST', body)
+        value = client.call(NAVIDROME_LOGIN, 'POST', body)
     check(
         value.get('username') == entry['username']
         and value.get('isAdmin') is False
@@ -259,7 +269,7 @@ def listener(client, entry, administrator, admin_entry):
         check(isinstance(libraries, list) and bool(libraries))
         identity = urllib.parse.quote(str(value['id']), safe='')
         administrator.call(
-            '/api/user/' + identity + '/library/', 'PUT', {'libraryIds': [lib['id'] for lib in libraries]}
+            NAVIDROME_USERS + identity + '/library/', 'PUT', {'libraryIds': [lib['id'] for lib in libraries]}
         )
     return value
 
@@ -282,7 +292,7 @@ def arr(client, entry, config, app):
         raise RuntimeError('Media manager API key is not ready') from None
     check(isinstance(key, str) and bool(key.strip()))
     client.headers['X-Api-Key'] = key
-    endpoint = '/api/' + ARR[app][0] + '/config/host'
+    endpoint = arr_endpoint(app, '/config/host')
     current = client.call(endpoint)
     check(isinstance(current, dict) and 'authenticationMethod' in current and 'username' in current)
     if not current.get('username') and not current.get('password'):
@@ -299,7 +309,7 @@ def arr(client, entry, config, app):
         # restart (its settings page says "restart required"): until then there is no
         # sign-in page, and the password check below found no session. Restart it and
         # wait for it to answer again.
-        client.call('/api/' + ARR[app][0] + '/system/restart', 'POST')
+        client.call(arr_endpoint(app, '/system/restart'), 'POST')
         time.sleep(5)
         wait(app, client, seconds=180)
     else:
@@ -441,13 +451,13 @@ def seerr(client, entry, jellyfin_entry):
         # once "Enable Local Sign-In" is off, which people do to have their users sign in
         # with Jellyfin only. That is not a wrong password: it can't be tried. (A Seerr
         # setup is still to make has it on: Seerr starts with it on.)
-        if exc.code != 500 or client.call('/api/v1/settings/public').get('localLogin') is not False:
+        if exc.code != 500 or client.call(SEERR_PUBLIC).get('localLogin') is not False:
             raise
         check(not entry['allow_create'])
         return SEERR_PASSWORD_OFF
     if not result:
         allowed(entry)
-        check(client.call('/api/v1/settings/public').get('initialized') is False)
+        check(client.call(SEERR_PUBLIC).get('initialized') is False)
         check(jellyfin_entry and jellyfin_entry['state'] == 'verified')
         sign_in = {
             'username': jellyfin_entry['username'],
@@ -473,9 +483,9 @@ def seerr(client, entry, jellyfin_entry):
         client.jar.clear()
         result = client.call('/api/v1/auth/local', 'POST', login_body)
     seerr_signed_in_as(client, result, entry)
-    if entry['allow_create'] and client.call('/api/v1/settings/public').get('initialized') is False:
+    if entry['allow_create'] and client.call(SEERR_PUBLIC).get('initialized') is False:
         client.call('/api/v1/settings/initialize', 'POST')
-    check(client.call('/api/v1/settings/public').get('initialized') is True)
+    check(client.call(SEERR_PUBLIC).get('initialized') is True)
     client.call('/api/v1/auth/logout', 'POST')
 
 
@@ -726,7 +736,7 @@ def provision(config, apps, output=print, client_factory=Client):
             continue
         output(store.APPS[app][0] + ': checking account setup')
         client = client_factory('navidrome' if app == 'navidrome_listener' else app)
-        extra = note = None
+        opened = []  # other clients the step opens, closed with this one
         try:
             verify_project(config, app)
             wait(
@@ -735,24 +745,7 @@ def provision(config, apps, output=print, client_factory=Client):
                 config.get('accounts', {}).get('wait_seconds', 180),
             )
             store.update(config, app, state='started')
-            if app in ARR:
-                arr(client, entry, config, app)
-            elif app == 'navidrome_listener':
-                admin = store.get(config, 'navidrome', verified=True)
-                check(admin is not None)
-                extra = client_factory('navidrome')
-                listener(client, entry, extra, admin)
-                import music_client
-
-                music_client.save(config, music_client.credential(entry['username'], entry['password']))
-            elif app == 'seerr':
-                note = seerr(client, entry, store.get(config, 'jellyfin', verified=True))
-            elif app == 'nextcloud':
-                note = nextcloud(client, entry, config)
-            else:
-                note = {'jellyfin': jellyfin, 'immich': immich, 'navidrome': navidrome, 'qbittorrent': qbittorrent}[
-                    app
-                ](client, entry)
+            note = account_step(config, app, client, entry, client_factory, opened)
             store.update(config, app, state='verified', allow_create=False)
             output(store.APPS[app][0] + ': ' + (note or 'verified'))
         except (
@@ -764,19 +757,49 @@ def provision(config, apps, output=print, client_factory=Client):
             AttributeError,
             subprocess.SubprocessError,
         ) as exc:
-            if not isinstance(exc, NotRunning):
-                # (An app that never ran refused nothing: marked so, the next run asked
-                # "did not take the saved login. What now?" of each of them.)
-                store.update(config, app, state='needs_setup')
-            pending.append(app)
-            # The reason, never the password: the checks' own messages name no values.
-            # (A reply of another shape, a list where a record was expected, reaches here
-            # as AttributeError: said in words.)
-            reason = ODD_ANSWER if isinstance(exc, AttributeError) else str(exc) or type(exc).__name__
-            advice = what_to_do(config, app, entry, answered=not isinstance(exc, (NotAnswering, NotRunning)))
-            output(f'{store.APPS[app][0]}: not verified ({reason}); the saved login is kept. {advice}')
+            not_verified(config, app, entry, exc, output, pending)
         finally:
             client.close()
-            if extra:
-                extra.close()
+            for other in opened:
+                other.close()
     return pending
+
+
+def account_step(config, app, client, entry, client_factory, opened):
+    """The app's own account step, with its client: what it says when it went well
+    (None: "verified"). A client it opens besides is added to `opened`."""
+    if app in ARR:
+        arr(client, entry, config, app)
+        return None
+    if app == 'navidrome_listener':
+        admin = store.get(config, 'navidrome', verified=True)
+        check(admin is not None)
+        extra = client_factory('navidrome')
+        opened.append(extra)
+        listener(client, entry, extra, admin)
+        import music_client
+
+        music_client.save(config, music_client.credential(entry['username'], entry['password']))
+        return None
+    if app == 'seerr':
+        return seerr(client, entry, store.get(config, 'jellyfin', verified=True))
+    if app == 'nextcloud':
+        return nextcloud(client, entry, config)
+    steps = {'jellyfin': jellyfin, 'immich': immich, 'navidrome': navidrome, 'qbittorrent': qbittorrent}
+    return steps[app](client, entry)
+
+
+def not_verified(config, app, entry, exc, output, pending):
+    """An account step that failed with `exc`: marked to be set up again, added to
+    `pending`, and said with its reason and what to do."""
+    if not isinstance(exc, NotRunning):
+        # (An app that never ran refused nothing: marked so, the next run asked
+        # "did not take the saved login. What now?" of each of them.)
+        store.update(config, app, state='needs_setup')
+    pending.append(app)
+    # The reason, never the password: the checks' own messages name no values.
+    # (A reply of another shape, a list where a record was expected, reaches here
+    # as AttributeError: said in words.)
+    reason = ODD_ANSWER if isinstance(exc, AttributeError) else str(exc) or type(exc).__name__
+    advice = what_to_do(config, app, entry, answered=not isinstance(exc, (NotAnswering, NotRunning)))
+    output(f'{store.APPS[app][0]}: not verified ({reason}); the saved login is kept. {advice}')

@@ -380,15 +380,14 @@ class Card:
     def __init__(self, path):
         # The card's folder with every link resolved, then held to the places Linux mounts
         # a removable card (or the card this tool runs from): only that folder is opened.
-        top = os.path.realpath(path)
-        if os.path.basename(top) == ROOT_NAME:
-            top = os.path.dirname(top)
-        own = default_card()
-        # /mnt itself too (`sudo mount /dev/sdb1 /mnt` is a usual way to mount a card).
-        if not (top == own or any((top + '/').startswith(root) for root in CARD_ROOTS)):
+        named = os.path.realpath(path)
+        if os.path.basename(named) == ROOT_NAME:
+            named = os.path.dirname(named)
+        top = card_folder(named)
+        if top is None:
             raise Unusable(
                 '%s is not where a card is mounted. Mount the card under /media, /run/media or /mnt (a '
-                'desktop does that by itself), or run this tool from the card' % show(top)
+                'desktop does that by itself), or run this tool from the card' % show(named)
             )
         try:
             self.top = open_dir(top)
@@ -444,26 +443,30 @@ class Card:
                     yield None, 'records/' + show(hh), 'not a folder (%s)' % e.strerror
                     continue
                 try:
-                    for name in sorted(os.listdir(d)):
-                        where = 'records/%s/%s' % (show(hh), show(name))
-                        try:
-                            rec = parse_record(read_limited(d, name, SMALL_FILE))
-                        except Invalid as e:
-                            yield None, where, str(e)
-                            continue
-                        except OSError as e:
-                            self.still_there()
-                            yield None, where, str(e)
-                            continue
-                        problem = self._contradiction(rec, hh, name)
-                        if problem:
-                            yield None, where, problem
-                        else:
-                            yield rec, where, None
+                    yield from self._records_in(d, hh)
                 finally:
                     os.close(d)
         finally:
             os.close(top)
+
+    def _records_in(self, d, hh):
+        """The records in one folder of records/ (open as `d`, named `hh`), as records() gives them."""
+        for name in sorted(os.listdir(d)):
+            where = 'records/%s/%s' % (show(hh), show(name))
+            try:
+                rec = parse_record(read_limited(d, name, SMALL_FILE))
+            except Invalid as e:
+                yield None, where, str(e)
+                continue
+            except OSError as e:
+                self.still_there()
+                yield None, where, str(e)
+                continue
+            problem = self._contradiction(rec, hh, name)
+            if problem:
+                yield None, where, problem
+            else:
+                yield rec, where, None
 
     def _contradiction(self, rec, hh, name):
         if name != rec['record_id'] + '.json' or hh != rec['record_id'][:2]:
@@ -1336,6 +1339,21 @@ def default_card():
     here = os.path.dirname(os.path.realpath(__file__))
     if os.path.basename(here) == 'tools' and os.path.basename(os.path.dirname(here)) == ROOT_NAME:
         return os.path.dirname(os.path.dirname(here))
+    return None
+
+
+def card_folder(top):
+    """`top` (every link resolved) when it is where a card is mounted: the card this tool
+    runs from, or a folder where Linux mounts a removable card, /mnt itself too (`sudo
+    mount /dev/sdb1 /mnt` is a usual way to mount a card). None anywhere else."""
+    own = default_card()
+    if top == own:
+        return own
+    for root in CARD_ROOTS:
+        if top + '/' == root:
+            return root[:-1]
+        if top.startswith(root):
+            return top
     return None
 
 

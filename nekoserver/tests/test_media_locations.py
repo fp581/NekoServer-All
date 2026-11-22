@@ -871,6 +871,7 @@ class MediaFoldersTests(unittest.TestCase):
                 }
             )
         )
+        path.chmod(0o600)  # the control service's own file (with umask 002 it was group-writable)
         media_locations.run(self.pc.kept, path, self.pc.own, steps=self.pc.steps(), lock=busy)
         said = json.loads((self.pc.control / 'result.json').read_text())
         self.assertEqual(said['message'], media_locations.BACKUP_RUNNING)

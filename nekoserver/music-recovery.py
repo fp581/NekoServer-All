@@ -20,71 +20,103 @@ NAME_REFUSED = {errno.EINVAL, errno.ENOENT, errno.EILSEQ, errno.ENAMETOOLONG}
 
 
 def restore(root, snapshot, destination=None):
+    """Check every file a backup run's list names against its copy in the backup, and
+    with `destination` restore them all into that new folder. Returns how many files."""
     root = safe_path(Path(root))
-    snapshot = safe_path(Path(snapshot))
-    if snapshot.parent != root / 'snapshots' or snapshot.stat().st_size > 128_000_000:
+    seen = set()
+    verified = [checked_file(root, row, seen) for row in listed_files(root, snapshot)]
+    if destination is not None:
+        restore_into(root, Path(destination), verified)
+    return len(verified)
+
+
+def listed_files(root, snapshot):
+    """The rows of a backup run's list (in the backup's snapshots folder)."""
+    # Both are named on the command line: the list is read only once it is proved to lie
+    # directly in the backup's snapshots folder, with every link followed.
+    shelf = os.path.realpath(safe_path(root / 'snapshots'))
+    listing = os.path.realpath(safe_path(Path(snapshot)))
+    if (
+        not listing.startswith(shelf + os.sep)
+        or os.path.dirname(listing) != shelf
+        or os.stat(listing).st_size > 128_000_000
+    ):
         raise RuntimeError('Select an inventory directly inside backups/music/snapshots')
-    value = json.loads(snapshot.read_text())
+    with open(listing) as stream:
+        value = json.loads(stream.read())
     if value.get('format') != 'neko-music-backup-v1' or not isinstance(value.get('files'), list):
         raise RuntimeError('Invalid music backup inventory')
-    seen = set()
-    verified = []
-    for row in value['files']:
-        name = row.get('path')
-        if not isinstance(name, str) or not name or '\x00' in name:
-            raise RuntimeError('Invalid music path')
-        rel = Path(name)
-        if rel.is_absolute() or '..' in rel.parts or str(rel) != name or name == '.':
-            raise RuntimeError('Unsafe music path')
-        if str(rel) in seen:
-            raise RuntimeError('Duplicate music path')
-        seen.add(str(rel))
-        checksum = row['sha256']
-        if not isinstance(checksum, str) or not re.fullmatch(r'[0-9a-f]{64}', checksum):
-            raise RuntimeError('Invalid music checksum')
-        source = safe_path(root / 'objects' / checksum[:2] / checksum)
-        if type(row.get('size')) is not int or row['size'] < 0 or not source.is_file():
-            raise RuntimeError('Invalid music object')
-        with source.open('rb') as stream:
-            if source.stat().st_size != row['size'] or hashlib.file_digest(stream, 'sha256').hexdigest() != checksum:
-                raise RuntimeError('Music backup checksum mismatch')
-        # The file's date, in lists made since 0.51.3 (older ones restore with today's).
-        mtime = row.get('mtime')
-        if mtime is not None and type(mtime) is not int:
-            raise RuntimeError('Invalid music date')
-        verified.append((source, rel, checksum, mtime))
-    if destination is not None:
-        dest = safe_path(Path(destination))
-        if not dest.is_absolute() or dest.exists() or dest == root or root in dest.parents or dest in root.parents:
-            raise RuntimeError('Use a new, separate restore directory')
-        dest.mkdir(mode=0o700)
-        # Every file is written through the folder made just now, opened once (its parent
-        # may be writable by others): a folder swapped in at its path meanwhile gets no
-        # part of the copy, where writing each file by its path split the files between
-        # the two folders while the count said all were restored (the review of 0.47.9;
-        # monthly-recovery.py stages a snapshot the same way).
-        folder = os.open(dest, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        refused = []
+    return value['files']
+
+
+def checked_file(root, row, seen):
+    """One row of the list, checked, and its copy in the backup read and compared with its
+    checksum: (copy, path in the library, checksum, date or None). `seen`: the paths of
+    the rows before it."""
+    name = row.get('path')
+    if not isinstance(name, str) or not name or '\x00' in name:
+        raise RuntimeError('Invalid music path')
+    rel = Path(name)
+    if rel.is_absolute() or '..' in rel.parts or str(rel) != name or name == '.':
+        raise RuntimeError('Unsafe music path')
+    if str(rel) in seen:
+        raise RuntimeError('Duplicate music path')
+    seen.add(str(rel))
+    checksum = row['sha256']
+    if not isinstance(checksum, str) or not re.fullmatch(r'[0-9a-f]{64}', checksum):
+        raise RuntimeError('Invalid music checksum')
+    source = safe_path(root / 'objects' / checksum[:2] / checksum)
+    if type(row.get('size')) is not int or row['size'] < 0 or not source.is_file():
+        raise RuntimeError('Invalid music object')
+    with source.open('rb') as stream:
+        if source.stat().st_size != row['size'] or hashlib.file_digest(stream, 'sha256').hexdigest() != checksum:
+            raise RuntimeError('Music backup checksum mismatch')
+    # The file's date, in lists made since 0.51.3 (older ones restore with today's).
+    mtime = row.get('mtime')
+    if mtime is not None and type(mtime) is not int:
+        raise RuntimeError('Invalid music date')
+    return source, rel, checksum, mtime
+
+
+def restore_into(root, destination, verified):
+    """The checked files copied into the new folder `destination`."""
+    dest = safe_path(destination)
+    if not dest.is_absolute() or dest.exists() or dest == root or root in dest.parents or dest in root.parents:
+        raise RuntimeError('Use a new, separate restore directory')
+    dest.mkdir(mode=0o700)
+    # Every file is written through the folder made just now, opened once (its parent
+    # may be writable by others): a folder swapped in at its path meanwhile gets no
+    # part of the copy, where writing each file by its path split the files between
+    # the two folders while the count said all were restored (the review of 0.47.9;
+    # monthly-recovery.py stages a snapshot the same way).
+    folder = os.open(dest, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        refused = copied_into(folder, verified)
+        here = os.stat(dest, follow_symlinks=False)
+        made = os.fstat(folder)
+        if (here.st_dev, here.st_ino) != (made.st_dev, made.st_ino):
+            raise RuntimeError(
+                f'{dest} was replaced while the music was restored; nothing there is a checked copy. '
+                'Choose a new folder and restore again.'
+            )
+    finally:
+        os.close(folder)
+    if refused:
+        raise RuntimeError(names_refused(refused, len(verified), dest))
+
+
+def copied_into(folder, verified):
+    """Every checked file copied under the open `folder`; the paths of those whose names
+    its drive refused (every other error stops the restore)."""
+    refused = []
+    for source, rel, checksum, mtime in verified:
         try:
-            for source, rel, checksum, mtime in verified:
-                try:
-                    write_copy(folder, source, rel, checksum, mtime)
-                except OSError as exc:
-                    if exc.errno not in NAME_REFUSED:
-                        raise
-                    refused.append(str(rel))
-            here = os.stat(dest, follow_symlinks=False)
-            made = os.fstat(folder)
-            if (here.st_dev, here.st_ino) != (made.st_dev, made.st_ino):
-                raise RuntimeError(
-                    f'{dest} was replaced while the music was restored; nothing there is a checked copy. '
-                    'Choose a new folder and restore again.'
-                )
-        finally:
-            os.close(folder)
-        if refused:
-            raise RuntimeError(names_refused(refused, len(verified), dest))
-    return len(verified)
+            write_copy(folder, source, rel, checksum, mtime)
+        except OSError as exc:
+            if exc.errno not in NAME_REFUSED:
+                raise
+            refused.append(str(rel))
+    return refused
 
 
 def names_refused(refused, total, dest):

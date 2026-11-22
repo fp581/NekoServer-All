@@ -313,12 +313,21 @@ def asked_restore(snapshot, destination, out=print):
         raise RuntimeError(NOT_WRITTEN.format(reason=snapshot_restore.failure_reason(exc))) from None
 
 
+NEW_FOLDER = 'Choose a new directory, inside an existing folder, for the restored password files'
+
+
 def restore(snapshot, destination, password, key_dir=KEY_DIR, out=print):
     """Decrypt a snapshot's password folder into a new private directory."""
     archive, key, cert, damaged = snapshot_files(snapshot)
     destination = absolute(destination, 'Restore directory')
     if destination.exists() or not destination.parent.is_dir():
-        raise RuntimeError('Choose a new directory, inside an existing folder, for the restored password files')
+        raise RuntimeError(NEW_FOLDER)
+    # The folder is named on the command line: it is made only once it is proved to be a
+    # new folder inside the folder named, with every link followed.
+    parent = os.path.realpath(destination.parent)
+    destination = Path(os.path.realpath(destination))
+    if not str(destination).startswith(parent.rstrip(os.sep) + os.sep):
+        raise RuntimeError(NEW_FOLDER)
     key = opening_key(key, cert, password, damaged, key_dir, out)
     plain = openssl(
         [
