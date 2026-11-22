@@ -139,6 +139,8 @@ class TracedClient(Client):
             print(f'   {self.app}: {method} {endpoint} failed after {time.monotonic() - started:.1f}s: {exc}')
             raise
         print(f'   {self.app}: {method} {endpoint} {time.monotonic() - started:.1f}s')
+        if endpoint == '/Library/VirtualFolders':
+            print('     ' + json.dumps([(f.get('Name'), f.get('Locations'), f.get('CollectionType')) for f in answer]))
         return answer
 
 
