@@ -165,6 +165,32 @@ def new_library_options():
     return {'LibraryOptions': dict(WATCHED)}
 
 
+def scan_new_library(client, library, log=print):
+    """Jellyfin looks through a library setup has just made, so the files already in it
+    are listed now. Adding a library starts a library scan only when none is running
+    (Jellyfin 12.4, LibraryManager.StartScanInBackground: "an active scan already
+    handles library structure changes"); but a scan already running, of the library
+    made just before or Jellyfin's own, read the list of libraries before this one was
+    added and passes it over until the next scheduled scan, 12 hours later. A refresh of
+    the library itself (POST /Items/{id}/Refresh) goes in Jellyfin's refresh queue, apart
+    from the scan, and looks through its folder (ProviderManager.RefreshCollectionFolderChildren)."""
+    query = urllib.parse.urlencode(
+        {
+            'metadataRefreshMode': 'Default',
+            'imageRefreshMode': 'Default',
+            'replaceAllMetadata': 'false',
+            'replaceAllImages': 'false',
+        }
+    )
+    try:
+        client.call(f'/Items/{urllib.parse.quote(str(library["ItemId"]))}/Refresh?' + query, 'POST')
+    except RuntimeError:
+        log(
+            f'jellyfin: the new library "{library.get("Name", "")}" is listed at Jellyfin\'s next library scan; '
+            'to see its files now, scan it in Jellyfin (Dashboard, Libraries)'
+        )
+
+
 def watch_library(client, library, log=print, on_share=False):
     """Switch real time monitoring on in a library setup made, when Jellyfin says it is
     off. A library whose options Jellyfin does not give is left as it is. `on_share`: the
@@ -239,6 +265,7 @@ def jellyfin(client, media, apply, username, password):
                 existing = matching(folders(client), category, name, kind)
                 if not existing:
                     raise RuntimeError('Library creation was not retained')
+                scan_new_library(client, existing)
             if apply:
                 watch_library(client, existing, on_share=on_share)
             ids.append(str(existing['ItemId']))
