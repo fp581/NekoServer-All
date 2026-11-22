@@ -1741,14 +1741,16 @@ Sec-Fetch-Dest: document
         ));
         assert!(no_origin.contains("\"E41\""), "{no_origin}");
         assert!(post("/api/control/fan", &local, &here, "", "[1]").contains("\"E42\""));
-        assert!(post(
+        // What came back is said when it is not the refusal: on CI this once failed with
+        // no way to tell an empty reply (a reset connection) from another answer.
+        let oversized = post(
             "/api/control/fan",
             &local,
             &here,
             "",
-            &"x".repeat(MAX_BODY + 1)
-        )
-        .contains("\"E42\""));
+            &"x".repeat(MAX_BODY + 1),
+        );
+        assert!(oversized.contains("\"E42\""), "got {oversized:?}");
         assert!(post("/api/control/format-disk", &local, &here, "", "{}").contains("\"E40\""));
         assert!(post("/api/status", &local, &here, "", "{}").contains("\"E42\""));
         // Reading what can be controlled is a plain GET.
