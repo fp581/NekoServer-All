@@ -43,7 +43,20 @@ Installing needs the secure Tailscale address (https) or the server's own addres
 | **Needs attention** | Everything to look at, most urgent first, each with "What should I do?". |
 | **Help** | Step-by-step guides, the error codes below, installing it as an app, and a privacy-safe summary to share. |
 
-On a phone the main pages are in the bar at the bottom; **More** opens the rest. On a tablet the menu becomes a slim icon rail. The ☾ / ☀ button at the top right switches between the night theme and the warm light one (Lamplight). Settings (⚙) has the same choice (or follow the device), larger text (Large, or TV for across the room) and the cat's animation (moving, or still pictures).
+On a phone the main pages are in the bar at the bottom; **More** opens the rest. On a tablet the menu becomes a slim icon rail. Settings (⚙) has larger text (Large, or TV for across the room) and the cat's animation (moving, or still pictures).
+
+## Themes
+
+Settings (⚙) → *Theme* picks one of two, on each device on its own:
+
+| Theme | What it is |
+| --- | --- |
+| **Moonlit Neko (with the cat)** | The one it has always had: purple and peach, the cat on every page, friendly words. |
+| **Professional (quiet, no cat)** | A calm panel where only the status has colour: grey-green neutrals, one blue for what you can press, one font made to be easy to read (Atkinson Hyperlegible Next), no cat, no taglines, and plain words ("Everything is running."). |
+
+Each has a dark and a light mode. The ☾ / ☀ button at the top right switches between them (in Moonlit Neko they are Neko night and Lamplight), and Settings can also follow the device.
+
+In Professional every status has a shape as well as a colour, so someone who can't tell red from green still sees which: a **circle** when all is fine, a **triangle** when something needs you, a **square** when something is broken, a **ring** when it is not known yet. Every text colour reads at 4.5:1 or more on every surface, in both modes, as WCAG asks; a test measures it. The font is on the server itself: the page loads nothing from elsewhere.
 
 ## The cat
 

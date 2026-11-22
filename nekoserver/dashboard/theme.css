@@ -29,3 +29,28 @@
 :root[data-neko-theme='light'] {
   color-scheme: light;
 }
+/* The Professional theme (DASHBOARD.md, "Themes"): a calm panel where only the status has
+ * colour. Cool grey-green neutrals, one ink blue for what can be pressed, and the three
+ * status colours (mint: fine, amber: needs you, red: broken), each shown with its own
+ * shape too (professional.css). The same names as above, so every page takes it as it is.
+ * Every text colour reads at 4.5:1 or better on every surface it sits on, in both
+ * schemes, and the three status colours differ in lightness, not only in hue
+ * (tests/test_professional_theme.py measures them). Peach and pink, decoration in
+ * Moonlit Neko, become a quiet slate: nothing but the status calls for attention. */
+:root[data-neko-look='professional'] {
+  --bg: light-dark(#eef1ef, #161a19);
+  --side: light-dark(#e7ebe9, #131716);
+  --surface: light-dark(#fbfcfb, #1e2322);
+  --raised: light-dark(#f3f5f4, #262c2a);
+  --line: light-dark(#cfd5d2, #353c3a);
+  --text: light-dark(#18211f, #e6ebe9);
+  --muted: light-dark(#4b5653, #a5afac);
+  --purple: light-dark(#2d4f86, #a6c0ec);
+  --purple-soft: light-dark(#e3eaf5, #26324a);
+  --peach: light-dark(#545e70, #b3bcc9);
+  --pink: light-dark(#545e70, #b3bcc9);
+  --mint: light-dark(#195737, #80cc9f);
+  --amber: light-dark(#8a5400, #efcb8f);
+  --red: light-dark(#a2252c, #f28d87);
+  --cat-box: light-dark(#e7ebe9, #262c2a);
+}

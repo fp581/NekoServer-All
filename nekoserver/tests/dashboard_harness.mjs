@@ -68,7 +68,8 @@ const DETAILED = new Set([
   'mediaFlow',
   'mediaHiccup',
   'mediaSignedOut',
-  'askInTurn'
+  'askInTurn',
+  'wordsIn'
 ]);
 /* What those need of the page script besides the functions above. */
 const ASK_PAGE = [
@@ -117,8 +118,10 @@ function stub() {
     }
   });
 }
+/* What this browser keeps: nothing, except a theme a call chooses (wordsIn). */
+const kept = {};
 const storage = {
-  getItem: () => null,
+  getItem: key => kept[key] ?? null,
   setItem() {
     /* not kept */
   },
@@ -174,6 +177,15 @@ const SPECIAL = {
   upgradeAtWork: ([release, s, asked]) => app.upgradeAtWork(release, s, asked),
   gettingStarted: argument => app.gettingStarted(app.validStatus(argument)),
   companionWords: ([mood, s, issues]) => app.companionWords(mood, app.validStatus(s), issues),
+  // The hero's words in a theme (DASHBOARD.md, "Themes"), kept as Settings keeps it.
+  wordsIn: ([look, mood, s, issues]) => {
+    kept['neko-look'] = JSON.stringify(look);
+    try {
+      return app.companionWords(mood, s === null ? null : app.validStatus(s), issues);
+    } finally {
+      delete kept['neko-look'];
+    }
+  },
   appsSummary: argument => app.appsSummary(app.validStatus(argument)),
   assistantSetUp: argument => app.assistantSetUp(app.validStatus(argument)),
   askIntro: argument => app.askIntro(argument.status && app.validStatus(argument.status), argument.control),

@@ -1,0 +1,283 @@
+/* The Professional theme (DASHBOARD.md, "Themes"): a calm panel where only the status has
+ * colour. Its colours are in theme.css; this is its look, laid over style.css only while
+ * the page's root says data-neko-look="professional", so Moonlit Neko is as it was.
+ *
+ * - One font, made to be easy to read (Atkinson Hyperlegible Next), with numbers that line
+ *   up in columns.
+ * - No glows, gradients or soft shadows: depth comes from a step in lightness and a line.
+ * - Corners by size: 10 px for panels, 8 for cards and lists, 6 for buttons and fields.
+ * - No cat and no taglines; the words say what is going on.
+ * - Every status has a shape as well as a colour (WCAG 1.4.1): a circle when all is fine,
+ *   a triangle when something needs you, a square when something is broken, a ring when
+ *   it is not known yet. Someone who can't tell the colours apart still sees which. */
+
+/* The font is on the server itself (the page loads nothing from elsewhere). Its letters
+ * that look alike elsewhere (I, l, 1; O, 0) are easy to tell apart. SIL Open Font
+ * License: ATKINSON-LICENSE.txt beside it. Letters it has not (Hebrew, say) take the
+ * device's own font. */
+@font-face {
+  font-family: 'Atkinson Hyperlegible Next';
+  src: url('atkinson-latin.woff2') format('woff2');
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Atkinson Hyperlegible Next';
+  src: url('atkinson-latin-ext.woff2') format('woff2');
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF,
+    U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ---------- the page ---------- */
+:root[data-neko-look='professional'] body {
+  font-family: 'Atkinson Hyperlegible Next', system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  background: var(--bg);
+}
+:root[data-neko-look='professional'] :is(h1, h2, h3) {
+  letter-spacing: -0.01em;
+}
+/* The taglines above each heading are Moonlit Neko's voice, not information. */
+:root[data-neko-look='professional'] .eyebrow {
+  display: none;
+}
+:root[data-neko-look='professional'] .brand-name small {
+  display: none;
+}
+
+/* ---------- depth by lightness, corners by size ---------- */
+:root[data-neko-look='professional'] :is(.panel, .hero, dialog) {
+  border-radius: 10px;
+  box-shadow: none;
+  background: var(--surface);
+}
+:root[data-neko-look='professional'] :is(.panel, .hero) {
+  border: 1px solid var(--line);
+}
+:root[data-neko-look='professional'] .panel[data-alert] {
+  border-color: var(--amber);
+  box-shadow: none;
+}
+:root[data-neko-look='professional']
+  :is(
+    .summary,
+    .stat,
+    .callout,
+    .app-card,
+    .protection-item,
+    .sensor-group,
+    .core,
+    .control-access,
+    .command-box,
+    .media-how,
+    .media-browse,
+    .context-menu,
+    .toast,
+    .banner,
+    .ask-bug
+  ) {
+  border-radius: 8px;
+  box-shadow: none;
+}
+:root[data-neko-look='professional']
+  :is(
+    .button,
+    .nav,
+    .icon-button,
+    .search,
+    .favorite,
+    .menu-item,
+    .menu-button,
+    .field select,
+    .field input,
+    .media-form input,
+    input[type='color'],
+    .chips button,
+    .update-tabs button,
+    .skip
+  ) {
+  border-radius: 6px;
+}
+:root[data-neko-look='professional'] :is(.badge, .count, .row .code, .meter, .meter > span) {
+  border-radius: 4px;
+}
+:root[data-neko-look='professional'] :is(.app-icon, .summary-icon, .brand img, .topbar-logo) {
+  border-radius: 6px;
+  box-shadow: none;
+}
+:root[data-neko-look='professional'] :is(.ask-question, .ask-answer) {
+  border-radius: 8px;
+}
+:root[data-neko-look='professional'] .summary-icon {
+  background: var(--raised);
+  color: var(--muted);
+}
+:root[data-neko-look='professional'] dialog::backdrop {
+  backdrop-filter: none;
+}
+:root[data-neko-look='professional'] .context-menu {
+  border: 1px solid var(--line);
+}
+
+/* ---------- the menu: a plain bar beside the page you are on, no glow ---------- */
+:root[data-neko-look='professional'] .nav.active {
+  box-shadow: none;
+  background: var(--raised);
+}
+:root[data-neko-look='professional'] .nav.active::before {
+  box-shadow: none;
+  animation: none;
+}
+
+/* ---------- buttons: the accent for the one that does it, a line for the others ---------- */
+:root[data-neko-look='professional'] .button:hover {
+  filter: none;
+  background: color-mix(in srgb, var(--purple) 88%, var(--text));
+}
+:root[data-neko-look='professional'] .button.secondary {
+  border-color: var(--muted);
+  background: var(--surface);
+}
+:root[data-neko-look='professional'] .button.secondary:hover {
+  background: var(--raised);
+}
+
+/* ---------- Home: the verdict, said plainly, with its shape ---------- */
+:root[data-neko-look='professional'] .hero {
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+  padding: 28px 32px;
+}
+/* Two rules, as :is() can't hold a pseudo-element: the stars and the moon. */
+:root[data-neko-look='professional'] .hero::after {
+  display: none;
+}
+:root[data-neko-look='professional'] .hero-moon {
+  display: none;
+}
+:root[data-neko-look='professional'] .hero h2 {
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  margin: 10px 0 8px;
+}
+:root[data-neko-look='professional'] .cat-state {
+  border-radius: 4px;
+  font-size: 13px;
+  letter-spacing: 0;
+  color: var(--mint);
+}
+:root[data-neko-look='professional'] .cat-state::before {
+  width: 10px;
+  height: 10px;
+}
+:root[data-neko-look='professional'] .hero:is([data-mood='curious'], [data-mood='playful']) .cat-state {
+  color: var(--muted);
+}
+:root[data-neko-look='professional'] .hero:is([data-mood='curious'], [data-mood='playful']) .cat-state::before {
+  background: none;
+  box-shadow: inset 0 0 0 2px currentColor;
+}
+/* Named again here, as the green above would otherwise win over style.css's colours. */
+:root[data-neko-look='professional'] .hero[data-mood='afraid'] .cat-state {
+  color: var(--amber);
+}
+:root[data-neko-look='professional'] .hero[data-level='critical'] .cat-state {
+  color: var(--red);
+}
+:root[data-neko-look='professional'] .hero[data-mood='afraid'] .cat-state::before {
+  border-radius: 0;
+  width: 12px;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+:root[data-neko-look='professional'] .hero[data-level='critical'] .cat-state::before {
+  width: 10px;
+  border-radius: 1px;
+  clip-path: none;
+}
+:root[data-neko-look='professional'] .hero[data-mood='afraid'] #hero-action {
+  color: var(--surface);
+}
+
+/* ---------- no cat ---------- */
+:root[data-neko-look='professional'] .cat-box {
+  display: none;
+}
+:root[data-neko-look='professional'] .section-head.with-cat,
+:root[data-neko-look='professional'] .section-head.with-cat:is([data-cat='apps'], [data-cat='help']),
+:root[data-neko-look='professional'] .section-head.with-cat[data-cat='processes'] {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+:root[data-neko-look='professional'] .section-head.with-cat:is([data-cat='apps'], [data-cat='help']) > div {
+  grid-column: 1;
+}
+:root[data-neko-look='professional']
+  .section-head.with-cat:is([data-cat='apps'], [data-cat='help'])
+  > :is(a, button, .badge) {
+  grid-column: 2;
+}
+
+/* ---------- status: a shape for each, not only a colour ---------- */
+:root[data-neko-look='professional'] .dot {
+  width: 10px;
+  height: 10px;
+}
+:root[data-neko-look='professional'] .dot.warning {
+  width: 12px;
+  border-radius: 0;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+:root[data-neko-look='professional'] .dot.critical {
+  border-radius: 1px;
+}
+:root[data-neko-look='professional'] .dot.unknown {
+  background: none;
+  box-shadow: inset 0 0 0 2px var(--muted);
+}
+:root[data-neko-look='professional'] .badge::before {
+  content: '';
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+:root[data-neko-look='professional']
+  :is(
+    .badge.warning,
+    .badge.needs_setup,
+    .badge.not_set_up,
+    .badge.stale,
+    .badge.partial,
+    .badge.starting,
+    .badge.restarting
+  )::before {
+  width: 10px;
+  border-radius: 0;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+:root[data-neko-look='professional']
+  :is(
+    .badge.fail,
+    .badge.critical,
+    .badge.unhealthy,
+    .badge.missing,
+    .badge.exited,
+    .badge.docker_down,
+    .badge.dead
+  )::before {
+  border-radius: 1px;
+}
+:root[data-neko-look='professional'] .badge.unknown::before {
+  background: none;
+  box-shadow: inset 0 0 0 1.5px currentColor;
+}
+:root[data-neko-look='professional'] .badge.running {
+  color: var(--purple);
+}
