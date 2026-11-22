@@ -2439,10 +2439,12 @@ class ConnectorQbittorrentLoginTests(unittest.TestCase):
         self.client_answering('Ok.', 'SID').login('u', 'p')
 
     def test_a_refused_login_still_fails(self):
+        refusing = self.client_answering('Fails.')
         with self.assertRaises(RuntimeError):
-            self.client_answering('Fails.').login('u', 'p')
+            refusing.login('u', 'p')
+        silent = self.client_answering('', None)
         with self.assertRaises(RuntimeError):
-            self.client_answering('', None).login('u', 'p')
+            silent.login('u', 'p')
 
 
 def load_connector():
@@ -2529,12 +2531,14 @@ class ConnectorRerunTests(unittest.TestCase):
         self.assertIn('the current one is saved in it', said)
         # Prowlarr refusing the current key too is said, and setup reports the link.
         refused.add('/applications/3')
-        with mock.patch('builtins.print') as shown, self.assertRaisesRegex(RuntimeError, 'sonarr'):
-            with (
-                mock.patch.object(connect, 'app_key', side_effect=lambda app, root: 'k-' + app),
-                mock.patch.object(connect, 'request', side_effect=request),
-            ):
-                connect.configure_applications(Path('/x'), True, apps=('sonarr',))
+        root = Path('/x')
+        with (
+            mock.patch('builtins.print') as shown,
+            mock.patch.object(connect, 'app_key', side_effect=lambda app, root: 'k-' + app),
+            mock.patch.object(connect, 'request', side_effect=request),
+        ):
+            with self.assertRaisesRegex(RuntimeError, 'sonarr'):
+                connect.configure_applications(root, True, apps=('sonarr',))
         self.assertIn('enter it in Prowlarr (Settings, Apps)', str(shown.call_args_list))
 
     def test_a_link_to_another_address_is_still_reported(self):

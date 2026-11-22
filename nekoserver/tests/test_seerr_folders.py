@@ -140,11 +140,10 @@ class ChoiceTakenBackTests(unittest.TestCase):
         for wanted in ('/data/movies', '/data/existing/movies-new'):
             for verify_only in (False, True):
                 seerr = Seerr([made(OWN)], roots=(OWN, wanted))
-                with self.subTest(wanted=wanted, verify_only=verify_only), self.assertRaises(sp.SetupRequired) as said:
-                    with mock.patch.object(sp, 'app_key', return_value='key'):
-                        sp.provider(
-                            seerr, radarr((OWN, wanted)), '/srv', 'radarr', not verify_only, verify_only, wanted
-                        )
+                movies = radarr((OWN, wanted))
+                with self.subTest(wanted=wanted, verify_only=verify_only), mock.patch.object(sp, 'app_key', return_value='key'):
+                    with self.assertRaises(sp.SetupRequired) as said:
+                        sp.provider(seerr, movies, '/srv', 'radarr', not verify_only, verify_only, wanted)
                 self.assertIn(f'Requests are still saved in {OWN}', str(said.exception))
                 self.assertIn(f'Settings, Services, Radarr, and choose the root folder {wanted}', str(said.exception))
                 self.assertEqual(seerr.posted, [])  # the provider is the person's to change

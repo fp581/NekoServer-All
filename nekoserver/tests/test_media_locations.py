@@ -173,7 +173,7 @@ class PC:
             mock.patch.object(source_import, 'MOUNT_TABLE', self.table),
             mock.patch.object(existing_media, 'same_folder', self.same_folder),
             mock.patch.object(existing_media, 'check', functools.partial(self.checked, original)),
-            mock.patch.object(media_locations, 'verify_storage', lambda config: None),
+            mock.patch.object(media_locations, 'verify_storage', return_value=None),
             mock.patch.object(media_locations, 'SETUP_LOCK', self.locks / 'setup.lock'),
             mock.patch.object(media_locations, 'OPERATION_LOCK', self.locks / 'operation.lock'),
         ]

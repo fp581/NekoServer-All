@@ -250,10 +250,14 @@ class RestoreAsOfTests(Restoring):
         # A nightly restore's tool stopped the same way (its folder made, not finished).
         target = self.media / 'restored/apps-stopped'
         out = []
-        with self.assertRaises(KeyboardInterrupt):
+
+        def stopped_after_its_folder_is_made():
             with recovery_wizard.part_way(target, out.append):
                 target.mkdir()
                 raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            stopped_after_its_folder_is_made()
         self.assertIn(str(target), out[0])
 
     def test_as_of_a_chosen_date(self):

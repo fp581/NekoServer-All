@@ -96,7 +96,7 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(collector['cards'], guard['cards'])
         without_nextcloud = switched_on(settings_0513())
         without_nextcloud['nextcloud']['enabled'] = False
-        self.assertEqual(self.written(without_nextcloud)[0]['cards']['nextcloud'], False)
+        self.assertIs(self.written(without_nextcloud)[0]['cards']['nextcloud'], False)
 
 
 class Ctx:
