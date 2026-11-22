@@ -114,7 +114,9 @@ class RetentionTests(unittest.TestCase):
         readers = [name for name, body in self.functions.items() if '["app_backup"]["keep_snapshots"]' in body]
         self.assertEqual(readers, [('app_snapshot', 'snapshot')])
         # Each count has its own setting; the app backup's is not borrowed anywhere.
-        self.assertIn('["host_backup"]["keep_snapshots"]', self.functions[('host_snapshot', 'snapshot')])
+        # The settings backup reads its own count in host_keep, which its snapshot calls.
+        self.assertIn('host_keep(cfg, &root, &left_out)', self.functions[('host_snapshot', 'snapshot')])
+        self.assertIn('["host_backup"]["keep_snapshots"]', self.functions[('host_snapshot', 'host_keep')])
         self.assertIn('["maintenance"]["keep_snapshots"]', self.functions[('maintenance', 'keep_snapshots')])
 
     def test_the_count_only_ever_removes_snapshot_folders(self):
@@ -125,7 +127,8 @@ class RetentionTests(unittest.TestCase):
         self.assertIn('remove_snapshot(root, &name)', pruning)
         # The folders it is given hold app and settings snapshots, nothing else.
         self.assertIn('media.join("backups/media-applications")', self.functions[('app_snapshot', 'snapshot')])
-        self.assertIn('media.join("backups/host-user")', self.functions[('host_snapshot', 'snapshot')])
+        self.assertIn('let root = host_root(media)?;', self.functions[('host_snapshot', 'snapshot')])
+        self.assertIn('media.join("backups/host-user")', self.functions[('host_snapshot', 'host_root')])
         for body in (self.functions[('app_snapshot', 'snapshot')], self.functions[('host_snapshot', 'snapshot')]):
             self.assertRegex(body, r'publish_snapshot\(\s*&root,')
 
