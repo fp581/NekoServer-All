@@ -2,6 +2,7 @@
 
 import guided_setup
 import json
+import os
 import time
 import account_store
 import setup_progress
@@ -9,13 +10,16 @@ import subprocess
 import sys
 from pathlib import Path
 from neko_common import (
+    SYSTEMD_UNITS,
     VERSION,
     app_port,
+    check_units,
     atomic_json,
     apps_to_connect,
     media_services,
     remember_answer,
     safe_path,
+    write_units,
 )
 
 DEPENDENCIES = ['media', 'recovery']
@@ -57,6 +61,7 @@ def run(ctx):
         ctx.log(
             'Connecting the apps: Movies and shows and the downloads are switched off, so there is nothing to connect'
         )
+        follow_favourite_shows(ctx)
         return
     docker_running()
     if account_store.enabled(ctx.config) and 'accounts' in getattr(ctx, 'plan', ()):
@@ -132,7 +137,51 @@ def run(ctx):
             + '. Finish it in the app, then retry this step',
         }
     ctx.log('Onboarding configuration checks complete')
+    follow_favourite_shows(ctx)
     witness_playback(ctx)
+
+
+# Favourite shows keep coming (favourite_shows.py): every hour, a show someone favourited in
+# Jellyfin that Sonarr does not follow is given to Sonarr for its new episodes.
+FAVOURITES = 'nekoserver-favourite-shows'
+
+
+def favourite_units(data, release):
+    """{name: text} of the hourly job's service and timer."""
+    return {
+        FAVOURITES + '.service': '[Unit]\nDescription=NekoServer favourite shows keep coming\n'
+        f'RequiresMountsFor={data}\nAfter=docker.service\n'
+        '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=10min\n'
+        f'ExecStart=/usr/bin/python3 -Es {release}/favourite_shows.py run --config {release}/config.json\n',
+        FAVOURITES + '.timer': '[Unit]\nDescription=NekoServer favourite shows keep coming\n'
+        f'[Timer]\nOnBootSec=15min\nOnUnitInactiveSec=60min\nUnit={FAVOURITES}.service\n'
+        '[Install]\nWantedBy=timers.target\n',
+    }
+
+
+def follow_favourite_shows(ctx, run=subprocess.run):
+    """The hourly job set up where Jellyfin and Sonarr both are, and taken away where
+    they are not (an app switched off since). Setup runs as root; anything else (a dry
+    look) only says what would be done."""
+    services = media_services(ctx.config)
+    wanted = 'jellyfin' in services and 'sonarr' in services
+    if os.geteuid() != 0:
+        ctx.log('Favourite shows keep coming: ' + ('set up when setup runs as root' if wanted else 'not needed'))
+        return
+    units = [SYSTEMD_UNITS / name for name in (FAVOURITES + '.timer', FAVOURITES + '.service')]
+    if not wanted:
+        from modules._schedules import remove
+
+        remove(units, run, ctx.log)
+        return
+    data = safe_path(ctx.config['data_mount'])
+    release = data / 'installer' / 'releases' / ('v' + VERSION)
+    definitions = favourite_units(data, release)
+    check_units(definitions, 'favourite shows')
+    write_units(definitions)
+    for command in (['systemctl', 'daemon-reload'], ['systemctl', 'enable', '--now', FAVOURITES + '.timer']):
+        run(command, check=True, capture_output=True, text=True, timeout=60)
+    ctx.log('Favourite shows keep coming: every hour, a show favourited in Jellyfin gets its new episodes (Sonarr)')
 
 
 def connected_before(ctx):

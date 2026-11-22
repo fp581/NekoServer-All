@@ -2,6 +2,10 @@
 
 ## v0.52.0 — (in progress)
 
+### Added: favourite shows keep coming
+- **A show marked as a favourite in Jellyfin gets its new episodes.** Every hour NekoServer looks at each Jellyfin user's favourite shows; one Sonarr does not follow yet is given to Sonarr, watching only episodes that have not aired yet (and every new season), with the quality Seerr's requests use. Nothing you have is downloaded again, and nothing is removed when a show stops being a favourite. This closes the gap for shows from your own folders, which Sonarr did not know.
+- **New episodes land beside the old ones** where Sonarr may save (NekoServer's library, or a folder of yours chosen for new downloads). For a show in a folder of yours that the apps may only read, they go to the library's TV folder, and the run's account (`reports/media/favourite-shows.json`) says so for that show.
+
 ### Added: Media folders page
 - **A Media folders page on the dashboard.** After setup, at any time: for films, shows and music it shows NekoServer's own library and each folder of yours connected to it (Ready, or why not), and where new downloads go. Add a folder (type it, or pick one from the drives and shares the PC has mounted), use it where it is or copy its files into the library, send new downloads to a folder or back to the library, or take a folder away. Your files are never deleted, moved or changed. It needs the PIN on every device, and the change is made by the same code setup uses.
 - **More than one folder of each kind.** Films, shows and music can each have up to 8 folders of yours connected, used where they are, on the page and in setup (which asks "Is any other folder holding your films?" until you answer That is all). New downloads still go to one place. Each folder keeps its place in the apps for as long as it is connected, so taking one away moves no other, and the folders a 0.51 server had stay exactly where they were.

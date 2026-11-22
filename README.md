@@ -69,6 +69,8 @@ Run `sudo bash install.sh` again at any time: it keeps your answers and asks onl
 
 **Films, shows or music you already have** can be used where they are (nothing is copied or changed) or copied into the library, up to 8 folders of each kind. After setup, the dashboard's **Media folders** page adds more, takes one away and chooses where new downloads go ([DASHBOARD.md](nekoserver/DASHBOARD.md)).
 
+**Favourite shows keep coming.** Mark a show as a favourite in Jellyfin, and Sonarr downloads each new episode when it airs, also for shows from your own folders ([guide](nekoserver/README.md)).
+
 ## Backups
 
 - **Every night**: the apps' settings and databases, and this PC's own settings. The newest **3** of each are kept; you can choose any number from **1 to 7**. An older one is removed only after a new one has succeeded, with one exception: when the HDD is too full for the next app backup, the oldest app backups are removed first to make room (never the newest). Music kept on a drive of its own is copied every night too.
