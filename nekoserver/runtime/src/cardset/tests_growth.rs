@@ -102,6 +102,28 @@ fn each_card_keeps_only_its_newest_three_snapshots() {
 }
 
 #[test]
+fn a_cleanup_cut_off_is_finished_by_the_next_run_even_when_nothing_changed() {
+    let s = Scratch::new("grow-unfinished");
+    let src = source(&s, "photos", 1);
+    let (p, v) = card(&s, 1);
+    let mut store = Store::in_memory().unwrap();
+    // Four snapshots and no cleanup after them: as a run that stopped (a power cut, the
+    // card taken out) between writing its snapshot and removing the oldest leaves them.
+    for n in 1..=4 {
+        add_file(&mut store, &v, &p, &src, n);
+        inventory::checkpoint(&v, &mut store, &super::format::now(), 10).unwrap();
+    }
+    assert_eq!(inventory::read(&v).unwrap().valid.len(), 4);
+    // The next run has nothing new to write, and still keeps only the newest three.
+    assert!(matches!(
+        checkpoint(&mut store, &v),
+        Checkpoint::Unchanged(_)
+    ));
+    assert_eq!(inventory::read(&v).unwrap().valid.len(), KEEP);
+    assert!(names(&p, "staging").is_empty(), "nothing left in staging");
+}
+
+#[test]
 fn a_catalogue_made_before_the_change_counter_gets_it() {
     let s = Scratch::new("grow-old");
     let path = s.path.join("catalogue.db");

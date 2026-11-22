@@ -920,14 +920,20 @@ class Progress:
         # size, was reported as restored and never copied again).
         return holds(dest_fd, entry['path'], rec['checksum'])
 
-    def at_original(self, rec):
+    def at_original(self, dest_fd, rec):
         """(version ID, entry) of another version of rec's file restored under its own name
-        by an earlier run (from another card, say), or None."""
+        by an earlier run (from another card, say), or None. Of several, the one whose file
+        is there now: an entry whose file was deleted and restored again since (review of
+        0.52) would otherwise hide the version that is there, and keep out a newer one."""
+        found = []
         for version_id in sorted(self.at.get((rec['source_id'], rec['original_relative_path']), ())):
             entry = self._entry(version_id)
             if version_id != rec['version_id'] and entry is not None and entry['path'] == rec['original_relative_path']:
+                found.append((version_id, entry))
+        for version_id, entry in found:
+            if holds(dest_fd, entry['path'], entry.get('sha256')):
                 return version_id, entry
-        return None
+        return found[0] if found else None
 
     def _write(self, version_id, entry):
         self._note(version_id, entry)
@@ -1107,7 +1113,7 @@ def one_version(card, rec, dest_fd, choices, chosen):
             return 'same version', chosen_where
         return older(card, rec, dest_fd, choices, chosen_where)
     # A version of this file an earlier run restored under its name (from another card).
-    earlier = progress.at_original(rec) if progress is not None else None
+    earlier = progress.at_original(dest_fd, rec) if progress is not None else None
     replacing_ours = False
     if earlier is not None and entry_age(earlier[1]) is not None:
         earlier_version, earlier_entry = earlier

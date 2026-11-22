@@ -1208,6 +1208,15 @@ def media_result(**parts):
 class MediaFoldersPageTests(unittest.TestCase):
     """The Media folders page (dashboard_harness.mjs: mediaFlow, mediaSignedOut)."""
 
+    def test_a_look_that_does_not_reach_the_server_is_tried_again(self):
+        """Review of 0.52: one look at a change at work that failed (a network hiccup)
+        stopped the page looking, and it said "Working on it" for ever."""
+        (flow,) = page(('mediaHiccup', {}))
+        self.assertIn('Working on it', flow['during'])
+        self.assertTrue(flow['looksAgain'])
+        self.assertIn('Your films are connected.', flow['after'])
+        self.assertNotIn('Working on it', flow['after'])
+
     def test_the_page_looks_then_shows_each_kind_with_its_folders_and_where_downloads_go(self):
         (flow,) = page(('mediaFlow', {'result': media_result(message='Your films are connected.')}))
         # A look is asked for (root does it), then its answer is read.

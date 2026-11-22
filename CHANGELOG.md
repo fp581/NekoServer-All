@@ -23,6 +23,16 @@
 - **The recovery menu restores from a card**: "From backup cards", with the same restore tool every card carries. CARD-RECOVERY.md stays the way without NekoServer.
 - **A card keeps only its three newest inventories** (the list of which card held which file), and a new one is written only when something changed, so a card no longer fills up with them.
 
+### Fixed: from the review of 0.52
+- **A backup-card run with only an older, full card plugged in no longer says Passed.** The newest card had room but was not there, so new photos were on no card and the run looked finished. It now says "Card 1 is full: 2 files wait for card 2. Plug in card 2", and the run counts as partly done.
+- **A file too big for one card goes onto a bigger card plugged in beside it.** The writer stopped after the first card, and did the same every night after.
+- **A cleanup of old inventories cut off on a card (a power cut, the card taken out) is finished by the next run**, also when nothing new was written. Before, the card kept more than the three newest.
+- **The restore tool no longer leaves a newer version on the card because of an old progress entry.** With a file deleted and restored from another card since, the progress file named two versions under one name; the tool looked at the one no longer there, and skipped the newest as "a file is there already".
+- **Media folders: a look at a change at work that does not get an answer (a network hiccup) is tried again.** The page stopped looking and said "Working on it" for ever.
+- **Media folders: settings saved in one copy but not the other are put back.** Setup's own copy kept a change the page called "Not changed", and the next setup run made it. If a copy cannot be put back, the page says which one has the new choice.
+- **Media folders: an app that could not be restarted is said, not "Done".** A folder switched to read-only stays writable for an app that runs until it restarts; the page now says Partly done, why, and to restart the server or run setup again.
+- **The hourly check of the apps gets a download folder changed on the Media folders page at once.** It kept its own old copy of the settings, and reported a right Seerr folder as wrong until setup ran again.
+
 ### Fixed: from the review of 0.51.3
 - **A password list restored from a snapshot made without a backup key is the one that was checked.** The archive was checked against its recorded checksum and then unpacked by name, so one replaced in between (another job writing to the HDD, a failing drive) was unpacked unchecked, with "Done" over changed passwords. It is now opened once; the same bytes are checked and unpacked, and moved into place only when they match.
 - **A password list restored from a snapshot made without a backup key brings the apps' own password files too**, as the menu promised and the Nextcloud guide counted on: each app's `.env` and Nextcloud's `config.php`, not only the account list. The finished restore names each file.

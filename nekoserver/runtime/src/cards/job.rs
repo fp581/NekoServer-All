@@ -165,12 +165,15 @@ pub fn write(
         let n = card.row.sequence_number;
         match one_card(store, card, cands, keep, &mut *space) {
             Ok(result) => {
-                let full = result.state == RunState::WaitingForNextCard;
+                // The next plugged-in card takes over what this one could not: the rest
+                // when it is full, and files too big for it (a bigger card may hold them).
+                let more = result.state == RunState::WaitingForNextCard
+                    || !result.needs_larger_media.is_empty();
                 if let Some(e) = result.stopped.clone() {
                     written.stopped = Some((n, e));
                 }
                 written.runs.push((n, result));
-                if !full || written.stopped.is_some() {
+                if !more || written.stopped.is_some() {
                     break;
                 }
             }
@@ -212,10 +215,23 @@ fn one_card(
 /// What the run left out, as sentences the Backups page shows (the report's "missing").
 pub fn left_out(w: &Written, skipped: &Skipped, shown: &Value) -> Vec<String> {
     let mut said = vec![];
+    let last_card = w.runs.last();
     if let Some(n) = shown["full_card"].as_u64() {
         said.push(full_words(n));
+    } else if let Some((n, _)) = last_card.filter(|(_, r)| r.state == RunState::WaitingForNextCard)
+    {
+        // Only an older card of the set was plugged in, and it is full: the newest card
+        // has room, but it was not here, so what is new waits for it.
+        let newest = shown["next_number"].as_u64().unwrap_or(n + 2) - 1;
+        let waiting = shown["files_waiting"].as_u64().unwrap_or(0);
+        if waiting > 0 {
+            said.push(format!(
+                "Card {n} is full: {} for card {newest}. Plug in card {newest}",
+                common::plural(waiting, "file waits", "files wait")
+            ));
+        }
     }
-    let last = w.runs.last().map(|(_, r)| r);
+    let last = last_card.map(|(_, r)| r);
     let deferred = last.map_or(0, |r| r.deferred.len());
     if deferred > 0 {
         said.push(format!(
@@ -367,6 +383,83 @@ mod tests {
                     == 1
             );
         }
+    }
+
+    #[test]
+    fn a_file_too_big_for_one_card_goes_onto_a_bigger_card_plugged_in_beside_it() {
+        let s = Scratch::new("job-bigger");
+        let mut store = Store::in_memory().unwrap();
+        store.start_set("Example set").unwrap();
+        // Card 1 holds 3 MiB; card 2, plugged in beside it, 8 MiB.
+        let small = card(&s, &mut store, 1);
+        let (path, vol) = testkit::card(&s, 2);
+        store
+            .saw_volume(&vol.identity, RESERVE_FLOOR + 8 * MIB, &format::now())
+            .unwrap();
+        let big = Card {
+            mount: path.clone(),
+            row: store.volume(&vol.identity.volume_id).unwrap().unwrap(),
+            expect: testkit::expect(&path, 2),
+        };
+        let src = source(&s, "photos", 1);
+        put(&src, "2001/film.mp4", &bytes(1, 5 * 1024 * 1024));
+        put(&src, "2001/photo.jpg", &bytes(2, 500_000));
+        let cands = testkit::cands(&src);
+        let mut sizes = [
+            (
+                small.row.volume_id.clone(),
+                testkit::space_of(small.mount.clone(), 3 * MIB),
+            ),
+            (
+                big.row.volume_id.clone(),
+                testkit::space_of(big.mount.clone(), 8 * MIB),
+            ),
+        ];
+        let mut space = |v: &Volume| {
+            let (_, f) = sizes
+                .iter_mut()
+                .find(|(id, _)| id == v.volume_id())
+                .unwrap();
+            f(v)
+        };
+        let w = write(&mut store, &[small, big], &cands, &mut space).unwrap();
+        assert_eq!(w.runs.len(), 2, "card 2 is tried too");
+        assert_eq!(w.runs[0].1.needs_larger_media, ["2001/film.mp4"]);
+        assert_eq!(w.runs[1].1.committed.len(), 1, "the film is on card 2");
+        let counts = status::count(&store, &cands).unwrap();
+        assert_eq!(counts, (2, 0));
+        let shown = status::save(&place(&s), &store, &w.seen(counts)).unwrap();
+        assert!(left_out(&w, &Skipped::default(), &shown).is_empty());
+    }
+
+    #[test]
+    fn an_older_full_card_alone_is_not_a_finished_run() {
+        let s = Scratch::new("job-older-full");
+        let mut store = Store::in_memory().unwrap();
+        store.start_set("Example set").unwrap();
+        let place = place(&s);
+        // Card 1 fills up; card 2, the newest, takes the rest and has room left.
+        let first = vec![card(&s, &mut store, 1)];
+        let cands = files(&s, 3);
+        write(&mut store, &first, &cands, &mut room(&first)).unwrap();
+        let second = vec![card(&s, &mut store, 2)];
+        write(&mut store, &second, &cands, &mut room(&second)).unwrap();
+        // New photos, and only the old full card plugged in tonight.
+        let cands = files(&s, 5);
+        let w = write(&mut store, &first, &cands, &mut room(&first)).unwrap();
+        assert_eq!(w.runs[0].1.state, RunState::WaitingForNextCard);
+        let counts = status::count(&store, &cands).unwrap();
+        assert_eq!(counts.1, 2, "the two new photos are on no card");
+        let shown = status::save(&place, &store, &w.seen(counts)).unwrap();
+        assert_eq!(
+            shown["full_card"],
+            serde_json::Value::Null,
+            "card 2 has room"
+        );
+        assert_eq!(
+            left_out(&w, &Skipped::default(), &shown),
+            ["Card 1 is full: 2 files wait for card 2. Plug in card 2"]
+        );
     }
 
     #[test]

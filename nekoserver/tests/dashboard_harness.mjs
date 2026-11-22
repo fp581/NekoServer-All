@@ -66,6 +66,7 @@ const DETAILED = new Set([
   'askSignedOut',
   'askTyped',
   'mediaFlow',
+  'mediaHiccup',
   'mediaSignedOut',
   'askInTurn'
 ]);
@@ -82,7 +83,8 @@ const ASK_PAGE = [
   'askNote',
   // The Media folders page (mediaFlow, mediaSignedOut below).
   'MEDIA',
-  'renderMedia'
+  'renderMedia',
+  'mediaState'
 ];
 const calls = JSON.parse(process.argv[2]);
 
@@ -503,6 +505,36 @@ SPECIAL.mediaFlow = async argument => {
     formSent = sent.filter(([p]) => p === '/api/control/media-change').map(([, body]) => body);
   }
   return { looked, page, form: form ? shown(form) : null, formSent };
+};
+/* A change at work, and one look at it that does not reach the server (a network
+   hiccup): the page keeps looking, and shows how the change ended once it can.
+   Returns what the page shows after the hiccup, whether it looks again, and after. */
+SPECIAL.mediaHiccup = async () => {
+  const byId = keptPage();
+  app.state.route = 'media';
+  Object.assign(app.MEDIA, { answer: { ok: true, working: true, result: null }, asked: true, refused: null, formKey: '' });
+  const later = [];
+  globalThis.setTimeout = (run, wait) => {
+    if (wait === 2000) later.push(run); // the page's next look at the change
+    return 0;
+  };
+  let reached = false;
+  globalThis.fetch = async () => {
+    if (!reached) {
+      reached = true;
+      throw new Error('the network is down for a moment');
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true, working: false, result: { state: 'done', message: 'Your films are connected.', kinds: [] } }) };
+  };
+  await app.mediaState();
+  await settle();
+  const during = shown(byId('media-folders'));
+  const looksAgain = later.length > 0;
+  if (looksAgain) {
+    later.shift()();
+    await settle();
+  }
+  return { during, looksAgain, after: shown(byId('media-folders')) };
 };
 // A device not signed in: the page shows how to unlock, and asks the server nothing.
 SPECIAL.mediaSignedOut = async () => {
