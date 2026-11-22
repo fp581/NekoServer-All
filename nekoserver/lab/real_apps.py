@@ -10,8 +10,8 @@ list, Seerr's search and the Jellyfin Enhanced plugin).
   python3 lab/real_apps.py ROOT
 
 ROOT is the data folder the apps were started with (NEKO_DATA and NEKO_MEDIA). It is
-set up as a person would set it up: one show in the library, with two of its episodes
-on disk, marked as a favourite. Then:
+set up as a person would set it up: films, and one show with two of its episodes on
+disk, marked as a favourite; the libraries are made by setup's own library step. Then:
 
   1. Favourite shows (favourite_shows.run_once, as the hourly job runs it): Sonarr
      follows the show in its own folder, and the episodes that aired and are not on
@@ -127,6 +127,20 @@ def make_the_show(root):
     print(f'made {folder} with episodes {sorted(ON_DISK)}')
 
 
+def make_films(root, count=40):
+    """Short films in the Movies library: Jellyfin's scan of it takes a while."""
+    films = root / 'library/movies'
+    for n in range(1, count + 1):
+        folder = films / f'Film {n} (2001)'
+        folder.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ['ffmpeg', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=blue:s=160x120:d=1']
+            + ['-c:v', 'libx264', str(folder / f'Film {n} (2001).mkv')],
+            check=True,
+        )
+    print(f'made {count} films in {films}')
+
+
 def jellyfin_first_run():
     """Jellyfin's first-run steps (its startup wizard's API), then signed in as the
     administrator. Returns (the signed-in client, the administrator's user ID)."""
@@ -155,32 +169,18 @@ def the_show_in_jellyfin(jellyfin, user):
     return next((i for i in items if (i.get('ProviderIds') or {}).get('Tvdb') == SHOW['tvdb']), None)
 
 
-def library_scan_running(jellyfin):
-    """Whether Jellyfin's "Scan Media Library" task is running now."""
-    tasks = jellyfin.call('/ScheduledTasks')
-    return any(t.get('Name') == 'Scan Media Library' and t.get('State') == 'Running' for t in tasks)
-
-
 def set_up_jellyfin(root):
-    section('Jellyfin: first run, a TV library, the show marked as a favourite')
+    section('Jellyfin: first run, setup\'s libraries, the show marked as a favourite')
     jellyfin, user = jellyfin_first_run()
     check(True, 'Jellyfin first-run steps done; signed in as its administrator')
     media_libraries.ensure_readiness_key(jellyfin, root)
     check(media_libraries.readiness_key_path(root).read_text().strip() != '', "NekoServer's Jellyfin key saved")
-    query = urllib.parse.urlencode(
-        {'name': 'TV Shows', 'collectionType': 'tvshows', 'paths': '/data/tv', 'refreshLibrary': 'true'}
+    # Setup's own library step: Movies, then TV Shows. The films make Jellyfin's scan of
+    # Movies still run while TV Shows is added, as with a person's many films.
+    results, _server, _ids = media_libraries.jellyfin(
+        Client('jellyfin'), root, True, lambda _: ADMIN['Username'], lambda _: ADMIN['Pw']
     )
-    jellyfin.call('/Library/VirtualFolders?' + query, 'POST', media_libraries.new_library_options())
-    libraries = media_libraries.folders(jellyfin)
-    check(
-        bool(media_libraries.matching(libraries, 'tv', 'TV Shows', 'tvshows')),
-        'Jellyfin keeps a TV library at /data/tv (as setup checks it)',
-        [(f.get('Name'), f.get('Locations')) for f in libraries],
-    )
-    # Jellyfin starts no scan while one is running (its first-run scan may still be), and
-    # then the new library waits for the next one: the test waits, then asks for a scan.
-    wait_for("Jellyfin's running library scan ends", lambda: not library_scan_running(jellyfin))
-    jellyfin.call('/Library/Refresh', 'POST')
+    check(all(r['status'] == 'pass' for r in results), "setup's library step makes Movies and TV Shows", results)
     try:
         show = wait_for('Jellyfin finds the show with its TVDB ID', lambda: the_show_in_jellyfin(jellyfin, user))
     except Failed as exc:
@@ -326,6 +326,7 @@ def main(argv):
     root = Path(argv[1])
     try:
         make_the_show(root)
+        make_films(root)
         jellyfin, _show = set_up_jellyfin(root)
         sonarr = set_up_sonarr(root)
         set_up_seerr(root)
