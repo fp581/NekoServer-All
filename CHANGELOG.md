@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.52.0 — (in progress)
+## v0.52.0 — (in progress; the release number is 0.52.0)
 
 ### Added: favourite shows keep coming
 - **A show marked as a favourite in Jellyfin gets its missing episodes and its new ones.** Every hour NekoServer looks at each Jellyfin user's favourite shows; one Sonarr does not follow yet is given to Sonarr, watching every new episode and season, with the quality Seerr's requests use. An hour later, once Sonarr has the show's list of episodes, the episodes that aired and that Jellyfin does not have are searched for (specials left out). What Jellyfin has is what counts, so nothing you have is downloaded again, also from a folder of yours the download apps can't see. Nothing is removed when a show stops being a favourite. This closes the gap for shows from your own folders, which Sonarr did not know.
