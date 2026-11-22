@@ -155,6 +155,12 @@ def the_show_in_jellyfin(jellyfin, user):
     return next((i for i in items if (i.get('ProviderIds') or {}).get('Tvdb') == SHOW['tvdb']), None)
 
 
+def library_scan_running(jellyfin):
+    """Whether Jellyfin's "Scan Media Library" task is running now."""
+    tasks = jellyfin.call('/ScheduledTasks')
+    return any(t.get('Name') == 'Scan Media Library' and t.get('State') == 'Running' for t in tasks)
+
+
 def set_up_jellyfin(root):
     section('Jellyfin: first run, a TV library, the show marked as a favourite')
     jellyfin, user = jellyfin_first_run()
@@ -171,6 +177,10 @@ def set_up_jellyfin(root):
         'Jellyfin keeps a TV library at /data/tv (as setup checks it)',
         [(f.get('Name'), f.get('Locations')) for f in libraries],
     )
+    # Jellyfin starts no scan while one is running (its first-run scan may still be), and
+    # then the new library waits for the next one: the test waits, then asks for a scan.
+    wait_for("Jellyfin's running library scan ends", lambda: not library_scan_running(jellyfin))
+    jellyfin.call('/Library/Refresh', 'POST')
     try:
         show = wait_for('Jellyfin finds the show with its TVDB ID', lambda: the_show_in_jellyfin(jellyfin, user))
     except Failed as exc:
