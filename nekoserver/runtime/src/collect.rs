@@ -2124,6 +2124,31 @@ fn media(report: Option<&MediaReport>) -> Value {
     }
     r
 }
+/// When a file was last changed, in seconds since 1970; None when that can't be read.
+fn modified_at(path: &Path) -> Option<f64> {
+    let time = fs::metadata(path).ok()?.modified().ok()?;
+    Some(
+        time.duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs_f64(),
+    )
+}
+/// The restore rehearsals' reports in `folder` (at most 100), each with when it was written.
+fn rehearsal_reports(folder: &Path) -> Vec<(f64, PathBuf)> {
+    if common::safe(folder).is_err() {
+        return vec![];
+    }
+    let Ok(items) = fs::read_dir(folder) else {
+        return vec![];
+    };
+    items
+        .flatten()
+        .take(100)
+        .map(|item| item.path().join("restore-report.json"))
+        .filter(|p| common::safe(p).is_ok())
+        .filter_map(|p| modified_at(&p).map(|at| (at, p)))
+        .collect()
+}
 fn recovery(cfg: &Value, data_ok: bool, media_ok: bool) -> Value {
     let mut r = json!({"status":"needs_setup","reason":"Full restore acceptance still required","latest_rehearsal":null,"checkpoint":false});
     let data = Path::new(text(&cfg["data_mount"]));
@@ -2138,26 +2163,8 @@ fn recovery(cfg: &Value, data_ok: bool, media_ok: bool) -> Value {
         (data, data_ok),
         (Path::new(text(&cfg["media_mount"])), media_ok),
     ] {
-        if !ok {
-            continue;
-        }
-        let folder = root.join("recovery-tests");
-        if common::safe(&folder).is_err() {
-            continue;
-        }
-        if let Ok(items) = fs::read_dir(folder) {
-            for item in items.flatten().take(100) {
-                let p = item.path().join("restore-report.json");
-                if common::safe(&p).is_ok() {
-                    if let Ok(meta) = fs::metadata(&p) {
-                        if let Ok(time) = meta.modified() {
-                            if let Ok(d) = time.duration_since(std::time::UNIX_EPOCH) {
-                                candidates.push((d.as_secs_f64(), p));
-                            }
-                        }
-                    }
-                }
-            }
+        if ok {
+            candidates.extend(rehearsal_reports(&root.join("recovery-tests")));
         }
     }
     if let Some((at, p)) = candidates.into_iter().max_by(|a, b| a.0.total_cmp(&b.0)) {

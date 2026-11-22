@@ -377,7 +377,7 @@ const PATH_MAX: usize = libc::PATH_MAX as usize - 1;
 /// name too long" and stopped the whole run, so no file after it was ever backed up.
 fn path_fits(target: &Path) -> bool {
     let folder = target.parent().map_or(0, |p| p.as_os_str().len());
-    let name = target.file_name().map_or(0, |n| n.len());
+    let name = target.file_name().map_or(0, std::ffi::OsStr::len);
     let longest = (name + VERSION_TAG)
         .min(NAME_MAX)
         .max(partial_name("").len());
@@ -1000,7 +1000,7 @@ fn kept_findings(previous: &Value, key: &str, found: &[String]) -> (Vec<String>,
 fn ledger_key(path: &Path, root: &Path) -> Result<String> {
     path.strip_prefix(root)
         .ok()
-        .and_then(|p| p.to_str())
+        .and_then(Path::to_str)
         .filter(|p| ledger::valid_path(p))
         .map(str::to_string)
         .ok_or_else(|| Error::new("File name cannot be recorded in the checksum ledger"))
@@ -4828,7 +4828,11 @@ fn keep_dump(data: &Path, media: &Path, created: &Path, keep: u64) -> Result<()>
         data.join("backups/immich-database"),
         media.join("backups/immich-database"),
     ] {
-        prune_dumps(&folder, keep, created.file_name().and_then(|n| n.to_str()))?;
+        prune_dumps(
+            &folder,
+            keep,
+            created.file_name().and_then(std::ffi::OsStr::to_str),
+        )?;
     }
     Ok(())
 }

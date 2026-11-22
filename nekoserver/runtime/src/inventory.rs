@@ -102,7 +102,7 @@ impl Inventory {
         let key_of = |path: &Path| {
             path.strip_prefix(root)
                 .ok()
-                .and_then(|p| p.to_str())
+                .and_then(Path::to_str)
                 .filter(|k| crate::ledger::valid_path(k))
                 .map(str::to_string)
         };

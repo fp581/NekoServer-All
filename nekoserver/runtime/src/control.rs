@@ -799,7 +799,10 @@ impl Service {
             return json!({"status": "disabled", "devices": []});
         }
         let fresh = self.lights.try_lock().ok().map(|mut l| l.status());
-        let mut shown = self.shown_lights.lock().unwrap_or_else(|e| e.into_inner());
+        let mut shown = self
+            .shown_lights
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(v) = fresh {
             *shown = v;
         }
@@ -808,7 +811,9 @@ impl Service {
     /// The fans, also after a request thread panicked while holding them: a poisoned lock
     /// would otherwise stop every fan step for good, with no restart to hand them back.
     pub fn fans(&self) -> std::sync::MutexGuard<'_, Fans> {
-        self.fans.lock().unwrap_or_else(|e| e.into_inner())
+        self.fans
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     /// Stop a running detection and wait until it has handed every fan back.
     pub fn stop_detection(&self) {

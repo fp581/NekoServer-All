@@ -127,7 +127,10 @@ impl Folders {
     /// The last answer and whether a change is at work. An answer left "working" by a
     /// run that ended (a restart, a crash) is said as stopped.
     pub fn state(&self) -> Value {
-        let _one = self.one.lock().unwrap_or_else(|e| e.into_inner());
+        let _one = self
+            .one
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let working = self.busy();
         let mut result = common::json(&self.result(), 2_000_000);
         if result["format"] != fact("format") {
@@ -172,7 +175,10 @@ impl Folders {
             Ok(asked) => asked,
             Err(why) => return refuse("E42", why),
         };
-        let _one = self.one.lock().unwrap_or_else(|e| e.into_inner());
+        let _one = self
+            .one
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.busy() {
             return refuse("E47", busy());
         }
