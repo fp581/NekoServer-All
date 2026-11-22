@@ -7521,7 +7521,7 @@ mod tests {
         assert!(media.is_empty());
         // The source: the journal's apps and the manifest, not every app set up.
         let source = include_str!("maintenance.rs");
-        let recovery = &source[source.find("fn put_back_all(cfg").unwrap()..];
+        let recovery = &source[source.find("fn put_back_all(\n    cfg: &Value").unwrap()..];
         let recovery = &recovery[..recovery.find("\n}\n").unwrap()];
         assert!(recovery.contains("rollback_paths(&apps, snapshot_manifest)"));
         assert!(!recovery.contains("roots(&names(cfg)?)"));
