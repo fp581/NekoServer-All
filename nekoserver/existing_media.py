@@ -242,11 +242,16 @@ def drive_of_nekoserver(config, uuid):
     chosen on the storage page (also a minute ago, before the approval), or another drive
     of a group's; None otherwise. The disk Linux runs from is never one: a role kept there
     is only a folder of it, and the person's own folders beside it stay theirs."""
+    if not uuid:
+        return None
+    return role_drive_of_nekoserver(config, uuid) or extra_drive_of_nekoserver(config, uuid)
+
+
+def role_drive_of_nekoserver(config, uuid):
+    """drive_of_nekoserver for the app SSD and the media HDD."""
     import drive_table
     from modules.storage import ONE_DRIVE, SHARED_FOLDERS
 
-    if not uuid:
-        return None
     storage = config.get('storage') if isinstance(config.get('storage'), dict) else {}
     for key, mount_key in (('data_ssd', 'data_mount'), ('media_hdd', 'media_mount')):
         record = storage.get(key) if isinstance(storage.get(key), dict) else {}
@@ -256,6 +261,11 @@ def drive_of_nekoserver(config, uuid):
             return drive_table.role(key), str(mount_path(config[mount_key]))
         if record['folder'] in SHARED_FOLDERS.values():
             return drive_table.role(key), ONE_DRIVE
+    return None
+
+
+def extra_drive_of_nekoserver(config, uuid):
+    """drive_of_nekoserver for a drive of a group's own (never a folder a NAS shares)."""
     for name, record in extra_drives(config).items():
         network = record.get('network') if isinstance(record.get('network'), dict) else {}
         if record.get('uuid') == uuid and not network.get('export'):
@@ -1109,6 +1119,34 @@ def library_row(check_name, make, too_old=()):
         return media_libraries.row(check_name, 'fail', API_FAILED)
 
 
+def has_library(values, path, kind, entry):
+    """A library of Jellyfin's (`values`) has the folder `path`. Of the right kind, or said:
+    Jellyfin reads films as films only in a library for films (review of 0.51.2: a folder
+    of films in a music library passed, on its path alone)."""
+    found = [x for x in values if path in [str(p).rstrip('/') for p in x['Locations']]]
+    wrong = next((x for x in found if str(x.get('CollectionType') or '').casefold() != kind), None)
+    if wrong:
+        raise media_libraries.SetupRequired(
+            WRONG_KIND.format(
+                path=entry['path'],
+                name=wrong.get('Name', ''),
+                has={'tvshows': 'shows'}.get(wrong.get('CollectionType'), wrong.get('CollectionType') or 'mixed content'),
+                what=WHAT[entry['holds']],
+            )
+        )
+    return bool(found)
+
+
+def watch_libraries_of(client, values, path, on_share):
+    """Real time monitoring in every library that has the folder (watch_library); with
+    the folder on a share, Jellyfin's library scan every hour too."""
+    for library in values:
+        if path in [str(p).rstrip('/') for p in library['Locations']] and library.get('ItemId'):
+            media_libraries.watch_library(client, library, on_share=on_share)
+    if on_share:
+        media_libraries.scan_every_hour(client)
+
+
 def jellyfin_library(client, config, entry, kind, apply, how):
     """Jellyfin's library for one folder: there already, or made and read back."""
     name, check_name = library_name(entry), f"jellyfin:existing:{entry['slot']}"
@@ -1116,33 +1154,13 @@ def jellyfin_library(client, config, entry, kind, apply, how):
     path = container_path(entry['holds'], entry['slot'])
 
     def there(values):
-        """A library has the folder. Of the right kind, or said: Jellyfin reads films
-        as films only in a library for films (review of 0.51.2: a folder of films in a
-        music library passed, on its path alone)."""
-        found = [x for x in values if path in [str(p).rstrip('/') for p in x['Locations']]]
-        wrong = next((x for x in found if str(x.get('CollectionType') or '').casefold() != kind), None)
-        if wrong:
-            raise media_libraries.SetupRequired(
-                WRONG_KIND.format(
-                    path=entry['path'],
-                    name=wrong.get('Name', ''),
-                    has={'tvshows': 'shows'}.get(
-                        wrong.get('CollectionType'), wrong.get('CollectionType') or 'mixed content'
-                    ),
-                    what=WHAT[entry['holds']],
-                )
-            )
-        return bool(found)
+        return has_library(values, path, kind, entry)
 
     on_share = entry['fstype'] in NETWORK
     values = media_libraries.folders(client)
     if there(values):
         if apply:
-            for library in values:
-                if path in [str(p).rstrip('/') for p in library['Locations']] and library.get('ItemId'):
-                    media_libraries.watch_library(client, library, on_share=on_share)
-            if on_share:
-                media_libraries.scan_every_hour(client)
+            watch_libraries_of(client, values, path, on_share)
         return media_libraries.row(check_name, 'pass')
     if any(str(x.get('Name', '')).casefold() == name.casefold() for x in values):
         raise media_libraries.SetupRequired(NAME_TAKEN.format(app='Jellyfin', name=name))

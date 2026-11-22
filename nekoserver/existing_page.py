@@ -290,6 +290,18 @@ def remount_as_it_is(argv):
     return existing_media.takes_new_files(argv[3]) == argv[2].endswith(',rw')
 
 
+def fstab_line(config, entry):
+    """The /etc/fstab line that makes a share used in place permanent (the one its check
+    offers), or None: it needs none, or it is away now (use_in_place says so, never
+    waiting for it)."""
+    if not existing_media.folder_answers(entry['path']):
+        return None  # away now: its share does not answer
+    try:
+        return existing_media.check(config, entry['holds'], entry['path']).get('add_to_fstab')
+    except existing_media.Refused:
+        return None  # away now
+
+
 def mount(ctx):
     """Before the apps start: every folder used in place is mounted where the apps see
     it, now and at every start. A share that is not permanent yet gets its line (the one
@@ -302,16 +314,7 @@ def mount(ctx):
     # disconnects what they connected.
     if not wanted and not existing_media.connected_before():
         return []
-    permanent = []
-    for entry in wanted:
-        if not existing_media.folder_answers(entry['path']):
-            continue  # away now (its share does not answer): use_in_place says so, never waiting for it
-        try:
-            line = existing_media.check(config, entry['holds'], entry['path']).get('add_to_fstab')
-        except existing_media.Refused:
-            continue  # away now: use_in_place says so
-        if line:
-            permanent.append(line)
+    permanent = [line for line in (fstab_line(config, entry) for entry in wanted) if line]
     changed = []
 
     def noted(argv, timeout):
@@ -355,6 +358,33 @@ def copy_said(shown):
 COPIED = ('copied', 'imported_earlier')
 
 
+def copied_one(ctx, config, folder):
+    """One folder of the list copied into the library, said as it goes; False when it was
+    not (it stays on the list for the next run)."""
+    # The settings file is not trusted: copy_preview checks the kind and the folder again.
+    kind, path = (folder.get('holds'), folder.get('path')) if isinstance(folder, dict) else (None, None)
+    try:
+        ctx.log(copy_said(existing_media.copy_preview(config, kind, path)))
+        # The dashboard's page shows how far the copy is (media_locations.CopyProgress).
+        told = {'progress': ctx.copy_progress(kind, path)} if hasattr(ctx, 'copy_progress') else {}
+        row = existing_media.copy_now(config, kind, path, **told)
+    except (RuntimeError, OSError, TypeError) as problem:
+        ctx.log(f'Your own folder {path} was not copied: {problem}. Setup tries again at its next run.')
+        return False
+    if row.get('status') not in COPIED:
+        # The import said why it stopped (no room, the drive away, a file that could
+        # not be read) without raising: the folder was taken off the list all the
+        # same, so a run after fixing it never copied it (review of 0.51.3).
+        why = row.get('reason') or 'the copy did not finish'
+        ctx.log(f'Your own folder {path} was not copied: {why}. Setup tries again at its next run.')
+        return False
+    ctx.log(
+        f"Copied into the library: {row.get('copied', 0)} files from {path}"
+        + (f" ({row['reason']})" if row.get('reason') else '')
+    )
+    return True
+
+
 def copy(ctx):
     """Once the library folders are there: every folder the person chose to copy is
     copied into the library (existing_media.copy_now: add-only, their folder kept), after
@@ -365,31 +395,7 @@ def copy(ctx):
     wanted = config.get(COPIES)
     if not isinstance(wanted, list) or not wanted:
         return []
-    left = []
-    for folder in wanted:
-        # The settings file is not trusted: copy_preview checks the kind and the folder again.
-        kind, path = (folder.get('holds'), folder.get('path')) if isinstance(folder, dict) else (None, None)
-        try:
-            ctx.log(copy_said(existing_media.copy_preview(config, kind, path)))
-            # The dashboard's page shows how far the copy is (media_locations.CopyProgress).
-            told = {'progress': ctx.copy_progress(kind, path)} if hasattr(ctx, 'copy_progress') else {}
-            row = existing_media.copy_now(config, kind, path, **told)
-        except (RuntimeError, OSError, TypeError) as problem:
-            ctx.log(f'Your own folder {path} was not copied: {problem}. Setup tries again at its next run.')
-            left.append(folder)
-            continue
-        if row.get('status') not in COPIED:
-            # The import said why it stopped (no room, the drive away, a file that could
-            # not be read) without raising: the folder was taken off the list all the
-            # same, so a run after fixing it never copied it (review of 0.51.3).
-            why = row.get('reason') or 'the copy did not finish'
-            ctx.log(f'Your own folder {path} was not copied: {why}. Setup tries again at its next run.')
-            left.append(folder)
-            continue
-        ctx.log(
-            f"Copied into the library: {row.get('copied', 0)} files from {path}"
-            + (f" ({row['reason']})" if row.get('reason') else '')
-        )
+    left = [folder for folder in wanted if not copied_one(ctx, config, folder)]
     if left:
         config[COPIES] = left
     else:
