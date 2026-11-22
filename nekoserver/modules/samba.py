@@ -451,6 +451,155 @@ def switch_off_unused(run=subprocess.run):
     return stopped
 
 
+def network_chosen(context, settings, mode):
+    """The network the shares are on: the home network's address (chosen here when Samba
+    runs first; the LAN gateway, HTTPS, is not needed for it) into `settings`, or the
+    tailnet only. A needs_setup result when no home address is chosen yet."""
+    if mode == 'lan':
+        if not network_access.choose_lan(context):
+            return {
+                'status': 'needs_setup',
+                'reason': 'Choose the home-network address: run setup again in a terminal on the server (it asks which network connects to your router), or set gateway.lan_ip and gateway.lan_cidr',
+            }
+        settings['lan_ip'] = context.config['gateway']['lan_ip']
+        settings['lan_cidr'] = context.config['gateway']['lan_cidr']
+        network_access.verify_lan({'gateway': settings})
+    elif settings.get('tailnet_only') is not True:
+        raise RuntimeError('Tailnet sharing requires tailnet_only=true')
+    return None
+
+
+def checked_user(settings):
+    """The account the shares are opened with: a real desktop account, never root."""
+    user = samba_account(settings)
+    if (
+        not user
+        or user == 'root'
+        or any(ch not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-' for ch in user)
+    ):
+        raise RuntimeError('Run with sudo from a real desktop account, or configure networking.samba_user explicitly')
+    pwd.getpwnam(user)
+    return user
+
+
+def checked_media(config, mode):
+    """The media drive the shares are on, mounted as a drive of its own; on the tailnet,
+    Tailscale signed in."""
+    media = Path(config['media_mount'])
+    if media.is_symlink() or not media.is_dir():
+        raise RuntimeError('Media mount missing or symlink')
+    if findmnt('TARGET', media) != str(media):
+        raise RuntimeError('Media HDD is not a dedicated mount')
+    if mode == 'tailnet':
+        if not shutil.which('tailscale') or not Path('/sys/class/net/tailscale0').exists():
+            raise RuntimeError('Authenticate Tailscale before tailnet Samba setup')
+    return media
+
+
+def folders_waiting(settings, media, placed):
+    """The shared folders that are not there yet, each with the step that makes it. A
+    link stops setup, and so does a folder you named yourself that is missing."""
+    waiting = []
+    for name, rel in settings.get('shares', {}).items():
+        path = safe_path(media / validate_share(name, rel))
+        if path.is_symlink():
+            raise RuntimeError(f'Share directory is a link, not a folder: {path}')
+        if not path.is_dir():
+            # The library and photo archive are made by the media and photos steps; when
+            # those could not run yet, the shares wait for them. A folder you named
+            # yourself must exist.
+            if rel in MADE_BY_SETUP:
+                waiting.append(f'{name} ({path}, made by the {MADE_BY_SETUP[rel]} step)')
+                continue
+            raise RuntimeError(
+                f'Share directory missing: {path}. Create it, or take the "{name}" share out of "shares" under "networking" in my-config.json'
+            )
+    for name, path in placed.items():
+        path = safe_path(path)
+        if path.is_symlink():
+            raise RuntimeError(f'Share directory is a link, not a folder: {path}')
+        if not path.is_dir():
+            waiting.append(f'{name} ({path}, made by the media apps step)')
+    return waiting
+
+
+def write_samba_config(context, samba, how, shared):
+    """Samba installed and NekoServer's share file written, included from smb.conf (made
+    only when there is none), then checked with testparm. A Samba set up by someone else
+    is not changed. `samba`: (this Linux, its Samba service); `how`: (the settings, the
+    mode); `shared`: (the media drive, the account, the folders placed on other drives)."""
+    family, service = samba
+    settings, mode = how
+    media, user, placed = shared
+    main = safe_path('/etc/samba/smb.conf')
+    managed = safe_path(SHARE_FILE)
+    remember_service(service, managed)
+    if not shutil.which('smbd'):
+        family.install(['samba'])
+    desired = share_config(settings, media, user, placed, apps_account(context.config))
+    # Safest: don't modify a pre-existing unmanaged Samba installation.
+    if main.exists() and not includes_ours(main.read_text()):
+        unmanaged_config(main, family, context.log)
+    if managed.exists() and managed.read_text() != desired:
+        check_rewrite(managed.read_text(), mode, settings)
+    managed.parent.mkdir(parents=True, exist_ok=True)
+    if not managed.exists() or managed.read_text() != desired:
+        atomic_write(managed, desired, 0o644)
+    # Default samba configuration is a tiny [global] include, only when no config exists.
+    if not main.exists():
+        atomic_write(main, '[global]\n   include = /etc/samba/nekoserver.conf\n', 0o644)
+    call(['testparm', '-s', str(main)], timeout=30)
+
+
+def write_storage_guard(family, service, media, mode, placed):
+    """Samba's drop-in that runs it only with the drives of its shares mounted (storage_guard)."""
+    unit = call(['systemd-escape', '--path', '--suffix=mount', str(media)])
+    override = SYSTEMD_UNITS / (service + '.d') / '10-nekoserver-storage.conf'
+    content = storage_guard(media, unit, mode, family.service('tailscale'), placed.values())
+    if override.exists() and not safe_path(override).read_text().startswith('# Managed by NekoServer\n'):
+        raise RuntimeError('Unmanaged Samba storage guard')
+    atomic_write(override, content, 0o644)
+
+
+def has_samba_account(user):
+    """Samba has an account for `user` (pdbedit lists it)."""
+    account = subprocess.run(['pdbedit', '-L', '-u', user], capture_output=True, text=True, timeout=15, check=False)
+    return account.returncode == 0 and any(line.startswith(user + ':') for line in account.stdout.splitlines())
+
+
+def account_made(context, user):
+    """Samba's account for `user` made, with the password chosen on the accounts page (or
+    typed now); a needs_setup result when there is no one to type it, or none was set."""
+    if not sys.stdin.isatty():
+        context.log('Samba service installed; authenticated user setup is still required')
+        return {
+            'status': 'needs_setup',
+            'reason': 'Run interactively to create the Samba password, or use sudo smbpasswd -a ' + user,
+        }
+    # The password chosen on the accounts page goes straight to Samba, in no log (the
+    # account store keeps it privately, for "Show login").
+    import account_store
+
+    if not account_store.AHEAD.get('others', {}).get('shared_folders'):
+        print(
+            '\nShared folders: choose a password for opening the server\'s folders from other '
+            'computers (user: ' + user + '). Type it twice; nothing is shown while you type.'
+        )
+    if not samba_password(user):
+        return {
+            'status': 'needs_setup',
+            'reason': 'No Samba password was set (the two did not match three times, or Samba refused it). Run setup again, or use  sudo smbpasswd -a '
+            + user,
+        }
+    account = subprocess.run(['pdbedit', '-L', '-u', user], capture_output=True, text=True, timeout=15, check=False)
+    if account.returncode or not any(line.startswith(user + ':') for line in account.stdout.splitlines()):
+        raise RuntimeError('Samba user was not retained; inspect local authentication setup')
+    # Made by NekoServer: the uninstaller removes it again. One that was there before
+    # (shares of your own use it) is never on this list, and stays.
+    remember_account(user)
+    return None
+
+
 def run(context):
     if not context.apply:
         context.log('Samba setup deferred; run --module samba --apply')
@@ -475,84 +624,19 @@ def run(context):
     mode = settings.get('share_mode', 'tailnet')
     if mode not in ('lan', 'tailnet'):
         raise RuntimeError('Samba share_mode must be lan or tailnet')
-    if mode == 'lan':
-        # Chosen here when Samba runs first; the LAN gateway (HTTPS) is not needed for it.
-        if not network_access.choose_lan(context):
-            return {
-                'status': 'needs_setup',
-                'reason': 'Choose the home-network address: run setup again in a terminal on the server (it asks which network connects to your router), or set gateway.lan_ip and gateway.lan_cidr',
-            }
-        settings['lan_ip'] = context.config['gateway']['lan_ip']
-        settings['lan_cidr'] = context.config['gateway']['lan_cidr']
-        network_access.verify_lan({'gateway': settings})
-    elif settings.get('tailnet_only') is not True:
-        raise RuntimeError('Tailnet sharing requires tailnet_only=true')
-    user = samba_account(settings)
-    if (
-        not user
-        or user == 'root'
-        or any(ch not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-' for ch in user)
-    ):
-        raise RuntimeError('Run with sudo from a real desktop account, or configure networking.samba_user explicitly')
-    pwd.getpwnam(user)
-    media = Path(context.config['media_mount'])
-    if media.is_symlink() or not media.is_dir():
-        raise RuntimeError('Media mount missing or symlink')
-    if findmnt('TARGET', media) != str(media):
-        raise RuntimeError('Media HDD is not a dedicated mount')
-    if mode == 'tailnet':
-        if not shutil.which('tailscale') or not Path('/sys/class/net/tailscale0').exists():
-            raise RuntimeError('Authenticate Tailscale before tailnet Samba setup')
-    waiting = []
-    for name, rel in settings.get('shares', {}).items():
-        path = safe_path(media / validate_share(name, rel))
-        if path.is_symlink():
-            raise RuntimeError(f'Share directory is a link, not a folder: {path}')
-        if not path.is_dir():
-            # The library and photo archive are made by the media and photos steps; when
-            # those could not run yet, the shares wait for them. A folder you named
-            # yourself must exist.
-            if rel in MADE_BY_SETUP:
-                waiting.append(f'{name} ({path}, made by the {MADE_BY_SETUP[rel]} step)')
-                continue
-            raise RuntimeError(
-                f'Share directory missing: {path}. Create it, or take the "{name}" share out of "shares" under "networking" in my-config.json'
-            )
-    for name, path in placed.items():
-        path = safe_path(path)
-        if path.is_symlink():
-            raise RuntimeError(f'Share directory is a link, not a folder: {path}')
-        if not path.is_dir():
-            waiting.append(f'{name} ({path}, made by the media apps step)')
+    no_address = network_chosen(context, settings, mode)
+    if no_address:
+        return no_address
+    user = checked_user(settings)
+    media = checked_media(context.config, mode)
+    waiting = folders_waiting(settings, media, placed)
     if waiting:
         return {
             'status': 'needs_setup',
             'reason': 'Shared folders wait for ' + ', '.join(waiting) + ': finish those steps, then run setup again',
         }
-    main = safe_path('/etc/samba/smb.conf')
-    managed = safe_path(SHARE_FILE)
-    remember_service(service, managed)
-    if not shutil.which('smbd'):
-        family.install(['samba'])
-    desired = share_config(settings, media, user, placed, apps_account(context.config))
-    # Safest: don't modify a pre-existing unmanaged Samba installation.
-    if main.exists() and not includes_ours(main.read_text()):
-        unmanaged_config(main, family, context.log)
-    if managed.exists() and managed.read_text() != desired:
-        check_rewrite(managed.read_text(), mode, settings)
-    managed.parent.mkdir(parents=True, exist_ok=True)
-    if not managed.exists() or managed.read_text() != desired:
-        atomic_write(managed, desired, 0o644)
-    # Default samba configuration is a tiny [global] include, only when no config exists.
-    if not main.exists():
-        atomic_write(main, '[global]\n   include = /etc/samba/nekoserver.conf\n', 0o644)
-    call(['testparm', '-s', str(main)], timeout=30)
-    unit = call(['systemd-escape', '--path', '--suffix=mount', str(media)])
-    override = SYSTEMD_UNITS / (service + '.d') / '10-nekoserver-storage.conf'
-    content = storage_guard(media, unit, mode, family.service('tailscale'), placed.values())
-    if override.exists() and not safe_path(override).read_text().startswith('# Managed by NekoServer\n'):
-        raise RuntimeError('Unmanaged Samba storage guard')
-    atomic_write(override, content, 0o644)
+    write_samba_config(context, (family, service), (settings, mode), (media, user, placed))
+    write_storage_guard(family, service, media, mode, placed)
     call(['systemctl', 'daemon-reload'])
     for unused in switch_off_unused(subprocess.run):
         context.log(
@@ -561,36 +645,10 @@ def run(context):
         )
     call(['systemctl', 'enable', '--now', service], timeout=40)
     call(['systemctl', 'restart', service], timeout=40)
-    account = subprocess.run(['pdbedit', '-L', '-u', user], capture_output=True, text=True, timeout=15, check=False)
-    has_account = account.returncode == 0 and any(line.startswith(user + ':') for line in account.stdout.splitlines())
-    if not has_account:
-        if not sys.stdin.isatty():
-            context.log('Samba service installed; authenticated user setup is still required')
-            return {
-                'status': 'needs_setup',
-                'reason': 'Run interactively to create the Samba password, or use sudo smbpasswd -a ' + user,
-            }
-        # The password chosen on the accounts page goes straight to Samba, in no log (the
-        # account store keeps it privately, for "Show login").
-        import account_store
-
-        if not account_store.AHEAD.get('others', {}).get('shared_folders'):
-            print(
-                '\nShared folders: choose a password for opening the server\'s folders from other '
-                'computers (user: ' + user + '). Type it twice; nothing is shown while you type.'
-            )
-        if not samba_password(user):
-            return {
-                'status': 'needs_setup',
-                'reason': 'No Samba password was set (the two did not match three times, or Samba refused it). Run setup again, or use  sudo smbpasswd -a '
-                + user,
-            }
-        account = subprocess.run(['pdbedit', '-L', '-u', user], capture_output=True, text=True, timeout=15, check=False)
-        if account.returncode or not any(line.startswith(user + ':') for line in account.stdout.splitlines()):
-            raise RuntimeError('Samba user was not retained; inspect local authentication setup')
-        # Made by NekoServer: the uninstaller removes it again. One that was there before
-        # (shares of your own use it) is never on this list, and stays.
-        remember_account(user)
+    if not has_samba_account(user):
+        no_password = account_made(context, user)
+        if no_password:
+            return no_password
     context.log(f'Samba configured for {mode}, authenticated user {user}; existing password preserved')
     for line in how_to_open(mode, settings.get('lan_ip'), user, {**settings['shares'], **placed}):
         context.log(line)

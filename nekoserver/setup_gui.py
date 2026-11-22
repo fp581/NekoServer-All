@@ -554,24 +554,32 @@ class Window:
 
     def post(self, route, body):
         """(status, body, content type) for a POST with its JSON body."""
-        if route == 'api/choose' and isinstance(body, dict):
-            return self._fixed_or_ok(self.choose(body))
         if route in ('api/continue', 'api/back'):
             return self._fixed_or_ok(self.press(route[len('api/') :]))
         if route == 'api/start':
-            choices = body.get('choices') if isinstance(body, dict) else None
-            reviewed = body.get('reviewed') if isinstance(body, dict) else None
-            reviewed = reviewed if type(reviewed) is int else None
-            return self._fixed_or_ok(
-                self.choose(choices if isinstance(choices, dict) else {}, start=True, reviewed=reviewed)
-            )
-        if route == 'api/login' and isinstance(body, dict):
+            return self._fixed_or_ok(self.start_pressed(body if isinstance(body, dict) else {}))
+        if not isinstance(body, dict):
+            return NOT_FOUND
+        if route == 'api/choose':
+            return self._fixed_or_ok(self.choose(body))
+        if route == 'api/login':
             return self.login(body.get('app'))
-        if route == 'api/test' and isinstance(body, dict):
+        if route == 'api/test':
             return self.tried(body.get('test'), body.get('word'))
-        if route == 'api/answer' and isinstance(body, dict):
+        if route == 'api/answer':
             return 200, json.dumps({'ok': self.answered(body)}).encode(), JSON
         return NOT_FOUND
+
+    def start_pressed(self, body):
+        """Install pressed: the switches pressed in the window that are not saved yet, and
+        the review it showed (its number), each only when it is what it should be."""
+        choices = body.get('choices')
+        reviewed = body.get('reviewed')
+        return self.choose(
+            choices if isinstance(choices, dict) else {},
+            start=True,
+            reviewed=reviewed if type(reviewed) is int else None,
+        )
 
     @staticmethod
     def answered(body):

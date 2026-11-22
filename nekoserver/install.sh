@@ -29,7 +29,7 @@ worth_retrying() {
   fi
 }
 retrying() {
-  local attempt=1 waited=0 code output
+  local program="$1" attempt=1 waited=0 code output
   output=$(mktemp)
   while :; do
     # (In a || list, so a failure here is judged below instead of ending the script.)
@@ -62,7 +62,7 @@ retrying() {
   fi
   if grep -qiE "$clock_pattern" "$output"; then
     echo "This PC's clock looks wrong (check the date and time with  timedatectl): let the network set it (sudo timedatectl set-ntp true), wait a minute, then run  sudo bash install.sh  again." >&2
-  elif ((code != 0)) && [[ "$1" != env ]] && worth_retrying "$code" "$output"; then
+  elif ((code != 0)) && [[ "$program" != env ]] && worth_retrying "$code" "$output"; then
     # Three tries and the source still did not answer: setup ended on the package
     # manager's own lines alone (apt's say "Failed to fetch"), with nothing on what to do.
     # (zypper runs as env ...: zypper_run judges its codes and says them itself.)
@@ -149,6 +149,7 @@ for arg in "$@"; do
       readonly_mode=true
       help=true
       ;;
+    *) ;; # the other arguments go to installer.py as they are
   esac
   [[ "$previous" == --profile && "$arg" == full ]] && full=true
   [[ "$arg" == --profile=full ]] && full=true

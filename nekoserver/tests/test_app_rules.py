@@ -182,8 +182,9 @@ class SeerrPasswordSignInOff(unittest.TestCase):
 
     def test_with_password_sign_in_on_the_password_is_still_tried(self):
         self.assertIsNone(account_setup.seerr(self.client(True), self.entry, None))
+        client, wrong = self.client(True), dict(self.entry, password='wrong')
         with self.assertRaises(RuntimeError):
-            account_setup.seerr(self.client(True), dict(self.entry, password='wrong'), None)
+            account_setup.seerr(client, wrong, None)
 
 
 class AppStillStartingAfterAnUpdate(unittest.TestCase):
@@ -277,8 +278,9 @@ class QbittorrentLetsInWithoutAPassword(unittest.TestCase):
 
     def test_without_it_the_password_is_tried(self):
         self.assertIsNone(account_setup.qbittorrent(self.client(False), self.entry))
+        client, wrong = self.client(False), dict(self.entry, password='wrong')
         with self.assertRaises(RuntimeError):
-            account_setup.qbittorrent(self.client(False), dict(self.entry, password='wrong'))
+            account_setup.qbittorrent(client, wrong)
 
 
 if __name__ == '__main__':

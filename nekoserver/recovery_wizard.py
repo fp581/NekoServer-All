@@ -82,6 +82,7 @@ ROOT = Path(__file__).resolve().parent
 # The weekly USB backup holds this lock while it mounts, copies and unmounts the drive.
 USB_LOCK = Path('/run/nekoserver-photo-backup.lock')
 RESTORE = 'The restore'  # how the room check names a restore in its message
+WHICH_FILES = 'Which files'  # the line of a restore's review that says which files come back
 SNAPSHOT = re.compile(r'^snapshot-(\d+)-\d+$')
 MONTHLY = re.compile(r'^(\d+)-\d+$')
 
@@ -1119,27 +1120,38 @@ def restore_scope(listed, prompt, output, newest_run=None):
         return 'everything', None, None
     damaged = not newest_run and read_inventory(listed[0][0]) is None
     earlier = newest_with_files(listed) if not (newest_run or damaged) else None
-    older = None
-    if newest_run:
-        options = stale_list_options(listed, newest_run, output)
-    elif damaged:
-        options, older = damaged_list_options(listed, output)
-    elif earlier:
-        output(
-            f'The last backup ({listed[0][1]}) lists no files: the folder was empty then, as after a new '
-            f'drive. The last backup that lists files is the one of {earlier[1]}.'
-        )
-        options = [
-            ('earlier', f'As of the backup of {earlier[1]}: the last one that lists files (recommended)'),
-            ('last', f'As of the last backup ({listed[0][1]}): nothing, as it lists no files'),
-        ]
-    else:
-        options = [('last', f'As of the last backup ({listed[0][1]}): only the files you had then (recommended)')]
+    options, older = scope_options(listed, newest_run, damaged, earlier, output)
     if len(listed) > 1:
         options.append(('date', 'As of an earlier backup: choose the date'))
     if not (newest_run or damaged):
         options.append(('everything', 'Everything ever kept, also files you deleted or renamed'))
     pick = choose('Which files?', options, prompt, output)
+    return scope_picked(pick, listed, older, earlier, (prompt, output))
+
+
+def scope_options(listed, newest_run, damaged, earlier, output):
+    """(the first choices of "Which files?", the older list a damaged newest one points to):
+    for a backup run with no list of its own, a damaged list, a last backup that lists no
+    files (`earlier`: the last one that does), or the usual last backup."""
+    if newest_run:
+        return stale_list_options(listed, newest_run, output), None
+    if damaged:
+        return damaged_list_options(listed, output)
+    if earlier:
+        output(
+            f'The last backup ({listed[0][1]}) lists no files: the folder was empty then, as after a new '
+            f'drive. The last backup that lists files is the one of {earlier[1]}.'
+        )
+        return [
+            ('earlier', f'As of the backup of {earlier[1]}: the last one that lists files (recommended)'),
+            ('last', f'As of the last backup ({listed[0][1]}): nothing, as it lists no files'),
+        ], None
+    return [('last', f'As of the last backup ({listed[0][1]}): only the files you had then (recommended)')], None
+
+
+def scope_picked(pick, listed, older, earlier, asking):
+    """restore_scope's answer for the choice made (`asking`: prompt, output, for the date)."""
+    prompt, output = asking
     if pick == 'older' and older:
         return 'as_of', older[0], older[1]
     if pick == 'date':
@@ -1373,7 +1385,7 @@ def files_approved(config, what, source, chosen, target, untouched, prompt, outp
     rows = [
         ('Restore', what),
         ('From', source),
-        ('Which files', chosen.which()),
+        (WHICH_FILES, chosen.which()),
         ('Size', f'{size_words(size)} (free space where it goes: {free_space(target)})'),
         ('Into', f'{target} (a new folder)'),
         *([('Missing', chosen.missing())] if chosen.missing() else []),
@@ -1942,20 +1954,33 @@ def encrypted_by_nextcloud(folder, sample=200):
         for name in sorted(names):
             if seen >= sample:
                 return False
-            try:
-                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=folder_fd)
-            except OSError:
-                continue  # a symlink, or not readable
-            try:
-                if stat.S_ISREG(os.fstat(fd).st_mode):
-                    seen += 1
-                    if os.read(fd, 7) == b'HBEGIN:':
-                        return True
-            except OSError:
+            header = encryption_header(name, folder_fd)
+            if header is None:
                 continue
-            finally:
-                os.close(fd)
+            seen += 1
+            if header:
+                return True
     return False
+
+
+def encryption_header(name, folder_fd):
+    """Whether the file `name` in the open folder starts with Nextcloud's "HBEGIN:"; None
+    when it is no file to count (a symlink, something else, or one that can't be opened)."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=folder_fd)
+    except OSError:
+        return None  # a symlink, or not readable
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        try:
+            return os.read(fd, 7) == b'HBEGIN:'
+        except OSError:
+            return False  # a file, counted, that could not be read
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
 
 
 def plain_password_list(run):
@@ -2040,18 +2065,7 @@ def take_out_checked(run, name, members, target, optional=()):
             stderr=errors,
             env=in_english(),
         )
-        for chunk in iter(lambda: archive.read(1024 * 1024), b''):
-            digest.update(chunk)
-            if tar.stdin and not tar.stdin.closed:
-                try:
-                    tar.stdin.write(chunk)
-                except BrokenPipeError:
-                    tar.stdin.close()  # tar stopped early; the rest is still checked
-        if not tar.stdin.closed:
-            try:
-                tar.stdin.close()
-            except BrokenPipeError:
-                pass
+        checked_into(archive, tar.stdin, digest)
         failed = tar.wait()
         errors.seek(0)
         said = errors.read().strip()
@@ -2066,6 +2080,24 @@ def take_out_checked(run, name, members, target, optional=()):
         os.rename(unpacking / entry, Path(target) / entry)
     os.rmdir(unpacking)
     return None
+
+
+def checked_into(archive, pipe, digest):
+    """Every byte of `archive` counted into `digest` and written to tar's input `pipe`,
+    which is closed at the end. A tar that stopped early closes the pipe; the rest is
+    still checked."""
+    for chunk in iter(lambda: archive.read(1024 * 1024), b''):
+        digest.update(chunk)
+        if pipe and not pipe.closed:
+            try:
+                pipe.write(chunk)
+            except BrokenPipeError:
+                pipe.close()  # tar stopped early; the rest is still checked
+    if not pipe.closed:
+        try:
+            pipe.close()
+        except BrokenPipeError:
+            pass
 
 
 def password_snapshots(config):
@@ -2288,7 +2320,7 @@ def restore_music(config, prompt, output):
     rows = [
         ('Restore', dict(MENU)['music']),
         ('From', f'{run} (the night of {dict(runs)[run]})'),
-        ('Which files', f'your music as that night\'s backup had it: {file_count(len(files))}'),
+        (WHICH_FILES, f'your music as that night\'s backup had it: {file_count(len(files))}'),
         ('Size', f'{size_words(size)} (free space where it goes: {free_space(target)})'),
         ('Into', f'{target} (a new folder)'),
         ('Overwritten', f'nothing. Your music library ({library}) stays as it is.'),
@@ -3670,7 +3702,7 @@ def restore_from_cards(config, prompt, output, mounts='/proc/self/mounts'):
     rows = [
         ('Restore', FROM_CARDS),
         ('From', f'the card mounted at {card}'),
-        ('Which files', f'those with "{word}" in their folder or name' if word else 'every file on this card'),
+        (WHICH_FILES, f'those with "{word}" in their folder or name' if word else 'every file on this card'),
         ('Into', f'{target} (a new folder; each file is checked against its checksum)'),
         ('Overwritten', 'nothing. Nothing on the card or in your apps is changed.'),
         APPS_KEEP_RUNNING,

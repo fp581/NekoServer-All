@@ -790,12 +790,7 @@ def _ledger_rows(path, rest):
                     rest[key] = reader.value()
                     continue
                 entries = True
-                for rel in reader.members():
-                    row = reader.value()
-                    sha = row.get('sha256') if isinstance(row, dict) else None
-                    if not valid_ledger_path(rel) or not (isinstance(sha, str) and re.fullmatch(r'[0-9a-f]{64}', sha)):
-                        raise RuntimeError(f'The checksum ledger {path} has an invalid entry; it is not trusted')
-                    yield rel, row
+                yield from _checked_entries(reader, path)
             if not reader.at_end():
                 raise ValueError('more after the ledger')
     except (OSError, ValueError):
@@ -803,6 +798,17 @@ def _ledger_rows(path, rest):
     # The format comes after the entries in the file: judged once it is all read.
     if not entries or rest.get('format') != 'neko-ledger-v1':
         raise RuntimeError(f'The checksum ledger {path} is unreadable')
+
+
+def _checked_entries(reader, path):
+    """The ledger's "entries", one (relative path, row) at a time; one with an unsafe path
+    or without a checksum stops it all (RuntimeError)."""
+    for rel in reader.members():
+        row = reader.value()
+        sha = row.get('sha256') if isinstance(row, dict) else None
+        if not valid_ledger_path(rel) or not (isinstance(sha, str) and re.fullmatch(r'[0-9a-f]{64}', sha)):
+            raise RuntimeError(f'The checksum ledger {path} has an invalid entry; it is not trusted')
+        yield rel, row
 
 
 def read_ledger(root):
@@ -877,6 +883,19 @@ def record_ledger(root, entries, how, replace=(), retire=None):
         return added
 
 
+def _write_other_members(out, path, rest, retired):
+    """The ledger's members after its entries: the format, and the copies given up as lost
+    (those of before with `retired` added), then whatever else the ledger had."""
+    before = rest.pop('retired', {})
+    if not isinstance(before, dict):
+        raise RuntimeError(f'The checksum ledger {path} is unreadable')
+    rest['format'] = 'neko-ledger-v1'
+    if before or retired:
+        rest['retired'] = {**before, **retired}
+    for key, value in rest.items():
+        out.write(', ' + json.dumps(key) + ': ' + json.dumps(value))
+
+
 def _copy_ledger(path, out, root, entries, how, replace, retire):
     """Write the ledger at `path` to `out` with record_ledger's changes, one row at a
     time. Returns the paths added, then the paths retired."""
@@ -909,14 +928,7 @@ def _copy_ledger(path, out, root, entries, how, replace, retire):
             added.add(rel)
             put(rel, new_row(rel))
     out.write('}')
-    before = rest.pop('retired', {})
-    if not isinstance(before, dict):
-        raise RuntimeError(f'The checksum ledger {path} is unreadable')
-    rest['format'] = 'neko-ledger-v1'
-    if before or retired:
-        rest['retired'] = {**before, **retired}
-    for key, value in rest.items():
-        out.write(', ' + json.dumps(key) + ': ' + json.dumps(value))
+    _write_other_members(out, path, rest, retired)
     out.write('}')
     return [rel for rel in entries if rel in added] + [rel for rel in retire if rel in retired]
 
@@ -1409,27 +1421,7 @@ def fetch(url, what, limit, timeout=30, opener=None, headers=None):
     request = urllib.request.Request(url, headers={'User-Agent': 'NekoServer-installer', **(headers or {})})
     try:
         with (opener or urllib.request.urlopen)(request, timeout=timeout) as response:
-            # `timeout` is for the whole answer: the socket's own limit is per read, and a
-            # server sending a byte a second kept setup waiting for good.
-            deadline, data = time.monotonic() + timeout, b''
-            read = getattr(response, 'read1', response.read)
-            while len(data) <= limit:
-                if time.monotonic() > deadline:
-                    raise RuntimeError(
-                        f'{what}: {url} answered too slowly (not within {timeout} seconds); try again later'
-                    )
-                chunk = read(min(65536, limit + 1 - len(data)))
-                if not chunk:
-                    break
-                data += chunk
-            # Before, the first `limit` bytes were taken as the whole answer, and an
-            # answer cut off part-way as what there was: a compose file cut short was used.
-            promised = getattr(response, 'headers', {}).get('Content-Length')
-            if len(data) > limit:
-                raise RuntimeError(f'{what}: the answer from {url} is larger than expected; try again later')
-            if isinstance(promised, str) and promised.isdecimal() and len(data) < int(promised):
-                raise http.client.IncompleteRead(data, int(promised) - len(data))
-            return data
+            return _whole_answer(response, url, what, limit, timeout)
     except http.client.HTTPException as exc:
         # Not an OSError: an answer cut off part-way (IncompleteRead) or a header line
         # too long to be a web site's (LineTooLong, a proxy's page, say) came out in
@@ -1446,18 +1438,47 @@ def fetch(url, what, limit, timeout=30, opener=None, headers=None):
             ) from None
         raise RuntimeError(f'{what}: {url} answered HTTP {exc.code}; try again later') from None
     except OSError as exc:
-        reason = str(getattr(exc, 'reason', exc))
-        # A clock set wrong makes every certificate look not valid yet, or expired.
-        if re.search(r'not yet valid|certificate has expired', reason, re.IGNORECASE):
-            raise RuntimeError(
-                f'{what}: could not download {url} ({reason}). This PC\'s clock looks wrong (check '
-                'the date and time with  timedatectl): let the network set it (sudo timedatectl '
-                'set-ntp true), wait a minute, then run setup again'
-            ) from None
-        raise RuntimeError(
-            f'{what}: could not download {url} ({reason}). Check that this PC '
-            'is connected to the internet, then run setup again'
-        ) from None
+        raise RuntimeError(_not_downloaded(exc, url, what)) from None
+
+
+def _whole_answer(response, url, what, limit, timeout):
+    """The whole of a download's answer, read within `timeout` seconds and no more than
+    `limit` bytes; one cut off part-way (fewer bytes than it promised) raises IncompleteRead."""
+    # `timeout` is for the whole answer: the socket's own limit is per read, and a
+    # server sending a byte a second kept setup waiting for good.
+    deadline, data = time.monotonic() + timeout, b''
+    read = getattr(response, 'read1', response.read)
+    while len(data) <= limit:
+        if time.monotonic() > deadline:
+            raise RuntimeError(f'{what}: {url} answered too slowly (not within {timeout} seconds); try again later')
+        chunk = read(min(65536, limit + 1 - len(data)))
+        if not chunk:
+            break
+        data += chunk
+    # Before, the first `limit` bytes were taken as the whole answer, and an
+    # answer cut off part-way as what there was: a compose file cut short was used.
+    promised = getattr(response, 'headers', {}).get('Content-Length')
+    if len(data) > limit:
+        raise RuntimeError(f'{what}: the answer from {url} is larger than expected; try again later')
+    if isinstance(promised, str) and promised.isdecimal() and len(data) < int(promised):
+        raise http.client.IncompleteRead(data, int(promised) - len(data))
+    return data
+
+
+def _not_downloaded(exc, url, what):
+    """Why a download did not reach its site, in words: a clock set wrong makes every
+    certificate look not valid yet, or expired; anything else is the network."""
+    reason = str(getattr(exc, 'reason', exc))
+    if re.search(r'not yet valid|certificate has expired', reason, re.IGNORECASE):
+        return (
+            f'{what}: could not download {url} ({reason}). This PC\'s clock looks wrong (check '
+            'the date and time with  timedatectl): let the network set it (sudo timedatectl '
+            'set-ntp true), wait a minute, then run setup again'
+        )
+    return (
+        f'{what}: could not download {url} ({reason}). Check that this PC '
+        'is connected to the internet, then run setup again'
+    )
 
 
 # Images are downloaded before the apps are started: a slow connection then has hours,

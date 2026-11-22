@@ -70,7 +70,9 @@ def main(argv=None):
         'For phone/remote clients use the HTTPS music address setup printed (port 8446 unless another '
         'program had it; the phone setup page lists it), not localhost.'
     )
-    return 0 if result['status'] == 'pass' else 1 if result['status'] == 'needs_setup' else 2
+    if result['status'] == 'pass':
+        return 0
+    return 1 if result['status'] == 'needs_setup' else 2
 
 
 if __name__ == '__main__':

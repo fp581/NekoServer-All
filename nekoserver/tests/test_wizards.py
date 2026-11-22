@@ -2205,8 +2205,9 @@ class RecoveryWizardTests(unittest.TestCase):
             mock.patch.object(recovery_wizard, 'new_folder', return_value=self.root / 'out'),
         ):
             out = []
+            typed = answers('1', 'yes')
             with self.assertRaisesRegex(RuntimeError, 'Wrong password'):
-                recovery_wizard.restore_passwords(self.config, answers('1', 'yes'), out.append)
+                recovery_wizard.restore_passwords(self.config, typed, out.append)
         said = '\n'.join(out)
         self.assertNotIn('not looked at', said)
         self.assertNotIn('No password list', said)

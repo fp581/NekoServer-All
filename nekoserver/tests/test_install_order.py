@@ -950,8 +950,9 @@ class HardwareVideoLockTests(unittest.TestCase):
             ):
                 with lock_file.open('a') as held:  # a backup or monthly update is running
                     fcntl.flock(held, fcntl.LOCK_EX)
+                    context = Ctx(data)
                     with self.assertRaisesRegex(RuntimeError, 'running right now'):
-                        hv.switch_apps(Ctx(data), None, check_storage=lambda c: None)
+                        hv.switch_apps(context, None, check_storage=lambda c: None)
                     self.assertEqual(calls, [])  # no settings written, nothing restarted
                 hv.switch_apps(Ctx(data), None, check_storage=lambda c: calls.append('storage'))
             self.assertEqual(calls, ['storage', 'immich', 'apps'])
@@ -1634,8 +1635,9 @@ class UsbPickerTests(unittest.TestCase):
             mock.patch.object(storage, 'inventory_now', return_value=self.INVENTORY),
             mock.patch.object(photo_backup, 'atomic_write') as written,
         ):
+            context = Ctx()
             with self.assertRaisesRegex(RuntimeError, 'separate drive'):
-                photo_backup.run(Ctx())
+                photo_backup.run(context)
         written.assert_not_called()  # no weekly timer for that partition
 
     def test_a_second_partition_of_the_hdd_is_refused(self):

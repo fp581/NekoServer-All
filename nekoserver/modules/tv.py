@@ -427,7 +427,111 @@ def run(ctx):
     if impossible:
         return impossible
     family = host.current()
-    if (
+    if left_out_by_choice(ctx):
+        ctx.log('TV setup: skipped by choice')
+        return
+    cfg = ctx.config
+    opts = cfg.get('tv', {})
+    user, home, root = checked_places(cfg, opts)
+    desktop = desktop_folder(user, home) if opts.get('desktop_shortcuts', True) else None
+    flatpak = flatpak_steam(home)
+    if flatpak:
+        ctx.log(
+            'TV: Steam from Flatpak ('
+            + FLATPAK_STEAM
+            + ') is already on this PC; the TV uses it, no second Steam is installed'
+        )
+    steam_program, browser_program = expected_programs(family, flatpak)
+    destinations = launcher_places(launchers(steam_program, browser_program), home, desktop)
+    # Inspect every launcher/ancestor before any packages, power settings or files change.
+    recorded = recorded_launchers(root)
+    check_launchers(destinations, user, home, recorded)
+    if opts.get('keep_awake', True):
+        power_folder_is_theirs(home, user)
+    vendors = graphics()
+    if not vulkan_packages(vendors):
+        say_no_vulkan(ctx, vendors)
+    packages = wanted_packages(opts, vendors, bool(browser()), flatpak=bool(flatpak))
+    not_offered = packages_installed(ctx, family, packages, flatpak)
+    if not_offered:
+        return not_offered
+    steam_program = flatpak or find_program('steam') or steam_program
+    browser_program = browser() or browser_program
+    programs_are_there(steam_program, browser_program)
+    files = launchers(steam_program, browser_program)
+    destinations = {path: files[path.name] for path in destinations}
+    results = [{'check': 'tv:packages', 'status': 'pass'}]
+    if opts.get('bluetooth', True):
+        results.append(bluetooth_row())
+    write_launchers(destinations, user, home, recorded)
+    if opts.get('keep_awake', True):
+        ensure_user_dir(home / USER_CONFIG, home, user)
+        results.append(keep_awake(user, home, ctx.log))
+    results.append({'check': 'tv:launchers', 'status': 'pass'})
+    results += confirmed_rows(ctx, root, handoffs(opts))
+    write_report(root, user, home, results, destinations)
+    ctx.log(
+        'TV launchers installed for '
+        + user.pw_name
+        + '; complete Steam login, Remote Play and controller/HDMI tests. Report: '
+        + str(root / REPORT)
+    )
+    if any(row['status'] == 'needs_setup' for row in results):
+        return {'status': 'needs_setup', 'reason': 'TV software installed; unfinished desktop/hardware handoffs remain'}
+    return {'status': 'configured', 'reason': 'TV setup and user-witnessed tests completed; see tv-setup.json'}
+
+
+def checked_places(cfg, opts):
+    """(the desktop's account, its home, the app SSD for the TV's report), once the TV's
+    switches are true or false and the SSD is mounted."""
+    user, home = desktop_user(cfg)
+    if any(key in opts and type(opts[key]) is not bool for key in ('desktop_shortcuts', 'bluetooth', 'keep_awake')):
+        raise RuntimeError('TV switches must be JSON booleans')
+    root = safe_path(cfg['data_mount'])
+    if not os.path.ismount(root):
+        raise RuntimeError('Mounted application SSD required for the TV report')
+    return user, home, root
+
+
+def expected_programs(family, flatpak):
+    """(Steam, the browser) the launchers start: the ones here, else where this Linux's
+    packages put them. The browser already here opens YouTube; Firefox is installed only
+    where there is none."""
+    steam = flatpak or find_program('steam') or ('/usr/games/steam' if family.name == 'debian' else '/usr/bin/steam')
+    return steam, browser() or (
+        '/usr/bin/firefox-esr' if family.name == 'debian' and not family.ubuntu() else '/usr/bin/firefox'
+    )
+
+
+def programs_are_there(steam_program, browser_program):
+    """The programs the launchers start are installed (Steam's first word: a Flatpak's
+    command has more)."""
+    for binary in (steam_program.split()[0], browser_program):
+        if not Path(binary).is_file():
+            raise RuntimeError('Required TV launcher executable missing: ' + binary)
+
+
+def launcher_places(files, home, desktop):
+    """{where each launcher goes: its text}: the user's applications, and the desktop when
+    the shortcuts are wanted there (`desktop`, else None)."""
+    destinations = {home / '.local/share/applications' / name: text for name, text in files.items()}
+    if desktop:
+        destinations.update({desktop / name: text for name, text in files.items()})
+    return destinations
+
+
+def say_no_vulkan(ctx, vendors):
+    """Said when this PC has no graphics chip a Vulkan driver package is for."""
+    ctx.log(
+        'TV: no Intel or AMD graphics found'
+        + (" (NVIDIA needs its maker's driver, installed your Linux's own way)" if 'nvidia' in vendors else '')
+        + '; installing Steam without a Vulkan driver package'
+    )
+
+
+def left_out_by_choice(ctx):
+    """The person said no to the TV (asked only when the first page left it open)."""
+    return (
         guided_setup.wanted(
             ctx,
             'tv',
@@ -439,51 +543,20 @@ def run(ctx):
             ],
         )
         is False
-    ):
-        ctx.log('TV setup: skipped by choice')
-        return
-    cfg = ctx.config
-    opts = cfg.get('tv', {})
-    user, home = desktop_user(cfg)
-    if any(key in opts and type(opts[key]) is not bool for key in ('desktop_shortcuts', 'bluetooth', 'keep_awake')):
-        raise RuntimeError('TV switches must be JSON booleans')
-    root = safe_path(cfg['data_mount'])
-    if not os.path.ismount(root):
-        raise RuntimeError('Mounted application SSD required for the TV report')
-    desktop = desktop_folder(user, home) if opts.get('desktop_shortcuts', True) else None
-    # The browser already here opens YouTube; Firefox is installed only where there is none.
-    flatpak = flatpak_steam(home)
-    if flatpak:
-        ctx.log(
-            'TV: Steam from Flatpak ('
-            + FLATPAK_STEAM
-            + ') is already on this PC; the TV uses it, no second Steam is installed'
-        )
-    steam_program = (
-        flatpak or find_program('steam') or ('/usr/games/steam' if family.name == 'debian' else '/usr/bin/steam')
     )
-    browser_program = browser() or (
-        '/usr/bin/firefox-esr' if family.name == 'debian' and not family.ubuntu() else '/usr/bin/firefox'
-    )
-    files = launchers(steam_program, browser_program)
-    destinations = {home / '.local/share/applications' / name: text for name, text in files.items()}
-    if desktop:
-        destinations.update({desktop / name: text for name, text in files.items()})
-    # Inspect every launcher/ancestor before any packages, power settings or files change.
-    recorded = recorded_launchers(root)
-    check_launchers(destinations, user, home, recorded)
-    if opts.get('keep_awake', True):
-        power_dir = safe_path(home / USER_CONFIG)
-        if power_dir.exists() and (not power_dir.is_dir() or power_dir.stat().st_uid != user.pw_uid):
-            raise RuntimeError('Desktop power configuration directory must be owned by the selected user')
-    vendors = graphics()
-    if not vulkan_packages(vendors):
-        ctx.log(
-            'TV: no Intel or AMD graphics found'
-            + (" (NVIDIA needs its maker's driver, installed your Linux's own way)" if 'nvidia' in vendors else '')
-            + '; installing Steam without a Vulkan driver package'
-        )
-    packages = wanted_packages(opts, vendors, bool(browser()), flatpak=bool(flatpak))
+
+
+def power_folder_is_theirs(home, user):
+    """The desktop's power settings folder is the user's own (or not there yet)."""
+    power_dir = safe_path(home / USER_CONFIG)
+    if power_dir.exists() and (not power_dir.is_dir() or power_dir.stat().st_uid != user.pw_uid):
+        raise RuntimeError('Desktop power configuration directory must be owned by the selected user')
+
+
+def packages_installed(ctx, family, packages, flatpak):
+    """The TV's packages installed where they are missing; a needs_setup result, with
+    what to switch on said in the log, when the repositories here do not offer them
+    (nothing is changed then). Flatpak Steam runs without steam-devices."""
     missing = [p for p in packages if not family.installed(p)]
     unavailable = [p for p in missing if not family.available(p) or (p == 'steam' and not steam_ready(family))]
     if flatpak and 'steam-devices' in unavailable:
@@ -517,29 +590,22 @@ def run(ctx):
             ) from None
     if not all(family.installed(p) for p in packages):
         raise RuntimeError('TV package installation was not retained')
-    steam_program = flatpak or find_program('steam') or steam_program
-    browser_program = browser() or browser_program
-    for binary in (steam_program.split()[0], browser_program):
-        if not Path(binary).is_file():
-            raise RuntimeError('Required TV launcher executable missing: ' + binary)
-    files = launchers(steam_program, browser_program)
-    destinations = {path: files[path.name] for path in destinations}
-    results = [{'check': 'tv:packages', 'status': 'pass'}]
-    if opts.get('bluetooth', True):
-        enabled = command(['systemctl', 'enable', '--now', 'bluetooth.service'])
-        active = command(['systemctl', 'is-active', '--quiet', 'bluetooth.service'])
-        results.append(
-            {
-                'check': 'tv:bluetooth_service',
-                'status': 'pass' if not enabled.returncode and not active.returncode else 'needs_setup',
-            }
-        )
-    write_launchers(destinations, user, home, recorded)
-    if opts.get('keep_awake', True):
-        ensure_user_dir(home / USER_CONFIG, home, user)
-        results.append(keep_awake(user, home, ctx.log))
-    results.append({'check': 'tv:launchers', 'status': 'pass'})
-    handoffs = [
+    return None
+
+
+def bluetooth_row():
+    """Bluetooth switched on for a controller, and the report's row for it."""
+    enabled = command(['systemctl', 'enable', '--now', 'bluetooth.service'])
+    active = command(['systemctl', 'is-active', '--quiet', 'bluetooth.service'])
+    return {
+        'check': 'tv:bluetooth_service',
+        'status': 'pass' if not enabled.returncode and not active.returncode else 'needs_setup',
+    }
+
+
+def handoffs(opts):
+    """What only the person can do and test on the TV: (key, title, steps, what opens)."""
+    return [
         (
             'steam_login_remote_play',
             'Steam sign-in and Remote Play',
@@ -572,26 +638,34 @@ def run(ctx):
             [('settings', ''), ('url', 'https://www.youtube.com/')],
         ),
     ]
+
+
+def confirmed_rows(ctx, root, steps):
+    """The TV's tests as one part with one question, and a row for each: confirmed by
+    the person, or still to do."""
     # One part with one question (in the window, a sliding yes for each): the tests
     # confirmed in an earlier run are not asked for again.
-    before = [key for key, *_ in handoffs if ('tv:' + key) in previous_checks(root)]
+    before = [key for key, *_ in steps if ('tv:' + key) in previous_checks(root)]
     confirmed = guided_setup.part(
         ctx,
         'Try the TV: Steam, the controller, picture and sound',
-        [{'id': key, 'title': title, 'lines': instructions} for key, title, instructions, _ in handoffs],
+        [{'id': key, 'title': title, 'lines': instructions} for key, title, instructions, _ in steps],
         'tv_worked',  # the question's words are in questions.py
         done=before,
         targets=[('steam', '')],
     )
-    for key, _title, _instructions, _targets in handoffs:
-        done = key in confirmed
-        results.append(
-            {
-                'check': 'tv:' + key,
-                'status': 'user_confirmed' if done else 'needs_setup',
-                'reason': 'Confirmed by you in the terminal; not an independent hardware probe',
-            }
-        )
+    return [
+        {
+            'check': 'tv:' + key,
+            'status': 'user_confirmed' if key in confirmed else 'needs_setup',
+            'reason': 'Confirmed by you in the terminal; not an independent hardware probe',
+        }
+        for key, _title, _instructions, _targets in steps
+    ]
+
+
+def write_report(root, user, home, results, destinations):
+    """The TV's report on the SSD: whose desktop, every check, and each launcher's checksum."""
     atomic_json(
         root / REPORT,
         {
@@ -603,12 +677,3 @@ def run(ctx):
             },
         },
     )
-    ctx.log(
-        'TV launchers installed for '
-        + user.pw_name
-        + '; complete Steam login, Remote Play and controller/HDMI tests. Report: '
-        + str(root / REPORT)
-    )
-    if any(row['status'] == 'needs_setup' for row in results):
-        return {'status': 'needs_setup', 'reason': 'TV software installed; unfinished desktop/hardware handoffs remain'}
-    return {'status': 'configured', 'reason': 'TV setup and user-witnessed tests completed; see tv-setup.json'}

@@ -1158,8 +1158,9 @@ class NextcloudOffTests(unittest.TestCase):
                 # An unfinished update would start Nextcloud again when it resumes: refuse.
                 journal.write_text('{}')
                 events.clear()
+                context = Ctx(data)
                 with self.assertRaisesRegex(RuntimeError, 'monthly update did not finish'):
-                    nextcloud.stop_installed(Ctx(data), lambda args: events.append(args[-1]), hold, journal)
+                    nextcloud.stop_installed(context, lambda args: events.append(args[-1]), hold, journal)
                 self.assertEqual(events, ['locked', 'released'])
 
 

@@ -42,7 +42,7 @@ def check(config):
                 '--property=LoadState,ActiveState,UnitFileState,ExecMainStatus',
             ]
         )
-        fields = dict(line.split('=', 1) for line in output.splitlines() if '=' in line)
+        fields = {key: value for key, equals, value in (line.partition('=') for line in output.splitlines()) if equals}
         good = (
             code == 0
             and fields.get('LoadState') == 'loaded'

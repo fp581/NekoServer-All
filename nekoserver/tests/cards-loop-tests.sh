@@ -31,7 +31,8 @@ trap cleanup EXIT
 
 # card <name> <MiB>: a fresh ext4 card mounted at $BASE/<name>.
 card() {
-  local name="$1" size_mib="$2" img="$BASE/$1.img" mnt="$BASE/$1" dev
+  local name="$1" size_mib="$2"
+  local img="$BASE/$name.img" mnt="$BASE/$name" dev
   truncate -s "${size_mib}M" "$img"
   mkfs.ext4 -q -m 0 -F "$img" >/dev/null
   dev=$(losetup -f --show "$img") || return 1

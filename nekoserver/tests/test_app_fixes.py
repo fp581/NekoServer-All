@@ -144,7 +144,7 @@ class ChipTakenOutTests(unittest.TestCase):
             mock.patch('account_store.enabled', return_value=True),
             mock.patch('account_store.get', return_value={'username': 'u', 'password': 'p' * 12}),
             mock.patch('account_setup.wait'),
-            mock.patch('account_setup.Client', lambda app: self.jellyfin),
+            mock.patch('account_setup.Client', return_value=self.jellyfin),
             mock.patch.object(hv, 'container', return_value='abc123'),  # the app runs
         ):
             patch.start()

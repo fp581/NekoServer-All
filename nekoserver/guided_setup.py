@@ -48,14 +48,7 @@ def interactive(ctx):
 
 def desktop_command(config, argv):
     """Use the invoking desktop user and a minimal environment, including its bus."""
-    name = os.environ.get('SUDO_USER')
-    if name and name != 'root':
-        user = pwd.getpwnam(name)
-        if os.environ.get('SUDO_UID') and str(user.pw_uid) != os.environ['SUDO_UID']:
-            raise RuntimeError('Desktop identity does not match sudo user')
-    else:
-        selected = config.get('tv', {}).get('user', 'auto')
-        user = pwd.getpwnam(selected) if selected != 'auto' else pwd.getpwuid(config.get('media', {}).get('uid', 1000))
+    user = desktop_account(config)
     home = safe_path(user.pw_dir)
     if (
         user.pw_uid < 1000
@@ -78,6 +71,28 @@ def desktop_command(config, argv):
     bus = runtime / 'bus'
     if bus.exists():
         env.append('DBUS_SESSION_BUS_ADDRESS=unix:path=' + str(bus))
+    env += display_environment(runtime)
+    env += x_authority(user, home, runtime)
+    return ['runuser', '-u', user.pw_name, '--', 'env', '-i', *env, *argv]
+
+
+def desktop_account(config):
+    """The desktop's account: the one that ran sudo (checked against its UID), else the
+    TV's chosen user, else the media apps' account."""
+    name = os.environ.get('SUDO_USER')
+    if name and name != 'root':
+        user = pwd.getpwnam(name)
+        if os.environ.get('SUDO_UID') and str(user.pw_uid) != os.environ['SUDO_UID']:
+            raise RuntimeError('Desktop identity does not match sudo user')
+        return user
+    selected = config.get('tv', {}).get('user', 'auto')
+    return pwd.getpwnam(selected) if selected != 'auto' else pwd.getpwuid(config.get('media', {}).get('uid', 1000))
+
+
+def display_environment(runtime):
+    """DISPLAY and WAYLAND_DISPLAY as the desktop has them: ones that name a display, and
+    a Wayland socket that is there in the user's runtime folder."""
+    env = []
     display = os.environ.get('DISPLAY', '')
     wayland = os.environ.get('WAYLAND_DISPLAY', '')
     if re.fullmatch(r':\d+(?:\.\d+)?', display):
@@ -89,16 +104,22 @@ def desktop_command(config, argv):
         sockets = sorted(p for p in runtime.glob('wayland-*') if re.fullmatch(r'wayland-\d+', p.name) and p.is_socket())
         if len(sockets) == 1:
             env.append('WAYLAND_DISPLAY=' + sockets[0].name)
+    return env
+
+
+def x_authority(user, home, runtime):
+    """XAUTHORITY, when it names the user's own file in their home or runtime folder."""
     auth = os.environ.get('XAUTHORITY', '')
-    if auth:
-        candidate = safe_path(auth)
-        if (
-            candidate.is_file()
-            and candidate.stat().st_uid == user.pw_uid
-            and (home in candidate.parents or runtime in candidate.parents)
-        ):
-            env.append('XAUTHORITY=' + str(candidate))
-    return ['runuser', '-u', user.pw_name, '--', 'env', '-i', *env, *argv]
+    if not auth:
+        return []
+    candidate = safe_path(auth)
+    if (
+        candidate.is_file()
+        and candidate.stat().st_uid == user.pw_uid
+        and (home in candidate.parents or runtime in candidate.parents)
+    ):
+        return ['XAUTHORITY=' + str(candidate)]
+    return []
 
 
 def valid_url(url):
@@ -158,34 +179,43 @@ def launch(ctx, target, kind='url'):
         kind = 'url'
     elif kind == 'url' and not valid_url(target):
         raise ValueError('Unsupported browser URL')
-    if kind == 'url':
-        # xdg-open opens the browser you already use; a browser is never installed here.
-        if not shutil.which('xdg-open') and os.geteuid() == 0 and host.supported():
-            try:
-                host.current().install(['xdg-utils'])
-            except (OSError, subprocess.SubprocessError, RuntimeError):
-                return False
-        if shutil.which('xdg-open'):
-            argv = ['/usr/bin/xdg-open', target]
-        elif shutil.which('firefox'):
-            argv = ['/usr/bin/firefox', '--new-window', target]
-        else:
-            return False
-    else:
-        # Steam lives in /usr/games on Debian and Ubuntu, in /usr/bin elsewhere.
-        commands = {
-            'steam': [find_program('steam') or '/usr/bin/steam', '-gamepadui'],
-            'bluetooth': ['/usr/bin/blueman-manager'],
-            'settings': [SETTINGS_APP, 'display'],
-        }
-        if kind not in commands:
-            raise ValueError('Unsupported desktop application')
-        argv = commands[kind]
-        if kind == 'bluetooth' and Path(SETTINGS_APP).is_file():
-            argv = [SETTINGS_APP, 'bluetooth']
-        if not Path(argv[0]).is_file():
-            return False
+    argv = browser_argv(target) if kind == 'url' else app_argv(kind)
+    if argv is None:
+        return False
     return launch_quietly(ctx.config, argv)
+
+
+def browser_argv(url):
+    """The command that opens `url` in the browser you already use (xdg-open, installed
+    when it is missing; else Firefox), or None when there is none. A browser is never
+    installed here."""
+    if not shutil.which('xdg-open') and os.geteuid() == 0 and host.supported():
+        try:
+            host.current().install(['xdg-utils'])
+        except (OSError, subprocess.SubprocessError, RuntimeError):
+            return None
+    if shutil.which('xdg-open'):
+        return ['/usr/bin/xdg-open', url]
+    if shutil.which('firefox'):
+        return ['/usr/bin/firefox', '--new-window', url]
+    return None
+
+
+def app_argv(kind):
+    """The command of a desktop app setup opens ('steam', 'bluetooth', 'settings'), or
+    None when it is not installed."""
+    # Steam lives in /usr/games on Debian and Ubuntu, in /usr/bin elsewhere.
+    commands = {
+        'steam': [find_program('steam') or '/usr/bin/steam', '-gamepadui'],
+        'bluetooth': ['/usr/bin/blueman-manager'],
+        'settings': [SETTINGS_APP, 'display'],
+    }
+    if kind not in commands:
+        raise ValueError('Unsupported desktop application')
+    argv = commands[kind]
+    if kind == 'bluetooth' and Path(SETTINGS_APP).is_file():
+        argv = [SETTINGS_APP, 'bluetooth']
+    return argv if Path(argv[0]).is_file() else None
 
 
 def launch_quietly(config, argv):
