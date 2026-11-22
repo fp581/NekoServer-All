@@ -71,6 +71,8 @@ Run `sudo bash install.sh` again at any time: it keeps your answers and asks onl
 
 **Favourite shows keep coming.** Mark a show as a favourite in Jellyfin, and Sonarr downloads the episodes you are missing and each new one when it airs, also for shows from your own folders ([guide](nekoserver/README.md)).
 
+**Search and request in Jellyfin.** Jellyfin's search also finds films and shows you don't have, with a button to ask for them; they download and arrive in your library, like a streaming app with your own storage. In a browser and the Jellyfin phone apps, not on TV apps ([guide](nekoserver/README.md)).
+
 ## Backups
 
 - **Every night**: the apps' settings and databases, and this PC's own settings. The newest **3** of each are kept; you can choose any number from **1 to 7**. An older one is removed only after a new one has succeeded, with one exception: when the HDD is too full for the next app backup, the oldest app backups are removed first to make room (never the newest). Music kept on a drive of its own is copied every night too.

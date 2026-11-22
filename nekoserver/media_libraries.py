@@ -382,6 +382,19 @@ def ensure_readiness_key(client, root, log=print):
         log('Jellyfin: NekoServer\'s key was revoked or replaced in Jellyfin; saved its current key')
 
 
+def search_and_request_rows(jellyfin, root, apply, wanted):
+    """Jellyfin Enhanced's rows (jellyfin_requests.py): a step left for later or one that
+    failed is said with why; never one that stops the rest of setup."""
+    import jellyfin_requests
+
+    try:
+        return jellyfin_requests.connect(jellyfin, root, apply, wanted)
+    except SetupRequired as exc:
+        return [row(jellyfin_requests.CHECK, 'needs_setup', str(exc))]
+    except (RuntimeError, ValueError, TypeError, KeyError) as exc:
+        return [row(jellyfin_requests.CHECK, 'fail', f'Jellyfin Enhanced could not be set up: {exc}')]
+
+
 def configure(
     root,
     media,
@@ -391,9 +404,12 @@ def configure(
     username=input,
     password=getpass.getpass,
     more=None,
+    search_and_request=True,
 ):
     """`more`: called with Jellyfin's signed-in client for further libraries (the
-    person's own folders, existing_page.libraries); its rows are added to the results."""
+    person's own folders, existing_page.libraries); its rows are added to the results.
+    `search_and_request`: Jellyfin Enhanced set up and connected to Seerr once Seerr is
+    linked (jellyfin_requests.py; onboarding.search_and_request_in_jellyfin)."""
     if 'jellyfin' not in apps:
         return [row('media_libraries', 'needs_setup', 'Jellyfin is required for this library workflow')]
     stored = account_store.get({'data_mount': str(root)}, 'jellyfin', verified=True)
@@ -425,6 +441,7 @@ def configure(
                     results.append(row('seerr:setup', 'fail', 'Seerr authenticated link/library API checks failed'))
             finally:
                 sr.close()
+            results += search_and_request_rows(jf, root, apply, search_and_request)
         return results
     finally:
         jf.close()
