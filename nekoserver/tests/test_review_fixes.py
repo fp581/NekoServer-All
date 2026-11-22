@@ -2076,6 +2076,57 @@ class LibraryScanTests(unittest.TestCase):
         self.assertIn('TV Shows', jellyfin['looked_through'])
         self.assertEqual(client.refreshed['metadataRefreshMode'], 'Default')
 
+    def test_a_library_jellyfin_is_slow_to_add_is_waited_for(self):
+        """Found with the real Jellyfin 12.4 (lab/real_apps.py): while it scanned 40 films,
+        adding TV Shows took longer than setup waits for a call (12 seconds), and setup
+        said the library failed though Jellyfin went on and added it."""
+        import media_libraries
+
+        made, clock = [], {'now': 0.0}
+
+        class Jellyfin:
+            def __init__(self):
+                self.headers = {}
+
+            def call(self, endpoint, method='GET', payload=None):
+                path, _, query = endpoint.partition('?')
+                asked = dict(urllib.parse.parse_qsl(query))
+                if path == '/System/Info/Public':
+                    return {'Id': 'server', 'StartupWizardCompleted': True}
+                if path == '/Users/AuthenticateByName':
+                    return {'AccessToken': 't', 'User': {'Policy': {'IsAdministrator': True}}}
+                if path == '/Library/VirtualFolders' and method == 'POST':
+                    made.append({**asked, 'listed_at': clock['now'] + (20 if asked['name'] == 'TV Shows' else 0)})
+                    if asked['name'] == 'TV Shows':
+                        raise RuntimeError('jellyfin: unavailable or incompatible API response')  # timed out
+                    return {}
+                if path == '/Library/VirtualFolders':
+                    return [
+                        {
+                            'Name': m['name'],
+                            'Locations': [m['paths']],
+                            'CollectionType': m['collectionType'],
+                            'ItemId': m['name'],
+                        }
+                        for m in made
+                        if m['listed_at'] <= clock['now']
+                    ]
+                return {}
+
+        def sleep(seconds):
+            clock['now'] += seconds
+
+        with (
+            tempfile.TemporaryDirectory() as media,
+            mock.patch('time.monotonic', lambda: clock['now']),
+            mock.patch('time.sleep', sleep),
+        ):
+            for category in ('movies', 'tv'):
+                (Path(media) / 'library' / category).mkdir(parents=True)
+            results, _, ids = media_libraries.jellyfin(Jellyfin(), media, True, lambda _: 'admin', lambda _: 'pw')
+        self.assertEqual([r['status'] for r in results], ['pass'] * 3, results)
+        self.assertEqual(ids, ['Movies', 'TV Shows'])
+
 
 class ImportLayoutTests(unittest.TestCase):
     """0.39.5: imports land in the library folder itself. Each source used to get a

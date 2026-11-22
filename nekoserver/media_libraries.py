@@ -3,6 +3,7 @@
 import getpass
 import account_store
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -165,6 +166,34 @@ def new_library_options():
     return {'LibraryOptions': dict(WATCHED)}
 
 
+# How long Jellyfin may take to add a library while it is busy (below).
+ADDING_WAIT = 120
+
+
+def add_library(client, category, name, kind):
+    """Add the library and return it as Jellyfin lists it. While Jellyfin scans the
+    library made just before (many films), adding the next one can take longer than a
+    call is waited for (12 seconds; seen with Jellyfin 12.4 and 40 films, lab/real_apps.py).
+    Jellyfin goes on adding it, so its list of libraries is looked at until it has it."""
+    query = urllib.parse.urlencode(
+        {'name': name, 'collectionType': kind, 'paths': '/data/' + category, 'refreshLibrary': 'true'}
+    )
+    try:
+        client.call('/Library/VirtualFolders?' + query, 'POST', new_library_options())
+    except RuntimeError as exc:
+        if str(exc) != 'jellyfin: unavailable or incompatible API response':
+            raise
+        deadline = time.monotonic() + ADDING_WAIT
+        while not matching(folders(client), category, name, kind):
+            if time.monotonic() >= deadline:
+                raise RuntimeError('Library creation was not retained') from None
+            time.sleep(5)
+    existing = matching(folders(client), category, name, kind)
+    if not existing:
+        raise RuntimeError('Library creation was not retained')
+    return existing
+
+
 def scan_new_library(client, library, log=print):
     """Jellyfin looks through a library setup has just made, so the files already in it
     are listed now. Adding a library starts a library scan only when none is running
@@ -258,13 +287,7 @@ def jellyfin(client, media, apply, username, password):
                 results.append(row('jellyfin:' + category, 'needs_setup', 'Preview: library would be created'))
                 continue
             if not existing:
-                query = urllib.parse.urlencode(
-                    {'name': name, 'collectionType': kind, 'paths': '/data/' + category, 'refreshLibrary': 'true'}
-                )
-                client.call('/Library/VirtualFolders?' + query, 'POST', new_library_options())
-                existing = matching(folders(client), category, name, kind)
-                if not existing:
-                    raise RuntimeError('Library creation was not retained')
+                existing = add_library(client, category, name, kind)
                 scan_new_library(client, existing)
             if apply:
                 watch_library(client, existing, on_share=on_share)
