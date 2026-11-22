@@ -16,6 +16,16 @@ async function open(browser, route, width = 1280) {
   return page;
 }
 
+/* Tab pressed until `focused()` names `wanted`, `tries` times at most; then what has focus. */
+async function tabTo(page, focused, wanted, tries) {
+  const now = await focused();
+  if (now === wanted || tries <= 0) {
+    return now;
+  }
+  await page.keyboard.press('Tab');
+  return tabTo(page, focused, wanted, tries - 1);
+}
+
 const CHECKS = {
   /* Keyboard focus on the control named `label` (Tab pressed until it is reached), then
      the page's readings come in again (what it does every few seconds): where is focus? */
@@ -25,10 +35,7 @@ const CHECKS = {
       const n = document.activeElement;
       return n && n !== document.body ? (n.getAttribute('aria-label') || n.textContent).trim() : '(no control)';
     };
-    for (let i = 0; i < 200 && (await page.evaluate(name)) !== label; i++) {
-      await page.keyboard.press('Tab');
-    }
-    const before = await page.evaluate(name);
+    const before = await tabTo(page, () => page.evaluate(name), label, 200);
     await page.evaluate(kind => load(kind), reload);
     return { before, after: await page.evaluate(name) };
   },
@@ -44,12 +51,7 @@ const CHECKS = {
         const n = document.activeElement;
         return n && n !== document.body ? n.id || (n.getAttribute('aria-label') || n.textContent).trim() : '';
       });
-    const reach = async wanted => {
-      for (let i = 0; i < 80 && (await focused()) !== wanted; i++) {
-        await page.keyboard.press('Tab');
-      }
-      return focused();
-    };
+    const reach = wanted => tabTo(page, focused, wanted, 80);
     const steps = [await reach('media-pick')];
     await page.keyboard.press('Enter'); // the drives and shares
     await page.waitForSelector('.media-list button');
@@ -123,10 +125,11 @@ const CHECKS = {
 
 const browser = await chromium.launch();
 try {
-  const answers = [];
-  for (const [name, argument] of JSON.parse(wanted)) {
-    answers.push(await CHECKS[name](browser, argument));
-  }
+  // One check after another (never two at once), the answers in their order.
+  const answers = await JSON.parse(wanted).reduce(
+    async (earlier, [name, argument]) => [...(await earlier), await CHECKS[name](browser, argument)],
+    Promise.resolve([])
+  );
   process.stdout.write(JSON.stringify(answers));
 } finally {
   await browser.close();

@@ -73,37 +73,41 @@ const postFail = states.find(state => state.postFail)?.postFail;
 // How many switch saves were on their way at once (one: they go one after another).
 let saves = 0;
 let savesAtOnce = 0;
-globalThis.fetch = async (route, options) => {
-  if (options?.method === 'POST') {
-    posts.push([route, JSON.parse(options.body)]);
-    if (route === 'api/choose' && !postFail) {
-      saves += 1;
-      savesAtOnce = Math.max(savesAtOnce, saves);
-      return {
-        json: async () => {
-          saves -= 1;
-          return { ok: true };
-        }
-      };
+// A switch saved: counted while it is on its way, to see how many go at once.
+function saveSwitch() {
+  saves += 1;
+  savesAtOnce = Math.max(savesAtOnce, saves);
+  return {
+    json: async () => {
+      saves -= 1;
+      return { ok: true };
     }
-    if (postFail)
-      return {
-        ok: false,
-        status: postFail,
-        json: async () => {
-          throw new SyntaxError('not JSON');
-        }
-      };
-    if (route === 'api/start' && refusal) return { json: async () => ({ ok: false, reason: refusal }) };
-    // {"login": {...}} in any state: what Show login is answered with.
-    if (route === 'api/login') return { json: async () => states.find(state => state.login)?.login ?? { ok: false } };
-    // {"failAnswer": 1} in any state: that many answers are not delivered (the network dropped).
-    if (route === 'api/answer' && failures > 0) {
-      failures -= 1;
-      throw new TypeError('Failed to fetch');
-    }
-    return { json: async () => ({ ok: true }) };
+  };
+}
+// The answer to a button press (a POST), as the setup server would give it.
+function answerPost(route, options) {
+  posts.push([route, JSON.parse(options.body)]);
+  if (route === 'api/choose' && !postFail) return saveSwitch();
+  if (postFail)
+    return {
+      ok: false,
+      status: postFail,
+      json: async () => {
+        throw new SyntaxError('not JSON');
+      }
+    };
+  if (route === 'api/start' && refusal) return { json: async () => ({ ok: false, reason: refusal }) };
+  // {"login": {...}} in any state: what Show login is answered with.
+  if (route === 'api/login') return { json: async () => states.find(state => state.login)?.login ?? { ok: false } };
+  // {"failAnswer": 1} in any state: that many answers are not delivered (the network dropped).
+  if (route === 'api/answer' && failures > 0) {
+    failures -= 1;
+    throw new TypeError('Failed to fetch');
   }
+  return { json: async () => ({ ok: true }) };
+}
+globalThis.fetch = async (route, options) => {
+  if (options?.method === 'POST') return answerPost(route, options);
   const state = states[Math.min(poll, states.length - 1)];
   poll += 1;
   if (state.fail === 'gone') throw new TypeError('Failed to fetch');
