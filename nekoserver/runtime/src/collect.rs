@@ -144,62 +144,8 @@ fn chars(s: &str, n: usize) -> String {
 }
 fn metrics(previous: &Value) -> (Value, Value) {
     let mut host = json!({"cpu_percent":null,"memory_percent":null,"memory_used":null,"memory_total":null,"temperature":null,"uptime_seconds":null,"cpu_model":null});
-    let mut current = empty();
-    if let Ok(s) = fs::read_to_string("/proc/stat") {
-        let values = s
-            .lines()
-            .next()
-            .unwrap_or("")
-            .split_whitespace()
-            .skip(1)
-            .take(8)
-            .map(str::parse::<u64>)
-            .collect::<std::result::Result<Vec<_>, _>>();
-        if let Ok(v) = values {
-            if v.len() == 8 {
-                let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id")
-                    .unwrap_or_default()
-                    .trim()
-                    .to_owned();
-                let total: u64 = v.iter().sum();
-                let idle = v[3] + v[4];
-                current = json!({"total":total,"idle":idle,"boot":boot});
-                if previous["boot"] == current["boot"] {
-                    if let (Some(pt), Some(pi)) =
-                        (previous["total"].as_u64(), previous["idle"].as_u64())
-                    {
-                        if total > pt && idle >= pi && idle - pi <= total - pt {
-                            host["cpu_percent"] = json!(round(
-                                100.0 * ((total - pt) - (idle - pi)) as f64 / (total - pt) as f64
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    if let Ok(s) = fs::read_to_string("/proc/meminfo") {
-        let mut total = 0;
-        let mut available = 0;
-        for line in s.lines() {
-            let mut f = line.split_whitespace();
-            match f.next() {
-                Some("MemTotal:") => {
-                    total = f.next().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0) * 1024
-                }
-                Some("MemAvailable:") => {
-                    available = f.next().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0) * 1024
-                }
-                _ => {}
-            }
-        }
-        if total > 0 && available <= total {
-            host["memory_total"] = json!(total);
-            host["memory_used"] = json!(total - available);
-            host["memory_percent"] =
-                json!(round(100.0 * (total - available) as f64 / total as f64));
-        }
-    }
+    let current = cpu_usage(previous, &mut host);
+    memory_usage(&mut host);
     if let Ok(s) = fs::read_to_string("/proc/uptime") {
         host["uptime_seconds"] = num(
             &json!(s
@@ -220,45 +166,118 @@ fn metrics(previous: &Value) -> (Value, Value) {
             ));
         }
     }
-    let mut temps = vec![];
-    if let Ok(rows) = fs::read_dir("/sys/class/hwmon") {
-        for hw in rows.flatten() {
-            if let Ok(name) = fs::read_to_string(hw.path().join("name")) {
-                if !["coretemp", "k10temp", "zenpower"].contains(&name.trim()) {
-                    continue;
-                }
-                if let Ok(sensors) = fs::read_dir(hw.path()) {
-                    for sensor in sensors.flatten() {
-                        let name = sensor.file_name();
-                        let name = name.to_string_lossy();
-                        if name.starts_with("temp") && name.ends_with("_input") {
-                            if let Ok(value) = fs::read_to_string(sensor.path()) {
-                                if let Ok(v) = value.trim().parse::<f64>() {
-                                    let v = v / 1000.0;
-                                    // The chip's own critical limit, when it reports one.
-                                    let crit = fs::read_to_string(
-                                        hw.path().join(name.replace("_input", "_crit")),
-                                    )
-                                    .ok()
-                                    .and_then(|c| c.trim().parse::<f64>().ok())
-                                    .map(|c| c / 1000.0)
-                                    .filter(|c| (40.0..=150.0).contains(c));
-                                    if (-10.0..=150.0).contains(&v) {
-                                        temps.push((v, crit))
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let temps = cpu_temperatures();
     if let Some((v, crit)) = temps.into_iter().max_by(|a, b| a.0.total_cmp(&b.0)) {
         host["temperature"] = json!(round(v));
         host["temperature_crit"] = json!(crit);
     }
     (host, current)
+}
+/// The CPU counters now (the sample the next call compares with), and the CPU use
+/// since the `previous` sample of the same boot in `host`.
+fn cpu_usage(previous: &Value, host: &mut Value) -> Value {
+    let Ok(s) = fs::read_to_string("/proc/stat") else {
+        return empty();
+    };
+    let values = s
+        .lines()
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .skip(1)
+        .take(8)
+        .map(str::parse::<u64>)
+        .collect::<std::result::Result<Vec<_>, _>>();
+    let Ok(v) = values else {
+        return empty();
+    };
+    if v.len() != 8 {
+        return empty();
+    }
+    let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    let total: u64 = v.iter().sum();
+    let idle = v[3] + v[4];
+    let current = json!({"total":total,"idle":idle,"boot":boot});
+    if previous["boot"] != current["boot"] {
+        return current;
+    }
+    if let (Some(pt), Some(pi)) = (previous["total"].as_u64(), previous["idle"].as_u64()) {
+        if total > pt && idle >= pi && idle - pi <= total - pt {
+            host["cpu_percent"] = json!(round(
+                100.0 * ((total - pt) - (idle - pi)) as f64 / (total - pt) as f64
+            ));
+        }
+    }
+    current
+}
+/// The memory in use, from /proc/meminfo, in `host`.
+fn memory_usage(host: &mut Value) {
+    let Ok(s) = fs::read_to_string("/proc/meminfo") else {
+        return;
+    };
+    let mut total = 0;
+    let mut available = 0;
+    for line in s.lines() {
+        let mut f = line.split_whitespace();
+        match f.next() {
+            Some("MemTotal:") => {
+                total = f.next().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0) * 1024
+            }
+            Some("MemAvailable:") => {
+                available = f.next().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0) * 1024
+            }
+            _ => {}
+        }
+    }
+    if total > 0 && available <= total {
+        host["memory_total"] = json!(total);
+        host["memory_used"] = json!(total - available);
+        host["memory_percent"] = json!(round(100.0 * (total - available) as f64 / total as f64));
+    }
+}
+/// Every CPU temperature sensor's reading (°C), with the chip's critical limit.
+fn cpu_temperatures() -> Vec<(f64, Option<f64>)> {
+    let mut temps = vec![];
+    let Ok(rows) = fs::read_dir("/sys/class/hwmon") else {
+        return temps;
+    };
+    for hw in rows.flatten() {
+        let Ok(name) = fs::read_to_string(hw.path().join("name")) else {
+            continue;
+        };
+        if !["coretemp", "k10temp", "zenpower"].contains(&name.trim()) {
+            continue;
+        }
+        if let Ok(sensors) = fs::read_dir(hw.path()) {
+            temps.extend(
+                sensors
+                    .flatten()
+                    .filter_map(|sensor| sensor_temperature(&hw.path(), &sensor)),
+            );
+        }
+    }
+    temps
+}
+/// One hwmon sensor file's temperature (°C) and the chip's critical limit, when it is
+/// a plausible temperature input.
+fn sensor_temperature(chip: &Path, sensor: &fs::DirEntry) -> Option<(f64, Option<f64>)> {
+    let name = sensor.file_name();
+    let name = name.to_string_lossy();
+    if !(name.starts_with("temp") && name.ends_with("_input")) {
+        return None;
+    }
+    let value = fs::read_to_string(sensor.path()).ok()?;
+    let v = value.trim().parse::<f64>().ok()? / 1000.0;
+    // The chip's own critical limit, when it reports one.
+    let crit = fs::read_to_string(chip.join(name.replace("_input", "_crit")))
+        .ok()
+        .and_then(|c| c.trim().parse::<f64>().ok())
+        .map(|c| c / 1000.0)
+        .filter(|c| (40.0..=150.0).contains(c));
+    (-10.0..=150.0).contains(&v).then_some((v, crit))
 }
 /// mount_info for drive `key`; the app SSD and the media HDD also pass the check every job
 /// makes (UUID, filesystem, Btrfs subvolume, the NAS disk's WWN), or they count as the
@@ -966,94 +985,12 @@ fn applications(
     report: Option<&MediaReport>,
     data: Option<&Path>,
 ) -> (Value, Value, Value) {
-    let (code, s) = probe(
-        &[
-            "docker",
-            "--host",
-            "unix:///var/run/docker.sock",
-            "ps",
-            "-a",
-            "--format",
-            "{{json .}}",
-        ],
-        15,
-    );
-    let mut records = vec![];
-    if code == 0 {
-        for line in s.lines() {
-            if let Ok(v) = serde_json::from_str::<Value>(line) {
-                let labels = text(&v["Labels"])
-                    .split(',')
-                    .filter_map(|s| s.split_once('='))
-                    .map(|(k, v)| (k.to_string(), v.to_string()))
-                    .collect::<std::collections::BTreeMap<_, _>>();
-                records.push((labels, v));
-            }
-        }
-    }
+    let (code, records) = docker_records();
     // Which app each container belongs to (the dashboard names processes by it),
     // and how much CPU and memory each app's containers use together.
-    let mut containers = serde_json::Map::new();
-    let mut services = serde_json::Map::new();
-    for (labels, v) in &records {
-        if let (Some(app), id) = (app_of(labels), text(&v["ID"])) {
-            if id.len() >= 12 {
-                containers.insert(id[..12].to_string(), json!(app));
-                let service = labels
-                    .get("com.docker.compose.service")
-                    .map_or("", String::as_str);
-                services.insert(id[..12].to_string(), json!(chars(service, 64)));
-            }
-        }
-    }
-    let usage = if records.iter().any(|(_, v)| v["State"] == "running") {
-        let (code, out) = probe(
-            &[
-                "docker",
-                "--host",
-                "unix:///var/run/docker.sock",
-                "stats",
-                "--no-stream",
-                "--format",
-                "{{json .}}",
-            ],
-            30,
-        );
-        if code == 0 {
-            docker_stats(&out)
-        } else {
-            Default::default()
-        }
-    } else {
-        Default::default()
-    };
-    // When each running app container last started, exactly (Docker's own "Up 5
-    // minutes" is rounded down, which could make a newer check look older than it).
-    let running: Vec<&str> = records
-        .iter()
-        .filter(|(labels, v)| v["State"] == "running" && app_of(labels).is_some())
-        .map(|(_, v)| text(&v["ID"]))
-        .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_hexdigit()))
-        .collect();
-    let starts = if running.is_empty() {
-        Default::default()
-    } else {
-        let mut args = vec![
-            "docker",
-            "--host",
-            "unix:///var/run/docker.sock",
-            "inspect",
-            "--format",
-            "{{.Id}} {{.State.StartedAt}}",
-        ];
-        args.extend(&running);
-        let (code, out) = probe(&args, 15);
-        if code == 0 {
-            started_at(&out)
-        } else {
-            Default::default()
-        }
-    };
+    let (containers, services) = container_owners(&records);
+    let usage = container_usage(&records);
+    let starts = container_starts(&records);
     let now = common::now();
     let selected = common::media_services(cfg);
     let mut out = vec![];
@@ -1077,58 +1014,14 @@ fn applications(
                     && l.get("com.docker.compose.service").map(String::as_str) == Some(service)
             })
             .collect::<Vec<_>>();
-        let mut state = if code != 0 { "unknown" } else { "missing" };
-        let mut health = "unknown";
-        let mut up_for = None;
-        if found.len() == 1 {
-            let v = &found[0].1;
-            state = if [
-                "running",
-                "exited",
-                "restarting",
-                "paused",
-                "created",
-                "dead",
-            ]
-            .contains(&text(&v["State"]))
-            {
-                text(&v["State"])
-            } else {
-                "unknown"
-            };
-            let status = text(&v["Status"]);
-            let id = text(&v["ID"]);
-            up_for = starts
-                .iter()
-                .find(|(full, _)| !id.is_empty() && full.starts_with(id))
-                .map(|(_, at)| (now - at).max(0.0));
-            health = if status.contains("(unhealthy)") {
-                "unhealthy"
-            } else if status.contains("(health: starting)") {
-                "starting"
-            } else if status.contains("(healthy)") {
-                "healthy"
-            } else {
-                "not_defined"
-            };
-        } else if found.len() > 1 {
-            state = "ambiguous";
-        } else if data.is_some_and(|d| !set_up(d, app)) {
-            state = "not_set_up";
-        }
-        let mine = containers
-            .iter()
-            .filter(|(_, owner)| *owner == app)
-            .filter_map(|(id, _)| usage.get(id))
-            .collect::<Vec<_>>();
-        let (cpu, memory) = if mine.is_empty() {
-            (Value::Null, Value::Null)
-        } else {
-            (
-                json!(round(mine.iter().map(|u| u.0).sum::<f64>())),
-                json!(mine.iter().map(|u| u.1).sum::<f64>()),
-            )
+        let (state, health, up_for) = match found.as_slice() {
+            [(_, v)] => container_state(v, &starts, now),
+            [] if data.is_some_and(|d| !set_up(d, app)) => ("not_set_up", "unknown", None),
+            [] if code != 0 => ("unknown", "unknown", None),
+            [] => ("missing", "unknown", None),
+            _ => ("ambiguous", "unknown", None),
         };
+        let (cpu, memory) = app_load(&containers, &usage, app);
         // Its name, description and ports from the shared list: the page shows these
         // (it kept a copy of its own, already worded differently).
         out.push(json!({"id":app,"name":name,"description":description,"state":state,"health":health,"responding":responding(report,app,up_for),"url":format!("http://127.0.0.1:{port}/"),"port":port,"tailnet":common::tailnet_port(app),"cpu_percent":cpu,"memory_used":memory}));
@@ -1137,6 +1030,169 @@ fn applications(
         json!(out),
         Value::Object(containers),
         Value::Object(services),
+    )
+}
+/// A Docker container's Compose labels and its `docker ps` record.
+type Container = (std::collections::BTreeMap<String, String>, Value);
+/// Every container Docker knows, with the exit code of `docker ps` (not 0: Docker did
+/// not answer, and no container is known).
+fn docker_records() -> (i32, Vec<Container>) {
+    let (code, s) = probe(
+        &[
+            "docker",
+            "--host",
+            "unix:///var/run/docker.sock",
+            "ps",
+            "-a",
+            "--format",
+            "{{json .}}",
+        ],
+        15,
+    );
+    let mut records = vec![];
+    if code != 0 {
+        return (code, records);
+    }
+    for line in s.lines() {
+        if let Ok(v) = serde_json::from_str::<Value>(line) {
+            let labels = text(&v["Labels"])
+                .split(',')
+                .filter_map(|s| s.split_once('='))
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            records.push((labels, v));
+        }
+    }
+    (code, records)
+}
+/// Each app container's app and Compose service, by its short ID.
+fn container_owners(
+    records: &[Container],
+) -> (
+    serde_json::Map<String, Value>,
+    serde_json::Map<String, Value>,
+) {
+    let mut containers = serde_json::Map::new();
+    let mut services = serde_json::Map::new();
+    for (labels, v) in records {
+        if let (Some(app), id) = (app_of(labels), text(&v["ID"])) {
+            if id.len() >= 12 {
+                containers.insert(id[..12].to_string(), json!(app));
+                let service = labels
+                    .get("com.docker.compose.service")
+                    .map_or("", String::as_str);
+                services.insert(id[..12].to_string(), json!(chars(service, 64)));
+            }
+        }
+    }
+    (containers, services)
+}
+/// The CPU and memory each running container uses, asked only while one runs.
+fn container_usage(records: &[Container]) -> std::collections::HashMap<String, (f64, f64)> {
+    if !records.iter().any(|(_, v)| v["State"] == "running") {
+        return Default::default();
+    }
+    let (code, out) = probe(
+        &[
+            "docker",
+            "--host",
+            "unix:///var/run/docker.sock",
+            "stats",
+            "--no-stream",
+            "--format",
+            "{{json .}}",
+        ],
+        30,
+    );
+    if code == 0 {
+        docker_stats(&out)
+    } else {
+        Default::default()
+    }
+}
+/// When each running app container last started, exactly (Docker's own "Up 5
+/// minutes" is rounded down, which could make a newer check look older than it).
+fn container_starts(records: &[Container]) -> Vec<(String, f64)> {
+    let running: Vec<&str> = records
+        .iter()
+        .filter(|(labels, v)| v["State"] == "running" && app_of(labels).is_some())
+        .map(|(_, v)| text(&v["ID"]))
+        .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_hexdigit()))
+        .collect();
+    if running.is_empty() {
+        return Default::default();
+    }
+    let mut args = vec![
+        "docker",
+        "--host",
+        "unix:///var/run/docker.sock",
+        "inspect",
+        "--format",
+        "{{.Id}} {{.State.StartedAt}}",
+    ];
+    args.extend(&running);
+    let (code, out) = probe(&args, 15);
+    if code == 0 {
+        started_at(&out)
+    } else {
+        Default::default()
+    }
+}
+/// An app's one container: its state, its health and how long it has been up.
+fn container_state<'a>(
+    v: &'a Value,
+    starts: &[(String, f64)],
+    now: f64,
+) -> (&'a str, &'static str, Option<f64>) {
+    let state = if [
+        "running",
+        "exited",
+        "restarting",
+        "paused",
+        "created",
+        "dead",
+    ]
+    .contains(&text(&v["State"]))
+    {
+        text(&v["State"])
+    } else {
+        "unknown"
+    };
+    let status = text(&v["Status"]);
+    let id = text(&v["ID"]);
+    let up_for = starts
+        .iter()
+        .find(|(full, _)| !id.is_empty() && full.starts_with(id))
+        .map(|(_, at)| (now - at).max(0.0));
+    let health = if status.contains("(unhealthy)") {
+        "unhealthy"
+    } else if status.contains("(health: starting)") {
+        "starting"
+    } else if status.contains("(healthy)") {
+        "healthy"
+    } else {
+        "not_defined"
+    };
+    (state, health, up_for)
+}
+/// The CPU (percent) and memory an app's containers use together; null while none
+/// was measured.
+fn app_load(
+    containers: &serde_json::Map<String, Value>,
+    usage: &std::collections::HashMap<String, (f64, f64)>,
+    app: &str,
+) -> (Value, Value) {
+    let mine = containers
+        .iter()
+        .filter(|(_, owner)| *owner == app)
+        .filter_map(|(id, _)| usage.get(id))
+        .collect::<Vec<_>>();
+    if mine.is_empty() {
+        return (Value::Null, Value::Null);
+    }
+    (
+        json!(round(mine.iter().map(|u| u.0).sum::<f64>())),
+        json!(mine.iter().map(|u| u.1).sum::<f64>()),
     )
 }
 /// Whether the TV step (Steam Big Picture) is set up: its report is on the app SSD
@@ -1460,137 +1516,171 @@ fn schedule_stopped(timer: &Value, known: bool, ever_ran: bool) -> Option<String
 /// while one of them is missing (`away`, its name) none can run: each job says so rather
 /// than "Passed", and gets no alert of its own (the drive's alert is the one to act on).
 fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
-    let mut out = vec![];
-    for (key, name, unit, base_max) in jobs_of(cfg) {
-        let weekly =
-            cfg["photos"]["backup_schedule"] == "weekly" && ["archive", "database"].contains(&key);
-        let report_key = if weekly { "database" } else { key };
-        let unit = if weekly {
-            "nekoserver-immich-db-backup"
-        } else {
-            unit
-        };
-        let max = if weekly {
-            864000.0
-        } else if key == "archive" {
-            cfg["photos"]["archive_interval_minutes"]
-                .as_u64()
-                .filter(|v| (15..=10080).contains(v))
-                .map(|v| base_max.max(v as f64 * 120.0))
-                .unwrap_or(base_max)
-        } else {
-            base_max
-        };
-        let saved = if ok {
-            common::json(
-                &Path::new(text(&cfg["data_mount"]))
-                    .join(format!("reports/jobs/{report_key}.json")),
-                common::REPORT_LIMIT,
-            )
-        } else {
-            empty()
-        };
-        // The upgrade runs as nekoserver-upgrade@<release> (or, after a restart, as the
-        // resume service): its report says which, so a run at work is asked about.
-        let named = upgrade_unit(&saved);
-        let unit = if key == "upgrade" {
-            named.as_str()
-        } else {
-            unit
-        };
-        let raw = text(&saved["status"]);
-        // An update undone after the apps did not start well: the backup was made and the
-        // apps are back as they were, so only the update is still to come (done in part).
-        let undone = key == "maintenance" && rolled_back(&saved);
-        let status = if undone {
-            "partial"
-        } else if ["running", "pass", "fail", "partial"].contains(&raw) {
-            raw
-        } else {
-            "unknown"
-        };
-        // A success saved while the clock was ahead still counts (shown as now): hiding
-        // it would read as "never succeeded" after the clock was put back.
-        let success = common::shown_time(&saved["last_success"], now);
-        let start = num(&saved["started_at"], 0.0, now + 60.0);
-        // Never succeeded: due one interval (plus a day) after its schedule was set up.
-        let installed = timer_installed_at(unit);
-        let (timer, known) = timer_of(unit);
-        let stale = if status == "running" {
-            // A run with no start time can't be judged as fresh.
-            start.as_f64().is_none_or(|t| now - t > max)
-        } else {
-            let weekly = weekly || ["updates", "external"].contains(&key);
-            job_overdue(weekly, success.as_f64(), installed, &timer, now, max)
-        };
-        let state = overdue_state(status, stale);
-        if let Some(why) = retired(cfg, key) {
-            out.push(json!({"id":key,"name":name,"status":"disabled","last_success":success,"last_attempt":start,"timer":timer,"reason":why,"restore":[]}));
-            continue;
-        }
-        // A worker that systemd could not even start writes no report: its service says so.
-        let (_, service) = probe(
-            &[
-                "systemctl",
-                "show",
-                &format!("{unit}.service"),
-                "--property=LoadState,ActiveState,Result,ExecMainStatus",
-            ],
-            8,
-        );
-        let unrun = if status == "fail" || undone {
-            None
-        } else if status == "running" && cut_off(&service, start.as_f64(), now) {
-            Some("Stopped part-way: the PC restarted or the job was stopped. The next run starts it again.".to_string())
-        } else {
-            service_failure(unit, &service)
-        };
-        let state = if unrun.is_some() { "fail" } else { state };
-        let stopped = if ["fail", "running"].contains(&state) {
-            None
-        } else {
-            schedule_stopped(&timer, known && scheduled(key), !success.is_null())
-        };
-        let state = if stopped.is_some() { "stale" } else { state };
-        let reason = if let Some(why) = unrun {
-            Some(why)
-        } else if let Some(why) = stopped {
-            Some(why)
-        } else if status == "fail" {
-            Some(with_full_usb_advice(key, failure_reason(&saved)))
-        } else if undone {
-            Some(undone_reason(&saved))
-        } else if status == "partial" {
-            Some(partial_reason(&saved["missing"]))
-        } else if success.is_null() && stale {
-            Some(overdue_reason(key, "No successful run since it was set up"))
-        } else if success.is_null() {
-            Some("No recorded successful run".to_string())
-        } else if stale {
-            Some(overdue_reason(key, "Last success is overdue"))
-        } else {
-            None
-        };
-        // The service that does the work, for the page's log commands (the weekly photo
-        // schedule's, an upgrade's own instance).
-        let mut row = json!({"id":key,"name":name,"status":state,"last_success":success,"last_attempt":start,"timer":timer,"reason":reason,"restore":restore_tests(cfg,key),"unit":format!("{unit}.service")});
-        if undone {
-            row["rolled_back"] = json!(true);
-        }
-        if key == "external" && state == "fail" && usb_was_away(&saved) {
-            row["usb_away"] = json!(true);
-        }
-        // Said to the page too: it kept its own rule, and listed "NekoServer upgrade
-        // schedule is off" after every upgrade that worked.
-        if !scheduled(key) {
-            row["scheduled"] = json!(false);
-        }
-        if let Some(drive) = away {
-            row["blocked"] = json!(blocked_words(key, drive));
-        }
-        out.push(row);
-    }
+    let out: Vec<Value> = jobs_of(cfg)
+        .into_iter()
+        .map(|job| job_row(cfg, now, ok, away, job))
+        .collect();
     json!(out)
+}
+/// The dashboard's row for one job of `jobs_of`.
+fn job_row(
+    cfg: &Value,
+    now: f64,
+    ok: bool,
+    away: Option<&str>,
+    (key, name, unit, base_max): (&'static str, &'static str, &'static str, f64),
+) -> Value {
+    let weekly =
+        cfg["photos"]["backup_schedule"] == "weekly" && ["archive", "database"].contains(&key);
+    let report_key = if weekly { "database" } else { key };
+    let unit = if weekly {
+        "nekoserver-immich-db-backup"
+    } else {
+        unit
+    };
+    let max = job_max(cfg, key, weekly, base_max);
+    let saved = if ok {
+        common::json(
+            &Path::new(text(&cfg["data_mount"])).join(format!("reports/jobs/{report_key}.json")),
+            common::REPORT_LIMIT,
+        )
+    } else {
+        empty()
+    };
+    // The upgrade runs as nekoserver-upgrade@<release> (or, after a restart, as the
+    // resume service): its report says which, so a run at work is asked about.
+    let named = upgrade_unit(&saved);
+    let unit = if key == "upgrade" {
+        named.as_str()
+    } else {
+        unit
+    };
+    // An update undone after the apps did not start well: the backup was made and the
+    // apps are back as they were, so only the update is still to come (done in part).
+    let undone = key == "maintenance" && rolled_back(&saved);
+    let status = job_status(&saved, undone);
+    // A success saved while the clock was ahead still counts (shown as now): hiding
+    // it would read as "never succeeded" after the clock was put back.
+    let success = common::shown_time(&saved["last_success"], now);
+    let start = num(&saved["started_at"], 0.0, now + 60.0);
+    // Never succeeded: due one interval (plus a day) after its schedule was set up.
+    let installed = timer_installed_at(unit);
+    let (timer, known) = timer_of(unit);
+    let stale = if status == "running" {
+        // A run with no start time can't be judged as fresh.
+        start.as_f64().is_none_or(|t| now - t > max)
+    } else {
+        let weekly = weekly || ["updates", "external"].contains(&key);
+        job_overdue(weekly, success.as_f64(), installed, &timer, now, max)
+    };
+    let state = overdue_state(status, stale);
+    if let Some(why) = retired(cfg, key) {
+        return json!({"id":key,"name":name,"status":"disabled","last_success":success,"last_attempt":start,"timer":timer,"reason":why,"restore":[]});
+    }
+    let unrun = never_ran(unit, status, undone, start.as_f64(), now);
+    let state = if unrun.is_some() { "fail" } else { state };
+    let stopped = if ["fail", "running"].contains(&state) {
+        None
+    } else {
+        schedule_stopped(&timer, known && scheduled(key), !success.is_null())
+    };
+    let state = if stopped.is_some() { "stale" } else { state };
+    let reason = unrun
+        .or(stopped)
+        .or_else(|| job_reason(key, &saved, (status, undone), success.is_null(), stale));
+    // The service that does the work, for the page's log commands (the weekly photo
+    // schedule's, an upgrade's own instance).
+    let mut row = json!({"id":key,"name":name,"status":state,"last_success":success,"last_attempt":start,"timer":timer,"reason":reason,"restore":restore_tests(cfg,key),"unit":format!("{unit}.service")});
+    if undone {
+        row["rolled_back"] = json!(true);
+    }
+    if key == "external" && state == "fail" && usb_was_away(&saved) {
+        row["usb_away"] = json!(true);
+    }
+    // Said to the page too: it kept its own rule, and listed "NekoServer upgrade
+    // schedule is off" after every upgrade that worked.
+    if !scheduled(key) {
+        row["scheduled"] = json!(false);
+    }
+    if let Some(drive) = away {
+        row["blocked"] = json!(blocked_words(key, drive));
+    }
+    row
+}
+/// How long (seconds) job `key` may go without a success before it is overdue.
+fn job_max(cfg: &Value, key: &str, weekly: bool, base_max: f64) -> f64 {
+    if weekly {
+        864000.0
+    } else if key == "archive" {
+        cfg["photos"]["archive_interval_minutes"]
+            .as_u64()
+            .filter(|v| (15..=10080).contains(v))
+            .map(|v| base_max.max(v as f64 * 120.0))
+            .unwrap_or(base_max)
+    } else {
+        base_max
+    }
+}
+/// The status a job's report gives ("unknown" for any other word).
+fn job_status(saved: &Value, undone: bool) -> &str {
+    let raw = text(&saved["status"]);
+    if undone {
+        "partial"
+    } else if ["running", "pass", "fail", "partial"].contains(&raw) {
+        raw
+    } else {
+        "unknown"
+    }
+}
+/// Why a job that wrote no report of it failed: a worker that systemd could not even
+/// start writes no report, and its service says so.
+fn never_ran(
+    unit: &str,
+    status: &str,
+    undone: bool,
+    started: Option<f64>,
+    now: f64,
+) -> Option<String> {
+    let (_, service) = probe(
+        &[
+            "systemctl",
+            "show",
+            &format!("{unit}.service"),
+            "--property=LoadState,ActiveState,Result,ExecMainStatus",
+        ],
+        8,
+    );
+    if status == "fail" || undone {
+        None
+    } else if status == "running" && cut_off(&service, started, now) {
+        Some("Stopped part-way: the PC restarted or the job was stopped. The next run starts it again.".to_string())
+    } else {
+        service_failure(unit, &service)
+    }
+}
+/// What the job's own report says is wrong, if anything.
+fn job_reason(
+    key: &str,
+    saved: &Value,
+    (status, undone): (&str, bool),
+    never_succeeded: bool,
+    stale: bool,
+) -> Option<String> {
+    if status == "fail" {
+        Some(with_full_usb_advice(key, failure_reason(saved)))
+    } else if undone {
+        Some(undone_reason(saved))
+    } else if status == "partial" {
+        Some(partial_reason(&saved["missing"]))
+    } else if never_succeeded && stale {
+        Some(overdue_reason(key, "No successful run since it was set up"))
+    } else if never_succeeded {
+        Some("No recorded successful run".to_string())
+    } else if stale {
+        Some(overdue_reason(key, "Last success is overdue"))
+    } else {
+        None
+    }
 }
 /// What job `key` says while a drive it needs (`drive`, its name) is missing. Not every
 /// job in the list is a backup: the upgrade's row said "so this backup can't run" too
@@ -2127,7 +2217,11 @@ fn media(report: Option<&MediaReport>) -> Value {
 /// When a file was last changed, in seconds since 1970; None when that can't be read.
 fn modified_at(path: &Path) -> Option<f64> {
     let time = fs::metadata(path).ok()?.modified().ok()?;
-    Some(time.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs_f64())
+    Some(
+        time.duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs_f64(),
+    )
 }
 /// The restore rehearsals' reports in `folder` (at most 100), each with when it was written.
 fn rehearsal_reports(folder: &Path) -> Vec<(f64, PathBuf)> {
@@ -2777,18 +2871,57 @@ fn cards_reminder(s: &Value) -> Option<(&'static str, String, String)> {
     ))
 }
 pub(crate) fn alerts(s: &Value) -> Value {
-    let mut out = vec![];
-    let mut add = |id: String, level: &str, title: String, detail: &str| {
-        out.push(json!({"id":id,"level":level,"title":title,"detail":detail}))
-    };
+    let mut out = Alerts::default();
+    setup_alerts(&mut out, s);
+    delivery_alerts(&mut out, s);
+    tailscale_alerts(&mut out, s);
+    startup_alerts(&mut out, s);
+    // Apps stopped on purpose while a drive is missing are named in that drive's alert,
+    // not raised one by one (each with advice that can't help): one alert to act on.
+    let held = held_apps(s);
+    let named = drive_alerts(&mut out, s, &held);
+    nas_target_alerts(&mut out, s);
+    for a in s["arrays"].as_array().into_iter().flatten() {
+        array_alert(&mut out, a);
+    }
+    load_alerts(&mut out, s);
+    nas_hold_alert(&mut out, s, &held, named);
+    for a in s["applications"].as_array().into_iter().flatten() {
+        if !held.contains(&text(&a["name"])) {
+            app_alert(&mut out, a);
+        }
+    }
+    for j in s["backups"].as_array().into_iter().flatten() {
+        // Waiting for a missing drive: its alert says what to do.
+        if !j["blocked"].is_string() {
+            job_alert(&mut out, s, j);
+        }
+    }
+    key_alerts(&mut out, s);
+    integrity_alerts(&mut out, s);
+    update_alerts(&mut out, s);
+    media_alerts(&mut out, s);
+    json!(out.0)
+}
+/// The alerts the dashboard shows, in the order they are raised.
+#[derive(Default)]
+struct Alerts(Vec<Value>);
+impl Alerts {
+    fn add(&mut self, id: String, level: &str, title: String, detail: &str) {
+        self.0
+            .push(json!({"id":id,"level":level,"title":title,"detail":detail}))
+    }
+}
+/// The shares, the time zone, where the backups are and the steps of setup.
+fn setup_alerts(out: &mut Alerts, s: &Value) {
     for (id, title, detail) in share_alerts(s) {
-        add(id, "critical", title, &detail);
+        out.add(id, "critical", title, &detail);
     }
     if let (Some(zone), Some(now)) = (
         s["time_zone"]["schedules"].as_str(),
         s["time_zone"]["this_pc"].as_str(),
     ) {
-        add(
+        out.add(
             "timezone:changed".into(),
             "warning",
             "This PC's time zone changed since setup".into(),
@@ -2796,7 +2929,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
         );
     }
     if s["backup_place"]["same_drive"] == true && s["backup_place"]["offline"] != true {
-        add(
+        out.add(
             "backup:same-drive".into(),
             "warning",
             "Your backups are on the same drive as your files".into(),
@@ -2805,25 +2938,28 @@ pub(crate) fn alerts(s: &Value) -> Value {
     }
     // A step of setup that failed in its last run: said until a later run finishes it.
     for step in s["setup"]["unfinished"].as_array().into_iter().flatten() {
-        add(
+        out.add(
             format!("setup:{}", text(&step["id"])),
             "warning",
             format!("Setup: {} did not finish", text(&step["title"])),
             &setup_step_detail(step),
         );
     }
+}
+/// Phone alerts, the battery, the home network and the outside monitor.
+fn delivery_alerts(out: &mut Alerts, s: &Value) {
     // Alerts that fail to reach anyone are still said on the page.
     // The alert server not reached at all (the internet down for a day, say) is told
     // apart: setup run then could only fail its downloads too (deep check 879).
     if s["notifications"]["status"] == "fail" && s["notifications"]["reason"] == "unreachable" {
-        add(
+        out.add(
             "notifications:delivery".into(),
             "warning",
             "Phone alerts are not being delivered".into(),
             "This server could not reach your alert server: its internet connection is probably down (check the router), or its clock is wrong (check it with  timedatectl). The alerts wait and are sent by themselves once it is reached again. If the internet works, run  sudo bash install.sh  again: it sends a test message.",
         );
     } else if s["notifications"]["status"] == "fail" {
-        add(
+        out.add(
             "notifications:delivery".into(),
             "warning",
             "Phone alerts are not being delivered".into(),
@@ -2835,7 +2971,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
             .as_f64()
             .map(|p| format!(" ({p:.0}% left)"))
             .unwrap_or_default();
-        add(
+        out.add(
             "battery".into(),
             "warning",
             format!("The server is running on its battery{left}"),
@@ -2843,7 +2979,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
         );
     }
     if s["home_network"]["status"] == "moved" {
-        add(
+        out.add(
             "home-network".into(),
             "warning",
             "Home addresses stopped: this server's address at home changed".into(),
@@ -2854,38 +2990,41 @@ pub(crate) fn alerts(s: &Value) -> Value {
         );
     }
     if ["fail", "stale"].contains(&text(&s["heartbeat"]["status"])) {
-        add(
+        out.add(
             "heartbeat:delivery".into(),
             "warning",
             "Outage alerts: the outside monitor is not reached".into(),
             "This server's check-ins to your outside monitor fail or have stopped, so it cannot warn you of an outage. Check the network and the monitor's ping address.",
         );
     }
+}
+/// Phone access through Tailscale.
+fn tailscale_alerts(out: &mut Alerts, s: &Value) {
     if s["tailscale"]["state"] == "NeedsLogin" && s["tailscale"]["signed_in_before"] == false {
         // Seen on a fresh Debian server: it was told its sign-in "ran out", as urgent,
         // before it had ever been signed in. That is a setup step still to do.
-        add(
+        out.add(
             "tailscale:login".into(),
             "warning",
             "Phone access is not set up yet".into(),
             "This server is not signed in to Tailscale yet, so your phone can't reach the apps away from home. Run  sudo bash install.sh  again: it walks you through it (or run  sudo tailscale up  and open the link it prints).",
         );
     } else if s["tailscale"]["state"] == "NeedsLogin" || signed_in_until_past(&s["tailscale"]) {
-        add(
+        out.add(
             "tailscale:login".into(),
             "critical",
             "Phone access is signed out of Tailscale".into(),
             "This server's Tailscale sign-in ran out, so the app addresses on your phone stop working. Sign in again: sudo tailscale up, then in the Tailscale admin console choose Disable key expiry for this server.",
         );
     } else if s["tailscale"]["state"] == "NeedsMachineAuth" {
-        add(
+        out.add(
             "tailscale:off".into(),
             "warning",
             "Phone access waits: approve this server in Tailscale".into(),
             "This server signed in to Tailscale, and your Tailscale account still has to approve it before your phone can reach the apps. In the Tailscale admin console (Machines), find this server and choose Approve.",
         );
     } else if s["tailscale"]["state"] == "Stopped" {
-        add(
+        out.add(
             "tailscale:off".into(),
             "warning",
             "Phone access is off: Tailscale is switched off".into(),
@@ -2895,13 +3034,16 @@ pub(crate) fn alerts(s: &Value) -> Value {
         .as_f64()
         .is_some_and(|d| d <= EXPIRY_WARNING_DAYS)
     {
-        add(
+        out.add(
             "tailscale:expiry".into(),
             "warning",
             "Phone access stops soon: Tailscale sign-in runs out".into(),
             "In the Tailscale admin console (Machines), open this server's menu and choose Disable key expiry, so it stays signed in.",
         );
     }
+}
+/// The services that must start with the computer.
+fn startup_alerts(out: &mut Alerts, s: &Value) {
     // The apps that are down with Docker (apps_without_docker): its alert names them.
     let without_docker: Vec<&str> = s["applications"]
         .as_array()
@@ -2920,7 +3062,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
         // Enabled is not the same as healthy: a failed service is reported either way
         // (a finished one-shot, such as a resume service, is "inactive", not failed).
         if unit["active"] == "failed" {
-            add(
+            out.add(
                 format!("startup:{name}:failed"),
                 if core { "critical" } else { "warning" },
                 format!("{} has stopped with an error", text(&unit["name"])),
@@ -2929,7 +3071,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
         } else if stays_running(name) && unit["active"] == "inactive" {
             // Not failed, yet not running: Docker waiting for a drive that never
             // appeared, or a service someone stopped.
-            add(
+            out.add(
                 format!("startup:{name}:failed"),
                 "critical",
                 format!("{} is not running", text(&unit["name"])),
@@ -2937,7 +3079,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
             );
         }
         if core && unit["enabled"] == false {
-            add(
+            out.add(
                 format!("startup:{}", text(&unit["unit"])),
                 "warning",
                 format!("{} won't start after a restart", text(&unit["name"])),
@@ -2945,89 +3087,103 @@ pub(crate) fn alerts(s: &Value) -> Value {
             );
         }
     }
-    // Apps stopped on purpose while a drive is missing are named in that drive's alert,
-    // not raised one by one (each with advice that can't help): one alert to act on.
-    let held = held_apps(s);
+}
+/// Each drive's alerts; true once a drive's alert named the apps that are `held`.
+fn drive_alerts(out: &mut Alerts, s: &Value, held: &[&str]) -> bool {
     let mut named = false;
-    if let Some(disks) = s["storage"].as_array() {
-        for d in disks {
-            let id = text(&d["id"]);
-            let name = text(&d["name"]);
-            if d["status"] != "mounted" {
-                let stopped = if id != "os" && !named && !held.is_empty() {
-                    named = true;
-                    held.join(", ")
-                } else {
-                    String::new()
-                };
-                let detail = unavailable_detail(text(&d["status"]), &stopped);
-                add(
-                    format!("mount:{id}"),
-                    "critical",
-                    format!("{name} unavailable"),
-                    &detail,
-                );
-            } else if d["fs_errors"].as_u64().is_some_and(|n| n > 0) && id != "os" {
-                add(
-                    format!("mount:{id}"),
-                    "critical",
-                    format!("{name} has filesystem errors"),
-                    &format!("Linux met errors writing to it (a loose cable, the network storage box away for long, a failing drive), so some changes may be missing and the drive may have turned read-only. Check it: sudo bash install.sh --recover, and choose {} (a check changes nothing; a repair is a choice of its own there, with your yes).", check_drive_choice()),
-                );
-            } else if d["waiting"] == true {
-                add(
-                    format!("mount:{id}"),
-                    "warning",
-                    format!("{name} is waiting for the network storage box"),
-                    "The NAS does not answer, so the apps' reads and writes to this drive wait for it (for up to ten minutes; nothing is lost while they wait). Check that the NAS is on and on the network.",
-                );
-            } else if d["read_only"] == true {
-                add(
-                    format!("mount:{id}"),
-                    "critical",
-                    format!("{name} turned read-only"),
-                    &if d["network"] == true {
-                        format!("Linux stopped writing to it after errors (the connection to the network storage box was lost for a while, most likely), so the apps' changes fail. Nothing more is written; do not restart the apps yet. Check the NAS and the network, then in a terminal: sudo bash install.sh --recover, and choose {}.", check_drive_choice())
-                    } else {
-                        format!("Linux stopped writing to it after errors, so the apps' changes fail. Check its cable and health, then in a terminal: sudo bash install.sh --recover, and choose {}.", check_drive_choice())
-                    },
-                );
-            } else if d["used_percent"].as_f64().unwrap_or(0.0) >= 90.0 {
-                let full = d["used_percent"].as_f64().unwrap_or(0.0) >= 97.0;
-                add(
-                    format!("space:{id}"),
-                    if full { "critical" } else { "warning" },
-                    if full {
-                        format!("{name} is almost full")
-                    } else {
-                        format!("{name} is filling up")
-                    },
-                    &drive_space_advice(id, full, d["photos"] == true),
-                );
-            }
-            let state = text(&d["smart"]["status"]);
-            if state == "fail" || state == "warning" {
-                let failing = state == "fail";
-                add(
-                    format!("smart:{id}"),
-                    if failing { "critical" } else { "warning" },
-                    if failing {
-                        format!("{name} is failing")
-                    } else {
-                        format!("{name} health warning")
-                    },
-                    &health_advice(id, text(&d["smart"]["reason"]), failing),
-                );
-            }
-        }
+    for d in s["storage"].as_array().into_iter().flatten() {
+        let stopped =
+            if d["status"] != "mounted" && text(&d["id"]) != "os" && !named && !held.is_empty() {
+                named = true;
+                held.join(", ")
+            } else {
+                String::new()
+            };
+        drive_state_alert(out, d, &stopped);
+        drive_health_alert(out, d);
     }
+    named
+}
+/// A drive that is away, has errors, waits, turned read-only or is filling up.
+/// `stopped`: the apps held while it is away, when its alert names them.
+fn drive_state_alert(out: &mut Alerts, d: &Value, stopped: &str) {
+    let id = text(&d["id"]);
+    let name = text(&d["name"]);
+    if d["status"] != "mounted" {
+        let detail = unavailable_detail(text(&d["status"]), stopped);
+        out.add(
+            format!("mount:{id}"),
+            "critical",
+            format!("{name} unavailable"),
+            &detail,
+        );
+    } else if d["fs_errors"].as_u64().is_some_and(|n| n > 0) && id != "os" {
+        out.add(
+            format!("mount:{id}"),
+            "critical",
+            format!("{name} has filesystem errors"),
+            &format!("Linux met errors writing to it (a loose cable, the network storage box away for long, a failing drive), so some changes may be missing and the drive may have turned read-only. Check it: sudo bash install.sh --recover, and choose {} (a check changes nothing; a repair is a choice of its own there, with your yes).", check_drive_choice()),
+        );
+    } else if d["waiting"] == true {
+        out.add(
+            format!("mount:{id}"),
+            "warning",
+            format!("{name} is waiting for the network storage box"),
+            "The NAS does not answer, so the apps' reads and writes to this drive wait for it (for up to ten minutes; nothing is lost while they wait). Check that the NAS is on and on the network.",
+        );
+    } else if d["read_only"] == true {
+        out.add(
+            format!("mount:{id}"),
+            "critical",
+            format!("{name} turned read-only"),
+            &if d["network"] == true {
+                format!("Linux stopped writing to it after errors (the connection to the network storage box was lost for a while, most likely), so the apps' changes fail. Nothing more is written; do not restart the apps yet. Check the NAS and the network, then in a terminal: sudo bash install.sh --recover, and choose {}.", check_drive_choice())
+            } else {
+                format!("Linux stopped writing to it after errors, so the apps' changes fail. Check its cable and health, then in a terminal: sudo bash install.sh --recover, and choose {}.", check_drive_choice())
+            },
+        );
+    } else if d["used_percent"].as_f64().unwrap_or(0.0) >= 90.0 {
+        let full = d["used_percent"].as_f64().unwrap_or(0.0) >= 97.0;
+        out.add(
+            format!("space:{id}"),
+            if full { "critical" } else { "warning" },
+            if full {
+                format!("{name} is almost full")
+            } else {
+                format!("{name} is filling up")
+            },
+            &drive_space_advice(id, full, d["photos"] == true),
+        );
+    }
+}
+/// A drive whose health (SMART) fails or warns.
+fn drive_health_alert(out: &mut Alerts, d: &Value) {
+    let id = text(&d["id"]);
+    let name = text(&d["name"]);
+    let state = text(&d["smart"]["status"]);
+    if state == "fail" || state == "warning" {
+        let failing = state == "fail";
+        out.add(
+            format!("smart:{id}"),
+            if failing { "critical" } else { "warning" },
+            if failing {
+                format!("{name} is failing")
+            } else {
+                format!("{name} health warning")
+            },
+            &health_advice(id, text(&d["smart"]["reason"]), failing),
+        );
+    }
+}
+/// The connections to the network storage box.
+fn nas_target_alerts(out: &mut Alerts, s: &Value) {
     for t in s["network_storage"]["targets"]
         .as_array()
         .into_iter()
         .flatten()
     {
         if t["state"] != "connected" {
-            add(
+            out.add(
                 format!("nas:{}", text(&t["target"])),
                 "critical",
                 "The connection to the network storage box is down".into(),
@@ -3039,74 +3195,78 @@ pub(crate) fn alerts(s: &Value) -> Value {
             );
         }
     }
-    for a in s["arrays"].as_array().into_iter().flatten() {
-        let id = text(&a["id"]);
-        let names: Vec<&str> = a["holds_names"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .collect();
-        let shown = if names.is_empty() {
-            text(&a["name"]).to_string()
-        } else {
-            format!("{} ({})", text(&a["name"]), names.join(", "))
-        };
-        let worst_errors = a["members"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|m| m["errors"].as_u64())
-            .max()
-            .unwrap_or(0);
-        match text(&a["status"]) {
-            "degraded" => add(
+}
+/// A drive array that lost a drive, rebuilds or has errors.
+fn array_alert(out: &mut Alerts, a: &Value) {
+    let id = text(&a["id"]);
+    let names: Vec<&str> = a["holds_names"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    let shown = if names.is_empty() {
+        text(&a["name"]).to_string()
+    } else {
+        format!("{} ({})", text(&a["name"]), names.join(", "))
+    };
+    let worst_errors = a["members"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m["errors"].as_u64())
+        .max()
+        .unwrap_or(0);
+    match text(&a["status"]) {
+        "degraded" => out.add(
+            format!("array-lost:{id}"),
+            "critical",
+            format!("{shown} has lost a drive"),
+            text(&a["reason"]),
+        ),
+        "rebuilding" => {
+            out.add(
                 format!("array-lost:{id}"),
                 "critical",
-                format!("{shown} has lost a drive"),
+                format!("{shown} has one copy fewer"),
                 text(&a["reason"]),
-            ),
-            "rebuilding" => {
-                add(
-                    format!("array-lost:{id}"),
-                    "critical",
-                    format!("{shown} has one copy fewer"),
-                    text(&a["reason"]),
-                );
-                let done = a["progress"]
-                    .as_f64()
-                    .map(|p| format!(" ({p} % done)"))
-                    .unwrap_or_default();
-                add(
-                    format!("array-rebuild:{id}"),
-                    "warning",
-                    format!("{shown} is rebuilding{done}"),
-                    "Keep the computer on and every drive connected until it finishes; Server health → Drives shows the progress.",
-                );
-            }
-            "failing" => add(
-                format!("array-errors:{id}"),
-                "critical",
-                format!("{shown}: a drive is failing"),
-                text(&a["reason"]),
-            ),
-            "warning"
-                if a["mismatches"].as_u64().unwrap_or(0) > 0
-                    || worst_errors >= crate::array_health::ERRORS_ALERTED =>
-            {
-                add(
-                    format!("array-errors:{id}"),
-                    "warning",
-                    format!("{shown} needs a look"),
-                    text(&a["reason"]),
-                )
-            }
-            _ => {}
+            );
+            let done = a["progress"]
+                .as_f64()
+                .map(|p| format!(" ({p} % done)"))
+                .unwrap_or_default();
+            out.add(
+                format!("array-rebuild:{id}"),
+                "warning",
+                format!("{shown} is rebuilding{done}"),
+                "Keep the computer on and every drive connected until it finishes; Server health → Drives shows the progress.",
+            );
         }
+        "failing" => out.add(
+            format!("array-errors:{id}"),
+            "critical",
+            format!("{shown}: a drive is failing"),
+            text(&a["reason"]),
+        ),
+        "warning"
+            if a["mismatches"].as_u64().unwrap_or(0) > 0
+                || worst_errors >= crate::array_health::ERRORS_ALERTED =>
+        {
+            out.add(
+                format!("array-errors:{id}"),
+                "warning",
+                format!("{shown} needs a look"),
+                text(&a["reason"]),
+            )
+        }
+        _ => {}
     }
+}
+/// Memory and CPU heat.
+fn load_alerts(out: &mut Alerts, s: &Value) {
     let used = s["metrics"]["memory_percent"].as_f64().unwrap_or(0.0);
     if used >= 90.0 {
-        add(
+        out.add(
             "memory-pressure".into(),
             if used >= 97.0 { "critical" } else { "warning" },
             "Available RAM is low".into(),
@@ -3114,100 +3274,97 @@ pub(crate) fn alerts(s: &Value) -> Value {
         );
     }
     if let Some(level) = cpu_heat(s) {
-        add(
+        out.add(
             "temperature".into(),
             level,
             "CPU temperature is high".into(),
             "Check that the fans turn and the air vents are not blocked or dusty (Fans & lights shows the fans). A long video conversion also warms it up for a while.",
         );
     }
+}
+/// The apps held for a drive on the NAS; `named`: a drive's alert named them already.
+fn nas_hold_alert(out: &mut Alerts, s: &Value, held: &[&str], named: bool) {
     if nas_held(s) {
         let stopped = if named || held.is_empty() {
             String::new()
         } else {
             format!(" Stopped: {}.", held.join(", "))
         };
-        add(
+        out.add(
             "nas:hold".into(),
             "critical",
             "The apps are held: a drive on the network storage box stopped taking writes".into(),
             &format!("They are stopped so nothing is written to a drive that fails.{stopped} They start again by themselves once every drive on the NAS takes writes; restarting them by hand is refused until then. If the drive was repaired and they stay stopped, look at  journalctl -u {} .", common::shared("nas_watch", "service")),
         );
     }
-    if let Some(apps) = s["applications"].as_array() {
-        for a in apps {
-            if held.contains(&text(&a["name"])) {
-                continue;
-            }
-            if [
-                "exited",
-                "restarting",
-                "dead",
-                "missing",
-                "ambiguous",
-                "paused",
-                "created",
-            ]
-            .contains(&text(&a["state"]))
-                || a["health"] == "unhealthy"
-                // Running but not answering its own page (no Docker health check to say
-                // so): the dashboard shows it as not responding, the alert agrees.
-                || (a["state"] == "running" && a["responding"] == false)
-            {
-                add(
-                    format!("app:{}", text(&a["id"])),
-                    if a["health"] == "unhealthy" || a["responding"] == false {
-                        "critical"
-                    } else {
-                        "warning"
-                    },
-                    format!("{} needs attention", text(&a["name"])),
-                    "On the dashboard's Your apps page, choose Restart app on it (on a phone, tap ⋯ on the app). If it keeps happening, the guide shows what else to try.",
-                );
-            }
-        }
+}
+/// An app that stopped, is unhealthy or does not answer.
+fn app_alert(out: &mut Alerts, a: &Value) {
+    if [
+        "exited",
+        "restarting",
+        "dead",
+        "missing",
+        "ambiguous",
+        "paused",
+        "created",
+    ]
+    .contains(&text(&a["state"]))
+        || a["health"] == "unhealthy"
+        // Running but not answering its own page (no Docker health check to say
+        // so): the dashboard shows it as not responding, the alert agrees.
+        || (a["state"] == "running" && a["responding"] == false)
+    {
+        out.add(
+            format!("app:{}", text(&a["id"])),
+            if a["health"] == "unhealthy" || a["responding"] == false {
+                "critical"
+            } else {
+                "warning"
+            },
+            format!("{} needs attention", text(&a["name"])),
+            "On the dashboard's Your apps page, choose Restart app on it (on a phone, tap ⋯ on the app). If it keeps happening, the guide shows what else to try.",
+        );
     }
-    if let Some(jobs) = s["backups"].as_array() {
-        for j in jobs {
-            // Waiting for a missing drive: its alert says what to do.
-            if j["blocked"].is_string() {
-                continue;
-            }
-            if ["fail", "stale", "partial"].contains(&text(&j["status"])) {
-                let away = j["usb_away"] == true;
-                // The backup cards are a copy kept elsewhere, besides the backups: nothing
-                // they hold is lost when a run stops (a card taken out, a card full), so
-                // their alert is a warning; a full card says which one to put in.
-                let cards = j["id"] == "cards";
-                let full = s["cards"]["set"]["full_card"].as_u64().filter(|_| cards);
-                add(
-                    format!("backup:{}", text(&j["id"])),
-                    if j["status"] == "fail" && !away && !cards {
-                        "critical"
-                    } else {
-                        "warning"
-                    },
-                    if let Some(n) = full {
-                        crate::cards::job::full_words(n)
-                    } else if away {
-                        format!("{}: the USB drive was not plugged in", text(&j["name"]))
-                    } else if j["rolled_back"] == true {
-                        format!(
-                            "{}: the update was undone, your apps work",
-                            text(&j["name"])
-                        )
-                    } else {
-                        format!("{} needs attention", text(&j["name"]))
-                    },
-                    j["reason"]
-                        .as_str()
-                        .unwrap_or("Review the backup schedule."),
-                );
-            }
-        }
+}
+/// A job that failed, is overdue or did part of its work.
+fn job_alert(out: &mut Alerts, s: &Value, j: &Value) {
+    if ["fail", "stale", "partial"].contains(&text(&j["status"])) {
+        let away = j["usb_away"] == true;
+        // The backup cards are a copy kept elsewhere, besides the backups: nothing
+        // they hold is lost when a run stops (a card taken out, a card full), so
+        // their alert is a warning; a full card says which one to put in.
+        let cards = j["id"] == "cards";
+        let full = s["cards"]["set"]["full_card"].as_u64().filter(|_| cards);
+        out.add(
+            format!("backup:{}", text(&j["id"])),
+            if j["status"] == "fail" && !away && !cards {
+                "critical"
+            } else {
+                "warning"
+            },
+            if let Some(n) = full {
+                crate::cards::job::full_words(n)
+            } else if away {
+                format!("{}: the USB drive was not plugged in", text(&j["name"]))
+            } else if j["rolled_back"] == true {
+                format!(
+                    "{}: the update was undone, your apps work",
+                    text(&j["name"])
+                )
+            } else {
+                format!("{} needs attention", text(&j["name"]))
+            },
+            j["reason"]
+                .as_str()
+                .unwrap_or("Review the backup schedule."),
+        );
     }
+}
+/// The backup cards' reminder and the backup password.
+fn key_alerts(out: &mut Alerts, s: &Value) {
     if let Some((id, title, detail)) = cards_reminder(s) {
-        add(id.into(), "warning", title, &detail);
+        out.add(id.into(), "warning", title, &detail);
     }
     // The monthly schedule exists, but no backup password was chosen: each snapshot
     // holds the app password files unencrypted until one is.
@@ -3216,20 +3373,23 @@ pub(crate) fn alerts(s: &Value) -> Value {
             .any(|j| j["id"] == "maintenance" && j["timer"]["installed"] == true)
     });
     if monthly_installed && s["backup_key"] == false {
-        add(
+        out.add(
             "backup-key".into(),
             "warning",
             "Monthly backups keep the app passwords unencrypted".into(),
             "No backup password was chosen at setup, so each monthly snapshot on the HDD holds the app password files in plain text (readable by root only, but by anyone who takes the drive). In a terminal on the server, in the NekoServer folder, run  sudo python3 backup_secrets.py --setup  to choose one: snapshots made from then on keep them encrypted.",
         );
     }
+}
+/// Backup copies with damaged or missing files.
+fn integrity_alerts(out: &mut Alerts, s: &Value) {
     if let Some(rows) = s["integrity"].as_array() {
         for c in rows {
             let count = |k: &str| c[k].as_u64().unwrap_or(0);
             let bad =
                 count("damaged") + count("both_damaged") + count("disagree") + count("missing");
             if bad > 0 {
-                add(
+                out.add(
                     format!("integrity:{}", text(&c["id"])),
                     if count("both_damaged") + count("damaged") + count("missing") > 0 { "critical" } else { "warning" },
                     format!(
@@ -3246,9 +3406,12 @@ pub(crate) fn alerts(s: &Value) -> Value {
             }
         }
     }
+}
+/// Major versions of the apps waiting to be installed.
+fn update_alerts(out: &mut Alerts, s: &Value) {
     if let Some(rows) = s["updates"].as_array() {
         for u in rows {
-            add(
+            out.add(
                 format!("major-update:{}", text(&u["app"])),
                 "warning",
                 format!(
@@ -3261,8 +3424,11 @@ pub(crate) fn alerts(s: &Value) -> Value {
             );
         }
     }
+}
+/// The media checks.
+fn media_alerts(out: &mut Alerts, s: &Value) {
     if s["media"]["status"] == "stale" {
-        add(
+        out.add(
             "media-stale".into(),
             "warning",
             "Media checks are stale".into(),
@@ -3287,14 +3453,13 @@ pub(crate) fn alerts(s: &Value) -> Value {
         .collect();
     let only_held = !failed.is_empty() && failed.iter().all(|name| held_ids.contains(name));
     if s["media"]["counts"]["fail"].as_u64().unwrap_or(0) > 0 && !only_held {
-        add(
+        out.add(
             "media-failure".into(),
             "warning",
             "Media connection check failed".into(),
             "An app failed its check. Server health → Checks & monitoring names it: open that app, and if it doesn't work, restart it on Your apps (on a phone, tap ⋯ on it).",
         );
     }
-    json!(out)
 }
 /// The phone alerts' last delivery check is overdue (over 3 minutes old, or dated ahead):
 /// only while their timer runs. A timer switched off by choice ("wanted": false) is not
