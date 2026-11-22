@@ -101,9 +101,14 @@ def fingerprint(config, profile):
     return hashlib.sha256(json.dumps(clean, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
+def properties(out):
+    """`systemctl show`'s answer (one name=value per line) as a dict."""
+    return {name: value for name, value in (line.split('=', 1) for line in out.splitlines() if '=' in line)}
+
+
 def retired_timer(unit):
     rc, out = health.run(['systemctl', 'show', unit, '--property=LoadState,ActiveState,UnitFileState'])
-    fields = dict(line.split('=', 1) for line in out.splitlines() if '=' in line)
+    fields = properties(out)
     return fields.get('LoadState') == 'not-found' or (
         rc == 0
         and fields.get('ActiveState') == 'inactive'
@@ -111,9 +116,9 @@ def retired_timer(unit):
     )
 
 
-def service(unit, timer=False):
+def service(unit):
     rc, out = health.run(['systemctl', 'show', unit, '--property=LoadState,ActiveState,UnitFileState'])
-    fields = dict(line.split('=', 1) for line in out.splitlines() if '=' in line)
+    fields = properties(out)
     return (
         rc == 0
         and fields.get('LoadState') == 'loaded'
@@ -184,7 +189,7 @@ def guard_check(config):
         rc, out = health.run(
             ['systemctl', 'show', 'docker.service', '--property=ExecStartPre,RequiresMountsFor,BindsTo']
         )
-        props = dict(line.split('=', 1) for line in out.splitlines() if '=' in line)
+        props = properties(out)
         units = [line.split('=', 1)[1] for line in text.splitlines() if line.startswith('BindsTo=')][0].split()
         return (
             rc == 0
@@ -260,105 +265,7 @@ def containers(config, photos=False):
         specs = [(a, a) for a in media_services(config) if a in health.APPS and a != 'immich']
     results = []
     for app, svc in specs:
-        rc, out = health.run(
-            recovery_tools.DOCKER
-            + [
-                'ps',
-                '-aq',
-                '--filter',
-                'label=com.docker.compose.project=neko-' + app,
-                '--filter',
-                'label=com.docker.compose.service=' + svc,
-            ],
-            15,
-        )
-        ids = out.splitlines()
-        state = 'fail'
-        mounts = False
-        ports = False
-        starting = False
-        if rc == 0 and len(ids) == 1 and re.fullmatch(r'[a-f0-9]{12,64}', ids[0]):
-            rc, out = health.run(recovery_tools.DOCKER + ['inspect', ids[0]], 15)
-            try:
-                values = json.loads(out)
-                v = values[0] if rc == 0 and isinstance(values, list) and len(values) == 1 else {}
-                labels = v.get('Config', {}).get('Labels', {})
-                running = v.get('State', {}).get('Status') == 'running'
-                health_state = v.get('State', {}).get('Health', {}).get('Status', 'not_defined')
-                healthy = health_state not in ('unhealthy', 'starting')
-                exact = (
-                    labels.get('com.docker.compose.project') == 'neko-' + app
-                    and labels.get('com.docker.compose.service') == svc
-                )
-                binds = [m for m in v.get('Mounts', []) if isinstance(m, dict) and m.get('Type') == 'bind']
-
-                def bound(source, targets, readonly=False, writable=False, binds=binds):
-                    """`writable`: the app must be able to write there (Docker's "RW")."""
-                    return any(
-                        m.get('Source') == source
-                        and m.get('Destination') in targets
-                        and (not readonly or m.get('RW') is False)
-                        and (not writable or m.get('RW') is True)
-                        for m in binds
-                    )
-
-                if app == 'immich':
-                    # The same bindings the snapshot checks (shared.json "immich_targets").
-                    targets = IMMICH_TARGETS.get(svc, ())
-                    if svc == 'immich-server':
-                        expected = str(photo_library(config))
-                    elif svc == 'database':
-                        expected = str(Path(config['data_mount']) / 'appdata/immich/postgres')
-                    else:
-                        expected = None
-                    # Photos are uploaded and the database written there: read-only, the
-                    # folder would be the right one and Immich still unusable (review of
-                    # 0.51.2: only the paths were checked). The same for an app's own data.
-                    mounts = expected is None or bound(expected, targets, writable=True)
-                else:
-                    destination = {'seerr': '/app/config', 'navidrome': DATA}.get(app, '/config')
-                    mounts = bound(str(Path(config['data_mount']) / 'appdata' / app), (destination,), writable=True)
-                    if app in ('jellyfin', 'navidrome', 'sonarr', 'radarr', 'lidarr', 'qbittorrent'):
-                        library = (
-                            files_root(config, 'music' if app in ('navidrome', 'lidarr') else 'movies') / 'library'
-                        )
-                        # (folder, where the app sees it, whether the app only reads it)
-                        if app == 'jellyfin':
-                            needed = [('movies', '/data/movies', True), ('tv', '/data/tv', True)]
-                        elif app == 'navidrome':
-                            needed = [('music', '/music', True)]
-                        else:
-                            needed = [('', DATA, False)]
-                        # The others import, rename and download there: read-only (as a
-                        # monthly update checks them, and leaves them when it cannot open
-                        # them up again) they cannot work, though the folder is right.
-                        mounts = mounts and all(
-                            bound(str(library / rel), (dest,), readonly=ro, writable=not ro) for rel, dest, ro in needed
-                        )
-                        if app == 'qbittorrent':
-                            mounts = mounts and bound(
-                                str(music_downloads(config)), ('/data/downloads/music',), writable=True
-                            )
-                network = v.get('NetworkSettings', {})
-                bindings = network.get('Ports', {})
-                peer = peer_port(v) if app == 'qbittorrent' else None
-                published = [
-                    p for key, rows in bindings.items() if rows and key not in peer_bindings(peer, config) for p in rows
-                ]
-                ports = all(p.get('HostIp') == '127.0.0.1' for p in published)
-                if not photos or svc == 'immich-server':
-                    ports = ports and any(
-                        p.get('HostPort') == str(health.APPS[app][2])
-                        for p in (bindings.get(str(health.APPS[app][2]) + '/tcp') or [])
-                    )
-                if not photos:
-                    mounts = mounts and 'nekoserver-media' in network.get('Networks', {})
-                state = 'pass' if exact and running and healthy and mounts and ports else 'fail'
-                # Right after Docker (re)started it: everything in place, the health check
-                # not through yet. The gateway step waits for such a container.
-                starting = exact and running and mounts and ports and health_state == 'starting'
-            except (ValueError, TypeError, KeyError, AttributeError, IndexError):
-                pass
+        state, starting = container_state(config, app, svc, photos)
         if state == 'pass':
             detail = 'Running state, persistent source mounts, network and localhost published ports verified.'
         elif starting:
@@ -367,6 +274,119 @@ def containers(config, photos=False):
             detail = 'Inspect container health, bind mounts (its own data folder must be writable), network and published ports locally.'
         results.append(item('container:' + svc, health.APPS[app][0] + ' / ' + svc, state, detail))
     return results
+
+
+def container_state(config, app, svc, photos):
+    """(pass or fail, whether it is starting) for the one container of `app`'s service
+    `svc`: found by setup's labels, then inspected."""
+    rc, out = health.run(
+        recovery_tools.DOCKER
+        + [
+            'ps',
+            '-aq',
+            '--filter',
+            'label=com.docker.compose.project=neko-' + app,
+            '--filter',
+            'label=com.docker.compose.service=' + svc,
+        ],
+        15,
+    )
+    ids = out.splitlines()
+    if not (rc == 0 and len(ids) == 1 and re.fullmatch(r'[a-f0-9]{12,64}', ids[0])):
+        return 'fail', False
+    rc, out = health.run(recovery_tools.DOCKER + ['inspect', ids[0]], 15)
+    try:
+        values = json.loads(out)
+        v = values[0] if rc == 0 and isinstance(values, list) and len(values) == 1 else {}
+        return inspected_state(config, app, svc, photos, v)
+    except (ValueError, TypeError, KeyError, AttributeError, IndexError):
+        return 'fail', False
+
+
+def inspected_state(config, app, svc, photos, v):
+    """container_state from what `docker inspect` said of it (`v`)."""
+    labels = v.get('Config', {}).get('Labels', {})
+    running = v.get('State', {}).get('Status') == 'running'
+    health_state = v.get('State', {}).get('Health', {}).get('Status', 'not_defined')
+    healthy = health_state not in ('unhealthy', 'starting')
+    exact = (
+        labels.get('com.docker.compose.project') == 'neko-' + app and labels.get('com.docker.compose.service') == svc
+    )
+    binds = [m for m in v.get('Mounts', []) if isinstance(m, dict) and m.get('Type') == 'bind']
+    mounts = mounts_ok(config, app, svc, binds)
+    network = v.get('NetworkSettings', {})
+    ports = ports_ok(config, app, svc, photos, v, network.get('Ports', {}))
+    if not photos:
+        mounts = mounts and 'nekoserver-media' in network.get('Networks', {})
+    state = 'pass' if exact and running and healthy and mounts and ports else 'fail'
+    # Right after Docker (re)started it: everything in place, the health check
+    # not through yet. The gateway step waits for such a container.
+    starting = exact and running and mounts and ports and health_state == 'starting'
+    return state, starting
+
+
+def bound(binds, source, targets, readonly=False, writable=False):
+    """One of the container's bind mounts is `source` at one of `targets`. `writable`: the
+    app must be able to write there (Docker's "RW")."""
+    return any(
+        m.get('Source') == source
+        and m.get('Destination') in targets
+        and (not readonly or m.get('RW') is False)
+        and (not writable or m.get('RW') is True)
+        for m in binds
+    )
+
+
+def mounts_ok(config, app, svc, binds):
+    """The container has its own data folder, and the libraries it uses, bound as needed."""
+    if app == 'immich':
+        # The same bindings the snapshot checks (shared.json "immich_targets").
+        targets = IMMICH_TARGETS.get(svc, ())
+        if svc == 'immich-server':
+            expected = str(photo_library(config))
+        elif svc == 'database':
+            expected = str(Path(config['data_mount']) / 'appdata/immich/postgres')
+        else:
+            expected = None
+        # Photos are uploaded and the database written there: read-only, the
+        # folder would be the right one and Immich still unusable (review of
+        # 0.51.2: only the paths were checked). The same for an app's own data.
+        return expected is None or bound(binds, expected, targets, writable=True)
+    destination = {'seerr': '/app/config', 'navidrome': DATA}.get(app, '/config')
+    mounts = bound(binds, str(Path(config['data_mount']) / 'appdata' / app), (destination,), writable=True)
+    if app not in ('jellyfin', 'navidrome', 'sonarr', 'radarr', 'lidarr', 'qbittorrent'):
+        return mounts
+    library = files_root(config, 'music' if app in ('navidrome', 'lidarr') else 'movies') / 'library'
+    # (folder, where the app sees it, whether the app only reads it)
+    if app == 'jellyfin':
+        needed = [('movies', '/data/movies', True), ('tv', '/data/tv', True)]
+    elif app == 'navidrome':
+        needed = [('music', '/music', True)]
+    else:
+        needed = [('', DATA, False)]
+    # The others import, rename and download there: read-only (as a
+    # monthly update checks them, and leaves them when it cannot open
+    # them up again) they cannot work, though the folder is right.
+    mounts = mounts and all(
+        bound(binds, str(library / rel), (dest,), readonly=ro, writable=not ro) for rel, dest, ro in needed
+    )
+    if app == 'qbittorrent':
+        mounts = mounts and bound(binds, str(music_downloads(config)), ('/data/downloads/music',), writable=True)
+    return mounts
+
+
+def ports_ok(config, app, svc, photos, v, bindings):
+    """Every port the container publishes is on 127.0.0.1 (qBittorrent's peer port aside),
+    and the app's own port is among them."""
+    peer = peer_port(v) if app == 'qbittorrent' else None
+    published = [p for key, rows in bindings.items() if rows and key not in peer_bindings(peer, config) for p in rows]
+    ports = all(p.get('HostIp') == '127.0.0.1' for p in published)
+    if not photos or svc == 'immich-server':
+        ports = ports and any(
+            p.get('HostPort') == str(health.APPS[app][2])
+            for p in (bindings.get(str(health.APPS[app][2]) + '/tcp') or [])
+        )
+    return ports
 
 
 MEDIA_CHECK = 'nekoserver-media-health.service'  # modules/media_monitor.py
@@ -802,20 +822,40 @@ def accepted_modules(config, modules):
     ]
 
 
-def inspect(config, profile='full', now=None):
-    now = time.time() if now is None else now
-    run = {
-        'format': 'neko-acceptance-v1',
-        'version': VERSION,
-        'generated_at': now,
-        'run_id': str(uuid.uuid4()),
-        'profile': profile,
-        'automatic': [],
-        'manual': [],
-        'scope': 'selected deployment profile; manual results are user reported',
-    }
+BUNDLE_CHECK = 'Preserved current installer'
+
+
+class Inspection:
+    """One run of the automatic checks: the settings, the steps checked, the time and the
+    report, with what the drive checks found (`matched`, `drives`) and what the last
+    report says (`previous`, and whether it is for the same profile and settings: `prior`)."""
+
+    def __init__(self, config, modules, now, run):
+        self.config = config
+        self.modules = modules
+        self.now = now
+        self.run = run
+        self.checks = run['automatic']
+        self.matched = {}
+        self.drives = False
+        self.previous = {}
+        self.prior = False
+        self._states = []
+
+    def add(self, *x):
+        self.checks.append(item(*x))
+
+    def states_now(self):
+        """The runtime's job states, asked once per inspection."""
+        if not self._states:
+            self._states.append(job_states(self.config))
+        return self._states[0]
+
+
+def checked_modules(config, profile, run):
+    """The steps of `profile`, once the settings are found sound; None (and the failed
+    configuration row in `run`) when they are not."""
     checks = run['automatic']
-    add = lambda *x: checks.append(item(*x))
     why = 'Configuration or selected dependency profile is invalid.'
     try:
         if not isinstance(config, dict):
@@ -830,50 +870,53 @@ def inspect(config, profile='full', now=None):
         run['config_fingerprint'] = fingerprint(config, profile)
         run['dashboard_scope'] = scope_digest(config)
     except installer.InstallerError as exc:
-        add('configuration', CONFIGURATION_CHECK, 'fail', str(exc))
-        return summarize(run)
+        checks.append(item('configuration', CONFIGURATION_CHECK, 'fail', str(exc)))
+        return None
     except (OSError, RuntimeError, ValueError, TypeError, KeyError):
-        add('configuration', CONFIGURATION_CHECK, 'fail', why)
-        return summarize(run)
-    add('configuration', CONFIGURATION_CHECK, 'pass', 'Selected profile and dependency plan are valid.')
-    asked = []
+        checks.append(item('configuration', CONFIGURATION_CHECK, 'fail', why))
+        return None
+    return modules
 
-    def states_now():
-        """The runtime's job states, asked once per inspection."""
-        if not asked:
-            asked.append(job_states(config))
-        return asked[0]
 
-    add('host', 'Supported recovery host', *host_finding(recovery_tools.host_supported()))
-    matched = {}
+def drive_rows(check):
+    """The app SSD and the media drive: each the drive setup chose, and two drives."""
+    config = check.config
     for role, name in (('data_ssd', 'Application SSD'), ('media_hdd', 'Media HDD')):
         configured = bool(config['storage'][role].get('uuid'))
         problem = (
             drive_problem(config, (role,)) if configured else 'No drive is chosen for it yet: run  sudo bash install.sh'
         )
-        matched[role] = problem is None
-        add(
+        check.matched[role] = problem is None
+        check.add(
             'mount:' + role,
             name,
-            verdict(matched[role], configured),
+            verdict(check.matched[role], configured),
             'The drive setup chose is mounted and takes new files (the runtime\'s drive check).'
-            if matched[role]
+            if check.matched[role]
             # The runtime's words say what is wrong and what to do (another drive, or the
             # right one turned read-only), so they come first.
             else problem.rstrip('.') + '. Nothing on the drive is read until this is fixed.',
         )
-    distinct = drive_problem(config, ('data_ssd', 'media_hdd')) if all(matched.values()) else 'not checked'
-    drives = distinct is None
-    if all(matched.values()) and not drives:
-        add('mount:distinct', 'Separate storage identities', 'fail', distinct)
+    distinct = drive_problem(config, ('data_ssd', 'media_hdd')) if all(check.matched.values()) else 'not checked'
+    check.drives = distinct is None
+    if all(check.matched.values()) and not check.drives:
+        check.add('mount:distinct', 'Separate storage identities', 'fail', distinct)
+
+
+def reboot_row(check):
+    """Whether the same checks passed on a later boot than the saved baseline."""
+    config, run, now = check.config, check.run, check.now
     current_boot = boot_id()
     run['boot_id'] = current_boot
-    previous = load_json(Path(config['data_mount']) / 'reports/acceptance/latest.json') if matched['data_ssd'] else {}
+    previous = (
+        load_json(Path(config['data_mount']) / 'reports/acceptance/latest.json') if check.matched['data_ssd'] else {}
+    )
     prior = (
         previous.get('format') == 'neko-acceptance-v1'
-        and previous.get('profile') == profile
+        and previous.get('profile') == run['profile']
         and previous.get('config_fingerprint') == run['config_fingerprint']
     )
+    check.previous, check.prior = previous, prior
     verified = (
         prior
         and current_boot is not None
@@ -882,22 +925,22 @@ def inspect(config, profile='full', now=None):
         and health.number(previous.get('reboot_verified_at'), 0, now) is not None
     )
     baseline = previous.get('baseline_boot_id') if prior and previous.get('baseline_verified') is True else current_boot
-    run['baseline_verified'] = drives
+    run['baseline_verified'] = check.drives
     observed = (
         prior
         and previous.get('baseline_verified') is True
         and current_boot is not None
         and isinstance(baseline, str)
         and baseline != current_boot
-        and drives
+        and check.drives
     )
-    if (observed or verified) and drives:
+    if (observed or verified) and check.drives:
         run.update(
             baseline_boot_id=baseline,
             reboot_boot_id=current_boot,
             reboot_verified_at=now if observed else previous['reboot_verified_at'],
         )
-        add(
+        check.add(
             'reboot',
             'Check after a real reboot',
             'pass',
@@ -905,177 +948,203 @@ def inspect(config, profile='full', now=None):
         )
     else:
         run['baseline_boot_id'] = current_boot
-        add(
+        check.add(
             'reboot',
             'Check after a real reboot',
             'needs_setup',
             'Save a baseline, reboot normally and rerun this profile. Same-boot inspections do not pass this check.',
         )
-    if drives:
-        try:
-            bundle = Path(config['data_mount']) / 'installer/releases' / ('v' + VERSION)
-            recovery_tools.verify_bundle(bundle, config)
-            add('bundle', 'Preserved current installer', 'pass', 'Current SSD recovery bundle and checksums verified.')
-        except (OSError, ValueError, TypeError, KeyError, RuntimeError):
-            add(
-                'bundle',
-                'Preserved current installer',
-                'needs_setup',
-                'Apply recovery from this release to preserve its verified installer bundle.',
-            )
-    else:
-        add(
-            'bundle',
-            'Preserved current installer',
-            'blocked',
-            'Drive verification is required before inspecting private files.',
-        )
-    if 'docker' in modules:
-        if drives:
-            valid, version = docker_info(config)
-            add(
-                'docker:store',
-                'Docker persistent store',
-                'pass' if valid else 'fail',
-                'Running classic overlay2 store uses the intended SSD.'
-                if valid
-                else 'Verify Docker availability, SSD data-root and classic storage backend.',
-            )
-            add(
-                'docker:service',
-                'Docker boot service',
-                'pass' if service('docker.service') else 'fail',
-                'Service must be active and enabled for boot.',
-            )
-            add(
-                'docker:guard',
-                'Effective Docker storage guard',
-                'pass' if guard_check(config) else 'fail',
-                'Installed and loaded UUID/mount guard must match both data drives.',
-            )
-            add('docker:logs', 'Container log size limits', *log_rotation_finding(log_rotation()))
-            saved = load_json(Path(config['data_mount']) / 'installer/host-checkpoint.json')
-            expected = {k: config[k] for k in ('storage', 'data_mount', 'media_mount')}
-            good = (
-                valid
-                and saved.get('format') == 'neko-host-checkpoint-v1'
-                and saved.get('docker_version') == version
-                and saved.get('architecture') == platform.machine()
-                and saved.get('driver') == 'overlay2'
-                and saved.get('docker_root') == str(Path(config['data_mount']) / 'docker-engine')
-                and all(saved.get(k) == v for k, v in expected.items())
-                and saved.get('uid') == config['media']['uid']
-                and saved.get('gid') == config['media']['gid']
-            )
-            add(
-                'checkpoint',
-                'Docker recovery checkpoint',
-                'pass' if good else 'needs_setup',
-                'Checkpoint must match the running engine, drives and configured ownership.',
-            )
-            if 'media' in modules:
-                checks.extend(containers(config))
-                checks.extend(media_checks(config))
-            if 'nextcloud' in modules:
-                from cloud_checks import check
 
-                checks.extend(check(config))
-            if 'photos' in modules and immich_wanted(config):
-                checks.extend(containers(config, photos=True))
-        else:
-            add(
-                'docker:dependents',
-                'Docker/application inspection',
-                'blocked',
-                'Drive verification is required before reading Docker or application configuration.',
-            )
-    if (
-        'photo_preservation' in modules
-        or 'photo_backup' in modules
-        or 'app_backup' in modules
-        or 'host_backup' in modules
-        or 'music_backup' in modules
-    ):
-        # Their reports live on the drives: only read from the drives setup chose (the
-        # review of 0.47.2: a refused SSD still gave its reports, and they passed).
-        states, why = states_now() if drives else (None, 'drive verification is required before reading them')
-        rows = states['backups'] if states else []
-        if not states:
-            add('backup:states', 'Backup states', 'blocked', 'The backups could not be judged: ' + why)
-        # The photo archive and Immich's database copy only with Immich set up: with it
-        # switched off those jobs are off too, and could never pass.
-        immich = immich_wanted(config)
-        selected = {'archive', 'database'} if 'photo_preservation' in modules and immich else set()
-        if 'photo_backup' in modules:
-            selected.add('external')
-        if 'app_backup' in modules:
-            selected.add('applications')
-        if 'music_backup' in modules and music_backed_up(config):
-            selected.add('music')
-        if 'host_backup' in modules:
-            selected.add('host')
-        for job in rows:
-            if job['id'] not in selected:
-                continue
-            status = verdict(
-                job['status'] == 'pass'
-                and job['last_success'] is not None
-                and job['timer']['installed']
-                and job['timer']['active'],
-                job['status'] in ('fail', 'stale'),
-            )
-            add(
-                'backup:' + job['id'],
-                job['name'],
-                status,
-                'A recent successful updated job and active timer are required; checksums/restoration also need manual verification.',
-            )
-        if 'photo_backup' in modules:
-            spec = config.get('photos', {})
-            external = health.mount_info(
-                config['external_backup_mount'],
-                spec.get('external_backup_uuid', ''),
-                spec.get('external_backup_fstype', 'ext4'),
-            )
-            state = external['status']
-            # Mounted: also the NAS disk setup chose, as the weekly copy checks it (the
-            # UUID alone passed a restored or copied LUN).
-            problem = drive_problem(config, ('usb',)) if state == 'mounted' else None
-            add(
-                'external:identity',
-                'External backup identity',
-                verdict(state == 'mounted' and problem is None, state == 'wrong_drive' or problem is not None),
-                problem
-                or 'Connect the intended external drive for this acceptance check; normal offline storage between runs is expected.',
-            )
-    if drives:
-        checks.extend(permission_checks.check(config, modules))
-    if 'server_os' in modules:
-        checks.extend(os_checks.check(config))
-    if 'maintenance' in modules:
-        report = load_json(Path(config['data_mount']) / 'reports/jobs/maintenance.json') if drives else {}
-        good = (
-            report.get('status') == 'pass'
-            and type(report.get('last_success')) in (int, float)
-            and 0 <= now - report['last_success'] <= 35 * 86400
+
+def bundle_row(check):
+    """This release's installer, kept on the SSD for a recovery."""
+    if not check.drives:
+        check.add('bundle', BUNDLE_CHECK, 'blocked', 'Drive verification is required before inspecting private files.')
+        return
+    try:
+        bundle = Path(check.config['data_mount']) / 'installer/releases' / ('v' + VERSION)
+        recovery_tools.verify_bundle(bundle, check.config)
+        check.add('bundle', BUNDLE_CHECK, 'pass', 'Current SSD recovery bundle and checksums verified.')
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+        check.add(
+            'bundle',
+            BUNDLE_CHECK,
+            'needs_setup',
+            'Apply recovery from this release to preserve its verified installer bundle.',
         )
-        add(
-            'maintenance:timer',
-            'Monthly overnight backup and updates',
-            'pass' if service('nekoserver-maintenance.timer', True) else 'needs_setup',
-            'Timer must be enabled; missing external storage blocks updates.',
+
+
+def checkpoint_good(config, valid, version):
+    """The Docker recovery checkpoint matches the running engine, the drives and the
+    media apps' account."""
+    saved = load_json(Path(config['data_mount']) / 'installer/host-checkpoint.json')
+    expected = {k: config[k] for k in ('storage', 'data_mount', 'media_mount')}
+    return (
+        valid
+        and saved.get('format') == 'neko-host-checkpoint-v1'
+        and saved.get('docker_version') == version
+        and saved.get('architecture') == platform.machine()
+        and saved.get('driver') == 'overlay2'
+        and saved.get('docker_root') == str(Path(config['data_mount']) / 'docker-engine')
+        and all(saved.get(k) == v for k, v in expected.items())
+        and saved.get('uid') == config['media']['uid']
+        and saved.get('gid') == config['media']['gid']
+    )
+
+
+def docker_rows(check):
+    """Docker's store, service, guard, logs and checkpoint, then the apps' containers."""
+    config, modules = check.config, check.modules
+    if not check.drives:
+        check.add(
+            'docker:dependents',
+            'Docker/application inspection',
+            'blocked',
+            'Drive verification is required before reading Docker or application configuration.',
         )
-        add(
-            'maintenance:rehearsal',
-            'Recent restore rehearsal and live checks',
-            verdict(good, report.get('status') == 'fail'),
-            'A real successful monthly transaction is required; unit tests do not establish server acceptance.',
+        return
+    valid, version = docker_info(config)
+    check.add(
+        'docker:store',
+        'Docker persistent store',
+        'pass' if valid else 'fail',
+        'Running classic overlay2 store uses the intended SSD.'
+        if valid
+        else 'Verify Docker availability, SSD data-root and classic storage backend.',
+    )
+    check.add(
+        'docker:service',
+        'Docker boot service',
+        'pass' if service('docker.service') else 'fail',
+        'Service must be active and enabled for boot.',
+    )
+    check.add(
+        'docker:guard',
+        'Effective Docker storage guard',
+        'pass' if guard_check(config) else 'fail',
+        'Installed and loaded UUID/mount guard must match both data drives.',
+    )
+    check.add('docker:logs', 'Container log size limits', *log_rotation_finding(log_rotation()))
+    check.add(
+        'checkpoint',
+        'Docker recovery checkpoint',
+        'pass' if checkpoint_good(config, valid, version) else 'needs_setup',
+        'Checkpoint must match the running engine, drives and configured ownership.',
+    )
+    if 'media' in modules:
+        check.checks.extend(containers(config))
+        check.checks.extend(media_checks(config))
+    if 'nextcloud' in modules:
+        from cloud_checks import check as cloud_check
+
+        check.checks.extend(cloud_check(config))
+    if 'photos' in modules and immich_wanted(config):
+        check.checks.extend(containers(config, photos=True))
+
+
+BACKUP_STEPS = ('photo_preservation', 'photo_backup', 'app_backup', 'host_backup', 'music_backup')
+
+
+def backups_selected(config, modules):
+    """The backups this server has, by the dashboard's id."""
+    # The photo archive and Immich's database copy only with Immich set up: with it
+    # switched off those jobs are off too, and could never pass.
+    selected = {'archive', 'database'} if 'photo_preservation' in modules and immich_wanted(config) else set()
+    if 'photo_backup' in modules:
+        selected.add('external')
+    if 'app_backup' in modules:
+        selected.add('applications')
+    if 'music_backup' in modules and music_backed_up(config):
+        selected.add('music')
+    if 'host_backup' in modules:
+        selected.add('host')
+    return selected
+
+
+def external_row(check):
+    """The USB (or NAS) drive of the weekly copy is the one setup chose."""
+    config = check.config
+    spec = config.get('photos', {})
+    external = health.mount_info(
+        config['external_backup_mount'],
+        spec.get('external_backup_uuid', ''),
+        spec.get('external_backup_fstype', 'ext4'),
+    )
+    state = external['status']
+    # Mounted: also the NAS disk setup chose, as the weekly copy checks it (the
+    # UUID alone passed a restored or copied LUN).
+    problem = drive_problem(config, ('usb',)) if state == 'mounted' else None
+    check.add(
+        'external:identity',
+        'External backup identity',
+        verdict(state == 'mounted' and problem is None, state == 'wrong_drive' or problem is not None),
+        problem
+        or 'Connect the intended external drive for this acceptance check; normal offline storage between runs is expected.',
+    )
+
+
+def backup_rows(check):
+    """Each backup this server has: done recently, with its timer on."""
+    if not any(step in check.modules for step in BACKUP_STEPS):
+        return
+    # Their reports live on the drives: only read from the drives setup chose (the
+    # review of 0.47.2: a refused SSD still gave its reports, and they passed).
+    states, why = check.states_now() if check.drives else (None, 'drive verification is required before reading them')
+    rows = states['backups'] if states else []
+    if not states:
+        check.add('backup:states', 'Backup states', 'blocked', 'The backups could not be judged: ' + why)
+    selected = backups_selected(check.config, check.modules)
+    for job in rows:
+        if job['id'] not in selected:
+            continue
+        status = verdict(
+            job['status'] == 'pass'
+            and job['last_success'] is not None
+            and job['timer']['installed']
+            and job['timer']['active'],
+            job['status'] in ('fail', 'stale'),
         )
+        check.add(
+            'backup:' + job['id'],
+            job['name'],
+            status,
+            'A recent successful updated job and active timer are required; checksums/restoration also need manual verification.',
+        )
+    if 'photo_backup' in check.modules:
+        external_row(check)
+
+
+def maintenance_rows(check):
+    """The monthly overnight job: its timer, and a recent successful run."""
+    config, now = check.config, check.now
+    report = load_json(Path(config['data_mount']) / 'reports/jobs/maintenance.json') if check.drives else {}
+    good = (
+        report.get('status') == 'pass'
+        and type(report.get('last_success')) in (int, float)
+        and 0 <= now - report['last_success'] <= 35 * 86400
+    )
+    check.add(
+        'maintenance:timer',
+        'Monthly overnight backup and updates',
+        'pass' if service('nekoserver-maintenance.timer') else 'needs_setup',
+        'Timer must be enabled; missing external storage blocks updates.',
+    )
+    check.add(
+        'maintenance:rehearsal',
+        'Recent restore rehearsal and live checks',
+        verdict(good, report.get('status') == 'fail'),
+        'A real successful monthly transaction is required; unit tests do not establish server acceptance.',
+    )
+
+
+def timer_rows(check):
+    """The media check's timer when it is on, and the timers of jobs switched off gone."""
+    config, modules = check.config, check.modules
     if 'media_monitor' in modules and config.get('monitoring', {}).get('enabled', True):
-        add(
+        check.add(
             'media:timer',
             'Scheduled media checks',
-            'pass' if service('nekoserver-media-health.timer', True) else 'needs_setup',
+            'pass' if service('nekoserver-media-health.timer') else 'needs_setup',
             'Scheduled read-only media timer must be active and enabled.',
         )
     for module, enabled, unit in (
@@ -1084,135 +1153,211 @@ def inspect(config, profile='full', now=None):
         ('backup_cards', neko_common.cards_enabled(config), neko_common.SHARED['cards']['timer']),
     ):
         if module in modules and not enabled:
-            add(
+            check.add(
                 'retired:' + unit,
                 'Disabled ' + unit,
                 'pass' if retired_timer(unit) else 'needs_setup',
                 'Old managed timer must be absent or inactive and disabled.',
             )
-    if 'dashboard' in modules:
-        checks.extend(dashboard_checks(config, now))
-    if 'heartbeat' in modules:
-        states, why = states_now()
-        heartbeat = (states or {}).get('heartbeat') or {'status': 'unknown', 'last_success': None, 'timer': {}}
-        good = (
-            heartbeat['status'] == 'pass'
-            and heartbeat['last_success'] is not None
-            and heartbeat['timer'].get('installed')
-            and heartbeat['timer'].get('active')
-        )
-        add(
-            'heartbeat:delivery',
-            'Heartbeat HTTPS acknowledgement',
-            verdict(good, heartbeat['status'] in ('fail', 'stale')),
-            'A current successful HTTPS request and active timer are required; monitor registration and outside alerts remain witnessed.',
-        )
-    if 'notifications' in modules:
-        states, why = states_now()
-        delivery = (states or {}).get('notifications') or {'status': 'unknown', 'last_success': None, 'timer': {}}
-        good = delivery['timer'].get('installed') and delivery['timer'].get('active')
-        add(
-            'notifications:timer',
-            'Background notification schedule',
-            'pass' if good else 'needs_setup',
-            'Native notification timer must be installed and active.',
-        )
-        add(
-            'notifications:delivery',
-            'Notification provider acceptance',
-            verdict(
-                delivery['status'] not in ('fail', 'stale') and delivery['last_success'] is not None,
-                delivery['status'] in ('fail', 'stale'),
-            ),
-            'A recorded provider-accepted delivery is required; actual phone receipt remains a witnessed check.',
-        )
-    if 'tailscale' in modules:
-        rc, out = health.run(['tailscale', 'status', '--json'], 15)
-        try:
-            value = json.loads(out)
-            active = rc == 0 and isinstance(value, dict) and value.get('BackendState') == 'Running'
-        except ValueError:
-            active = False
-        add(
-            'tailscale',
-            'Tailscale authentication',
-            'pass' if active and service(host.service('tailscale')) else 'needs_setup',
-            'Authenticated local backend and enabled service required; actual remote access remains a witnessed test.',
-        )
-    if 'samba' in modules:
-        add(
-            'samba',
-            'Samba boot service',
-            'pass' if service(host.service('samba')) else 'needs_setup',
-            'Samba service must be active and enabled; share permissions require actual client tests.',
-        )
+
+
+def heartbeat_row(check):
+    """The outage monitor's last check-in was accepted, and its timer is on."""
+    states, _ = check.states_now()
+    heartbeat = (states or {}).get('heartbeat') or {'status': 'unknown', 'last_success': None, 'timer': {}}
+    good = (
+        heartbeat['status'] == 'pass'
+        and heartbeat['last_success'] is not None
+        and heartbeat['timer'].get('installed')
+        and heartbeat['timer'].get('active')
+    )
+    check.add(
+        'heartbeat:delivery',
+        'Heartbeat HTTPS acknowledgement',
+        verdict(good, heartbeat['status'] in ('fail', 'stale')),
+        'A current successful HTTPS request and active timer are required; monitor registration and outside alerts remain witnessed.',
+    )
+
+
+def notification_rows(check):
+    """The phone alerts' timer is on, and an alert was accepted."""
+    states, _ = check.states_now()
+    delivery = (states or {}).get('notifications') or {'status': 'unknown', 'last_success': None, 'timer': {}}
+    good = delivery['timer'].get('installed') and delivery['timer'].get('active')
+    check.add(
+        'notifications:timer',
+        'Background notification schedule',
+        'pass' if good else 'needs_setup',
+        'Native notification timer must be installed and active.',
+    )
+    check.add(
+        'notifications:delivery',
+        'Notification provider acceptance',
+        verdict(
+            delivery['status'] not in ('fail', 'stale') and delivery['last_success'] is not None,
+            delivery['status'] in ('fail', 'stale'),
+        ),
+        'A recorded provider-accepted delivery is required; actual phone receipt remains a witnessed check.',
+    )
+
+
+def tailscale_row(check):
+    """Tailscale is signed in and its service on."""
+    rc, out = health.run(['tailscale', 'status', '--json'], 15)
+    try:
+        value = json.loads(out)
+        active = rc == 0 and isinstance(value, dict) and value.get('BackendState') == 'Running'
+    except ValueError:
+        active = False
+    check.add(
+        'tailscale',
+        'Tailscale authentication',
+        'pass' if active and service(host.service('tailscale')) else 'needs_setup',
+        'Authenticated local backend and enabled service required; actual remote access remains a witnessed test.',
+    )
+
+
+def gateway_rows(check):
+    """The application gateways (home network, Tailscale)."""
     for kind, module in (('lan', 'gateway_lan'), ('tailnet', 'gateway_tailnet')):
-        if module in modules:
-            if drives:
-                checks.extend(gateway_checks.check(config, kind))
-            else:
-                add(
-                    'gateway:' + kind,
-                    'Application gateway',
-                    'blocked',
-                    'Drive verification is required before reading gateway state.',
-                )
-            if kind == 'lan':
-                add(
-                    'gateway:lan:service',
-                    'LAN gateway boot service',
-                    'pass' if service('nekoserver-gateway-lan.service') else 'needs_setup',
-                    'LAN gateway must be active and enabled.',
-                )
-    if 'tv' in modules:
-        try:
-            user, home = tv.desktop_user(config)
-            saved = load_json(Path(config['data_mount']) / 'reports/tv-setup.json') if matched['data_ssd'] else {}
-            hashes = saved.get('launchers_sha256', {})
-            good = saved.get('user') == user.pw_name and isinstance(hashes, dict) and len(hashes) >= 2
-            if good:
-                for name, digest in hashes.items():
-                    rel = Path(name)
-                    if (
-                        rel.is_absolute()
-                        or '..' in rel.parts
-                        or not isinstance(digest, str)
-                        or not re.fullmatch(r'[a-f0-9]{64}', digest)
-                        or hashlib.sha256(safe_path(home / rel).read_bytes()).hexdigest() != digest
-                    ):
-                        good = False
-                        break
-            add(
-                'tv:launchers',
-                'TV desktop launchers',
-                'pass' if good else 'needs_setup',
-                'Current desktop launcher files must match their installation report; controller/display/session tests remain manual.',
+        if module not in check.modules:
+            continue
+        if check.drives:
+            check.checks.extend(gateway_checks.check(check.config, kind))
+        else:
+            check.add(
+                'gateway:' + kind,
+                'Application gateway',
+                'blocked',
+                'Drive verification is required before reading gateway state.',
             )
-        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-            add(
-                'tv:launchers',
-                'TV desktop launchers',
-                'needs_setup',
-                'TV user or managed launcher evidence unavailable; reapply TV setup.',
+        if kind == 'lan':
+            check.add(
+                'gateway:lan:service',
+                'LAN gateway boot service',
+                'pass' if service('nekoserver-gateway-lan.service') else 'needs_setup',
+                'LAN gateway must be active and enabled.',
             )
-    if drives:
-        try:
-            checks.extend(native_runtime.acceptance_checks(config, modules))
-        except (OSError, ValueError, TypeError, KeyError, RuntimeError):
-            add(
-                'runtime',
-                'Native runtime',
-                'needs_setup',
-                'Verify native build integrity and reapply the affected modules.',
-            )
-    else:
-        add(
+
+
+def launchers_good(home, hashes):
+    """Each TV launcher file is the one the TV step wrote (its checksum in the report)."""
+    for name, digest in hashes.items():
+        rel = Path(name)
+        if (
+            rel.is_absolute()
+            or '..' in rel.parts
+            or not isinstance(digest, str)
+            or not re.fullmatch(r'[a-f0-9]{64}', digest)
+            or hashlib.sha256(safe_path(home / rel).read_bytes()).hexdigest() != digest
+        ):
+            return False
+    return True
+
+
+def tv_row(check):
+    """The TV desktop's launchers are the ones the TV step installed."""
+    config = check.config
+    try:
+        user, home = tv.desktop_user(config)
+        saved = load_json(Path(config['data_mount']) / 'reports/tv-setup.json') if check.matched['data_ssd'] else {}
+        hashes = saved.get('launchers_sha256', {})
+        good = saved.get('user') == user.pw_name and isinstance(hashes, dict) and len(hashes) >= 2
+        good = good and launchers_good(home, hashes)
+        check.add(
+            'tv:launchers',
+            'TV desktop launchers',
+            'pass' if good else 'needs_setup',
+            'Current desktop launcher files must match their installation report; controller/display/session tests remain manual.',
+        )
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+        check.add(
+            'tv:launchers',
+            'TV desktop launchers',
+            'needs_setup',
+            'TV user or managed launcher evidence unavailable; reapply TV setup.',
+        )
+
+
+def runtime_rows(check):
+    """NekoServer's own program, as each of its services runs it."""
+    if not check.drives:
+        check.add(
             'runtime',
             'Native runtime',
             'blocked',
             'Drive verification is required before inspecting installed native workers.',
         )
-    run['manual'] = carried(manual_tests(modules, config), previous, prior, now)
+        return
+    try:
+        check.checks.extend(native_runtime.acceptance_checks(check.config, check.modules))
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+        check.add(
+            'runtime',
+            'Native runtime',
+            'needs_setup',
+            'Verify native build integrity and reapply the affected modules.',
+        )
+
+
+def service_rows(check):
+    """The checks of the steps that keep a service or a report: each only when its step is
+    in the profile."""
+    config, modules = check.config, check.modules
+    if check.drives:
+        check.checks.extend(permission_checks.check(config, modules))
+    if 'server_os' in modules:
+        check.checks.extend(os_checks.check(config))
+    if 'maintenance' in modules:
+        maintenance_rows(check)
+    timer_rows(check)
+    if 'dashboard' in modules:
+        check.checks.extend(dashboard_checks(config, check.now))
+    if 'heartbeat' in modules:
+        heartbeat_row(check)
+    if 'notifications' in modules:
+        notification_rows(check)
+    if 'tailscale' in modules:
+        tailscale_row(check)
+    if 'samba' in modules:
+        check.add(
+            'samba',
+            'Samba boot service',
+            'pass' if service(host.service('samba')) else 'needs_setup',
+            'Samba service must be active and enabled; share permissions require actual client tests.',
+        )
+    gateway_rows(check)
+    if 'tv' in modules:
+        tv_row(check)
+    runtime_rows(check)
+
+
+def inspect(config, profile='full', now=None):
+    now = time.time() if now is None else now
+    run = {
+        'format': 'neko-acceptance-v1',
+        'version': VERSION,
+        'generated_at': now,
+        'run_id': str(uuid.uuid4()),
+        'profile': profile,
+        'automatic': [],
+        'manual': [],
+        'scope': 'selected deployment profile; manual results are user reported',
+    }
+    modules = checked_modules(config, profile, run)
+    if modules is None:
+        return summarize(run)
+    check = Inspection(config, modules, now, run)
+    check.add('configuration', CONFIGURATION_CHECK, 'pass', 'Selected profile and dependency plan are valid.')
+    check.add('host', 'Supported recovery host', *host_finding(recovery_tools.host_supported()))
+    drive_rows(check)
+    reboot_row(check)
+    bundle_row(check)
+    if 'docker' in modules:
+        docker_rows(check)
+    backup_rows(check)
+    service_rows(check)
+    run['manual'] = carried(manual_tests(modules, config), check.previous, check.prior, now)
     return summarize(run)
 
 
@@ -1313,8 +1458,7 @@ def save(config, report):
     return path
 
 
-def main(argv=None):
-    neko_common.readable_output()
+def arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         '--config',
@@ -1332,6 +1476,40 @@ def main(argv=None):
         help='Also ask about the tests you watched yourself (a test restore, say) and record your answers; '
         'needs --save and a terminal',
     )
+    return parser
+
+
+def exit_code(report):
+    """0 when acceptance is complete, 2 when a check failed, 1 while some still wait."""
+    if report['acceptance_complete']:
+        return 0
+    if report['status'] == 'failed':
+        return 2
+    return 1
+
+
+def checked_and_said(a, config):
+    """The inspection run (and the witnessed tests asked with --manual), saved with
+    --save, and said on the screen. Returns the exit code."""
+    report = inspect(config, a.profile)
+    if a.manual:
+        if config.get('guided_setup', {}).get('enabled', True):
+            guided_manual(config, report)
+        else:
+            record_manual(report)
+    if a.save:
+        save(config, report)
+    print('NekoServer acceptance · ' + report['profile'] + ' · ' + report['status'])
+    for group in ('automatic', 'manual'):
+        for check in report[group]:
+            print(group + ' / ' + check['id'] + ': ' + check['status'] + ' — ' + check['detail'])
+    print('Manual passes are user-reported. This report applies only to the selected profile and current inspection.')
+    return exit_code(report)
+
+
+def main(argv=None):
+    neko_common.readable_output()
+    parser = arguments()
     a = parser.parse_args(argv)
     if a.manual and (not a.save or not sys.stdin.isatty()):
         parser.error('--manual requires --save and an interactive terminal')
@@ -1347,22 +1525,7 @@ def main(argv=None):
         print('Acceptance check stopped: ' + str(exc), file=sys.stderr)
         return 2
     try:
-        report = inspect(config, a.profile)
-        if a.manual:
-            if config.get('guided_setup', {}).get('enabled', True):
-                guided_manual(config, report)
-            else:
-                record_manual(report)
-        if a.save:
-            save(config, report)
-        print('NekoServer acceptance · ' + report['profile'] + ' · ' + report['status'])
-        for group in ('automatic', 'manual'):
-            for check in report[group]:
-                print(group + ' / ' + check['id'] + ': ' + check['status'] + ' — ' + check['detail'])
-        print(
-            'Manual passes are user-reported. This report applies only to the selected profile and current inspection.'
-        )
-        return 0 if report['acceptance_complete'] else 2 if report['status'] == 'failed' else 1
+        return checked_and_said(a, config)
     except (OSError, RuntimeError, ValueError, KeyError, TypeError, installer.InstallerError, KeyboardInterrupt) as exc:
         print(
             'Acceptance check could not finish: '

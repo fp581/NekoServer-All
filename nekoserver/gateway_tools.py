@@ -67,7 +67,7 @@ def owned_listeners(config):
     path = LAN_CONFIG
     ledger = managed(Path(config['data_mount']) / 'gateway/lan-managed.json')
     old = health.read_json(path)
-    rc, _ = health.run(['systemctl', 'is-active', '--quiet', 'nekoserver-gateway-lan.service'])
+    rc, _ = health.run(['systemctl', 'is-active', '--quiet', GATEWAY_LAN_UNIT])
     owned = set()
     if (
         rc == 0
@@ -126,6 +126,7 @@ def choose_lan_ports(ctx):
 
 
 LAN_CONFIG = Path('/etc/nekoserver-gateway/lan.json')  # the home gateway's Caddy settings
+GATEWAY_LAN_UNIT = 'nekoserver-gateway-lan.service'  # the home gateway's service
 # The record of the files the gateway step wrote (their checksums, caddy's account) lives on
 # the SSD beside the certificates; a copy stays on the system disk beside the files
 # themselves, so a replaced SSD (RECOVERY.md) does not make setup refuse them as someone else's.
@@ -655,6 +656,57 @@ def adopt_state(state, user, ledger):
     )
 
 
+def caddy_account():
+    """Caddy installed from the system's packages, and the unprivileged account it runs as."""
+    if not shutil.which('caddy'):
+        if not recovery_tools.host_supported():
+            raise RuntimeError('Install official Caddy for this OS; automatic installation does not support it yet')
+        family = host.current()
+        if not family.available('caddy'):
+            raise RuntimeError('Caddy is not offered by this system\'s package repositories')
+        family.install(['caddy'])
+    user = pwd.getpwnam('caddy')
+    if user.pw_uid == 0 or user.pw_gid == 0:
+        raise RuntimeError('Caddy needs an unprivileged package service account')
+    return user
+
+
+def check_caddy_can_reach(public, user):
+    """Caddy's account can go through each of the gateway's folders (or the nearest part of
+    it there is yet), and read the folders themselves."""
+    for folder in public:
+        safe_path(folder)
+        existing = folder
+        while not existing.exists():
+            existing = existing.parent
+        if not permission_checks.access(existing, user.pw_uid, {user.pw_gid}, 5 if existing == folder else 1):
+            raise RuntimeError('Existing gateway directory blocks service traversal; review its permissions')
+
+
+def validate_caddy(caddy_settings):
+    """Caddy's own check of the new settings, on a copy in a fresh temporary folder (its own
+    name, nothing from the settings in the path)."""
+    with tempfile.TemporaryDirectory(prefix='neko-caddy-validate-') as folder:
+        test = Path(folder, 'lan.json')
+        test.write_text(caddy_settings)
+        command(
+            ['caddy', 'validate', '--config', str(test)],
+            env={**os.environ, 'XDG_DATA_HOME': folder, 'XDG_CONFIG_HOME': folder},
+        )
+
+
+def start_lan_gateway():
+    """The home gateway's service started again with its new settings (stopped when it
+    cannot start)."""
+    command(['systemctl', 'daemon-reload'])
+    command(['systemctl', 'enable', '--now', GATEWAY_LAN_UNIT])
+    try:
+        command(['systemctl', 'restart', GATEWAY_LAN_UNIT])
+    except RuntimeError:
+        command(['systemctl', 'stop', GATEWAY_LAN_UNIT])
+        raise
+
+
 def _apply_lan(config):
     recovery_tools.require_root()
     recovery_tools.mounts(config)
@@ -668,43 +720,21 @@ def _apply_lan(config):
     caddy_settings = json.dumps(lan_model(config, web), indent=2) + '\n'
     payloads = {
         LAN_CONFIG: caddy_settings,
-        SYSTEMD_UNITS / 'nekoserver-gateway-lan.service': unit(config, code, state),
+        SYSTEMD_UNITS / GATEWAY_LAN_UNIT: unit(config, code, state),
         web / 'index.html': portal(config, lan(config)[0]),
     }
     payloads[code / native_runtime.NAME] = native_runtime.payload(ROOT, config)
     aside = preflight(payloads, ledger)
     port_preflight(config)
-    if not shutil.which('caddy'):
-        if not recovery_tools.host_supported():
-            raise RuntimeError('Install official Caddy for this OS; automatic installation does not support it yet')
-        family = host.current()
-        if not family.available('caddy'):
-            raise RuntimeError('Caddy is not offered by this system\'s package repositories')
-        family.install(['caddy'])
-    user = pwd.getpwnam('caddy')
-    if user.pw_uid == 0 or user.pw_gid == 0:
-        raise RuntimeError('Caddy needs an unprivileged package service account')
+    user = caddy_account()
     adopted = None
     if state.exists() and (state.stat().st_uid != user.pw_uid or state.stat().st_gid != user.pw_gid):
         adopted = adopt_state(state, user, ledger)
     # Package Caddy runs without root credentials. Fresh public ancestors must
     # survive a private installer umask; existing restrictive paths are preserved.
     public = (data / 'gateway', code.parent, code, web.parent, web, Path('/etc/nekoserver-gateway'))
-    for folder in public:
-        safe_path(folder)
-        existing = folder
-        while not existing.exists():
-            existing = existing.parent
-        if not permission_checks.access(existing, user.pw_uid, {user.pw_gid}, 5 if existing == folder else 1):
-            raise RuntimeError('Existing gateway directory blocks service traversal; review its permissions')
-    with tempfile.TemporaryDirectory(prefix='neko-caddy-validate-') as folder:
-        # A copy in a fresh temporary folder (its own name, nothing from the settings in the path).
-        test = Path(folder, 'lan.json')
-        test.write_text(caddy_settings)
-        command(
-            ['caddy', 'validate', '--config', str(test)],
-            env={**os.environ, 'XDG_DATA_HOME': folder, 'XDG_CONFIG_HOME': folder},
-        )
+    check_caddy_can_reach(public, user)
+    validate_caddy(caddy_settings)
     # Configuration validity is checked before replacing managed files or restarting our service.
     recovery_tools.mounts(config)
     verify_lan(config)
@@ -725,13 +755,7 @@ def _apply_lan(config):
     if 'jellyfin' in lan_ports(config):
         said = seerr_play_links(config, HTTPS + lan(config)[0] + ':' + str(lan_ports(config)['jellyfin']), 'lan')
         notes += [said] if said else []
-    command(['systemctl', 'daemon-reload'])
-    command(['systemctl', 'enable', '--now', 'nekoserver-gateway-lan.service'])
-    try:
-        command(['systemctl', 'restart', 'nekoserver-gateway-lan.service'])
-    except RuntimeError:
-        command(['systemctl', 'stop', 'nekoserver-gateway-lan.service'])
-        raise
+    start_lan_gateway()
     report = {
         'format': 'neko-gateway-v1',
         'mode': 'lan',
@@ -1028,6 +1052,22 @@ def only(state, ports):
     }
 
 
+def set_tailnet_routes(state, mine, target, host):
+    """Tailscale's routes made as `target` says, from how they are (`state`): NekoServer's
+    own routes (`mine`) that are no longer wanted go first, then each one not yet as wanted."""
+    for port in sorted(mine):
+        # Ours but no longer wanted, or set under the server's old name: off first.
+        if port not in target['TCP'] or only(state, {port}) != only(target, {port}):
+            command(['tailscale', 'serve', '--bg', https(port), 'off'])
+    for port in target['TCP']:
+        if only(state, {port}) == only(target, {port}):
+            continue
+        command(
+            ['tailscale', 'serve', '--bg', https(port), target['Web'][host + ':' + port]['Handlers']['/']['Proxy']],
+            45,
+        )
+
+
 def _apply_tailnet(config):
     recovery_tools.require_root()
     recovery_tools.mounts(config)
@@ -1064,17 +1104,7 @@ def _apply_tailnet(config):
     union = {k: {**only(owned, mine)[k], **target[k]} for k in ('TCP', 'Web')}
     atomic_json(ledger, {'format': 'neko-tailnet-owned-v1', 'host': host, 'owned': union, 'status': 'pending'})
     try:
-        for port in sorted(mine):
-            # Ours but no longer wanted, or set under the server's old name: off first.
-            if port not in target['TCP'] or only(state, {port}) != only(target, {port}):
-                command(['tailscale', 'serve', '--bg', https(port), 'off'])
-        for port in target['TCP']:
-            if only(state, {port}) == only(target, {port}):
-                continue
-            command(
-                ['tailscale', 'serve', '--bg', https(port), target['Web'][host + ':' + port]['Handlers']['/']['Proxy']],
-                45,
-            )
+        set_tailnet_routes(state, mine, target, host)
         if only(serve_state(), set(target['TCP'])) != target:
             raise RuntimeError('Tailnet routes did not match the planned private configuration')
     except (RuntimeError, ValueError, TypeError) as exc:
@@ -1228,7 +1258,7 @@ def seerr_play_links(config, url, kind, client=None):
             client = media_libraries.Client('seerr')
             client.headers['X-Api-Key'] = media_libraries.seerr_key(config['data_mount'])
         current = client.call('/settings/jellyfin')
-    except (media_libraries.SetupRequired, RuntimeError):
+    except RuntimeError:  # SetupRequired included
         return None  # Seerr not set up yet: its Jellyfin link is made later, by account setup
     if not isinstance(current, dict) or not current.get('serverId'):
         return None  # not linked to Jellyfin yet
@@ -1298,7 +1328,7 @@ def listed(value):
 # Trusted as a whole, so a Nextcloud network made again later (with another number)
 # still trusts the hop. 192.168.0.0/16, Docker's other default range, is not trusted as a
 # whole: it is the usual home network range too.
-DOCKER_RANGE = '172.16.0.0/12'
+DOCKER_RANGE = '172.16.0.0/12'  # NOSONAR: Docker's fixed default pool, not an address of this server
 
 
 def cloud_proxies(compose):
