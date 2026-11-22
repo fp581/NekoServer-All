@@ -69,78 +69,102 @@ def chosen_folders(config):
         return None
 
 
+JELLYFIN_LIBRARIES = 'jellyfin:current_libraries'
+SEERR_LIBRARIES = 'seerr:current_libraries'
+
+
+def seerr_settings(root):
+    """Seerr's own settings file, or {} when it is not there or cannot be read."""
+    try:
+        path = safe_path(root / 'appdata/seerr/settings.json')
+        if path.is_file():
+            return json.loads(path.read_text())
+    except (OSError, ValueError, RuntimeError):
+        pass
+    return {}
+
+
+def jellyfin_folders(client):
+    """Jellyfin's libraries, asked with NekoServer's key; a key it no longer takes is
+    something to set up again, not a broken Jellyfin."""
+    try:
+        return folders(client)
+    except RuntimeError as exc:
+        if str(exc) in REJECTED:
+            raise SetupRequired(
+                'Jellyfin no longer accepts NekoServer\'s key (it was revoked or replaced): run  sudo bash install.sh  again to renew it'
+            ) from None
+        raise
+
+
+def jellyfin_row(client, root, settings, found):
+    """The row of Jellyfin's films and shows libraries. `found` is given Jellyfin's server
+    id and the libraries' ids as they are seen (Seerr's check below needs them)."""
+    try:
+        info = client.call('/System/Info/Public')
+        if not isinstance(info, dict) or not info.get('Id'):
+            raise RuntimeError('Invalid public system response')
+        found['server_id'] = info['Id']
+        if info.get('StartupWizardCompleted') is not True:
+            raise SetupRequired('Jellyfin first administrator wizard is incomplete')
+        client.headers['X-Emby-Token'] = jellyfin_key(root, settings, found['server_id'])
+        values = jellyfin_folders(client)
+        for category, name, kind in LIBRARIES:
+            value = matching(values, category, name, kind)
+            if not value:
+                raise SetupRequired('Expected movie/TV libraries are missing')
+            found['ids'].append(str(value['ItemId']))
+        return row(JELLYFIN_LIBRARIES, 'pass')
+    except SetupRequired as exc:
+        return row(JELLYFIN_LIBRARIES, 'needs_setup', str(exc))
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError):
+        return row(JELLYFIN_LIBRARIES, 'fail', 'Jellyfin authenticated library check failed')
+
+
+def seerr_row(client, root, server_id, ids):
+    """The row of Seerr's link to this Jellyfin and its libraries switched on there."""
+    try:
+        open_seerr(client, root, 'Seerr first-run setup is incomplete')
+        selected = client.call('/settings/jellyfin')
+        if (
+            not server_id
+            or not isinstance(selected, dict)
+            or selected.get('serverId', selected.get('serverID')) != server_id
+        ):
+            raise SetupRequired('Seerr/Jellyfin server identity is not verified')
+        values = client.call('/settings/jellyfin/library')
+        if (
+            len(ids) != 2
+            or not isinstance(values, list)
+            or not all(
+                any(isinstance(x, dict) and str(x.get('id')) == i and x.get('enabled') is True for x in values)
+                for i in ids
+            )
+        ):
+            raise SetupRequired('Expected Jellyfin libraries are not currently enabled in Seerr')
+        return row(SEERR_LIBRARIES, 'pass')
+    except SetupRequired as exc:
+        return row(SEERR_LIBRARIES, 'needs_setup', str(exc))
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError):
+        return row(SEERR_LIBRARIES, 'fail', 'Seerr library/link API check failed')
+
+
 def check(config, factory=ReadClient):
     root = safe_path(config['data_mount'])
     apps = media_services(config)
     results = []
-    ids = []
-    server_id = None
-    settings = {}
-    if 'seerr' in apps:
-        try:
-            path = safe_path(root / 'appdata/seerr/settings.json')
-            if path.is_file():
-                settings = json.loads(path.read_text())
-        except (OSError, ValueError, RuntimeError):
-            settings = {}
+    found = {'server_id': None, 'ids': []}
+    settings = seerr_settings(root) if 'seerr' in apps else {}
     if 'jellyfin' in apps:
         client = factory('jellyfin')
         try:
-            try:
-                info = client.call('/System/Info/Public')
-                if not isinstance(info, dict) or not info.get('Id'):
-                    raise RuntimeError('Invalid public system response')
-                server_id = info['Id']
-                if info.get('StartupWizardCompleted') is not True:
-                    raise SetupRequired('Jellyfin first administrator wizard is incomplete')
-                client.headers['X-Emby-Token'] = jellyfin_key(root, settings, server_id)
-                try:
-                    values = folders(client)
-                except RuntimeError as exc:
-                    if str(exc) in REJECTED:
-                        raise SetupRequired(
-                            'Jellyfin no longer accepts NekoServer\'s key (it was revoked or replaced): run  sudo bash install.sh  again to renew it'
-                        ) from None
-                    raise
-                for category, name, kind in LIBRARIES:
-                    value = matching(values, category, name, kind)
-                    if not value:
-                        raise SetupRequired('Expected movie/TV libraries are missing')
-                    ids.append(str(value['ItemId']))
-                results.append(row('jellyfin:current_libraries', 'pass'))
-            except SetupRequired as exc:
-                results.append(row('jellyfin:current_libraries', 'needs_setup', str(exc)))
-            except (OSError, RuntimeError, ValueError, TypeError, KeyError):
-                results.append(row('jellyfin:current_libraries', 'fail', 'Jellyfin authenticated library check failed'))
+            results.append(jellyfin_row(client, root, settings, found))
         finally:
             client.close()
     if 'seerr' in apps:
         client = factory('seerr')
         try:
-            try:
-                open_seerr(client, root, 'Seerr first-run setup is incomplete')
-                selected = client.call('/settings/jellyfin')
-                if (
-                    not server_id
-                    or not isinstance(selected, dict)
-                    or selected.get('serverId', selected.get('serverID')) != server_id
-                ):
-                    raise SetupRequired('Seerr/Jellyfin server identity is not verified')
-                values = client.call('/settings/jellyfin/library')
-                if (
-                    len(ids) != 2
-                    or not isinstance(values, list)
-                    or not all(
-                        any(isinstance(x, dict) and str(x.get('id')) == i and x.get('enabled') is True for x in values)
-                        for i in ids
-                    )
-                ):
-                    raise SetupRequired('Expected Jellyfin libraries are not currently enabled in Seerr')
-                results.append(row('seerr:current_libraries', 'pass'))
-            except SetupRequired as exc:
-                results.append(row('seerr:current_libraries', 'needs_setup', str(exc)))
-            except (OSError, RuntimeError, ValueError, TypeError, KeyError):
-                results.append(row('seerr:current_libraries', 'fail', 'Seerr library/link API check failed'))
+            results.append(seerr_row(client, root, found['server_id'], found['ids']))
         finally:
             client.close()
         if set(apps) & set(seerr_providers.SPECS):

@@ -31,6 +31,18 @@ def nextcloud_default(config, plan=()):
 
 def validate(config, plan):
     nextcloud_default(config, plan)
+    steps_own_checks(config, plan)
+    check_locations(config)
+    check_groups(config)
+    check_switches(config, plan)
+    if 'media' in plan:
+        check_media(config)
+    check_numbers(config, plan)
+    check_photos(config, plan)
+
+
+def steps_own_checks(config, plan):
+    """Each step's own check of its settings, for the steps of this run."""
     validators = {
         'music': music.options,
         'network_storage': network_storage.options,
@@ -46,6 +58,10 @@ def validate(config, plan):
     for name in plan:
         if name in validators:
             validators[name](config)
+
+
+def check_locations(config):
+    """Each place ("locations") names a drive this server has."""
     from neko_common import DRIVE_KEYS, LOCATIONS, extra_drives, not_a_drive
 
     places = config.get('locations', {})
@@ -58,12 +74,20 @@ def validate(config, plan):
         raise RuntimeError(
             'locations must name photos, music, cloud or movies, each "ssd", "media" or a drive under "storage"'
         )
+
+
+def check_groups(config):
+    """The groups the steps read are objects ({...})."""
     for group in ('tv', 'onboarding', 'docker', 'photos', 'networking', 'guided_setup'):
         values = config.get(group, {})
         if not isinstance(values, dict):
             raise RuntimeError(group + ' must be an object')
     if type(config.get('guided_setup', {}).get('enabled', True)) is not bool:
         raise RuntimeError('guided_setup.enabled must be a boolean')
+
+
+def check_switches(config, plan):
+    """The on/off settings of this run's steps are true or false."""
     switches = {
         'tv': ('desktop_shortcuts', 'bluetooth', 'keep_awake'),
         'onboarding': (
@@ -84,19 +108,26 @@ def validate(config, plan):
             values = config.get(group, {})
             if key in values and type(values[key]) is not bool:
                 raise RuntimeError(group + '.' + key + ' must be a boolean')
-    if 'media' in plan:
-        values = config.get('media', {})
-        for key in ('uid', 'gid'):
-            value = values.get(key, 1000)
-            if type(value) is not int or not 1 <= value <= 2**32 - 2:
-                raise RuntimeError('Media uid/gid must be positive numeric account IDs')
-        from modules import media as media_module
 
-        peer = media_module.torrent_port(values)
-        if peer is not None and peer == config.get('dashboard', {}).get('port', DASHBOARD_DEFAULT_PORT):
-            raise RuntimeError(f'media.torrent_port {peer} is the dashboard port; choose another port for one of them')
-        if values.get('bind_ip', '127.0.0.1') != '127.0.0.1':
-            raise RuntimeError('Media web interfaces must bind to localhost')
+
+def check_media(config):
+    """The media apps' account, peer port and web address."""
+    values = config.get('media', {})
+    for key in ('uid', 'gid'):
+        value = values.get(key, 1000)
+        if type(value) is not int or not 1 <= value <= 2**32 - 2:
+            raise RuntimeError('Media uid/gid must be positive numeric account IDs')
+    from modules import media as media_module
+
+    peer = media_module.torrent_port(values)
+    if peer is not None and peer == config.get('dashboard', {}).get('port', DASHBOARD_DEFAULT_PORT):
+        raise RuntimeError(f'media.torrent_port {peer} is the dashboard port; choose another port for one of them')
+    if values.get('bind_ip', '127.0.0.1') != '127.0.0.1':
+        raise RuntimeError('Media web interfaces must bind to localhost')
+
+
+def check_numbers(config, plan):
+    """The time zone, and the waits and intervals of this run's steps."""
     if set(plan) & {'media', 'photos', 'photo_backup', 'photo_preservation', 'music_backup', 'maintenance'}:
         host_timezone(config)
     if 'media_monitor' in plan:
@@ -108,6 +139,10 @@ def validate(config, plan):
 
         account_store.enabled(config)
         whole_number(config.get('accounts', {}), 'accounts', 'wait_seconds', 180, 0, 600)
+
+
+def check_photos(config, plan):
+    """Immich's version, the photo archive's timing and the weekly copy's settings."""
     opts = config.get('photos', {})
     if 'photos' in plan:
         value = opts.get('immich_version', 'auto')
@@ -163,34 +198,45 @@ def unknown_settings(config, template, where='the settings file'):
     said = []
     if not template:  # no template to compare with: nothing can be said
         return said
-
-    def warn(name, close):
-        hint = f' Did you mean "{close[0]}"?' if close else ''
-        said.append(
-            f'Warning: "{name}" in {where} is not a setting NekoServer knows, so it does nothing.'
-            f'{hint} Check its spelling.'
-        )
-
     top = [*template, *SETTINGS_BEYOND_TEMPLATE['']]
     for key, value in config.items():
         if key.startswith('_'):  # a comment of yours
             continue
         if key not in top:
-            warn(key, difflib.get_close_matches(key, top, 1, 0.75))
+            said.append(unknown_warning(key, difflib.get_close_matches(key, top, 1, 0.75), where))
             continue
         known = template.get(key)
         if key in FREE_NAMES or not isinstance(value, dict) or not isinstance(known, dict):
             continue
-        names = [*known, *SETTINGS_BEYOND_TEMPLATE.get(key, ()), 'wanted', 'enabled']
-        for inner in value:
-            close = difflib.get_close_matches(inner, names, 1, 0.75)
-            if inner not in names and not inner.startswith('_') and close:
-                warn(f'{key}.{inner}', [f'{key}.{close[0]}'])
+        said += unknown_inside(key, value, known, where)
+    return said
+
+
+def unknown_warning(name, close, where):
+    """The warning for one key no release knows, with the known one it is closest to."""
+    hint = f' Did you mean "{close[0]}"?' if close else ''
+    return (
+        f'Warning: "{name}" in {where} is not a setting NekoServer knows, so it does nothing.{hint} Check its spelling.'
+    )
+
+
+def unknown_inside(key, value, known, where):
+    """The warnings for the keys inside the group `key`: only one close to a known key is
+    named, since setup itself saves answers ("wanted") under any group."""
+    import difflib
+
+    names = [*known, *SETTINGS_BEYOND_TEMPLATE.get(key, ()), 'wanted', 'enabled']
+    said = []
+    for inner in value:
+        close = difflib.get_close_matches(inner, names, 1, 0.75)
+        if inner not in names and not inner.startswith('_') and close:
+            said.append(unknown_warning(f'{key}.{inner}', [f'{key}.{close[0]}'], where))
     return said
 
 
 def _time(value):
-    if not isinstance(value, str) or not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]', value):
+    # ASCII: \d alone would also take other scripts' digits, which systemd's times do not.
+    if not isinstance(value, str) or not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', value, re.ASCII):
         raise RuntimeError('Invalid job time; use HH:MM')
 
 

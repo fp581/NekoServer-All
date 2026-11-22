@@ -497,61 +497,68 @@ def fields_match(entry, expected):
     return all(str(actual.get(k.lower(), '')).rstrip('/') == str(v).rstrip('/') for k, v in expected.items())
 
 
+def existing_link_ok(app, found, app_api_key, pro_key, apply):
+    """The link Prowlarr has to `app` already: it routes to the app and signs in."""
+    # Prowlarr masks the stored key ("********") in its answers, so only the routing
+    # fields can be compared; the key was checked when the link was made.
+    routing = {'prowlarrUrl': PROWLARR_URL, 'baseUrl': in_docker(app)}
+    if not (fields_match(found, routing) and found.get('syncLevel') in ('addOnly', 'fullSync')):
+        print(f'{app}: existing connection differs; review in Prowlarr')
+        return False
+    if not signs_in(app, pro_key, found, app_api_key, apply):
+        return False
+    print(f'{app}: existing connection fields verified')
+    return True
+
+
+def new_link(app, match, app_api_key, pro_key, apply, existing):
+    """A new link from Prowlarr to `app`, made from Prowlarr's own definition `match`."""
+    entry = copy.deepcopy(match)
+    entry['name'] = f'neko-{app}'
+    entry['syncLevel'] = 'addOnly'  # additive sync; never remove existing indexers
+    # Docker service DNS must be used for container-to-container access.
+    fields = entry.get('fields', [])
+    required = {'prowlarrUrl': PROWLARR_URL, 'baseUrl': in_docker(app), 'apiKey': app_api_key}
+    for name, value in required.items():
+        if not field_set(fields, name, value):
+            print(f'{app}: missing provider field {name}; manual setup needed')
+            return False
+    print(f'{app}:', 'will link' if not apply else 'linking')
+    if not apply:
+        return True
+    try:
+        result = request('prowlarr', pro_key, APPLICATIONS, 'POST', entry)
+    except RuntimeError as exc:
+        print(f'{app}: could not link ({exc}); check Prowlarr UI')
+        return False
+    existing.append(result)
+    print(f'{app}: linked')
+    return True
+
+
+def link_application(app, root, apply, pro_key, schemas, existing):
+    """Prowlarr linked to `app` (Sonarr, Radarr or Lidarr): True when it is, or will be."""
+    try:
+        app_api_key = app_key(app, root)
+        request(app, app_api_key, '/system/status')
+    except RuntimeError as exc:
+        print(f'{app}: not ready ({exc})')
+        return False
+    found = next((e for e in existing if str(e.get('name', '')).lower() == f'neko-{app}'), None)
+    if found:
+        return existing_link_ok(app, found, app_api_key, pro_key, apply)
+    match = next((s for s in schemas if app in str(s.get('implementation', '')).lower()), None)
+    if match is None:
+        print(f'{app}: no matching Prowlarr application definition; manual setup needed')
+        return False
+    return new_link(app, match, app_api_key, pro_key, apply, existing)
+
+
 def configure_applications(root, apply, apps=('sonarr', 'radarr', 'lidarr')):
-    failures = []
     pro_key = app_key('prowlarr', root)
     schemas = listed('prowlarr', pro_key, APPLICATIONS + '/schema')
     existing = listed('prowlarr', pro_key, APPLICATIONS)
-    for app in apps:
-        try:
-            app_api_key = app_key(app, root)
-            request(app, app_api_key, '/system/status')
-        except RuntimeError as exc:
-            print(f'{app}: not ready ({exc})')
-            failures.append(app)
-            continue
-        expected = {'prowlarrUrl': PROWLARR_URL, 'baseUrl': in_docker(app), 'apiKey': app_api_key}
-        found = next((e for e in existing if str(e.get('name', '')).lower() == f'neko-{app}'), None)
-        if found:
-            # Prowlarr masks the stored key ("********") in its answers, so only the
-            # routing fields can be compared; the key was checked when the link was made.
-            routing = {k: v for k, v in expected.items() if k != 'apiKey'}
-            if fields_match(found, routing) and found.get('syncLevel') in ('addOnly', 'fullSync'):
-                if signs_in(app, pro_key, found, app_api_key, apply):
-                    print(f'{app}: existing connection fields verified')
-                else:
-                    failures.append(app)
-            else:
-                print(f'{app}: existing connection differs; review in Prowlarr')
-                failures.append(app)
-            continue
-        match = next((s for s in schemas if app in str(s.get('implementation', '')).lower()), None)
-        if match is None:
-            print(f'{app}: no matching Prowlarr application definition; manual setup needed')
-            failures.append(app)
-            continue
-        entry = copy.deepcopy(match)
-        entry['name'] = f'neko-{app}'
-        entry['syncLevel'] = 'addOnly'  # additive sync; never remove existing indexers
-        # Docker service DNS must be used for container-to-container access.
-        fields = entry.get('fields', [])
-        required = {'prowlarrUrl': PROWLARR_URL, 'baseUrl': in_docker(app), 'apiKey': app_api_key}
-        for name, value in required.items():
-            if not field_set(fields, name, value):
-                failures.append(app)
-                print(f'{app}: missing provider field {name}; manual setup needed')
-                break
-        else:
-            print(f'{app}:', 'will link' if not apply else 'linking')
-            if apply:
-                try:
-                    result = request('prowlarr', pro_key, APPLICATIONS, 'POST', entry)
-                    existing.append(result)
-                    print(f'{app}: linked')
-                except RuntimeError as exc:
-                    failures.append(app)
-                    print(f'{app}: could not link ({exc}); check Prowlarr UI')
-
+    failures = [app for app in apps if not link_application(app, root, apply, pro_key, schemas, existing)]
     if failures:
         raise RuntimeError('Prowlarr application connections incomplete: ' + ', '.join(failures))
 
@@ -760,74 +767,78 @@ def remove_stale(root, selected, apply):
         raise RuntimeError('Some connections to removed apps were not checked: ' + ', '.join(failures))
 
 
-def configure_download_clients(root, apply, apps=('sonarr', 'radarr', 'lidarr'), verify_qbit=True):
-    failures = []
+def qbittorrent_login(root):
+    """qBittorrent's login: the one setup saved, or typed in."""
     stored = account_store.get({'data_mount': str(root)}, 'qbittorrent', verified=True)
     if stored:
-        user, password = stored['username'], stored['password']
-    else:
-        password = questions.ask('qbit_password', getpass.getpass)
-        if not password:
-            raise RuntimeError('No password supplied; download-client setup incomplete')
-        user = questions.ask('qbit_user', input).strip() or 'admin'
+        return stored['username'], stored['password']
+    password = questions.ask('qbit_password', getpass.getpass)
+    if not password:
+        raise RuntimeError('No password supplied; download-client setup incomplete')
+    user = questions.ask('qbit_user', input).strip() or 'admin'
+    return user, password
+
+
+def new_client(app, key, wanted, apply):
+    """qBittorrent added to `app` as a new download client with the fields `wanted`."""
+    candidates = listed(app, key, DOWNLOAD_CLIENTS + '/schema')
+    schema = next((s for s in candidates if str(s.get('implementation', '')).lower() == 'qbittorrent'), None)
+    if not schema:
+        print(f'{app}: no qBittorrent provider schema')
+        return False
+    entry = copy.deepcopy(schema)
+    entry['name'] = CLIENT
+    entry['enable'] = True
+    fields = entry.get('fields', [])
+    for name, value in wanted.items():
+        if not field_set(fields, name, value):
+            print(f'{app}: unsupported schema field {name}; needs manual configuration')
+            return False
+    print(f'{app}:', 'will configure' if not apply else 'configuring', 'qBittorrent')
+    if not apply:
+        return True
+    try:
+        request(app, key, DOWNLOAD_CLIENTS, 'POST', entry)
+    except RuntimeError as exc:
+        print(f'{app}: rejected ({exc}); check credentials and WebUI settings')
+        return False
+    print(f'{app}: configured')
+    return True
+
+
+def download_client(app, category, root, login, apply, verify_qbit):
+    """qBittorrent as `app`'s download client: True when it is, or will be."""
+    user, password = login
+    # Each app names its qBittorrent category field after its own media.
+    wanted = {
+        'host': 'qbittorrent',
+        'port': 8080,
+        'username': user,
+        'password': password,
+        CATEGORY_FIELDS[app]: category,
+    }
+    try:
+        key = app_key(app, root)
+        existing = listed(app, key, DOWNLOAD_CLIENTS)
+        found = next((x for x in existing if x.get('name') == CLIENT), None)
+        if found:
+            return existing_client(app, key, found, wanted, verify_qbit)
+        return new_client(app, key, wanted, apply)
+    except RuntimeError as exc:
+        print(f'{app}: skipped ({exc})')
+        return False
+
+
+def configure_download_clients(root, apply, apps=('sonarr', 'radarr', 'lidarr'), verify_qbit=True):
+    login = qbittorrent_login(root)
     if verify_qbit:
         categories = tuple({'sonarr': 'tv', 'radarr': 'movies', 'lidarr': 'music'}[app] for app in apps)
-        qbit_setup.configure(user, password, apply, categories)
-    for app, category in [('sonarr', 'tv'), ('radarr', 'movies'), ('lidarr', 'music')]:
-        if app not in apps:
-            continue
-        # Each app names its qBittorrent category field after its own media.
-        category_field = CATEGORY_FIELDS[app]
-        try:
-            key = app_key(app, root)
-            existing = listed(app, key, DOWNLOAD_CLIENTS)
-            expected = {
-                'host': 'qbittorrent',
-                'port': 8080,
-                'username': user,
-                'password': password,
-                category_field: category,
-            }
-            found = next((x for x in existing if x.get('name') == CLIENT), None)
-            if found:
-                if not existing_client(app, key, found, expected, verify_qbit):
-                    failures.append(app)
-                continue
-            candidates = listed(app, key, DOWNLOAD_CLIENTS + '/schema')
-            schema = next((s for s in candidates if str(s.get('implementation', '')).lower() == 'qbittorrent'), None)
-            if not schema:
-                print(f'{app}: no qBittorrent provider schema')
-                failures.append(app)
-                continue
-            entry = copy.deepcopy(schema)
-            entry['name'] = CLIENT
-            entry['enable'] = True
-            fields = entry.get('fields', [])
-            needed = {
-                'host': 'qbittorrent',
-                'port': 8080,
-                'username': user,
-                'password': password,
-                category_field: category,
-            }
-            for name, value in needed.items():
-                if not field_set(fields, name, value):
-                    failures.append(app)
-                    print(f'{app}: unsupported schema field {name}; needs manual configuration')
-                    break
-            else:
-                print(f'{app}:', 'will configure' if not apply else 'configuring', 'qBittorrent')
-                if apply:
-                    try:
-                        request(app, key, DOWNLOAD_CLIENTS, 'POST', entry)
-                        print(f'{app}: configured')
-                    except RuntimeError as exc:
-                        failures.append(app)
-                        print(f'{app}: rejected ({exc}); check credentials and WebUI settings')
-        except RuntimeError as exc:
-            failures.append(app)
-            print(f'{app}: skipped ({exc})')
-
+        qbit_setup.configure(*login, apply, categories)
+    failures = [
+        app
+        for app, category in [('sonarr', 'tv'), ('radarr', 'movies'), ('lidarr', 'music')]
+        if app in apps and not download_client(app, category, root, login, apply, verify_qbit)
+    ]
     if failures:
         raise RuntimeError('Download-client setup incomplete: ' + ', '.join(failures))
 
@@ -960,7 +971,7 @@ def chosen_actions(args, root, config, apps, selected):
     return actions
 
 
-def main(argv=None):
+def arguments():
     parser = argparse.ArgumentParser(description='NekoServer Prowlarr source and application connector')
     parser.add_argument('--config', type=checked_settings, default=default_settings(Path(__file__).parent))
     parser.add_argument('--data-root', default=None, help='SSD mount with appdata')
@@ -980,27 +991,23 @@ def main(argv=None):
         action='store_true',
         help='Take away the connections setup made to apps no longer in media.services',
     )
-    args = parser.parse_args(argv)
-    try:
-        config = read_settings(args.config)
-    except RuntimeError as exc:
-        print(f'Nothing was connected: {exc}', file=sys.stderr)
-        return 2
-    # The apps set up. One whose group is switched off (Movies and shows, say) is stopped by
-    # the media step: there is nothing to connect it to, and the connections setup made to
-    # it are taken away (--remove-stale) as for an app taken out of media.services.
-    listed = config.get('media', {}).get('services', list(PORTS) + ['qbittorrent'])
-    selected = [x for x in listed if app_wanted(config, x)]
-    apps = tuple(x for x in ('sonarr', 'radarr', 'lidarr') if x in selected)
+    return parser
+
+
+def mounted_ssd(parser, args, config):
+    """The app SSD's folder, as a mounted drive: looked at only by its real path, and only
+    when that is the path asked for (the settings name it; a link is not the drive)."""
     root = Path(args.data_root or config['data_mount'])
-    if not root.is_dir() or root.is_symlink() or not os.path.ismount(root):
+    real = os.path.realpath(root)
+    if not real.startswith(os.sep) or real != os.path.abspath(root):
         parser.error('Data SSD must be mounted at --data-root')
-    actions = chosen_actions(args, root, config, apps, selected)
-    if not actions:
-        parser.error(
-            'Select one or more of --indexers, --applications, --download-clients, --pass-on-login, --remove-stale'
-        )
-    print('NekoServer media connector:', 'APPLY' if args.apply else 'PREVIEW (no writes)')
+    if not os.path.isdir(real) or not os.path.ismount(real):
+        parser.error('Data SSD must be mounted at --data-root')
+    return Path(real)
+
+
+def run_actions(actions, selected):
+    """Each chosen step in turn; the labels of those that did not finish."""
     failures = []
     for label, action in actions:
         try:
@@ -1015,7 +1022,31 @@ def main(argv=None):
             failures.append(label)
             if isinstance(exc, (KeyboardInterrupt, EOFError)):
                 break
-    return 1 if failures else 0
+    return failures
+
+
+def main(argv=None):
+    parser = arguments()
+    args = parser.parse_args(argv)
+    try:
+        config = read_settings(args.config)
+    except RuntimeError as exc:
+        print(f'Nothing was connected: {exc}', file=sys.stderr)
+        return 2
+    # The apps set up. One whose group is switched off (Movies and shows, say) is stopped by
+    # the media step: there is nothing to connect it to, and the connections setup made to
+    # it are taken away (--remove-stale) as for an app taken out of media.services.
+    listed = config.get('media', {}).get('services', list(PORTS) + ['qbittorrent'])
+    selected = [x for x in listed if app_wanted(config, x)]
+    apps = tuple(x for x in ('sonarr', 'radarr', 'lidarr') if x in selected)
+    root = mounted_ssd(parser, args, config)
+    actions = chosen_actions(args, root, config, apps, selected)
+    if not actions:
+        parser.error(
+            'Select one or more of --indexers, --applications, --download-clients, --pass-on-login, --remove-stale'
+        )
+    print('NekoServer media connector:', 'APPLY' if args.apply else 'PREVIEW (no writes)')
+    return 1 if run_actions(actions, selected) else 0
 
 
 if __name__ == '__main__':
