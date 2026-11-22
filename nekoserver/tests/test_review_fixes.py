@@ -2101,15 +2101,15 @@ class LibraryScanTests(unittest.TestCase):
                         raise RuntimeError('jellyfin: unavailable or incompatible API response')  # timed out
                     return {}
                 if path == '/Library/VirtualFolders':
+                    # Listed at once (as the real Jellyfin 12.4 did), its ID only once added.
                     return [
                         {
                             'Name': m['name'],
                             'Locations': [m['paths']],
                             'CollectionType': m['collectionType'],
-                            'ItemId': m['name'],
+                            **({'ItemId': m['name']} if m['listed_at'] <= clock['now'] else {}),
                         }
                         for m in made
-                        if m['listed_at'] <= clock['now']
                     ]
                 return {}
 
