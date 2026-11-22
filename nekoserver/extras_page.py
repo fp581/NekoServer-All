@@ -216,6 +216,29 @@ def tv_installs(opts, vendors, has_browser, flatpak=False):
     return lines
 
 
+def why_no_tv(config, family, has_desktop):
+    """Why the TV extra cannot be set up on this PC ('' when it can): it opens Jellyfin,
+    and it needs a Linux setup supports, Steam for it, and a desktop."""
+    if not media_group(config, 'movies'):
+        return 'The TV mode opens Jellyfin, and Movies and shows is switched off on this server.'
+    if family is None:
+        return 'The TV extra is not supported on this Linux yet.'
+    no_steam = tv.unavailable_reason(family)
+    if no_steam:
+        return no_steam + '.'
+    if not (tv.has_desktop() if has_desktop is None else has_desktop):
+        return tv.NO_DESKTOP + '.'
+    return ''
+
+
+def steam_from_flatpak(config):
+    """Steam is installed as a Flatpak for the desktop's own account."""
+    try:
+        return bool(tv.flatpak_steam(tv.desktop_user(config)[1]))
+    except (RuntimeError, KeyError, OSError):
+        return False  # no desktop user to look in yet: the step looks again
+
+
 def tv_plan(config, family=None, has_desktop=None, vendors=None, has_browser=None, flatpak=None):
     """What the TV extra will install on this PC, and what it cannot set up by itself.
 
@@ -232,28 +255,14 @@ def tv_plan(config, family=None, has_desktop=None, vendors=None, has_browser=Non
     opts = config.get('tv', {})
     if not isinstance(opts, dict):
         opts = {}
-    if not media_group(config, 'movies'):
-        plan['reason'] = 'The TV mode opens Jellyfin, and Movies and shows is switched off on this server.'
-        return plan
-    if family is None:
+    if family is None and media_group(config, 'movies'):
         family = host.current() if host.detect() is not None else None
-    if family is None:
-        plan['reason'] = 'The TV extra is not supported on this Linux yet.'
-        return plan
-    no_steam = tv.unavailable_reason(family)
-    if no_steam:
-        plan['reason'] = no_steam + '.'
-        return plan
-    if not (tv.has_desktop() if has_desktop is None else has_desktop):
-        plan['reason'] = tv.NO_DESKTOP + '.'
+    plan['reason'] = why_no_tv(config, family, has_desktop)
+    if plan['reason']:
         return plan
     vendors = tv.graphics() if vendors is None else vendors
     has_browser = bool(tv.browser()) if has_browser is None else has_browser
-    if flatpak is None:
-        try:
-            flatpak = bool(tv.flatpak_steam(tv.desktop_user(config)[1]))
-        except (RuntimeError, KeyError, OSError):
-            flatpak = False  # no desktop user to look in yet: the step looks again
+    flatpak = steam_from_flatpak(config) if flatpak is None else flatpak
     plan['possible'] = True
     plan['packages'] = tv.wanted_packages(opts, vendors, has_browser, flatpak=flatpak)
     plan['installs'] = tv_installs(opts, vendors, has_browser, flatpak)

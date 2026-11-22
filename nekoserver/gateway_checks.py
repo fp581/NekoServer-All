@@ -6,6 +6,9 @@ import gateway_tools as g
 import status_checks as health
 from neko_common import safe_path, local_opener
 
+# The answers that show an app's listener was reached over trusted HTTPS (a sign-in page, a redirect).
+REACHED = (200, 201, 204, 301, 302, 303, 307, 308, 401, 403)
+
 
 def check(config, kind):
     def row(key, status, detail):
@@ -17,53 +20,45 @@ def check(config, kind):
         }
 
     if kind == 'tailnet':
-        try:
-            node = g.tailnode()
-            expected = g.tailnet_routes(config, node)
-            saved = health.read_json(Path(config['data_mount']) / 'gateway/tailnet-owned.json')
-            valid = (
-                saved.get('format') == 'neko-tailnet-owned-v1'
-                and saved.get('host') == node
-                and saved.get('status') == 'configured'
-                and saved.get('owned') == expected
-                and g.only(g.serve_state(), set(expected['TCP'])) == expected
-            )
-            # Matching routes are not enough: without Tailscale's certificate every
-            # address hangs at the TLS handshake (one try here, no wait).
-            problem = g.https_problem(g.tailnet_links(node, expected), wait=0) if valid else None
-            if problem:
-                state = 'needs_setup'
-            else:
-                state = 'pass' if valid else 'fail'
-            return [
-                row(
-                    'routes',
-                    state,
-                    problem or 'Private owned HTTPS routes must match selected apps; Funnel is forbidden.',
-                )
-            ]
-        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-            return [
-                row(
-                    'routes',
-                    'needs_setup',
-                    'Inspect Tailscale login, HTTPS permission and private route ownership locally.',
-                )
-            ]
+        return [tailnet_row(config, row)]
+    return lan_rows(config, row)
+
+
+def tailnet_row(config, row):
+    """The Tailscale gateway's one row: the private routes setup owns are the ones it
+    saved, for this server's apps, and their HTTPS certificate is there."""
+    try:
+        node = g.tailnode()
+        expected = g.tailnet_routes(config, node)
+        saved = health.read_json(Path(config['data_mount']) / 'gateway/tailnet-owned.json')
+        valid = (
+            saved.get('format') == 'neko-tailnet-owned-v1'
+            and saved.get('host') == node
+            and saved.get('status') == 'configured'
+            and saved.get('owned') == expected
+            and g.only(g.serve_state(), set(expected['TCP'])) == expected
+        )
+        # Matching routes are not enough: without Tailscale's certificate every
+        # address hangs at the TLS handshake (one try here, no wait).
+        problem = g.https_problem(g.tailnet_links(node, expected), wait=0) if valid else None
+        if problem:
+            state = 'needs_setup'
+        else:
+            state = 'pass' if valid else 'fail'
+        return row('routes', state, problem or 'Private owned HTTPS routes must match selected apps; Funnel is forbidden.')
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+        return row('routes', 'needs_setup', 'Inspect Tailscale login, HTTPS permission and private route ownership locally.')
+
+
+def lan_rows(config, row):
+    """The home gateway's rows: its configuration, then each app's listener over HTTPS
+    trusted by the gateway's own certificate authority."""
     out = []
     try:
-        g.verify_lan(config)
-        saved = g.managed(Path(config['data_mount']) / 'gateway/lan-managed.json')
-        expected = g.lan_model(config, Path('/usr/local/share/nekoserver-gateway/lan'))
-        actual = health.read_json('/etc/nekoserver-gateway/lan.json')
-        valid = actual == expected and bool(saved.get('sha256'))
-        for name, digest in saved.get('sha256', {}).items():
-            if g.hashes({safe_path(name): safe_path(name).read_bytes()})[name] != digest:
-                valid = False
         out.append(
             row(
                 'configuration',
-                'pass' if valid else 'fail',
+                'pass' if lan_files_match(config) else 'fail',
                 'Managed LAN configuration and files must match the selected address, subnet and apps.',
             )
         )
@@ -73,20 +68,10 @@ def check(config, kind):
         host = g.lan(config)[0]
         for app in ['portal', *g.selected(config)]:
             port = g.lan_ports(config)[app]
-            code = None
-            try:
-                with opener.open('https://' + host + ':' + str(port) + '/', timeout=5) as response:
-                    code = response.status
-                    response.read(1024)
-            except urllib.error.HTTPError as exc:
-                code = exc.code
-                exc.close()
-            except OSError:
-                pass
             out.append(
                 row(
                     app,
-                    'pass' if code in (200, 201, 204, 301, 302, 303, 307, 308, 401, 403) else 'fail',
+                    'pass' if answered(opener, 'https://' + host + ':' + str(port) + '/') in REACHED else 'fail',
                     'Trusted HTTPS transport must reach this listener; login/playback/upload still require client tests.',
                 )
             )
@@ -99,3 +84,32 @@ def check(config, kind):
             )
         )
     return out
+
+
+def lan_files_match(config):
+    """The gateway's settings are the ones setup would write now, and every file setup
+    wrote for it still has the checksum setup saved."""
+    g.verify_lan(config)
+    saved = g.managed(Path(config['data_mount']) / 'gateway/lan-managed.json')
+    expected = g.lan_model(config, Path('/usr/local/share/nekoserver-gateway/lan'))
+    actual = health.read_json('/etc/nekoserver-gateway/lan.json')
+    valid = actual == expected and bool(saved.get('sha256'))
+    for name, digest in saved.get('sha256', {}).items():
+        if g.hashes({safe_path(name): safe_path(name).read_bytes()})[name] != digest:
+            valid = False
+    return valid
+
+
+def answered(opener, url):
+    """The HTTP status an address answered with; None when it did not answer."""
+    code = None
+    try:
+        with opener.open(url, timeout=5) as response:
+            code = response.status
+            response.read(1024)
+    except urllib.error.HTTPError as exc:
+        code = exc.code
+        exc.close()
+    except OSError:
+        pass  # no answer, or cut off after its status: what it said is kept
+    return code
