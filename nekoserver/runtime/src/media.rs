@@ -62,35 +62,30 @@ fn success(code: Option<u16>) -> Result<()> {
         _ => Err(Error::new("API returned non-success status")),
     }
 }
-fn get(app: &str, endpoint: &str, auth: Option<(&str, &str)>) -> Result<Value> {
-    if !endpoint.starts_with('/') || endpoint.starts_with("//") || endpoint.contains(['\r', '\n']) {
-        return Err(Error::new("Invalid local endpoint"));
+/// The request's credential headers: the API key as the app wants it, checked first.
+fn auth_headers(auth: Option<(&str, &str)>) -> Result<String> {
+    let Some((header, key)) = auth else {
+        return Ok(String::new());
+    };
+    if !["X-Api-Key", "X-Emby-Token"].contains(&header)
+        || key.is_empty()
+        || !key.bytes().all(|b| b.is_ascii_graphic())
+    {
+        return Err(Error::new("Invalid local credential"));
     }
-    let port = port(app)?;
-    let address = SocketAddr::from(([127, 0, 0, 1], port));
-    let start = Instant::now();
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(3))?;
-    stream.set_write_timeout(Some(Duration::from_secs(3)))?;
-    let mut request=format!("GET {endpoint} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\nAccept: application/json\r\nUser-Agent: NekoServer-MediaHealth\r\n");
-    if let Some((header, key)) = auth {
-        if !["X-Api-Key", "X-Emby-Token"].contains(&header)
-            || key.is_empty()
-            || !key.bytes().all(|b| b.is_ascii_graphic())
-        {
-            return Err(Error::new("Invalid local credential"));
-        }
-        request.push_str(&format!("{header}: {key}\r\n"));
-        if header == "X-Emby-Token" {
-            // Jellyfin 12 no longer reads a key from X-Emby-Token alone (401); it wants
-            // it in the MediaBrowser Authorization header. Older Jellyfin takes either.
-            request.push_str(&format!(
-                "Authorization: MediaBrowser Client=\"NekoServer\", Device=\"Runtime\", DeviceId=\"nekoserver-runtime\", Version=\"{}\", Token=\"{key}\"\r\n",
-                crate::VERSION
-            ));
-        }
+    let mut headers = format!("{header}: {key}\r\n");
+    if header == "X-Emby-Token" {
+        // Jellyfin 12 no longer reads a key from X-Emby-Token alone (401); it wants
+        // it in the MediaBrowser Authorization header. Older Jellyfin takes either.
+        headers.push_str(&format!(
+            "Authorization: MediaBrowser Client=\"NekoServer\", Device=\"Runtime\", DeviceId=\"nekoserver-runtime\", Version=\"{}\", Token=\"{key}\"\r\n",
+            crate::VERSION
+        ));
     }
-    request.push_str("\r\n");
-    stream.write_all(request.as_bytes())?;
+    Ok(headers)
+}
+/// The whole answer, read within 5 seconds of `start`: (its bytes, where its headers end).
+fn read_answer(stream: &mut TcpStream, start: Instant) -> Result<(Vec<u8>, Option<usize>)> {
     let mut bytes = Vec::new();
     let mut buf = [0u8; 8192];
     let mut header_end = None;
@@ -101,7 +96,7 @@ fn get(app: &str, endpoint: &str, auth: Option<(&str, &str)>) -> Result<Value> {
         stream.set_read_timeout(Some(left))?;
         let count = stream.read(&mut buf)?;
         if count == 0 {
-            break;
+            return Ok((bytes, header_end));
         }
         bytes.extend_from_slice(&buf[..count]);
         if bytes.len() > LIMIT {
@@ -117,6 +112,21 @@ fn get(app: &str, endpoint: &str, auth: Option<(&str, &str)>) -> Result<Value> {
             return Err(Error::new("API headers too large"));
         }
     }
+}
+fn get(app: &str, endpoint: &str, auth: Option<(&str, &str)>) -> Result<Value> {
+    if !endpoint.starts_with('/') || endpoint.starts_with("//") || endpoint.contains(['\r', '\n']) {
+        return Err(Error::new("Invalid local endpoint"));
+    }
+    let port = port(app)?;
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let start = Instant::now();
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(3))?;
+    stream.set_write_timeout(Some(Duration::from_secs(3)))?;
+    let mut request=format!("GET {endpoint} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\nAccept: application/json\r\nUser-Agent: NekoServer-MediaHealth\r\n");
+    request.push_str(&auth_headers(auth)?);
+    request.push_str("\r\n");
+    stream.write_all(request.as_bytes())?;
+    let (bytes, header_end) = read_answer(&mut stream, start)?;
     let end = header_end.ok_or_else(|| Error::new("Incomplete HTTP response"))?;
     let mut headers = [httparse::EMPTY_HEADER; 64];
     let mut response = httparse::Response::new(&mut headers);
@@ -538,6 +548,90 @@ fn jellyfin_key(data: &Path, saved: &Value, server_id: &str) -> Option<String> {
     (!server_id.is_empty() && linked == server_id && !key.is_empty()).then(|| key.to_string())
 }
 
+/// A check's outcome as the readiness report says it.
+fn state_word(outcome: &Result<bool>) -> &'static str {
+    match outcome {
+        Ok(true) => "pass",
+        Ok(false) => "needs_setup",
+        Err(_) => "fail",
+    }
+}
+/// The one library of `kind` at `dir` (movies at /data/movies, shows at /data/tv): its
+/// item ID, or None when there is not exactly one such library.
+fn library_id(libraries: &[Value], dir: &str, kind: &str) -> Option<String> {
+    let found = libraries
+        .iter()
+        .filter(|v| {
+            v["Locations"].as_array().is_some_and(|locations| {
+                locations
+                    .iter()
+                    .any(|p| text(p).trim_end_matches('/') == dir)
+            })
+        })
+        .collect::<Vec<_>>();
+    if found.len() != 1 || found[0]["CollectionType"] != kind || text(&found[0]["ItemId"]).is_empty() {
+        return None;
+    }
+    Some(text(&found[0]["ItemId"]).to_string())
+}
+/// Jellyfin's first-run account, NekoServer's key and its two libraries. `server_id` and
+/// `ids` get what Seerr's check compares with.
+fn jellyfin_ready(data: &Path, saved: &Value, server_id: &mut String, ids: &mut Vec<String>) -> Result<bool> {
+    let info = get("jellyfin", "/System/Info/Public", None)?;
+    *server_id = text(&info["Id"]).to_string();
+    if server_id.is_empty() {
+        return Err(Error::new("Jellyfin identity missing"));
+    }
+    if info["StartupWizardCompleted"] != true {
+        return Ok(false);
+    }
+    let Some(key) = jellyfin_key(data, saved, server_id) else {
+        return Ok(false);
+    };
+    let values = match get(
+        "jellyfin",
+        "/Library/VirtualFolders",
+        Some(("X-Emby-Token", &key)),
+    ) {
+        // Revoked or replaced: needs setup (which renews it), not a failure.
+        Err(e) if e.to_string() == REJECTED => return Ok(false),
+        other => other?,
+    };
+    let libraries = array(&values)?;
+    for (dir, kind) in [("/data/movies", "movies"), ("/data/tv", "tvshows")] {
+        let Some(id) = library_id(libraries, dir, kind) else {
+            return Ok(false);
+        };
+        ids.push(id);
+    }
+    Ok(true)
+}
+/// Seerr's login, its link to this Jellyfin and both libraries enabled in it.
+fn seerr_ready(key: &str, server_id: &str, ids: &[String]) -> Result<bool> {
+    if key.is_empty() {
+        return Ok(false);
+    }
+    if seerr(key, "/settings/public")?["initialized"] != true {
+        return Ok(false);
+    }
+    let link = seerr(key, "/settings/jellyfin")?;
+    let linked = text(
+        link.get("serverId")
+            .or_else(|| link.get("serverID"))
+            .unwrap_or(&Value::Null),
+    );
+    if server_id.is_empty() || linked != server_id {
+        return Ok(false);
+    }
+    let libraries = seerr(key, "/settings/jellyfin/library")?;
+    Ok(ids.len() == 2
+        && ids.iter().all(|id| {
+            array(&libraries).is_ok_and(|rows| {
+                rows.iter()
+                    .any(|r| text(&r["id"]) == id && r["enabled"] == true)
+            })
+        }))
+}
 fn readiness(cfg: &Value, data: &Path, selected: &[&str]) -> Value {
     let mut rows = json!({});
     let settings = if selected.contains(&"seerr") {
@@ -549,97 +643,20 @@ fn readiness(cfg: &Value, data: &Path, selected: &[&str]) -> Value {
     let mut server_id = String::new();
     let mut ids = Vec::new();
     if selected.contains(&"jellyfin") {
-        let outcome = (|| -> Result<bool> {
-            let info = get("jellyfin", "/System/Info/Public", None)?;
-            server_id = text(&info["Id"]).to_string();
-            if server_id.is_empty() {
-                return Err(Error::new("Jellyfin identity missing"));
-            }
-            if info["StartupWizardCompleted"] != true {
-                return Ok(false);
-            }
-            let Some(key) = jellyfin_key(data, saved, &server_id) else {
-                return Ok(false);
-            };
-            let values = match get(
-                "jellyfin",
-                "/Library/VirtualFolders",
-                Some(("X-Emby-Token", &key)),
-            ) {
-                // Revoked or replaced: needs setup (which renews it), not a failure.
-                Err(e) if e.to_string() == REJECTED => return Ok(false),
-                other => other?,
-            };
-            let libraries = array(&values)?;
-            for (dir, kind) in [("/data/movies", "movies"), ("/data/tv", "tvshows")] {
-                let found = libraries
-                    .iter()
-                    .filter(|v| {
-                        v["Locations"].as_array().is_some_and(|locations| {
-                            locations
-                                .iter()
-                                .any(|p| text(p).trim_end_matches('/') == dir)
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                if found.len() != 1
-                    || found[0]["CollectionType"] != kind
-                    || text(&found[0]["ItemId"]).is_empty()
-                {
-                    return Ok(false);
-                }
-                ids.push(text(&found[0]["ItemId"]).to_string());
-            }
-            Ok(true)
-        })();
-        let state = match outcome {
-            Ok(true) => "pass",
-            Ok(false) => "needs_setup",
-            Err(_) => "fail",
-        };
+        let outcome = jellyfin_ready(data, saved, &mut server_id, &mut ids);
         readiness_row(
             &mut rows,
             "jellyfin:current_libraries",
-            state,
+            state_word(&outcome),
             "Check first-run account, NekoServer's Jellyfin key (rerun setup if it was revoked) and authenticated movie/TV libraries.",
         );
     }
     if selected.contains(&"seerr") {
         let key = text(&settings["main"]["apiKey"]);
-        let outcome = (|| -> Result<bool> {
-            if key.is_empty() {
-                return Ok(false);
-            }
-            if seerr(key, "/settings/public")?["initialized"] != true {
-                return Ok(false);
-            }
-            let link = seerr(key, "/settings/jellyfin")?;
-            if server_id.is_empty()
-                || text(
-                    link.get("serverId")
-                        .or_else(|| link.get("serverID"))
-                        .unwrap_or(&Value::Null),
-                ) != server_id
-            {
-                return Ok(false);
-            }
-            let libraries = seerr(key, "/settings/jellyfin/library")?;
-            Ok(ids.len() == 2
-                && ids.iter().all(|id| {
-                    array(&libraries).is_ok_and(|rows| {
-                        rows.iter()
-                            .any(|r| text(&r["id"]) == id && r["enabled"] == true)
-                    })
-                }))
-        })();
         readiness_row(
             &mut rows,
             "seerr:current_libraries",
-            match outcome {
-                Ok(true) => "pass",
-                Ok(false) => "needs_setup",
-                Err(_) => "fail",
-            },
+            state_word(&seerr_ready(key, &server_id, &ids)),
             "Check Seerr login, Jellyfin identity and enabled movie/TV libraries.",
         );
         for app in ["sonarr", "radarr"].iter().filter(|a| selected.contains(a)) {
@@ -651,11 +668,7 @@ fn readiness(cfg: &Value, data: &Path, selected: &[&str]) -> Value {
             readiness_row(
                 &mut rows,
                 &format!("seerr:provider:{app}"),
-                match outcome {
-                    Ok(true) => "pass",
-                    Ok(false) => "needs_setup",
-                    Err(_) => "fail",
-                },
+                state_word(&outcome),
                 "Verify saved default routing, live profiles and root folders through Seerr.",
             );
         }
@@ -842,6 +855,46 @@ fn checked_apps(cfg: &Value) -> Result<Vec<&str>> {
     }
     Ok(selected)
 }
+/// One *arr app's connections (download client, indexer, root folder; for Prowlarr its
+/// apps and indexer), checked through its API with its key.
+fn integration(app: &str, data: &Path, selected: &[&str]) -> Value {
+    let Some(key) = arr_key(data, app) else {
+        return json!({"result":"needs_setup","reason":"Application API key unavailable"});
+    };
+    let mut row = json!({"result":"pass","note":"Configuration checks only; imports and playback still require acceptance"});
+    if arr(app, &key, "system/status").is_err() {
+        row["result"] = json!("fail");
+        return row;
+    }
+    let endpoints = if app == "prowlarr" {
+        vec!["applications", "indexer"]
+    } else {
+        vec!["downloadclient", "indexer", "rootfolder"]
+    };
+    for endpoint in endpoints {
+        match arr(app, &key, endpoint)
+            .and_then(|v| array(&v).map(|rows| configured(app, endpoint, rows, selected, data)))
+        {
+            Ok(valid) => {
+                row[format!("{endpoint}_configured")] = json!(valid);
+                // An indexer needs an account with a provider and is optional:
+                // without one, requests cannot be found, but the apps, their
+                // backups and the monthly update work. It is reported, not held
+                // against the app.
+                if !valid && endpoint == "indexer" {
+                    row["note"] = json!("No indexer chosen yet: requests cannot be found until one is added in Prowlarr");
+                } else if !valid && row["result"] == "pass" {
+                    row["result"] = json!("needs_setup");
+                }
+            }
+            Err(_) => {
+                row[format!("{endpoint}_configured")] = Value::Null;
+                row["result"] = json!("fail");
+            }
+        }
+    }
+    row
+}
 pub fn run(a: &Args) -> Result<()> {
     common::require_root()?;
     let config = a.path("config")?;
@@ -878,44 +931,7 @@ pub fn run(a: &Args) -> Result<()> {
         .iter()
         .filter(|a| selected.contains(a))
     {
-        let Some(key) = arr_key(&data, app) else {
-            integrations[app] =
-                json!({"result":"needs_setup","reason":"Application API key unavailable"});
-            continue;
-        };
-        let mut row = json!({"result":"pass","note":"Configuration checks only; imports and playback still require acceptance"});
-        if arr(app, &key, "system/status").is_err() {
-            row["result"] = json!("fail");
-        } else {
-            let endpoints = if *app == "prowlarr" {
-                vec!["applications", "indexer"]
-            } else {
-                vec!["downloadclient", "indexer", "rootfolder"]
-            };
-            for endpoint in endpoints {
-                match arr(app, &key, endpoint).and_then(|v| {
-                    array(&v).map(|rows| configured(app, endpoint, rows, &selected, &data))
-                }) {
-                    Ok(valid) => {
-                        row[format!("{endpoint}_configured")] = json!(valid);
-                        // An indexer needs an account with a provider and is optional:
-                        // without one, requests cannot be found, but the apps, their
-                        // backups and the monthly update work. It is reported, not held
-                        // against the app.
-                        if !valid && endpoint == "indexer" {
-                            row["note"] = json!("No indexer chosen yet: requests cannot be found until one is added in Prowlarr");
-                        } else if !valid && row["result"] == "pass" {
-                            row["result"] = json!("needs_setup");
-                        }
-                    }
-                    Err(_) => {
-                        row[format!("{endpoint}_configured")] = Value::Null;
-                        row["result"] = json!("fail");
-                    }
-                }
-            }
-        }
-        integrations[app] = row;
+        integrations[app] = integration(app, &data, &selected);
     }
     let readiness = readiness(&cfg, &data, &selected);
     let mut counts = json!({"pass":0,"warning":0,"fail":0,"needs_setup":0});

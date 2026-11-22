@@ -228,7 +228,7 @@ fn entries(
     }
     if m.is_dir() {
         let mut children = fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
-        children.sort_by_key(|p| p.file_name());
+        children.sort_by_key(fs::DirEntry::file_name);
         for child in children {
             entries(
                 root,

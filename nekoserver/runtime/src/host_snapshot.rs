@@ -226,7 +226,7 @@ fn walk(
     }
     if m.is_dir() {
         let mut children = fs::read_dir(source)?.collect::<std::io::Result<Vec<_>>>()?;
-        children.sort_by_key(|v| v.file_name());
+        children.sort_by_key(fs::DirEntry::file_name);
         for child in children {
             walk(
                 &child.path(),

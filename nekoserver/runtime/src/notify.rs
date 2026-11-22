@@ -187,23 +187,21 @@ fn max_age(s: &Value) -> f64 {
         .filter(|v| (180..=630).contains(v))
         .unwrap_or_else(|| crate::collect::late_after(300)) as f64
 }
-fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<String>, bool) {
+/// A snapshot of the dashboard's collector that is recent and has its lists.
+fn fresh_snapshot(s: &Value, now: f64) -> bool {
     let oldest = now - max_age(s);
-    let fresh = s["format"] == "neko-dashboard-v1"
+    s["format"] == "neko-dashboard-v1"
         && s["generated_at"]
             .as_f64()
             .is_some_and(|t| t.is_finite() && t >= oldest && t <= now + crate::collect::LATE_AHEAD)
         && s["alerts"].is_array()
         && s["applications"].is_array()
         && s["storage"].is_array()
-        && s["backups"].is_array();
-    let mut active = BTreeMap::new();
-    let mut unknown = BTreeSet::new();
-    // Everything that can alert starts as unknown and is cleared only by explicit
-    // evidence below (a running, not unhealthy app; a passed job; a mounted, checked
-    // drive), so "RECOVERED" is never sent for a job that is merely running again or an
-    // app whose state cannot be read. The ids come from the same lists the dashboard
-    // uses, so a newly monitored app or job is covered automatically.
+        && s["backups"].is_array()
+}
+/// Everything that can alert, as unknown until evidence clears it. The ids come from the
+/// same lists the dashboard uses, so a newly monitored app or job is covered automatically.
+fn watched_ids() -> BTreeSet<String> {
     let apps = crate::collect::APPS
         .iter()
         .map(|(id, ..)| format!("app:{id}"));
@@ -220,23 +218,45 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
     let services = crate::collect::STARTUP
         .iter()
         .flat_map(|(unit, _)| [format!("startup:{unit}"), format!("startup:{unit}:failed")]);
-    for id in apps.chain(jobs).chain(drives).chain(checks).chain(services) {
-        if label(&id).is_some() {
-            unknown.insert(id);
-        }
-    }
-    if !fresh {
-        active.insert("monitoring-stale".into(), "warning".into());
-        return (active, unknown, false);
-    }
-    for alert in s["alerts"].as_array().unwrap().iter().take(100) {
+    apps.chain(jobs)
+        .chain(drives)
+        .chain(checks)
+        .chain(services)
+        .filter(|id| label(id).is_some())
+        .collect()
+}
+/// The snapshot's alerts that have a message of their own, by id, with their level.
+fn active_alerts(s: &Value) -> BTreeMap<String, String> {
+    let mut active = BTreeMap::new();
+    for alert in s["alerts"].as_array().into_iter().flatten().take(100) {
         let id = alert["id"].as_str().unwrap_or("");
         let level = alert["level"].as_str().unwrap_or("");
         if label(id).is_some() && ["critical", "warning"].contains(&level) {
             active.insert(id.into(), level.into());
         }
     }
-    for row in s["applications"].as_array().unwrap() {
+    active
+}
+fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<String>, bool) {
+    // Everything that can alert starts as unknown and is cleared only by explicit
+    // evidence below (a running, not unhealthy app; a passed job; a mounted, checked
+    // drive), so "RECOVERED" is never sent for a job that is merely running again or an
+    // app whose state cannot be read.
+    let mut unknown = watched_ids();
+    if !fresh_snapshot(s, now) {
+        let active = BTreeMap::from([("monitoring-stale".to_string(), "warning".to_string())]);
+        return (active, unknown, false);
+    }
+    let active = active_alerts(s);
+    recovered_apps_and_jobs(s, &mut unknown);
+    recovered_services_and_checks(s, &mut unknown);
+    recovered_drives(s, &mut unknown);
+    not_known_yet(s, &mut unknown);
+    (active, unknown, true)
+}
+/// Apps running, healthy and answering, and backups that passed: recovered.
+fn recovered_apps_and_jobs(s: &Value, unknown: &mut BTreeSet<String>) {
+    for row in s["applications"].as_array().into_iter().flatten() {
         // Running, healthy and answering (as the dashboard shows it): only then recovered.
         // "responding" is true only when the hourly check reached the app and it answered;
         // null (no current check yet, or the app restarted since the last one) is not
@@ -248,11 +268,15 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
             unknown.remove(&format!("app:{}", row["id"].as_str().unwrap_or("")));
         }
     }
-    for row in s["backups"].as_array().unwrap() {
+    for row in s["backups"].as_array().into_iter().flatten() {
         if row["status"] == "pass" {
             unknown.remove(&format!("backup:{}", row["id"].as_str().unwrap_or("")));
         }
     }
+}
+/// Services enabled at boot or no longer failed, and checksum checks with nothing
+/// damaged after a full check: recovered.
+fn recovered_services_and_checks(s: &Value, unknown: &mut BTreeSet<String>) {
     // A service is good again only when it is listed (the check ran) and is enabled at
     // boot, or no longer failed: a missing list never counts as recovered.
     for row in s["startup"].as_array().cloned().unwrap_or_default() {
@@ -280,7 +304,11 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
             unknown.remove(&format!("integrity:{}", row["id"].as_str().unwrap_or("")));
         }
     }
-    for row in s["storage"].as_array().unwrap() {
+}
+/// Drives mounted, writable and without errors (and their space read, their SMART
+/// passed): recovered.
+fn recovered_drives(s: &Value, unknown: &mut BTreeSet<String>) {
+    for row in s["storage"].as_array().into_iter().flatten() {
         let id = row["id"].as_str().unwrap_or("");
         if row["status"] == "mounted"
             && row["read_only"] != true
@@ -296,6 +324,9 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
             unknown.remove(&format!("smart:{id}"));
         }
     }
+}
+/// What the snapshot says it could not read this time: unknown, never recovered.
+fn not_known_yet(s: &Value, unknown: &mut BTreeSet<String>) {
     for row in s["arrays"].as_array().into_iter().flatten() {
         if row["status"] == "unknown" {
             for kind in ["array-lost", "array-rebuild", "array-errors"] {
@@ -363,7 +394,6 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
     if !s["metrics"]["temperature"].is_number() {
         unknown.insert("temperature".into());
     }
-    (active, unknown, true)
 }
 fn send(cfg: &Value, runtime: &Path, message: &str, priority: u8) -> Result<()> {
     let url = cfg["endpoint"].as_str().unwrap_or("");
@@ -524,24 +554,7 @@ fn plan(
     }
     let mut events = vec![];
     for (id, level) in &active {
-        if !state["entries"][id].is_object() {
-            state["entries"][id] = json!({"first_seen":now,"last_sent":null,"sent_level":null});
-        }
-        // Back before its recovery was sent: the same problem, still the one sent.
-        if let Some(row) = state["entries"][id].as_object_mut() {
-            row.remove("cleared_at");
-        }
-        let row = &state["entries"][id];
-        let first = row["first_seen"]
-            .as_f64()
-            .filter(|t| t.is_finite() && *t <= now)
-            .unwrap_or(now);
-        let sent = row["last_sent"]
-            .as_f64()
-            .filter(|t| t.is_finite() && *t <= now);
-        let due = sent.is_none_or(|t| now - t >= repeat as f64)
-            || (level == "critical" && row["sent_level"] == "warning");
-        if due && (now - first >= debounce as f64 || id.starts_with("mount:")) {
+        if problem_due(&mut state["entries"], id, level, now, (debounce, repeat)) {
             events.push((id.clone(), false, level.clone()));
         }
     }
@@ -561,15 +574,7 @@ fn plan(
         }
         if !active.contains_key(&id) && fresh && !unknown.contains(&id) && !listed.unread(&id) {
             if state["entries"][&id]["last_sent"].is_number() {
-                // A recovery is sent once it lasted as long as a problem must before it is
-                // sent: one that lasted a moment sent RECOVERED, then the alert again
-                // (deep check 306).
-                let cleared = state["entries"][&id]["cleared_at"]
-                    .as_f64()
-                    .filter(|t| t.is_finite() && *t <= now)
-                    .unwrap_or(now);
-                state["entries"][&id]["cleared_at"] = json!(cleared);
-                if now - cleared >= debounce as f64 {
+                if recovery_due(&mut state["entries"][&id], now, debounce) {
                     events.push((id, true, "recovered".into()));
                 }
             } else {
@@ -578,6 +583,39 @@ fn plan(
         }
     }
     (state, events)
+}
+/// A problem that is active now: its entry kept (made on its first sight), and whether a
+/// message is due: it lasted the debounce time (a drive that is gone at once), and was
+/// never sent, was sent `repeat` seconds ago, or got worse (warning to critical).
+fn problem_due(entries: &mut Value, id: &str, level: &str, now: f64, (debounce, repeat): (u64, u64)) -> bool {
+    if !entries[id].is_object() {
+        entries[id] = json!({"first_seen":now,"last_sent":null,"sent_level":null});
+    }
+    // Back before its recovery was sent: the same problem, still the one sent.
+    if let Some(row) = entries[id].as_object_mut() {
+        row.remove("cleared_at");
+    }
+    let row = &entries[id];
+    let first = row["first_seen"]
+        .as_f64()
+        .filter(|t| t.is_finite() && *t <= now)
+        .unwrap_or(now);
+    let sent = row["last_sent"]
+        .as_f64()
+        .filter(|t| t.is_finite() && *t <= now);
+    let due = sent.is_none_or(|t| now - t >= repeat as f64)
+        || (level == "critical" && row["sent_level"] == "warning");
+    due && (now - first >= debounce as f64 || id.starts_with("mount:"))
+}
+/// A recovery is sent once it lasted as long as a problem must before it is sent: one
+/// that lasted a moment sent RECOVERED, then the alert again (deep check 306).
+fn recovery_due(entry: &mut Value, now: f64, debounce: u64) -> bool {
+    let cleared = entry["cleared_at"]
+        .as_f64()
+        .filter(|t| t.is_finite() && *t <= now)
+        .unwrap_or(now);
+    entry["cleared_at"] = json!(cleared);
+    now - cleared >= debounce as f64
 }
 /// Why the last message was not sent: "unreachable" (the alert server was not reached at
 /// all: the internet down, say) or "refused" (it answered no); null when it was sent.
@@ -670,6 +708,22 @@ fn after_test(old: Value, taken: bool, now: f64) -> Value {
 }
 /// How the notifications' settings file is called when it is missing or damaged.
 const WHOSE: &str = "The notifications'";
+/// The message for `events`: one line each (a reminder says "still": it is the problem
+/// already sent, not a new one).
+fn health_message(events: &[(String, bool, String)], entries: &Value) -> String {
+    let mut message = String::from("NekoServer health update\n");
+    for (id, recovered, level) in events {
+        let still = if !*recovered && reminder(&entries[id.as_str()], level) {
+            "still "
+        } else {
+            ""
+        };
+        let state = if *recovered { "RECOVERED" } else { level.as_str() };
+        message.push_str(&format!("{still}{state}: {}\n", label(id).unwrap_or_else(|| id.clone())));
+    }
+    message.push_str("Review the local dashboard and service logs for details.");
+    message
+}
 pub fn run(a: &Args) -> Result<()> {
     common::require_root()?;
     let config_path = a.path("config")?;
@@ -729,25 +783,7 @@ pub fn run(a: &Args) -> Result<()> {
     let mut failed = false;
     if !events.is_empty() && due {
         let urgency = priority(&events, &state["entries"]);
-        let mut message = String::from("NekoServer health update\n");
-        for (id, recovered, level) in &events {
-            // A reminder says so: it is the problem already sent, not a new one.
-            let still = if !*recovered && reminder(&state["entries"][id.as_str()], level) {
-                "still "
-            } else {
-                ""
-            };
-            message.push_str(&format!(
-                "{still}{}: {}\n",
-                if *recovered {
-                    "RECOVERED"
-                } else {
-                    level.as_str()
-                },
-                label(id).unwrap()
-            ));
-        }
-        message.push_str("Review the local dashboard and service logs for details.");
+        let message = health_message(&events, &state["entries"]);
         state["last_attempt"] = json!(now);
         let sent = send(&cfg, &runtime, &message, urgency);
         state["delivery_reason"] = why_not_sent(&sent);
