@@ -22,7 +22,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.52.0'
+VERSION = '0.52.1'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -2178,7 +2178,7 @@ def immich_wanted(config):
 
 def cards_enabled(config):
     """Backup cards are switched on (setup's first page, explanations.EXTRAS
-    "backup_cards"). Off without an answer, also on a server set up before 0.52.0."""
+    "backup_cards"). Off without an answer, also on a server set up before 0.52.1."""
     import explanations
 
     return explanations.extra_state(config, explanations.EXTRA_BY_ID['backup_cards']) is True
@@ -2258,7 +2258,7 @@ MONTHLY_DEFAULT = '02:30'  # the monthly check on the 1st, and the weekly app up
 # the same minute: the music copy first, then the app snapshot, then this PC's own
 # settings. The Immich database copy of the old daily photo schedule went two hours before.
 NIGHTLY_OFFSETS = {'music': -30, 'app': 0, 'host': 60, 'photo_database': -120, 'cards': 120}
-# The backup cards (0.52.0) go an hour after the last of them (this PC's settings), so the
+# The backup cards (0.52.1) go an hour after the last of them (this PC's settings), so the
 # copy onto a card never waits for the jobs' lock behind a nightly backup.
 # In the weekly photo schedule the Immich database copy goes just before the USB copy,
 # which takes it along (Sunday 02:15 before 03:00, as it always was).
@@ -2401,7 +2401,7 @@ def _own_time(config, section, key, default):
 
 def job_times(config):
     """When each scheduled job runs, as its timer is written: app (the media apps'
-    snapshot), music, host (this PC's own settings), cards (the backup cards, 0.52.0),
+    snapshot), music, host (this PC's own settings), cards (the backup cards, 0.52.1),
     photo_database (the daily Immich database copy of the old photo schedule),
     photo_database_weekly and
     photo_database_weekly_day (the same copy just before the USB copy: the day before it
