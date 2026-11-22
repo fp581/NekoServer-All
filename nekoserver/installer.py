@@ -718,6 +718,96 @@ def finished(plan, tally, log):
     return WAITING if tally.failures else 0
 
 
+def checked_plan(args, config, modules, previous):
+    """The steps of this run, in order, checked with the settings; and the lines about
+    settings that look mistyped."""
+    selected = selected_steps(args, config, previous, modules)
+    plan = ordered(modules, selected)
+    if getattr(args, 'retry_step', None):
+        plan = [name for name in plan if name in selected]
+    from config_checks import validate
+
+    validate(config, plan)
+    from config_checks import unknown_settings
+
+    mistyped = unknown_settings(config, template_settings(ROOT), Path(args.config).name)
+    return plan, mistyped
+
+
+def opened_log(args, state_dir, plan, previous, mistyped):
+    """The run's log, opened, with the profile run (a full run with --apply) and the
+    mistyped settings written in it."""
+    log = RunLog(safe_path(state_dir / (INSTALL_LOG if args.apply else 'inspection.log')))
+    roll_log(log.path)
+    if args.apply and not (args.module or args.retry_failed or getattr(args, 'retry_step', None)):
+        record_profile(safe_path(state_dir / PROFILE_FILE), args.profile, plan, previous, log)
+    for line in mistyped:
+        log(line)
+    return log
+
+
+def run_context(args, config, log, as_read, plan, previous):
+    """What each step is given: the settings, the log, and what the run is."""
+    ctx = Context(config, log, apply=args.apply, config_path=args.config, saved=as_read)
+    ctx.plan = plan  # the steps of this run (the drives step asks the backup times only when one writes a timer)
+    ctx.only = args.module  # the one step asked for by name (install.sh --module), or None
+    ctx.previous = dict(previous)  # each step as the last run left it
+    return ctx
+
+
+def moves_to_the_ssd(args, name, states):
+    """Whether the state and the log move onto the SSD now: the storage step has just
+    mounted it, in a run with --apply that keeps its state in the usual place."""
+    return (
+        name == 'storage'
+        and states[name]['status'] == 'success'
+        and args.apply
+        and Path(args.state_dir).expanduser() == DEFAULT_STATE
+    )
+
+
+class Run:
+    """One run's steps as they go: the states, the state file, and the tally."""
+
+    def __init__(self, args, config, modules, ctx, states, state_path):
+        self.args = args
+        self.config = config
+        self.modules = modules
+        self.ctx = ctx
+        self.states = states
+        self.state_path = state_path
+        self.complete_status = 'success' if args.apply else 'inspected'
+        self.tally = Tally()
+
+    def step(self, name, plan, log):
+        """One step: held up by a step it needs, or run and recorded."""
+        held = waiting_for(name, self.modules, self.states, self.complete_status)
+        if held:
+            self.states[name] = blocked(held)
+            log(f'BLOCKED {name}: {self.states[name]["reason"]}')
+            setup_progress.step(name, 'blocked', self.states[name]['reason'])
+            self.tally.failures.append(name)
+            atomic_json_write(self.state_path, self.states)
+            return
+        result = tried_step(name, self.modules, self.ctx, self.states, self.state_path, log, self.args.apply)
+        record_outcome(name, result, self.states, self.complete_status, self.tally, log)
+        setup_progress.step(name, self.states[name]['status'], self.states[name].get('reason', ''))
+        if moves_to_the_ssd(self.args, name, self.states):
+            self.states, self.state_path = state_to_the_ssd(self.config, self.states, plan, name, log, self.state_path)
+        atomic_json_write(self.state_path, self.states)
+
+
+def after_the_steps(args, config, states, log):
+    """With --apply: the failed steps noted for the dashboard, and old releases tidied."""
+    if args.apply:
+        note_unfinished(config, states, log)
+        # Also after a run with a step still pending (Tailscale not signed in, say), or
+        # earlier releases' files would pile up with every upgrade: only folders no service
+        # or drop-in names any more go.
+        tidy_old_releases(config, states, log)
+        settle_upgrade(config, log)
+
+
 def _execute(args, root=ROOT):
     config = read_json(Path(args.config))
     as_read = copy.deepcopy(config)  # what the run changes is saved on the file as it is then
@@ -730,16 +820,7 @@ def _execute(args, root=ROOT):
     state_path = safe_path(state_dir / 'state.json')
     safe_path(state_dir / INSTALL_LOG)
     previous = previous_states(state_path, args)
-    selected = selected_steps(args, config, previous, modules)
-    plan = ordered(modules, selected)
-    if getattr(args, 'retry_step', None):
-        plan = [name for name in plan if name in selected]
-    from config_checks import validate
-
-    validate(config, plan)
-    from config_checks import unknown_settings
-
-    mistyped = unknown_settings(config, template_settings(ROOT), Path(args.config).name)
+    plan, mistyped = checked_plan(args, config, modules, previous)
     if args.check or args.dry_run:
         for line in mistyped:
             print(line)
@@ -752,54 +833,20 @@ def _execute(args, root=ROOT):
     make_state_folder(on_the_ssd, state_dir, given, config)
     if not args.apply:
         state_path = safe_path(state_dir / 'inspection-state.json')
-    log = RunLog(safe_path(state_dir / (INSTALL_LOG if args.apply else 'inspection.log')))
-    roll_log(log.path)
-    states = dict(previous) if args.apply else {}
-    complete_status = 'success' if args.apply else 'inspected'
-    tally = Tally()
-    if args.apply and not (args.module or args.retry_failed or getattr(args, 'retry_step', None)):
-        record_profile(safe_path(state_dir / PROFILE_FILE), args.profile, plan, previous, log)
-    for line in mistyped:
-        log(line)
-    ctx = Context(config, log, apply=args.apply, config_path=args.config, saved=as_read)
-    ctx.plan = plan  # the steps of this run (the drives step asks the backup times only when one writes a timer)
-    ctx.only = args.module  # the one step asked for by name (install.sh --module), or None
-    ctx.previous = dict(previous)  # each step as the last run left it
+    log = opened_log(args, state_dir, plan, previous, mistyped)
+    ctx = run_context(args, config, log, as_read, plan, previous)
     save_profiles(ctx, added, profiles_changed, args.apply)
     review_retention(ctx, args.apply)
     # The steps this run goes through (with the ones they need), for the setup window and
     # the finishing screen to count the same steps as the log.
     if not getattr(args, 'retry_step', None):
         setup_progress.event('plan', steps=list(plan))
+    run = Run(args, config, modules, ctx, dict(previous) if args.apply else {}, state_path)
     for name in plan:
-        held = waiting_for(name, modules, states, complete_status)
-        if held:
-            states[name] = blocked(held)
-            log(f'BLOCKED {name}: {states[name]["reason"]}')
-            setup_progress.step(name, 'blocked', states[name]['reason'])
-            tally.failures.append(name)
-            atomic_json_write(state_path, states)
-            continue
-        result = tried_step(name, modules, ctx, states, state_path, log, args.apply)
-        record_outcome(name, result, states, complete_status, tally, log)
-        setup_progress.step(name, states[name]['status'], states[name].get('reason', ''))
-        if (
-            name == 'storage'
-            and states[name]['status'] == 'success'
-            and args.apply
-            and Path(args.state_dir).expanduser() == DEFAULT_STATE
-        ):
-            states, state_path = state_to_the_ssd(config, states, plan, name, log, state_path)
-        atomic_json_write(state_path, states)
-    refresh_settings(args, states, complete_status, modules, config, log)
-    if args.apply:
-        note_unfinished(config, states, log)
-        # Also after a run with a step still pending (Tailscale not signed in, say), or
-        # earlier releases' files would pile up with every upgrade: only folders no service
-        # or drop-in names any more go.
-        tidy_old_releases(config, states, log)
-        settle_upgrade(config, log)
-    return finished(plan, tally, log)
+        run.step(name, plan, log)
+    refresh_settings(args, run.states, run.complete_status, modules, config, log)
+    after_the_steps(args, config, run.states, log)
+    return finished(plan, run.tally, log)
 
 
 def note_unfinished(config, states, log):

@@ -103,7 +103,7 @@ def fingerprint(config, profile):
 
 def properties(out):
     """`systemctl show`'s answer (one name=value per line) as a dict."""
-    return {name: value for name, value in (line.split('=', 1) for line in out.splitlines() if '=' in line)}
+    return dict(line.split('=', 1) for line in out.splitlines() if '=' in line)
 
 
 def retired_timer(unit):

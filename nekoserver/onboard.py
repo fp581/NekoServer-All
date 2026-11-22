@@ -311,19 +311,17 @@ def connector_command(a, apps, root, media):
     return cmd, has_connector
 
 
-def main(argv=None):
-    p = arguments()
-    a = p.parse_args(argv)
-    refuse_option_mixes(p, a)
-    config = read_settings(a.config)
-    apps = apps_set_up(p, config)
-    if not 0 <= a.wait <= 600:
-        p.error('--wait must be 0..600')
-    root, media = the_two_drives(p, a, config)
+def wait_for_apps(a, apps):
+    """--wait: up to that many seconds for the apps to answer, saying which still do not."""
     if not a.skip_http and a.wait:
         pending = wait_ready(apps, a.wait)
         if pending:
             print('Startup wait ended; still unavailable:', ', '.join(pending))
+
+
+def first_report(a, config, root, media, apps):
+    """The report before any step: written, printed, and returned with what it was made
+    from (the music library, the films' folder) and where it is written."""
     music = music_library({**config, 'data_mount': str(root), 'media_mount': str(media)})
     # The films and shows are looked for on the drive they are placed on (the media drive
     # unless placed elsewhere, or the folder given by hand).
@@ -334,14 +332,12 @@ def main(argv=None):
     for r in findings:
         print(f"{r['status']:>11}  {r['check']}")
     print('Report:', output)
-    if a.report_only and (a.sources or a.import_sources):
-        p.error('--report-only cannot configure or import sources')
-    source_results = source_steps(a, root, media)
-    findings += source_results
-    library_results = library_step(a, config, root, films, apps) if a.libraries else []
-    findings += library_results
-    if a.report_only or not a.configure:
-        return finish_without_connector(a, config, apps, root, media, output, findings)
+    return music, films, findings, output
+
+
+def run_connector(p, a, apps, root, media):
+    """media-connect.py for the apps set up, when it has anything to connect: its exit
+    code (0 when it did not run) and whether it ran."""
     script = Path(__file__).with_name('media-connect.py')
     if not script.is_file():
         p.error('media-connect.py is missing')
@@ -355,11 +351,11 @@ def main(argv=None):
         print('Configuring selected Arr root folders, Prowlarr and download-client connections.')
         print('Indexer selection is optional; existing sources will be preserved.')
         result = run_program(script, cmd)
-    provider_results = provider_step(a, config, root, apps) if a.request_providers else []
-    findings = report(root, films, not a.skip_http, apps, music)
-    findings += source_results
-    findings += library_results
-    findings += provider_results
+    return result, has_connector
+
+
+def final_findings(a, findings, has_connector, result):
+    """The connector's own row and, without HTTP checks, the end-to-end reminder."""
     if has_connector:
         findings.append({'check': 'connector', 'status': 'pass' if result == 0 else 'fail'})
     if a.skip_http:
@@ -370,6 +366,35 @@ def main(argv=None):
                 'reason': 'Complete remaining accounts/request providers and verify imports/playback on the server',
             }
         )
+    return findings
+
+
+def main(argv=None):
+    p = arguments()
+    a = p.parse_args(argv)
+    refuse_option_mixes(p, a)
+    config = read_settings(a.config)
+    apps = apps_set_up(p, config)
+    if not 0 <= a.wait <= 600:
+        p.error('--wait must be 0..600')
+    root, media = the_two_drives(p, a, config)
+    wait_for_apps(a, apps)
+    music, films, findings, output = first_report(a, config, root, media, apps)
+    if a.report_only and (a.sources or a.import_sources):
+        p.error('--report-only cannot configure or import sources')
+    source_results = source_steps(a, root, media)
+    findings += source_results
+    library_results = library_step(a, config, root, films, apps) if a.libraries else []
+    findings += library_results
+    if a.report_only or not a.configure:
+        return finish_without_connector(a, config, apps, root, media, output, findings)
+    result, has_connector = run_connector(p, a, apps, root, media)
+    provider_results = provider_step(a, config, root, apps) if a.request_providers else []
+    findings = report(root, films, not a.skip_http, apps, music)
+    findings += source_results
+    findings += library_results
+    findings += provider_results
+    final_findings(a, findings, has_connector, result)
     if not a.skip_http:
         findings += readiness(config, root, media)
     safe_report(output, findings)
