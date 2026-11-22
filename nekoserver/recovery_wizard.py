@@ -1990,12 +1990,27 @@ PASSWORD_FILES = ('secrets/accounts',)
 APP_PASSWORD_FILES = ('compose/*/.env', 'appdata/nextcloud/html/config/config.php')
 
 
+def in_english():
+    """The environment for a program whose messages are read here (tar's "Not found in
+    archive"): its messages in English whatever language the PC is set to. On a PC in
+    German, tar said "Nicht im Archiv gefunden" and a password list without an app's .env
+    was refused as damaged (review of 0.52). LANGUAGE is dropped: it can override the
+    language of the messages even under LC_ALL."""
+    found = {key: value for key, value in os.environ.items() if key != 'LANGUAGE'}
+    found['LC_ALL'] = 'C'
+    return found
+
+
 def not_found_only(said, optional):
     """Whether tar's complaints are only that some of the `optional` names were not in
     the archive (an app not installed has no .env)."""
-    lines = [line for line in said.splitlines() if line.strip()]
-    missing = [f'tar: {name}: Not found in archive' for name in optional]
-    return all(line in missing or line.startswith('tar: Exiting with failure status') for line in lines)
+    missing = {f'{name}: Not found in archive' for name in optional}
+    for line in (line.strip() for line in said.splitlines()):
+        # tar starts each line with its own name as it was started ("tar:", "/usr/bin/tar:").
+        _, _, words = line.partition('tar: ')
+        if line and words not in missing and not words.startswith('Exiting with failure status'):
+            return False
+    return True
 
 
 def take_out_checked(run, name, members, target, optional=()):
@@ -2023,6 +2038,7 @@ def take_out_checked(run, name, members, target, optional=()):
             + list(optional),
             stdin=subprocess.PIPE,
             stderr=errors,
+            env=in_english(),
         )
         for chunk in iter(lambda: archive.read(1024 * 1024), b''):
             digest.update(chunk)
