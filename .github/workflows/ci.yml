@@ -1,9 +1,12 @@
 name: CI
 
+# CI runs once, when a pull request is opened (or reopened, or marked ready for
+# review), not for every commit pushed to a branch or to a pull request after that.
+# To check a pull request again after more commits: Actions -> CI -> Run workflow,
+# on its branch (or: gh workflow run ci.yml --ref <branch>).
 on:
-  push:
-    branches: [main]
   pull_request:
+    types: [opened, reopened, ready_for_review]
   workflow_dispatch:
 
 permissions:
