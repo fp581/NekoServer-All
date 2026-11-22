@@ -485,7 +485,9 @@ fn publish(root: &Path, text: &dyn Fn(&mut dyn Write) -> Result<()>) -> Result<(
             .open(&temp)?;
         let mut out = std::io::BufWriter::with_capacity(1 << 16, f);
         text(&mut out)?;
-        let f = out.into_inner().map_err(std::io::IntoInnerError::into_error)?;
+        let f = out
+            .into_inner()
+            .map_err(std::io::IntoInnerError::into_error)?;
         f.sync_all()?;
         drop(f);
         common::safe(&root.join(LEDGER))?;

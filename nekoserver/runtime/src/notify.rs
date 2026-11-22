@@ -587,7 +587,13 @@ fn plan(
 /// A problem that is active now: its entry kept (made on its first sight), and whether a
 /// message is due: it lasted the debounce time (a drive that is gone at once), and was
 /// never sent, was sent `repeat` seconds ago, or got worse (warning to critical).
-fn problem_due(entries: &mut Value, id: &str, level: &str, now: f64, (debounce, repeat): (u64, u64)) -> bool {
+fn problem_due(
+    entries: &mut Value,
+    id: &str,
+    level: &str,
+    now: f64,
+    (debounce, repeat): (u64, u64),
+) -> bool {
     if !entries[id].is_object() {
         entries[id] = json!({"first_seen":now,"last_sent":null,"sent_level":null});
     }
@@ -718,8 +724,15 @@ fn health_message(events: &[(String, bool, String)], entries: &Value) -> String 
         } else {
             ""
         };
-        let state = if *recovered { "RECOVERED" } else { level.as_str() };
-        message.push_str(&format!("{still}{state}: {}\n", label(id).unwrap_or_else(|| id.clone())));
+        let state = if *recovered {
+            "RECOVERED"
+        } else {
+            level.as_str()
+        };
+        message.push_str(&format!(
+            "{still}{state}: {}\n",
+            label(id).unwrap_or_else(|| id.clone())
+        ));
     }
     message.push_str("Review the local dashboard and service logs for details.");
     message

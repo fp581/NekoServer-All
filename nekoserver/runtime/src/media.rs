@@ -569,14 +569,22 @@ fn library_id(libraries: &[Value], dir: &str, kind: &str) -> Option<String> {
             })
         })
         .collect::<Vec<_>>();
-    if found.len() != 1 || found[0]["CollectionType"] != kind || text(&found[0]["ItemId"]).is_empty() {
+    if found.len() != 1
+        || found[0]["CollectionType"] != kind
+        || text(&found[0]["ItemId"]).is_empty()
+    {
         return None;
     }
     Some(text(&found[0]["ItemId"]).to_string())
 }
 /// Jellyfin's first-run account, NekoServer's key and its two libraries. `server_id` and
 /// `ids` get what Seerr's check compares with.
-fn jellyfin_ready(data: &Path, saved: &Value, server_id: &mut String, ids: &mut Vec<String>) -> Result<bool> {
+fn jellyfin_ready(
+    data: &Path,
+    saved: &Value,
+    server_id: &mut String,
+    ids: &mut Vec<String>,
+) -> Result<bool> {
     let info = get("jellyfin", "/System/Info/Public", None)?;
     *server_id = text(&info["Id"]).to_string();
     if server_id.is_empty() {

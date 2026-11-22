@@ -1504,7 +1504,8 @@ impl Probe<'_> {
             let state = &info[0]["State"];
             if state["Running"] != true
                 || state["Restarting"] == true
-                || ["unhealthy", "starting"].contains(&state["Health"]["Status"].as_str().unwrap_or(""))
+                || ["unhealthy", "starting"]
+                    .contains(&state["Health"]["Status"].as_str().unwrap_or(""))
             {
                 return Err(Error::new("Container not healthy"));
             }
@@ -1532,7 +1533,11 @@ impl Probe<'_> {
                 host,
             );
         }
-        let binding = compose(self.file, self.project, &["port", self.service, &port.to_string()])?;
+        let binding = compose(
+            self.file,
+            self.project,
+            &["port", self.service, &port.to_string()],
+        )?;
         let published = binding
             .trim()
             .strip_prefix("127.0.0.1:")
@@ -1569,7 +1574,16 @@ impl Probe<'_> {
         compose(
             self.file,
             self.project,
-            &["exec", "-T", "--user", "www-data", "nextcloud", "php", "-r", &script],
+            &[
+                "exec",
+                "-T",
+                "--user",
+                "www-data",
+                "nextcloud",
+                "php",
+                "-r",
+                &script,
+            ],
         )
         .map_err(|e| Error::new(&format!("{PROBE_FAILED}{e}")))?;
         Ok(())
@@ -2053,7 +2067,12 @@ fn stop_every_app(journal: &Value, snapshot: &Path) -> Result<()> {
 }
 /// The snapshot unpacked for the rollback: its app data onto the SSD's stage (checked
 /// against the archive), its media paths onto the HDD's when it has any.
-fn unpack_rollback(cfg: &Value, journal: &mut Value, snapshot: &Path, snapshot_manifest: &Value) -> Result<()> {
+fn unpack_rollback(
+    cfg: &Value,
+    journal: &mut Value,
+    snapshot: &Path,
+    snapshot_manifest: &Value,
+) -> Result<()> {
     // The app data is unpacked straight onto the SSD below; the HDD stage only
     // ever serves media paths, so it is unpacked only when the snapshot has any.
     let has_media = snapshot_manifest["paths"]["media"]
@@ -2099,7 +2118,12 @@ fn unpack_rollback(cfg: &Value, journal: &mut Value, snapshot: &Path, snapshot_m
 }
 /// Every path the rollback may restore put back from its stage, each noted in the
 /// journal once it is back (a resumed rollback skips those).
-fn put_back_all(cfg: &Value, journal: &mut Value, snapshot: &Path, snapshot_manifest: &Value) -> Result<()> {
+fn put_back_all(
+    cfg: &Value,
+    journal: &mut Value,
+    snapshot: &Path,
+    snapshot_manifest: &Value,
+) -> Result<()> {
     let apps: Vec<String> = journal["models"]
         .as_object()
         .unwrap()
