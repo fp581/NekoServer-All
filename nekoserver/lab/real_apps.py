@@ -163,8 +163,23 @@ def set_up_jellyfin(root):
     query = urllib.parse.urlencode(
         {'name': 'TV Shows', 'collectionType': 'tvshows', 'paths': '/data/tv', 'refreshLibrary': 'true'}
     )
-    jellyfin.call('/Library/VirtualFolders?' + query, 'POST', {'LibraryOptions': {}})
-    show = wait_for('Jellyfin finds the show with its TVDB ID', lambda: the_show_in_jellyfin(jellyfin, user))
+    jellyfin.call('/Library/VirtualFolders?' + query, 'POST', media_libraries.new_library_options())
+    libraries = media_libraries.folders(jellyfin)
+    check(
+        bool(media_libraries.matching(libraries, 'tv', 'TV Shows', 'tvshows')),
+        'Jellyfin keeps a TV library at /data/tv (as setup checks it)',
+        [(f.get('Name'), f.get('Locations')) for f in libraries],
+    )
+    try:
+        show = wait_for('Jellyfin finds the show with its TVDB ID', lambda: the_show_in_jellyfin(jellyfin, user))
+    except Failed as exc:
+        everything = jellyfin.call(
+            '/Items?' + urllib.parse.urlencode({'userId': user, 'recursive': 'true', 'fields': 'ProviderIds,Path'})
+        ).get('Items', [])
+        raise Failed(
+            f'{exc}\n   Jellyfin lists: '
+            + json.dumps([(i.get('Type'), i.get('Name'), i.get('Path'), i.get('ProviderIds')) for i in everything])
+        ) from None
     check(True, f"Jellyfin lists {show['Name']} (TVDB {SHOW['tvdb']}) at {show.get('Path')}")
     has = wait_for(
         'Jellyfin lists both episodes',
