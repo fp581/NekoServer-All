@@ -91,9 +91,9 @@ def safe_report(output, results):
 
 def readiness_exit(findings):
     """2: a check failed; 1: an automatic check still needs setup; 0: every automatic
-    check passed. Witnessed tests (a real playback) are reported but never counted:
-    no rerun of this script could change them."""
-    automatic = [x for x in findings if x.get('check') not in media_readiness.WITNESSED]
+    check passed. Witnessed tests (a real playback) and extras are reported but never
+    counted (media_readiness.REPORTED_ONLY)."""
+    automatic = [x for x in findings if x.get('check') not in media_readiness.REPORTED_ONLY]
     if any(x['status'] == 'fail' for x in automatic):
         return 2
     if any(x['status'] != 'pass' for x in automatic):
@@ -223,7 +223,12 @@ def main(argv=None):
         import existing_page
 
         library_results = media_libraries.configure(
-            root, films, a.apply, apps, more=existing_page.libraries(config, a.apply)
+            root,
+            films,
+            a.apply,
+            apps,
+            more=existing_page.libraries(config, a.apply),
+            search_and_request=config.get('onboarding', {}).get('search_and_request_in_jellyfin', True),
         )
         # Navidrome's library for the person's own music folder is the Music step's
         # (modules/music.py): it must not wait for Jellyfin's libraries.

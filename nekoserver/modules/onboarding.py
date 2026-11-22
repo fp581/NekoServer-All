@@ -203,14 +203,17 @@ CONNECTOR = (
 def first_problem(config):
     """The first check onboarding's report (reports/onboarding.json on the SSD) did not
     pass, with its reason; a failed one before one still to set up. Tests only a person
-    can do (a real playback) are left out: they never hold setup up."""
-    from media_readiness import WITNESSED
+    can do (a real playback) and extras (media_readiness.REPORTED_ONLY) are left out:
+    they never hold setup up."""
+    from media_readiness import REPORTED_ONLY
 
     try:
         rows = json.loads((Path(config['data_mount']) / 'reports' / 'onboarding.json').read_text()).get('checks', [])
     except (OSError, ValueError, AttributeError):
         rows = []
-    rows = [r for r in rows if isinstance(r, dict) and r.get('status') != 'pass' and r.get('check') not in WITNESSED]
+    rows = [
+        r for r in rows if isinstance(r, dict) and r.get('status') != 'pass' and r.get('check') not in REPORTED_ONLY
+    ]
     for wanted in ('fail', 'needs_setup'):
         row = next((r for r in rows if r.get('status') == wanted), None)
         if row is not None:

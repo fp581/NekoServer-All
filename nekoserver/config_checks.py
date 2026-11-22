@@ -72,6 +72,7 @@ def validate(config, plan):
             'configure_indexers',
             'configure_libraries',
             'configure_request_providers',
+            'search_and_request_in_jellyfin',
         ),
         'docker': ('install_engine', 'enable_service'),
         'photos': ('deploy_immich',),

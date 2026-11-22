@@ -2,6 +2,11 @@
 
 ## v0.52.0 — (in progress)
 
+### Added: search and request in Jellyfin
+- **Jellyfin's search also finds films and shows you don't have**, with a button to ask for them; Seerr has them downloaded and they arrive in Jellyfin. In a browser and the official Jellyfin phone apps (not the TV apps). Each Jellyfin user is added to Seerr the first time they search, so requests are in their name.
+- **Setup does it all, when Jellyfin and Seerr are both set up**: it adds the Jellyfin Enhanced plugin's repository to Jellyfin, installs the plugin by its ID, restarts Jellyfin once for it, and connects it to Seerr on the apps' own network with Seerr's key. A run that only checks changes nothing; one with everything set already changes nothing either.
+- **It never holds setup up.** When Jellyfin has no build of the plugin for its version (or can't reach its repository), or Jellyfin does not run it, setup's last page says so and the rest finishes: Seerr works as before, and the next setup run tries again. `"search_and_request_in_jellyfin": false` under `"onboarding"` leaves it out.
+
 ### Added: Media folders page
 - **A Media folders page on the dashboard.** After setup, at any time: for films, shows and music it shows NekoServer's own library and each folder of yours connected to it (Ready, or why not), and where new downloads go. Add a folder (type it, or pick one from the drives and shares the PC has mounted), use it where it is or copy its files into the library, send new downloads to a folder or back to the library, or take a folder away. Your files are never deleted, moved or changed. It needs the PIN on every device, and the change is made by the same code setup uses.
 - **More than one folder of each kind.** Films, shows and music can each have up to 8 folders of yours connected, used where they are, on the page and in setup (which asks "Is any other folder holding your films?" until you answer That is all). New downloads still go to one place. Each folder keeps its place in the apps for as long as it is connected, so taking one away moves no other, and the folders a 0.51 server had stay exactly where they were.
