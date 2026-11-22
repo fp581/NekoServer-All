@@ -58,7 +58,7 @@ def validate_source(source):
     elif kind == 'remote':
         # Remote shares are REFERENCES ONLY until separately mounted and tested.
         uri = plain_url(source.get('uri', ''))
-        if not (uri.startswith('smb://') or uri.startswith('nfs://')):
+        if not uri.startswith(('smb://', 'nfs://')):
             raise ValueError('Remote reference must start smb:// or nfs://')
         if any(ch in uri for ch in '\r\n\x00') or '@' in uri.split('://', 1)[1].split('/')[0]:
             raise ValueError('Do not embed credentials in remote references')

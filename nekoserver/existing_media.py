@@ -1247,7 +1247,7 @@ def navidrome_share(call, library, name, listeners):
                 call('PUT', theirs, {'libraryIds': [*have, library]})
                 if library not in [x['id'] for x in navidrome_listed(call, theirs)]:
                     raise RuntimeError('Library access was not retained')
-        except (RuntimeError, LookupError, KeyError):
+        except (RuntimeError, LookupError):
             raise media_libraries.SetupRequired(NOT_SHARED.format(user=user['userName'], name=name)) from None
 
 

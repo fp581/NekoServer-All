@@ -30,7 +30,7 @@ def checked_mount(target):
 
 
 def version_ok(value):
-    return bool(re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', value))
+    return bool(re.fullmatch(r'v\d+\.\d+\.\d+', value, re.ASCII))
 
 
 def resolve_immich_version(value, opener=urllib.request.urlopen):

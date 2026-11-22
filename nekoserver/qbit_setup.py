@@ -61,7 +61,7 @@ class Client:
         try:
             with self.opener.open(req, timeout=10) as response:
                 payload = response.read(3_000_000).decode()
-        except (OSError, urllib.error.URLError) as exc:
+        except OSError as exc:  # URLError and HTTPError are OSErrors
             code = None
             if isinstance(exc, urllib.error.HTTPError):
                 code = exc.code

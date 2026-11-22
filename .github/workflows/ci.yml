@@ -46,7 +46,7 @@ jobs:
       - name: Build the runtime for this PC
         run: python3 runtime/build.py
       - name: Compile every module
-        run: python -m py_compile *.py modules/*.py
+        run: python -m py_compile ./*.py ./modules/*.py
       - name: Lint (syntax errors and undefined names)
         # Pinned, so lint results only change when this line does.
         run: pipx run ruff==0.16.8 check --select E9,F63,F7,F82 --output-format github .
