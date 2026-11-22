@@ -392,6 +392,115 @@ pub fn run(a: &Args) -> Result<()> {
         snapshot(&job.cfgpath, &job.cfg, &job.data, &job.media, &selected)
     })
 }
+/// The Samba server setup manages, checked before its files are copied: (whether it is
+/// running, its unit). A standalone Samba server only (not AD/DC or winbind), with
+/// NekoServer's own settings and its databases in their usual places.
+fn managed_samba() -> Result<(bool, &'static str)> {
+    probe_absent(&["pgrep", "-x", "winbindd|nmbd|samba"])?;
+    let (unit, state) = samba_state()?;
+    if state == "absent" {
+        return Ok((false, unit));
+    }
+    if common::bytes(Path::new("/etc/samba/smb.conf"), 64000)?
+        != b"[global]\n   include = /etc/samba/nekoserver.conf\n"
+    {
+        return Err(Error::new("Unmanaged Samba refused"));
+    }
+    for parameter in ["state directory", "private dir"] {
+        let value = command(&["testparm", "-s", &format!("--parameter-name={parameter}")])?;
+        let path = common::safe(Path::new(&value))?;
+        if !path.starts_with("/etc/samba") && !path.starts_with("/var/lib/samba") {
+            return Err(Error::new("Unsupported Samba database location"));
+        }
+    }
+    if command(&["testparm", "-s", "--parameter-name=passdb backend"])? != "tdbsam" {
+        return Err(Error::new("Unsupported Samba authentication backend"));
+    }
+    Ok((state == "active", unit))
+}
+/// Room on the HDD for every file and the reserve setup chose.
+fn room_for(cfg: &Value, root: &Path, files: &[Value], media: &Path) -> Result<()> {
+    let total = files.iter().try_fold(0u64, |n, r| {
+        n.checked_add(r["size"].as_u64().unwrap_or(0))
+            .ok_or_else(|| Error::new("Snapshot too large"))
+    })?;
+    let reserve = cfg["host_backup"]["minimum_free_bytes"]
+        .as_u64()
+        .ok_or_else(|| Error::new("Free-space reserve required"))?;
+    if !(1024 * 1024 * 1024..=1024 * 1024 * 1024 * 1024).contains(&reserve) {
+        return Err(Error::new("Invalid free-space reserve"));
+    }
+    let have = common::free_bytes(root)?;
+    let needed = total as u128 + reserve as u128;
+    if have < needed {
+        return Err(Error::new(&short_of_space(media, have, needed, reserve)));
+    }
+    Ok(())
+}
+/// Every listed file copied into the snapshot's payload, with its checksum recorded (a
+/// link as a small file of its target, a folder made).
+fn copy_files(files: &mut [Value], selected: &[Source], payload: &Path) -> Result<()> {
+    for row in files {
+        let rel = Path::new(row["path"].as_str().unwrap());
+        let (id, source, _, _) = selected.iter().find(|s| rel.starts_with(&s.0)).unwrap();
+        let suffix = rel.strip_prefix(id).unwrap();
+        let original = if suffix.as_os_str().is_empty() {
+            source.clone()
+        } else {
+            source.join(suffix)
+        };
+        let target = payload.join(rel);
+        common::directory(target.parent().unwrap(), 0o700)?;
+        if row["kind"] == "directory" {
+            common::directory(&target, 0o700)?;
+        } else if row["kind"] == "symlink" {
+            common::atomic(
+                &target,
+                row["link_target"].as_str().unwrap().as_bytes(),
+                0o600,
+            )?;
+            row["size"] = json!(fs::metadata(&target)?.len());
+            row["sha256"] = json!(common::digest(&target)?);
+        } else {
+            row["sha256"] = json!(app_snapshot::copy_file(&original, &target)?);
+        }
+    }
+    Ok(())
+}
+/// The sources listed again after the copy: the same files, else the run is not kept
+/// and the error names what changed.
+fn unchanged_while_copied(files: &[Value], missing: &[String], selected: &[Source]) -> Result<()> {
+    let (after, after_missing, _) = inventory(selected)?;
+    let mut before = files.to_vec();
+    for row in &mut before {
+        row.as_object_mut().unwrap().remove("sha256");
+        if row["kind"] == "symlink" {
+            row["size"] = json!(0);
+        }
+    }
+    if before == after && missing == after_missing.as_slice() {
+        return Ok(());
+    }
+    let mut changed = changed_paths(&before, &after, selected);
+    changed.extend(
+        missing
+            .iter()
+            .chain(&after_missing)
+            .filter(|m| !(missing.contains(m) && after_missing.contains(m)))
+            .cloned(),
+    );
+    let shown = changed
+        .iter()
+        .take(3)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = changed.len().saturating_sub(3);
+    Err(Error::new(&format!(
+        "Host inventory changed during snapshot: {shown}{} changed while it was copied, so this run is not kept; the next one tries again",
+        if more > 0 { format!(" and {more} more") } else { String::new() }
+    )))
+}
 fn snapshot(
     cfgpath: &Path,
     cfg: &Value,
@@ -405,34 +514,7 @@ fn snapshot(
     let samba = cfg["host_backup"]["samba"]
         .as_bool()
         .ok_or_else(|| Error::new("Samba policy required"))?;
-    let mut samba_unit = "";
-    let active = if samba {
-        // This installer supports a standalone Samba server, not AD/DC or winbind.
-        probe_absent(&["pgrep", "-x", "winbindd|nmbd|samba"])?;
-        let (unit, state) = samba_state()?;
-        samba_unit = unit;
-        if state != "absent"
-            && common::bytes(Path::new("/etc/samba/smb.conf"), 64000)?
-                != b"[global]\n   include = /etc/samba/nekoserver.conf\n"
-        {
-            return Err(Error::new("Unmanaged Samba refused"));
-        }
-        if state != "absent" {
-            for parameter in ["state directory", "private dir"] {
-                let value = command(&["testparm", "-s", &format!("--parameter-name={parameter}")])?;
-                let path = common::safe(Path::new(&value))?;
-                if !path.starts_with("/etc/samba") && !path.starts_with("/var/lib/samba") {
-                    return Err(Error::new("Unsupported Samba database location"));
-                }
-            }
-            if command(&["testparm", "-s", "--parameter-name=passdb backend"])? != "tdbsam" {
-                return Err(Error::new("Unsupported Samba authentication backend"));
-            }
-        }
-        state == "active"
-    } else {
-        false
-    };
+    let (active, samba_unit) = if samba { managed_samba()? } else { (false, "") };
     common::directory(Path::new("/etc/nekoserver-backups"), 0o700)?;
     common::atomic_json(
         Path::new(*JOURNAL),
@@ -458,81 +540,10 @@ fn snapshot(
         }
         // Half-made snapshots of runs that failed or were cut off take space too.
         common::clear_leftovers(&root, true)?;
-        let total = files.iter().try_fold(0u64, |n, r| {
-            n.checked_add(r["size"].as_u64().unwrap_or(0))
-                .ok_or_else(|| Error::new("Snapshot too large"))
-        })?;
-        let reserve = cfg["host_backup"]["minimum_free_bytes"]
-            .as_u64()
-            .ok_or_else(|| Error::new("Free-space reserve required"))?;
-        if !(1024 * 1024 * 1024..=1024 * 1024 * 1024 * 1024).contains(&reserve) {
-            return Err(Error::new("Invalid free-space reserve"));
-        }
-        let have = common::free_bytes(&root)?;
-        if have < total as u128 + reserve as u128 {
-            return Err(Error::new(&short_of_space(
-                media,
-                have,
-                total as u128 + reserve as u128,
-                reserve,
-            )));
-        }
+        room_for(cfg, &root, &files, media)?;
         let stage = backup::stage_snapshot(&root)?;
-        let payload = &stage.payload;
-        for row in &mut files {
-            let rel = Path::new(row["path"].as_str().unwrap());
-            let (id, source, _, _) = selected.iter().find(|s| rel.starts_with(&s.0)).unwrap();
-            let suffix = rel.strip_prefix(id).unwrap();
-            let original = if suffix.as_os_str().is_empty() {
-                source.clone()
-            } else {
-                source.join(suffix)
-            };
-            let target = payload.join(rel);
-            common::directory(target.parent().unwrap(), 0o700)?;
-            if row["kind"] == "directory" {
-                common::directory(&target, 0o700)?;
-            } else if row["kind"] == "symlink" {
-                common::atomic(
-                    &target,
-                    row["link_target"].as_str().unwrap().as_bytes(),
-                    0o600,
-                )?;
-                row["size"] = json!(fs::metadata(&target)?.len());
-                row["sha256"] = json!(common::digest(&target)?);
-            } else {
-                row["sha256"] = json!(app_snapshot::copy_file(&original, &target)?);
-            }
-        }
-        let (after, after_missing, _) = inventory(selected)?;
-        let mut before = files.clone();
-        for row in &mut before {
-            row.as_object_mut().unwrap().remove("sha256");
-            if row["kind"] == "symlink" {
-                row["size"] = json!(0);
-            }
-        }
-        if before != after || missing != after_missing {
-            let mut changed = changed_paths(&before, &after, selected);
-            changed.extend(
-                missing
-                    .iter()
-                    .chain(&after_missing)
-                    .filter(|m| !(missing.contains(m) && after_missing.contains(m)))
-                    .cloned(),
-            );
-            let shown = changed
-                .iter()
-                .take(3)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ");
-            let more = changed.len().saturating_sub(3);
-            return Err(Error::new(&format!(
-                "Host inventory changed during snapshot: {shown}{} changed while it was copied, so this run is not kept; the next one tries again",
-                if more > 0 { format!(" and {more} more") } else { String::new() }
-            )));
-        }
+        copy_files(&mut files, selected, &stage.payload)?;
+        unchanged_while_copied(&files, &missing, selected)?;
         steam_still_closed(cfg, steam_included)?;
         if samba {
             probe_absent(&["pgrep", "-x", "smbd|winbindd|nmbd|samba"])?;
