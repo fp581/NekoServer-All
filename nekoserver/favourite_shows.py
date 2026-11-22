@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Favourite shows keep coming (README.md, "Favourite shows keep coming").
 
-A show someone marks as a favourite in Jellyfin gets its new episodes: every hour this
-looks at each Jellyfin user's favourite shows, and one Sonarr does not follow yet is given
-to Sonarr to watch for episodes that have not aired yet. Nothing a person has is
-downloaded again, and nothing is ever taken away: a show that stops being a favourite
-stays followed (Sonarr is where to stop it).
+A show someone marks as a favourite in Jellyfin gets its missing episodes and its new
+ones: every hour this looks at each Jellyfin user's favourite shows, and one Sonarr does
+not follow yet is given to Sonarr to watch for episodes that have not aired yet. Once
+Sonarr has the show's list of episodes (a little after it was added: the next run), the
+episodes that aired and that Jellyfin does not have are asked for too. What Jellyfin has
+is what counts: a show in a folder of the person's that Sonarr cannot see is not
+downloaded again. Nothing is ever taken away: a show that stops being a favourite stays
+followed (Sonarr is where to stop it).
 
 A show requested through Seerr is followed already; this is for the shows that came from
 a person's own folders (the Media folders page), which Sonarr did not know.
@@ -21,6 +24,7 @@ the account says so.
 """
 
 import argparse
+import calendar
 import json
 import sys
 import time
@@ -34,6 +38,9 @@ from neko_common import atomic_json, media_services, read_settings, safe_path
 
 # Where the last run's account is kept, for the dashboard and for a person to read.
 REPORT = Path('reports') / 'media' / 'favourite-shows.json'
+# The shows given to Sonarr whose missing episodes are still to be asked for, kept from
+# one run to the next: {tvdb: {title, show (Jellyfin's ID), user (one who likes it)}}.
+TO_FILL = Path('installer') / 'state' / 'favourite-shows-to-fill.json'
 FORMAT = 'neko-favourite-shows-v1'
 
 # Sonarr: watch only episodes that have not aired yet, and every new season; search for
@@ -74,7 +81,14 @@ def jellyfin_favourites(jellyfin):
             key = tvdb or 'name:' + title.casefold()
             show = shows.setdefault(
                 key,
-                {'tvdb': tvdb, 'title': title, 'path': str(item.get('Path') or '').rstrip('/'), 'by': []},
+                {
+                    'tvdb': tvdb,
+                    'title': title,
+                    'path': str(item.get('Path') or '').rstrip('/'),
+                    'id': str(item.get('Id') or ''),
+                    'user': str(user['Id']),
+                    'by': [],
+                },
             )
             show['by'].append(str(user.get('Name') or 'someone'))
     return list(shows.values())
@@ -153,11 +167,111 @@ def follow(sonarr, show, chosen):
     return folder
 
 
+def episodes_jellyfin_has(jellyfin, show_id, user):
+    """{(season, episode)} of the episodes of a show Jellyfin has as files (a file of two
+    episodes counts for both); not the ones it only knows of."""
+    query = urllib.parse.urlencode({'userId': user, 'isMissing': 'false', 'fields': 'Path'})
+    found = jellyfin.call(f'/Shows/{urllib.parse.quote(show_id)}/Episodes?' + query)
+    items = found.get('Items') if isinstance(found, dict) else None
+    if not isinstance(items, list):
+        raise RuntimeError('jellyfin: unsupported list of episodes')
+    has = set()
+    for item in items:
+        season, first = item.get('ParentIndexNumber'), item.get('IndexNumber')
+        if type(season) is not int or type(first) is not int:
+            continue
+        last = item.get('IndexNumberEnd') if type(item.get('IndexNumberEnd')) is int else first
+        has.update((season, n) for n in range(first, max(first, last) + 1))
+    return has
+
+
+def aired(episode, now):
+    """Whether Sonarr says the episode has aired already."""
+    when = str(episode.get('airDateUtc') or '')
+    try:
+        return bool(when) and calendar.timegm(time.strptime(when[:19], '%Y-%m-%dT%H:%M:%S')) <= now
+    except ValueError:
+        return False
+
+
+def fill(sonarr, jellyfin, series_id, wanted, now):
+    """The episodes of a show Sonarr has that aired and that Jellyfin does not have,
+    watched and searched for in Sonarr (specials left out). Returns how many, or None
+    while Sonarr has no list of episodes yet."""
+    episodes = sonarr.call(f'/episode?seriesId={series_id}')
+    if not isinstance(episodes, list) or not episodes:
+        return None
+    has = episodes_jellyfin_has(jellyfin, wanted['show'], wanted['user'])
+    missing = [
+        e['id']
+        for e in episodes
+        if isinstance(e, dict)
+        and type(e.get('id')) is int
+        and e.get('seasonNumber', 0) > 0
+        and not e.get('hasFile')
+        and aired(e, now)
+        and (e.get('seasonNumber'), e.get('episodeNumber')) not in has
+    ]
+    if missing:
+        sonarr.call('/episode/monitor', 'PUT', {'episodeIds': missing, 'monitored': True})
+        sonarr.call('/command', 'POST', {'name': 'EpisodeSearch', 'episodeIds': missing})
+    return len(missing)
+
+
+def fill_missing(root, sonarr, jellyfin, account, now):
+    """Each show given to Sonarr whose missing episodes are still to be asked for: asked
+    for once Sonarr has its list. A show taken out of Sonarr since is let go."""
+    state = safe_path(root / TO_FILL)
+    try:
+        to_fill = json.loads(state.read_text())
+    except (OSError, ValueError):
+        to_fill = {}
+    if not isinstance(to_fill, dict) or not to_fill:
+        return
+    ids = {str(r.get('tvdbId')): r.get('id') for r in sonarr.call('/series') or [] if isinstance(r, dict)}
+    for tvdb, wanted in list(to_fill.items()):
+        if tvdb not in ids or not isinstance(wanted, dict):
+            del to_fill[tvdb]
+            continue
+        try:
+            asked = fill(sonarr, jellyfin, ids[tvdb], wanted, now)
+        except (RuntimeError, OSError) as exc:  # tried again next hour
+            account['not_filled'].append({'title': wanted.get('title', ''), 'why': str(exc)})
+            continue
+        if asked is None:
+            continue  # Sonarr has not listed its episodes yet: the next run
+        account['filled'].append({'title': wanted.get('title', ''), 'episodes': asked})
+        del to_fill[tvdb]
+    atomic_json(state, to_fill)
+
+
+def remember_to_fill(root, show):
+    """A show just given to Sonarr: its missing episodes are asked for once Sonarr has its
+    list of episodes."""
+    state = safe_path(root / TO_FILL)
+    try:
+        to_fill = json.loads(state.read_text())
+    except (OSError, ValueError):
+        to_fill = {}
+    if not isinstance(to_fill, dict):
+        to_fill = {}
+    to_fill[show['tvdb']] = {'title': show['title'], 'show': show['id'], 'user': show['user']}
+    atomic_json(state, to_fill)
+
+
 def run_once(config, factory=Client, now=time.time):
     """One look at the favourites. Returns the account it saved: {followed, already,
     not_followed} with the shows in each (followed: given to Sonarr in this run)."""
     apps = media_services(config)
-    account = {'format': FORMAT, 'at': now(), 'followed': [], 'already': [], 'not_followed': []}
+    account = {
+        'format': FORMAT,
+        'at': now(),
+        'followed': [],
+        'already': [],
+        'not_followed': [],
+        'filled': [],
+        'not_filled': [],
+    }
     if 'jellyfin' not in apps or 'sonarr' not in apps:
         account['said'] = 'Jellyfin and Sonarr are not both set up: nothing to follow'
         return account
@@ -190,12 +304,15 @@ def run_once(config, factory=Client, now=time.time):
             except (RuntimeError, OSError) as exc:  # one show's trouble never stops the others
                 account['not_followed'].append({'title': show['title'], 'why': str(exc)})
                 continue
+            if show['id']:
+                remember_to_fill(root, show)
             entry = {'title': show['title'], 'by': show['by'], 'saved_in': saved_in}
             if show['path'] and saved_in != show['path']:
                 # In a folder of the person's the apps may only read: the new episodes are
                 # elsewhere, and Jellyfin shows them in that library.
                 entry['apart'] = True
             account['followed'].append(entry)
+        fill_missing(root, sonarr, jellyfin, account, now())
     finally:
         for client in (jellyfin, sonarr, seerr):
             if client is not None:
@@ -210,6 +327,9 @@ def said(account):
     parts = [f'{len(account["followed"])} now followed', f'{len(account["already"])} followed already']
     if account['not_followed']:
         parts.append(f'{len(account["not_followed"])} could not be followed')
+    asked = sum(f['episodes'] for f in account['filled'])
+    if asked:
+        parts.append(f'{asked} missing episodes asked for')
     return 'Favourite shows: ' + ', '.join(parts)
 
 
@@ -234,7 +354,7 @@ def main(argv=None):
     for show in account['followed']:
         if show.get('apart'):
             print(f'  {show["title"]}: its new episodes are saved in {show["saved_in"]} (your folder is read-only)')
-    for show in account['not_followed']:
+    for show in account['not_followed'] + account['not_filled']:
         print(f'  {show["title"]}: {show["why"]}')
     return 0
 

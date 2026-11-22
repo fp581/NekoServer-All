@@ -32,6 +32,9 @@ class Apps:
         self.sonarr_roots = ['/data/tv']
         self.added = []
         self.closed = []
+        self.sonarr_episodes = {}  # Sonarr's list of a show's episodes, once it has one
+        self.jellyfin_episodes = {}  # the episodes Jellyfin has of a show, by its ID
+        self.monitored, self.searched = [], []
 
     def factory(self, app):
         apps = self
@@ -56,6 +59,9 @@ class Apps:
                 return {'Id': 'server-1', 'StartupWizardCompleted': True}
             if path == '/Users':
                 return self.users
+            if path.startswith('/Shows/') and path.endswith('/Episodes'):
+                assert asked['isMissing'] == 'false', asked
+                return {'Items': self.jellyfin_episodes.get(path.split('/')[2], [])}
             if path == '/Items':
                 assert asked == {
                     'userId': asked['userId'],
@@ -67,7 +73,16 @@ class Apps:
                 return {'Items': self.favourites[asked['userId']]}
         if app == 'sonarr':
             if path == '/series' and method == 'GET':
-                return [{'tvdbId': int(t)} for t in self.sonarr_has]
+                return [{'tvdbId': int(t), 'id': n} for n, t in enumerate(self.sonarr_has, 1)]
+            if path == '/episode':
+                tvdb = self.sonarr_has[int(asked['seriesId']) - 1]
+                return self.sonarr_episodes.get(tvdb, [])
+            if path == '/episode/monitor' and method == 'PUT':
+                self.monitored.append(payload)
+                return {}
+            if path == '/command' and method == 'POST':
+                self.searched.append(payload)
+                return {}
             if path == '/series/lookup':
                 tvdb = asked['term'].removeprefix('tvdb:')
                 if tvdb not in self.lookup:
@@ -75,6 +90,7 @@ class Apps:
                 return [{'tvdbId': int(tvdb), 'title': self.lookup[tvdb], 'folder': self.lookup[tvdb], 'seasons': []}]
             if path == '/series' and method == 'POST':
                 self.added.append(payload)
+                self.sonarr_has.append(str(payload['tvdbId']))
                 return payload
             if path == '/rootfolder':
                 return [{'id': n, 'path': p} for n, p in enumerate(self.sonarr_roots, 1)]
@@ -90,7 +106,7 @@ class Apps:
 
 def show(name, tvdb, folder=None):
     """A favourite as Jellyfin lists it; `folder`: its folder as the apps see it."""
-    item = {'Name': name, 'ProviderIds': {'Tvdb': tvdb} if tvdb else {}}
+    item = {'Name': name, 'Id': 'jf-' + str(tvdb), 'ProviderIds': {'Tvdb': tvdb} if tvdb else {}}
     if folder:
         item['Path'] = folder
     return item
@@ -113,8 +129,55 @@ class FavouriteShowsTests(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
 
-    def run_job(self):
-        return favourite_shows.run_once(self.config, factory=self.apps.factory, now=lambda: 1000)
+    def run_job(self, now=1000):
+        return favourite_shows.run_once(self.config, factory=self.apps.factory, now=lambda: now)
+
+    def test_the_episodes_that_aired_and_that_jellyfin_does_not_have_are_asked_for(self):
+        """In a folder of Dana's that Sonarr cannot see: what Jellyfin has counts, so
+        nothing Dana has is downloaded again."""
+        self.apps.favourites['u1'] = [show('Severance', SEVERANCE, folder='/data/existing/tv/Severance')]
+        self.apps.lookup[SEVERANCE] = 'Severance'
+        first = self.run_job()
+        # Sonarr lists a new show's episodes a little after it is added: nothing asked yet.
+        self.assertEqual((first['filled'], self.apps.monitored, self.apps.searched), ([], [], []))
+
+        def episode(n, season, number, aired, has_file=False):
+            return {'id': n, 'seasonNumber': season, 'episodeNumber': number, 'airDateUtc': aired, 'hasFile': has_file}
+
+        past, later = '2022-02-18T02:00:00Z', '2099-01-01T00:00:00Z'
+        self.apps.sonarr_episodes[SEVERANCE] = [
+            episode(1, 1, 1, past),  # Dana has it
+            episode(2, 1, 2, past),  # Dana has it, in one file with episode 3
+            episode(3, 1, 3, past),
+            episode(4, 1, 4, past),  # missing: asked for
+            episode(5, 2, 1, past),  # missing: asked for
+            episode(6, 2, 2, past, has_file=True),  # Sonarr has it already
+            episode(7, 2, 3, later),  # not aired yet: Sonarr gets it when it airs
+            episode(8, 0, 1, past),  # a special: left out
+        ]
+        self.apps.jellyfin_episodes['jf-' + SEVERANCE] = [
+            {'ParentIndexNumber': 1, 'IndexNumber': 1},
+            {'ParentIndexNumber': 1, 'IndexNumber': 2, 'IndexNumberEnd': 3},
+        ]
+        now = 1_800_000_000
+        second = self.run_job(now)
+        self.assertEqual(self.apps.monitored, [{'episodeIds': [4, 5], 'monitored': True}])
+        self.assertEqual(self.apps.searched, [{'name': 'EpisodeSearch', 'episodeIds': [4, 5]}])
+        self.assertEqual(second['filled'], [{'title': 'Severance', 'episodes': 2}])
+        # Asked for once: the next run leaves the show to Sonarr.
+        self.run_job(now)
+        self.assertEqual(len(self.apps.searched), 1)
+
+    def test_a_show_taken_out_of_sonarr_before_its_episodes_were_asked_for_is_let_go(self):
+        self.apps.favourites['u1'] = [show('Severance', SEVERANCE)]
+        self.apps.lookup[SEVERANCE] = 'Severance'
+        self.run_job()
+        self.apps.sonarr_has.clear()  # removed in Sonarr
+        self.apps.favourites['u1'] = []
+        account = self.run_job()
+        self.assertEqual((account['filled'], self.apps.searched), ([], []))
+        kept = json.loads((self.data / favourite_shows.TO_FILL).read_text())
+        self.assertEqual(kept, {})
 
     def test_a_favourite_sonarr_does_not_follow_is_given_to_it_for_new_episodes_only(self):
         # In a folder of Dana's the apps may only read: the new episodes go where
