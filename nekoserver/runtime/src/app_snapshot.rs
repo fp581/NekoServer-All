@@ -1242,3 +1242,37 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
+/// The short functions 0.52.2 split out of `snapshot` (Sonar S3776): the one that needs
+/// no Docker.
+#[cfg(test)]
+mod split_helpers {
+    use super::*;
+
+    #[test]
+    fn every_listed_file_and_folder_is_copied_with_its_checksum() {
+        let root = std::env::temp_dir().join(format!("neko-app-copy-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let data = root.join("ssd");
+        fs::create_dir_all(data.join("appdata/jellyfin/empty")).unwrap();
+        fs::write(data.join("appdata/jellyfin/settings.xml"), "<a/>").unwrap();
+        let mut files = vec![
+            json!({"path": "appdata/jellyfin", "kind": "directory"}),
+            json!({"path": "appdata/jellyfin/empty", "kind": "directory"}),
+            json!({"path": "appdata/jellyfin/settings.xml", "kind": "file"}),
+        ];
+        let payload = root.join("payload");
+        copy_listed(&mut files, &data, &payload).unwrap();
+        assert!(payload.join("appdata/jellyfin/empty").is_dir());
+        assert_eq!(
+            fs::read(payload.join("appdata/jellyfin/settings.xml")).unwrap(),
+            b"<a/>"
+        );
+        assert_eq!(
+            files[2]["sha256"],
+            common::digest(&data.join("appdata/jellyfin/settings.xml")).unwrap()
+        );
+        // A folder gets no checksum.
+        assert!(files[0].get("sha256").is_none() && files[1].get("sha256").is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
