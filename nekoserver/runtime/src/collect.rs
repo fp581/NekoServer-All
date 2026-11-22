@@ -995,32 +995,10 @@ fn applications(
     let selected = common::media_services(cfg);
     let mut out = vec![];
     for &(app, name, description, port) in APPS.iter() {
-        let wanted = selected.contains(&app)
-            || (app == "immich" && common::immich_wanted(cfg))
-            || (app == "nextcloud" && cfg["nextcloud"]["enabled"] == true);
-        if !wanted {
+        if !chosen_app(cfg, &selected, app) {
             continue;
         }
-        let project = format!("neko-{app}");
-        let service = if app == "immich" {
-            "immich-server"
-        } else {
-            app
-        };
-        let found = records
-            .iter()
-            .filter(|(l, _)| {
-                l.get("com.docker.compose.project") == Some(&project)
-                    && l.get("com.docker.compose.service").map(String::as_str) == Some(service)
-            })
-            .collect::<Vec<_>>();
-        let (state, health, up_for) = match found.as_slice() {
-            [(_, v)] => container_state(v, &starts, now),
-            [] if data.is_some_and(|d| !set_up(d, app)) => ("not_set_up", "unknown", None),
-            [] if code != 0 => ("unknown", "unknown", None),
-            [] => ("missing", "unknown", None),
-            _ => ("ambiguous", "unknown", None),
-        };
+        let (state, health, up_for) = app_state(&records, app, (code, data), (&starts, now));
         let (cpu, memory) = app_load(&containers, &usage, app);
         // Its name, description and ports from the shared list: the page shows these
         // (it kept a copy of its own, already worded differently).
@@ -1031,6 +1009,45 @@ fn applications(
         Value::Object(containers),
         Value::Object(services),
     )
+}
+/// Whether `app` was chosen at setup (`selected`: the media apps chosen).
+fn chosen_app(cfg: &Value, selected: &[&str], app: &str) -> bool {
+    selected.contains(&app)
+        || (app == "immich" && common::immich_wanted(cfg))
+        || (app == "nextcloud" && cfg["nextcloud"]["enabled"] == true)
+}
+/// The Compose service that is `app` itself (Immich's server, beside its database).
+fn compose_service(app: &str) -> &str {
+    if app == "immich" {
+        "immich-server"
+    } else {
+        app
+    }
+}
+/// An app's state, health and time up, from its one container. `code`: the exit code of
+/// `docker ps` (not 0: Docker did not answer); `data`: the app SSD while it is mounted.
+fn app_state<'a>(
+    records: &'a [Container],
+    app: &str,
+    (code, data): (i32, Option<&Path>),
+    (starts, now): (&[(String, f64)], f64),
+) -> (&'a str, &'static str, Option<f64>) {
+    let project = format!("neko-{app}");
+    let service = compose_service(app);
+    let found = records
+        .iter()
+        .filter(|(l, _)| {
+            l.get("com.docker.compose.project") == Some(&project)
+                && l.get("com.docker.compose.service").map(String::as_str) == Some(service)
+        })
+        .collect::<Vec<_>>();
+    match found.as_slice() {
+        [(_, v)] => container_state(v, starts, now),
+        [] if data.is_some_and(|d| !set_up(d, app)) => ("not_set_up", "unknown", None),
+        [] if code != 0 => ("unknown", "unknown", None),
+        [] => ("missing", "unknown", None),
+        _ => ("ambiguous", "unknown", None),
+    }
 }
 /// A Docker container's Compose labels and its `docker ps` record.
 type Container = (std::collections::BTreeMap<String, String>, Value);
@@ -1530,82 +1547,143 @@ fn job_row(
     away: Option<&str>,
     (key, name, unit, base_max): (&'static str, &'static str, &'static str, f64),
 ) -> Value {
-    let weekly =
-        cfg["photos"]["backup_schedule"] == "weekly" && ["archive", "database"].contains(&key);
-    let report_key = if weekly { "database" } else { key };
-    let unit = if weekly {
-        "nekoserver-immich-db-backup"
-    } else {
-        unit
-    };
-    let max = job_max(cfg, key, weekly, base_max);
-    let saved = if ok {
-        common::json(
-            &Path::new(text(&cfg["data_mount"])).join(format!("reports/jobs/{report_key}.json")),
-            common::REPORT_LIMIT,
-        )
-    } else {
-        empty()
-    };
-    // The upgrade runs as nekoserver-upgrade@<release> (or, after a restart, as the
-    // resume service): its report says which, so a run at work is asked about.
-    let named = upgrade_unit(&saved);
-    let unit = if key == "upgrade" {
-        named.as_str()
-    } else {
-        unit
-    };
-    // An update undone after the apps did not start well: the backup was made and the
-    // apps are back as they were, so only the update is still to come (done in part).
-    let undone = key == "maintenance" && rolled_back(&saved);
-    let status = job_status(&saved, undone);
-    // A success saved while the clock was ahead still counts (shown as now): hiding
-    // it would read as "never succeeded" after the clock was put back.
-    let success = common::shown_time(&saved["last_success"], now);
-    let start = num(&saved["started_at"], 0.0, now + 60.0);
-    // Never succeeded: due one interval (plus a day) after its schedule was set up.
-    let installed = timer_installed_at(unit);
-    let (timer, known) = timer_of(unit);
-    let stale = if status == "running" {
-        // A run with no start time can't be judged as fresh.
-        start.as_f64().is_none_or(|t| now - t > max)
-    } else {
-        let weekly = weekly || ["updates", "external"].contains(&key);
-        job_overdue(weekly, success.as_f64(), installed, &timer, now, max)
-    };
-    let state = overdue_state(status, stale);
+    let job = JobSeen::read(cfg, (now, ok), (key, unit, base_max));
     if let Some(why) = retired(cfg, key) {
-        return json!({"id":key,"name":name,"status":"disabled","last_success":success,"last_attempt":start,"timer":timer,"reason":why,"restore":[]});
+        return json!({"id":key,"name":name,"status":"disabled","last_success":job.success,"last_attempt":job.start,"timer":job.timer,"reason":why,"restore":[]});
     }
-    let unrun = never_ran(unit, status, undone, start.as_f64(), now);
-    let state = if unrun.is_some() { "fail" } else { state };
-    let stopped = if ["fail", "running"].contains(&state) {
-        None
-    } else {
-        schedule_stopped(&timer, known && scheduled(key), !success.is_null())
-    };
-    let state = if stopped.is_some() { "stale" } else { state };
-    let reason = unrun
-        .or(stopped)
-        .or_else(|| job_reason(key, &saved, (status, undone), success.is_null(), stale));
+    let (state, reason) = job.verdict(now);
     // The service that does the work, for the page's log commands (the weekly photo
     // schedule's, an upgrade's own instance).
-    let mut row = json!({"id":key,"name":name,"status":state,"last_success":success,"last_attempt":start,"timer":timer,"reason":reason,"restore":restore_tests(cfg,key),"unit":format!("{unit}.service")});
-    if undone {
-        row["rolled_back"] = json!(true);
-    }
-    if key == "external" && state == "fail" && usb_was_away(&saved) {
-        row["usb_away"] = json!(true);
-    }
-    // Said to the page too: it kept its own rule, and listed "NekoServer upgrade
-    // schedule is off" after every upgrade that worked.
-    if !scheduled(key) {
-        row["scheduled"] = json!(false);
-    }
-    if let Some(drive) = away {
-        row["blocked"] = json!(blocked_words(key, drive));
-    }
+    let mut row = json!({"id":key,"name":name,"status":state,"last_success":job.success,"last_attempt":job.start,"timer":job.timer,"reason":reason,"restore":restore_tests(cfg,key),"unit":format!("{}.service", job.unit)});
+    job.mark(&mut row, state, away);
     row
+}
+/// What the dashboard knows of one job: its report, its schedule and whether it is
+/// overdue.
+struct JobSeen {
+    key: &'static str,
+    /// The service that does the work.
+    unit: String,
+    /// Its report (empty while the app SSD is away).
+    saved: Value,
+    /// An update undone after the apps did not start well.
+    undone: bool,
+    success: Value,
+    start: Value,
+    timer: Value,
+    /// Whether its timer's state could be read.
+    known: bool,
+    stale: bool,
+}
+impl JobSeen {
+    /// Job `key` with its own unit and limit (`base_max`, seconds), its report read when
+    /// the app SSD is mounted (`ok`).
+    fn read(
+        cfg: &Value,
+        (now, ok): (f64, bool),
+        (key, unit, base_max): (&'static str, &'static str, f64),
+    ) -> JobSeen {
+        let weekly =
+            cfg["photos"]["backup_schedule"] == "weekly" && ["archive", "database"].contains(&key);
+        let report_key = if weekly { "database" } else { key };
+        let unit = if weekly {
+            "nekoserver-immich-db-backup"
+        } else {
+            unit
+        };
+        let max = job_max(cfg, key, weekly, base_max);
+        let saved = if ok {
+            common::json(
+                &Path::new(text(&cfg["data_mount"]))
+                    .join(format!("reports/jobs/{report_key}.json")),
+                common::REPORT_LIMIT,
+            )
+        } else {
+            empty()
+        };
+        // The upgrade runs as nekoserver-upgrade@<release> (or, after a restart, as the
+        // resume service): its report says which, so a run at work is asked about.
+        let unit = if key == "upgrade" {
+            upgrade_unit(&saved)
+        } else {
+            unit.to_string()
+        };
+        // An update undone after the apps did not start well: the backup was made and the
+        // apps are back as they were, so only the update is still to come (done in part).
+        let undone = key == "maintenance" && rolled_back(&saved);
+        let status = job_status(&saved, undone);
+        // A success saved while the clock was ahead still counts (shown as now): hiding
+        // it would read as "never succeeded" after the clock was put back.
+        let success = common::shown_time(&saved["last_success"], now);
+        let start = num(&saved["started_at"], 0.0, now + 60.0);
+        // Never succeeded: due one interval (plus a day) after its schedule was set up.
+        let installed = timer_installed_at(&unit);
+        let (timer, known) = timer_of(&unit);
+        let stale = if status == "running" {
+            // A run with no start time can't be judged as fresh.
+            start.as_f64().is_none_or(|t| now - t > max)
+        } else {
+            let weekly = weekly || ["updates", "external"].contains(&key);
+            job_overdue(weekly, success.as_f64(), installed, &timer, now, max)
+        };
+        JobSeen {
+            key,
+            unit,
+            saved,
+            undone,
+            success,
+            start,
+            timer,
+            known,
+            stale,
+        }
+    }
+    /// Its status on the page and why, if anything is wrong.
+    fn verdict(&self, now: f64) -> (&str, Option<String>) {
+        let status = job_status(&self.saved, self.undone);
+        let state = overdue_state(status, self.stale);
+        let unrun = never_ran(&self.unit, status, self.undone, self.start.as_f64(), now);
+        let state = if unrun.is_some() { "fail" } else { state };
+        let stopped = if ["fail", "running"].contains(&state) {
+            None
+        } else {
+            schedule_stopped(
+                &self.timer,
+                self.known && scheduled(self.key),
+                !self.success.is_null(),
+            )
+        };
+        let state = if stopped.is_some() { "stale" } else { state };
+        let reason = unrun.or(stopped).or_else(|| {
+            job_reason(
+                self.key,
+                &self.saved,
+                (status, self.undone),
+                self.success.is_null(),
+                self.stale,
+            )
+        });
+        (state, reason)
+    }
+    /// What the page is told besides: an undone update, a USB drive left unplugged, a
+    /// schedule off, a drive the job waits for.
+    fn mark(&self, row: &mut Value, state: &str, away: Option<&str>) {
+        let key = self.key;
+        if self.undone {
+            row["rolled_back"] = json!(true);
+        }
+        if key == "external" && state == "fail" && usb_was_away(&self.saved) {
+            row["usb_away"] = json!(true);
+        }
+        // Said to the page too: it kept its own rule, and listed "NekoServer upgrade
+        // schedule is off" after every upgrade that worked.
+        if !scheduled(key) {
+            row["scheduled"] = json!(false);
+        }
+        if let Some(drive) = away {
+            row["blocked"] = json!(blocked_words(key, drive));
+        }
+    }
 }
 /// How long (seconds) job `key` may go without a success before it is overdue.
 fn job_max(cfg: &Value, key: &str, weekly: bool, base_max: f64) -> f64 {
@@ -6707,5 +6785,95 @@ mod split_helpers {
             job_reason("external", &saved, ("fail", true), true, true),
             Some(with_full_usb_advice("external", failure_reason(&saved)))
         );
+    }
+}
+/// What each row of `backups` takes from its job's report and setting, before 0.52.2 split
+/// `job_row` (Sonar S3776): passes on the code before the split and after it. Only what
+/// systemd's answers can't change is asked (the test PC has none of the timers).
+#[cfg(test)]
+mod job_pins {
+    use super::*;
+
+    #[test]
+    fn each_job_row_reads_its_own_report_unit_and_setting() {
+        let root = std::env::temp_dir().join(format!("neko-jobs-pin-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let jobs = root.join("reports/jobs");
+        fs::create_dir_all(&jobs).unwrap();
+        let report = |key: &str, saved: Value| {
+            fs::write(jobs.join(format!("{key}.json")), saved.to_string()).unwrap()
+        };
+        // The weekly photo schedule: the archive's row reads the database job's report,
+        // and names its unit.
+        report(
+            "database",
+            json!({"status": "fail", "reason": "the database copy failed", "started_at": 900.0}),
+        );
+        report(
+            "archive",
+            json!({"status": "pass", "last_success": 990.0, "started_at": 980.0}),
+        );
+        // An update undone after the apps did not start well.
+        report(
+            "maintenance",
+            json!({"status": "fail", "rolled_back": true, "reason": "Jellyfin did not start", "started_at": 900.0}),
+        );
+        // The upgrade's own instance, from its report.
+        report(
+            "upgrade",
+            json!({"status": "running", "unit": "nekoserver-upgrade@v0.52.2", "started_at": 990.0}),
+        );
+        let cfg = json!({
+            "data_mount": root.to_str().unwrap(),
+            "photos": {"deploy_immich": true, "backup_schedule": "weekly"},
+            "music": {"backup_enabled": false}
+        });
+        let rows = backups(&cfg, 1000.0, true, None);
+        let row = |key: &str| {
+            rows.as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["id"] == key)
+                .unwrap()
+                .clone()
+        };
+        let archive = row("archive");
+        assert_eq!(archive["unit"], "nekoserver-immich-db-backup.service");
+        assert_eq!(archive["status"], "fail");
+        assert_eq!(archive["last_attempt"], 900.0);
+        let saved =
+            json!({"status": "fail", "reason": "the database copy failed", "started_at": 900.0});
+        assert_eq!(
+            archive["reason"],
+            json!(with_full_usb_advice("archive", failure_reason(&saved)))
+        );
+        let monthly = row("maintenance");
+        assert_eq!(monthly["rolled_back"], true);
+        assert!(monthly.get("usb_away").is_none() && monthly.get("blocked").is_none());
+        let upgrade = row("upgrade");
+        assert_eq!(upgrade["unit"], "nekoserver-upgrade@v0.52.2.service");
+        // The upgrade has no schedule of its own; the page is told so.
+        assert_eq!(upgrade["scheduled"], false);
+        assert!(archive.get("scheduled").is_none());
+        // Switched off: disabled, with why, and no restore tests.
+        let music = row("music");
+        assert_eq!(music["status"], "disabled");
+        assert_eq!(
+            music["reason"],
+            "Switched off: the music backup is turned off in the settings"
+        );
+        assert_eq!(music["restore"], json!([]));
+        assert!(music.get("unit").is_none());
+        // The app SSD away: no report is read, whatever is on it.
+        let blind = backups(&cfg, 1000.0, false, Some("Application SSD"));
+        let archive = blind
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "archive")
+            .unwrap();
+        assert!(archive["last_attempt"].is_null() && archive["last_success"].is_null());
+        assert!(text(&archive["blocked"]).starts_with("The Application SSD is missing"));
+        fs::remove_dir_all(root).unwrap();
     }
 }
