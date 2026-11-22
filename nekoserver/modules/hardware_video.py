@@ -31,6 +31,19 @@ VA_CODECS = (
     ('VAProfileAV1', 'av1'),
 )
 HARDWARE = 'hardware.yaml'
+# Where each app keeps its video settings (Jellyfin's encoding page, Immich's settings).
+JELLYFIN_ENCODING = '/System/Configuration/encoding'
+IMMICH_SETTINGS = '/api/system-config'
+
+
+def kept_setting(current):
+    """What is said of an app whose own video setting was left as the person chose it."""
+    return 'kept your setting (' + current + ')'
+
+
+def video_line(app, what):
+    """A line of the log about one app's hardware video."""
+    return app.capitalize() + ' hardware video: ' + what
 
 
 def install_drivers(vendor, log, run=subprocess.run):
@@ -266,7 +279,7 @@ def configure_jellyfin(entry, method, node, client, video, ours=False, several=F
     login_jellyfin(client, entry)
     device = JELLYFIN_DEVICE[method]
     try:
-        encoding = client.call('/System/Configuration/encoding')
+        encoding = client.call(JELLYFIN_ENCODING)
         current = encoding.get('HardwareAccelerationType') or 'none'
         if current == 'none' and was_on:
             return SWITCHED_OFF
@@ -275,7 +288,7 @@ def configure_jellyfin(entry, method, node, client, video, ours=False, several=F
             if action == 'ask':
                 return ask_for('Jellyfin', method, node)
             if action == 'keep':
-                return 'kept your setting (' + current + ')'
+                return kept_setting(current)
         encoding.update(
             {
                 'HardwareAccelerationType': method,
@@ -291,7 +304,7 @@ def configure_jellyfin(entry, method, node, client, video, ours=False, several=F
         if video.get('low_power'):
             # The chip encodes H.264 only in its low-power mode, which Jellyfin uses only when told.
             encoding['EnableIntelLowPowerH264HwEncoder'] = True
-        client.call('/System/Configuration/encoding', 'POST', encoding)
+        client.call(JELLYFIN_ENCODING, 'POST', encoding)
         return (
             'on ('
             + method
@@ -330,7 +343,7 @@ def configure_immich(entry, method, node, client, video, ours=False, several=Fal
         return unusable
     login_immich(client, entry)
     try:
-        settings = client.call('/api/system-config')
+        settings = client.call(IMMICH_SETTINGS)
         current = settings.get('ffmpeg', {}).get('accel') or 'disabled'
         if current == 'disabled' and was_on:
             return SWITCHED_OFF
@@ -339,11 +352,11 @@ def configure_immich(entry, method, node, client, video, ours=False, several=Fal
             if action == 'ask':
                 return ask_for('Immich', method, node)
             if action == 'keep':
-                return 'kept your setting (' + current + ')'
+                return kept_setting(current)
         settings['ffmpeg'].update(accel=method, accelDecode=True)
         if node.startswith('/dev/dri/'):
             settings['ffmpeg']['preferredHwDevice'] = node
-        client.call('/api/system-config', 'PUT', settings)
+        client.call(IMMICH_SETTINGS, 'PUT', settings)
         return 'on (' + method + ')'
     finally:
         client.call('/api/auth/logout', 'POST')
@@ -452,14 +465,14 @@ def jellyfin_back_to_software(entry, client, method):
     """Jellyfin's hardware acceleration switched off, when it is still what NekoServer set."""
     login_jellyfin(client, entry)
     try:
-        encoding = client.call('/System/Configuration/encoding')
+        encoding = client.call(JELLYFIN_ENCODING)
         current = encoding.get('HardwareAccelerationType') or 'none'
         if current == 'none':
             return SWITCHED_OFF
         if current != method:
-            return 'kept your setting (' + current + ')'
+            return kept_setting(current)
         encoding['HardwareAccelerationType'] = 'none'
-        client.call('/System/Configuration/encoding', 'POST', encoding)
+        client.call(JELLYFIN_ENCODING, 'POST', encoding)
         return CHIP_AWAY
     finally:
         client.call('/Sessions/Logout', 'POST')
@@ -469,14 +482,14 @@ def immich_back_to_software(entry, client, method):
     """Immich's hardware acceleration switched off, when it is still what NekoServer set."""
     login_immich(client, entry)
     try:
-        settings = client.call('/api/system-config')
+        settings = client.call(IMMICH_SETTINGS)
         current = settings.get('ffmpeg', {}).get('accel') or 'disabled'
         if current == 'disabled':
             return SWITCHED_OFF
         if current != method:
-            return 'kept your setting (' + current + ')'
+            return kept_setting(current)
         settings['ffmpeg']['accel'] = 'disabled'
-        client.call('/api/system-config', 'PUT', settings)
+        client.call(IMMICH_SETTINGS, 'PUT', settings)
         return CHIP_AWAY
     finally:
         client.call('/api/auth/logout', 'POST')
@@ -521,7 +534,7 @@ def back_to_software(app, config, before, log, client_factory=None, running=None
         return None
     finally:
         client.close()
-    log(app.capitalize() + ' hardware video: ' + state)
+    log(video_line(app, state))
     return state
 
 
@@ -529,32 +542,43 @@ def apps_on(config, choices, log, client_factory=None, apps=None, check=probe, b
     """Switch the selected apps over, each to the first chip (preferred first) that passes
     the video check inside that app's own container; returns {app: what happened}."""
     import account_setup
-    import account_store
 
     client_factory = client_factory or account_setup.Client
     done = {}
     for app in selected_apps(config) if apps is None else apps:
         found = next(((choice, video) for choice in choices if (video := check(app, choice[1]))), None)
+        earlier = (before or {}).get(app)
         if found is None:
             # A setting NekoServer made for a chip that passed before is taken back.
-            taken_back = back_to_software(app, config, (before or {}).get(app), log, client_factory, running)
+            taken_back = back_to_software(app, config, earlier, log, client_factory, running)
             done[app] = taken_back or SOFTWARE
             if not taken_back:
-                log(app.capitalize() + ' hardware video: ' + done[app])
+                log(video_line(app, done[app]))
             continue
-        entry = account_store.get(config, app) if account_store.enabled(config) else None
-        if not entry:
-            done[app] = 'needs your login: turn it on in the app (see HARDWARE-VIDEO.md)'
-            continue
-        client = client_factory(app)
-        try:
-            account_setup.wait(app, client, 180)
-            done[app] = configure_app(app, found[0], entry, client, found[1], (before or {}).get(app), len(choices) > 1)
-        except (RuntimeError, OSError, KeyError, ValueError) as exc:
-            done[app] = 'not changed (' + str(exc) + ')'
-        finally:
-            client.close()
-        log(app.capitalize() + ' hardware video: ' + done[app])
+        done[app] = switched_over(app, config, found, (earlier, len(choices) > 1), client_factory, log)
+    return done
+
+
+def switched_over(app, config, found, how, client_factory, log):
+    """One app switched to the chip that passed its check (`found`: (choice, video)),
+    signed in with its saved login; what happened, in words. `how`: (the app's setting
+    before, whether there was more than one chip to choose from)."""
+    import account_setup
+    import account_store
+
+    entry = account_store.get(config, app) if account_store.enabled(config) else None
+    if not entry:
+        return 'needs your login: turn it on in the app (see HARDWARE-VIDEO.md)'
+    earlier, several = how
+    client = client_factory(app)
+    try:
+        account_setup.wait(app, client, 180)
+        done = configure_app(app, found[0], entry, client, found[1], earlier, several)
+    except (RuntimeError, OSError, KeyError, ValueError) as exc:
+        done = 'not changed (' + str(exc) + ')'
+    finally:
+        client.close()
+    log(video_line(app, done))
     return done
 
 
