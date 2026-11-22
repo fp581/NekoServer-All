@@ -5977,16 +5977,17 @@ function mediaForm(kinds) {
   form.append(kindField, pathField, pick, browse, how, backup, go);
   return form;
 }
+// The characters JavaScript's "." does not match: \n, \r, the line and the paragraph separator.
+const LINE_BREAKS = new Set(['\n', '\r', '\u2028', '\u2029']);
 /* A path without the slashes at its end (as a terminal completes it), keeping the
  * character before them: "/" stays "/". Exactly what replace(/(.)\/+$/, '$1') did, a
  * line break before the slashes included, without its backtracking. */
-const LINE_BREAKS = ['\n', '\r', ' ', ' '];
 function withoutEndSlashes(path) {
   let start = path.length;
   while (start > 0 && path[start - 1] === '/') {
     start--;
   }
-  const kept = start === 0 || LINE_BREAKS.includes(path[start - 1]) ? start + 1 : start;
+  const kept = start === 0 || LINE_BREAKS.has(path[start - 1]) ? start + 1 : start;
   return path.slice(0, Math.min(kept, path.length));
 }
 /* The music backup question, in setup's own words (the server sends them: existing_page
