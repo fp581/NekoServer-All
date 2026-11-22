@@ -3668,16 +3668,22 @@ def restore_from_cards(config, prompt, output, mounts='/proc/self/mounts'):
     args = ['restore', str(target), *(['--search', word] if word else [])]
     with part_way(target, output):
         status, _ = card_tool(card, *args, capture=False)
+    # Photos and documents are for you to open from your own account, as after a photo or
+    # Nextcloud restore: the tool runs as root and the restore folder is root's only, so
+    # "Done" was said over files the desktop user could not open (review of 0.52).
+    given = handed_over(config, target)
     if status == 0:
         say(
             output,
             f'\nDone: the files are in {target}.',
+            *given,
             'The other cards of the set hold the rest: plug in the next one and choose this again.',
         )
     else:
         say(
             output,
             f'\nThe restore into {target} finished, but not every file came back: the lines above say which and why.',
+            *given,
             'Files whose place was taken were skipped, never overwritten (CARD-RECOVERY.md, "Restore").',
         )
 

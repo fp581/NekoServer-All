@@ -4,6 +4,7 @@ it was until the switch is turned on."""
 
 import json
 import os
+import pwd
 import shutil
 import socket
 import socketserver
@@ -426,6 +427,26 @@ class RecoveryMenuTests(unittest.TestCase):
         text = '\n'.join(said)
         self.assertIn('Example set - 001', text)
         self.assertIn(f'Done: the files are in {target}.', text)
+
+    def test_the_restored_files_are_handed_to_the_desktop_user(self):
+        """Review of 0.52: the tool runs as root into a folder only root may open, and the
+        card restore never gave it to your account as a photo restore does, so "Done" was
+        said over files the desktop user could not open."""
+        target = self.tmp / 'restored'
+        said, given = [], []
+        answers = iter(['', 'yes'])
+        uid, gid = os.getuid(), os.getgid()
+        with (
+            mock.patch.object(self.wizard, 'card_tool', self.run_tool),
+            mock.patch.object(self.wizard, 'restore_target', return_value=target),
+            mock.patch.object(self.wizard, 'asked', side_effect=lambda *a, **k: next(answers) == 'yes'),
+            mock.patch.object(self.wizard, 'owner', return_value=(uid, gid)),
+            mock.patch.object(self.wizard, 'give_to', side_effect=lambda *a: given.append(a[:3])),
+        ):
+            self.wizard.restore_from_cards(self.config, lambda q='': next(answers), said.append, self.mounts)
+        self.assertEqual(given, [(target, uid, gid)])
+        name = pwd.getpwuid(uid).pw_name
+        self.assertIn(f'The folder and its files now belong to {name}', '\n'.join(said))
 
     def test_no_card_plugged_in_says_how_to_connect_one(self):
         said = []
