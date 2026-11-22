@@ -146,17 +146,19 @@ def run(ctx):
 # Favourite shows keep coming (favourite_shows.py): every hour, a show someone favourited in
 # Jellyfin that Sonarr does not follow is given to Sonarr for its new episodes.
 FAVOURITES = 'nekoserver-favourite-shows'
+FAVOURITES_TIMER = FAVOURITES + '.timer'
+FAVOURITES_SERVICE = FAVOURITES + '.service'
 
 
 def favourite_units(data, release):
     """{name: text} of the hourly job's service and timer."""
     return {
-        FAVOURITES + '.service': '[Unit]\nDescription=NekoServer favourite shows keep coming\n'
+        FAVOURITES_SERVICE: '[Unit]\nDescription=NekoServer favourite shows keep coming\n'
         f'RequiresMountsFor={data}\nAfter=docker.service\n'
         '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=10min\n'
         f'ExecStart=/usr/bin/python3 -Es {release}/favourite_shows.py run --config {release}/config.json\n',
-        FAVOURITES + '.timer': '[Unit]\nDescription=NekoServer favourite shows keep coming\n'
-        f'[Timer]\nOnBootSec=15min\nOnUnitInactiveSec=60min\nUnit={FAVOURITES}.service\n'
+        FAVOURITES_TIMER: '[Unit]\nDescription=NekoServer favourite shows keep coming\n'
+        f'[Timer]\nOnBootSec=15min\nOnUnitInactiveSec=60min\nUnit={FAVOURITES_SERVICE}\n'
         '[Install]\nWantedBy=timers.target\n',
     }
 
@@ -170,7 +172,7 @@ def follow_favourite_shows(ctx, run=subprocess.run):
     if os.geteuid() != 0:
         ctx.log('Favourite shows keep coming: ' + ('set up when setup runs as root' if wanted else 'not needed'))
         return
-    units = [SYSTEMD_UNITS / name for name in (FAVOURITES + '.timer', FAVOURITES + '.service')]
+    units = [SYSTEMD_UNITS / name for name in (FAVOURITES_TIMER, FAVOURITES_SERVICE)]
     if not wanted:
         from modules._schedules import remove
 
@@ -181,7 +183,7 @@ def follow_favourite_shows(ctx, run=subprocess.run):
     definitions = favourite_units(data, release)
     check_units(definitions, 'favourite shows')
     write_units(definitions)
-    for command in (['systemctl', 'daemon-reload'], ['systemctl', 'enable', '--now', FAVOURITES + '.timer']):
+    for command in (['systemctl', 'daemon-reload'], ['systemctl', 'enable', '--now', FAVOURITES_TIMER]):
         run(command, check=True, capture_output=True, text=True, timeout=60)
     ctx.log('Favourite shows keep coming: every hour, a show favourited in Jellyfin gets its new episodes (Sonarr)')
 

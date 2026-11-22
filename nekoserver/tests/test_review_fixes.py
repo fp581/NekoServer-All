@@ -2118,7 +2118,7 @@ class LibraryScanTests(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory() as media,
-            mock.patch('time.monotonic', lambda: clock['now']),
+            mock.patch('time.monotonic', side_effect=lambda: clock['now']),
             mock.patch('time.sleep', sleep),
         ):
             for category in ('movies', 'tv'):

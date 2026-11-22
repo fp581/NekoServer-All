@@ -93,7 +93,7 @@ class Clock:
 
 class SearchAndRequestTests(unittest.TestCase):
     def setUp(self):
-        patch = mock.patch.object(jellyfin_requests, 'seerr_key', lambda root: 'seerr-key')
+        patch = mock.patch.object(jellyfin_requests, 'seerr_key', return_value='seerr-key')
         patch.start()
         self.addCleanup(patch.stop)
         self.said = []

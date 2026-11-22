@@ -125,10 +125,10 @@ class FavouriteShowsTests(unittest.TestCase):
         self.config = {'data_mount': str(self.data), 'media': {'services': ['jellyfin', 'seerr', 'sonarr']}}
         for patch in (
             mock.patch.object(favourite_shows, 'media_services', lambda config: config['media']['services']),
-            mock.patch.object(media_readiness, 'jellyfin_key', lambda *a: 'jellyfin-key'),
-            mock.patch.object(seerr_providers, 'app_key', lambda *a: 'sonarr-key'),
-            mock.patch.object(favourite_shows, 'open_seerr', lambda client, *a: None),
-            mock.patch.object(seerr_providers, 'request_folders', lambda config: {'sonarr': '/data/tv'}),
+            mock.patch.object(media_readiness, 'jellyfin_key', return_value='jellyfin-key'),
+            mock.patch.object(seerr_providers, 'app_key', return_value='sonarr-key'),
+            mock.patch.object(favourite_shows, 'open_seerr', return_value=None),
+            mock.patch.object(seerr_providers, 'request_folders', return_value={'sonarr': '/data/tv'}),
         ):
             patch.start()
             self.addCleanup(patch.stop)
@@ -299,7 +299,7 @@ class FavouriteShowsTests(unittest.TestCase):
         settings.write_text(json.dumps(self.config))
         printed = []
         with (
-            mock.patch.object(favourite_shows, 'read_settings', lambda path: self.config),
+            mock.patch.object(favourite_shows, 'read_settings', return_value=self.config),
             mock.patch.object(favourite_shows, 'Client', self.apps.factory),
             mock.patch('builtins.print', printed.append),
         ):
@@ -315,7 +315,7 @@ class FavouriteShowsTests(unittest.TestCase):
 
         printed = []
         with (
-            mock.patch.object(favourite_shows, 'read_settings', lambda path: self.config),
+            mock.patch.object(favourite_shows, 'read_settings', return_value=self.config),
             mock.patch.object(favourite_shows, 'Client', down),
             mock.patch('builtins.print', printed.append),
         ):
@@ -348,7 +348,7 @@ class ScheduleTests(unittest.TestCase):
             mock.patch.object(neko_common, 'SYSTEMD_UNITS', self.units),
             mock.patch.object(neko_common, 'TIMER_STAMPS', Path(tmp.name) / 'stamps'),
             mock.patch.object(onboarding, 'SYSTEMD_UNITS', self.units),
-            mock.patch.object(onboarding.os, 'geteuid', lambda: 0),
+            mock.patch.object(onboarding.os, 'geteuid', return_value=0),
         ):
             patch.start()
             self.addCleanup(patch.stop)
@@ -374,8 +374,8 @@ class ScheduleTests(unittest.TestCase):
 
         ctx.config['onboarding'] = {}
         with (
-            mock.patch.object(self.onboarding, 'media_services', lambda config: ['jellyfin', 'sonarr']),
-            mock.patch.object(self.onboarding, 'apps_to_connect', lambda config: True),
+            mock.patch.object(self.onboarding, 'media_services', return_value=['jellyfin', 'sonarr']),
+            mock.patch.object(self.onboarding, 'apps_to_connect', return_value=True),
             mock.patch.object(self.onboarding, 'follow_favourite_shows', side_effect=job_step) as job,
             mock.patch.object(self.onboarding, 'docker_running', side_effect=RuntimeError('Docker is not running')),
             mock.patch.object(self.onboarding.subprocess, 'run'),
