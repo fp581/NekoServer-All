@@ -170,6 +170,15 @@ def new_library_options():
 ADDING_WAIT = 120
 
 
+def added(client, category, name, kind):
+    """The library once Jellyfin has added it, else None. Listed while still being added,
+    it has no ID yet ("Jellyfin library ID missing", seen with Jellyfin 12.4)."""
+    try:
+        return matching(folders(client), category, name, kind)
+    except RuntimeError:
+        return None
+
+
 def add_library(client, category, name, kind):
     """Add the library and return it as Jellyfin lists it. While Jellyfin scans the
     library made just before (many films), adding the next one can take longer than a
@@ -184,7 +193,7 @@ def add_library(client, category, name, kind):
         if str(exc) != 'jellyfin: unavailable or incompatible API response':
             raise
         deadline = time.monotonic() + ADDING_WAIT
-        while not matching(folders(client), category, name, kind):
+        while not added(client, category, name, kind):
             if time.monotonic() >= deadline:
                 raise RuntimeError('Library creation was not retained') from None
             time.sleep(5)
