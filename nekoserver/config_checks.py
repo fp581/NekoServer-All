@@ -154,11 +154,16 @@ def check_photos(config, plan):
             whole_number(opts, 'photos', key, default, minimum, maximum)
         _time(opts.get('database_backup_time', '02:15'))
     if 'photo_backup' in plan:
-        _time(opts.get('backup_time', '03:00'))
-        if opts.get('backup_weekday', 'Sun') not in ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'):
-            raise RuntimeError('Invalid external backup weekday')
-        if opts.get('external_backup_fstype', 'ext4') not in ('ext4', 'xfs', 'btrfs', 'exfat'):
-            raise RuntimeError('Invalid external backup filesystem')
+        check_weekly_copy(opts)
+
+
+def check_weekly_copy(opts):
+    """The weekly copy of the photos: its time, its day and the backup drive's filesystem."""
+    _time(opts.get('backup_time', '03:00'))
+    if opts.get('backup_weekday', 'Sun') not in ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'):
+        raise RuntimeError('Invalid external backup weekday')
+    if opts.get('external_backup_fstype', 'ext4') not in ('ext4', 'xfs', 'btrfs', 'exfat'):
+        raise RuntimeError('Invalid external backup filesystem')
 
 
 # Settings a release reads or writes that the template (config.json) does not show: with

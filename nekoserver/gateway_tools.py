@@ -1328,7 +1328,7 @@ def listed(value):
 # Trusted as a whole, so a Nextcloud network made again later (with another number)
 # still trusts the hop. 192.168.0.0/16, Docker's other default range, is not trusted as a
 # whole: it is the usual home network range too.
-DOCKER_RANGE = '172.16.0.0/12'  # NOSONAR: Docker's fixed default pool, not an address of this server
+DOCKER_RANGE = '172.16.0.0/12'
 
 
 def cloud_proxies(compose):
