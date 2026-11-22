@@ -501,6 +501,53 @@ fn unchanged_while_copied(files: &[Value], missing: &[String], selected: &[Sourc
         if more > 0 { format!(" and {more} more") } else { String::new() }
     )))
 }
+/// The HDD's folder of settings backups: root's own and private, without the half-made
+/// snapshots of runs that failed or were cut off (they take space too).
+fn host_root(media: &Path) -> Result<PathBuf> {
+    let root = media.join("backups/host-user");
+    common::directory(&root, 0o700)?;
+    let m = fs::metadata(&root)?;
+    if m.uid() != 0 || m.mode() & 0o077 != 0 {
+        return Err(Error::new("Private host backup root required"));
+    }
+    common::clear_leftovers(&root, true)?;
+    Ok(root)
+}
+/// The snapshot's manifest: what it holds, what was left out (Steam's files while it is
+/// open) or skipped, and whether the managed Samba was running.
+fn host_manifest(
+    cfg: &Value,
+    files: &[Value],
+    (missing, skipped, left_out): (&[String], &[Value], &[String]),
+    active: bool,
+) -> Value {
+    let consistency = if left_out.is_empty() {
+        "Steam closed; managed Samba stopped; other files checked for changes"
+    } else {
+        "Steam open: its files left out; managed Samba stopped; other files checked for changes"
+    };
+    json!({"format":"neko-host-snapshot-v1","version":VERSION,"created_at":common::now(),"files":files,"sources":cfg["host_backup"]["sources"],"missing_optional":missing,"left_out":left_out,"skipped":skipped,"smb_was_active":active,"links_are_inert":true,"application_consistency":consistency})
+}
+/// How many snapshots are kept, and the one that is never retired: a run that left
+/// Steam out keeps the last complete snapshot, which has it.
+fn host_keep(cfg: &Value, root: &Path, left_out: &[String]) -> (u64, Option<String>) {
+    // 1 to 7 (0.50.0), or the earlier count setup marked; a count that is neither
+    // removes nothing, and the journal says so.
+    let (keep, refused) = backup::keep_count(
+        &cfg["host_backup"]["keep_snapshots"],
+        &cfg["host_backup"]["earlier"],
+        "host_backup",
+    );
+    if let Some(why) = refused {
+        println!("Host snapshot: {why}");
+    }
+    let protected = if left_out.is_empty() {
+        None
+    } else {
+        newest_complete(root)
+    };
+    (keep, protected)
+}
 fn snapshot(
     cfgpath: &Path,
     cfg: &Value,
@@ -532,14 +579,7 @@ fn snapshot(
         // A HDD that drops out mid-run stops it (see common::expect_drive).
         let _hdd = common::expect_drive(media)?;
         let (mut files, missing, skipped) = inventory(selected)?;
-        let root = media.join("backups/host-user");
-        common::directory(&root, 0o700)?;
-        let m = fs::metadata(&root)?;
-        if m.uid() != 0 || m.mode() & 0o077 != 0 {
-            return Err(Error::new("Private host backup root required"));
-        }
-        // Half-made snapshots of runs that failed or were cut off take space too.
-        common::clear_leftovers(&root, true)?;
+        let root = host_root(media)?;
         room_for(cfg, &root, &files, media)?;
         let stage = backup::stage_snapshot(&root)?;
         copy_files(&mut files, selected, &stage.payload)?;
@@ -548,23 +588,8 @@ fn snapshot(
         if samba {
             probe_absent(&["pgrep", "-x", "smbd|winbindd|nmbd|samba"])?;
         }
-        let manifest = json!({"format":"neko-host-snapshot-v1","version":VERSION,"created_at":common::now(),"files":files,"sources":cfg["host_backup"]["sources"],"missing_optional":missing,"left_out":left_out,"skipped":skipped,"smb_was_active":active,"links_are_inert":true,"application_consistency":if left_out.is_empty() {"Steam closed; managed Samba stopped; other files checked for changes"} else {"Steam open: its files left out; managed Samba stopped; other files checked for changes"}});
-        // 1 to 7 (0.50.0), or the earlier count setup marked; a count that is neither
-        // removes nothing, and the journal says so.
-        let (keep, refused) = backup::keep_count(
-            &cfg["host_backup"]["keep_snapshots"],
-            &cfg["host_backup"]["earlier"],
-            "host_backup",
-        );
-        if let Some(why) = refused {
-            println!("Host snapshot: {why}");
-        }
-        // A run that left Steam out never retires the last snapshot that has it.
-        let protected = if left_out.is_empty() {
-            None
-        } else {
-            newest_complete(&root)
-        };
+        let manifest = host_manifest(cfg, &files, (&missing, &skipped, &left_out), active);
+        let (keep, protected) = host_keep(cfg, &root, &left_out);
         backup::publish_snapshot(
             &root,
             &stage,
@@ -791,6 +816,43 @@ mod tests {
 mod split_helpers {
     use super::*;
 
+    #[test]
+    fn the_manifest_says_what_was_left_out_and_the_keep_count_spares_steams_snapshot() {
+        let cfg = json!({"host_backup": {"sources": [{"id": "source1"}], "keep_snapshots": 3}});
+        let files = [json!({"path": "source1", "kind": "directory"})];
+        let skipped = [json!({"path": "source1/x", "reason": "special file"})];
+        let missing = ["source2".to_string()];
+        let closed = host_manifest(&cfg, &files, (&missing, &skipped, &[]), true);
+        assert_eq!(closed["format"], "neko-host-snapshot-v1");
+        assert_eq!(closed["files"], json!(files));
+        assert_eq!(closed["sources"], cfg["host_backup"]["sources"]);
+        assert_eq!(closed["missing_optional"], json!(["source2"]));
+        assert_eq!(closed["skipped"], json!(skipped));
+        assert_eq!(closed["smb_was_active"], true);
+        assert_eq!(closed["links_are_inert"], true);
+        assert_eq!(
+            closed["application_consistency"],
+            "Steam closed; managed Samba stopped; other files checked for changes"
+        );
+        let steam = ["source3".to_string()];
+        let open = host_manifest(&cfg, &files, (&[], &[], &steam), false);
+        assert_eq!(open["left_out"], json!(["source3"]));
+        assert_eq!(
+            open["application_consistency"],
+            "Steam open: its files left out; managed Samba stopped; other files checked for changes"
+        );
+        let root = std::env::temp_dir().join(format!("neko-host-keep2-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        // Steam copied: nothing is spared.
+        assert_eq!(host_keep(&cfg, &root, &[]), (3, None));
+        // Steam left out: the newest complete snapshot (none here yet) is spared.
+        assert_eq!(host_keep(&cfg, &root, &steam), (3, newest_complete(&root)));
+        // A count that is neither 1 to 7 nor an earlier one: nothing removed.
+        let odd = json!({"host_backup": {"keep_snapshots": 9}});
+        assert_eq!(host_keep(&odd, &root, &[]).0, 0);
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn a_snapshot_needs_room_for_its_files_and_the_chosen_reserve() {
         let root = std::env::temp_dir().join(format!("neko-host-room-{}", std::process::id()));
