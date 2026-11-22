@@ -1043,11 +1043,8 @@ fn gathered(buf: &[u8]) -> bool {
         .unwrap_or(0);
     length > MAX_BODY || buf.len() >= end + 4 + length
 }
-/// The server's loop. One thread (the gatherer) watches every connection whose request is
-/// still coming in and hands a request to a worker only once it is in whole. Before, each
-/// connection took a worker straight away: 200 connections that each sent half a request,
-/// opened again as soon as they were closed, kept all 16 workers and the queue full, and the
-/// page got no answer at all for as long as they went on (deep check 238).
+
+/// A connection whose request has come in whole: when it was accepted, and the request.
 type Gathered = (TcpStream, Instant, Vec<u8>);
 
 /// The workers that answer gathered requests, each in a thread of its own.
@@ -1124,6 +1121,11 @@ fn accept_new(listener: &TcpListener, pending: &mut VecDeque<Pending>) {
     }
 }
 
+/// The server's loop. One thread (the gatherer) watches every connection whose request is
+/// still coming in and hands a request to a worker only once it is in whole. Before, each
+/// connection took a worker straight away: 200 connections that each sent half a request,
+/// opened again as soon as they were closed, kept all 16 workers and the queue full, and the
+/// page got no answer at all for as long as they went on (deep check 238).
 fn serve_on(listener: TcpListener, server: Arc<Server>) -> Result<()> {
     let (tx, rx) = mpsc::sync_channel::<Gathered>(QUEUE);
     start_workers(rx, &server);
