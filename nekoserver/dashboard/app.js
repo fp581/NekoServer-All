@@ -197,7 +197,8 @@ const JOB_UNITS = {
   maintenance: 'nekoserver-maintenance.service',
   updates: 'nekoserver-updates.service',
   update_check: 'nekoserver-update-check.service',
-  upgrade: 'nekoserver-upgrade-resume.service'
+  upgrade: 'nekoserver-upgrade-resume.service',
+  cards: 'nekoserver-cards.service'
 };
 /* The service a job runs as: the status says (the weekly photo schedule runs the
    database copy, an upgrade runs as nekoserver-upgrade@<release>), else the usual one. */
@@ -243,6 +244,8 @@ const ROUTES = {
   processes: 'Processes',
   health: 'Server health',
   updates: 'Updates',
+  media: 'Media folders',
+  cards: 'Backup cards',
   attention: 'Needs attention',
   help: 'Help'
 };
@@ -250,7 +253,7 @@ const ROUTES = {
 const LIVE_ROUTES = new Set(['home', 'hardware', 'sensors']);
 /* Pages whose buttons change something: they read whether this device may (the PIN).
  * Ask Neko is one: asking and approving a fix need the PIN. */
-const CONTROL_ROUTES = new Set(['cooling', 'apps', 'processes', 'home', 'ask']);
+const CONTROL_ROUTES = new Set(['cooling', 'apps', 'processes', 'home', 'ask', 'media', 'cards']);
 /* Short, stable error codes. E10-E42 come from the server; E01, E02 and E12 are
  * noticed by this page. DASHBOARD.md lists the same table. */
 const ERRORS = {
@@ -321,6 +324,7 @@ const state = {
   mine: new Set(),
   shown: new Set(), // app actions started here, and those already announced
   upgradeAsked: null, // the reading shown when an upgrade was started here
+  cardsLook: null, // the Backup cards page's last look at the drives plugged in
   routed: false // a page has been shown (its sections, and only they, visible)
 };
 const savedFavorites = readStore('favorites', []);
@@ -1082,8 +1086,10 @@ function renderChrome() {
     $('version').textContent = 'NekoServer v' + s.version;
   }
   renderCounts(s);
-  // Ask Neko is in the menu only on a server that has the assistant.
+  // Ask Neko is in the menu only on a server that has the assistant, Backup cards only
+  // while they are switched on.
   $('nav-ask').hidden = !assistantSetUp(s);
+  $('nav-cards').hidden = !cardsOn(s);
   $('footer-status').textContent = s ? 'Readings from ' + ago(s.generated_at) : 'Waiting for readings';
 }
 
@@ -2310,6 +2316,21 @@ function backupCard(job, fresh) {
   if (job.reason) {
     card.append(longText('reason', text(job.reason)));
   }
+  if (job.id === 'cards') {
+    // The set itself: which card is in, what is on the cards and what waits for one.
+    for (const line of cardsSummary(cardSet())) {
+      card.append(el('p', '', line));
+    }
+    const row = el('div', 'update-actions');
+    row.append(
+      keyed(button('Write to the card now', writeNow, 'button small'), 'backup-cards-write'),
+      keyed(
+        button('Backup cards page', () => (location.hash = '#cards'), 'button small secondary'),
+        'backup-cards-page'
+      )
+    );
+    card.append(row);
+  }
   card.append(
     keyed(
       button('Help & logs', () => showGuide('backup', jobUnit(job)), 'text-button'),
@@ -2428,6 +2449,186 @@ function renderBackups() {
     s.integrity.map(check => integrityRow(check, fresh, monthlyNext(s)))
   );
   put('restore-status', [restoreBox(s)]);
+}
+
+/* ---------- backup cards (0.52.0) ---------- */
+/* Backup cards are switched on (setup's first page): the readings carry the set. */
+function cardsOn(s = state.status) {
+  return object(s?.cards).enabled === true;
+}
+/* The set as the server last saw it (cards/status.json through the readings), or as the
+ * page's own look at the drives found it, whichever is newer. */
+function cardSet(s = state.status, looked = state.cardsLook) {
+  const read = object(object(s?.cards).set),
+    seen = object(looked?.set);
+  return count(seen.updated_at) > count(read.updated_at) ? seen : read;
+}
+/* What the set is, in a few lines: which card is in, how many files are on the cards and
+ * how many wait for one, when a card was last written. The Backups page says the same. */
+function cardsSummary(set, now = Date.now() / 1000) {
+  const cards = list(set.cards);
+  if (!cards.length) {
+    return ['No card is set up yet. Plug in an empty SD card or USB stick and choose it on the Backup cards page.'];
+  }
+  const inside = cards.filter(c => c.plugged === true).map(c => c.number);
+  const lines = [
+    inside.length
+      ? (inside.length === 1 ? 'Card ' : 'Cards ') +
+        inside.join(' and ') +
+        (inside.length === 1 ? ' is' : ' are') +
+        ' in.'
+      : 'No card of the set is in. ' + plural(cards.length, 'card') + ' in the set.'
+  ];
+  if (numeric(set.files_on_cards)) {
+    lines.push(
+      plural(set.files_on_cards, 'file') +
+        ' on the cards, ' +
+        plural(count(set.files_waiting), 'file') +
+        ' waiting for a card.'
+    );
+  }
+  lines.push(numeric(set.last_write_at) ? 'Last written ' + ago(set.last_write_at) + '.' : 'Not written to yet.');
+  if (numeric(set.full_card)) {
+    lines.push('Card ' + set.full_card + ' is full: put in a new card (it becomes card ' + (set.full_card + 1) + ').');
+  }
+  return lines;
+}
+/* One card of the set, in a line. */
+function cardLine(c) {
+  return joined([
+    'Card ' + c.number,
+    c.plugged ? 'in now' : 'not in',
+    plural(count(c.files), 'file'),
+    c.full ? 'full' : '',
+    c.state && c.state !== 'in_use' ? c.state.replaceAll('_', ' ') : ''
+  ]);
+}
+/* What the page offers for one drive plugged in: a card of the set, one that can become
+ * the next card, or why not (the server's words). */
+function driveOffer(d, next) {
+  const name = joined([text(d.label, 'A drive'), d.size ? bytes(d.size) : '', text(d.fstype)]);
+  if (numeric(d.card)) {
+    return { name, said: 'Card ' + d.card + ' of your set.', action: null };
+  }
+  if (d.usable === true) {
+    return {
+      name,
+      said: 'Empty: it can be card ' + next + ' of the set.',
+      action: 'Use this as card ' + next + ' of the set'
+    };
+  }
+  return { name, said: text(d.why, 'It cannot be a backup card.'), action: null };
+}
+async function lookForCards() {
+  const answer = await postControl('cards-list');
+  if (answer.ok) {
+    state.cardsLook = answer;
+    renderCards();
+    return;
+  }
+  if (answer.error === 'E43' && state.control?.access?.pin_set) {
+    unlockDialog(
+      lookForCards,
+      'BACKUP CARDS',
+      'Choosing and writing backup cards needs your PIN on every device, the server too.'
+    );
+    return;
+  }
+  toast(controlMessage(answer));
+}
+function enrolDialog(d, next) {
+  const tick = el('input');
+  tick.type = 'checkbox';
+  tick.id = 'cards-ack';
+  const label = el(
+    'label',
+    'field check',
+    'I understand the copies on the cards are not encrypted: anyone holding a card can read them.'
+  );
+  label.prepend(tick);
+  const go = button(
+    'Use this as card ' + next,
+    async () => {
+      const answer = await postControl('cards-enrol', { mount: d.mount, number: next, acknowledged: tick.checked });
+      $('dialog').close();
+      if (answer.ok) {
+        toast(text(answer.message, 'The card is ready.'));
+        await lookForCards();
+        return;
+      }
+      toast(controlMessage(answer));
+    },
+    'button'
+  );
+  const cancel = button('Cancel', () => $('dialog').close(), 'button secondary');
+  const row = el('div', 'dialog-actions');
+  row.append(go, cancel);
+  openDialog('BACKUP CARDS', 'Use this card as card ' + next + '?', [
+    el(
+      'p',
+      '',
+      'NekoServer adds a NekoBackup folder to it and copies your photos and documents into it, a little more each night it is plugged in. Nothing on it is erased; the card is never formatted.'
+    ),
+    label,
+    row
+  ]);
+  requestAnimationFrame(() => cancel.focus());
+}
+async function writeNow() {
+  const answer = await postControl('cards-write');
+  if (answer.ok) {
+    toast(text(answer.message, 'Writing to the card now.'));
+    return;
+  }
+  if (answer.error === 'E43' && state.control?.access?.pin_set) {
+    unlockDialog(
+      writeNow,
+      'BACKUP CARDS',
+      'Choosing and writing backup cards needs your PIN on every device, the server too.'
+    );
+    return;
+  }
+  toast(controlMessage(answer));
+}
+function renderCards() {
+  const s = state.status;
+  if (!s) {
+    return;
+  }
+  if (!cardsOn(s)) {
+    put('cards-set', [
+      empty(
+        "Backup cards are off. Switch them on on setup's first page, under Storage (run setup again on the server)."
+      )
+    ]);
+    put('cards-drives', []);
+    return;
+  }
+  const set = cardSet(s);
+  const box = el('div', 'callout');
+  box.append(el('strong', '', text(set.set_name, 'Your backup cards')));
+  for (const line of cardsSummary(set)) {
+    box.append(el('p', '', line));
+  }
+  box.append(keyed(button('Write to the card now', writeNow, 'button small'), 'cards-write'));
+  const rows = list(set.cards).map(c => el('p', 'row', cardLine(c)));
+  put('cards-set', [box, ...rows]);
+  const look = state.cardsLook;
+  const found = look
+    ? list(look.drives).map(d => {
+        const offer = driveOffer(d, count(look.next_number) || 1);
+        const row = el('article', 'card');
+        row.append(el('strong', '', offer.name), el('p', offer.action ? '' : 'reason', offer.said));
+        if (offer.action) {
+          row.append(button(offer.action, () => enrolDialog(d, count(look.next_number) || 1), 'button small'));
+        }
+        return row;
+      })
+    : [];
+  put('cards-drives', [
+    ...(look && !found.length ? [empty('No card or USB stick is plugged in and mounted.')] : found),
+    keyed(button(look ? 'Look again' : 'Look for cards', lookForCards, 'button small secondary'), 'cards-look')
+  ]);
 }
 
 /* ---------- hardware ---------- */
@@ -5286,12 +5487,506 @@ function moreMenu() {
     if (id === 'ask' && !assistantSetUp()) {
       continue;
     }
+    if (id === 'cards' && !cardsOn()) {
+      continue;
+    }
     const a = el('a', id === state.route ? 'nav active' : 'nav', name);
     a.href = '#' + id;
     a.addEventListener('click', () => $('dialog').close());
     nav.append(a);
   }
   openDialog('NEKOSERVER', 'All pages', [nav, button('Settings', preferences)]);
+}
+
+/* ---------- media folders ---------- */
+/* The Media folders page (DASHBOARD.md, "Media folders"): the folders of films, shows and
+ * music the server plays, and where new downloads go. The page only asks: the control
+ * service checks each change and has it made as root by media_locations.py, the code
+ * setup uses for the same choice. Everything here needs the PIN. */
+const MEDIA = {
+  answer: null, // what /api/control/media-state said last: {working, result}
+  asked: false, // a look was asked for since the page was opened
+  refused: null, // the server's refusal of the last look (the app SSD away, say), or null
+  timer: 0,
+  browse: null, // the folders offered to pick from, as media-browse said them
+  path: null, // the form's folder box and the list to pick from (made with the form)
+  box: null,
+  form: { kind: '', path: '', how: 'in_place', downloads: false, backup: true },
+  formKey: ''
+};
+const MEDIA_POLL = 2000; // how often the page looks while a change is at work
+const MEDIA_KIND = { movies: 'Films', tv: 'Shows', music: 'Music' };
+const MEDIA_ROLE = { in_place: 'Used where it is', new_files: 'For new downloads only' };
+const MEDIA_KEPT = 'The files in it are not touched: nothing is deleted, moved or changed.';
+function mediaKinds(answer = MEDIA.answer) {
+  return list(object(object(answer).result).kinds).filter(k => Object.hasOwn(MEDIA_KIND, k.kind));
+}
+/* What the last answer says, as the page shows it at the top: [badge state, title, words]. */
+function mediaOutcome(answer) {
+  const a = object(answer),
+    r = object(a.result);
+  if (a.working) {
+    return ['starting', 'Working on it…', text(r.state) === 'working' ? text(r.message) : ''];
+  }
+  return firstOf(
+    [
+      [!a.result, null],
+      [r.state === 'done', ['pass', 'Done', text(r.message)]],
+      // Saved, but a step after it did not finish: What to do next names it (nothing is undone).
+      [r.state === 'partial', ['warning', 'Partly done', text(r.message)]],
+      [r.state === 'refused', ['warning', 'Not changed', text(r.message)]],
+      [r.state === 'failed', ['fail', 'Something went wrong', text(r.message)]]
+    ],
+    null
+  );
+}
+async function mediaState() {
+  const answer = await postControl('media-state');
+  clearTimeout(MEDIA.timer);
+  if (answer.ok) {
+    const shown = mediaKinds();
+    MEDIA.answer = answer;
+    if (answer.working && !mediaKinds().length && shown.length) {
+      // A change at work has no folders to say yet: the ones shown stay (a copy into
+      // the library takes hours, and the page said "Looking at your folders…" for all
+      // of them, with no folder shown).
+      MEDIA.answer = { ...answer, result: { ...object(answer.result), kinds: shown } };
+    }
+    if (answer.working) {
+      MEDIA.refused = null; // the look was refused only because this change is at work
+      MEDIA.timer = setTimeout(() => void mediaState(), MEDIA_POLL);
+    }
+  } else if (answer.error === 'E43') {
+    MEDIA.answer = null;
+  }
+  if (state.route === 'media') {
+    withFocus(renderMedia);
+  }
+  return answer;
+}
+/* A change sent (or a look): refused at once with its words, else followed until it ends. */
+async function mediaChange(body, starting) {
+  const answer = await postControl('media-change', body);
+  if (body.change === 'look' && answer.error !== 'E43') {
+    // Said on the page until a look goes through: a look refused (the app SSD away) left
+    // the page saying "This server plays no films, shows or music", or showing the last
+    // answer as if it were now. One refused because a change is at work follows it.
+    MEDIA.refused = answer.ok ? null : answer;
+  }
+  if (answer.ok) {
+    if (starting) {
+      toast(starting);
+    }
+    MEDIA.answer = { ...object(MEDIA.answer), working: true };
+  } else if (answer.error === 'E43' && state.control?.access?.pin_set) {
+    unlockDialog(() => void mediaChange(body, starting), 'MEDIA FOLDERS', MEDIA_PIN);
+    return answer;
+  } else if (body.change !== 'look' || answer.error !== 'E47') {
+    toast(controlMessage(answer)); // a look while a change is at work just follows it
+  }
+  await mediaState();
+  return answer;
+}
+const MEDIA_PIN = 'Your media folders are changed as the server’s administrator, so it needs your PIN on every device.';
+function mediaLook() {
+  MEDIA.asked = true;
+  void mediaChange({ change: 'look' });
+}
+function mediaUnlock() {
+  if (state.control?.access?.pin_set === false) {
+    toast('Media folders need a PIN. Run setup again in a terminal on the server to choose one.');
+    return;
+  }
+  unlockDialog(mediaLook, 'MEDIA FOLDERS', MEDIA_PIN);
+}
+function mediaFolderRow(kind, f) {
+  const row = el('div', 'row media-folder'),
+    info = el('div');
+  info.append(el('h3', '', f.path), el('p', '', text(MEDIA_ROLE[f.use], 'Your folder')));
+  if (f.new_files) {
+    info.append(el('p', 'media-target', 'New downloads go here'));
+  }
+  if (f.backup_said) {
+    info.append(el('p', '', 'Backup: ' + text(f.backup_said)));
+  }
+  if (!f.ready) {
+    info.append(longText('reason', text(f.reason, 'Not there now.')));
+  }
+  const actions = el('div', 'update-actions');
+  if (kind.downloads && f.use === 'in_place' && !f.new_files) {
+    actions.append(
+      button('Send new downloads here', () =>
+        mediaChange(
+          // The folder shown goes too: a page left open must not change one added since in its slot.
+          { change: 'target', kind: kind.kind, target: f.slot, path: f.path },
+          'Checking that new ' + kind.words + ' can be saved in ' + f.path + '…'
+        )
+      )
+    );
+  }
+  const away = button('Take away', () => confirmTakeAway(kind, f));
+  away.setAttribute('aria-label', 'Take away ' + f.path);
+  actions.append(away);
+  info.append(actions);
+  row.append(info, badge(f.ready ? 'pass' : 'warning', f.ready ? 'Ready' : 'Not ready'));
+  return row;
+}
+function confirmTakeAway(kind, f) {
+  confirmDialog(
+    'MEDIA FOLDERS',
+    'Take away ' + f.path + '?',
+    'It is disconnected from your ' +
+      kind.words +
+      ': the apps stop showing what is in it. ' +
+      MEDIA_KEPT +
+      ' An app that has a file open there keeps it until it restarts; the page says so if a restart is needed.',
+    'Take it away',
+    () =>
+      void mediaChange(
+        { change: 'remove', kind: kind.kind, slot: f.slot, path: f.path },
+        'Disconnecting ' + f.path + '…'
+      )
+  );
+}
+function mediaKindCard(kind) {
+  const card = el('article', 'card media-kind'),
+    rows = el('div', 'row-list');
+  card.append(cardHeading(text(MEDIA_KIND[kind.kind]), badge('pass', plural(list(kind.folders).length + 1, 'place'))));
+  const library = el('div', 'row media-folder'),
+    info = el('div');
+  info.append(el('h3', '', 'NekoServer library'), el('p', '', text(kind.library)));
+  if (kind.target === 'library') {
+    info.append(el('p', 'media-target', 'New downloads go here'));
+  } else if (kind.downloads) {
+    const back = button('Send new downloads here', () =>
+      mediaChange(
+        { change: 'target', kind: kind.kind, target: 'library' },
+        'New ' + kind.words + ' go to the library from now on…'
+      )
+    );
+    back.setAttribute('aria-label', 'Send new ' + kind.words + ' to the NekoServer library');
+    const actions = el('div', 'update-actions');
+    actions.append(back);
+    info.append(actions);
+  }
+  library.append(info, badge('pass', 'Ready'));
+  rows.append(library, ...list(kind.folders).map(f => mediaFolderRow(kind, f)));
+  card.append(rows);
+  for (const path of words(kind.copies)) {
+    card.append(hint('Waiting to be copied into the library: ' + path));
+  }
+  if (!kind.downloads) {
+    card.append(hint('This server does not download new ' + kind.words + ', so there is no place to choose for them.'));
+  }
+  return card;
+}
+function mediaOutcomeNodes(answer) {
+  const said = mediaOutcome(answer);
+  // A look that went well says nothing more than the folders below it.
+  const look = object(object(object(answer).result).asked).change === 'look';
+  if (!said || (look && said[0] === 'pass')) {
+    return [];
+  }
+  const [level, title, message] = said,
+    r = object(object(answer).result),
+    box = el('div', 'callout media-outcome');
+  box.setAttribute('role', 'status');
+  box.append(
+    cardHeading(level === 'starting' ? title : 'Last change', badge(level, level === 'starting' ? 'Working' : title))
+  );
+  if (message) {
+    box.append(longText('', message));
+  }
+  if (level === 'starting') {
+    box.append(...mediaProgress(object(answer).progress));
+  }
+  for (const note of words(r.notes)) {
+    box.append(longText('hint', note));
+  }
+  const next = words(r.next);
+  if (next.length && !object(answer).working) {
+    box.append(el('h4', '', 'What to do next'));
+    const steps = el('ul', 'media-next');
+    for (const step of next) {
+      steps.append(el('li', '', step));
+    }
+    box.append(steps);
+  }
+  return [box];
+}
+/* How far a copy into the library is, as the server's job writes it (media-state's
+ * "progress"): the same on every browser and after a reload. [] when nothing is copied. */
+function mediaProgress(p) {
+  const done = numeric(p?.bytes_done) && numeric(p?.bytes_total) && numeric(p?.files_done) && numeric(p?.files_total);
+  if (!done) {
+    return [];
+  }
+  const bar = el('progress', 'media-progress');
+  bar.max = Math.max(p.bytes_total, 1);
+  bar.value = Math.min(p.bytes_done, bar.max);
+  bar.setAttribute('aria-label', 'Copied so far');
+  const said =
+    p.files_done +
+    ' of ' +
+    plural(p.files_total, 'file') +
+    ' copied (' +
+    bytes(p.bytes_done) +
+    ' of ' +
+    bytes(p.bytes_total) +
+    ')';
+  return [bar, el('p', 'media-progress-said', said)];
+}
+function renderMedia() {
+  if (!signedIn()) {
+    MEDIA.answer = null;
+    MEDIA.asked = false;
+    MEDIA.refused = null;
+    MEDIA.formKey = '';
+    put('media-add', []);
+    const pin = state.control?.access?.pin_set;
+    put('media-folders', [
+      hint(
+        pin === false
+          ? 'Media folders need a PIN. Run setup again in a terminal on the server to choose one.'
+          : 'Your media folders are shown and changed with your PIN, on every device (the server too).'
+      ),
+      pin === false ? el('span') : button('Unlock media folders', mediaUnlock, 'button small')
+    ]);
+    return;
+  }
+  if (!MEDIA.asked) {
+    mediaLook();
+  }
+  const kinds = mediaKinds();
+  const nodes = mediaOutcomeNodes(MEDIA.answer);
+  const refused = MEDIA.answer?.working ? null : MEDIA.refused;
+  if (refused) {
+    const box = el('div', 'callout media-outcome');
+    box.setAttribute('role', 'status');
+    box.append(
+      cardHeading('Your folders could not be looked at now', badge('warning', 'Not looked at')),
+      longText('', controlMessage(refused))
+    );
+    if (kinds.length) {
+      box.append(longText('hint', 'What is shown below is from the last look, and may have changed since.'));
+    }
+    nodes.unshift(box);
+  }
+  if (!kinds.length) {
+    nodes.push(
+      empty(
+        firstOf(
+          [
+            [refused, 'Your folders are shown here once the server can look at them. Then press Look again.'],
+            [MEDIA.answer?.working || !MEDIA.answer, 'Looking at your folders…']
+          ],
+          'This server plays no films, shows or music.'
+        )
+      )
+    );
+  } else {
+    const grid = el('div', 'card-grid auto media-kinds');
+    grid.append(...kinds.map(mediaKindCard));
+    nodes.push(grid);
+  }
+  nodes.push(button('Look again', mediaLook, 'button small secondary'));
+  put('media-folders', nodes);
+  // The form is drawn again only when what it offers changes: typing in it is never undone.
+  const key = JSON.stringify(kinds.map(k => [k.kind, k.downloads, k.room]));
+  if (kinds.length && key !== MEDIA.formKey) {
+    MEDIA.formKey = key;
+    withFocus(() => put('media-add', [mediaForm(kinds)]));
+  }
+}
+function mediaRadio(name, value, label, checked, onChange) {
+  const wrap = el('label', 'media-choice'),
+    input = el('input');
+  Object.assign(input, { type: 'radio', name, value, checked });
+  input.addEventListener('change', onChange);
+  wrap.append(input, el('span', '', label));
+  return wrap;
+}
+function mediaForm(kinds) {
+  const f = MEDIA.form;
+  if (!kinds.some(k => k.kind === f.kind)) {
+    f.kind = kinds[0].kind;
+  }
+  const form = el('form', 'card media-form');
+  form.append(el('h3', '', 'Add a folder'));
+  const kindField = el('label', 'field', 'What is in it'),
+    kindSelect = el('select');
+  kindSelect.id = 'media-kind';
+  for (const k of kinds) {
+    const option = el('option', '', text(MEDIA_KIND[k.kind]));
+    option.value = k.kind;
+    kindSelect.append(option);
+  }
+  kindSelect.value = f.kind;
+  kindField.append(kindSelect);
+  const pathField = el('label', 'field', 'The folder, as this server sees it'),
+    path = el('input');
+  Object.assign(path, { type: 'text', id: 'media-path', value: f.path, autocomplete: 'off', spellcheck: false });
+  path.placeholder = '/mnt/nas/films';
+  path.addEventListener('input', () => {
+    f.path = path.value;
+  });
+  pathField.append(path);
+  const pick = button('Pick a folder', () => void mediaBrowse(''));
+  pick.id = 'media-pick';
+  const browse = el('div', 'media-browse');
+  MEDIA.path = path;
+  MEDIA.box = browse;
+  const how = el('fieldset', 'media-how');
+  how.append(el('legend', '', 'How'));
+  const downloadsBox = el('input'),
+    downloadsField = el('label', 'media-choice');
+  Object.assign(downloadsBox, { type: 'checkbox', id: 'media-downloads', checked: f.downloads });
+  downloadsField.append(downloadsBox, el('span', '', 'New downloads go there'));
+  const note = el('p', 'hint');
+  const backup = mediaBackupField(kinds.find(k => k.backup_question)?.backup_question);
+  const fit = () => {
+    const kind = kinds.find(k => k.kind === f.kind) || kinds[0];
+    const copying = f.how === 'copy';
+    // Setup's "Back this up too?": music used where it is (the server asks it only of a NAS's).
+    backup.hidden = !(kind.backup_question && !copying);
+    downloadsBox.disabled = copying || !kind.downloads;
+    if (downloadsBox.disabled) {
+      downloadsBox.checked = f.downloads = false;
+    }
+    note.textContent = firstOf(
+      [
+        [copying, 'Its files are copied into the NekoServer library; your folder is kept as it is.'],
+        [!kind.downloads, 'This server does not download new ' + kind.words + '.'],
+        // The server's words (shared.json media_folders.full), as setup says them.
+        [!kind.room, text(kind.full)]
+      ],
+      'Nothing in the folder is copied, moved or changed: the apps read it where it is.'
+    );
+  };
+  how.append(
+    mediaRadio('media-how', 'in_place', 'Use it where it is', f.how === 'in_place', () => {
+      f.how = 'in_place';
+      fit();
+    }),
+    mediaRadio('media-how', 'copy', 'Copy its files into the library', f.how === 'copy', () => {
+      f.how = 'copy';
+      fit();
+    }),
+    downloadsField,
+    note
+  );
+  kindSelect.addEventListener('change', () => {
+    f.kind = kindSelect.value;
+    fit();
+  });
+  downloadsBox.addEventListener('change', () => {
+    f.downloads = downloadsBox.checked;
+  });
+  fit();
+  const go = el('button', 'button', 'Connect folder');
+  go.type = 'submit';
+  form.addEventListener('submit', e => {
+    e.preventDefault();
+    if (!f.path.trim()) {
+      toast('Type the folder first, or pick one.');
+      path.focus();
+      return;
+    }
+    // A folder that is copied is not connected: new downloads can't go there.
+    const downloads = f.how === 'in_place' && !downloadsBox.disabled && f.downloads;
+    // A path typed with a slash at its end (as a terminal completes it) names the same
+    // folder: it was refused as "Type the folder as a full path, starting with /".
+    const typed = f.path.trim().replace(/(.)\/+$/, '$1');
+    const body = { change: 'add', kind: f.kind, path: typed, how: f.how, downloads };
+    if (!backup.hidden) {
+      body.backup = f.backup;
+    }
+    void mediaChange(body, 'Checking ' + body.path + ' as the apps would see it…');
+  });
+  form.append(kindField, pathField, pick, browse, how, backup, go);
+  return form;
+}
+/* The music backup question, in setup's own words (the server sends them: existing_page
+ * backup_question). The answer counts only for a folder on a NAS, as in setup. */
+function mediaBackupField(asked) {
+  const box = el('fieldset', 'media-how');
+  box.id = 'media-backup';
+  if (!asked) {
+    box.hidden = true;
+    return box;
+  }
+  box.append(el('legend', '', text(asked.title)), el('p', 'hint', text(asked.hint)));
+  for (const choice of list(asked.choices)) {
+    box.append(
+      mediaRadio('media-backup', String(choice.backup), text(choice.label), MEDIA.form.backup === choice.backup, () => {
+        MEDIA.form.backup = choice.backup;
+      })
+    );
+  }
+  box.append(
+    el('p', 'hint', 'Asked only for music on a NAS; a folder on a drive of this PC is not backed up by NekoServer.')
+  );
+  return box;
+}
+/* The folders to pick from: the server lists them (the page never reads the disk). */
+async function mediaBrowse(path) {
+  const answer = await postControl('media-browse', path ? { path } : {});
+  if (!answer.ok) {
+    toast(controlMessage(answer));
+    return;
+  }
+  MEDIA.browse = answer;
+  const box = MEDIA.box;
+  if (!box?.isConnected) {
+    return;
+  }
+  const nodes = [];
+  const here = text(answer.path);
+  if (here) {
+    const top = el('div', 'update-actions');
+    const use = button('Use ' + here, () => {
+      MEDIA.form.path = here;
+      MEDIA.path.value = here;
+      box.replaceChildren();
+      MEDIA.path.focus();
+    });
+    use.id = 'media-use';
+    top.append(
+      use,
+      button(answer.parent ? 'Up' : 'Back to the drives', () => void mediaBrowse(text(answer.parent)))
+    );
+    nodes.push(el('p', 'hint', 'In ' + here + ':'), top);
+  } else {
+    nodes.push(el('p', 'hint', 'Drives and shared folders connected to this server:'));
+  }
+  const folders = list(answer.folders);
+  const listing = el('ul', 'media-list');
+  for (const f of folders) {
+    const item = el('li'),
+      open = button((f.share ? '⇄ ' : f.mount ? '▣ ' : '') + text(f.name), () => void mediaBrowse(text(f.path)));
+    open.setAttribute('aria-label', 'Open ' + text(f.path));
+    item.append(open);
+    listing.append(item);
+  }
+  nodes.push(
+    folders.length
+      ? listing
+      : hint(
+          firstOf(
+            [
+              // Only part of a very big folder is read: its folders may be in the rest.
+              [here && answer.more, 'No folders among the first names looked at.'],
+              [here, 'No folders in it.']
+            ],
+            'No drive or shared folder is connected under /mnt, /media or /srv.'
+          )
+        )
+  );
+  if (answer.more) {
+    nodes.push(hint('There are more: type the rest of the path in the box.'));
+  }
+  box.replaceChildren(...nodes);
+  (box.querySelector('#media-use') || box.querySelector('button'))?.focus();
 }
 
 /* ---------- routing & rendering ---------- */
@@ -5350,6 +6045,8 @@ const PAGES = {
   processes: renderProcesses,
   health: renderHealth,
   updates: renderUpdates,
+  media: renderMedia,
+  cards: renderCards,
   help: renderHelp
 };
 function render() {

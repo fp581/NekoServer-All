@@ -552,6 +552,7 @@ def _execute(args, root=ROOT):
         'photo_backup',
         'app_backup',
         'host_backup',
+        'backup_cards',
         'notifications',
         'heartbeat',
         'maintenance',

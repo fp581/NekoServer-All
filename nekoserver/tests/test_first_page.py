@@ -54,6 +54,7 @@ class PageTests(Base):
                 ('extras', 'Warn me if the server stops checking in'),
                 ('extras', 'Add a local AI assistant'),
                 ('storage', 'My media and backup drives are in a NAS (a storage device on my home network)'),
+                ('storage', 'Backup cards'),
             ],
         )
         self.assertEqual(explanations.PAGE_TITLE, 'What would you like this server to do?')
@@ -89,6 +90,7 @@ class PageTests(Base):
                 'heartbeat': False,
                 'assistant': False,
                 'network_storage': False,
+                'backup_cards': False,
             },
         )
         # A saved answer is what it says, on a new server too.
@@ -267,9 +269,9 @@ class TerminalTests(Base):
         self.assertEqual(saved['notifications'], {'wanted': True})
 
     def test_no_stops_and_a_wrong_line_is_said(self):
-        started, asked, said, saved = self.run_page('12', 'no')
+        started, asked, said, saved = self.run_page('13', 'no')
         self.assertFalse(started)
-        self.assertIn('Type the number of a line (1 to 11), press Enter to go on, or type no to stop.', said)
+        self.assertIn('Type the number of a line (1 to 12), press Enter to go on, or type no to stop.', said)
         self.assertNotIn('=== Ready to install NekoServer ===', said)
         self.assertEqual(saved, settings())  # nothing was saved
         # On the review, Enter alone approves nothing, and no stops with nothing saved.

@@ -2853,7 +2853,7 @@ def choose_usb(context):
 # The steps that write a backup or update timer: the backup times are asked only when
 # the run has one of them (a profile with no backups never asks).
 JOB_STEPS = frozenset(
-    ('photo_preservation', 'photo_backup', 'music_backup', 'app_backup', 'host_backup', 'maintenance')
+    ('photo_preservation', 'photo_backup', 'music_backup', 'app_backup', 'host_backup', 'backup_cards', 'maintenance')
 )
 
 

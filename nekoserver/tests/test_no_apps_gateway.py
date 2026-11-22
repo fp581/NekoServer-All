@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import gateway_tools  # noqa: E402
+from neko_common import SHARED  # noqa: E402
 
 NONE = {
     'media_apps': {'photos': False, 'movies': False, 'music': False},
@@ -55,6 +56,22 @@ class GatewayRestartTests(unittest.TestCase):
         self.assertLess(tries * length(fields['RestartSec']), length(fields['StartLimitIntervalSec']))
         self.assertLessEqual(tries, 10)
         self.assertLess(text.index('StartLimitBurst='), text.index('[Service]'))  # read only in [Unit]
+
+    def test_the_start_check_is_given_the_time_it_waits_for_the_home_address(self):
+        """Deep check 876: after a power cut the PC was up before the router gave it its
+        home address. The start check refused at once, the six tries were used up in about
+        a minute and the home addresses stayed down until someone started the gateway. It
+        now waits for the address (startup.rs wait_for_lan): systemd must let it, and the
+        tries must still end with the address gone for good."""
+        text = gateway_tools.unit({'data_mount': '/srv/n', 'media_mount': '/mnt/m'}, Path('/opt/x'), Path('/s'))
+        fields = dict(line.split('=', 1) for line in text.splitlines() if '=' in line)
+        wait = SHARED['gateway_start']['address_wait_seconds']
+        self.assertGreaterEqual(wait, 120)  # a home router's start, after the PC's
+        self.assertGreater(int(fields['TimeoutStartSec'].rstrip('s')), wait)  # systemd's default is 90 s
+        self.assertGreater(text.index('TimeoutStartSec='), text.index('[Service]'))
+        tries = int(fields['StartLimitBurst'])
+        each = wait + int(fields['RestartSec'].rstrip('s'))
+        self.assertLess(tries * each, int(fields['StartLimitIntervalSec'].rstrip('s')))
 
 
 if __name__ == '__main__':

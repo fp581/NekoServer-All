@@ -81,6 +81,43 @@
     "_about": "How an exFAT backup drive is mounted: with Linux's own exFAT driver (-i: no mount.exfat helper). Arch's fuse-exfat installs one, and through FUSE the drive's options no longer show who may read it, so every backup refused it as readable by everyone (deep check plan 207). The runtime (backup.rs) and setup (neko_common) take it from here.",
     "arguments": ["-i", "-t", "exfat"]
   },
+  "media_folders": {
+    "_about": "The dashboard's Media folders page (DASHBOARD.md, \"Media folders\"). The control service (control.rs) checks a change, writes it to `request` in `folder` and starts `unit`, which runs media_locations.py as root: the same code setup uses (existing_media.py). It writes `result`, which the control service hands to the page. `browse_roots`: where the page may look for a folder to pick (drives and shares mounted there), at most `browse_limit` names at a time.",
+    "unit": "nekoserver-media-folders.service",
+    "folder": "/run/nekoserver-control/media-folders",
+    "request": "request.json",
+    "result": "result.json",
+    "_progress": "A copy into the library at work writes how far it is here (media_locations.CopyProgress): {format, id (the request's), kind, source, files_done, files_total, bytes_done, bytes_total, at}. The control service hands it to the page with the state while the change is at work.",
+    "progress": "progress.json",
+    "lock": "lock",
+    "format": "neko-media-folders-v1",
+    "kinds": ["movies", "tv", "music"],
+    "changes": ["look", "add", "remove", "target"],
+    "how": ["in_place", "copy"],
+    "_folders_per_kind": "How many folders of the person's one kind (films, shows or music) may have connected, the one for new downloads counted (existing_media.extras refuses more). `full` says so, on the page and in setup.",
+    "folders_per_kind": 8,
+    "full": "Your {words} have {cap} folders connected already, the most NekoServer connects for one kind. Take one away first, or choose \"Copy its files into the library\" for this one.",
+    "_slot": "Each connected folder's name under library/existing and /data/existing (existing_media.slot_of): the kind, then this. The first folder used where it is is the kind itself (\"movies\") and a folder only for new downloads is \"<kind>-new\", as 0.51 named them; more folders get \"<kind>-2\", \"<kind>-3\" ... A name is kept for as long as its folder is connected, so the apps' libraries and root folders stay valid. A remove or target request names a folder by it (\"library\" is the NekoServer library).",
+    "slot_suffix": "(-new|-[1-9][0-9]?)?",
+    "browse_roots": ["/mnt", "/media", "/run/media", "/srv"],
+    "browse_limit": 200,
+    "busy": "Already working on a change to your media folders. Wait until it has finished (this page shows it), then try again.",
+    "away": "That drive or share does not answer now. Check that it is switched on and connected, then try again. Nothing was changed."
+  },
+  "cards": {
+    "_about": "Backup cards (0.52.0): the runtime's card job and the control service (cards.rs), setup (modules/backup_cards.py, neko_common) and the dashboard's Backup cards page read these. What the server knows of the set is in <folder> on the app SSD: the catalogue (the cards stay the authority) and the status the dashboard shows.",
+    "folder": "cards",
+    "catalogue": "catalogue.sqlite",
+    "status": "status.json",
+    "job": "cards",
+    "service": "nekoserver-cards.service",
+    "timer": "nekoserver-cards.timer",
+    "set_name": "NekoServer cards",
+    "restore_tool": "neko-restore.py",
+    "filesystems": ["ext4", "exfat"],
+    "keep_inventories": 3,
+    "reminder_days": 30
+  },
   "setup_lock": "/run/nekoserver-setup.lock",
   "operation_lock": "/run/nekoserver-operation.lock",
   "recovery_menu": {
@@ -88,7 +125,8 @@
     "drive_section": "Check or repair a drive",
     "check_drive": "Check a drive that stopped taking new files",
     "password_list": "The list of app passwords",
-    "fix_copies": "Fix damaged backup copies"
+    "fix_copies": "Fix damaged backup copies",
+    "cards": "From backup cards"
   },
   "release_tag": "v?([0-9]{1,6})\\.([0-9]{1,6})\\.([0-9]{1,6})(-?[Bb]eta)?",
   "immich_targets": {
@@ -213,6 +251,10 @@
       "tailnet": 8447
     }
   ],
+  "gateway_start": {
+    "_about": "How long the home-network gateway's start check (startup.rs wait_for_lan) waits for this server's home-network address to appear before it refuses. After a power cut the PC is up before the router hands out addresses again; refused at once, the gateway used up its tries and the home addresses stayed down until someone started it. The gateway's unit (gateway_tools.unit) gives the check this long.",
+    "address_wait_seconds": 240
+  },
   "cats": {
     "_about": "The dashboard's cats (DASHBOARD.md, \"The cat\"): each mood has a big animation (\"home\": Home's status cat, the Processes cat, and the stand-in when a small one can't be fetched), a small animation and a still (\"pages\"). The runtime serves exactly these files, setup installs them.",
     "home": ["happy", "playful", "resting", "sleeping", "curious", "afraid", "listening", "breezy", "grooming"],

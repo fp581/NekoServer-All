@@ -20,6 +20,7 @@ Setup's first page asks one thing: *What would you like this server to do?* Each
 | 🔔 **Alerts on your phone** | A message, through the free ntfy app, when a backup or an app fails (off unless you switch it on) |
 | 💓 **A warning when the server stops** | An outside service you choose notices when the server goes quiet (off unless you switch it on) |
 | 🐈 **Ask Neko** | A local AI assistant in the dashboard (off unless you switch it on) |
+| 💾 **Backup cards** | A copy of your photos and Nextcloud files on SD cards or USB sticks you keep somewhere else, filled a little more each night one is plugged in; each card can be read on any Linux computer with nothing installed (off unless you switch it on) |
 
 Always set up, whatever you choose: the **dashboard** (with a PIN), **backups** with a monthly checkup, **private access from your own devices** through Tailscale, and **shared folders** on your home network.
 
@@ -66,11 +67,14 @@ Afterwards one page helps you **connect your phone**, and the last page says wha
 
 Run `sudo bash install.sh` again at any time: it keeps your answers and asks only about what is new. On a server that is set up it says so: nothing changes until you approve.
 
+**Films, shows or music you already have** can be used where they are (nothing is copied or changed) or copied into the library, up to 8 folders of each kind. After setup, the dashboard's **Media folders** page adds more, takes one away and chooses where new downloads go ([DASHBOARD.md](nekoserver/DASHBOARD.md)).
+
 ## Backups
 
 - **Every night**: the apps' settings and databases, and this PC's own settings. The newest **3** of each are kept; you can choose any number from **1 to 7**. An older one is removed only after a new one has succeeded, with one exception: when the HDD is too full for the next app backup, the oldest app backups are removed first to make room (never the newest). Music kept on a drive of its own is copied every night too.
 - **Every week**: your original photos and the Immich database to the backup drive, and (if you chose a removable drive) photos and Nextcloud files to it. These copies only ever add: a photo you delete stays in the backup.
 - **Every month**: every backup copy is checked, a snapshot of every app is made and a restore is tried, then the apps are updated; an update that fails is undone.
+- **Backup cards** (if you switched them on): every night a card of your set is plugged in, what is new among your photos and Nextcloud files is copied onto it. When one is full, the dashboard and your phone say to put in the next ([BACKUP-CARDS.md](nekoserver/BACKUP-CARDS.md)).
 - Films and shows are **not** backed up: the backups page lists them, and what the download apps found can be downloaded again.
 - A backup kept on the same drive as what it copies protects against a mistake, not against that drive failing. The backups page says so for each one.
 - **Restore**: `sudo bash install.sh --recover` opens a menu. A restore always goes into a new folder, and nothing is written before you have seen all of it and approved.

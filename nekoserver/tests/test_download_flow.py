@@ -2,10 +2,13 @@
 apps do: what happens to a finished download once Radarr (or Sonarr, Lidarr) has imported it.
 """
 
+import contextlib
+import io
 import json
 import sys
 import threading
 import unittest
+from unittest import mock
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -154,6 +157,13 @@ class JellyfinStandIn:
 
     def __init__(self, libraries=()):
         self.libraries = [dict(x) for x in libraries]
+        # Jellyfin's own "Scan Media Library": every 12 hours (ScheduledTasks, its Key).
+        self.scan = {
+            'Name': 'Scan Media Library',
+            'Key': 'RefreshLibrary',
+            'Id': 'task-scan',
+            'Triggers': [{'Type': 'IntervalTrigger', 'IntervalTicks': 12 * 36_000_000_000}],
+        }
         stand_in = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -172,6 +182,8 @@ class JellyfinStandIn:
                     return self.answer({'Id': 'server-1', 'StartupWizardCompleted': True})
                 if self.path == '/Library/VirtualFolders':
                     return self.answer(stand_in.libraries)
+                if self.path == '/ScheduledTasks':
+                    return self.answer([stand_in.scan])
                 self.answer({}, 404)
 
             def do_POST(self):
@@ -198,6 +210,9 @@ class JellyfinStandIn:
                     for library in stand_in.libraries:
                         if library['ItemId'] == body['Id']:
                             library['LibraryOptions'] = body['LibraryOptions']
+                    return self.answer()
+                if url.path == '/ScheduledTasks/task-scan/Triggers':
+                    stand_in.scan['Triggers'] = body
                     return self.answer()
                 if url.path == '/Sessions/Logout':
                     return self.answer()
@@ -231,15 +246,47 @@ class JellyfinSeesTheFilmTests(unittest.TestCase):
         for folder in ('movies', 'tv'):
             (self.media / 'library' / folder).mkdir(parents=True)
 
-    def run_setup(self, jellyfin):
+    def run_setup(self, jellyfin, fstype='ext4', said=None):
         import media_libraries
 
         self.addCleanup(jellyfin.close)
         client = jellyfin.client()
-        results, _, ids = media_libraries.jellyfin(client, self.media, True, lambda _: 'admin', lambda _: 'secret-word')
+        shown = io.StringIO()
+        with mock.patch.object(media_libraries, 'findmnt', return_value=fstype), contextlib.redirect_stdout(shown):
+            results, _, ids = media_libraries.jellyfin(
+                client, self.media, True, lambda _: 'admin', lambda _: 'secret-word'
+            )
+        if said is not None:
+            said.extend(shown.getvalue().splitlines())
         client.close()
         self.assertEqual([r['status'] for r in results], ['pass'] * 3)
         return {x['Locations'][0]: x['LibraryOptions'] for x in jellyfin.libraries}
+
+    def test_a_library_on_a_network_share_gets_an_hourly_scan_and_no_promise_of_at_once(self):
+        """Review of 0.51.3: on an NFS share, which gives no notice of files another
+        computer puts on the NAS, setup switched real time monitoring on and said new films
+        "appear as soon as they arrive"; Jellyfin's library scan stayed at every 12 hours."""
+        earlier = [
+            {
+                'Name': 'Movies',
+                'CollectionType': 'movies',
+                'Locations': ['/data/movies'],
+                'ItemId': 'm1',
+                'LibraryOptions': {'EnableRealtimeMonitor': False},
+            },
+        ]
+        jellyfin, said = JellyfinStandIn(earlier), []
+        self.run_setup(jellyfin, fstype='nfs4', said=said)
+        self.assertEqual(jellyfin.scan['Triggers'], [{'Type': 'IntervalTrigger', 'IntervalTicks': 36_000_000_000}])
+        log = '\n'.join(said)
+        self.assertNotIn('as soon as they arrive', log)
+        self.assertIn('may appear only at the next library scan (every hour)', log)
+        self.assertIn('the library scan now runs every hour', log)
+        # On a drive of this PC nothing changes in the scan, and the promise stands.
+        jellyfin, said = JellyfinStandIn(earlier), []
+        self.run_setup(jellyfin, said=said)
+        self.assertEqual(jellyfin.scan['Triggers'][0]['IntervalTicks'], 12 * 36_000_000_000)
+        self.assertIn('as soon as they arrive', '\n'.join(said))
 
     def test_the_libraries_setup_makes_are_watched(self):
         options = self.run_setup(JellyfinStandIn())

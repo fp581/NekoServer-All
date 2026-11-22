@@ -1081,6 +1081,7 @@ def inspect(config, profile='full', now=None):
     for module, enabled, unit in (
         ('media_monitor', config.get('monitoring', {}).get('enabled', True), 'nekoserver-media-health.timer'),
         ('music_backup', music_backed_up(config), 'nekoserver-music-backup.timer'),
+        ('backup_cards', neko_common.cards_enabled(config), neko_common.SHARED['cards']['timer']),
     ):
         if module in modules and not enabled:
             add(

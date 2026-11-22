@@ -70,6 +70,7 @@ STEPS = {
     'heartbeat': 'Server heartbeat',
     'host_backup': 'Nightly settings backup',
     'maintenance': 'Monthly updates',
+    'backup_cards': 'Backup cards',
 }
 
 WELCOME = [

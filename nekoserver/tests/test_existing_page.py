@@ -47,8 +47,16 @@ def context(**settings):
 
 
 def typed(*answers):
+    """The answers, one per question; then Ctrl+D (EOFError), as a person leaving."""
     given = iter(answers)
-    return lambda question='': next(given)
+
+    def answer(question=''):
+        try:
+            return next(given)
+        except StopIteration:
+            raise EOFError from None
+
+    return answer
 
 
 class PageTests(unittest.TestCase):
@@ -125,7 +133,7 @@ class PageTests(unittest.TestCase):
             [
                 {
                     'path': '/mnt/tank/films', 'holds': 'movies', 'use': 'in_place', 'new_files': False,
-                    'mount': '/mnt/tank', 'share': 'nas:/tank', 'fstype': 'nfs4',
+                    'mount': '/mnt/tank', 'share': 'nas:/tank', 'fstype': 'nfs4', 'slot': 'movies',
                 }
             ],
         )  # fmt: skip
@@ -264,6 +272,89 @@ class NewFilesTests(unittest.TestCase):
         self.assertEqual(existing_media.new_files_folder(config, 'movies'), '/data/existing/movies-new')
 
 
+class MoreFoldersTests(unittest.TestCase):
+    """More than one folder of a kind (0.52, the owner's decision 1): setup asks for any
+    other folder after the first, with the limit and the words of the dashboard's page."""
+
+    def found(self, path):
+        return {**FOUND, 'path': path}
+
+    def ask(self, checks, *answers, config=None):
+        ctx, said = context(storage=dict(DRIVES), media_apps={'movies_downloads': False}, **(config or {})), []
+        keys = []
+        real_typed = existing_page.typed
+
+        def noting(key, prompt, **values):
+            keys.append((key, values))
+            return real_typed(key, prompt, **values)
+
+        with (
+            mock.patch.object(existing_media, 'check', side_effect=checks),
+            mock.patch.object(existing_page, 'typed', side_effect=noting),
+        ):
+            existing_page.one_kind(ctx.config, 'movies', 'films', (typed(*answers), said.append))
+        return ctx.config, said, keys
+
+    def test_any_other_folder_is_asked_for_until_enter_alone(self):
+        checks = [self.found('/mnt/tank/films'), self.found('/mnt/tank/old-films'), self.found('/mnt/tank/kids')]
+        config, said, keys = self.ask(
+            checks, '/mnt/tank/films', '1', '/mnt/tank/old-films', '1', '/mnt/tank/kids', '2', ''
+        )
+        self.assertEqual(
+            [(e['path'], e['slot']) for e in existing_media.extras(config)],
+            [('/mnt/tank/films', 'movies'), ('/mnt/tank/old-films', 'movies-2')],
+        )
+        self.assertEqual(config[existing_page.COPIES], [{'holds': 'movies', 'path': '/mnt/tank/kids'}])
+        more = [values for key, values in keys if key == 'existing_more_folder']
+        self.assertEqual(more, [{'what': 'films', 'cap': existing_media.FOLDERS_PER_KIND}] * 3)
+        words = questions.words('existing_more_folder', what='films', cap=existing_media.FOLDERS_PER_KIND)
+        self.assertEqual(words['title'], 'Is any other folder holding your films?')
+        self.assertIn(f'up to {existing_media.FOLDERS_PER_KIND} folders', words['hint'])
+        self.assertEqual(questions.Q['existing_more_folder']['skip_label'], 'That is all')
+
+    def test_a_folder_given_twice_is_said_and_a_full_kind_takes_no_more(self):
+        _, said, _ = self.ask([self.found('/mnt/tank/films')] * 2, '/mnt/tank/films', '1', '/mnt/tank/films')
+        self.assertIn('/mnt/tank/films is already connected for your films.', said)
+        # A kind with all its folders: one more is said in the dashboard page's words.
+        cap = existing_media.FOLDERS_PER_KIND
+        config = {'storage': dict(DRIVES)}
+        for number in range(cap):
+            entry = existing_media.entry_for('movies', self.found(f'/mnt/tank/f{number}'))
+            config['placement'] = existing_media.with_choice(config, entry)['placement']
+        config.pop('storage')
+        full, said, _ = self.ask([self.found('/mnt/tank/one-more')], '/mnt/tank/one-more', '1', config=config)
+        self.assertIn(existing_media.full_words('movies'), said)
+        self.assertEqual(len(existing_media.extras(full)), cap)
+        # ... and copied into the library instead, it is still taken.
+        copied, _, _ = self.ask([self.found('/mnt/tank/one-more')], '/mnt/tank/one-more', '2', config=config)
+        self.assertEqual(copied[existing_page.COPIES], [{'holds': 'movies', 'path': '/mnt/tank/one-more'}])
+
+
+class DownloadOnlyStaysTests(unittest.TestCase):
+    def test_a_folder_only_for_new_ones_stays_used_when_another_takes_them(self):
+        """The owner's decision 2 on PR 89, in setup too: 0.51 dropped the folder that took
+        only the new films, and the films saved there left the library."""
+        new = writable(FOUND, path='/mnt/big/new-films', mount='/mnt/big', share='/dev/sdd1', fstype='ext4')
+        kids = {**FOUND, 'path': '/mnt/tank/kids'}
+        checks = [dict(FOUND), writable(FOUND, ok=False), new, dict(kids), writable(kids)]
+        ctx, said = context(storage=dict(DRIVES)), []
+        answers = typed(
+            *('/mnt/tank/films', '1', 'yes', '2', '/mnt/big/new-films'),  # read-only; new films elsewhere
+            *('/mnt/tank/kids', '1', 'yes'),  # another folder, which takes the new films
+        )
+        with mock.patch.object(existing_media, 'check', side_effect=checks):
+            existing_page.one_kind(ctx.config, 'movies', 'films', (answers, said.append))
+        self.assertEqual(
+            [(e['path'], e['use'], e['new_files'], e['slot']) for e in existing_media.extras(ctx.config)],
+            [
+                ('/mnt/tank/films', 'in_place', False, 'movies'),
+                ('/mnt/big/new-films', 'in_place', False, 'movies-new'),
+                ('/mnt/tank/kids', 'in_place', True, 'movies-2'),
+            ],
+        )
+        self.assertIn(existing_media.STAYS.format(path='/mnt/big/new-films', what='movies'), said)
+
+
 class CopyTests(unittest.TestCase):
     """ "Copy them into the NekoServer library": chosen on the page, done once the library is there."""
 
@@ -312,6 +403,31 @@ class CopyTests(unittest.TestCase):
         self.assertEqual(ctx.config[existing_page.COPIES], wanted)
         # Nothing chosen: nothing looked at.
         self.assertEqual(existing_page.copy(context()), [])
+
+    def test_a_copy_the_import_stops_stays_on_the_list(self):
+        """Review of 0.51.3: an import that stopped and said why (no room, the folder
+        away) as its row's status, not as an error, was logged as "Copied into the library:
+        0 files" and the folder taken off the list, so setup run again after freeing room
+        never copied it."""
+        wanted = [{'holds': 'music', 'path': '/mnt/tank/music'}]
+        for row in (
+            {
+                'status': 'needs_setup',
+                'reason': 'Nothing was copied: it needs 40.0 GB and the library drive has 2.0 GB free',
+            },
+            {'status': 'needs_setup', 'reason': 'Source folder not found: connect the drive'},
+            {'status': 'needs_setup'},
+        ):
+            ctx = context(**{existing_page.COPIES: list(wanted)})
+            with (
+                mock.patch.object(existing_media, 'copy_preview', return_value=dict(self.SHOWN)),
+                mock.patch.object(existing_media, 'copy_now', return_value=row),
+            ):
+                self.assertEqual(existing_page.copy(ctx), wanted)
+            self.assertEqual(ctx.config[existing_page.COPIES], wanted)
+            self.assertIn('Your own folder /mnt/tank/music was not copied: ', ctx.logs[-1])
+            self.assertIn('Setup tries again at its next run.', ctx.logs[-1])
+            self.assertFalse(any(line.startswith('Copied into the library') for line in ctx.logs))
 
 
 class MusicTests(unittest.TestCase):
@@ -377,7 +493,7 @@ class TableTests(unittest.TestCase):
         config['locations']['photos'] = 'media'
         self.assertTrue(existing_page.keep_table(config))
         self.assertEqual(config['placement']['photos']['data'], 'media')
-        self.assertEqual(config['placement']['movies']['extra'], [entry])
+        self.assertEqual(config['placement']['movies']['extra'], [{**entry, 'slot': 'movies'}])
         self.assertEqual(placement.table(config), config['placement'])
         # No table saved: none is made.
         plain = {'locations': {'photos': 'ssd'}, 'storage': DRIVES}

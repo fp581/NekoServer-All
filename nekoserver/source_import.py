@@ -475,11 +475,9 @@ SAMPLE = 1024 * 1024  # bytes of each piece same_samples compares
 
 def same_samples(first, second, size):
     """Whether two files of the same `size` hold the same bytes at their start, middle and
-    end (all of them when they are small). For a file of the same size and date as its
-    original (review of 0.51.2: that alone made it "already copied", so another file, or a
-    copy cut off and filled up, counted as imported for good). Not the whole file: reading
-    every film again at every run would take hours; a different or cut-off file differs in
-    one of these pieces."""
+    end (all of them when they are small): a quick first look (see already_copied), which
+    finds most different files (a copy cut off and filled up, another file put in its
+    place) without reading them whole."""
     places = sorted({0, max(0, size // 2 - SAMPLE // 2), max(0, size - SAMPLE)})
     try:
         with first.open('rb') as one, second.open('rb') as two:
@@ -495,18 +493,21 @@ def same_samples(first, second, size):
 
 def already_copied(current, dest, apply=False):
     """True when `dest` is the copy of `current` an earlier run made; False when it is a
-    different file (never replaced). Same size and date (copies keep their original's
-    date): not read whole again, but three pieces of both are compared (same_samples).
-    Otherwise (a copy from before 0.39.5) the contents decide, and a match takes its
-    original's date, so the next run doesn't read both again."""
+    different file (never replaced). Same size, the same three pieces (same_samples, a
+    quick first look), then the whole contents: only reading both whole sees a difference
+    anywhere in them, a source changed after its copy was made (review of 0.51.3) or a copy
+    damaged on the library drive (review of 0.52), both taken for "already imported" when
+    only the pieces were compared. This is asked only when an import runs again (`--again`)
+    or carries on after being cut off. A match from before 0.39.5 (another date) takes its
+    original's date."""
     if dest.is_symlink() or not dest.is_file():
         return False  # a symlink there is never "the copy"
     have, want = dest.stat(), current.stat()
-    if (have.st_size, have.st_mtime_ns) == (want.st_size, want.st_mtime_ns):
-        return same_samples(current, dest, want.st_size)
-    if have.st_size != want.st_size or digest(current) != digest(dest):
+    if have.st_size != want.st_size:
         return False
-    if apply:
+    if not same_samples(current, dest, want.st_size) or digest(current) != digest(dest):
+        return False
+    if apply and have.st_mtime_ns != want.st_mtime_ns:
         os.utime(dest, ns=(have.st_atime_ns, want.st_mtime_ns), follow_symlinks=False)
     return True
 
@@ -616,6 +617,31 @@ def link_copy(current, dest, stat, first, uid, gid, guard=None):
     return True
 
 
+def hard_links_work(folder):
+    """Whether the library drive at `folder` (or the nearest folder above it that is
+    there) takes hard links: a file is made and linked there, and both are removed.
+    False when that can't be tried (no right to write there, say), so room is never
+    counted short."""
+    place = Path(folder)
+    while not place.is_dir() and place != place.parent:
+        place = place.parent
+    probe = place / f'.neko-link-test-{os.getpid()}'
+    second = place / f'.neko-link-test-{os.getpid()}-2'
+    try:
+        os.close(os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600))
+    except OSError:
+        return False
+    try:
+        os.link(probe, second, follow_symlinks=False)
+    except OSError:
+        return False
+    else:
+        os.unlink(second)
+        return True
+    finally:
+        os.unlink(probe)
+
+
 def configured_folder(source):
     """The folder the source list names, whether or not it is there now."""
     value = source.get('mounted_path') if source.get('type') == 'remote' else source.get('path')
@@ -634,7 +660,10 @@ def legacy_left(left, folder, media, category):
     }
 
 
-def copy_source(source, media, apply=False, uid=None, gid=None, guard=None):
+def copy_source(source, media, apply=False, uid=None, gid=None, guard=None, progress=None):
+    """One source copied (or previewed) into `media`'s library: its report row.
+    `progress(files_done, bytes_done, files_total, bytes_total)`, when given, is told
+    before the first file and after each one (the dashboard shows it, copy_entries)."""
     category = source.get('category')
     if category not in ('movies', 'tv', 'music'):
         raise RuntimeError('Invalid media category')
@@ -653,7 +682,13 @@ def copy_source(source, media, apply=False, uid=None, gid=None, guard=None):
         return legacy_left(left, folder, media, category)
     conflicts, downloading, leftovers, links = [], [], [], []
     entries = planned_copies(folder, target, apply, conflicts, downloading, leftovers, links)
+    # On a library drive that takes no hard links (exFAT, some NAS shares), each further
+    # name is copied as a file of its own, so its room is counted too (review of 0.51.3:
+    # it was counted once and said to take no room of its own).
+    linkable = not links or hard_links_work(target)
     required = sum(stat.st_size for _, _, stat in entries)
+    if not linkable:
+        required += sum(stat.st_size for _, _, stat, _ in links)
     free = shutil.disk_usage(media).free
     if required > free:
         raise Said(
@@ -661,7 +696,8 @@ def copy_source(source, media, apply=False, uid=None, gid=None, guard=None):
             f'Nothing was copied: it needs {size_words(required)} and the library drive has {size_words(free)} free '
             f'({size_words(required - free)} too little). Free some room or take this folder out of the source list'
         )
-    skipped = copy_entries(entries, folder, uid, gid, guard, links) if apply else []
+    copied_again = []
+    skipped = copy_entries(entries, folder, uid, gid, guard, links, progress, copied_again) if apply else []
     copied = len(entries) + len(links) - len(skipped) if apply else 0
     result = {
         'status': 'copied' if apply else 'preview',
@@ -671,7 +707,9 @@ def copy_source(source, media, apply=False, uid=None, gid=None, guard=None):
         'destination': str(target),
     }
     result = with_downloading(with_skipped(with_conflicts(result, conflicts), skipped), downloading)
-    return with_links(with_leftovers(result, leftovers), links)
+    if not apply and not linkable:
+        copied_again = [stat for _, _, stat, _ in links]
+    return with_links(with_leftovers(result, leftovers), links, copied_again)
 
 
 def shown_name(path):
@@ -680,23 +718,53 @@ def shown_name(path):
     return os.fsencode(str(path)).decode('utf-8', 'backslashreplace')
 
 
-def copy_entries(entries, folder, uid, gid, guard, links=()):
+def copy_entries(entries, folder, uid, gid, guard, links=(), progress=None, copied_again=None):
     """Copy each planned file, then give each further name of a file with several names
     (`links`, see planned_copies) its hard link; returns the ones skipped because their
     name could not be used (relative to the source), so one odd name never stops the
-    whole source."""
+    whole source. A further name that could not be linked is copied, its stat added to
+    `copied_again`; when the drive has no room left for that copy, the import stops with
+    how much is missing. `progress`: told the files and bytes done of the total, before
+    the first file and after each one (a hard link takes no bytes; a further name copied
+    instead adds its size to both)."""
     skipped, stable = [], {}
-    for current, dest, stat, first in [(*entry, None) for entry in entries] + list(links):
+    planned = [(*entry, None) for entry in entries] + list(links)
+    files_total, bytes_total = len(planned), sum(stat.st_size for _, _, stat in entries)
+    bytes_done = 0
+    if progress:
+        progress(0, 0, files_total, bytes_total)
+    for done, (current, dest, stat, first) in enumerate(planned, 1):
         if stat.st_dev not in stable:
             stable[stat.st_dev] = stable_inodes(current.parent)
         try:
             if first is None or not link_copy(current, dest, stat, first, uid, gid, guard):
+                if first is not None:
+                    room_for_one_more(first.parent, stat.st_size)
+                    if copied_again is not None:
+                        copied_again.append(stat)
+                    bytes_total += stat.st_size
+                    first = None  # copied: its bytes count as done below
                 import_file(current, dest, stat, uid, gid, guard, stable[stat.st_dev])
         except UnicodeError:
             skipped.append(shown_name(current.relative_to(folder)))
         except SourceChanged:
             raise SourceChanged(shown_name(current.relative_to(folder))) from None
+        bytes_done += stat.st_size if first is None else 0
+        if progress:
+            progress(done, bytes_done, files_total, bytes_total)
     return skipped
+
+
+def room_for_one_more(folder, size):
+    """Said (Said) when the library drive has no room for one more copy of `size` bytes:
+    a further name the drive would not link, copied instead."""
+    free = shutil.disk_usage(folder).free
+    if size > free:
+        raise Said(
+            f'Copying stopped: the library drive does not take hard links, so a file the source holds under two '
+            f'names needs {size_words(size)} more and the drive has {size_words(free)} free. The files before it '
+            'were copied. Free some room, then copy again'
+        )
 
 
 def first_ten(names):
@@ -759,16 +827,30 @@ def with_leftovers(result, leftovers):
     return result
 
 
-def with_links(result, links):
-    """The report row, saying that files with several names were counted and kept once."""
-    if links:
-        result['hard_links'] = len(links)
-        count = neko_common.file_count(len(links))
-        said = (
+def with_links(result, links, copied_again=()):
+    """The report row, saying what became of files with several names: kept once (a link
+    in the library, no room of its own), or copied again where the library drive takes no
+    hard links (`copied_again`: their stats), with the room that takes."""
+    if not links:
+        return result
+    result['hard_links'] = len(links) - len(copied_again)
+    said = []
+    if len(links) > len(copied_again):
+        count = neko_common.file_count(len(links) - len(copied_again))
+        said.append(
             f'Kept once in the library: {count} that the source holds under a second name (hard links, as download '
             'programs and Sonarr or Radarr make them). Each second name is a link there too and takes no room of its own'
         )
-        result['reason'] = result['reason'] + '. ' + said if result.get('reason') else said
+    if copied_again:
+        result['copied_twice'] = len(copied_again)
+        count = neko_common.file_count(len(copied_again))
+        room = size_words(sum(stat.st_size for stat in copied_again))
+        said.append(
+            f'Copied again: {count} that the source holds under a second name, because the library drive does not '
+            f'take hard links. Each second name is a copy of its own and takes room ({room} in all, counted above)'
+        )
+    for line in said:
+        result['reason'] = result['reason'] + '. ' + line if result.get('reason') else line
     return result
 
 
@@ -843,7 +925,7 @@ def not_mounted_yet(source, finished):
     }
 
 
-def import_one(source, root, apply, owner, guard, finished, again=False):
+def import_one(source, root, apply, owner, guard, finished, again=False, progress=None):
     """One source copied into `root`'s library: its row for the report. A finished
     import is recorded in `finished`, and not done again unless asked (`again`): Sonarr,
     Radarr or Lidarr may since have renamed or replaced those files in the library, and a
@@ -855,7 +937,7 @@ def import_one(source, root, apply, owner, guard, finished, again=False):
             'reason': f'Copied before; not copied again (to copy what is new in it, in the NekoServer folder: {AGAIN})',
         }
     try:
-        result = copy_source(source, root, apply, *owner, guard)
+        result = copy_source(source, root, apply, *owner, guard, progress)
     except NotMountedYet:
         return not_mounted_yet(source, finished)
     except SourceGone:
@@ -885,7 +967,7 @@ def import_one(source, root, apply, owner, guard, finished, again=False):
     return result
 
 
-def run(config, sources, apply=False, verify=None, again=False):
+def run(config, sources, apply=False, verify=None, again=False, progress=None):
     media = neko_common.mount_path(config['media_mount'])
     data = neko_common.mount_path(config['data_mount'])
     if not os.path.ismount(media) or not os.path.ismount(data):
@@ -907,7 +989,7 @@ def run(config, sources, apply=False, verify=None, again=False):
     guards = {root: DriveGuard(root) for root in {data, media, music, films}} if apply else {}
     for index, source in enumerate(sources):
         root = music if source.get('category') == 'music' else films
-        result = import_one(source, root, apply, owner, guards.get(root), finished, again)
+        result = import_one(source, root, apply, owner, guards.get(root), finished, again, progress)
         # Inventory may contain private URLs; reports never serialize source entries.
         rows.append(dict(source_number=index + 1, category=source.get('category'), **result))
     if verify:

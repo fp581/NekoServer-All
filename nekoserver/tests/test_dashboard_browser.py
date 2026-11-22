@@ -9,6 +9,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -73,6 +74,109 @@ def snapshot():
     }
 
 
+def media_answer():
+    """media_locations.py's last answer, as the stand-in control service hands it over."""
+    films = {
+        'kind': 'movies',
+        'words': 'films',
+        'library': '/mnt/nekoserver-media/library/movies',
+        'downloads': True,
+        'target': 'library',
+        'folders': [
+            {
+                'slot': 'movies',
+                'use': 'in_place',
+                'path': '/mnt/nas/a-very-long-shared-folder-name-from-the-nas/films',
+                'new_files': False,
+                'ready': False,
+                'reason': 'Your films are not there now (nas:/volume1/a-very-long-shared-folder-name is not connected).',
+            }
+        ],
+        'copies': [],
+        'room': 7,
+        'full': None,
+    }
+    shows = {**films, 'kind': 'tv', 'words': 'shows', 'folders': [], 'room': 8}
+    result = {'format': 'neko-media-folders-v1', 'state': 'done', 'message': 'Done.', 'notes': [], 'next': []}
+    return {'ok': True, 'working': False, 'result': {**result, 'kinds': [films, shows]}}
+
+
+class StandInControl(threading.Thread):
+    """The control service, signed in, answering the Media folders page; every request
+    it was given is kept in `asked`."""
+
+    BROWSE = {
+        '': {
+            'ok': True,
+            'path': None,
+            'parent': None,
+            'more': False,
+            'folders': [{'name': '/mnt/nas', 'path': '/mnt/nas', 'mount': True, 'share': True}],
+        },
+        '/mnt/nas': {
+            'ok': True,
+            'path': '/mnt/nas',
+            'parent': '/mnt',
+            'more': False,
+            'folders': [{'name': 'films', 'path': '/mnt/nas/films', 'mount': False}],
+        },
+    }
+
+    def __init__(self, path):
+        super().__init__(daemon=True)
+        self.asked = []
+        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.server.bind(str(path))
+        self.server.listen(16)
+
+    def answer(self, request):
+        op = request.get('op')
+        if op == 'status':
+            access = {'local': True, 'pin_set': True, 'unlocked': True, 'signed_in': True}
+            return {
+                'ok': True,
+                'format': 'neko-control-v1',
+                'fans': {'enabled': False, 'outputs': []},
+                'lights': {'status': 'disabled', 'devices': []},
+                'access': access,
+                'apps': {'available': True, 'actions': []},
+            }
+        if op == 'app_media_state':
+            return media_answer()
+        if op == 'app_media_browse':
+            return self.BROWSE.get(request.get('path') or '', {'ok': False, 'error': 'E42', 'message': 'No.'})
+        return {'ok': True, 'id': 'abc', 'message': 'Working on it.'}
+
+    def run(self):
+        while True:
+            try:
+                connection, _ = self.server.accept()
+            except OSError:
+                return
+            with connection, connection.makefile('rw') as stream:
+                request = json.loads(stream.readline())
+                self.asked.append(request)
+                stream.write(json.dumps(self.answer(request)) + '\n')
+                stream.flush()
+
+
+def serve(status_file, control):
+    """The runtime's web server for the page, on a free port: (process, address)."""
+    with socket.socket() as s:
+        s.bind(('127.0.0.1', 0))
+        port = s.getsockname()[1]
+    command = [str(RUNTIME), 'serve', '--assets', str(ROOT / 'dashboard'), '--status', str(status_file)]
+    command += ['--port', str(port), '--control', str(control)]
+    server = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(100):
+        try:
+            socket.create_connection(('127.0.0.1', port), timeout=1).close()
+            break
+        except OSError:
+            time.sleep(0.05)
+    return server, f'http://127.0.0.1:{port}/'
+
+
 @unittest.skipUnless(playwright_works(), 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
 class DashboardInBrowserTests(unittest.TestCase):
     @classmethod
@@ -119,6 +223,7 @@ class DashboardInBrowserTests(unittest.TestCase):
             ('home', 'Actions for Immich', 'control'),
             ('updates', 'Install at the next update night', 'status'),
             ('updates', 'Check for updates', 'status'),
+            ('media', 'Unlock media folders', 'control'),
         ]
         answers = self.browse(*[('focusAfterRefresh', {'route': r, 'label': l, 'reload': k}) for r, l, k in checks])
         for (route, label, _), answer in zip(checks, answers):
@@ -130,10 +235,53 @@ class DashboardInBrowserTests(unittest.TestCase):
         # badges ("Won't start after a restart", "Not checked yet") stuck out of their
         # cards, and the page scrolled sideways (Server health 281 px, Backups 246 px).
         routes = ['home', 'apps', 'backups', 'hardware', 'sensors', 'cooling', 'processes', 'health', 'updates']
-        routes += ['attention', 'help']
+        routes += ['media', 'attention', 'help']
         for width in (390, 320, 195):
             answers = self.browse(*[('pageWidth', {'route': r, 'width': width}) for r in routes])
             for route, (scroll, window, overlap) in zip(routes, answers):
                 with self.subTest(route=route, width=width):
                     self.assertLessEqual(scroll, window)
                     self.assertFalse(overlap, "the title of the page is under its buttons")
+
+
+@unittest.skipUnless(playwright_works(), 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
+class MediaFoldersInBrowserTests(unittest.TestCase):
+    """The Media folders page, signed in (a stand-in control service answers it)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.folder = tempfile.TemporaryDirectory()
+        status = Path(cls.folder.name) / 'status.json'
+        status.write_text(json.dumps(snapshot()))
+        cls.control = StandInControl(Path(cls.folder.name) / 'control.sock')
+        cls.control.start()
+        cls.server, cls.address = serve(status, Path(cls.folder.name) / 'control.sock')
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.terminate()
+        cls.server.wait(timeout=10)
+        cls.control.server.close()
+        cls.folder.cleanup()
+
+    browse = DashboardInBrowserTests.browse
+
+    def test_a_folder_is_picked_and_added_with_the_keyboard_alone(self):
+        (answer,) = self.browse(('mediaKeyboard', {'width': 390}))
+        self.assertEqual(answer['picked'], '/mnt/nas')
+        self.assertEqual(
+            answer['steps'],
+            ['media-pick', 'Open /mnt/nas', 'media-use', 'media-path', 'media-downloads', 'Connect folder'],
+        )
+        sent = [r for r in self.control.asked if r.get('op') == 'app_media_change' and r.get('change') == 'add']
+        self.assertEqual(
+            {k: sent[-1][k] for k in ('kind', 'path', 'how', 'downloads')},
+            {'kind': 'movies', 'path': '/mnt/nas/new films', 'how': 'in_place', 'downloads': True},
+        )
+
+    def test_the_page_fits_a_phone(self):
+        for width in (390, 320):
+            (scroll, window, overlap) = self.browse(('pageWidth', {'route': 'media', 'width': width}))[0]
+            with self.subTest(width=width):
+                self.assertLessEqual(scroll, window)
+                self.assertFalse(overlap)

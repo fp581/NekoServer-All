@@ -4,14 +4,16 @@ import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from media_libraries import NOT_NEEDED, REQUEST_PROVIDERS, Client, SetupRequired, open_seerr, row
-from neko_common import app_port, safe_path
+from neko_common import SHARED, app_port, safe_path
 
 SPECS = {'sonarr': (app_port('sonarr'), '/data/tv'), 'radarr': (app_port('radarr'), '/data/movies')}
 
 
 # What each app's requests are for, as existing_media names the kinds.
 KINDS = {'sonarr': 'tv', 'radarr': 'movies'}
-OWN_FOLDER = re.compile(r'/data/existing/[a-z]+(-new)?')
+# A person's own folder, as existing_media.container_path names it (/data/existing/movies,
+# /data/existing/movies-new, /data/existing/movies-2 ...: the slots of shared.json).
+OWN_FOLDER = re.compile(r'/data/existing/[a-z]+' + SHARED['media_folders']['slot_suffix'])
 
 
 def request_folders(config):

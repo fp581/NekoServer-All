@@ -92,6 +92,8 @@ pub enum Outcome {
     /// it does not undo the commit.
     Committed {
         record: Box<Record>,
+        // Said nowhere yet: the next run's recovery redoes a failed clean-up (D8).
+        #[allow(dead_code)]
         cleanup_failed: Option<CardError>,
     },
     /// Nothing committed and this transaction's staging files removed: the file is

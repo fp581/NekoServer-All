@@ -214,13 +214,11 @@ fn directory(app: &str) -> &str {
     }
 }
 /// A person's own folder for new films or shows, as the apps see it ("save new ones
-/// here too": existing_media.container_path): /data/existing/movies, /data/existing/tv-new.
+/// here too": existing_media.container_path): /data/existing/movies, /data/existing/tv-new,
+/// /data/existing/movies-2 ...
 fn own_folder(path: &str) -> bool {
-    let Some(name) = path.strip_prefix("/data/existing/") else {
-        return false;
-    };
-    let kind = name.strip_suffix("-new").unwrap_or(name);
-    !kind.is_empty() && kind.bytes().all(|b| b.is_ascii_lowercase())
+    path.strip_prefix("/data/existing/")
+        .is_some_and(crate::media_folders::is_any_slot)
 }
 /// Where Seerr's provider may save a request: the library's own folder, or the
 /// person's own. Setup chooses between them (seerr_providers.request_folders).
@@ -295,9 +293,11 @@ fn chosen_folder(cfg: &Value, app: &str) -> Option<String> {
         Value::Array(rows) => rows.iter().collect(),
         _ => return None,
     };
-    // The (kind, use) pairs listed, and the kinds given a place for new ones: setup
-    // refuses settings that list one twice, or name two places for new ones.
-    let mut seen = vec![];
+    // The (kind, slot) and (kind, path) pairs listed, and the kinds given a place for
+    // new ones: setup refuses settings that list one twice, name two places for new
+    // ones, or give a kind more folders than it may have (existing_media.checked_extra).
+    let mut slots: Vec<(&str, String)> = vec![];
+    let mut paths: Vec<(&str, &str)> = vec![];
     let mut writable = vec![];
     let mut found = None;
     for entry in entries {
@@ -310,28 +310,37 @@ fn chosen_folder(cfg: &Value, app: &str) -> Option<String> {
             Value::Bool(new_files) => *new_files,
             _ => return None,
         };
+        // Settings saved by 0.51 have no slot: the one 0.51 gave (existing_media.slot).
+        let slot = match &entry["slot"] {
+            Value::Null if used == "in_place" => holds.to_string(),
+            Value::Null => format!("{holds}-new"),
+            Value::String(slot) => slot.clone(),
+            _ => return None,
+        };
         let complete = ["path", "mount", "share", "fstype"]
             .iter()
             .all(|key| entry[*key].is_string());
+        let path = entry["path"].as_str().unwrap_or("");
+        let had = slots.iter().filter(|(k, _)| *k == holds).count();
         if !["movies", "tv"].contains(&holds)
-            || seen.contains(&(holds, used))
+            || !crate::media_folders::is_slot(holds, &slot)
+            || slots.contains(&(holds, slot.clone()))
+            || paths.contains(&(holds, path))
+            || had >= crate::media_folders::folders_per_kind()
             || !complete
             || (used == "new_files" && !new_files)
             || (new_files && writable.contains(&holds))
         {
             return None;
         }
-        seen.push((holds, used));
         if new_files {
             writable.push(holds);
         }
         if holds == kind && new_files {
-            found = Some(if used == "in_place" {
-                format!("/data/existing/{kind}")
-            } else {
-                format!("/data/existing/{kind}-new")
-            });
+            found = Some(format!("/data/existing/{slot}"));
         }
+        slots.push((holds, slot));
+        paths.push((holds, path));
     }
     Some(found.unwrap_or_else(|| directory(app).to_string()))
 }
@@ -992,11 +1001,19 @@ mod tests {
             request_folder("sonarr", "/data/existing/tv-new"),
             Some("/data/existing/tv-new")
         );
+        // 0.52: a second or third folder of films takes the new ones.
+        assert_eq!(
+            request_folder("radarr", "/data/existing/movies-2"),
+            Some("/data/existing/movies-2")
+        );
         for elsewhere in [
             "/data/tv",
             "/data/existing",
             "/data/existing/",
             "/data/existing/-new",
+            "/data/existing/movies-0",
+            "/data/existing/movies-x",
+            "/data/existing/photos",
             "/data/existing/movies/more",
             "/data/existing/../movies",
             "/mnt/films",

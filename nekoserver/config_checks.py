@@ -133,6 +133,7 @@ SETTINGS_BEYOND_TEMPLATE = {
         # setup's own notes: installer.RETENTION_REVIEWED, existing_page.ASKED and COPIES
         *('profile_steps_known', 'retention_reviewed', 'existing_media_asked', 'existing_media_copy'),
         'existing_media_answered',  # existing_page.ANSWERED
+        'cards',  # the backup cards switch (explanations.EXTRAS "backup_cards"), saved once chosen
     ),
     'docker': ('persistent_root',),
     'photos': (

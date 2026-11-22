@@ -1,6 +1,51 @@
 # Changelog
 
-## v0.51.3 — (in progress; the release number is 0.51.3)
+## v0.52.0 — (in progress)
+
+### Added: Media folders page
+- **A Media folders page on the dashboard.** After setup, at any time: for films, shows and music it shows NekoServer's own library and each folder of yours connected to it (Ready, or why not), and where new downloads go. Add a folder (type it, or pick one from the drives and shares the PC has mounted), use it where it is or copy its files into the library, send new downloads to a folder or back to the library, or take a folder away. Your files are never deleted, moved or changed. It needs the PIN on every device, and the change is made by the same code setup uses.
+- **More than one folder of each kind.** Films, shows and music can each have up to 8 folders of yours connected, used where they are, on the page and in setup (which asks "Is any other folder holding your films?" until you answer That is all). New downloads still go to one place. Each folder keeps its place in the apps for as long as it is connected, so taking one away moves no other, and the folders a 0.51 server had stay exactly where they were.
+- **A folder that took only the new downloads stays connected when they go elsewhere.** It becomes an ordinary folder used where it is (read-only), so what was downloaded into it stays in Jellyfin, Navidrome and the other apps; 0.51 disconnected it. The page and setup say so.
+- **Copying a folder into the library shows how far it is.** The copy still starts at once, and backups wait for it; the page now shows the files and the size copied of the total, and says that backups wait until it is done. A reload, or another phone or PC, shows the same.
+- **Music on a NAS added on the page is asked "Back this up too?"**, in setup's words, and the answer is saved as setup saves it. The scheduled jobs' own copies of your folders (the music backup's list, the apps that wait for a share) are brought up to date at once, so a change made on the page counts from the next run, not from the next setup run.
+- **A change that half-fails says which step did not finish**, why, and what to do (for example "Jellyfin's library was not updated: it did not answer. Check that Jellyfin runs, then run setup again"), marked Partly done. Nothing is undone. Before, it said only "Run setup again", and a folder that could not be connected after the settings were saved was even shown as "Not changed".
+- **The Media folders page refuses a folder inside, around or the same as one already connected** (the apps would list every film twice), and names the one it overlaps.
+- **After sending new downloads elsewhere, the page says that Sonarr, Radarr and Lidarr keep what they already have in its old folder**, and how to move it in the app.
+- **A page left open on another device changes only the folder it shows**: a folder added since in the same place is never taken away or retargeted ("Press Look again").
+- **A folder typed with a slash at its end is the same folder; a very big folder in the picker says there are more; Ask Neko knows how a new drive or NAS folder is added.**
+
+### Added: backup cards
+- **Backup cards: a copy of your photos and documents on SD cards or USB sticks you keep somewhere else.** Switch them on on setup's first page, under Storage; they are off until you do, also after an upgrade. What goes on them: Immich's original photos and videos and each person's Nextcloud files, nothing else. The copies are not encrypted: keep the cards safe. BACKUP-CARDS.md says how to use them.
+- **You choose the cards on the dashboard.** A new Backup cards page (with your PIN, on the server too) lists the cards and sticks plugged in, and offers **Use this as card N of the set** for an empty one formatted ext4 or exFAT. NekoServer never formats or erases a card: a card of another set, one that holds files, a full one, a drive built into the PC, the disk Linux runs from and NekoServer's own drives are refused, each saying why.
+- **Every night a card of the set is plugged in, what is new goes onto it**, an hour after the other nightly backups, each file checked against its checksum, nothing on a card ever overwritten. **Write to the card now** does it at once. A card taken out in the middle loses nothing.
+- **A full card says which card to put in next**: "Card 2 is full: put in a new card (it becomes card 3)", on the dashboard and as a phone alert (a warning, not urgent). A set with no card written for 30 days gets a quiet reminder, without a sound.
+- **The Backups page shows the set**: which card is in, how many files are on the cards and how many wait for one, and when a card was last written.
+- **The recovery menu restores from a card**: "From backup cards", with the same restore tool every card carries. CARD-RECOVERY.md stays the way without NekoServer.
+- **A card keeps only its three newest inventories** (the list of which card held which file), and a new one is written only when something changed, so a card no longer fills up with them.
+
+### Fixed: from the review of 0.51.3
+- **A password list restored from a snapshot made without a backup key is the one that was checked.** The archive was checked against its recorded checksum and then unpacked by name, so one replaced in between (another job writing to the HDD, a failing drive) was unpacked unchecked, with "Done" over changed passwords. It is now opened once; the same bytes are checked and unpacked, and moved into place only when they match.
+- **A password list restored from a snapshot made without a backup key brings the apps' own password files too**, as the menu promised and the Nextcloud guide counted on: each app's `.env` and Nextcloud's `config.php`, not only the account list. The finished restore names each file.
+- **Switching off Movies and shows no longer lets its NAS folder stop the music downloads.** The folder stayed guarded, and its only app still running was qBittorrent (kept for Music), so the films' share going away stopped it.
+- **A Jellyfin library on a network share gets an hourly scan instead of a promise.** Setup said new films "appear as soon as they arrive", but an NFS or SMB share does not tell Jellyfin of files another computer puts on the NAS, so they waited up to 12 hours. Setup now says so and makes Jellyfin's library scan run every hour on such a server.
+- **A file is "already imported" only when its copy holds exactly the same bytes.** Only three pieces of each were compared, so a film edited after its copy was made (a program rewriting a tag and putting the old date back), or a copy damaged on the library drive, passed as already imported and was never copied again. An import run again (`--again`), or carrying on after being cut off, now reads the files it copied before whole, on both sides; that takes as long as reading them.
+- **A restore from a backup card gives the files to your own account**, as a photo or Nextcloud restore does: they were root's, in a folder only root can open, while the menu said "Done".
+- **A password list without an app's `.env` restores on a PC in any language.** tar said the missing file was "Nicht im Archiv gefunden" in German, which was not understood, so the list was refused as damaged.
+- **A copy of your own music or films that could not be made is tried again at the next setup run.** When the import stopped for want of room or with the folder away, setup said why but took the folder off its list anyway, so after fixing it, setup run again never copied it. Your files were never touched.
+- **On a library drive without hard links, a file the source holds under two names is counted twice for room.** It was copied twice but counted once, and the report said the second name "takes no room of its own". The drive is now tried first; the second names are counted, said as copied again, and a copy that would not fit stops with how much room is missing.
+
+### Fixed: the home around the server
+- **After a power cut, home addresses come back by themselves.** The PC was up before the router gave out addresses, so the home-address gateway used its tries in about a minute and stayed off until started by hand (and the dashboard said to reconnect drives). It now waits up to four minutes for the address.
+- **With the internet down, "Phone alerts are not being delivered" says the internet is probably down** (or the clock is wrong) and that the alerts go out by themselves once it is back, instead of telling you to run setup.
+- **The daily update check says plainly when the download site was not reached**: check the internet and whether the router's parental controls block it, before Docker's own words.
+- **A server switched off at the wall every night is told why its monthly check and update nights are overdue**: they need it on overnight.
+
+### Fixed: a household's people
+- **A restored photo library says whose folder is whose.** Each person's photos come back in a folder named with their Immich user ID, and the menu now says to upload each one with that person's own login; uploaded with the admin's, a child's photos went into the admin's account. The same for each person's Nextcloud files.
+- **After putting back a database copy or an app's settings, the guides say the old login is back** and to choose `c` in setup to take it from the restored password list.
+- **README says how to replace a family member's forgotten password, and what to remove when a phone is lost.**
+
+## v0.51.3 — 2026-11-16
 
 Fixes only, from the deep checks that go on after 0.51.2. Nothing changes in how NekoServer is used.
 

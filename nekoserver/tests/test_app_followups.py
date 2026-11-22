@@ -5,6 +5,7 @@ download apps, and qBittorrent's automatic mode switched on only for Lidarr."""
 import importlib.util
 import json
 import errno
+import shutil
 import os
 import sys
 import tempfile
@@ -206,6 +207,33 @@ class SymlinkSafeImportTests(unittest.TestCase):
             plain = source_import.copy_source(self.entry, self.media, apply=False)
         self.assertNotIn('hard_links', plain)
         self.assertEqual(plain['bytes'], 5)
+
+    def test_a_second_name_the_drive_cannot_link_is_counted_for_room(self):
+        """Review of 0.51.3: on a library drive without hard links each second name is
+        copied as a file of its own, but the room was counted for one copy and the report
+        said the second name "takes no room of its own"."""
+        (self.source / 'Seeding').mkdir()
+        os.link(self.source / 'Album/track.flac', self.source / 'Seeding/track.flac')
+        refused = OSError(errno.EPERM, 'Operation not permitted')
+        moved = lambda folder, old, new: os.rename(old, new, src_dir_fd=folder, dst_dir_fd=folder)  # noqa: E731
+        with (
+            mock.patch.object(source_import, 'stable_inodes', return_value=True),
+            mock.patch.object(source_import.os, 'link', side_effect=refused),
+            mock.patch.object(source_import, 'rename_at', side_effect=moved),
+        ):
+            preview = source_import.copy_source(self.entry, self.media, apply=False)
+            self.assertEqual(preview['bytes'], 10)  # both copies of the 5-byte file
+            self.assertNotIn('takes no room of its own', preview['reason'])
+            self.assertIn('Copied again: 1 file', preview['reason'])
+            # Room for one copy only: nothing is copied, and the report says how much is missing.
+            room = shutil._ntuple_diskusage(total=100, used=93, free=7)
+            with mock.patch.object(source_import.shutil, 'disk_usage', return_value=room):
+                with self.assertRaisesRegex(source_import.Said, 'Nothing was copied'):
+                    source_import.copy_source(self.entry, self.media, apply=True)
+            self.assertEqual(self.copied(), [])
+            result = source_import.copy_source(self.entry, self.media, apply=True)
+        self.assertEqual((result['copied'], result['bytes'], result['copied_twice']), (2, 10, 1))
+        self.assertIn('Copied again', result['reason'])
 
     def test_a_download_programs_own_leftover_is_not_imported_as_media(self):
         # D7: qBittorrent keeps the pieces of files you did not choose in a hidden

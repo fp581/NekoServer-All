@@ -849,6 +849,7 @@ pub const GUIDES: &[&str] = &[
     "Someone else in the family gets a login of their own in each app, never yours: in Immich, Administration, Users, Create user; in Nextcloud, your picture at the top right, then Accounts; in Jellyfin, Dashboard, Users, + with administrator off (for a child, Parental control) (README.md, \"Someone else in the family\").",
     "The apps update by themselves one night a week; the dashboard's Updates page, Apps, has Update now. NekoServer itself: the Updates page, NekoServer, Upgrade NekoServer (with the PIN); or in a terminal in the NekoServer-All/nekoserver folder: git pull, then sudo bash install.sh (README.md, \"Updating to a newer release\").",
     "A film on a TV: LG, Samsung and Roku TVs cannot reach the server (they have no Tailscale app): plug in a box or stick that has one, or connect the server to the TV with an HDMI cable. Casting from the phone does not work: use the Jellyfin app on the TV or stick, with the Jellyfin address ending in :8443 (GATEWAY.md, \"On a TV\").",
+    "A new hard drive or a NAS folder for films, shows or music: connect it (for a NAS, mount its shared folder on the server), then on the dashboard's Media folders page (with the PIN): Add a folder, choose what is in it, type its path or press Pick a folder, choose Use it where it is, and tick New downloads go there to save new ones on it. The page says in plain words why a folder can't be used (DASHBOARD.md, \"Media folders\").",
     "The dashboard's Help page has step-by-step guides.",
 ];
 
@@ -2481,7 +2482,7 @@ mod tests {
             std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(name))
                 .unwrap()
         };
-        let checks: [(&str, &[&str]); 6] = [
+        let checks: [(&str, &[&str]); 7] = [
             (
                 "RECOVERY.md",
                 &[
@@ -2527,6 +2528,17 @@ mod tests {
                     "HDMI cable",
                     "Casting from the phone",
                     ":8443",
+                ],
+            ),
+            // Deep check 848: "how do I add a drive?" had nothing to answer from.
+            (
+                "DASHBOARD.md",
+                &[
+                    "Media folders",
+                    "Add a folder",
+                    "Pick a folder",
+                    "Use it where it is",
+                    "New downloads go there",
                 ],
             ),
         ];
