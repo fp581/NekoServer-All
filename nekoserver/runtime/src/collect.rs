@@ -6404,3 +6404,308 @@ mod round_two_tests {
         assert!(text(&said[0]["detail"]).contains("leave it in overnight"));
     }
 }
+/// What `metrics`, `applications` and `alerts` did before 0.52.2 split them into short
+/// functions (Sonar S3776): these pass on the code before the split and after it.
+#[cfg(test)]
+mod behaviour_pins {
+    use super::*;
+
+    #[test]
+    fn the_host_readings_are_plausible_and_the_cpu_use_needs_an_earlier_sample() {
+        // No earlier sample: no CPU use yet, and this reading is the next one's sample.
+        let (host, sample) = metrics(&json!({}));
+        assert!(host["cpu_percent"].is_null());
+        if Path::new("/proc/stat").exists() {
+            assert!(sample["total"].as_u64().is_some() && sample["idle"].as_u64().is_some());
+            assert!(sample["idle"].as_u64() <= sample["total"].as_u64());
+            assert!(sample["boot"].is_string());
+            // An earlier sample of the same boot: a share of 0 to 100.
+            let earlier = json!({"total": 0, "idle": 0, "boot": sample["boot"]});
+            let (host, _) = metrics(&earlier);
+            let cpu = host["cpu_percent"].as_f64().unwrap();
+            assert!((0.0..=100.0).contains(&cpu), "{cpu}");
+            // Another boot's sample says nothing about this one.
+            let other = json!({"total": 0, "idle": 0, "boot": "another boot"});
+            assert!(metrics(&other).0["cpu_percent"].is_null());
+            // A sample from later than now (counters went back): not a share.
+            let ahead = json!({"total": u64::MAX, "idle": 0, "boot": sample["boot"]});
+            assert!(metrics(&ahead).0["cpu_percent"].is_null());
+        } else {
+            assert_eq!(sample, json!({}));
+        }
+        // Every field is there, read or null.
+        for key in [
+            "cpu_percent",
+            "memory_percent",
+            "memory_used",
+            "memory_total",
+            "temperature",
+            "uptime_seconds",
+            "cpu_model",
+        ] {
+            assert!(host.get(key).is_some(), "{key}");
+        }
+        if let (Some(used), Some(total)) =
+            (host["memory_used"].as_u64(), host["memory_total"].as_u64())
+        {
+            assert!(used <= total);
+            let percent = host["memory_percent"].as_f64().unwrap();
+            assert!((0.0..=100.0).contains(&percent));
+        }
+        if let Some(t) = host["temperature"].as_f64() {
+            assert!((-10.0..=150.0).contains(&t));
+        }
+    }
+
+    #[test]
+    fn an_app_without_its_container_is_not_set_up_or_not_known() {
+        let root = std::env::temp_dir().join(format!("neko-apps-pin-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let cfg = json!({"nextcloud": {"enabled": true}});
+        let state = |data: Option<&Path>| {
+            let (rows, _, _) = applications(&cfg, None, data);
+            let rows = rows.as_array().unwrap().clone();
+            // Only the apps chosen at setup are listed.
+            assert_eq!(rows.len(), 1, "{rows:?}");
+            let row = rows[0].clone();
+            assert_eq!(row["id"], "nextcloud");
+            // No container: nothing to say of its health or what it uses.
+            assert_eq!(row["health"], "unknown");
+            assert!(row["cpu_percent"].is_null() && row["memory_used"].is_null());
+            row["state"].as_str().unwrap().to_string()
+        };
+        // Setup never got to it (no Compose file on the app SSD): that, whether or not
+        // Docker answers.
+        assert_eq!(state(Some(&root)), "not_set_up");
+        // Set up: Docker's answer decides (no container, or none known while Docker does
+        // not answer). An SSD not mounted (None) takes the same way; each call waits for
+        // Docker, so it is not asked a third time.
+        fs::create_dir_all(root.join("compose/nextcloud")).unwrap();
+        fs::write(
+            root.join("compose/nextcloud/compose.yaml"),
+            "services: {}\n",
+        )
+        .unwrap();
+        let said = state(Some(&root));
+        assert!(said == "missing" || said == "unknown", "{said}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A server with something wrong in every part the alerts look at.
+    fn everything_wrong() -> Value {
+        json!({
+            "time_zone": {"schedules": "Europe/London", "this_pc": "Asia/Tokyo"},
+            "backup_place": {"same_drive": true},
+            "setup": {"unfinished": [{"id": "apps", "title": "the apps"}]},
+            "notifications": {"status": "fail", "reason": "unreachable"},
+            "battery": {"discharging": true, "percent": 40},
+            "home_network": {"status": "moved", "address": "192.168.1.5"},
+            "heartbeat": {"status": "stale"},
+            "tailscale": {"state": "Stopped"},
+            "startup": [
+                {"unit": "docker.service", "name": "Docker", "active": "failed", "enabled": false},
+                {"unit": "nekoserver-archive.timer", "name": "Photo archive", "active": "failed", "enabled": false}
+            ],
+            "storage": [
+                {"id": "media", "name": "Media HDD", "status": "missing"},
+                {"id": "data", "name": "App SSD", "status": "mounted", "used_percent": 98, "smart": {"status": "warning", "reason": "worn"}},
+                {"id": "nas", "name": "NAS drive", "status": "mounted", "read_only": true, "network": true, "held_by_nas_watch": true},
+                {"id": "os", "name": "System disk", "status": "mounted", "fs_errors": 2}
+            ],
+            "network_storage": {"targets": [{"target": "iqn.2026-01.nas:media", "state": "down"}], "portal": "10.0.0.2"},
+            "arrays": [
+                {"id": "md0", "name": "Pool", "status": "rebuilding", "reason": "one drive was replaced", "progress": 50, "holds_names": ["App SSD"]},
+                {"id": "md1", "name": "Mirror", "status": "warning", "reason": "mismatches", "mismatches": 3},
+                {"id": "md2", "name": "Spare", "status": "failing", "reason": "errors"}
+            ],
+            "metrics": {"memory_percent": 95, "temperature": 101, "temperature_crit": 100},
+            "applications": [
+                {"id": "jellyfin", "name": "Jellyfin", "state": "exited", "health": "unknown"},
+                {"id": "navidrome", "name": "Navidrome", "state": "running", "health": "healthy", "responding": false},
+                {"id": "immich", "name": "Immich", "state": "running", "health": "healthy"}
+            ],
+            "backups": [
+                {"id": "archive", "name": "Photo archive", "status": "fail", "reason": "it failed"},
+                {"id": "external", "name": "USB backup", "status": "fail", "usb_away": true},
+                {"id": "maintenance", "name": "Monthly", "status": "partial", "rolled_back": true, "timer": {"installed": true}},
+                {"id": "music", "name": "Music", "status": "fail", "blocked": "waits for the drive"}
+            ],
+            "backup_key": false,
+            "integrity": [{"id": "usb", "name": "USB drive", "damaged": 1, "disagree": 2}],
+            "updates": [{"app": "immich", "name": "Immich", "available": "v3", "current": "v2"}],
+            "media": {"status": "stale", "counts": {"fail": 1}, "checks": [{"name": "Jellyfin", "status": "fail"}]}
+        })
+    }
+
+    #[test]
+    fn every_alert_is_raised_in_the_same_order_with_the_same_words() {
+        let shown = alerts(&everything_wrong());
+        let rows = shown.as_array().unwrap();
+        let ids: Vec<&str> = rows.iter().map(|a| a["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, PINNED_IDS, "{ids:#?}");
+        let levels: Vec<&str> = rows.iter().map(|a| a["level"].as_str().unwrap()).collect();
+        assert_eq!(levels, PINNED_LEVELS, "{levels:#?}");
+        // The words too: a digest of every title and detail, in order.
+        let words: String = rows
+            .iter()
+            .map(|a| format!("{}\n{}\n", text(&a["title"]), text(&a["detail"])))
+            .collect();
+        use sha2::Digest;
+        let digest = format!("{:x}", sha2::Sha256::digest(words.as_bytes()));
+        assert_eq!(digest, PINNED_WORDS, "{words}");
+    }
+    const PINNED_IDS: &[&str] = &[
+        "timezone:changed",
+        "backup:same-drive",
+        "setup:apps",
+        "notifications:delivery",
+        "battery",
+        "home-network",
+        "heartbeat:delivery",
+        "tailscale:off",
+        "startup:docker.service:failed",
+        "startup:docker.service",
+        "startup:nekoserver-archive.timer:failed",
+        "mount:media",
+        "space:data",
+        "smart:data",
+        "mount:nas",
+        "nas:iqn.2026-01.nas:media",
+        "array-lost:md0",
+        "array-rebuild:md0",
+        "array-errors:md1",
+        "array-errors:md2",
+        "memory-pressure",
+        "temperature",
+        "nas:hold",
+        "app:navidrome",
+        "backup:archive",
+        "backup:external",
+        "backup:maintenance",
+        "backup-key",
+        "integrity:usb",
+        "major-update:immich",
+        "media-stale",
+        "media-failure",
+    ];
+    const PINNED_LEVELS: &[&str] = &[
+        "warning", "warning", "warning", "warning", "warning", "warning", "warning", "warning",
+        "critical", "warning", "warning", "critical", "critical", "warning", "critical",
+        "critical", "critical", "warning", "warning", "critical", "warning", "critical",
+        "critical", "critical", "critical", "warning", "warning", "warning", "critical", "warning",
+        "warning", "warning",
+    ];
+    const PINNED_WORDS: &str = "ea32bcf98220a1a27eb5664294f84efe0802fc59313a8845cc9e0a6df174103c";
+}
+/// The short functions 0.52.2 split out of `applications` and `backups` (Sonar S3776).
+#[cfg(test)]
+mod split_helpers {
+    use super::*;
+
+    #[test]
+    fn one_container_says_its_state_health_and_time_up() {
+        let starts = vec![("abc123full".to_string(), 1000.0)];
+        let up = json!({"State": "running", "Status": "Up 5 minutes (healthy)", "ID": "abc123"});
+        assert_eq!(
+            container_state(&up, &starts, 1060.0),
+            ("running", "healthy", Some(60.0))
+        );
+        // A start dated after now counts as just started.
+        assert_eq!(container_state(&up, &starts, 900.0).2, Some(0.0));
+        // A state Docker never says, and a container without an ID: not matched to a start.
+        let odd = json!({"State": "weird", "Status": "Up (unhealthy)", "ID": ""});
+        assert_eq!(
+            container_state(&odd, &starts, 1060.0),
+            ("unknown", "unhealthy", None)
+        );
+        for (status, health) in [
+            ("Up (health: starting)", "starting"),
+            ("Exited (0) 2 hours ago", "not_defined"),
+        ] {
+            let v = json!({"State": "exited", "Status": status, "ID": "zzz"});
+            assert_eq!(container_state(&v, &starts, 0.0), ("exited", health, None));
+        }
+    }
+
+    #[test]
+    fn an_apps_load_is_its_containers_together() {
+        let mut containers = serde_json::Map::new();
+        for (id, app) in [
+            ("aaa", "jellyfin"),
+            ("bbb", "jellyfin"),
+            ("ccc", "immich"),
+            ("ddd", "jellyfin"),
+        ] {
+            containers.insert(id.into(), json!(app));
+        }
+        // ddd was not measured: it adds nothing.
+        let usage = std::collections::HashMap::from([
+            ("aaa".to_string(), (1.25, 100.0)),
+            ("bbb".to_string(), (2.5, 50.0)),
+            ("ccc".to_string(), (9.0, 9.0)),
+        ]);
+        assert_eq!(
+            app_load(&containers, &usage, "jellyfin"),
+            (json!(round(3.75)), json!(150.0))
+        );
+        assert_eq!(
+            app_load(&containers, &usage, "navidrome"),
+            (Value::Null, Value::Null)
+        );
+    }
+
+    #[test]
+    fn a_jobs_report_gives_its_status_its_limit_and_its_reason() {
+        assert_eq!(job_status(&json!({"status": "pass"}), false), "pass");
+        assert_eq!(job_status(&json!({"status": "odd"}), false), "unknown");
+        assert_eq!(job_status(&json!({}), false), "unknown");
+        // An update undone: done in part, whatever the report says.
+        assert_eq!(job_status(&json!({"status": "pass"}), true), "partial");
+
+        let every = |minutes: u64| json!({"photos": {"archive_interval_minutes": minutes}});
+        assert_eq!(job_max(&every(60), "archive", true, 100.0), 864000.0);
+        assert_eq!(job_max(&every(60), "archive", false, 100.0), 7200.0);
+        assert_eq!(job_max(&every(60), "archive", false, 1e6), 1e6);
+        // Out of the setting's range (15 minutes to a week): the job's own limit.
+        assert_eq!(job_max(&every(10), "archive", false, 100.0), 100.0);
+        assert_eq!(job_max(&every(10081), "archive", false, 100.0), 100.0);
+        assert_eq!(job_max(&every(15), "archive", false, 100.0), 1800.0);
+        assert_eq!(job_max(&every(60), "music", false, 100.0), 100.0);
+
+        let none = json!({});
+        assert_eq!(
+            job_reason("music", &none, ("pass", false), false, false),
+            None
+        );
+        assert_eq!(
+            job_reason("music", &none, ("pass", false), true, false).as_deref(),
+            Some("No recorded successful run")
+        );
+        assert_eq!(
+            job_reason("music", &none, ("pass", false), true, true),
+            Some(overdue_reason(
+                "music",
+                "No successful run since it was set up"
+            ))
+        );
+        assert_eq!(
+            job_reason("music", &none, ("pass", false), false, true),
+            Some(overdue_reason("music", "Last success is overdue"))
+        );
+        // The report's own word comes first: a failure, an undone update, a part done.
+        let saved = json!({"missing": ["a"], "error": "x"});
+        assert_eq!(
+            job_reason("music", &saved, ("partial", false), true, true),
+            Some(partial_reason(&saved["missing"]))
+        );
+        assert_eq!(
+            job_reason("maintenance", &saved, ("partial", true), true, true),
+            Some(undone_reason(&saved))
+        );
+        assert_eq!(
+            job_reason("external", &saved, ("fail", true), true, true),
+            Some(with_full_usb_advice("external", failure_reason(&saved)))
+        );
+    }
+}
