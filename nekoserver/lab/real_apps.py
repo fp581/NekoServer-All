@@ -20,7 +20,8 @@ on disk, marked as a favourite. Then:
      runs it): Jellyfin Enhanced is installed and connected to Seerr; Jellyfin's search
      then finds a show the server does not have, through Seerr.
 
-Each check prints PASS or FAIL with what it saw; the first FAIL stops the run (exit 1)."""
+Each check prints PASS or FAIL with what it saw. A FAIL stops that feature's checks; the
+other feature is still tried (exit 1 when either failed)."""
 
 import http.cookiejar
 import json
@@ -270,7 +271,11 @@ def favourite_shows_test(root, sonarr):
     watched = {e['id'] for e in episodes if e['monitored']}
     check(missing <= watched, 'each one is watched in Sonarr')
     on_disk = [e for e in episodes if (e['seasonNumber'], e['episodeNumber']) in ON_DISK]
-    check(len(on_disk) == len(ON_DISK) and not any(e['monitored'] for e in on_disk), 'the two on disk are not')
+    check(
+        len(on_disk) == len(ON_DISK) and not any(e['monitored'] for e in on_disk),
+        'the two on disk are not',
+        [(e['seasonNumber'], e['episodeNumber'], e['monitored'], e['hasFile'], e.get('airDateUtc')) for e in on_disk],
+    )
     searches = [c for c in sonarr.call('/command') if c.get('name') == 'EpisodeSearch']
     asked = {i for c in searches for i in (c.get('body') or {}).get('episodeIds', [])}
     check(asked == missing, 'and Sonarr was told to search for exactly those', sorted(asked ^ missing))
@@ -314,13 +319,22 @@ def main(argv):
         jellyfin, _show = set_up_jellyfin(root)
         sonarr = set_up_sonarr(root)
         set_up_seerr(root)
-        favourite_shows_test(root, sonarr)
-        search_in_jellyfin_test(root, jellyfin)
     except Failed as exc:
         print(f'FAIL: {exc}', flush=True)
         return 1
-    print('\nAll passed.')
-    return 0
+    # Each feature is tried even when the other failed: one run says how both went.
+    failed = []
+    for name, test in (
+        ('Favourite shows keep coming', lambda: favourite_shows_test(root, sonarr)),
+        ('Search and request in Jellyfin', lambda: search_in_jellyfin_test(root, jellyfin)),
+    ):
+        try:
+            test()
+        except Failed as exc:
+            print(f'FAIL: {exc}', flush=True)
+            failed.append(name)
+    print('\nAll passed.' if not failed else '\nFailed: ' + ', '.join(failed))
+    return 1 if failed else 0
 
 
 if __name__ == '__main__':
