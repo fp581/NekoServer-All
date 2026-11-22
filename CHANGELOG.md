@@ -23,6 +23,12 @@
 - **The recovery menu restores from a card**: "From backup cards", with the same restore tool every card carries. CARD-RECOVERY.md stays the way without NekoServer.
 - **A card keeps only its three newest inventories** (the list of which card held which file), and a new one is written only when something changed, so a card no longer fills up with them.
 
+### Added: a Professional theme
+- **Settings → Theme: Moonlit Neko or Professional.** Professional is a calm panel with no cat: grey-green neutrals, one blue for what you can press, colour only where there is a status, and plain words. It has a dark and a light mode, like Moonlit Neko, which stays exactly as it was and is still the one a new dashboard starts with. DASHBOARD.md, "Themes", shows both.
+- **Every status has a shape as well as a colour in it**: a circle for fine, a triangle for needs you, a square for broken, a ring for not known yet, on the dots, the badges and Home's verdict.
+- **Its colours are measured**: every text colour reads at 4.5:1 or more on every surface in both modes (WCAG 2.2), and the status colours differ in lightness too, not only in hue. A test reads them from the stylesheet, so a change is measured again.
+- **Its font, Atkinson Hyperlegible Next, comes with the dashboard** (SIL Open Font License), so the page still loads nothing from elsewhere.
+
 ### Fixed: from the review of 0.51.3
 - **A password list restored from a snapshot made without a backup key is the one that was checked.** The archive was checked against its recorded checksum and then unpacked by name, so one replaced in between (another job writing to the HDD, a failing drive) was unpacked unchecked, with "Done" over changed passwords. It is now opened once; the same bytes are checked and unpacked, and moved into place only when they match.
 - **A password list restored from a snapshot made without a backup key brings the apps' own password files too**, as the menu promised and the Nextcloud guide counted on: each app's `.env` and Nextcloud's `config.php`, not only the account list. The finished restore names each file.

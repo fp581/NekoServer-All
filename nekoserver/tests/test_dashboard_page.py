@@ -329,6 +329,27 @@ class DashboardPageTests(unittest.TestCase):
         start, words = page(('gettingStarted', done), ('companionWords', ['resting', done, []]))
         self.assertEqual((start, words[0]), ([], 'Normal operation'))
 
+    def test_the_professional_theme_says_it_plainly_and_moonlit_neko_keeps_its_cat(self):
+        """The Professional theme (DASHBOARD.md, "Themes") shows no cat, so its words don't
+        speak as one: "Neko can take it easy" became "Nothing needs your attention right now"."""
+        done = status(backups=[{'name': 'app-backup', 'status': 'pass', 'last_success': 1.0}])
+        issue = [{'level': 'warning', 'title': 'The USB backup drive is not connected'}]
+        cat, plain, cat_first, plain_first, plain_issue = page(
+            ('wordsIn', ['neko', 'resting', done, []]),
+            ('wordsIn', ['professional', 'resting', done, []]),
+            ('wordsIn', ['neko', 'curious', None, []]),
+            ('wordsIn', ['professional', 'curious', None, []]),
+            ('wordsIn', ['professional', 'afraid', done, issue]),
+        )
+        self.assertIn('Neko', cat[2])
+        self.assertEqual(plain[1:3], ['Everything is running.', 'Nothing needs your attention right now.'])
+        self.assertIn('Neko', cat_first[2])
+        for words in (plain, plain_first, plain_issue):
+            self.assertFalse(any('Neko' in w for w in words), words)
+        self.assertEqual(plain_issue[1], 'The USB backup drive is not connected')
+        # The same state, the same label and the same next step: only the voice differs.
+        self.assertEqual((cat[0], cat[3], cat[4]), (plain[0], plain[3], plain[4]))
+
     def test_once_backups_have_run_the_one_still_to_run_is_no_first_run(self):
         """Seen on the phone after an upgrade: five backups had passed and only the monthly
         check was still to come, yet the Backups tile said "First run Tue, Dec 1"."""

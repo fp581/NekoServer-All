@@ -1359,8 +1359,16 @@ function panelAlerts(s, issues) {
 }
 /* The words beside the cat: [state, title, text, action, where it leads]. */
 function companionWords(mood, s, issues) {
+  // Moonlit Neko's cat speaks for itself; Professional says the same plainly.
+  const voice = (cat, plain) => (professional() ? plain : cat);
   if (!s) {
-    return ['Checking', 'Welcome home.', 'Neko is waiting for the server’s first readings.', 'Help', '#help'];
+    return [
+      'Checking',
+      voice('Welcome home.', 'Waiting for the first readings.'),
+      voice('Neko is waiting for the server’s first readings.', 'The server’s first readings come in a minute.'),
+      'Help',
+      '#help'
+    ];
   }
   const top = issues.find(i => i.level === 'critical') || issues[0],
     jobs = runningJobs(s);
@@ -1369,7 +1377,10 @@ function companionWords(mood, s, issues) {
       top?.level === 'critical' ? 'Urgent' : 'Needs a look',
       issues.length === 1 ? text(top?.title, 'Something needs a look.') : issues.length + ' things need a look.',
       issues.length === 1
-        ? 'Neko spotted it. “What should I do?” beside it says how to fix it.'
+        ? voice(
+            'Neko spotted it. “What should I do?” beside it says how to fix it.',
+            '“What should I do?” beside it says how to fix it.'
+          )
         : 'The first one: ' + text(top?.title, 'see the list') + '.',
       'See what to do',
       '#attention'
@@ -1384,7 +1395,10 @@ function companionWords(mood, s, issues) {
     playful: [
       'Job running',
       jobs.length === 1 ? jobName(jobs[0]) + ' is running.' : jobs.length + ' jobs are running.',
-      'Neko is keeping an eye on it. How far it got and how it ends show under Backups.',
+      voice(
+        'Neko is keeping an eye on it. How far it got and how it ends show under Backups.',
+        'How far it got and how it ends show under Backups.'
+      ),
       'Open Backups',
       '#backups'
     ],
@@ -1397,8 +1411,11 @@ function companionWords(mood, s, issues) {
     ],
     resting: [
       'Normal operation',
-      'Everything has its place.',
-      'Nothing needs your attention right now. Neko can take it easy.',
+      voice('Everything has its place.', 'Everything is running.'),
+      voice(
+        'Nothing needs your attention right now. Neko can take it easy.',
+        'Nothing needs your attention right now.'
+      ),
       'View server health',
       '#health'
     ]
@@ -1434,6 +1451,9 @@ function catFile(mood, small) {
  * animation that can't be fetched tries the same cat's other size, then its still (offline:
  * only the stills are saved); never another cat. */
 function showCat(img, mood, small) {
+  if (professional()) {
+    return; // no cat in this theme: its pictures are not fetched either
+  }
   const file = catFile(mood, small);
   if (img.dataset.catRequest === file) {
     return; // compared with what was asked for, not a stand-in shown meanwhile
@@ -5311,6 +5331,20 @@ function diagnostics() {
 function systemTheme() {
   return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
+/* The two themes (DASHBOARD.md, "Themes"), each light and dark: Moonlit Neko, with the cat,
+ * and Professional, a calm panel where only the status has colour (professional.css). The
+ * names its light and dark are given in the switch and in Settings. */
+const LOOKS = {
+  neko: { name: 'Moonlit Neko (with the cat)', dark: 'Neko night', light: 'Lamplight' },
+  professional: { name: 'Professional (quiet, no cat)', dark: 'Dark', light: 'Light' }
+};
+function look() {
+  const chosen = readStore('look', 'neko');
+  return Object.hasOwn(LOOKS, chosen) ? chosen : 'neko';
+}
+function professional() {
+  return look() === 'professional';
+}
 let themeChoice = null; // the switch's choice, for when this browser cannot store it
 function applyPreferences() {
   let theme = themeChoice ?? readStore('theme', 'dark');
@@ -5318,6 +5352,7 @@ function applyPreferences() {
     theme = 'dark';
   }
   const shown = theme === 'system' ? systemTheme() : theme;
+  document.documentElement.dataset.nekoLook = look();
   document.documentElement.dataset.nekoTheme = shown;
   // On the root itself too: no stylesheet (of a page this one is shown in) outranks it.
   document.documentElement.style.colorScheme = shown;
@@ -5343,9 +5378,13 @@ function shownTheme() {
 }
 function labelThemeToggle() {
   const toLight = shownTheme() === 'dark';
+  const names = LOOKS[look()];
   const button = $('theme-toggle');
-  button.title = toLight ? 'Switch to Lamplight' : 'Switch to Neko night';
-  button.setAttribute('aria-label', toLight ? 'Switch to the light theme (Lamplight)' : 'Switch to the dark theme');
+  button.title = 'Switch to ' + (toLight ? names.light : names.dark);
+  button.setAttribute(
+    'aria-label',
+    toLight ? 'Switch to the light theme (' + names.light + ')' : 'Switch to the dark theme'
+  );
 }
 function toggleTheme() {
   themeChoice = shownTheme() === 'dark' ? 'light' : 'dark';
@@ -5378,6 +5417,10 @@ function choice(label, key, options, fallback) {
     }
     saveStore(key, select.value);
     applyPreferences();
+    if (key === 'look') {
+      preferences(); // again, so the light and dark choices carry the theme's own names
+      $('dialog').querySelector('select')?.focus();
+    }
   });
   wrap.append(select);
   return wrap;
@@ -5405,28 +5448,40 @@ function alertsOn() {
   return 'Notification' in window && Notification.permission === 'granted' && readStore('notify', false) === true;
 }
 function preferences() {
-  openDialog('SETTINGS', 'Make yourself at home', [
+  const names = LOOKS[look()];
+  openDialog('SETTINGS', professional() ? 'Settings' : 'Make yourself at home', [
     el('p', '', 'Saved in this browser only. Nothing on the server changes.'),
+    choice(
+      'Theme',
+      'look',
+      Object.entries(LOOKS).map(([key, l]) => [key, l.name]),
+      'neko'
+    ),
     choice(
       'Appearance',
       'theme',
       [
-        ['dark', 'Neko night'],
-        ['light', 'Lamplight (soft and warm)'],
+        ['dark', names.dark],
+        ['light', professional() ? names.light : 'Lamplight (soft and warm)'],
         ['system', 'Same as this device']
       ],
       'dark'
     ),
-    choice(
-      'Cat animation',
-      'motion',
-      [
-        ['system', 'Same as this device'],
-        ['on', 'Moving'],
-        ['off', 'Still pictures']
-      ],
-      'system'
-    ),
+    // The cat's setting, only where there is a cat.
+    ...(professional()
+      ? []
+      : [
+          choice(
+            'Cat animation',
+            'motion',
+            [
+              ['system', 'Same as this device'],
+              ['on', 'Moving'],
+              ['off', 'Still pictures']
+            ],
+            'system'
+          )
+        ]),
     choice(
       'Text size',
       'size',

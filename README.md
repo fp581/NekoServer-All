@@ -22,7 +22,7 @@ Setup's first page asks one thing: *What would you like this server to do?* Each
 | 🐈 **Ask Neko** | A local AI assistant in the dashboard (off unless you switch it on) |
 | 💾 **Backup cards** | A copy of your photos and Nextcloud files on SD cards or USB sticks you keep somewhere else, filled a little more each night one is plugged in; each card can be read on any Linux computer with nothing installed (off unless you switch it on) |
 
-Always set up, whatever you choose: the **dashboard** (with a PIN), **backups** with a monthly checkup, **private access from your own devices** through Tailscale, and **shared folders** on your home network.
+Always set up, whatever you choose: the **dashboard** (with a PIN, in two themes: Moonlit Neko with its cat, or a quiet Professional one, each light or dark), **backups** with a monthly checkup, **private access from your own devices** through Tailscale, and **shared folders** on your home network.
 
 Any combination works, including none of the apps. Switching something off later stops it and keeps its data.
 

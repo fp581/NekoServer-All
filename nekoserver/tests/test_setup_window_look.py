@@ -298,8 +298,12 @@ class NothingMovesTests(unittest.TestCase):
 
 
 def colours(theme):
-    """theme.css's colours in one theme: light-dark(Lamplight, night)."""
+    """theme.css's colours in one theme: light-dark(Lamplight, night).
+
+    Only Moonlit Neko's: the setup window has no other look, so the dashboard's
+    Professional block below it in theme.css is left out."""
     css = (ROOT / 'dashboard/theme.css').read_text(encoding='utf-8')
+    css = css.split(":root[data-neko-look='professional']")[0]
     pairs = re.findall(r'--([a-z-]+): light-dark\((#[0-9a-f]{6}), (#[0-9a-f]{6})\)', css)
     return {name: lamplight if theme == 'light' else night for name, lamplight, night in pairs}
 

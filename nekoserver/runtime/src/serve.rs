@@ -27,7 +27,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-const CSP:&str="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'; object-src 'none'";
+const CSP:&str="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'; object-src 'none'";
 
 /// Every error the dashboard server answers with. Short, stable codes: the page and
 /// DASHBOARD.md explain each one (E01/E02/E12 are detected by the page itself).
@@ -81,6 +81,23 @@ const ASSETS: &[(&str, &str, &str)] = &[
     ("/index.html", "index.html", "text/html; charset=utf-8"),
     ("/theme.css", "theme.css", "text/css; charset=utf-8"),
     ("/style.css", "style.css", "text/css; charset=utf-8"),
+    // The Professional theme (DASHBOARD.md, "Themes"): its look, and its font (Atkinson
+    // Hyperlegible Next, SIL Open Font License: ATKINSON-LICENSE.txt beside it).
+    (
+        "/professional.css",
+        "professional.css",
+        "text/css; charset=utf-8",
+    ),
+    (
+        "/atkinson-latin.woff2",
+        "atkinson-latin.woff2",
+        "font/woff2",
+    ),
+    (
+        "/atkinson-latin-ext.woff2",
+        "atkinson-latin-ext.woff2",
+        "font/woff2",
+    ),
     ("/app.js", "app.js", "text/javascript; charset=utf-8"),
     ("/sw.js", "sw.js", "text/javascript; charset=utf-8"),
     ("/logo.svg", "logo.svg", "image/svg+xml"),
