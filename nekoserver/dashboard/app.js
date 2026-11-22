@@ -5977,13 +5977,17 @@ function mediaForm(kinds) {
   form.append(kindField, pathField, pick, browse, how, backup, go);
   return form;
 }
-/* A path without the slashes at its end ("/mnt/films/" is "/mnt/films"); "/" alone stays. */
+/* A path without the slashes at its end (as a terminal completes it), keeping the
+ * character before them: "/" stays "/". Exactly what replace(/(.)\/+$/, '$1') did, a
+ * line break before the slashes included, without its backtracking. */
+const LINE_BREAKS = ['\n', '\r', ' ', ' '];
 function withoutEndSlashes(path) {
-  let end = path.length;
-  while (end > 1 && path[end - 1] === '/') {
-    end -= 1;
+  let start = path.length;
+  while (start > 0 && path[start - 1] === '/') {
+    start--;
   }
-  return path.slice(0, end);
+  const kept = start === 0 || LINE_BREAKS.includes(path[start - 1]) ? start + 1 : start;
+  return path.slice(0, Math.min(kept, path.length));
 }
 /* The music backup question, in setup's own words (the server sends them: existing_page
  * backup_question). The answer counts only for a folder on a NAS, as in setup. */
