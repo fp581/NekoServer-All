@@ -127,6 +127,21 @@ def make_the_show(root):
     print(f'made {folder} with episodes {sorted(ON_DISK)}')
 
 
+class TracedClient(Client):
+    """A Client that prints each call, how long it took, and any error: setup's rows say
+    only that a step failed."""
+
+    def call(self, endpoint, method='GET', payload=None):
+        started = time.monotonic()
+        try:
+            answer = super().call(endpoint, method, payload)
+        except RuntimeError as exc:
+            print(f'   {self.app}: {method} {endpoint} failed after {time.monotonic() - started:.1f}s: {exc}')
+            raise
+        print(f'   {self.app}: {method} {endpoint} {time.monotonic() - started:.1f}s')
+        return answer
+
+
 def make_films(root, count=40):
     """Short films in the Movies library: Jellyfin's scan of it takes a while."""
     films = root / 'library/movies'
@@ -178,7 +193,7 @@ def set_up_jellyfin(root):
     # Setup's own library step: Movies, then TV Shows. The films make Jellyfin's scan of
     # Movies still run while TV Shows is added, as with a person's many films.
     results, _server, _ids = media_libraries.jellyfin(
-        Client('jellyfin'), root, True, lambda _: ADMIN['Username'], lambda _: ADMIN['Pw']
+        TracedClient('jellyfin'), root, True, lambda _: ADMIN['Username'], lambda _: ADMIN['Pw']
     )
     check(all(r['status'] == 'pass' for r in results), "setup's library step makes Movies and TV Shows", results)
     try:
