@@ -117,6 +117,29 @@ def switch_off(ctx, units=None, run=subprocess.run):
     )
 
 
+def archive_timing(opts):
+    """(how often the photo archive runs, in minutes, at least 15; how old a photo must be
+    to be archived, in seconds, at least 60), as the photo settings say."""
+    interval = opts.get('archive_interval_minutes', 360)
+    age = opts.get('archive_min_age_seconds', 600)
+    if not isinstance(interval, int) or interval < 15 or not isinstance(age, int) or age < 60:
+        raise RuntimeError('Invalid archive interval/age')
+    return interval, age
+
+
+def write_managed_unit(name, target, content):
+    """One systemd unit of a photo job written; an existing one is replaced only when it
+    is this job's own (its exact managed description)."""
+    if target.exists() and target.read_text() != content:
+        previous = target.read_text()
+        # Require this unit's exact managed description before updating it.
+        if f'Description={name}' not in previous:
+            raise RuntimeError(f'Unmanaged existing unit: {target}')
+    safe_path(target)
+    forget_last_run(target)  # a timer created again must not run every missed night at once
+    atomic_write(target, content, 0o644)
+
+
 def run(ctx):
     if not ctx.apply:
         ctx.log('Photo preservation: apply installs the configured weekly originals/database timer')
@@ -131,10 +154,7 @@ def run(ctx):
         return switch_off(ctx)
     require_mounts(data, media)
     runtime = data / 'installer' / 'runtime' / ('v' + VERSION)
-    interval = opts.get('archive_interval_minutes', 360)
-    age = opts.get('archive_min_age_seconds', 600)
-    if not isinstance(interval, int) or interval < 15 or not isinstance(age, int) or age < 60:
-        raise RuntimeError('Invalid archive interval/age')
+    interval, age = archive_timing(opts)
     archive = relative_path(opts.get('archive_dir', 'photos/archive'))
     binary = native_runtime.deploy(Path(__file__).resolve().parents[1], cfg, runtime)
     keep = opts.get('database_keep', 4)
@@ -162,15 +182,7 @@ def run(ctx):
         timer = SYSTEMD_UNITS / (name + TIMER)
         timer_text = f'[Unit]\nDescription={name} timer\n[Timer]\n{calendar}\n[Install]\nWantedBy=timers.target\n'
         for target, text in ((service, service_text(name, cmd, data, media, binary, guard)), (timer, timer_text)):
-            content = text.replace('\\n', '\n')
-            if target.exists() and target.read_text() != content:
-                previous = target.read_text()
-                # Require this unit's exact managed description before updating it.
-                if f'Description={name}' not in previous:
-                    raise RuntimeError(f'Unmanaged existing unit: {target}')
-            safe_path(target)
-            forget_last_run(target)  # a timer created again must not run every missed night at once
-            atomic_write(target, content, 0o644)
+            write_managed_unit(name, target, text.replace('\\n', '\n'))
     install_resume(binary, guard, data)
     subprocess.run(['systemctl', 'daemon-reload'], check=True, timeout=120)
     subprocess.run(['systemctl', 'enable', RESUME + SERVICE], check=True, capture_output=True, text=True, timeout=120)

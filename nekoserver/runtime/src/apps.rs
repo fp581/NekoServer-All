@@ -68,7 +68,9 @@ const FORCE_WAIT: Duration = Duration::from_secs(5);
 pub struct Actions(Mutex<BTreeMap<String, Value>>);
 impl Actions {
     fn entries(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, Value>> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner())
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     /// Record a new action; false while one for the same target still runs (or, with
     /// `alone`, while any action of the same kind does: one app restarts at a time).

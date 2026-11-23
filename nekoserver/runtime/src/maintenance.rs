@@ -1463,6 +1463,152 @@ fn still_working(file: &Path, project: &str, service: &str, seen: &mut Option<Va
                 .is_ok_and(|cpu| cpu >= 1.0)
         })
 }
+/// One app's health check after an update or in a restore test: what it is asked with.
+struct Probe<'a> {
+    file: &'a Path,
+    project: &'a str,
+    name: &'a str,
+    service: &'a str,
+    rehearsal: bool,
+    scratch: &'a Path,
+}
+
+impl Probe<'_> {
+    /// One attempt: every container running and healthy, the app answering at its
+    /// address, and for Nextcloud and Immich their own database checks.
+    fn once(&self) -> Result<()> {
+        self.containers_healthy()?;
+        let body = self.answer()?;
+        if self.name == "nextcloud" {
+            self.nextcloud_works(&body)?;
+        }
+        if self.name == "immich" {
+            self.immich_database_answers()?;
+        }
+        if self.rehearsal {
+            let name = self.name;
+            common::atomic_json(
+                &self.scratch.join(format!("{name}-restore-test.json")),
+                &json!({"status":"pass","database_and_files":name=="nextcloud","database_sql":name=="immich","http":true}),
+            )?;
+        }
+        Ok(())
+    }
+    /// Every service of this model running and not unhealthy (a quarantined Nextcloud
+    /// runs without its cron).
+    fn containers_healthy(&self) -> Result<()> {
+        let ids = compose(self.file, self.project, &["ps", "-q"])?;
+        let mut count = 0;
+        for id in ids.split_whitespace() {
+            let info: Value = serde_json::from_str(&docker(&["inspect", id])?)?;
+            let state = &info[0]["State"];
+            if state["Running"] != true
+                || state["Restarting"] == true
+                || ["unhealthy", "starting"]
+                    .contains(&state["Health"]["Status"].as_str().unwrap_or(""))
+            {
+                return Err(Error::new("Container not healthy"));
+            }
+            count += 1;
+        }
+        let expected = load(self.file)?["services"]
+            .as_object()
+            .map_or(0, serde_json::Map::len);
+        if count != expected {
+            return Err(Error::new("Missing healthy services"));
+        }
+        Ok(())
+    }
+    /// The app's answer at its health address.
+    fn answer(&self) -> Result<String> {
+        let (port, path) = app_port(self.name)?;
+        let own = format!("127.0.0.1:{port}");
+        let host = (self.name == "qbittorrent").then_some(own.as_str());
+        if self.rehearsal {
+            // The restore test runs on an internal network with no published port:
+            // asked from inside the app's own network (see restored_model).
+            return curl_inside(
+                &container_pid(self.file, self.project, self.service)?,
+                &format!("http://{own}{path}"),
+                host,
+            );
+        }
+        let binding = compose(
+            self.file,
+            self.project,
+            &["port", self.service, &port.to_string()],
+        )?;
+        let published = binding
+            .trim()
+            .strip_prefix("127.0.0.1:")
+            .filter(|s| s.parse::<u16>().is_ok())
+            .ok_or_else(|| Error::new("Private health port required"))?
+            .to_string();
+        curl_as(&format!("http://127.0.0.1:{published}{path}"), None, host)
+    }
+    /// Nextcloud installed, not in maintenance, migrated, and doing real database and
+    /// file operations, without storing a user's password.
+    fn nextcloud_works(&self, body: &str) -> Result<()> {
+        let s: Value = serde_json::from_str(body)?;
+        if s["installed"] != true || s["maintenance"] != false || s["needsDbUpgrade"] != false {
+            return Err(Error::new("Nextcloud migration incomplete"));
+        }
+        // A new name each attempt, written down before the file is made. A test
+        // file a cut-off attempt left behind is removed by the next one: only a
+        // name on that list, and only while it still holds what NekoServer wrote
+        // (its own name), never a file of the user's that merely looks alike.
+        let token = format!(
+            "neko-maintenance-{}-{}",
+            std::process::id(),
+            (common::now() * 1e6) as u128
+        );
+        let earlier = probe_names(self.scratch, &token)?;
+        let script = probe_script(&earlier, &token);
+        // Use the recorded initial administrator username instead of assuming it is admin.
+        let cfg = load(&self.scratch.join("config.json"))?;
+        let user = cfg["nextcloud"]["admin_user"].as_str().unwrap_or("admin");
+        let script = script.replace(
+            "get(\"admin\")",
+            &format!("get({})", serde_json::to_string(user)?),
+        );
+        compose(
+            self.file,
+            self.project,
+            &[
+                "exec",
+                "-T",
+                "--user",
+                "www-data",
+                "nextcloud",
+                "php",
+                "-r",
+                &script,
+            ],
+        )
+        .map_err(|e| Error::new(&format!("{PROBE_FAILED}{e}")))?;
+        Ok(())
+    }
+    /// Immich's database answers a query.
+    fn immich_database_answers(&self) -> Result<()> {
+        let result = compose(
+            self.file,
+            self.project,
+            &[
+                "exec",
+                "-T",
+                "database",
+                "sh",
+                "-c",
+                "psql -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\" -Atc 'SELECT 1'",
+            ],
+        )?;
+        if result.trim() != "1" {
+            return Err(Error::new("Restored Immich database probe failed"));
+        }
+        Ok(())
+    }
+}
+
 fn health(
     file: &Path,
     project: &str,
@@ -1471,155 +1617,57 @@ fn health(
     rehearsal: bool,
     scratch: &Path,
 ) -> Result<()> {
-    let service = if name == "immich" {
-        "immich-server"
-    } else {
-        name
+    let service = app_service(name);
+    // An app without a health address is refused at once, never waited for.
+    app_port(name)?;
+    let probe = Probe {
+        file,
+        project,
+        name,
+        service,
+        rehearsal,
+        scratch,
     };
-    let (port, path) = app_port(name)?;
     let start = Instant::now();
     let (mut seen, mut said) = (None, false);
     loop {
-        let attempt = (|| {
-            let ids = compose(file, project, &["ps", "-q"])?;
-            let mut count = 0;
-            for id in ids.split_whitespace() {
-                let info: Value = serde_json::from_str(&docker(&["inspect", id])?)?;
-                let state = &info[0]["State"];
-                if state["Running"] != true
-                    || state["Restarting"] == true
-                    || ["unhealthy", "starting"]
-                        .contains(&state["Health"]["Status"].as_str().unwrap_or(""))
-                {
-                    return Err(Error::new("Container not healthy"));
-                }
-                count += 1;
-            }
-            // Every service of this model (a quarantined Nextcloud runs without its cron).
-            let expected = load(file)?["services"]
-                .as_object()
-                .map_or(0, serde_json::Map::len);
-            if count != expected {
-                return Err(Error::new("Missing healthy services"));
-            }
-            let own = format!("127.0.0.1:{port}");
-            let host = (name == "qbittorrent").then_some(own.as_str());
-            let body = if rehearsal {
-                // The restore test runs on an internal network with no published port:
-                // asked from inside the app's own network (see restored_model).
-                curl_inside(
-                    &container_pid(file, project, service)?,
-                    &format!("http://{own}{path}"),
-                    host,
-                )?
-            } else {
-                let binding = compose(file, project, &["port", service, &port.to_string()])?;
-                let published = binding
-                    .trim()
-                    .strip_prefix("127.0.0.1:")
-                    .filter(|s| s.parse::<u16>().is_ok())
-                    .ok_or_else(|| Error::new("Private health port required"))?
-                    .to_string();
-                curl_as(&format!("http://127.0.0.1:{published}{path}"), None, host)?
-            };
-            if name == "nextcloud" {
-                let s: Value = serde_json::from_str(&body)?;
-                if s["installed"] != true
-                    || s["maintenance"] != false
-                    || s["needsDbUpgrade"] != false
-                {
-                    return Err(Error::new("Nextcloud migration incomplete"));
-                }
-                // Authenticated real database/file operations, without storing a user's password.
-                // A new name each attempt, written down before the file is made. A test
-                // file a cut-off attempt left behind is removed by the next one: only a
-                // name on that list, and only while it still holds what NekoServer wrote
-                // (its own name), never a file of the user's that merely looks alike.
-                let token = format!(
-                    "neko-maintenance-{}-{}",
-                    std::process::id(),
-                    (common::now() * 1e6) as u128
-                );
-                let earlier = probe_names(scratch, &token)?;
-                let script = probe_script(&earlier, &token);
-                // Use the recorded initial administrator username instead of assuming it is admin.
-                let cfg = load(&scratch.join("config.json"))?;
-                let user = cfg["nextcloud"]["admin_user"].as_str().unwrap_or("admin");
-                let script = script.replace(
-                    "get(\"admin\")",
-                    &format!("get({})", serde_json::to_string(user)?),
-                );
-                compose(
-                    file,
-                    project,
-                    &[
-                        "exec",
-                        "-T",
-                        "--user",
-                        "www-data",
-                        "nextcloud",
-                        "php",
-                        "-r",
-                        &script,
-                    ],
-                )
-                .map_err(|e| Error::new(&format!("{PROBE_FAILED}{e}")))?;
-            }
-            if name == "immich" {
-                let result = compose(
-                    file,
-                    project,
-                    &[
-                        "exec",
-                        "-T",
-                        "database",
-                        "sh",
-                        "-c",
-                        "psql -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\" -Atc 'SELECT 1'",
-                    ],
-                )?;
-                if result.trim() != "1" {
-                    return Err(Error::new("Restored Immich database probe failed"));
-                }
-            }
-            if rehearsal {
-                common::atomic_json(
-                    &scratch.join(format!("{name}-restore-test.json")),
-                    &json!({"status":"pass","database_and_files":name=="nextcloud","database_sql":name=="immich","http":true}),
-                )?;
-            }
-            Ok(())
-        })();
-        if attempt.is_ok() {
+        let Err(e) = probe.once() else {
             return Ok(());
-        }
+        };
         let elapsed = start.elapsed().as_secs();
-        if let Err(e) = &attempt {
-            // Nextcloud answers but cannot write: not a migration, so no hour's wait.
-            if probe_gave_up(&e.to_string(), elapsed) {
-                return Err(Error::new(&probe_advice(&e.to_string(), elapsed)));
-            }
+        // Nextcloud answers but cannot write: not a migration, so no hour's wait.
+        if probe_gave_up(&e.to_string(), elapsed) {
+            return Err(Error::new(&probe_advice(&e.to_string(), elapsed)));
         }
         if elapsed >= wait {
-            if keep_waiting(name, elapsed, wait, rehearsal, || {
+            let working = keep_waiting(name, elapsed, wait, rehearsal, || {
                 still_working(file, project, service, &mut seen)
-            }) {
-                if !said {
-                    println!("Monthly update: {name} is still starting after {} and keeps working (a new release may be updating its database); waiting for it up to {} in all", common::plural(wait / 60, "minute", "minutes"), common::plural(MIGRATION_WAIT.max(wait) / 60, "minute", "minutes"));
-                    said = true;
-                }
-                thread::sleep(Duration::from_secs(5));
-                continue;
-            }
-            return attempt.map_err(|e| {
-                Error::new(&format!(
-                    "{name} was not ready after {} ({e}). If it was still updating its database, raise \"health_wait_seconds\" under \"maintenance\" (up to 1800) and run  sudo bash install.sh  again; the next monthly update then waits longer",
-                    common::plural(elapsed / 60, "minute", "minutes")
-                ))
             });
+            if !working {
+                return Err(not_ready(name, elapsed, &e));
+            }
+            if !said {
+                println!("Monthly update: {name} is still starting after {} and keeps working (a new release may be updating its database); waiting for it up to {} in all", common::plural(wait / 60, "minute", "minutes"), common::plural(MIGRATION_WAIT.max(wait) / 60, "minute", "minutes"));
+                said = true;
+            }
         }
         thread::sleep(Duration::from_secs(5));
     }
+}
+/// The Compose service that is app `name` itself (Immich's server, beside its database).
+fn app_service(name: &str) -> &str {
+    if name == "immich" {
+        "immich-server"
+    } else {
+        name
+    }
+}
+/// An app that was not ready in time, with how to give it longer.
+fn not_ready(name: &str, elapsed: u64, e: &Error) -> Error {
+    Error::new(&format!(
+        "{name} was not ready after {} ({e}). If it was still updating its database, raise \"health_wait_seconds\" under \"maintenance\" (up to 1800) and run  sudo bash install.sh  again; the next monthly update then waits longer",
+        common::plural(elapsed / 60, "minute", "minutes")
+    ))
 }
 fn restored_model(original: &Value, stage: &Path, data: &Path, media: &Path) -> Result<Value> {
     let mut model = original.clone();
@@ -1987,6 +2035,136 @@ fn release(text: &str) -> Option<(u64, u64, u64)> {
     let found = (parts.next()??, parts.next()??, parts.next()??);
     parts.next().is_none().then_some(found)
 }
+/// The update stands: finish opening the apps up, never roll back.
+fn resume_committed(cfg: &Value, journal: &Value, snapshot: &Path) -> Result<()> {
+    let names: Vec<String> = journal["models"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    let wait = cfg["maintenance"]["health_wait_seconds"]
+        .as_u64()
+        .unwrap_or(300);
+    open_up(
+        &names,
+        snapshot,
+        &|file, name| live(file, name),
+        &|file, name| health(file, &format!("neko-{name}"), name, wait, false, snapshot),
+    )?;
+    finish_committed(journal, snapshot, Path::new(string(cfg, "data_mount")?));
+    fs::remove_file(*JOURNAL)?;
+    fs::File::open(Path::new(*JOURNAL).parent().unwrap())?.sync_all()?;
+    scrub_all(Path::new(string(cfg, "media_mount")?));
+    clear_work(Path::new(string(cfg, "data_mount")?));
+    Ok(())
+}
+/// Every app of the run stopped (each stop finished), from its old model.
+fn stop_every_app(journal: &Value, snapshot: &Path) -> Result<()> {
+    for (name, _) in journal["models"].as_object().unwrap() {
+        let file = snapshot.join(format!("{name}-old.json"));
+        compose(&file, &format!("neko-{name}"), &["stop", "--timeout", "60"])?;
+    }
+    Ok(())
+}
+/// The snapshot unpacked for the rollback: its app data onto the SSD's stage (checked
+/// against the archive), its media paths onto the HDD's when it has any.
+fn unpack_rollback(
+    cfg: &Value,
+    journal: &mut Value,
+    snapshot: &Path,
+    snapshot_manifest: &Value,
+) -> Result<()> {
+    // The app data is unpacked straight onto the SSD below; the HDD stage only
+    // ever serves media paths, so it is unpacked only when the snapshot has any.
+    let has_media = snapshot_manifest["paths"]["media"]
+        .as_array()
+        .is_some_and(|paths| !paths.is_empty());
+    if has_media {
+        extract(snapshot, &snapshot.join("rollback-stage"), &["media"])?;
+    }
+    let ssd_stage = Path::new(string(cfg, "data_mount")?)
+        .join("backups")
+        .join(format!("rollback-{}", string(journal, "run")?));
+    common::directory(&ssd_stage, 0o700)?;
+    checked(
+        &[
+            "tar",
+            "--extract",
+            "--file",
+            &snapshot.join("data.tar").to_string_lossy(),
+            "--acls",
+            "--xattrs",
+            "--numeric-owner",
+            "--same-owner",
+            "-C",
+            &ssd_stage.to_string_lossy(),
+        ],
+        21600,
+    )?;
+    checked(
+        &[
+            "tar",
+            "--compare",
+            "--file",
+            &snapshot.join("data.tar").to_string_lossy(),
+            "-C",
+            &ssd_stage.to_string_lossy(),
+        ],
+        21600,
+    )?;
+    restore_sealed_copy(journal, Path::new(string(cfg, "data_mount")?), &ssd_stage)?;
+    journal["phase"] = json!("restoring");
+    journal["restored"] = json!([]);
+    save_journal(journal)
+}
+/// Every path the rollback may restore put back from its stage, each noted in the
+/// journal once it is back (a resumed rollback skips those).
+fn put_back_all(
+    cfg: &Value,
+    journal: &mut Value,
+    snapshot: &Path,
+    snapshot_manifest: &Value,
+) -> Result<()> {
+    let apps: Vec<String> = journal["models"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    let allowed = rollback_paths(&apps, snapshot_manifest);
+    for (kind, root, paths) in [
+        ("data", Path::new(string(cfg, "data_mount")?), allowed.0),
+        ("media", Path::new(string(cfg, "media_mount")?), allowed.1),
+    ] {
+        for relative in paths {
+            let key = format!("{kind}/{relative}");
+            if journal["restored"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == &key)
+            {
+                continue;
+            }
+            let run = string(journal, "run")?.to_string();
+            let stage = if kind == "data" {
+                root.join("backups").join(format!("rollback-{run}"))
+            } else {
+                snapshot.join("rollback-stage/media")
+            };
+            let base = if kind == "data" {
+                placed_base(cfg, &relative)?
+            } else {
+                None
+            };
+            put_back(root, &stage, &relative, &run, base.as_deref(), &remount)?;
+            journal["restored"].as_array_mut().unwrap().push(json!(key));
+            save_journal(journal)?;
+        }
+    }
+    Ok(())
+}
 fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
     if !Path::new(*JOURNAL).exists() {
         return Ok(());
@@ -2001,136 +2179,52 @@ fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
     tidy_restore_test(&journal, &snapshot);
     let phase = string(&journal, "phase")?.to_string();
     if phase == "committed" {
-        // The update stands: finish opening the apps up, never roll back.
-        let names: Vec<String> = journal["models"]
-            .as_object()
-            .unwrap()
-            .keys()
-            .cloned()
-            .collect();
-        let wait = cfg["maintenance"]["health_wait_seconds"]
-            .as_u64()
-            .unwrap_or(300);
-        open_up(
-            &names,
-            &snapshot,
-            &|file, name| live(file, name),
-            &|file, name| health(file, &format!("neko-{name}"), name, wait, false, &snapshot),
-        )?;
-        finish_committed(&journal, &snapshot, Path::new(string(cfg, "data_mount")?));
-        fs::remove_file(*JOURNAL)?;
-        fs::File::open(Path::new(*JOURNAL).parent().unwrap())?.sync_all()?;
-        scrub_all(Path::new(string(cfg, "media_mount")?));
-        clear_work(Path::new(string(cfg, "data_mount")?));
-        return Ok(());
+        return resume_committed(cfg, &journal, &snapshot);
     }
     if ["updating", "restoring"].contains(&phase.as_str()) {
-        let snapshot_manifest = verify(&snapshot)?;
-        for (name, _) in journal["models"].as_object().unwrap() {
-            let file = snapshot.join(format!("{name}-old.json"));
-            compose(&file, &format!("neko-{name}"), &["stop", "--timeout", "60"])?;
-        }
-        if phase == "updating" {
-            // The app data is unpacked straight onto the SSD below; the HDD stage only
-            // ever serves media paths, so it is unpacked only when the snapshot has any.
-            let has_media = snapshot_manifest["paths"]["media"]
-                .as_array()
-                .is_some_and(|paths| !paths.is_empty());
-            if has_media {
-                extract(&snapshot, &snapshot.join("rollback-stage"), &["media"])?;
-            }
-            let ssd_stage = Path::new(string(cfg, "data_mount")?)
-                .join("backups")
-                .join(format!("rollback-{}", string(&journal, "run")?));
-            common::directory(&ssd_stage, 0o700)?;
-            checked(
-                &[
-                    "tar",
-                    "--extract",
-                    "--file",
-                    &snapshot.join("data.tar").to_string_lossy(),
-                    "--acls",
-                    "--xattrs",
-                    "--numeric-owner",
-                    "--same-owner",
-                    "-C",
-                    &ssd_stage.to_string_lossy(),
-                ],
-                21600,
-            )?;
-            checked(
-                &[
-                    "tar",
-                    "--compare",
-                    "--file",
-                    &snapshot.join("data.tar").to_string_lossy(),
-                    "-C",
-                    &ssd_stage.to_string_lossy(),
-                ],
-                21600,
-            )?;
-            restore_sealed_copy(&journal, Path::new(string(cfg, "data_mount")?), &ssd_stage)?;
-            journal["phase"] = json!("restoring");
-            journal["restored"] = json!([]);
-            save_journal(&journal)?;
-        }
-        let apps: Vec<String> = journal["models"]
-            .as_object()
-            .unwrap()
-            .keys()
-            .cloned()
-            .collect();
-        let allowed = rollback_paths(&apps, &snapshot_manifest);
-        for (kind, root, paths) in [
-            ("data", Path::new(string(cfg, "data_mount")?), allowed.0),
-            ("media", Path::new(string(cfg, "media_mount")?), allowed.1),
-        ] {
-            for relative in paths {
-                let key = format!("{kind}/{relative}");
-                if journal["restored"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|v| v == &key)
-                {
-                    continue;
-                }
-                let run = string(&journal, "run")?.to_string();
-                let stage = if kind == "data" {
-                    root.join("backups").join(format!("rollback-{run}"))
-                } else {
-                    snapshot.join("rollback-stage/media")
-                };
-                let base = if kind == "data" {
-                    placed_base(cfg, &relative)?
-                } else {
-                    None
-                };
-                put_back(root, &stage, &relative, &run, base.as_deref(), &remount)?;
-                journal["restored"].as_array_mut().unwrap().push(json!(key));
-                save_journal(&journal)?;
-            }
-        }
-        for (name, model) in journal["models"].as_object().unwrap() {
-            write_override(cfg, name, model)?;
-        }
+        roll_back(cfg, &mut journal, &snapshot, &phase)?;
     }
     if phase == "snapshot" {
         // Cut off while the apps were being stopped: a stop Docker is still finishing
         // would end after the start below and leave that app stopped (Docker does not
         // restart an app it was asked to stop). Each stop finishes first.
-        for (name, _) in journal["models"].as_object().unwrap() {
-            let file = snapshot.join(format!("{name}-old.json"));
-            compose(&file, &format!("neko-{name}"), &["stop", "--timeout", "60"])?;
-        }
+        stop_every_app(&journal, &snapshot)?;
     }
+    start_old_apps(cfg, &journal, &snapshot, &phase)?;
+    if phase != "snapshot" && phase != "backed_up" {
+        remove_spent_stages(cfg, &journal, &snapshot)?;
+    }
+    fs::remove_file(*JOURNAL)?;
+    fs::File::open(Path::new(*JOURNAL).parent().unwrap())?.sync_all()?;
+    scrub_all(Path::new(string(cfg, "media_mount")?));
+    clear_work(Path::new(string(cfg, "data_mount")?));
+    Ok(())
+}
+/// An update cut off while it was `phase` ("updating" or "restoring") undone: every app
+/// stopped, its old data put back from the snapshot, its old settings written again.
+fn roll_back(cfg: &Value, journal: &mut Value, snapshot: &Path, phase: &str) -> Result<()> {
+    let snapshot_manifest = verify(snapshot)?;
+    stop_every_app(journal, snapshot)?;
+    if phase == "updating" {
+        unpack_rollback(cfg, journal, snapshot, &snapshot_manifest)?;
+    }
+    put_back_all(cfg, journal, snapshot, &snapshot_manifest)?;
+    for (name, model) in journal["models"].as_object().unwrap() {
+        write_override(cfg, name, model)?;
+    }
+    Ok(())
+}
+/// The apps started again on their old images, each checked healthy unless the run was
+/// cut off before it changed anything (`phase` "snapshot").
+fn start_old_apps(cfg: &Value, journal: &Value, snapshot: &Path, phase: &str) -> Result<()> {
     restore_images(
         &journal["models"],
-        &snapshot,
+        snapshot,
         &|id| docker(&["image", "inspect", id]).is_ok(),
         &|archive| docker(&["load", "--input", archive]).map(|_| ()),
     )?;
-    for (name, _) in journal["models"].as_object().unwrap() {
+    let apps = journal["models"].as_object().unwrap();
+    for (name, _) in apps {
         let file = snapshot.join(format!("{name}-old.json"));
         compose(
             &file,
@@ -2138,44 +2232,42 @@ fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
             &["up", "-d", "--pull", "never"],
         )?;
     }
-    if phase != "snapshot" {
-        for (name, _) in journal["models"].as_object().unwrap() {
-            let file = snapshot.join(format!("{name}-old.json"));
-            health(
-                &file,
-                &format!("neko-{name}"),
-                name,
-                cfg["maintenance"]["health_wait_seconds"]
-                    .as_u64()
-                    .unwrap_or(300),
-                false,
-                &snapshot,
-            )?;
+    if phase == "snapshot" {
+        return Ok(());
+    }
+    for (name, _) in apps {
+        let file = snapshot.join(format!("{name}-old.json"));
+        health(
+            &file,
+            &format!("neko-{name}"),
+            name,
+            cfg["maintenance"]["health_wait_seconds"]
+                .as_u64()
+                .unwrap_or(300),
+            false,
+            snapshot,
+        )?;
+    }
+    Ok(())
+}
+/// Rolled back and healthy: the stages the old data came from are spent, also the stage
+/// of an app installed on another drive, on that drive.
+fn remove_spent_stages(cfg: &Value, journal: &Value, snapshot: &Path) -> Result<()> {
+    let rollback = format!("rollback-{}", string(journal, "run")?);
+    let stage = Path::new(string(cfg, "data_mount")?)
+        .join("backups")
+        .join(&rollback);
+    let mut spent = vec![snapshot.join("rollback-stage"), stage];
+    for (name, _) in journal["models"].as_object().unwrap() {
+        if let Some(base) = common::installed_base(cfg, name)? {
+            spent.push(base.join(&rollback));
         }
     }
-    if phase != "snapshot" && phase != "backed_up" {
-        // Rolled back and healthy: the stages the old data came from are spent.
-        let rollback = format!("rollback-{}", string(&journal, "run")?);
-        let stage = Path::new(string(cfg, "data_mount")?)
-            .join("backups")
-            .join(&rollback);
-        let mut spent = vec![snapshot.join("rollback-stage"), stage];
-        // ... and the stage of an app installed on another drive, on that drive.
-        for (name, _) in journal["models"].as_object().unwrap() {
-            if let Some(base) = common::installed_base(cfg, name)? {
-                spent.push(base.join(&rollback));
-            }
-        }
-        for spent in spent {
-            if spent.exists() {
-                fs::remove_dir_all(common::safe(&spent)?)?;
-            }
+    for spent in spent {
+        if spent.exists() {
+            fs::remove_dir_all(common::safe(&spent)?)?;
         }
     }
-    fs::remove_file(*JOURNAL)?;
-    fs::File::open(Path::new(*JOURNAL).parent().unwrap())?.sync_all()?;
-    scrub_all(Path::new(string(cfg, "media_mount")?));
-    clear_work(Path::new(string(cfg, "data_mount")?));
     Ok(())
 }
 /// For the settings folder of an app installed on another drive (0.50.0): the folder
@@ -3014,6 +3106,39 @@ fn remove_run(path: &Path) -> Result<()> {
 /// are not the worker's own are never deleted. Copies that v0.21.0 wrote to the SSD are removed
 /// once the same run (identical manifest) is on the HDD. The USB drive is not touched
 /// here: the weekly USB job retires the old monthly copies there.
+/// The SSD's copies of a failed update of `run`, removed with it.
+fn remove_failed_copies(data: &Path, run: &str, removed: &mut Vec<Value>) -> Result<()> {
+    for copy in failed_copies(data, run)? {
+        fs::remove_dir_all(common::safe(&copy)?)?;
+        removed.push(json!({"run":run,"drive":"ssd","failed_update":copy}));
+    }
+    Ok(())
+}
+/// The unfinished runs older than `oldest_kept` (the oldest complete run kept), removed.
+fn prune_unfinished(
+    (data, media): (&Path, &Path),
+    complete: &[String],
+    oldest_kept: &str,
+    protected: &dyn Fn(&str) -> bool,
+    removed: &mut Vec<Value>,
+) -> Result<()> {
+    let hdd = media.join("backups/monthly");
+    let all = monthly_runs(media)?;
+    let older = all.iter().position(|r| r == oldest_kept).unwrap_or(0);
+    for run in &all[..older] {
+        if complete.contains(run) || protected(run) {
+            continue;
+        }
+        // A folder that is not the worker's own (not private) stays, reported.
+        if let Err(e) = remove_run(&hdd.join(run)) {
+            println!("Monthly retention: unfinished snapshot {run} kept ({e})");
+            continue;
+        }
+        removed.push(json!({"run":run,"drive":"hdd","unfinished":true}));
+        remove_failed_copies(data, run, removed)?;
+    }
+    Ok(())
+}
 fn prune_monthly(data: &Path, media: &Path, keep: u64, current: Option<&str>) -> Result<Value> {
     let journal = load(Path::new(*JOURNAL)).ok();
     let protected = |run: &str| Some(run) == current || journal_names(journal.as_ref(), run);
@@ -3024,83 +3149,8 @@ fn prune_monthly(data: &Path, media: &Path, keep: u64, current: Option<&str>) ->
         .filter(|r| hdd.join(r).join("manifest.json").is_file())
         .collect();
     let mut removed = vec![];
-    let mut kept = vec![];
-    let mut held_back = None;
-    let cut = complete.len().saturating_sub(keep as usize);
-    // Old snapshots are only deleted while the ones kept in their place are intact.
-    let damaged: Vec<&String> = if keep > 0 && cut > 0 {
-        complete[cut..]
-            .iter()
-            .filter(|r| verify(&hdd.join(r)).is_err())
-            .collect()
-    } else {
-        vec![]
-    };
-    if !damaged.is_empty() {
-        held_back = Some(format!(
-            "older snapshots kept: {} failed its checksum check",
-            damaged
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-        println!("Monthly retention: {}", held_back.as_deref().unwrap_or(""));
-        kept.extend(complete.iter().cloned());
-    } else if keep > 0 {
-        for run in &complete[..cut] {
-            if protected(run) {
-                kept.push(run.clone());
-                continue;
-            }
-            remove_run(&hdd.join(run))?;
-            removed.push(json!({"run":run,"drive":"hdd"}));
-            for copy in failed_copies(data, run)? {
-                fs::remove_dir_all(common::safe(&copy)?)?;
-                removed.push(json!({"run":run,"drive":"ssd","failed_update":copy}));
-            }
-        }
-        kept.extend(complete[cut..].iter().cloned());
-        // An unfinished run (cut off, or its restore test failed) is worth less than a
-        // complete one: it goes once `keep` complete runs newer than it are kept, as a
-        // complete run of its age would. Each one is nearly a full snapshot in size.
-        if complete.len() >= keep as usize {
-            let all = monthly_runs(media)?;
-            let oldest_kept = all.iter().position(|r| r == &complete[cut]).unwrap_or(0);
-            for run in &all[..oldest_kept] {
-                if complete.contains(run) || protected(run) {
-                    continue;
-                }
-                // A folder that is not the worker's own (not private) stays, reported.
-                if let Err(e) = remove_run(&hdd.join(run)) {
-                    println!("Monthly retention: unfinished snapshot {run} kept ({e})");
-                    continue;
-                }
-                removed.push(json!({"run":run,"drive":"hdd","unfinished":true}));
-                for copy in failed_copies(data, run)? {
-                    fs::remove_dir_all(common::safe(&copy)?)?;
-                    removed.push(json!({"run":run,"drive":"ssd","failed_update":copy}));
-                }
-            }
-        }
-    } else {
-        kept.extend(complete.iter().cloned());
-    }
-    let ssd = data.join("backups/monthly");
-    for run in monthly_runs(data)? {
-        if protected(&run) {
-            continue;
-        }
-        let copy = ssd.join(&run);
-        let original = hdd.join(&run);
-        // The SSD copy may be the only good copy left. Delete it only when the HDD run is
-        // complete (restore-tested) and its archives really match their checksums; a
-        // matching manifest alone proves nothing about the archives next to it.
-        if complete.contains(&run) && same_manifest(&copy, &original) && verify(&original).is_ok() {
-            remove_run(&copy)?;
-            removed.push(json!({"run":run,"drive":"ssd"}));
-        }
-    }
+    let (kept, held_back) = prune_hdd((data, media), &complete, keep, &protected, &mut removed)?;
+    reclaim_ssd_copies(data, &hdd, &complete, &protected, &mut removed)?;
     let unmanaged: Vec<String> = monthly_runs(media)?
         .into_iter()
         .filter(|r| !complete.contains(r) && !protected(r))
@@ -3108,6 +3158,90 @@ fn prune_monthly(data: &Path, media: &Path, keep: u64, current: Option<&str>) ->
     Ok(
         json!({"keep":keep,"kept":kept,"removed":removed,"incomplete_not_removed":unmanaged,"held_back":held_back}),
     )
+}
+/// The HDD's monthly runs beyond the newest `keep` complete ones removed (none while
+/// `keep` is 0, or while a kept one is damaged): the runs kept, and why older ones were
+/// held back.
+fn prune_hdd(
+    (data, media): (&Path, &Path),
+    complete: &[String],
+    keep: u64,
+    protected: &dyn Fn(&str) -> bool,
+    removed: &mut Vec<Value>,
+) -> Result<(Vec<String>, Option<String>)> {
+    let hdd = media.join("backups/monthly");
+    let cut = complete.len().saturating_sub(keep as usize);
+    // Old snapshots are only deleted while the ones kept in their place are intact.
+    let damaged = damaged_kept(&hdd, complete, keep, cut);
+    if !damaged.is_empty() {
+        let held_back = format!(
+            "older snapshots kept: {} failed its checksum check",
+            damaged
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        println!("Monthly retention: {held_back}");
+        return Ok((complete.to_vec(), Some(held_back)));
+    }
+    if keep == 0 {
+        return Ok((complete.to_vec(), None));
+    }
+    let mut kept = vec![];
+    for run in &complete[..cut] {
+        if protected(run) {
+            kept.push(run.clone());
+            continue;
+        }
+        remove_run(&hdd.join(run))?;
+        removed.push(json!({"run":run,"drive":"hdd"}));
+        remove_failed_copies(data, run, removed)?;
+    }
+    kept.extend(complete[cut..].iter().cloned());
+    // An unfinished run (cut off, or its restore test failed) is worth less than a
+    // complete one: it goes once `keep` complete runs newer than it are kept, as a
+    // complete run of its age would. Each one is nearly a full snapshot in size.
+    if complete.len() >= keep as usize {
+        let newest = &complete[cut];
+        prune_unfinished((data, media), complete, newest, protected, removed)?;
+    }
+    Ok((kept, None))
+}
+/// The kept runs (from `cut` on) whose archives fail their checksum check.
+fn damaged_kept<'a>(hdd: &Path, complete: &'a [String], keep: u64, cut: usize) -> Vec<&'a String> {
+    if keep == 0 || cut == 0 {
+        return vec![];
+    }
+    complete[cut..]
+        .iter()
+        .filter(|r| verify(&hdd.join(r)).is_err())
+        .collect()
+}
+/// The SSD copies of monthly runs removed where the HDD's run is good. The SSD copy may
+/// be the only good copy left: it goes only when the HDD run is complete (restore-tested)
+/// and its archives really match their checksums; a matching manifest alone proves
+/// nothing about the archives next to it.
+fn reclaim_ssd_copies(
+    data: &Path,
+    hdd: &Path,
+    complete: &[String],
+    protected: &dyn Fn(&str) -> bool,
+    removed: &mut Vec<Value>,
+) -> Result<()> {
+    let ssd = data.join("backups/monthly");
+    for run in monthly_runs(data)? {
+        if protected(&run) {
+            continue;
+        }
+        let copy = ssd.join(&run);
+        let original = hdd.join(&run);
+        if complete.contains(&run) && same_manifest(&copy, &original) && verify(&original).is_ok() {
+            remove_run(&copy)?;
+            removed.push(json!({"run":run,"drive":"ssd"}));
+        }
+    }
+    Ok(())
 }
 /// For the Updates page: when the newest snapshot holding `app` was made (its own update
 /// snapshot, or a monthly one: every app is in those), and how its last update ended
@@ -7434,9 +7568,9 @@ mod tests {
         assert!(media.is_empty());
         // The source: the journal's apps and the manifest, not every app set up.
         let source = include_str!("maintenance.rs");
-        let recovery = &source[source.find("fn resume(cfgpath").unwrap()..];
+        let recovery = &source[source.find("fn put_back_all(\n    cfg: &Value").unwrap()..];
         let recovery = &recovery[..recovery.find("\n}\n").unwrap()];
-        assert!(recovery.contains("rollback_paths(&apps, &snapshot_manifest)"));
+        assert!(recovery.contains("rollback_paths(&apps, snapshot_manifest)"));
         assert!(!recovery.contains("roots(&names(cfg)?)"));
     }
     #[test]
@@ -7758,10 +7892,10 @@ mod tests {
         assert!(app.get("container_name").is_none() && app.get("ports").is_none());
         // Its health check asks the app from inside that network.
         let source = include_str!("maintenance.rs");
-        let check = &source[source.find(&["fn ", "health("].concat()).unwrap()..];
-        let check = &check[..check.find("\n}\n").unwrap()];
-        assert!(check.contains("if rehearsal {") && check.contains("curl_inside(\n"));
-        assert!(check.contains("&container_pid(file, project, service)?"));
+        let check = &source[source.find(&["fn ", "answer(&self)"].concat()).unwrap()..];
+        let check = &check[..check.find("\n    }\n").unwrap()];
+        assert!(check.contains("if self.rehearsal {") && check.contains("curl_inside(\n"));
+        assert!(check.contains("&container_pid(self.file, self.project, self.service)?"));
     }
     fn models() -> Value {
         let port = |n: u16| json!([{"host_ip":"127.0.0.1","published":n.to_string(),"target":n}]);
@@ -8966,5 +9100,25 @@ mod tests {
                     .as_str()
             )
         );
+    }
+}
+/// The short functions 0.52.2 split out of `health` (Sonar S3776): the ones that need no
+/// Docker. `resume` and `prune_monthly` are tested through themselves.
+#[cfg(test)]
+mod split_helpers {
+    use super::*;
+
+    #[test]
+    fn an_app_not_ready_in_time_is_told_how_to_wait_longer() {
+        assert_eq!(app_service("immich"), "immich-server");
+        assert_eq!(app_service("jellyfin"), "jellyfin");
+        let said = not_ready("jellyfin", 125, &Error::new("refused")).to_string();
+        assert_eq!(
+            said,
+            "jellyfin was not ready after 2 minutes (refused). If it was still updating its database, raise \"health_wait_seconds\" under \"maintenance\" (up to 1800) and run  sudo bash install.sh  again; the next monthly update then waits longer"
+        );
+        assert!(not_ready("navidrome", 60, &Error::new("x"))
+            .to_string()
+            .starts_with("navidrome was not ready after 1 minute (x)."));
     }
 }

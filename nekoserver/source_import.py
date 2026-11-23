@@ -61,6 +61,9 @@ class SourceChanged(RuntimeError):
     """A file changed while it was copied (still being written, say); names the file."""
 
 
+SOURCE_CHANGED = 'Source changed during import'
+
+
 # The kernel's names for SMB and NFS mounts: a share mounted with `mount -t smb3` (or
 # smb3 in /etc/fstab) shows as smb3, not cifs.
 NETWORK_TYPES = ('cifs', 'smb3', 'nfs', 'nfs4')
@@ -319,7 +322,7 @@ def open_source(current, stat, stable=True):
     info = os.fstat(reader)
     if not S_ISREG(info.st_mode) or identity(info, stable) != identity(stat, stable):
         os.close(reader)
-        raise SourceChanged('Source changed during import')
+        raise SourceChanged(SOURCE_CHANGED)
     return reader
 
 
@@ -354,7 +357,7 @@ def copy_into(reader, writer, stat):
     os.posix_fadvise(writer, 0, 0, os.POSIX_FADV_DONTNEED)
     after = os.fstat(reader)
     if after.st_size != stat.st_size or after.st_mtime_ns != stat.st_mtime_ns or fd_digest(writer) != fd_digest(reader):
-        raise SourceChanged('Source changed during import')
+        raise SourceChanged(SOURCE_CHANGED)
 
 
 def write_all(fd, data):
@@ -512,6 +515,36 @@ def already_copied(current, dest, apply=False):
     return True
 
 
+def unfinished_files(folder, downloading, leftovers):
+    """The test strict_files asks of each file name: a file still being downloaded
+    (TEMPORARY) or a download program's own leftover (LEFTOVERS) is left out, and its path,
+    relative to the source, goes into `downloading` or `leftovers` when they are kept."""
+
+    def unfinished(here, name):
+        if not name.endswith(LEFTOVERS + TEMPORARY):
+            return False
+        if name.endswith(LEFTOVERS):
+            noted = leftovers
+        else:
+            noted = downloading
+        if noted is not None:
+            noted.append(shown_name((Path(here) / name).relative_to(folder)))
+        return True
+
+    return unfinished
+
+
+def listed_files(folder, unfinished):
+    """Every file of the source, listed strictly: a folder that cannot be read makes the
+    source incomplete, with the places that could not be read."""
+    try:
+        return strict_files(folder, unfinished)
+    except UnreadableEntries as exc:
+        raise IncompleteSource(
+            [Path(p).relative_to(folder).as_posix() if Path(p).is_relative_to(folder) else '.' for p, _ in exc.problems]
+        ) from None
+
+
 def planned_copies(folder, target, apply=False, conflicts=None, downloading=None, leftovers=None, links=None):
     """[(file, where it goes, its stat)] for every file not imported yet. Strict listing:
     a folder that cannot be read makes this source incomplete (nothing is copied),
@@ -525,21 +558,7 @@ def planned_copies(folder, target, apply=False, conflicts=None, downloading=None
     goes into `links` as (file, where it goes, its stat, where the first name goes), to
     be made a hard link in the library. Before, each name was counted for room and
     copied as a file of its own."""
-
-    def unfinished(here, name):
-        noted = leftovers if name.endswith(LEFTOVERS) else downloading if name.endswith(TEMPORARY) else None
-        if not name.endswith(LEFTOVERS + TEMPORARY):
-            return False
-        if noted is not None:
-            noted.append(shown_name((Path(here) / name).relative_to(folder)))
-        return True
-
-    try:
-        found = strict_files(folder, unfinished)
-    except UnreadableEntries as exc:
-        raise IncompleteSource(
-            [Path(p).relative_to(folder).as_posix() if Path(p).is_relative_to(folder) else '.' for p, _ in exc.problems]
-        ) from None
+    found = listed_files(folder, unfinished_files(folder, downloading, leftovers))
     entries, first, stable = [], {}, {}
     for found_path, _ in sorted(found):
         current = safe_path(found_path)
@@ -588,7 +607,7 @@ def link_copy(current, dest, stat, first, uid, gid, guard=None):
     links): the caller then copies the file like any other."""
     now = current.lstat()
     if identity(now) != identity(stat) or (now.st_size, now.st_mtime_ns) != (stat.st_size, stat.st_mtime_ns):
-        raise SourceChanged('Source changed during import')
+        raise SourceChanged(SOURCE_CHANGED)
     try:
         have = os.stat(first, follow_symlinks=False)
     except OSError:
@@ -729,30 +748,46 @@ def copy_entries(entries, folder, uid, gid, guard, links=(), progress=None, copi
     instead adds its size to both)."""
     skipped, stable = [], {}
     planned = [(*entry, None) for entry in entries] + list(links)
-    files_total, bytes_total = len(planned), sum(stat.st_size for _, _, stat in entries)
-    bytes_done = 0
+    count = CopyCount(sum(stat.st_size for _, _, stat in entries))
     if progress:
-        progress(0, 0, files_total, bytes_total)
-    for done, (current, dest, stat, first) in enumerate(planned, 1):
+        progress(0, 0, len(planned), count.bytes_total)
+    for done, entry in enumerate(planned, 1):
+        current, stat = entry[0], entry[2]
         if stat.st_dev not in stable:
             stable[stat.st_dev] = stable_inodes(current.parent)
-        try:
-            if first is None or not link_copy(current, dest, stat, first, uid, gid, guard):
-                if first is not None:
-                    room_for_one_more(first.parent, stat.st_size)
-                    if copied_again is not None:
-                        copied_again.append(stat)
-                    bytes_total += stat.st_size
-                    first = None  # copied: its bytes count as done below
-                import_file(current, dest, stat, uid, gid, guard, stable[stat.st_dev])
-        except UnicodeError:
-            skipped.append(shown_name(current.relative_to(folder)))
-        except SourceChanged:
-            raise SourceChanged(shown_name(current.relative_to(folder))) from None
-        bytes_done += stat.st_size if first is None else 0
+        copy_one(entry, folder, (uid, gid, guard), stable[stat.st_dev], copied_again, count, skipped)
         if progress:
-            progress(done, bytes_done, files_total, bytes_total)
+            progress(done, count.bytes_done, len(planned), count.bytes_total)
     return skipped
+
+
+class CopyCount:
+    """The bytes to copy in all, and those copied so far (for copy_entries' progress)."""
+
+    def __init__(self, bytes_total):
+        self.bytes_total = bytes_total
+        self.bytes_done = 0
+
+
+def copy_one(entry, folder, owner, inodes_kept, copied_again, count, skipped):
+    """One planned file copied, or a further name of a file made its hard link (a copy when
+    the drive will not link it). `owner`: (uid, gid, guard) for import_file."""
+    current, dest, stat, first = entry
+    uid, gid, guard = owner
+    try:
+        if first is None or not link_copy(current, dest, stat, first, uid, gid, guard):
+            if first is not None:
+                room_for_one_more(first.parent, stat.st_size)
+                if copied_again is not None:
+                    copied_again.append(stat)
+                count.bytes_total += stat.st_size
+                first = None  # copied: its bytes count as done below
+            import_file(current, dest, stat, uid, gid, guard, inodes_kept)
+    except UnicodeError:
+        skipped.append(shown_name(current.relative_to(folder)))
+    except SourceChanged:
+        raise SourceChanged(shown_name(current.relative_to(folder))) from None
+    count.bytes_done += stat.st_size if first is None else 0
 
 
 def room_for_one_more(folder, size):
@@ -1017,7 +1052,13 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
     try:
-        config = json.loads(safe_path(args.config).read_text())
+        # The settings file comes from the command line: as the source list, it is read
+        # only as a .json file, by its real path, never through a link.
+        real = os.path.realpath(safe_path(args.config))
+        if not (real.startswith(os.sep) and real.endswith('.json')) or '\x00' in real:
+            raise RuntimeError(f'the settings file must be a .json file; {args.config} is not one')
+        with open(real, encoding='utf-8') as handle:
+            config = json.loads(handle.read())
         if args.data_root:
             config['data_mount'] = args.data_root
         if args.media_root:

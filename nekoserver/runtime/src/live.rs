@@ -453,50 +453,9 @@ impl Live {
                 .collect::<Vec<_>>();
             files.sort_by(|a, b| natural(a, b));
             for file in files {
-                let Some((kind, unit, scale, channel)) = reading_kind(&file) else {
+                let Some(row) = sensor_row(&chip, &file, group, &source) else {
                     continue;
                 };
-                let Some(raw) = number(&chip.join(&file)) else {
-                    continue;
-                };
-                let label = read(&chip.join(format!("{channel}_label")));
-                let value = raw / scale;
-                let mut row = json!({
-                    "id": format!("{}:{}", name_of(&chip), channel),
-                    "group": group, "chip": source, "kind": kind,
-                    "label": clean(if label.is_empty() { &channel } else { &label }, 60),
-                    "value": round1(value), "unit": unit,
-                });
-                if kind == "temperature" {
-                    // As fan control reads them (fans.rs temperature): a probe input with
-                    // nothing connected reads 127 °C on many boards, or says so in its
-                    // _fault file. Shown, it would be a red "127 °C" that is not real.
-                    if !(-40.0..127.0).contains(&value)
-                        || read(&chip.join(format!("{channel}_fault"))) == "1"
-                    {
-                        continue;
-                    }
-                    for limit in ["max", "crit"] {
-                        if let Some(v) = number(&chip.join(format!("{channel}_{limit}"))) {
-                            if v > 0.0 && v / 1000.0 <= 200.0 {
-                                row[limit] = json!(round1(v / 1000.0));
-                            }
-                        }
-                    }
-                }
-                if kind == "fan_duty" {
-                    // 0-255 is the duty the chip drives; automatic or manual is
-                    // reported, never changed here.
-                    row["value"] = percent(raw, 255.0);
-                    row["mode"] = json!(
-                        match read(&chip.join(format!("{channel}_enable"))).as_str() {
-                            "0" => "full speed",
-                            "1" => "manual",
-                            "" => "unknown",
-                            _ => "automatic",
-                        }
-                    );
-                }
                 rows.push(row);
                 if rows.len() >= MAX_SENSORS {
                     return rows;
@@ -505,19 +464,7 @@ impl Live {
         }
         if !rows.iter().any(|r| r["kind"] == "temperature") {
             // No hwmon temperatures (some ARM boards, VMs): use thermal zones instead.
-            for zone in children(&self.sys.join("class/thermal")) {
-                if !name_of(&zone).starts_with("thermal_zone") {
-                    continue;
-                }
-                if let Some(v) = number(&zone.join("temp")).map(|t| t / 1000.0) {
-                    if (-40.0..=200.0).contains(&v) {
-                        let kind = clean(&read(&zone.join("type")), 40);
-                        rows.push(json!({"id": name_of(&zone), "group": "System",
-                            "chip": kind, "kind": "temperature", "label": kind,
-                            "value": round1(v), "unit": "°C"}));
-                    }
-                }
-            }
+            rows.extend(thermal_zones(&self.sys.join("class/thermal")));
         }
         rows
     }
@@ -758,6 +705,67 @@ impl Live {
         json!({"format": "neko-processes-v1", "generated_at": crate::common::now(),
             "rows": rows, "count": count, "skipped": skipped, "truncated": truncated})
     }
+}
+
+/// One reading of a hardware monitoring chip as the page shows it, or None when it is no
+/// reading (an input with nothing connected, a file that is not one).
+fn sensor_row(chip: &Path, file: &str, group: &str, source: &str) -> Option<Value> {
+    let (kind, unit, scale, channel) = reading_kind(file)?;
+    let raw = number(&chip.join(file))?;
+    let label = read(&chip.join(format!("{channel}_label")));
+    let value = raw / scale;
+    let mut row = json!({
+        "id": format!("{}:{}", name_of(chip), channel),
+        "group": group, "chip": source, "kind": kind,
+        "label": clean(if label.is_empty() { &channel } else { &label }, 60),
+        "value": round1(value), "unit": unit,
+    });
+    if kind == "temperature" {
+        // As fan control reads them (fans.rs temperature): a probe input with
+        // nothing connected reads 127 °C on many boards, or says so in its
+        // _fault file. Shown, it would be a red "127 °C" that is not real.
+        if !(-40.0..127.0).contains(&value) || read(&chip.join(format!("{channel}_fault"))) == "1" {
+            return None;
+        }
+        for limit in ["max", "crit"] {
+            let found = number(&chip.join(format!("{channel}_{limit}")));
+            if let Some(v) = found.filter(|v| *v > 0.0 && v / 1000.0 <= 200.0) {
+                row[limit] = json!(round1(v / 1000.0));
+            }
+        }
+    }
+    if kind == "fan_duty" {
+        // 0-255 is the duty the chip drives; automatic or manual is
+        // reported, never changed here.
+        row["value"] = percent(raw, 255.0);
+        row["mode"] = json!(
+            match read(&chip.join(format!("{channel}_enable"))).as_str() {
+                "0" => "full speed",
+                "1" => "manual",
+                "" => "unknown",
+                _ => "automatic",
+            }
+        );
+    }
+    Some(row)
+}
+
+/// The thermal zones' temperatures (for a PC whose chips report none).
+fn thermal_zones(folder: &Path) -> Vec<Value> {
+    let mut rows = vec![];
+    for zone in children(folder) {
+        if !name_of(&zone).starts_with("thermal_zone") {
+            continue;
+        }
+        let found = number(&zone.join("temp")).map(|t| t / 1000.0);
+        if let Some(v) = found.filter(|v| (-40.0..=200.0).contains(v)) {
+            let kind = clean(&read(&zone.join("type")), 40);
+            rows.push(json!({"id": name_of(&zone), "group": "System",
+                "chip": kind, "kind": "temperature", "label": kind,
+                "value": round1(v), "unit": "°C"}));
+        }
+    }
+    rows
 }
 
 /// People-friendly groups for hwmon chips.
@@ -1377,5 +1385,74 @@ mod tests {
                 (9, "system".to_string(), Value::Null),
             ]
         );
+    }
+}
+
+/// Tests the mutation pass of 0.52.2 asked for (G6): the split-out sensor readers.
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+
+    fn folder(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("neko-live-split-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A temperature's limits are shown only when the chip gives a real one: above zero
+    /// and at most 200 °C.
+    #[test]
+    fn a_temperature_limit_is_shown_only_when_it_is_real() {
+        let chip = folder("limits");
+        fs::write(chip.join("temp1_input"), "45000").unwrap();
+        fs::write(chip.join("temp1_max"), "85000").unwrap();
+        fs::write(chip.join("temp1_crit"), "250000").unwrap();
+        let row = sensor_row(&chip, "temp1_input", "Processor", "coretemp").unwrap();
+        assert_eq!(row["value"], 45.0);
+        assert_eq!(row["max"], 85.0);
+        assert!(row.get("crit").is_none(), "{row}");
+        fs::write(chip.join("temp1_max"), "0").unwrap();
+        fs::write(chip.join("temp1_crit"), "200000").unwrap();
+        let row = sensor_row(&chip, "temp1_input", "Processor", "coretemp").unwrap();
+        assert!(row.get("max").is_none(), "{row}");
+        assert_eq!(row["crit"], 200.0);
+        let _ = fs::remove_dir_all(&chip);
+    }
+
+    /// A thermal zone is shown from -40 °C to 200 °C (a cold one at 20 °C too); beyond
+    /// that it is no reading.
+    #[test]
+    fn a_thermal_zone_is_shown_only_within_real_temperatures() {
+        let thermal = folder("zones");
+        for (zone, temp) in [
+            ("thermal_zone0", "20000"),
+            ("thermal_zone1", "-39000"),
+            ("thermal_zone2", "-41000"),
+            ("thermal_zone3", "201000"),
+        ] {
+            fs::create_dir_all(thermal.join(zone)).unwrap();
+            fs::write(thermal.join(zone).join("temp"), temp).unwrap();
+            fs::write(thermal.join(zone).join("type"), "acpitz").unwrap();
+        }
+        let mut shown: Vec<_> = thermal_zones(&thermal)
+            .iter()
+            .map(|row| {
+                (
+                    row["id"].as_str().unwrap().to_string(),
+                    row["value"].as_f64().unwrap(),
+                )
+            })
+            .collect();
+        shown.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            shown,
+            vec![
+                ("thermal_zone0".to_string(), 20.0),
+                ("thermal_zone1".to_string(), -39.0)
+            ]
+        );
+        let _ = fs::remove_dir_all(&thermal);
     }
 }

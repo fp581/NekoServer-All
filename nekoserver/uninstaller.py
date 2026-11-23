@@ -34,6 +34,7 @@ SETTINGS = 'my-config.json'
 TEMPLATE = 'config.json'
 UNITS = '/etc/systemd/system'
 SAMBA_SHARES = '/etc/samba/nekoserver.conf'
+REMOVING = '  removing '  # how each thing removed is listed as it goes
 SAMBA_CONFIG = '/etc/samba/smb.conf'
 SAMBA_CREATED = '/etc/samba/nekoserver-accounts'  # the Samba accounts setup created (modules/samba.py)
 OWN_SMB_CONF = '[global]\n   include = /etc/samba/nekoserver.conf\n'  # the smb.conf setup writes when there was none
@@ -1321,23 +1322,30 @@ def _remove_idle_run_folders(plan, out):
     for folder in sorted(plan.root.glob('run/nekoserver-*')):
         if folder.is_symlink() or not folder.is_dir():
             continue
-        held = []
         try:
-            inside = sorted(folder.iterdir())
-            idle = all(entry.name.endswith(LOCK_SUFFIX) and not entry.is_symlink() for entry in inside)
-            for entry in inside if idle else ():
-                held.append(os.open(entry, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC))
-                fcntl.flock(held[-1], fcntl.LOCK_EX | fcntl.LOCK_NB)
-            if idle:
-                out('  removing ' + str(folder))
-                for entry in inside:
-                    entry.unlink()
-                folder.rmdir()
+            _remove_if_idle(folder, out)
         except OSError:
             pass  # a lock in use, or a file put there meanwhile: the folder stays until the next restart
-        finally:
-            for fd in held:
-                os.close(fd)
+
+
+def _remove_if_idle(folder, out):
+    """One folder in /run removed when it holds nothing but lock files; each lock is taken
+    first, and one that a program still holds raises OSError before anything is removed."""
+    inside = sorted(folder.iterdir())
+    if not all(entry.name.endswith(LOCK_SUFFIX) and not entry.is_symlink() for entry in inside):
+        return
+    held = []
+    try:
+        for entry in inside:
+            held.append(os.open(entry, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC))
+            fcntl.flock(held[-1], fcntl.LOCK_EX | fcntl.LOCK_NB)
+        out(REMOVING + str(folder))
+        for entry in inside:
+            entry.unlink()
+        folder.rmdir()
+    finally:
+        for fd in held:
+            os.close(fd)
 
 
 def _destroy(plan, chosen, out, tools, accounts, drives, jobs):
@@ -1521,7 +1529,7 @@ def _finish_packages(plan, call, out, reconcile=None):
         _tried(call, out, ['systemctl', 'unmask', *units])
     policy = plan.at(host.POLICY)
     if _our_policy(policy):
-        out('  removing ' + str(policy))
+        out(REMOVING + str(policy))
         policy.unlink(missing_ok=True)
 
 
@@ -1842,7 +1850,7 @@ def _remove_files(plan, chosen, out, rmtree, drives=None, keep_inodes=(), held=(
         if drive is not None and drive not in drives:
             left.append(Skipped(path))  # open_drives said why, once for the drive
             continue
-        out('  removing ' + str(path))
+        out(REMOVING + str(path))
         gone = _removed(path, rmtree, out) if drive is None else _removed_on(drives[drive], path, out, keep_inodes)
         if not gone:
             left.append(str(path))

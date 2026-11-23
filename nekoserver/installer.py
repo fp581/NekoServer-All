@@ -361,13 +361,9 @@ def review_retention(ctx, apply):
         ctx.persist_config()
 
 
-def validate_config(config):
-    require_settings(config)
-    for group in ('runtime', 'modules', 'profiles', 'storage', 'media', 'photos', 'docker'):
-        if not isinstance(config.get(group, {}), dict):
-            raise InstallerError(group + ' must be an object')
-    # Saved pre-v0.18 configurations lack these switches. Apply current defaults
-    # in memory so reusing confirmed disk settings cannot revive retired jobs.
+def old_switches_defaulted(config):
+    """Saved pre-v0.18 configurations lack these switches. Apply current defaults in memory
+    so reusing confirmed disk settings cannot revive retired jobs."""
     for group, defaults in (
         ('monitoring', {'enabled': False}),
         ('music', {'backup_enabled': False}),
@@ -378,6 +374,10 @@ def validate_config(config):
             raise InstallerError(group + ' must be an object')
         for key, value in defaults.items():
             options.setdefault(key, value)
+
+
+def check_steps_and_profiles(config):
+    """Each step's switch is true or false, and each profile names steps once."""
     for entry in config.get('modules', {}).values():
         if not isinstance(entry, dict) or type(entry.get('enabled', False)) is not bool:
             raise InstallerError('Module enable switches must be booleans')
@@ -392,6 +392,11 @@ def validate_config(config):
     # "python" is accepted only so older configs still load; it now means Rust.
     if not isinstance(runtime, dict) or runtime.get("backend", "rust") not in ("python", "rust"):
         raise InstallerError("runtime.backend must be rust")
+
+
+def drives_apart(config):
+    """The app SSD, the media drive and the USB backup drive: three folders, none inside
+    another. Returns the media drive's."""
     data, media = mount_path(config['data_mount']), mount_path(config['media_mount'])
     if data == media or data in media.parents or media in data.parents:
         raise InstallerError('Data and media mounts must be separate and non-nested')
@@ -403,6 +408,17 @@ def validate_config(config):
         raise InstallerError(
             '"persistent_root" under "docker" must be the same as "data_mount" (or delete that line: Docker always uses the app SSD)'
         )
+    return media
+
+
+def validate_config(config):
+    require_settings(config)
+    for group in ('runtime', 'modules', 'profiles', 'storage', 'media', 'photos', 'docker'):
+        if not isinstance(config.get(group, {}), dict):
+            raise InstallerError(group + ' must be an object')
+    old_switches_defaulted(config)
+    check_steps_and_profiles(config)
+    media = drives_apart(config)
     for key, default in [('archive_dir', 'photos/archive'), ('inbox_dir', 'photos/inbox')]:
         relative_path(config.get('photos', {}).get(key, default))
     archive = media / relative_path(config.get('photos', {}).get('archive_dir', 'photos/archive'))
@@ -481,55 +497,231 @@ def record_profile(path, profile, plan, previous, log):
     atomic_json(path, {'format': PROFILE_FORMAT, 'profile': profile})
 
 
-def _execute(args, root=ROOT):
-    config = read_json(Path(args.config))
-    as_read = copy.deepcopy(config)  # what the run changes is saved on the file as it is then
-    validate_config(config)
-    # A settings file keeps the profiles it was made with: the steps a newer release added
-    # are added now (said in the log, and saved with --apply, once the log is open below).
-    added, profiles_changed = template_steps(config)
-    modules = load_modules(root / 'modules')
-    enabled = [k for k in modules if config.get('modules', {}).get(k, {}).get('enabled', False)]
-    # The folder as given on the command line (or the default): never from the settings.
+INSTALL_LOG = 'install.log'
+# The steps that run NekoServer's own program: its files are checked before they start.
+RUNTIME_STEPS = {
+    'docker',
+    'server_os',
+    'dashboard',
+    'gateway_lan',
+    'media_monitor',
+    'photo_preservation',
+    'photo_backup',
+    'app_backup',
+    'host_backup',
+    'backup_cards',
+    'notifications',
+    'heartbeat',
+    'maintenance',
+}
+
+
+def state_folders(args, config):
+    """(the folder given, the folder the state is kept in, whether that is on the SSD).
+    The folder given comes from the command line (or the default), never from the
+    settings; with the default folder and the SSD mounted, the state is kept on the SSD."""
     given = Path(args.state_dir).expanduser()
     if not given.is_absolute() or '..' in given.parts:
         raise InstallerError('--state-dir must be an absolute path without ".."')
     given = safe_path(given)
-    # With the default folder and the SSD mounted, the state is kept on the SSD.
-    state_dir = given
-    on_the_ssd = False
-    if state_dir == DEFAULT_STATE and os.path.ismount(config['data_mount']):
-        on_the_ssd = True
-        state_dir = Path(config['data_mount']) / 'installer' / 'state'
-        # The SSD's path comes from the settings file: the folder is used only once it
-        # is proved to lie on the SSD with every link followed.
-        if not os.path.realpath(state_dir).startswith(os.path.realpath(config['data_mount']) + os.sep):
-            raise InstallerError(f'The setup state folder must lie on the app SSD: {state_dir}')
-    state_path = safe_path(state_dir / 'state.json')
-    safe_path(state_dir / 'install.log')
+    if given != DEFAULT_STATE:
+        return given, given, False
+    # The SSD's path comes from the settings file: it is looked at only by its real path,
+    # and only when that is the path the settings name.
+    data = os.path.realpath(config['data_mount'])
+    if not data.startswith(os.sep) or data != os.path.abspath(config['data_mount']) or not os.path.ismount(data):
+        return given, given, False
+    state_dir = Path(config['data_mount']) / 'installer' / 'state'
+    # The SSD's path comes from the settings file: the folder is used only once it
+    # is proved to lie on the SSD with every link followed.
+    if not os.path.realpath(state_dir).startswith(os.path.realpath(config['data_mount']) + os.sep):
+        raise InstallerError(f'The setup state folder must lie on the app SSD: {state_dir}')
+    return given, state_dir, True
+
+
+def previous_states(state_path, args):
+    """Each step as the last run left it (state.json), checked."""
     previous = read_json(state_path) if state_path.exists() else {}
     if not isinstance(previous, dict) or any(not isinstance(value, dict) for value in previous.values()):
         raise InstallerError('Installer state must map module names to state objects')
     if args.retry_failed and not previous:
         raise InstallerError('No prior installer state; mount the data SSD with the foundation profile before retrying')
+    return previous
+
+
+def selected_steps(args, config, previous, modules):
+    """The steps asked for: a profile, one step, a step to retry with those that waited
+    for it, the failed ones again, or the ones switched on."""
     if args.profile:
         if args.profile not in config.get('profiles', {}):
             raise InstallerError('Unknown profile: ' + args.profile)
-        selected = config['profiles'][args.profile]
-    elif args.module:
-        selected = [args.module]
-    elif getattr(args, 'retry_step', None):
+        return config['profiles'][args.profile]
+    if args.module:
+        return [args.module]
+    if getattr(args, 'retry_step', None):
         # "Retry this step" at the end of a run: that step and the steps that waited for
         # it, and nothing that is already done.
-        selected = retry_selection(args.retry_step, previous, modules)
-    elif args.retry_failed:
-        selected = [
+        return retry_selection(args.retry_step, previous, modules)
+    if args.retry_failed:
+        return [
             name
             for name in modules
             if previous.get(name, {}).get('status') in ('failed', 'blocked', 'needs_setup', 'running')
         ]
+    return [k for k in modules if config.get('modules', {}).get(k, {}).get('enabled', False)]
+
+
+def read_only_plan(args, plan, modules, added):
+    """--check and --dry-run: the plan said, nothing changed."""
+    save_profiles(None, added, False, False)
+    print(f'NekoServer v{VERSION} — read-only plan (no changes):')
+    for name in plan:
+        print(f"  {name}: {getattr(modules[name]['object'], 'DESCRIPTION', '')}")
+    if args.check:
+        print('Configuration and dependency graph valid.')
+    return 0
+
+
+def make_state_folder(on_the_ssd, state_dir, given, config):
+    """The state folder made (only the folder given, or the one proved to be on the SSD)."""
+    if not on_the_ssd:
+        ensure_directory(given, 0o700)
+        return
+    # Its path comes from the settings: it is made as the path with every link
+    # followed, once that is proved to lie on the SSD. safe_path refused links on the
+    # way above, so on a real server this is the same path as state_dir.
+    checked = os.path.realpath(state_dir)
+    if not checked.startswith(os.path.realpath(config['data_mount']) + os.sep):
+        raise InstallerError(f'The setup state folder must lie on the app SSD: {state_dir}')
+    ensure_directory(Path(checked), 0o700)
+
+
+class RunLog:
+    """The run's log: each line on the screen and in the log file (`path`, which moves to
+    the SSD once the storage step has mounted it), and a step's own words for the setup
+    window."""
+
+    def __init__(self, path):
+        self.path = path
+
+    def __call__(self, message):
+        stamp = dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds')
+        text = f'[{stamp}] {message}'
+        print(text)
+        with safe_path(self.path).open('a', encoding='utf-8') as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(text + '\n')
+        if not message.startswith(MARKERS):
+            setup_progress.note(message)  # a step's own words, for the setup window
+
+
+def tried_step(name, modules, ctx, states, state_path, log, apply):
+    """One step run, again each time the person asks to retry it after it failed. Its
+    result; when it failed, states[name] says so."""
+    tried = 0
+    while True:
+        states[name] = {
+            'status': 'running',
+            'version': VERSION,
+            'started_at': dt.datetime.now(dt.timezone.utc).isoformat(),
+        }
+        atomic_json_write(state_path, states)
+        log(f'START {name}')
+        setup_progress.step(name, 'running')
+        try:
+            return modules[name]['object'].run(ctx)
+        except KeyboardInterrupt:
+            stopped_by_hand(states, name, state_path, log)
+            raise
+        except Exception as exc:
+            reason = code_error_reason(exc, log.path) if isinstance(exc, CODE_ERRORS) else failure_reason(exc)
+            states[name] = {'status': 'failed', 'reason': reason}
+            log(f'FAILED {name}: {reason}')
+            # Avoid tracebacks from providers that may contain sensitive arguments.
+            # With a person at the terminal: the reason, the fix when it is a known
+            # one, and "Retry this step now?", up to MOST_RETRIES times.
+            if apply and retry_now(name, reason, tried, log):
+                tried += 1
+                continue
+            return None
+
+
+class Tally:
+    """The steps not done (failed, waiting for you, or held up by one of those), those
+    among them that failed, and those this PC cannot have."""
+
+    def __init__(self):
+        self.failures = []
+        self.failed = []
+        self.unavailable = []
+
+
+def record_outcome(name, result, states, complete_status, tally, log):
+    """What a step came to, in its state and in the log."""
+    if states[name]['status'] == 'failed':
+        tally.failures.append(name)
+        tally.failed.append(name)
+        return
+    states[name] = outcome(result, complete_status)
+    if states[name]['status'] == 'needs_setup':
+        tally.failures.append(name)
+        log(f'NEEDS SETUP {name}: {states[name]["reason"]}')
+    elif states[name]['status'] == UNAVAILABLE:
+        tally.unavailable.append(name)
+        log(f'UNAVAILABLE {name}: {states[name]["reason"]}')
     else:
-        selected = enabled
+        log(f'PASS {name}')
+
+
+def state_to_the_ssd(config, states, plan, name, log, state_path):
+    """Once the storage step has mounted the SSD: the state and the log move onto it.
+    Returns (the states, the state file) from then on."""
+    persistent = Path(config['data_mount']) / 'installer' / 'state'
+    # Made as the path with every link followed, once that is proved to lie on
+    # the SSD (ensure_directory refuses links on the way, so it is the same path).
+    checked = os.path.realpath(persistent)
+    if not checked.startswith(os.path.realpath(config['data_mount']) + os.sep):
+        raise InstallerError(f'The setup state folder must lie on the app SSD: {persistent}')
+    ensure_directory(Path(checked), 0o700)
+    next_state = persistent / 'state.json'
+    previous_persistent = read_json(next_state) if next_state.exists() else {}
+    states = moved_states(previous_persistent, states, plan[: plan.index(name) + 1])
+    old_log = log.path
+    log.path = persistent / INSTALL_LOG
+    move_log(old_log, log.path)
+    retire(state_path)
+    return states, next_state
+
+
+def refresh_settings(args, states, complete_status, modules, config, log):
+    """The steps whose settings later steps (or a newer release) can change: written again
+    from the final configuration, even when only another step ran."""
+    for name in REFRESHED:
+        if args.apply and states.get(name, {}).get('status') == complete_status and name in modules:
+            try:
+                modules[name]['object'].refresh(config, log)
+            except (OSError, RuntimeError, ValueError) as exc:
+                log(f'{name}: settings not refreshed: {exc}')
+
+
+def finished(plan, tally, log):
+    """The last line, counted as the finishing screen and the setup window count (steps
+    done, out of the steps this PC can have), and the exit code."""
+    here = len(plan) - len(tally.unavailable)
+    log(
+        f'Finished: {here - len(tally.failures)} of {here} steps done; '
+        + (f'{len(tally.unavailable)} not available on this system; ' if tally.unavailable else '')
+        + f'{len(tally.failures)} failed, waiting or unfinished; log={log.path}'
+    )
+    if tally.failed:
+        return STEP_FAILED
+    return WAITING if tally.failures else 0
+
+
+def checked_plan(args, config, modules, previous):
+    """The steps of this run, in order, checked with the settings; and the lines about
+    settings that look mistyped."""
+    selected = selected_steps(args, config, previous, modules)
     plan = ordered(modules, selected)
     if getattr(args, 'retry_step', None):
         plan = [name for name in plan if name in selected]
@@ -539,159 +731,74 @@ def _execute(args, root=ROOT):
     from config_checks import unknown_settings
 
     mistyped = unknown_settings(config, template_settings(ROOT), Path(args.config).name)
-    if args.check or args.dry_run:
-        for line in mistyped:
-            print(line)
-    if args.apply and set(plan) & {
-        'docker',
-        'server_os',
-        'dashboard',
-        'gateway_lan',
-        'media_monitor',
-        'photo_preservation',
-        'photo_backup',
-        'app_backup',
-        'host_backup',
-        'backup_cards',
-        'notifications',
-        'heartbeat',
-        'maintenance',
-    }:
-        from native_runtime import payload
+    return plan, mistyped
 
-        payload(ROOT, config)
-    if args.check or args.dry_run:
-        save_profiles(None, added, False, False)
-        print(f'NekoServer v{VERSION} — read-only plan (no changes):')
-        for name in plan:
-            print(f"  {name}: {getattr(modules[name]['object'], 'DESCRIPTION', '')}")
-        if args.check:
-            print('Configuration and dependency graph valid.')
-        return 0
-    if on_the_ssd:
-        # Its path comes from the settings: it is made as the path with every link
-        # followed, once that is proved to lie on the SSD. safe_path refused links on the
-        # way above, so on a real server this is the same path as state_dir.
-        checked = os.path.realpath(state_dir)
-        if not checked.startswith(os.path.realpath(config['data_mount']) + os.sep):
-            raise InstallerError(f'The setup state folder must lie on the app SSD: {state_dir}')
-        ensure_directory(Path(checked), 0o700)
-    else:
-        ensure_directory(given, 0o700)
-    if not args.apply:
-        state_path = safe_path(state_dir / 'inspection-state.json')
-    log_path = safe_path(state_dir / ('install.log' if args.apply else 'inspection.log'))
-    roll_log(log_path)
-    states = dict(previous) if args.apply else {}
-    complete_status = 'success' if args.apply else 'inspected'
-    failures = []  # the steps not done: failed, waiting for you, or held up by one of those
-    failed = []  # those among them that failed
-    unavailable = []
 
-    def log(message):
-        stamp = dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds')
-        text = f'[{stamp}] {message}'
-        print(text)
-        with safe_path(log_path).open('a', encoding='utf-8') as handle:
-            os.fchmod(handle.fileno(), 0o600)
-            handle.write(text + '\n')
-        if not message.startswith(MARKERS):
-            setup_progress.note(message)  # a step's own words, for the setup window
-
+def opened_log(args, state_dir, plan, previous, mistyped):
+    """The run's log, opened, with the profile run (a full run with --apply) and the
+    mistyped settings written in it."""
+    log = RunLog(safe_path(state_dir / (INSTALL_LOG if args.apply else 'inspection.log')))
+    roll_log(log.path)
     if args.apply and not (args.module or args.retry_failed or getattr(args, 'retry_step', None)):
         record_profile(safe_path(state_dir / PROFILE_FILE), args.profile, plan, previous, log)
     for line in mistyped:
         log(line)
+    return log
+
+
+def run_context(args, config, log, as_read, plan, previous):
+    """What each step is given: the settings, the log, and what the run is."""
     ctx = Context(config, log, apply=args.apply, config_path=args.config, saved=as_read)
     ctx.plan = plan  # the steps of this run (the drives step asks the backup times only when one writes a timer)
     ctx.only = args.module  # the one step asked for by name (install.sh --module), or None
     ctx.previous = dict(previous)  # each step as the last run left it
-    save_profiles(ctx, added, profiles_changed, args.apply)
-    review_retention(ctx, args.apply)
-    # The steps this run goes through (with the ones they need), for the setup window and
-    # the finishing screen to count the same steps as the log.
-    if not getattr(args, 'retry_step', None):
-        setup_progress.event('plan', steps=list(plan))
-    for name in plan:
-        held = waiting_for(name, modules, states, complete_status)
+    return ctx
+
+
+def moves_to_the_ssd(args, name, states):
+    """Whether the state and the log move onto the SSD now: the storage step has just
+    mounted it, in a run with --apply that keeps its state in the usual place."""
+    return (
+        name == 'storage'
+        and states[name]['status'] == 'success'
+        and args.apply
+        and Path(args.state_dir).expanduser() == DEFAULT_STATE
+    )
+
+
+class Run:
+    """One run's steps as they go: the states, the state file, and the tally."""
+
+    def __init__(self, args, config, modules, ctx, states, state_path):
+        self.args = args
+        self.config = config
+        self.modules = modules
+        self.ctx = ctx
+        self.states = states
+        self.state_path = state_path
+        self.complete_status = 'success' if args.apply else 'inspected'
+        self.tally = Tally()
+
+    def step(self, name, plan, log):
+        """One step: held up by a step it needs, or run and recorded."""
+        held = waiting_for(name, self.modules, self.states, self.complete_status)
         if held:
-            states[name] = blocked(held)
-            log(f'BLOCKED {name}: {states[name]["reason"]}')
-            setup_progress.step(name, 'blocked', states[name]['reason'])
-            failures.append(name)
-            atomic_json_write(state_path, states)
-            continue
-        tried = 0
-        while True:
-            states[name] = {
-                'status': 'running',
-                'version': VERSION,
-                'started_at': dt.datetime.now(dt.timezone.utc).isoformat(),
-            }
-            atomic_json_write(state_path, states)
-            log(f'START {name}')
-            setup_progress.step(name, 'running')
-            try:
-                result = modules[name]['object'].run(ctx)
-            except KeyboardInterrupt:
-                stopped_by_hand(states, name, state_path, log)
-                raise
-            except Exception as exc:
-                reason = code_error_reason(exc, log_path) if isinstance(exc, CODE_ERRORS) else failure_reason(exc)
-                states[name] = {'status': 'failed', 'reason': reason}
-                log(f'FAILED {name}: {reason}')
-                # Avoid tracebacks from providers that may contain sensitive arguments.
-                # With a person at the terminal: the reason, the fix when it is a known
-                # one, and "Retry this step now?", up to MOST_RETRIES times.
-                if args.apply and retry_now(name, reason, tried, log):
-                    tried += 1
-                    continue
-            break
-        if states[name]['status'] == 'failed':
-            failures.append(name)
-            failed.append(name)
-        else:
-            states[name] = outcome(result, complete_status)
-            if states[name]['status'] == 'needs_setup':
-                failures.append(name)
-                log(f'NEEDS SETUP {name}: {states[name]["reason"]}')
-            elif states[name]['status'] == UNAVAILABLE:
-                unavailable.append(name)
-                log(f'UNAVAILABLE {name}: {states[name]["reason"]}')
-            else:
-                log(f'PASS {name}')
-        setup_progress.step(name, states[name]['status'], states[name].get('reason', ''))
-        if (
-            name == 'storage'
-            and states[name]['status'] == 'success'
-            and args.apply
-            and Path(args.state_dir).expanduser() == DEFAULT_STATE
-        ):
-            persistent = Path(config['data_mount']) / 'installer' / 'state'
-            # Made as the path with every link followed, once that is proved to lie on
-            # the SSD (ensure_directory refuses links on the way, so it is the same path).
-            checked = os.path.realpath(persistent)
-            if not checked.startswith(os.path.realpath(config['data_mount']) + os.sep):
-                raise InstallerError(f'The setup state folder must lie on the app SSD: {persistent}')
-            ensure_directory(Path(checked), 0o700)
-            next_state = persistent / 'state.json'
-            previous_persistent = read_json(next_state) if next_state.exists() else {}
-            states = moved_states(previous_persistent, states, plan[: plan.index(name) + 1])
-            old_log, old_state = log_path, state_path
-            state_dir = persistent
-            state_path = next_state
-            log_path = persistent / 'install.log'
-            move_log(old_log, log_path)
-            retire(old_state)
-        atomic_json_write(state_path, states)
-    for name in REFRESHED:
-        if args.apply and states.get(name, {}).get('status') == complete_status and name in modules:
-            # Later steps (or a newer release) can change what these keep: written again
-            # from the final configuration, even when only another step ran.
-            try:
-                modules[name]['object'].refresh(config, log)
-            except (OSError, RuntimeError, ValueError) as exc:
-                log(f'{name}: settings not refreshed: {exc}')
+            self.states[name] = blocked(held)
+            log(f'BLOCKED {name}: {self.states[name]["reason"]}')
+            setup_progress.step(name, 'blocked', self.states[name]['reason'])
+            self.tally.failures.append(name)
+            atomic_json_write(self.state_path, self.states)
+            return
+        result = tried_step(name, self.modules, self.ctx, self.states, self.state_path, log, self.args.apply)
+        record_outcome(name, result, self.states, self.complete_status, self.tally, log)
+        setup_progress.step(name, self.states[name]['status'], self.states[name].get('reason', ''))
+        if moves_to_the_ssd(self.args, name, self.states):
+            self.states, self.state_path = state_to_the_ssd(self.config, self.states, plan, name, log, self.state_path)
+        atomic_json_write(self.state_path, self.states)
+
+
+def after_the_steps(args, config, states, log):
+    """With --apply: the failed steps noted for the dashboard, and old releases tidied."""
     if args.apply:
         note_unfinished(config, states, log)
         # Also after a run with a step still pending (Tailscale not signed in, say), or
@@ -699,17 +806,47 @@ def _execute(args, root=ROOT):
         # or drop-in names any more go.
         tidy_old_releases(config, states, log)
         settle_upgrade(config, log)
-    # Counted as the finishing screen and the setup window count: steps done, out of the
-    # steps this PC can have.
-    here = len(plan) - len(unavailable)
-    log(
-        f'Finished: {here - len(failures)} of {here} steps done; '
-        + (f'{len(unavailable)} not available on this system; ' if unavailable else '')
-        + f'{len(failures)} failed, waiting or unfinished; log={log_path}'
-    )
-    if failed:
-        return STEP_FAILED
-    return WAITING if failures else 0
+
+
+def _execute(args, root=ROOT):
+    config = read_json(Path(args.config))
+    as_read = copy.deepcopy(config)  # what the run changes is saved on the file as it is then
+    validate_config(config)
+    # A settings file keeps the profiles it was made with: the steps a newer release added
+    # are added now (said in the log, and saved with --apply, once the log is open below).
+    added, profiles_changed = template_steps(config)
+    modules = load_modules(root / 'modules')
+    given, state_dir, on_the_ssd = state_folders(args, config)
+    state_path = safe_path(state_dir / 'state.json')
+    safe_path(state_dir / INSTALL_LOG)
+    previous = previous_states(state_path, args)
+    plan, mistyped = checked_plan(args, config, modules, previous)
+    if args.check or args.dry_run:
+        for line in mistyped:
+            print(line)
+    if args.apply and set(plan) & RUNTIME_STEPS:
+        from native_runtime import payload
+
+        payload(ROOT, config)
+    if args.check or args.dry_run:
+        return read_only_plan(args, plan, modules, added)
+    make_state_folder(on_the_ssd, state_dir, given, config)
+    if not args.apply:
+        state_path = safe_path(state_dir / 'inspection-state.json')
+    log = opened_log(args, state_dir, plan, previous, mistyped)
+    ctx = run_context(args, config, log, as_read, plan, previous)
+    save_profiles(ctx, added, profiles_changed, args.apply)
+    review_retention(ctx, args.apply)
+    # The steps this run goes through (with the ones they need), for the setup window and
+    # the finishing screen to count the same steps as the log.
+    if not getattr(args, 'retry_step', None):
+        setup_progress.event('plan', steps=list(plan))
+    run = Run(args, config, modules, ctx, dict(previous) if args.apply else {}, state_path)
+    for name in plan:
+        run.step(name, plan, log)
+    refresh_settings(args, run.states, run.complete_status, modules, config, log)
+    after_the_steps(args, config, run.states, log)
+    return finished(plan, run.tally, log)
 
 
 def note_unfinished(config, states, log):

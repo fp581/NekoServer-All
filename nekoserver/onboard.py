@@ -41,7 +41,12 @@ LIBRARIES = {'movies': '/data/movies', 'tv': '/data/tv', 'music': '/music'}
 
 
 def mount_ok(path):
-    return Path(path).is_dir() and not Path(path).is_symlink() and os.path.ismount(path)
+    # The settings name the drive's folder: it is looked at only by its real path, and only
+    # when that is the path asked for (a link is not a mounted drive).
+    real = os.path.realpath(path)
+    if not real.startswith(os.sep) or real != os.path.abspath(path):
+        return False
+    return os.path.isdir(real) and not os.path.islink(real) and os.path.ismount(real)
 
 
 def report(root, media, check_http=True, apps=APPS, music=None):
@@ -126,7 +131,7 @@ def wait_ready(apps, seconds, probe=None, clock=time.monotonic, sleep=time.sleep
     return sorted(pending)
 
 
-def main(argv=None):
+def arguments():
     p = argparse.ArgumentParser(description='NekoServer interactive media onboarding and status')
     p.add_argument('--config', type=checked_settings, default=default_settings(Path(__file__).parent))
     p.add_argument('--data-root')
@@ -153,43 +158,52 @@ def main(argv=None):
         action='store_true',
         help='Copy accessible sources into HDD libraries; --apply enables copies',
     )
-    a = p.parse_args(argv)
+    return p
+
+
+def refuse_option_mixes(p, a):
+    """The options that do not go together, refused before anything is read."""
     if a.apply and (not (a.configure or a.import_sources or a.libraries or a.request_providers) or a.report_only):
         p.error('--apply requires a setup/import action, without --report-only')
     if a.report_only and (a.libraries or a.request_providers):
         p.error('--report-only cannot configure libraries or request providers')
     if a.indexers and not a.configure:
         p.error('--indexers requires --configure')
-    config = read_settings(a.config)
+
+
+def apps_set_up(p, config):
+    """The media apps set up: one whose group is switched off (Movies and shows on a
+    music-only server, say) is stopped by the media step, so it is never checked or
+    connected here."""
     listed = tuple(config.get('media', {}).get('services', APPS))
     if not set(listed) <= set(APPS):
         p.error('Unknown media service in config')
-    # The apps set up: one whose group is switched off (Movies and shows on a music-only
-    # server, say) is stopped by the media step, so it is never checked or connected here.
-    apps = tuple(app for app in listed if app_wanted(config, app))
-    if not 0 <= a.wait <= 600:
-        p.error('--wait must be 0..600')
+    return tuple(app for app in listed if app_wanted(config, app))
+
+
+def the_two_drives(p, a, config):
+    """The app SSD's and the media drive's folders: each a mounted drive of its own."""
     root = safe_path(a.data_root or config['data_mount'])
     media = safe_path(a.media_root or config['media_mount'])
-    if not mount_ok(root) or not mount_ok(media) or root.resolve() == media.resolve():
+    # Compared by their real paths (the settings name both): two folders of one drive are
+    # refused.
+    real_root, real_media = os.path.realpath(root), os.path.realpath(media)
+    if not (real_root.startswith(os.sep) and real_media.startswith(os.sep)):
         p.error('Expected two distinct mounted data/media filesystems; refusing to proceed')
-    if not a.skip_http and a.wait:
-        pending = wait_ready(apps, a.wait)
-        if pending:
-            print('Startup wait ended; still unavailable:', ', '.join(pending))
-    music = music_library({**config, 'data_mount': str(root), 'media_mount': str(media)})
-    # The films and shows are looked for on the drive they are placed on (the media drive
-    # unless placed elsewhere, or the folder given by hand).
-    films = media if a.media_root else files_root({**config, 'data_mount': str(root)}, 'movies')
-    findings = report(root, films, not a.skip_http, apps, music)
-    output = root / 'reports' / 'onboarding.json'
-    safe_report(output, findings)
-    for r in findings:
-        print(f"{r['status']:>11}  {r['check']}")
-    print('Report:', output)
-    source_results = []
-    if a.report_only and (a.sources or a.import_sources):
-        p.error('--report-only cannot configure or import sources')
+    if not mount_ok(root) or not mount_ok(media) or real_root == real_media:
+        p.error('Expected two distinct mounted data/media filesystems; refusing to proceed')
+    return root, media
+
+
+def printed(results):
+    """Each result on a line of its own, with its reason when it has one."""
+    for r in results:
+        print(f"{r['status']:>11}  {r['check']}" + (': ' + r['reason'] if r.get('reason') else ''))
+
+
+def source_steps(a, root, media):
+    """The source inventory (--sources) and the import (--import-sources), as results."""
+    results = []
     if a.sources:
         wizard = Path(__file__).with_name('source-wizard.py')
         # Each program below runs inside this process (run_program), so what it asks is
@@ -198,7 +212,7 @@ def main(argv=None):
             wizard,
             ['--config', Path(a.config).resolve(), '--output', root / 'config' / 'media-sources.json'],
         )
-        source_results.append({'check': 'source_inventory', 'status': 'pass' if result == 0 else 'fail'})
+        results.append({'check': 'source_inventory', 'status': 'pass' if result == 0 else 'fail'})
     if a.import_sources or a.sources:
         script = Path(__file__).with_name('source_import.py')
         cmd = [
@@ -216,55 +230,68 @@ def main(argv=None):
         if a.apply:
             cmd.append('--apply')
         result = run_program(script, cmd)
-        source_results.append({'check': 'source_import', 'status': {0: 'pass', 1: 'needs_setup'}.get(result, 'fail')})
-    findings += source_results
-    library_results = []
-    if a.libraries:
-        import existing_page
+        results.append({'check': 'source_import', 'status': {0: 'pass', 1: 'needs_setup'}.get(result, 'fail')})
+    return results
 
-        library_results = media_libraries.configure(
-            root,
-            films,
-            a.apply,
-            apps,
-            more=existing_page.libraries(config, a.apply),
-            search_and_request=config.get('onboarding', {}).get('search_and_request_in_jellyfin', True),
+
+def library_step(a, config, root, films, apps):
+    """Jellyfin's and Seerr's libraries (--libraries), as results, printed."""
+    import existing_page
+
+    results = media_libraries.configure(
+        root,
+        films,
+        a.apply,
+        apps,
+        more=existing_page.libraries(config, a.apply),
+        search_and_request=config.get('onboarding', {}).get('search_and_request_in_jellyfin', True),
+    )
+    # Navidrome's library for the person's own music folder is the Music step's
+    # (modules/music.py): it must not wait for Jellyfin's libraries.
+    if a.request_providers:
+        results = [r for r in results if r['check'] != 'seerr:request_providers']
+    printed(results)
+    return results
+
+
+def provider_step(a, config, root, apps):
+    """Seerr's request providers (--request-providers), as results, printed."""
+    results = seerr_providers.configure(root, a.apply, apps, folders=seerr_providers.request_folders(config))
+    printed(results)
+    return results
+
+
+def readiness(config, root, media):
+    """The apps' own readiness checks, on the drives found here."""
+    return media_readiness.check({**config, 'data_mount': str(root), 'media_mount': str(media)})
+
+
+def finish_without_connector(a, config, apps, root, media, output, findings):
+    """--report-only, or no --configure: the report, without the app connections."""
+    if a.request_providers:
+        findings += provider_step(a, config, root, apps)
+    print(
+        'Library/source steps complete. Use --configure for Arr/download-client setup.'
+        if a.libraries or a.import_sources or a.sources
+        else 'No API configuration changed. Use --configure or --libraries for interactive setup.'
+    )
+    if a.skip_http and set(apps) & {'jellyfin', 'navidrome', 'seerr'}:
+        findings.append(
+            {
+                'check': 'accounts_libraries_playback',
+                'status': 'needs_setup',
+                'reason': 'Authenticated accounts, libraries and playback still require server validation',
+            }
         )
-        # Navidrome's library for the person's own music folder is the Music step's
-        # (modules/music.py): it must not wait for Jellyfin's libraries.
-        if a.request_providers:
-            library_results = [r for r in library_results if r['check'] != 'seerr:request_providers']
-        findings += library_results
-        for r in library_results:
-            print(f"{r['status']:>11}  {r['check']}" + (': ' + r['reason'] if r.get('reason') else ''))
-    if a.report_only or not a.configure:
-        if a.request_providers:
-            provider_results = seerr_providers.configure(
-                root, a.apply, apps, folders=seerr_providers.request_folders(config)
-            )
-            findings += provider_results
-            for r in provider_results:
-                print(f"{r['status']:>11}  {r['check']}" + (': ' + r['reason'] if r.get('reason') else ''))
-        print(
-            'Library/source steps complete. Use --configure for Arr/download-client setup.'
-            if a.libraries or a.import_sources or a.sources
-            else 'No API configuration changed. Use --configure or --libraries for interactive setup.'
-        )
-        if a.skip_http and set(apps) & {'jellyfin', 'navidrome', 'seerr'}:
-            findings.append(
-                {
-                    'check': 'accounts_libraries_playback',
-                    'status': 'needs_setup',
-                    'reason': 'Authenticated accounts, libraries and playback still require server validation',
-                }
-            )
-        if not a.skip_http:
-            findings += media_readiness.check({**config, 'data_mount': str(root), 'media_mount': str(media)})
-        safe_report(output, findings)
-        return readiness_exit(findings)
-    script = Path(__file__).with_name('media-connect.py')
-    if not script.is_file():
-        p.error('media-connect.py is missing')
+    if not a.skip_http:
+        findings += readiness(config, root, media)
+    safe_report(output, findings)
+    return readiness_exit(findings)
+
+
+def connector_command(a, apps, root, media):
+    """media-connect.py's arguments for the apps set up, and whether it has anything to
+    connect."""
     cmd = ['--config', str(Path(a.config).resolve()), '--data-root', str(root)]
     managers = {'sonarr', 'radarr', 'lidarr'} & set(apps)
     if managers:
@@ -277,30 +304,58 @@ def main(argv=None):
     if managers and 'qbittorrent' in apps:
         cmd.append('--download-clients')
     has_connector = any(x in cmd for x in ('--applications', '--download-clients', '--root-folders')) or a.indexers
-    if not has_connector and not (a.libraries or a.request_providers):
-        # Only apps with nothing to connect (Navidrome, or qBittorrent on its own): their
-        # account and readiness checks below are all there is to do.
-        print('No app connections apply to the selected apps; checking their accounts and readiness.')
     if a.indexers:
         cmd.append('--indexers')
     if a.apply:
         cmd.append('--apply')
+    return cmd, has_connector
+
+
+def wait_for_apps(a, apps):
+    """--wait: up to that many seconds for the apps to answer, saying which still do not."""
+    if not a.skip_http and a.wait:
+        pending = wait_ready(apps, a.wait)
+        if pending:
+            print('Startup wait ended; still unavailable:', ', '.join(pending))
+
+
+def first_report(a, config, root, media, apps):
+    """The report before any step: written, printed, and returned with what it was made
+    from (the music library, the films' folder) and where it is written."""
+    music = music_library({**config, 'data_mount': str(root), 'media_mount': str(media)})
+    # The films and shows are looked for on the drive they are placed on (the media drive
+    # unless placed elsewhere, or the folder given by hand).
+    films = media if a.media_root else files_root({**config, 'data_mount': str(root)}, 'movies')
+    findings = report(root, films, not a.skip_http, apps, music)
+    output = root / 'reports' / 'onboarding.json'
+    safe_report(output, findings)
+    for r in findings:
+        print(f"{r['status']:>11}  {r['check']}")
+    print('Report:', output)
+    return music, films, findings, output
+
+
+def run_connector(p, a, apps, root, media):
+    """media-connect.py for the apps set up, when it has anything to connect: its exit
+    code (0 when it did not run) and whether it ran."""
+    script = Path(__file__).with_name('media-connect.py')
+    if not script.is_file():
+        p.error('media-connect.py is missing')
+    cmd, has_connector = connector_command(a, apps, root, media)
+    if not has_connector and not (a.libraries or a.request_providers):
+        # Only apps with nothing to connect (Navidrome, or qBittorrent on its own): their
+        # account and readiness checks below are all there is to do.
+        print('No app connections apply to the selected apps; checking their accounts and readiness.')
     result = 0
     if has_connector:
         print('Configuring selected Arr root folders, Prowlarr and download-client connections.')
         print('Indexer selection is optional; existing sources will be preserved.')
         result = run_program(script, cmd)
-    provider_results = []
-    if a.request_providers:
-        provider_results = seerr_providers.configure(
-            root, a.apply, apps, folders=seerr_providers.request_folders(config)
-        )
-        for r in provider_results:
-            print(f"{r['status']:>11}  {r['check']}" + (': ' + r['reason'] if r.get('reason') else ''))
-    findings = report(root, films, not a.skip_http, apps, music)
-    findings += source_results
-    findings += library_results
-    findings += provider_results
+    return result, has_connector
+
+
+def final_findings(a, findings, has_connector, result):
+    """The connector's own row and, without HTTP checks, the end-to-end reminder."""
     if has_connector:
         findings.append({'check': 'connector', 'status': 'pass' if result == 0 else 'fail'})
     if a.skip_http:
@@ -311,8 +366,37 @@ def main(argv=None):
                 'reason': 'Complete remaining accounts/request providers and verify imports/playback on the server',
             }
         )
+    return findings
+
+
+def main(argv=None):
+    p = arguments()
+    a = p.parse_args(argv)
+    refuse_option_mixes(p, a)
+    config = read_settings(a.config)
+    apps = apps_set_up(p, config)
+    if not 0 <= a.wait <= 600:
+        p.error('--wait must be 0..600')
+    root, media = the_two_drives(p, a, config)
+    wait_for_apps(a, apps)
+    music, films, findings, output = first_report(a, config, root, media, apps)
+    if a.report_only and (a.sources or a.import_sources):
+        p.error('--report-only cannot configure or import sources')
+    source_results = source_steps(a, root, media)
+    findings += source_results
+    library_results = library_step(a, config, root, films, apps) if a.libraries else []
+    findings += library_results
+    if a.report_only or not a.configure:
+        return finish_without_connector(a, config, apps, root, media, output, findings)
+    result, has_connector = run_connector(p, a, apps, root, media)
+    provider_results = provider_step(a, config, root, apps) if a.request_providers else []
+    findings = report(root, films, not a.skip_http, apps, music)
+    findings += source_results
+    findings += library_results
+    findings += provider_results
+    final_findings(a, findings, has_connector, result)
     if not a.skip_http:
-        findings += media_readiness.check({**config, 'data_mount': str(root), 'media_mount': str(media)})
+        findings += readiness(config, root, media)
     safe_report(output, findings)
     return max(readiness_exit(findings), 2 if result else 0)
 

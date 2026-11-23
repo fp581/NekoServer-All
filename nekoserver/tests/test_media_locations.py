@@ -173,7 +173,7 @@ class PC:
             mock.patch.object(source_import, 'MOUNT_TABLE', self.table),
             mock.patch.object(existing_media, 'same_folder', self.same_folder),
             mock.patch.object(existing_media, 'check', functools.partial(self.checked, original)),
-            mock.patch.object(media_locations, 'verify_storage', lambda config: None),
+            mock.patch.object(media_locations, 'verify_storage', return_value=None),
             mock.patch.object(media_locations, 'SETUP_LOCK', self.locks / 'setup.lock'),
             mock.patch.object(media_locations, 'OPERATION_LOCK', self.locks / 'operation.lock'),
         ]
@@ -871,6 +871,7 @@ class MediaFoldersTests(unittest.TestCase):
                 }
             )
         )
+        path.chmod(0o600)  # the control service's own file (with umask 002 it was group-writable)
         media_locations.run(self.pc.kept, path, self.pc.own, steps=self.pc.steps(), lock=busy)
         said = json.loads((self.pc.control / 'result.json').read_text())
         self.assertEqual(said['message'], media_locations.BACKUP_RUNNING)

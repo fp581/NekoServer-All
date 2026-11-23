@@ -8,9 +8,9 @@ inspection checks the apps, backups and drives, and saves its report for the das
 """
 
 import json
+import os
 import subprocess
 import time
-from pathlib import Path
 
 # (service, what it is, its job report in reports/jobs/), in the order they run. The
 # health check comes first so a problem with an app is reported before its backup.
@@ -42,7 +42,14 @@ def outcome(config, report):
     if report is None:
         return 'pass', ''
     try:
-        row = json.loads((Path(config['data_mount']) / 'reports/jobs' / (report + '.json')).read_text())
+        data = os.path.realpath(config['data_mount'])
+        path = os.path.realpath(os.path.join(data, 'reports', 'jobs', report + '.json'))
+        # The SSD's path comes from the settings file: the report is read only once it is
+        # proved to lie on the SSD with every link followed.
+        if not path.startswith(data + os.sep):
+            raise ValueError('a report outside the SSD')
+        with open(path) as stream:
+            row = json.loads(stream.read())
     except (OSError, ValueError, KeyError, TypeError):
         return 'fail', 'it left no report'
     status = row.get('status') if isinstance(row, dict) else None

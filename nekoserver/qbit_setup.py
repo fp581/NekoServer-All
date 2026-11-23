@@ -61,7 +61,7 @@ class Client:
         try:
             with self.opener.open(req, timeout=10) as response:
                 payload = response.read(3_000_000).decode()
-        except (OSError, urllib.error.URLError) as exc:
+        except OSError as exc:  # URLError and HTTPError are OSErrors
             code = None
             if isinstance(exc, urllib.error.HTTPError):
                 code = exc.code
@@ -198,22 +198,7 @@ def configure(username, password, apply=False, categories=('tv', 'movies', 'musi
         preferences = answer_object(client, '/app/preferences')
         existing = answer_object(client, '/torrents/categories', of_objects=True)
         desired = '/data/downloads'
-        current = str(preferences.get('save_path', '')).rstrip('/')
-        changes = {}
-        if current != desired:
-            if current not in ('', '/downloads', '/downloads/complete'):
-                raise RuntimeError('qBittorrent has a custom save path; preserve it and review manually')
-            if client.call('/torrents/info', json_result=True):
-                raise RuntimeError('Existing torrents prevent changing the default save path automatically')
-            changes['save_path'] = desired
-        if preferences.get('temp_path_enabled'):
-            temp = str(preferences.get('temp_path', '')).rstrip('/')
-            if temp != '/data/downloads/incomplete':
-                if not temp.startswith('/downloads/'):
-                    raise RuntimeError('qBittorrent has a custom incomplete path; review manually')
-                if client.call('/torrents/info', json_result=True):
-                    raise RuntimeError('Existing torrents prevent changing the incomplete path')
-                changes['temp_path'] = '/data/downloads/incomplete'
+        changes = path_changes(client, preferences, desired)
         # Each category's own folder is used only in Automatic Torrent Management mode,
         # and qBittorrent starts new torrents in Manual mode unless told otherwise: the
         # Arr apps send only the category, so in Manual mode an album would land in the
@@ -222,27 +207,7 @@ def configure(username, password, apply=False, categories=('tv', 'movies', 'musi
         # This changes only how new torrents start; existing torrents keep their mode.
         changes.update(automatic_mode(preferences, categories))
         changes.update(share_limits(preferences))
-        fix = {}
-        for category in categories:
-            if category not in existing:
-                continue
-            path = str(existing[category].get('savePath', '')).rstrip('/')
-            if category_ok(category, path, desired):
-                continue
-            # Only music has a single right place (/data/downloads/music, on the SSD that
-            # Lidarr sees). A wrong but empty music category is corrected; anything else
-            # with torrents in it, or another category's custom path, needs a person.
-            if (
-                category == 'music'
-                and path in (desired, '/downloads', '/downloads/complete')
-                and not client.call('/torrents/info?category=music', json_result=True)
-            ):
-                fix[category] = desired + '/' + category
-                continue
-            raise RuntimeError(
-                f'qBittorrent category {category} saves to {path or "the default folder"}, not {desired}/{category}; '
-                'change it in qBittorrent (right-click the category, Edit) and run setup again'
-            )
+        fix = category_fixes(client, existing, categories, desired)
         output('qBittorrent: login verified; download paths/categories ' + ('APPLY' if apply else 'PREVIEW'))
         if apply:
             save_preferences(client, changes, output)
@@ -259,3 +224,51 @@ def configure(username, password, apply=False, categories=('tv', 'movies', 'musi
                 raise RuntimeError('qBittorrent did not retain expected download configuration')
     finally:
         client.close()
+
+
+def path_changes(client, preferences, desired):
+    """The download folders qBittorrent is to save to: its default folder (`desired`) and
+    the folder of downloads under way. Only qBittorrent's own defaults are changed, and
+    never with torrents in it; a folder of the person's own stops setup."""
+    changes = {}
+    current = str(preferences.get('save_path', '')).rstrip('/')
+    if current != desired:
+        if current not in ('', '/downloads', '/downloads/complete'):
+            raise RuntimeError('qBittorrent has a custom save path; preserve it and review manually')
+        if client.call('/torrents/info', json_result=True):
+            raise RuntimeError('Existing torrents prevent changing the default save path automatically')
+        changes['save_path'] = desired
+    temp = str(preferences.get('temp_path', '')).rstrip('/')
+    if preferences.get('temp_path_enabled') and temp != '/data/downloads/incomplete':
+        if not temp.startswith('/downloads/'):
+            raise RuntimeError('qBittorrent has a custom incomplete path; review manually')
+        if client.call('/torrents/info', json_result=True):
+            raise RuntimeError('Existing torrents prevent changing the incomplete path')
+        changes['temp_path'] = '/data/downloads/incomplete'
+    return changes
+
+
+def category_fixes(client, existing, categories, desired):
+    """{category: its right folder} for the categories qBittorrent has with a folder setup
+    may correct. Only music has a single right place (/data/downloads/music, on the SSD
+    that Lidarr sees): a wrong but empty music category is corrected; anything else with
+    torrents in it, or another category's custom path, needs a person (RuntimeError)."""
+    fix = {}
+    for category in categories:
+        if category not in existing:
+            continue
+        path = str(existing[category].get('savePath', '')).rstrip('/')
+        if category_ok(category, path, desired):
+            continue
+        if (
+            category == 'music'
+            and path in (desired, '/downloads', '/downloads/complete')
+            and not client.call('/torrents/info?category=music', json_result=True)
+        ):
+            fix[category] = desired + '/' + category
+            continue
+        raise RuntimeError(
+            f'qBittorrent category {category} saves to {path or "the default folder"}, not {desired}/{category}; '
+            'change it in qBittorrent (right-click the category, Edit) and run setup again'
+        )
+    return fix

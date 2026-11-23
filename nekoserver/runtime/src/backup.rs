@@ -377,7 +377,7 @@ const PATH_MAX: usize = libc::PATH_MAX as usize - 1;
 /// name too long" and stopped the whole run, so no file after it was ever backed up.
 fn path_fits(target: &Path) -> bool {
     let folder = target.parent().map_or(0, |p| p.as_os_str().len());
-    let name = target.file_name().map_or(0, |n| n.len());
+    let name = target.file_name().map_or(0, std::ffi::OsStr::len);
     let longest = (name + VERSION_TAG)
         .min(NAME_MAX)
         .max(partial_name("").len());
@@ -1000,7 +1000,7 @@ fn kept_findings(previous: &Value, key: &str, found: &[String]) -> (Vec<String>,
 fn ledger_key(path: &Path, root: &Path) -> Result<String> {
     path.strip_prefix(root)
         .ok()
-        .and_then(|p| p.to_str())
+        .and_then(Path::to_str)
         .filter(|p| ledger::valid_path(p))
         .map(str::to_string)
         .ok_or_else(|| Error::new("File name cannot be recorded in the checksum ledger"))
@@ -1216,20 +1216,15 @@ fn archive_with(
         return Err(Error::new("Archive minimum age is 60 seconds"));
     }
     let (source, archive) = separate(source, archive)?;
-    let mut copied = 0;
-    let mut versions = 0;
-    // Files changed in the last `age` seconds (still being written) wait for the next
-    // run; files that changed or went away while being copied are left for it too.
-    let (mut waiting, mut in_use) = (0, 0);
     common::directory(&archive, 0o755)?;
-    let mut ledger = if apply {
+    let ledger = if apply {
         Ledger::open_waiting(&archive, LEDGER_WAIT)?
     } else {
         Ledger::read(&archive)?
     };
     // The run is pending until its files, checksums and list of files are all written.
     let begun = apply.then(|| begin_run(&archive)).flatten();
-    let mut report = Integrity {
+    let report = Integrity {
         list_problem: begun,
         ..Default::default()
     };
@@ -1237,11 +1232,25 @@ fn archive_with(
     // What a change of shape replaced (a file that became a folder, or back) is kept in
     // REPLACED/<when>/ at the archive's root, as the Nextcloud copy does.
     let when = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-    let mut replaced = 0;
-    // The live originals, each with the archive copy that holds it (see inventory.rs).
-    let mut live = Inventory::default();
+    let mut run = ArchiveRun {
+        source,
+        archive,
+        apply,
+        settle,
+        check,
+        ledger,
+        report,
+        live: Inventory::default(),
+        quarantine,
+        when,
+        copied: 0,
+        versions: 0,
+        waiting: 0,
+        in_use: 0,
+        replaced: 0,
+    };
     for section in ["upload", "library"] {
-        let root = source.join(section);
+        let root = run.source.join(section);
         common::safe(&root)?;
         if !root.exists() {
             continue;
@@ -1252,136 +1261,220 @@ fn archive_with(
         // Every regular file in Immich's upload and library folders is kept, whatever
         // its name or format, so formats Immich adds later are backed up too. Symlinks
         // and special files still stop the run (walk), and every copy is checked.
-        walk(&root, &mut |path| {
-            let meta = match fs::metadata(path) {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    in_use += 1;
-                    return Ok(());
-                }
-                found => found?,
-            };
-            // A photo dated ahead of the clock (a camera set wrong) is archived now: the
-            // copy is verified anyway, and its date may not come for years.
-            let modified = meta.mtime() as f64 + meta.mtime_nsec() as f64 / 1e9;
-            let relative = path
-                .strip_prefix(&source)
-                .map_err(|_| Error::new("Invalid archive relative path"))?;
-            let target = archive.join(relative);
-            if settle.is_some_and(|age| common::settling(modified, age as f64)) {
-                waiting += 1;
-                // Still live: its earlier copy (if any) stays in the inventory.
-                live.add(&target, &archive);
-                return Ok(());
-            }
-            if !path_fits(&target) {
-                // Left out and named; its earlier copy (if any) stays in the inventory.
-                report.too_long.push(relative.to_string_lossy().to_string());
-                live.add(&target, &archive);
-                return Ok(());
-            }
-            // A saved file where one of its folders must go, or a saved folder where it
-            // must go: moved aside (kept, never deleted), or the archive could never
-            // copy this file again.
-            let in_way = in_the_way(&archive, relative);
-            if !in_way.is_empty() {
-                if !apply {
-                    copied += 1;
-                    return Ok(());
-                }
-                let history = archive.join(REPLACED).join(&when);
-                for object in &in_way {
-                    replaced += move_aside(object, &archive, &history, &mut ledger, &archive)?;
-                }
-            }
-            let key = ledger_key(&target, &archive)?;
-            let expected = ledger.get(&key).map(|e| e.sha256.clone());
-            // Deleted, renamed or changed while it was copied (Immich at work, someone
-            // tidying up): left for the next run, as the Nextcloud copy does.
-            let kept = match kept_copy(path, &target, apply, 0o644, check, expected.as_deref()) {
-                Ok(kept) => kept,
-                Err(e) if in_use_now(&e, path) => {
-                    in_use += 1;
-                    if path.exists() {
-                        live.add(&target, &archive);
-                    }
-                    return Ok(());
-                }
-                Err(e) => return Err(e),
-            };
-            live.add(&target, &archive);
-            match kept.added {
-                Added::New => copied += 1,
-                Added::Version => versions += 1,
-                Added::Same => {}
-                // The Immich original still matches what was recorded: it is the
-                // trusted copy, so the damaged archive file is replaced from it.
-                Added::Damaged if apply && kept.source_sha256 == expected => {
-                    match replace_damaged(path, &target, &quarantine.join(&key)) {
-                        Ok(()) => report.repaired += 1,
-                        // Changed (or gone) while it was copied: like any file in use,
-                        // copied next time; the damaged copy is kept aside.
-                        Err(e) if in_use_now(&e, path) => in_use += 1,
-                        Err(e) => return Err(e),
-                    }
-                }
-                Added::Damaged => report.damaged.push(key.clone()),
-            }
-            if kept.first_damaged {
-                report.damaged.push(key);
-            }
-            // Read once: the audit and the USB check below need not read it again.
-            if let (Some(file), Some(sha)) = (&kept.file, &kept.sha256) {
-                remember_digest(file, sha);
-            }
-            if apply {
-                record_kept(&mut ledger, &archive, &kept, &mut report)?;
-                date_kept(&mut ledger, &archive, &kept, &target, path);
-            }
-            Ok(())
-        })?;
+        walk(&root, &mut |path| run.one_file(path))?;
     }
-    if apply {
-        if check == Check::Full {
-            audit(&archive, &ledger, &mut report)?;
+    run.finish(list)?;
+    run.say();
+    Ok((run.copied, run.report))
+}
+/// One archive copy in progress: where it copies, and what it has counted so far.
+struct ArchiveRun {
+    source: PathBuf,
+    archive: PathBuf,
+    apply: bool,
+    settle: Option<u64>,
+    check: Check,
+    ledger: Ledger,
+    report: Integrity,
+    /// The live originals, each with the archive copy that holds it (see inventory.rs).
+    live: Inventory,
+    quarantine: PathBuf,
+    when: String,
+    copied: u64,
+    /// Changed files kept as dated versions.
+    versions: u64,
+    /// Files changed in the last `settle` seconds (still being written) wait for the
+    /// next run; files that changed or went away while being copied are left for it too.
+    waiting: u64,
+    in_use: u64,
+    /// Saved files moved aside by a change of shape.
+    replaced: usize,
+}
+impl ArchiveRun {
+    /// One original found in Immich's folders.
+    fn one_file(&mut self, path: &Path) -> Result<()> {
+        let meta = match fs::metadata(path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.in_use += 1;
+                return Ok(());
+            }
+            found => found?,
+        };
+        // A photo dated ahead of the clock (a camera set wrong) is archived now: the
+        // copy is verified anyway, and its date may not come for years.
+        let modified = meta.mtime() as f64 + meta.mtime_nsec() as f64 / 1e9;
+        let relative = path
+            .strip_prefix(&self.source)
+            .map_err(|_| Error::new("Invalid archive relative path"))?;
+        let target = self.archive.join(relative);
+        if self
+            .settle
+            .is_some_and(|age| common::settling(modified, age as f64))
+        {
+            self.waiting += 1;
+            // Still live: its earlier copy (if any) stays in the inventory.
+            self.live.add(&target, &self.archive);
+            return Ok(());
+        }
+        if !path_fits(&target) {
+            // Left out and named; its earlier copy (if any) stays in the inventory.
+            self.report
+                .too_long
+                .push(relative.to_string_lossy().to_string());
+            self.live.add(&target, &self.archive);
+            return Ok(());
+        }
+        if !self.clear_the_way(relative)? {
+            self.copied += 1;
+            return Ok(());
+        }
+        self.keep(path, &target)
+    }
+    /// A saved file where one of the original's folders must go, or a saved folder
+    /// where it must go: moved aside (kept, never deleted), or the archive could never
+    /// copy this file again. False on a dry run that found something in the way.
+    fn clear_the_way(&mut self, relative: &Path) -> Result<bool> {
+        let in_way = in_the_way(&self.archive, relative);
+        if in_way.is_empty() {
+            return Ok(true);
+        }
+        if !self.apply {
+            return Ok(false);
+        }
+        let history = self.archive.join(REPLACED).join(&self.when);
+        for object in &in_way {
+            self.replaced += move_aside(
+                object,
+                &self.archive,
+                &history,
+                &mut self.ledger,
+                &self.archive,
+            )?;
+        }
+        Ok(true)
+    }
+    /// Copies (or checks) one original into the archive and records it.
+    fn keep(&mut self, path: &Path, target: &Path) -> Result<()> {
+        let key = ledger_key(target, &self.archive)?;
+        let expected = self.ledger.get(&key).map(|e| e.sha256.clone());
+        // Deleted, renamed or changed while it was copied (Immich at work, someone
+        // tidying up): left for the next run, as the Nextcloud copy does.
+        let copy = kept_copy(
+            path,
+            target,
+            self.apply,
+            0o644,
+            self.check,
+            expected.as_deref(),
+        );
+        let kept = match copy {
+            Ok(kept) => kept,
+            Err(e) if in_use_now(&e, path) => {
+                self.in_use += 1;
+                if path.exists() {
+                    self.live.add(target, &self.archive);
+                }
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+        self.live.add(target, &self.archive);
+        self.count(&kept, &key, expected.as_deref(), (path, target))?;
+        if kept.first_damaged {
+            self.report.damaged.push(key);
+        }
+        // Read once: the audit and the USB check below need not read it again.
+        if let (Some(file), Some(sha)) = (&kept.file, &kept.sha256) {
+            remember_digest(file, sha);
+        }
+        if self.apply {
+            record_kept(&mut self.ledger, &self.archive, &kept, &mut self.report)?;
+            date_kept(&mut self.ledger, &self.archive, &kept, target, path);
+        }
+        Ok(())
+    }
+    /// Counts what the copy found, repairing a damaged archive file from its original.
+    fn count(
+        &mut self,
+        kept: &Kept,
+        key: &str,
+        expected: Option<&str>,
+        (path, target): (&Path, &Path),
+    ) -> Result<()> {
+        match kept.added {
+            Added::New => self.copied += 1,
+            Added::Version => self.versions += 1,
+            Added::Same => {}
+            // The Immich original still matches what was recorded: it is the
+            // trusted copy, so the damaged archive file is replaced from it.
+            Added::Damaged if self.apply && kept.source_sha256.as_deref() == expected => {
+                match replace_damaged(path, target, &self.quarantine.join(key)) {
+                    Ok(()) => self.report.repaired += 1,
+                    // Changed (or gone) while it was copied: like any file in use,
+                    // copied next time; the damaged copy is kept aside.
+                    Err(e) if in_use_now(&e, path) => self.in_use += 1,
+                    Err(e) => return Err(e),
+                }
+            }
+            Added::Damaged => self.report.damaged.push(key.to_string()),
+        }
+        Ok(())
+    }
+    /// Checks the archive against its ledger and publishes the ledger and the list.
+    fn finish(&mut self, list: bool) -> Result<()> {
+        if !self.apply {
+            return Ok(());
+        }
+        if self.check == Check::Full {
+            audit(&self.archive, &self.ledger, &mut self.report)?;
         } else {
-            missing_from(&archive, &ledger, &mut report)?;
+            missing_from(&self.archive, &self.ledger, &mut self.report)?;
         }
         // Published after every file it lists.
-        ledger.save()?;
+        self.ledger.save()?;
         if list {
-            report.list_problem =
-                save_inventory(&archive, &live, &ledger, "Archive").or(report.list_problem.take());
+            self.report.list_problem =
+                save_inventory(&self.archive, &self.live, &self.ledger, "Archive")
+                    .or(self.report.list_problem.take());
         }
+        Ok(())
     }
-    report.print("Archive");
-    if versions > 0 {
+    /// The run's summary lines.
+    fn say(&self) {
+        self.report.print("Archive");
+        if self.versions > 0 {
+            println!(
+                "Archive: {} kept as dated versions",
+                common::plural(self.versions, "changed file", "changed files")
+            );
+        }
+        if !self.report.too_long.is_empty() {
+            println!("Archive: {}", too_long_said(PHOTOS, &self.report.too_long));
+        }
+        if self.replaced > 0 {
+            println!("Archive: {} in the way of a file that became a folder (or a folder that became a file); kept in {REPLACED}/{} at the archive's top", common::plural(self.replaced, "saved file was", "saved files were"), self.when);
+        }
+        if self.waiting > 0 {
+            let (changed, wait) = if self.waiting == 1 {
+                ("file", "waits")
+            } else {
+                ("files", "wait")
+            };
+            println!("Archive: {} {changed} changed in the last {} {wait} for the next run (they may still be being written)", self.waiting, common::plural(self.settle.unwrap_or(0), "second", "seconds"));
+        }
+        if self.in_use > 0 {
+            println!("Archive: {} changed, moved or deleted while being copied; the next run copies them if they are still there", common::plural(self.in_use, "file was", "files were"));
+        }
         println!(
-            "Archive: {} kept as dated versions",
-            common::plural(versions, "changed file", "changed files")
+            "Archive: {} new verified originals{}",
+            self.copied,
+            if self.apply {
+                ""
+            } else {
+                " identified (dry run)"
+            }
         );
     }
-    if !report.too_long.is_empty() {
-        println!("Archive: {}", too_long_said(PHOTOS, &report.too_long));
-    }
-    if replaced > 0 {
-        println!("Archive: {} in the way of a file that became a folder (or a folder that became a file); kept in {REPLACED}/{when} at the archive's top", common::plural(replaced, "saved file was", "saved files were"));
-    }
-    if waiting > 0 {
-        let (changed, wait) = if waiting == 1 {
-            ("file", "waits")
-        } else {
-            ("files", "wait")
-        };
-        println!("Archive: {waiting} {changed} changed in the last {} {wait} for the next run (they may still be being written)", common::plural(settle.unwrap_or(0), "second", "seconds"));
-    }
-    if in_use > 0 {
-        println!("Archive: {} changed, moved or deleted while being copied; the next run copies them if they are still there", common::plural(in_use, "file was", "files were"));
-    }
-    println!(
-        "Archive: {copied} new verified originals{}",
-        if apply { "" } else { " identified (dry run)" }
-    );
-    Ok((copied, report))
 }
 /// When the HDD archive folder was made (the filesystem's birth time), as seconds since
 /// the epoch: no record of this archive can be older. None where the filesystem keeps
@@ -1597,37 +1690,91 @@ fn mirror_on(
             .map(|(_, entry)| entry.verified_at)
             .fold(f64::INFINITY, f64::min)
     });
-    let mut usb_ledger = match Ledger::read(&dest) {
-        Ok(found) => Some(found),
-        Err(e) => {
-            // Never written over: moved aside (kept), and a new one is started from the HDD's.
-            println!("Backup: the USB drive's checksum list could not be read ({e}); it is kept as {LEDGER}.unreadable-*");
-            if apply && dest.join(LEDGER).exists() {
-                let aside = quarantine_folder(&dest);
-                let stamp = aside
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                fs::rename(
-                    dest.join(LEDGER),
-                    dest.join(format!("{LEDGER}.unreadable-{stamp}")),
-                )?;
-            }
-            None
-        }
+    let usb_ledger = open_usb_ledger(&dest, apply)?;
+    let conflicting = adopt_usb_records(
+        &mut ledger,
+        usb_ledger.as_ref(),
+        &files,
+        archive_since,
+        &mut report,
+    )?;
+    let (noted, notes) = version_notes(&source)?;
+    let mut seen = if exfat && dest.is_dir() {
+        names_on(&dest)?
+    } else {
+        Default::default()
     };
+    let mut run = UsbMirror {
+        source,
+        dest,
+        apply,
+        check,
+        quarantine,
+        archive_since,
+        ledger,
+        usb_ledger,
+        report,
+        conflicting,
+        noted,
+        copied: 0,
+    };
+    for (key, path) in &files {
+        if exfat && exfat_refuses(key, &mut seen) {
+            run.report.unstorable.push(key.clone());
+            continue;
+        }
+        run.one_file(key, path)?;
+    }
+    run.gone_from_hdd(&files)?;
+    if apply {
+        run.finish(&notes, exfat)?;
+    }
+    run.say();
+    Ok((run.copied, run.report))
+}
+/// The USB drive's own checksum list, None when it has none it can read: an unreadable
+/// one is never written over but moved aside (kept), and a new one is started from the
+/// HDD's.
+fn open_usb_ledger(dest: &Path, apply: bool) -> Result<Option<Ledger>> {
+    let error = match Ledger::read(dest) {
+        Ok(found) => return Ok(Some(found)),
+        Err(e) => e,
+    };
+    println!("Backup: the USB drive's checksum list could not be read ({error}); it is kept as {LEDGER}.unreadable-*");
+    if apply && dest.join(LEDGER).exists() {
+        let aside = quarantine_folder(dest);
+        let stamp = aside
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        fs::rename(
+            dest.join(LEDGER),
+            dest.join(format!("{LEDGER}.unreadable-{stamp}")),
+        )?;
+    }
+    Ok(None)
+}
+/// Takes the USB drive's records back into the HDD's ledger, and returns the files whose
+/// two records disagree.
+fn adopt_usb_records(
+    ledger: &mut Ledger,
+    usb_ledger: Option<&Ledger>,
+    files: &[(String, PathBuf)],
+    archive_since: f64,
+    report: &mut Integrity,
+) -> Result<std::collections::BTreeSet<String>> {
     // A USB record for a file this archive holds without a record of its own: the
     // archive's ledger was lost (or is short), so the USB's records are taken back, every
     // one. Without such a file the archive is complete, and a record older than it is
     // the USB drive's own history.
     let on_hdd: std::collections::BTreeSet<&String> = files.iter().map(|(k, _)| k).collect();
     let ledger_lost = usb_ledger
-        .iter()
+        .into_iter()
         .flat_map(Ledger::entries)
         .any(|(key, _)| on_hdd.contains(key) && ledger.get(key).is_none());
     let mut conflicting = std::collections::BTreeSet::new();
-    for (key, entry) in usb_ledger.iter().flat_map(Ledger::entries) {
+    for (key, entry) in usb_ledger.into_iter().flat_map(Ledger::entries) {
         // Given up as lost in the recovery menu: the USB's record brings nothing back.
         if ledger.retired_as(key, &entry.sha256) {
             continue;
@@ -1641,192 +1788,254 @@ fn mirror_on(
             conflicting.insert(key.clone());
         }
     }
-    // Files a current-version note names: what "restore newest" will take.
+    Ok(conflicting)
+}
+/// The files a current-version note names (what "restore newest" will take), and the
+/// notes themselves with the lists of shortened versions' full names.
+fn version_notes(source: &Path) -> Result<(std::collections::BTreeSet<String>, Vec<PathBuf>)> {
     let mut noted = std::collections::BTreeSet::new();
     let mut notes = vec![];
-    walk(&source, &mut |path| {
+    walk(source, &mut |path| {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         if name == NAMES {
             notes.push(path.to_path_buf()); // full names of shortened versions
         } else if name.starts_with('.') && name.ends_with(".neko-latest") {
             let named = String::from_utf8(common::bytes(path, 4096)?)
                 .map_err(|_| Error::new("Unreadable current-version note"))?;
-            let folder = path.parent().unwrap_or(&source);
+            let folder = path.parent().unwrap_or(source);
             // As mark_latest wrote it: trimmed, " song.mp3"'s current copy was never
             // checked by checksum (deep check 476).
-            noted.insert(ledger_key(&folder.join(&named), &source)?);
+            noted.insert(ledger_key(&folder.join(&named), source)?);
             notes.push(path.to_path_buf());
         }
         Ok(())
     })?;
-    let mut copied = 0;
-    let mut seen = if exfat && dest.is_dir() {
-        names_on(&dest)?
-    } else {
-        Default::default()
-    };
-    for (key, path) in &files {
-        if exfat && exfat_refuses(key, &mut seen) {
-            report.unstorable.push(key.clone());
-            continue;
+    Ok((noted, notes))
+}
+/// Copies the version notes onto the USB drive where they differ.
+fn copy_notes(source: &Path, dest: &Path, notes: &[PathBuf]) -> Result<()> {
+    for note in notes {
+        let target = dest.join(ledger_key(note, source)?);
+        let text = common::bytes(note, 4_000_000)?;
+        if common::bytes(&target, 4_000_000).ok().as_deref() != Some(text.as_slice()) {
+            if let Some(parent) = target.parent() {
+                common::directory(parent, 0o755)?;
+            }
+            common::atomic(&target, &text, 0o644)?;
         }
-        let target = dest.join(key);
+    }
+    Ok(())
+}
+/// One copy of the HDD archive onto a USB drive in progress.
+struct UsbMirror {
+    source: PathBuf,
+    dest: PathBuf,
+    apply: bool,
+    check: Check,
+    quarantine: PathBuf,
+    archive_since: f64,
+    ledger: Ledger,
+    usb_ledger: Option<Ledger>,
+    report: Integrity,
+    /// Files whose HDD and USB records disagree.
+    conflicting: std::collections::BTreeSet<String>,
+    /// Files a current-version note names: always checked by checksum.
+    noted: std::collections::BTreeSet<String>,
+    copied: u64,
+}
+impl UsbMirror {
+    /// One file of the HDD archive.
+    fn one_file(&mut self, key: &str, path: &Path) -> Result<()> {
+        let target = self.dest.join(key);
         if !path_fits(&target) {
-            report.too_long.push(key.clone());
-            continue;
+            self.report.too_long.push(key.to_string());
+            return Ok(());
         }
-        if conflicting.contains(key) {
-            let apart = match usb_ledger.as_mut() {
-                Some(theirs) => histories_apart(
-                    key,
-                    path,
-                    &target,
-                    &ledger,
-                    theirs,
-                    archive_since,
-                    &dest,
-                    apply,
-                )?,
-                None => false,
-            };
-            if !apart {
-                report.disagree.push(key.clone());
-            }
-            continue;
+        if self.conflicting.contains(key) {
+            return self.records_disagree(key, path, &target);
         }
-        let recorded = ledger.get(key).map(|e| e.sha256.clone());
+        let recorded = self.ledger.get(key).map(|e| e.sha256.clone());
         if !target.exists() {
-            // Never copy a damaged archive file onto the USB drive.
-            if let Some(expected) = &recorded {
-                if digest_once(path)? != *expected {
-                    report.damaged.push(key.clone());
-                    continue;
-                }
-            } else {
-                report.unverified += 1;
-            }
-            verified_copy(path, &target, apply, 0o644)?;
-            copied += 1;
-            continue;
+            return self.copy_new(key, path, &target, recorded.as_deref());
         }
         if !target.is_file() {
             return Err(Error::new("Backup target is not a regular file"));
         }
-        let verify = check == Check::Full || noted.contains(key);
+        let verify = self.check == Check::Full || self.noted.contains(key);
         if !verify && copied_since_change(&fs::metadata(path)?, &fs::metadata(&target)?) {
             if recorded.is_none() {
-                report.unverified += 1;
+                self.report.unverified += 1;
             }
-            continue;
+            return Ok(());
         }
-        let (hdd, usb) = (digest_once(path)?, common::digest(&target)?);
+        self.compare(key, (path, &target), recorded)
+    }
+    /// A file whose two records disagree: settled when the two copies' histories went
+    /// apart, else named.
+    fn records_disagree(&mut self, key: &str, path: &Path, target: &Path) -> Result<()> {
+        let apart = match self.usb_ledger.as_mut() {
+            Some(theirs) => histories_apart(
+                key,
+                path,
+                target,
+                &self.ledger,
+                theirs,
+                self.archive_since,
+                &self.dest,
+                self.apply,
+            )?,
+            None => false,
+        };
+        if !apart {
+            self.report.disagree.push(key.to_string());
+        }
+        Ok(())
+    }
+    /// A file not on the USB drive yet. Never copies a damaged archive file onto it.
+    fn copy_new(
+        &mut self,
+        key: &str,
+        path: &Path,
+        target: &Path,
+        recorded: Option<&str>,
+    ) -> Result<()> {
+        if let Some(expected) = recorded {
+            if digest_once(path)? != expected {
+                self.report.damaged.push(key.to_string());
+                return Ok(());
+            }
+        } else {
+            self.report.unverified += 1;
+        }
+        verified_copy(path, target, self.apply, 0o644)?;
+        self.copied += 1;
+        Ok(())
+    }
+    /// Checks both copies of a file against its record: repairs a damaged USB copy, and
+    /// records the checksum both copies agree on when there was none.
+    fn compare(
+        &mut self,
+        key: &str,
+        (path, target): (&Path, &Path),
+        recorded: Option<String>,
+    ) -> Result<()> {
+        let (hdd, usb) = (digest_once(path)?, common::digest(target)?);
         match recorded {
             Some(expected) => match (hdd == expected, usb == expected) {
                 (true, true) => {}
                 (true, false) => {
-                    if apply {
-                        replace_damaged(path, &target, &quarantine.join(key))?;
+                    if self.apply {
+                        replace_damaged(path, target, &self.quarantine.join(key))?;
                     }
-                    report.repaired += 1;
+                    self.report.repaired += 1;
                 }
-                (false, true) => report.damaged.push(key.clone()),
-                (false, false) => report.both_damaged.push(key.clone()),
+                (false, true) => self.report.damaged.push(key.to_string()),
+                (false, false) => self.report.both_damaged.push(key.to_string()),
             },
             None if hdd == usb => {
-                if apply
-                    && ledger.record(key, &hdd, fs::metadata(path)?.len(), "agreed")?
+                if self.apply
+                    && self
+                        .ledger
+                        .record(key, &hdd, fs::metadata(path)?.len(), "agreed")?
                         == Recorded::New
                 {
-                    report.newly_verified += 1;
-                } else if !apply {
-                    report.unverified += 1;
+                    self.report.newly_verified += 1;
+                } else if !self.apply {
+                    self.report.unverified += 1;
                 }
             }
-            None => report.disagree.push(key.clone()),
+            None => self.report.disagree.push(key.to_string()),
         }
+        Ok(())
     }
-    // Files the ledger expects that are gone from the HDD archive: the USB copy, if it
-    // still matches, is kept (repair from it in the recovery menu); if it is gone or
-    // damaged too, no good copy is left.
-    let present: std::collections::BTreeSet<&String> = files.iter().map(|(k, _)| k).collect();
-    let gone: Vec<(String, String, f64)> = ledger
-        .keys()
-        .filter(|k| !present.contains(k) && !conflicting.contains(*k))
-        .map(|k| {
-            let entry = ledger.get(k);
-            (
-                k.clone(),
-                entry.map(|e| e.sha256.clone()).unwrap_or_default(),
-                entry.map(|e| e.verified_at).unwrap_or(f64::INFINITY),
-            )
-        })
-        .collect();
-    for (key, expected, verified_at) in gone {
-        let usb = dest.join(&key);
-        let intact = usb.is_file() && common::digest(&usb)? == expected;
-        if intact && verified_at < archive_since {
-            // Recorded before this archive was made (taken over from the USB drive's
-            // records by an earlier release): the USB drive's own, never this archive's.
-            report.usb_only += 1;
-        } else if intact {
-            report.missing.push(key);
-        } else {
-            report.both_damaged.push(key);
-        }
-    }
-    if apply {
-        clear_partials(&dest)?;
-        for note in &notes {
-            let target = dest.join(ledger_key(note, &source)?);
-            let text = common::bytes(note, 4_000_000)?;
-            if common::bytes(&target, 4_000_000).ok().as_deref() != Some(text.as_slice()) {
-                if let Some(parent) = target.parent() {
-                    common::directory(parent, 0o755)?;
-                }
-                common::atomic(&target, &text, 0o644)?;
+    /// Files the ledger expects that are gone from the HDD archive: the USB copy, if it
+    /// still matches, is kept (repair from it in the recovery menu); if it is gone or
+    /// damaged too, no good copy is left.
+    fn gone_from_hdd(&mut self, files: &[(String, PathBuf)]) -> Result<()> {
+        let present: std::collections::BTreeSet<&String> = files.iter().map(|(k, _)| k).collect();
+        let gone: Vec<(String, String, f64)> = self
+            .ledger
+            .keys()
+            .filter(|k| !present.contains(k) && !self.conflicting.contains(*k))
+            .map(|k| {
+                let entry = self.ledger.get(k);
+                (
+                    k.clone(),
+                    entry.map(|e| e.sha256.clone()).unwrap_or_default(),
+                    entry.map(|e| e.verified_at).unwrap_or(f64::INFINITY),
+                )
+            })
+            .collect();
+        for (key, expected, verified_at) in gone {
+            let usb = self.dest.join(&key);
+            let intact = usb.is_file() && common::digest(&usb)? == expected;
+            if intact && verified_at < self.archive_since {
+                // Recorded before this archive was made (taken over from the USB drive's
+                // records by an earlier release): the USB drive's own, never this archive's.
+                self.report.usb_only += 1;
+            } else if intact {
+                self.report.missing.push(key);
+            } else {
+                self.report.both_damaged.push(key);
             }
         }
+        Ok(())
+    }
+    /// Writes the notes, the lists of files and the ledgers, after the files they name.
+    fn finish(&mut self, notes: &[PathBuf], exfat: bool) -> Result<()> {
+        clear_partials(&self.dest)?;
+        copy_notes(&self.source, &self.dest, notes)?;
         // The inventories of live files, after the files they name.
-        if let Err(e) = inventory::mirror(&source, &dest) {
+        if let Err(e) = inventory::mirror(&self.source, &self.dest) {
             let said = format!("the lists of the files you had could not be copied to the USB drive ({e}), so a restore from it can't go by the newest one");
             println!("Backup: {said}");
-            report.list_problem = Some(said);
+            self.report.list_problem = Some(said);
         }
         // Ledgers last: the HDD one with this run's agreements, then its USB copy, which
         // keeps every record it already had.
-        ledger.save()?;
-        ledger.publish_copy(&dest, usb_ledger.as_ref())?;
+        self.ledger.save()?;
+        self.ledger
+            .publish_copy(&self.dest, self.usb_ledger.as_ref())?;
         // Photos too deep for this drive are left out the same way: a restore from it
         // must not take them for lost copies.
-        let left: Vec<String> = report
+        let left: Vec<String> = self
+            .report
             .unstorable
             .iter()
-            .chain(&report.too_long)
+            .chain(&self.report.too_long)
             .cloned()
             .collect();
-        note_left_out(&dest, exfat || !report.too_long.is_empty(), &left)?;
+        note_left_out(&self.dest, exfat || !self.report.too_long.is_empty(), &left)?;
         // Only now is this copy's run complete (see inventory::begin).
-        if report.list_problem.is_none() {
-            inventory::finish_mirror(&source, &dest)?;
+        if self.report.list_problem.is_none() {
+            inventory::finish_mirror(&self.source, &self.dest)?;
         }
+        Ok(())
     }
-    report.print("Backup");
-    if !report.too_long.is_empty() {
-        println!("Backup: {}", too_long_said(PHOTOS, &report.too_long));
-    }
-    if !report.unstorable.is_empty() {
+    /// The run's summary lines.
+    fn say(&self) {
+        let report = &self.report;
+        report.print("Backup");
+        if !report.too_long.is_empty() {
+            println!("Backup: {}", too_long_said(PHOTOS, &report.too_long));
+        }
+        if !report.unstorable.is_empty() {
+            println!(
+                "Backup: {} not copied because the USB drive (exFAT) cannot store their names (a character exFAT refuses, or the same name as another file but for upper/lower case); they stay safe on the HDD, and a USB drive formatted as ext4 takes them all: {}",
+                common::plural(report.unstorable.len(), "file", "files"),
+                report.unstorable.iter().take(20).cloned().collect::<Vec<_>>().join(", ")
+            );
+        }
         println!(
-            "Backup: {} not copied because the USB drive (exFAT) cannot store their names (a character exFAT refuses, or the same name as another file but for upper/lower case); they stay safe on the HDD, and a USB drive formatted as ext4 takes them all: {}",
-            common::plural(report.unstorable.len(), "file", "files"),
-            report.unstorable.iter().take(20).cloned().collect::<Vec<_>>().join(", ")
+            "Backup: {}{}",
+            common::plural(self.copied, "new verified file", "new verified files"),
+            if self.apply {
+                ""
+            } else {
+                " identified (dry run)"
+            }
         );
     }
-    println!(
-        "Backup: {}{}",
-        common::plural(copied, "new verified file", "new verified files"),
-        if apply { "" } else { " identified (dry run)" }
-    );
-    Ok((copied, report))
 }
 /// For each saved file the HDD archive keeps in `REPLACED/<when>/<old place>` (see
 /// archive_with) while the USB copy still has it at `<old place>`: move it there too, its
@@ -2174,37 +2383,101 @@ fn copy_cloud_with(
     free: &dyn Fn(&Path) -> Result<u128>,
 ) -> Result<CloudCopy> {
     let (cloud, dest) = separate(cloud, dest)?;
-    let (mut copied, mut versions, mut skipped) = (0, 0, 0);
-    let mut refused = vec![];
-    let mut clashes = vec![];
-    let mut unreadable = vec![];
-    let mut too_long = vec![];
-    // Files the drive has no room for: left out and named, like the too-long paths. One
-    // such file used to stop the copy, and every file after it was never copied (D11).
-    let mut no_room = vec![];
-    let (mut renamed, mut taken) = (0, std::collections::HashMap::new());
-    let mut seen = std::collections::HashMap::new();
-    let mut skipped_files = vec![];
     // The USB copy keeps its own ledger: the Nextcloud files are not on the HDD.
     let root = dest.join("nextcloud");
     common::directory(&root, 0o700)?;
-    let mut ledger = if apply {
+    let ledger = if apply {
         Ledger::open(&root)?
     } else {
         Ledger::read(&root)?
     };
     // The run is pending until its files, checksums and list of files are all written.
     let begun = apply.then(|| begin_run(&root)).flatten();
-    let mut report = Integrity {
+    let report = Integrity {
         list_problem: begun,
         ..Default::default()
     };
     let quarantine = quarantine_folder(&root);
     let when = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-    let mut replaced = 0;
-    // Each user's live files, with the saved copy that holds each (see inventory.rs).
-    let mut live = Inventory::default();
+    let mut run = CloudRun {
+        root,
+        apply,
+        fat_names,
+        check,
+        free,
+        ledger,
+        report,
+        quarantine,
+        when,
+        live: Inventory::default(),
+        copied: 0,
+        versions: 0,
+        skipped: 0,
+        renamed: 0,
+        replaced: 0,
+        refused: vec![],
+        clashes: vec![],
+        unreadable: vec![],
+        too_long: vec![],
+        no_room: vec![],
+        skipped_files: vec![],
+        taken: std::collections::HashMap::new(),
+        seen: std::collections::HashMap::new(),
+    };
     for user_dir in list(&cloud)? {
+        run.one_user(&user_dir, internal)?;
+    }
+    run.finish()?;
+    run.say();
+    Ok(CloudCopy {
+        copied: run.copied,
+        versions: run.versions,
+        skipped: run.skipped,
+        refused: run.refused,
+        skipped_files: run.skipped_files,
+        no_room: run.no_room,
+        integrity: run.report,
+    })
+}
+/// One copy of the Nextcloud files onto the USB drive in progress.
+struct CloudRun<'a> {
+    /// The copy's folder on the USB drive, with its own ledger.
+    root: PathBuf,
+    apply: bool,
+    /// The drive is exFAT: names it can't store are left out and named.
+    fat_names: bool,
+    check: Check,
+    /// The bytes free on the drive that holds a folder.
+    free: &'a dyn Fn(&Path) -> Result<u128>,
+    ledger: Ledger,
+    report: Integrity,
+    quarantine: PathBuf,
+    when: String,
+    /// Each user's live files, with the saved copy that holds each (see inventory.rs).
+    live: Inventory,
+    copied: u64,
+    versions: u64,
+    skipped: u64,
+    /// Files renamed only in upper/lower case, kept under their earlier spelling.
+    renamed: usize,
+    /// Saved files moved aside by a change of shape.
+    replaced: usize,
+    refused: Vec<String>,
+    clashes: Vec<String>,
+    unreadable: Vec<String>,
+    too_long: Vec<String>,
+    /// Files the drive has no room for: left out and named, like the too-long paths.
+    /// One such file used to stop the copy, and every file after it was never copied
+    /// (D11).
+    no_room: Vec<String>,
+    skipped_files: Vec<String>,
+    /// Which live file each kept spelling stands for.
+    taken: std::collections::HashMap<String, String>,
+    seen: std::collections::HashMap<String, String>,
+}
+impl CloudRun<'_> {
+    /// One folder of Nextcloud's data folder.
+    fn one_user(&mut self, user_dir: &Path, internal: Option<&str>) -> Result<()> {
         let user = user_dir
             .file_name()
             .unwrap_or_default()
@@ -2216,223 +2489,301 @@ fn copy_cloud_with(
         // own records use (".neko-...") cannot be one there, and are named, never skipped
         // without a word.
         if is_nextcloud_internal(&user, internal)
-            || !fs::symlink_metadata(&user_dir)?.is_dir()
+            || !fs::symlink_metadata(user_dir)?.is_dir()
             || !fs::symlink_metadata(&files).is_ok_and(|m| m.is_dir())
         {
-            continue;
+            return Ok(());
         }
         if user.starts_with(".neko-") || user == QUARANTINE {
-            refused.push(format!(
+            self.refused.push(format!(
                 "{user} (every file of this Nextcloud user: the name is one NekoServer's backup uses for its own records)"
             ));
-            continue;
+            return Ok(());
         }
-        if fat_names {
-            kept_names(&root, &user, &ledger, &mut seen)?;
+        if self.fat_names {
+            kept_names(&self.root, &user, &self.ledger, &mut self.seen)?;
         }
-        walk(&files, &mut |path| {
-            let name = path.file_name().unwrap_or_default().to_string_lossy();
-            if nextcloud_upload_in_progress(&name) {
-                return Ok(());
-            }
-            let relative = path
-                .strip_prefix(&files)
-                .map_err(|_| Error::new("Invalid relative path"))?;
-            // A name the copy uses for its own records (notes.neko-latest, .neko-names.json,
-            // an unfinished copy's .neko-part): its own reading leaves those out, so a user's
-            // file of that name would be reported missing every week. Named, not copied.
-            if metadata_name(&name) {
-                refused.push(format!(
-                    "{user}/{} (a name NekoServer's backup uses for its own records; rename it)",
-                    relative.display()
-                ));
-                return Ok(());
-            }
-            // A name that is not valid text (made on another system with an old character
-            // set) cannot go in the checksum list: that file is left out and named, not
-            // the whole copy stopped.
-            if !relative
-                .to_str()
-                .is_some_and(|r| ledger::valid_path(&format!("{user}/files/{r}")))
-            {
-                let shown = format!("{user}/{}", relative.display());
-                unreadable.push(shown.clone());
-                refused.push(shown);
-                return Ok(());
-            }
-            if fat_names && !fat_safe(relative) {
-                refused.push(format!("{user}/{}", relative.display()));
-                return Ok(());
-            }
+        walk(&files, &mut |path| self.one_file(&user, &files, path))
+    }
+    /// One file of a user's `files` folder.
+    fn one_file(&mut self, user: &str, files: &Path, path: &Path) -> Result<()> {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if nextcloud_upload_in_progress(&name) {
+            return Ok(());
+        }
+        let relative = path
+            .strip_prefix(files)
+            .map_err(|_| Error::new("Invalid relative path"))?;
+        if !self.name_allowed(user, relative, &name) {
+            return Ok(());
+        }
+        let shown = format!("{user}/{}", relative.display());
+        let user_files = self.root.join(user).join("files");
+        // What the file is called now, and where the drive keeps it: the same,
+        // but for a file renamed only in upper/lower case (renamed_in_case).
+        let named = user_files.join(relative);
+        let Some(kept_as) = self.kept_as(files, path, relative, &user_files, &shown) else {
+            return Ok(());
+        };
+        let relative = kept_as.as_path();
+        let target = user_files.join(relative);
+        if !path_fits(&target) {
+            // Left out and named; its earlier copy (if any) stays in the inventory.
+            self.too_long.push(shown.clone());
+            self.refused.push(shown);
+            self.live.add_as(&named, &target, &self.root);
+            return Ok(());
+        }
+        if !self.clear_the_way(user, &user_files, relative)? {
+            self.copied += 1; // a dry run moves nothing; the copy would go ahead
+            return Ok(());
+        }
+        let kept_shown = format!("{user}/{}", relative.display());
+        self.keep(path, (&named, &target), shown, &kept_shown)
+    }
+    /// Whether the backup can copy a file of this name; if not, it is named.
+    fn name_allowed(&mut self, user: &str, relative: &Path, name: &str) -> bool {
+        // A name the copy uses for its own records (notes.neko-latest, .neko-names.json,
+        // an unfinished copy's .neko-part): its own reading leaves those out, so a user's
+        // file of that name would be reported missing every week. Named, not copied.
+        if metadata_name(name) {
+            self.refused.push(format!(
+                "{user}/{} (a name NekoServer's backup uses for its own records; rename it)",
+                relative.display()
+            ));
+            return false;
+        }
+        // A name that is not valid text (made on another system with an old character
+        // set) cannot go in the checksum list: that file is left out and named, not
+        // the whole copy stopped.
+        if !relative
+            .to_str()
+            .is_some_and(|r| ledger::valid_path(&format!("{user}/files/{r}")))
+        {
             let shown = format!("{user}/{}", relative.display());
-            let user_files = root.join(&user).join("files");
-            // What the file is called now, and where the drive keeps it: the same,
-            // but for a file renamed only in upper/lower case (renamed_in_case).
-            let named = user_files.join(relative);
-            let mut kept_as = relative.to_path_buf();
-            if fat_names {
-                if let Some(earlier) = case_clash(&shown, &mut seen) {
-                    // The same file under its new spelling only while the drive holds
-                    // exactly its content (asked without copying anything): a file
-                    // with other content there stays a clash, never a merged version.
-                    let same_file = renamed_in_case(&files, &shown, &earlier, &seen)
-                        .filter(|stored| {
-                            kept_copy(path, &user_files.join(stored), false, 0o600, check, None)
-                                .is_ok_and(|kept| kept.added == Added::Same)
-                        })
-                        // ... and one kept file stands for one live file only.
-                        .filter(|stored| {
-                            let spelling = stored.to_string_lossy().to_lowercase();
-                            *taken.entry(spelling).or_insert_with(|| shown.clone()) == shown
-                        });
-                    match same_file {
-                        Some(stored) => {
-                            kept_as = stored;
-                            renamed += 1;
-                        }
-                        None => {
-                            clashes.push(format!("{shown} (same as {earlier} on exFAT)"));
-                            refused.push(shown);
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-            let relative = kept_as.as_path();
-            let target = user_files.join(relative);
-            if !path_fits(&target) {
-                // Left out and named; its earlier copy (if any) stays in the inventory.
-                too_long.push(shown.clone());
-                refused.push(shown);
-                live.add_as(&named, &target, &root);
-                return Ok(());
-            }
-            let in_way = in_the_way(&user_files, relative);
-            if !in_way.is_empty() {
-                if !apply {
-                    copied += 1; // a dry run moves nothing; the copy would go ahead
-                    return Ok(());
-                }
-                let history = root.join(&user).join(REPLACED).join(&when);
-                // Each move is saved in the checksum list as it happens (see move_aside).
-                for object in &in_way {
-                    replaced += move_aside(object, &user_files, &history, &mut ledger, &root)?;
-                }
-            }
-            let key = ledger_key(&target, &root)?;
-            let expected = ledger.get(&key).map(|e| e.sha256.clone());
-            // A new file bigger than the room left is not even begun (it would be
-            // written for an hour, then fail); one that runs out of room part-way (a
-            // new version, or other files landing meanwhile) is left out the same way.
-            let fits = target.exists()
-                || !no_room_for(fs::metadata(path).map_or(0, |m| m.len()), free(&root)?);
-            let result = if fits {
-                kept_copy(path, &target, apply, 0o600, check, expected.as_deref())
-            } else {
-                Err(std::io::Error::from_raw_os_error(libc::ENOSPC).into())
-            };
-            if result.is_ok() || path.exists() {
-                live.add_as(&named, &target, &root);
-            }
-            match result {
-                Ok(kept) => {
-                    match kept.added {
-                        Added::New => copied += 1,
-                        Added::Version => versions += 1,
-                        Added::Same => {}
-                        // The live file still matches the recorded checksum: repair the USB copy.
-                        Added::Damaged if apply && kept.source_sha256 == expected => {
-                            match replace_damaged(path, &target, &quarantine.join(&key)) {
-                                Ok(()) => report.repaired += 1,
-                                Err(e) if in_use_now(&e, path) => {
-                                    skipped += 1;
-                                    skipped_files.push(format!("{user}/{}", relative.display()));
-                                }
-                                Err(e) => return Err(e),
-                            }
-                        }
-                        Added::Damaged => report.damaged.push(key.clone()),
-                    }
-                    if kept.first_damaged {
-                        report.damaged.push(key);
-                    }
-                    if apply {
-                        record_kept(&mut ledger, &root, &kept, &mut report)?;
-                        date_kept(&mut ledger, &root, &kept, &target, path);
-                    }
-                }
-                Err(e) if common::drive_full(&e) => no_room.push(shown),
-                Err(e) if in_use_now(&e, path) => {
-                    skipped += 1;
-                    skipped_files.push(format!("{user}/{}", relative.display()));
-                }
-                Err(e) => return Err(e),
-            }
-            Ok(())
-        })?;
-    }
-    if apply {
-        if check == Check::Full {
-            audit(&root, &ledger, &mut report)?;
-        } else {
-            missing_from(&root, &ledger, &mut report)?;
+            self.unreadable.push(shown.clone());
+            self.refused.push(shown);
+            return false;
         }
-        ledger.save()?;
-        report.list_problem =
-            save_inventory(&root, &live, &ledger, "Nextcloud").or(report.list_problem.take());
+        if self.fat_names && !fat_safe(relative) {
+            self.refused.push(format!("{user}/{}", relative.display()));
+            return false;
+        }
+        true
     }
-    report.print("Nextcloud");
-    println!(
-        "Nextcloud: {}, {} kept as dated versions, {skipped} skipped while in use",
-        common::plural(copied, "new file", "new files"),
-        common::plural(versions, "changed file", "changed files")
-    );
-    if replaced > 0 {
-        println!("Nextcloud: {} in the way of a file that became a folder (or a folder that became a file); kept in {REPLACED}/{when} beside the user's files", common::plural(replaced, "saved file was", "saved files were"));
+    /// Where the drive keeps the file: its own name, or on exFAT the earlier spelling
+    /// of a file renamed only in upper/lower case. None for a name that clashes with
+    /// another file's on exFAT (named).
+    fn kept_as(
+        &mut self,
+        files: &Path,
+        path: &Path,
+        relative: &Path,
+        user_files: &Path,
+        shown: &str,
+    ) -> Option<PathBuf> {
+        if !self.fat_names {
+            return Some(relative.to_path_buf());
+        }
+        let Some(earlier) = case_clash(shown, &mut self.seen) else {
+            return Some(relative.to_path_buf());
+        };
+        // The same file under its new spelling only while the drive holds
+        // exactly its content (asked without copying anything): a file
+        // with other content there stays a clash, never a merged version.
+        let check = self.check;
+        let taken = &mut self.taken;
+        let same_file = renamed_in_case(files, shown, &earlier, &self.seen)
+            .filter(|stored| {
+                kept_copy(path, &user_files.join(stored), false, 0o600, check, None)
+                    .is_ok_and(|kept| kept.added == Added::Same)
+            })
+            // ... and one kept file stands for one live file only.
+            .filter(|stored| {
+                let spelling = stored.to_string_lossy().to_lowercase();
+                *taken.entry(spelling).or_insert_with(|| shown.to_string()) == shown
+            });
+        if same_file.is_some() {
+            self.renamed += 1;
+        } else {
+            self.clashes
+                .push(format!("{shown} (same as {earlier} on exFAT)"));
+            self.refused.push(shown.to_string());
+        }
+        same_file
     }
-    if !unreadable.is_empty() {
+    /// A saved file or folder where this file must go is moved aside (kept, never
+    /// deleted). False on a dry run that found something in the way.
+    fn clear_the_way(&mut self, user: &str, user_files: &Path, relative: &Path) -> Result<bool> {
+        let in_way = in_the_way(user_files, relative);
+        if in_way.is_empty() {
+            return Ok(true);
+        }
+        if !self.apply {
+            return Ok(false);
+        }
+        let history = self.root.join(user).join(REPLACED).join(&self.when);
+        // Each move is saved in the checksum list as it happens (see move_aside).
+        for object in &in_way {
+            self.replaced +=
+                move_aside(object, user_files, &history, &mut self.ledger, &self.root)?;
+        }
+        Ok(true)
+    }
+    /// Copies (or checks) one file onto the drive. `shown` names it as it is called
+    /// now, `kept_shown` as the drive keeps it.
+    fn keep(
+        &mut self,
+        path: &Path,
+        (named, target): (&Path, &Path),
+        shown: String,
+        kept_shown: &str,
+    ) -> Result<()> {
+        let key = ledger_key(target, &self.root)?;
+        let expected = self.ledger.get(&key).map(|e| e.sha256.clone());
+        // A new file bigger than the room left is not even begun (it would be
+        // written for an hour, then fail); one that runs out of room part-way (a
+        // new version, or other files landing meanwhile) is left out the same way.
+        let fits = target.exists()
+            || !no_room_for(
+                fs::metadata(path).map_or(0, |m| m.len()),
+                (self.free)(&self.root)?,
+            );
+        let result = if fits {
+            kept_copy(
+                path,
+                target,
+                self.apply,
+                0o600,
+                self.check,
+                expected.as_deref(),
+            )
+        } else {
+            Err(std::io::Error::from_raw_os_error(libc::ENOSPC).into())
+        };
+        if result.is_ok() || path.exists() {
+            self.live.add_as(named, target, &self.root);
+        }
+        match result {
+            Ok(kept) => self.count(&kept, key, expected.as_deref(), (path, target), kept_shown)?,
+            Err(e) if common::drive_full(&e) => self.no_room.push(shown),
+            Err(e) if in_use_now(&e, path) => {
+                self.skipped += 1;
+                self.skipped_files.push(kept_shown.to_string());
+            }
+            Err(e) => return Err(e),
+        }
+        Ok(())
+    }
+    /// Counts what the copy found and records it.
+    fn count(
+        &mut self,
+        kept: &Kept,
+        key: String,
+        expected: Option<&str>,
+        (path, target): (&Path, &Path),
+        kept_shown: &str,
+    ) -> Result<()> {
+        match kept.added {
+            Added::New => self.copied += 1,
+            Added::Version => self.versions += 1,
+            Added::Same => {}
+            // The live file still matches the recorded checksum: repair the USB copy.
+            Added::Damaged if self.apply && kept.source_sha256.as_deref() == expected => {
+                match replace_damaged(path, target, &self.quarantine.join(&key)) {
+                    Ok(()) => self.report.repaired += 1,
+                    Err(e) if in_use_now(&e, path) => {
+                        self.skipped += 1;
+                        self.skipped_files.push(kept_shown.to_string());
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            Added::Damaged => self.report.damaged.push(key.clone()),
+        }
+        if kept.first_damaged {
+            self.report.damaged.push(key);
+        }
+        if self.apply {
+            record_kept(&mut self.ledger, &self.root, kept, &mut self.report)?;
+            date_kept(&mut self.ledger, &self.root, kept, target, path);
+        }
+        Ok(())
+    }
+    /// Checks the copy against its ledger and publishes the ledger and the list.
+    fn finish(&mut self) -> Result<()> {
+        if !self.apply {
+            return Ok(());
+        }
+        if self.check == Check::Full {
+            audit(&self.root, &self.ledger, &mut self.report)?;
+        } else {
+            missing_from(&self.root, &self.ledger, &mut self.report)?;
+        }
+        self.ledger.save()?;
+        self.report.list_problem =
+            save_inventory(&self.root, &self.live, &self.ledger, "Nextcloud")
+                .or(self.report.list_problem.take());
+        Ok(())
+    }
+    /// The run's summary lines.
+    fn say(&self) {
+        self.report.print("Nextcloud");
         println!(
-            "Nextcloud: {} not copied because their names are not valid text (UTF-8), so the backup cannot record them; rename them: {}",
-            common::plural(unreadable.len(), "file", "files"),
-            unreadable.iter().take(20).cloned().collect::<Vec<_>>().join(", ")
+            "Nextcloud: {}, {} kept as dated versions, {} skipped while in use",
+            common::plural(self.copied, "new file", "new files"),
+            common::plural(self.versions, "changed file", "changed files"),
+            self.skipped
         );
+        if self.replaced > 0 {
+            println!("Nextcloud: {} in the way of a file that became a folder (or a folder that became a file); kept in {REPLACED}/{} beside the user's files", common::plural(self.replaced, "saved file was", "saved files were"), self.when);
+        }
+        if !self.unreadable.is_empty() {
+            println!(
+                "Nextcloud: {} not copied because their names are not valid text (UTF-8), so the backup cannot record them; rename them: {}",
+                common::plural(self.unreadable.len(), "file", "files"),
+                self.unreadable.iter().take(20).cloned().collect::<Vec<_>>().join(", ")
+            );
+        }
+        if !self.too_long.is_empty() {
+            println!(
+                "Nextcloud: {}",
+                too_long_said(("file", "files"), &self.too_long)
+            );
+        }
+        if !self.no_room.is_empty() {
+            println!(
+                "Nextcloud: {}",
+                no_room_said(&self.no_room, (self.free)(&self.root).ok())
+            );
+        }
+        if self.renamed > 0 {
+            println!("Nextcloud: {} renamed only in upper/lower case since the USB drive (exFAT) saved {}; the drive keeps the earlier spelling, and a restore gives the name of today", common::plural(self.renamed, "file was", "files were"), if self.renamed == 1 { "it" } else { "them" });
+        }
+        self.say_refused();
     }
-    if !too_long.is_empty() {
-        println!("Nextcloud: {}", too_long_said(("file", "files"), &too_long));
+    /// The files left out for their names on exFAT.
+    fn say_refused(&self) {
+        let exfat: Vec<&String> = self
+            .refused
+            .iter()
+            .filter(|r| !self.unreadable.contains(r) && !self.too_long.contains(r))
+            .collect();
+        if !exfat.is_empty() {
+            println!(
+                "Nextcloud: {} not copied because the USB drive (exFAT) cannot store their names; rename them or use an ext4 USB drive: {}",
+                common::plural(exfat.len(), "file", "files"),
+                exfat.iter().take(20).map(|r| r.as_str()).collect::<Vec<_>>().join(", ")
+            );
+        }
+        if !self.clashes.is_empty() {
+            println!(
+                "Nextcloud: of these, {} differ from another file or folder only in upper/lower case, which exFAT treats as the same name (they would merge): {}",
+                self.clashes.len(),
+                self.clashes.iter().take(20).cloned().collect::<Vec<_>>().join(", ")
+            );
+        }
     }
-    if !no_room.is_empty() {
-        println!("Nextcloud: {}", no_room_said(&no_room, free(&root).ok()));
-    }
-    if renamed > 0 {
-        println!("Nextcloud: {} renamed only in upper/lower case since the USB drive (exFAT) saved {}; the drive keeps the earlier spelling, and a restore gives the name of today", common::plural(renamed, "file was", "files were"), if renamed == 1 { "it" } else { "them" });
-    }
-    let exfat: Vec<&String> = refused
-        .iter()
-        .filter(|r| !unreadable.contains(r) && !too_long.contains(r))
-        .collect();
-    if !exfat.is_empty() {
-        println!(
-            "Nextcloud: {} not copied because the USB drive (exFAT) cannot store their names; rename them or use an ext4 USB drive: {}",
-            common::plural(exfat.len(), "file", "files"),
-            exfat.iter().take(20).map(|r| r.as_str()).collect::<Vec<_>>().join(", ")
-        );
-    }
-    if !clashes.is_empty() {
-        println!(
-            "Nextcloud: of these, {} differ from another file or folder only in upper/lower case, which exFAT treats as the same name (they would merge): {}",
-            clashes.len(),
-            clashes.iter().take(20).cloned().collect::<Vec<_>>().join(", ")
-        );
-    }
-    Ok(CloudCopy {
-        copied,
-        versions,
-        skipped,
-        refused,
-        skipped_files,
-        no_room,
-        integrity: report,
-    })
 }
 /// How many of `what` the USB drive keeps, the newest ones (shared.json "usb_keeps":
 /// setup's backups page says the same numbers).
@@ -4828,7 +5179,11 @@ fn keep_dump(data: &Path, media: &Path, created: &Path, keep: u64) -> Result<()>
         data.join("backups/immich-database"),
         media.join("backups/immich-database"),
     ] {
-        prune_dumps(&folder, keep, created.file_name().and_then(|n| n.to_str()))?;
+        prune_dumps(
+            &folder,
+            keep,
+            created.file_name().and_then(std::ffi::OsStr::to_str),
+        )?;
     }
     Ok(())
 }
@@ -10650,5 +11005,36 @@ mod tests {
             "the 100000 files you have now are the same as in the last list (/hdd/archive/.neko-inventory/x.json.gz), so no new one was written"
         );
         assert!(unchanged_list_said(1, list).starts_with("the 1 file you have now is the same"));
+    }
+}
+
+/// Tests the mutation pass of 0.52.2 asked for (G6): the USB drive's checksum list.
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+
+    /// An unreadable checksum list on the USB drive is never written over: a real run moves
+    /// it aside (kept), a dry run leaves it exactly where it is.
+    #[test]
+    fn an_unreadable_usb_list_is_moved_aside_only_by_a_real_run() {
+        let dest = std::env::temp_dir().join(format!("neko-usb-ledger-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dest);
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(dest.join(LEDGER), b"not a checksum list").unwrap();
+        let aside = |dest: &Path| -> Vec<String> {
+            fs::read_dir(dest)
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .filter(|n| n.starts_with(&format!("{LEDGER}.unreadable-")))
+                .collect()
+        };
+        assert!(open_usb_ledger(&dest, false).unwrap().is_none());
+        assert_eq!(fs::read(dest.join(LEDGER)).unwrap(), b"not a checksum list");
+        assert!(aside(&dest).is_empty());
+        assert!(open_usb_ledger(&dest, true).unwrap().is_none());
+        assert!(!dest.join(LEDGER).exists());
+        assert_eq!(aside(&dest).len(), 1);
+        let _ = fs::remove_dir_all(&dest);
     }
 }

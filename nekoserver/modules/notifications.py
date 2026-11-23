@@ -42,7 +42,7 @@ def options(config):
 def endpoint(value):
     if not isinstance(value, str):
         return False
-    match = re.fullmatch(r'https://[A-Za-z0-9][A-Za-z0-9.-]*(?::([0-9]{1,5}))?/[A-Za-z0-9_-]{1,128}', value)
+    match = re.fullmatch(r'https://[A-Za-z0-9][A-Za-z0-9.-]*(?::(\d{1,5}))?/[A-Za-z0-9_-]{1,128}', value, re.ASCII)
     return bool(match and (match[1] is None or 0 < int(match[1]) <= 65535))
 
 

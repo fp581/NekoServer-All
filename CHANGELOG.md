@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.52.2 — (in progress)
+
+A clean-up release: the findings SonarCloud has on the code as it is (vulnerabilities and code smells), fixed without changing what NekoServer does or says. Each fix is listed here as it lands.
+
 ## v0.52.1 — (in progress; the release number is 0.52.1)
 
 ### Added: favourite shows keep coming

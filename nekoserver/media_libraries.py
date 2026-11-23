@@ -3,6 +3,7 @@
 import getpass
 import account_store
 import json
+import os
 import time
 import urllib.error
 import urllib.parse
@@ -271,6 +272,44 @@ def sign_in(client, user, secret):
         raise SetupRequired('Jellyfin administrator authentication was not verified')
 
 
+JELLYFIN_ROW = 'jellyfin:'  # a Jellyfin library's row: jellyfin:movies, jellyfin:tv
+SEERR_LIBRARY_ROW = 'seerr:library:'  # a library's row in Seerr, by its Jellyfin id
+
+
+def jellyfin_library(client, media, apply, category, name, kind):
+    """One of Jellyfin's libraries (films or shows), found or made on its folder of the
+    media drive: (its row, its id once it is there, whether it is on a network share)."""
+    try:
+        host = safe_path(Path(media) / 'library' / category)
+        # The settings name the media drive: the folder is looked at only by its real path,
+        # and only when that is the path asked for (safe_path refused links on the way).
+        real = os.path.realpath(host)
+        if not real.startswith(os.sep) or real != os.path.abspath(host) or not os.path.isdir(real):
+            raise SetupRequired('Expected HDD library folder is missing')
+        on_share = on_a_share(Path(real))
+    except SetupRequired as exc:
+        return row(JELLYFIN_ROW + category, 'needs_setup', str(exc)), None, False
+    except (RuntimeError, ValueError, TypeError, KeyError):
+        return row(JELLYFIN_ROW + category, 'fail', LIBRARY_CHECK_FAILED), None, False
+    try:
+        existing = matching(folders(client), category, name, kind)
+        if not existing and not apply:
+            return row(JELLYFIN_ROW + category, 'needs_setup', 'Preview: library would be created'), None, on_share
+        if not existing:
+            existing = add_library(client, category, name, kind)
+            scan_new_library(client, existing)
+        if apply:
+            watch_library(client, existing, on_share=on_share)
+        return row(JELLYFIN_ROW + category, 'pass'), str(existing['ItemId']), on_share
+    except SetupRequired as exc:
+        return row(JELLYFIN_ROW + category, 'needs_setup', str(exc)), None, on_share
+    except (RuntimeError, ValueError, TypeError, KeyError):
+        return row(JELLYFIN_ROW + category, 'fail', LIBRARY_CHECK_FAILED), None, on_share
+
+
+LIBRARY_CHECK_FAILED = 'Library API/path check failed; existing settings preserved'
+
+
 def jellyfin(client, media, apply, username, password):
     info = client.call('/System/Info/Public')
     if not isinstance(info, dict) or not info.get('Id'):
@@ -285,29 +324,11 @@ def jellyfin(client, media, apply, username, password):
     ids = []
     shared = False
     for category, name, kind in LIBRARIES:
-        try:
-            host = safe_path(Path(media) / 'library' / category)
-            if not host.is_dir():
-                raise SetupRequired('Expected HDD library folder is missing')
-            on_share = on_a_share(host)
-            shared = shared or on_share
-            existing = matching(folders(client), category, name, kind)
-            if not existing and not apply:
-                results.append(row('jellyfin:' + category, 'needs_setup', 'Preview: library would be created'))
-                continue
-            if not existing:
-                existing = add_library(client, category, name, kind)
-                scan_new_library(client, existing)
-            if apply:
-                watch_library(client, existing, on_share=on_share)
-            ids.append(str(existing['ItemId']))
-            results.append(row('jellyfin:' + category, 'pass'))
-        except SetupRequired as exc:
-            results.append(row('jellyfin:' + category, 'needs_setup', str(exc)))
-        except (RuntimeError, ValueError, TypeError, KeyError):
-            results.append(
-                row('jellyfin:' + category, 'fail', 'Library API/path check failed; existing settings preserved')
-            )
+        result, library_id, on_share = jellyfin_library(client, media, apply, category, name, kind)
+        results.append(result)
+        if library_id is not None:
+            ids.append(library_id)
+        shared = shared or on_share
     if apply and shared:
         try:
             scan_every_hour(client)
@@ -358,25 +379,26 @@ def seerr(client, root, server_id, library_ids, apply, apps=('sonarr', 'radarr')
     values = client.call('/settings/jellyfin/library')
     if not isinstance(values, list):
         raise RuntimeError('Unsupported Seerr library response')
-    for lib_id in library_ids:
-        matches = [x for x in values if isinstance(x, dict) and str(x.get('id')) == lib_id]
-        if len(matches) != 1:
-            results.append(row('seerr:library:' + lib_id, 'needs_setup', 'Expected Jellyfin library not discovered'))
-            continue
-        if matches[0].get('enabled') is not True and apply:
-            client.call('/settings/jellyfin/library/' + urllib.parse.quote(lib_id, safe=''), 'PUT', {'enabled': True})
-            saved = client.call('/settings/jellyfin/library')
-            if not isinstance(saved, list) or not any(
-                isinstance(x, dict) and str(x.get('id')) == lib_id and x.get('enabled') is True for x in saved
-            ):
-                raise RuntimeError('Seerr library setting was not retained')
-            results.append(row('seerr:library:' + lib_id, 'pass'))
-        else:
-            results.append(
-                row('seerr:library:' + lib_id, 'pass' if matches[0].get('enabled') is True else 'needs_setup')
-            )
+    results += [seerr_library(client, values, lib_id, apply) for lib_id in library_ids]
     results.append(request_providers_row(apps))
     return results
+
+
+def seerr_library(client, values, lib_id, apply):
+    """The row for one Jellyfin library in Seerr (`values`: Seerr's list of them), switched
+    on there with --apply."""
+    matches = [x for x in values if isinstance(x, dict) and str(x.get('id')) == lib_id]
+    if len(matches) != 1:
+        return row(SEERR_LIBRARY_ROW + lib_id, 'needs_setup', 'Expected Jellyfin library not discovered')
+    if matches[0].get('enabled') is True or not apply:
+        return row(SEERR_LIBRARY_ROW + lib_id, 'pass' if matches[0].get('enabled') is True else 'needs_setup')
+    client.call('/settings/jellyfin/library/' + urllib.parse.quote(lib_id, safe=''), 'PUT', {'enabled': True})
+    saved = client.call('/settings/jellyfin/library')
+    if not isinstance(saved, list) or not any(
+        isinstance(x, dict) and str(x.get('id')) == lib_id and x.get('enabled') is True for x in saved
+    ):
+        raise RuntimeError('Seerr library setting was not retained')
+    return row(SEERR_LIBRARY_ROW + lib_id, 'pass')
 
 
 REQUEST_PROVIDERS = 'seerr:request_providers'

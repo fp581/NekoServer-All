@@ -446,12 +446,10 @@ def docker_ready(config, wanted):
             )
 
 
-def reattach(config, bundle, apply=False, confirm=''):
-    mounts(config)
-    verify_bundle(bundle, config)
-    problem = runtime_problem(bundle)
-    if problem:
-        raise RuntimeError(problem)
+def saved_checkpoint(config, bundle):
+    """The record of the old server on the SSD (installer/host-checkpoint.json), read and
+    checked against this PC and the settings: the same kind of PC and Docker store, the
+    same drives and the same media account. A record that differs is refused, said plainly."""
     record = Path(config['data_mount']) / 'installer/host-checkpoint.json'
     # The drive's folder comes from the settings, a file: the record is read only as a .json
     # file, by its real path (as source_import reads the source list).
@@ -488,6 +486,16 @@ def reattach(config, bundle, apply=False, confirm=''):
             f'to {recorded[0]}:{recorded[1]} (the record {record}). Reattaching never changes who owns files. '
             f'Nothing was changed. Use the settings of the server these drives come from:  --config {kept}'
         )
+    return saved
+
+
+def reattach(config, bundle, apply=False, confirm=''):
+    mounts(config)
+    verify_bundle(bundle, config)
+    problem = runtime_problem(bundle)
+    if problem:
+        raise RuntimeError(problem)
+    saved = saved_checkpoint(config, bundle)
     target = Path(config['data_mount']) / 'docker-engine'
     if saved.get('docker_root') != str(target) or not target.is_dir() or not any(target.iterdir()):
         raise RuntimeError('Expected persistent Docker store is missing or empty')
@@ -528,28 +536,7 @@ def reattach(config, bundle, apply=False, confirm=''):
             + config['storage']['data_ssd']['uuid']
         )
     with lock(config, changes_apps=False):
-        # Recheck disk identities immediately before writing OS configuration.
-        mounts(config)
-        docker_module.install_storage_guard(config)
-        atomic_write(daemon, json.dumps(desired, indent=2) + '\n', 0o644)
-        try:
-            # A start tried by hand earlier (and refused) leaves systemd's "started too
-            # often" count behind, which would refuse this start too.
-            subprocess.run(['systemctl', 'reset-failed', *DOCKER_UNITS], capture_output=True, timeout=30, check=False)
-            command(['systemctl', 'enable', '--now', 'docker'], 90)
-            actual = checkpoint(config)
-            if not docker_new_enough(actual['docker_version'], saved['docker_version']):
-                raise RuntimeError('Running Docker is older than the checkpoint')
-            # The store runs with this Docker now: the record names it from here on.
-            checkpoint(config, apply=True)
-        except BaseException:
-            # A failed adoption must not keep a mismatched daemon running.
-            stopped = subprocess.run(['systemctl', 'stop', *DOCKER_UNITS], capture_output=True, timeout=30, check=False)
-            if stopped.returncode:
-                raise RuntimeError(
-                    'Post-start verification failed and Docker could not be stopped; inspect service/socket locally'
-                ) from None
-            raise
+        start_reattached(config, daemon, desired, saved)
     return {
         'status': 'needs_setup',
         'reason': 'Docker store reattached and running. Next: run  sudo bash install.sh  to set up the rest '
@@ -557,13 +544,50 @@ def reattach(config, bundle, apply=False, confirm=''):
     }
 
 
+def start_reattached(config, daemon, desired, saved):
+    """Docker set to the SSD's store and started, under the lock; stopped again when it
+    does not run as the record says it must."""
+    # Recheck disk identities immediately before writing OS configuration.
+    mounts(config)
+    docker_module.install_storage_guard(config)
+    atomic_write(daemon, json.dumps(desired, indent=2) + '\n', 0o644)
+    try:
+        # A start tried by hand earlier (and refused) leaves systemd's "started too
+        # often" count behind, which would refuse this start too.
+        subprocess.run(['systemctl', 'reset-failed', *DOCKER_UNITS], capture_output=True, timeout=30, check=False)
+        command(['systemctl', 'enable', '--now', 'docker'], 90)
+        actual = checkpoint(config)
+        if not docker_new_enough(actual['docker_version'], saved['docker_version']):
+            raise RuntimeError('Running Docker is older than the checkpoint')
+        # The store runs with this Docker now: the record names it from here on.
+        checkpoint(config, apply=True)
+    except BaseException:
+        # A failed adoption must not keep a mismatched daemon running.
+        stopped = subprocess.run(['systemctl', 'stop', *DOCKER_UNITS], capture_output=True, timeout=30, check=False)
+        if stopped.returncode:
+            raise RuntimeError(
+                'Post-start verification failed and Docker could not be stopped; inspect service/socket locally'
+            ) from None
+        raise
+
+
+def on_ssd(config, *parts):
+    """`parts` below the app SSD, with no symlink along the way, and proved to lie on the
+    SSD with every link followed (the SSD's path comes from the settings file)."""
+    safe_path(Path(config['data_mount']).joinpath(*parts))
+    data = os.path.realpath(config['data_mount'])
+    path = os.path.realpath(os.path.join(data, *parts))
+    if not path.startswith(data + os.sep):
+        raise RuntimeError('Refusing a path that leaves the app SSD: ' + path)
+    return path
+
+
 def compose_args(config):
-    root = Path(config['data_mount']) / 'compose/immich'
-    compose = safe_path(root / 'compose.yaml')
-    env = safe_path(root / '.env')
-    if not compose.is_file() or not env.is_file():
+    compose = on_ssd(config, 'compose', 'immich', 'compose.yaml')
+    env = on_ssd(config, 'compose', 'immich', '.env')
+    if not os.path.isfile(compose) or not os.path.isfile(env):
         raise RuntimeError('Existing Immich manifest and environment required')
-    return DOCKER + ['compose', '-p', 'neko-immich', '-f', str(compose), '--env-file', str(env)]
+    return DOCKER + ['compose', '-p', 'neko-immich', '-f', compose, '--env-file', env]
 
 
 def validate_model(model, upload, database, ask=None):
@@ -648,7 +672,9 @@ def snapshot_plan(config, destination):
     database = safe_path(Path(config['data_mount']) / 'appdata/immich/postgres')
     validate_model(model, upload, database)
     version = None
-    for line in safe_path(Path(config['data_mount']) / 'compose/immich/.env').read_text().splitlines():
+    with open(on_ssd(config, 'compose', 'immich', '.env')) as stream:
+        settings = stream.read()
+    for line in settings.splitlines():
         if line.startswith('IMMICH_VERSION='):
             version = line.split('=', 1)[1]
     if not isinstance(version, str) or not re.fullmatch(r'v\d+\.\d+\.\d+', version):
@@ -812,6 +838,11 @@ def restart_again(config, base, failed):
 
 # Marks a snapshot or a rehearsal that is not usable yet.
 INCOMPLETE = '.incomplete'
+# A snapshot's own files, beside its copy of the photos and of the database folder: the
+# database dump, Immich's Compose settings as they were, and the record of the rest.
+SNAPSHOT_SQL = 'database.sql'
+SNAPSHOT_COMPOSE = 'compose-resolved.json'
+SNAPSHOT_RECORD = 'snapshot.json'
 
 
 def snapshot(config, destination, apply=False, config_path=None):
@@ -859,7 +890,7 @@ def snapshot(config, destination, apply=False, config_path=None):
                 (photo / directory.relative_to(upload)).mkdir(parents=True, exist_ok=True, mode=0o700)
             for source in files:
                 copy_verified(source, photo / source.relative_to(upload))
-            sql = destination / 'database.sql'
+            sql = destination / SNAPSHOT_SQL
             with sql.open('xb') as output:
                 os.fchmod(output.fileno(), 0o600)
                 command(
@@ -881,7 +912,7 @@ def snapshot(config, destination, apply=False, config_path=None):
                 raise RuntimeError('Database dump unexpectedly small')
             if not dump_complete(sql):
                 raise RuntimeError('Database dump is incomplete (no end marker); the disk may be full')
-            atomic_json(destination / 'compose-resolved.json', model)
+            atomic_json(destination / SNAPSHOT_COMPOSE, model)
             entries = {
                 str(p.relative_to(destination)): digest(p)
                 for p in regular_files(destination)
@@ -897,7 +928,7 @@ def snapshot(config, destination, apply=False, config_path=None):
                 'sha256': entries,
                 'empty_directories': [str(p.relative_to(photo)) for p in sorted(photo.rglob('*')) if p.is_dir()],
             }
-            atomic_json(destination / 'snapshot.json', metadata)
+            atomic_json(destination / SNAPSHOT_RECORD, metadata)
             (destination / INCOMPLETE).unlink()
     return {
         'status': 'pass',
@@ -907,17 +938,10 @@ def snapshot(config, destination, apply=False, config_path=None):
     }
 
 
-def verify_snapshot(path):
-    path = safe_path(path)
-    if (path / INCOMPLETE).exists():
-        raise RuntimeError('Incomplete snapshot cannot be restored')
-    meta = json.loads(safe_path(path / 'snapshot.json').read_text())
-    if meta.get('format') != FORMAT or not re.fullmatch(r'v\d+\.\d+\.\d+', meta.get('immich_version', '')):
-        raise RuntimeError('Unsupported snapshot format/version')
-    entries = meta.get('sha256')
-    if not isinstance(entries, dict) or not {'database.sql', 'compose-resolved.json'} <= set(entries):
-        raise RuntimeError('Snapshot lacks database/Compose checksums')
-    actual = {str(p.relative_to(path)) for p in regular_files(path)} - {'snapshot.json'}
+def check_snapshot_files(path, entries):
+    """Every file in the snapshot folder is one its record lists (`entries`: name to
+    checksum), and each is read and compared with its checksum."""
+    actual = {str(p.relative_to(path)) for p in regular_files(path)} - {SNAPSHOT_RECORD}
     if actual != set(entries):
         raise RuntimeError('Snapshot file inventory differs')
     for name, expected in entries.items():
@@ -926,8 +950,13 @@ def verify_snapshot(path):
             raise RuntimeError('Invalid snapshot checksum entry')
         if digest(path / rel) != expected:
             raise RuntimeError('Snapshot checksum mismatch')
-    payload = (path / 'compose-resolved.json').read_bytes()
-    if hashlib.sha256(payload).hexdigest() != entries['compose-resolved.json']:
+
+
+def snapshot_model(path, meta, entries):
+    """Immich's Compose settings as the snapshot kept them, read once more and checked:
+    unchanged since its checksum, for the folders the record names, every image pinned."""
+    payload = (path / SNAPSHOT_COMPOSE).read_bytes()
+    if hashlib.sha256(payload).hexdigest() != entries[SNAPSHOT_COMPOSE]:
         raise RuntimeError('Snapshot Compose changed during verification')
     model = json.loads(payload)
     if type(meta.get('database_bytes')) is not int or meta['database_bytes'] < 1:
@@ -935,6 +964,21 @@ def verify_snapshot(path):
     validate_model(model, Path(meta['source_upload']), Path(meta['source_database']))
     if not all(re.fullmatch(r'[A-Za-z0-9./:_-]+@sha256:[0-9a-f]{64}', s['image']) for s in model['services'].values()):
         raise RuntimeError('Snapshot images are not pinned by digest')
+    return model
+
+
+def verify_snapshot(path):
+    path = safe_path(path)
+    if (path / INCOMPLETE).exists():
+        raise RuntimeError('Incomplete snapshot cannot be restored')
+    meta = json.loads(safe_path(path / SNAPSHOT_RECORD).read_text())
+    if meta.get('format') != FORMAT or not re.fullmatch(r'v\d+\.\d+\.\d+', meta.get('immich_version', '')):
+        raise RuntimeError('Unsupported snapshot format/version')
+    entries = meta.get('sha256')
+    if not isinstance(entries, dict) or not {SNAPSHOT_SQL, SNAPSHOT_COMPOSE} <= set(entries):
+        raise RuntimeError('Snapshot lacks database/Compose checksums')
+    check_snapshot_files(path, entries)
+    model = snapshot_model(path, meta, entries)
     dirs = meta.get('empty_directories', [])
     if not isinstance(dirs, list) or any(
         not isinstance(x, str) or Path(x).is_absolute() or '..' in Path(x).parts for x in dirs
@@ -1056,45 +1100,70 @@ def isolated_model(model, meta, workspace, port):
         },
     }
     validate_model(model, Path(meta['source_upload']), Path(meta['source_database']))
-    allowed = ('image', 'command', 'entrypoint', 'environment', 'healthcheck', 'shm_size', 'stop_grace_period', 'init')
     for name, source in model['services'].items():
-        service = {k: copy.deepcopy(source[k]) for k in allowed if k in source}
-        service['restart'] = 'no'
-        service['volumes'] = []
-        env = service.get('environment', {})
-        if not isinstance(env, dict):
-            raise RuntimeError('Canonical service environment required')
-        for key in ('UPLOAD_LOCATION', 'DB_DATA_LOCATION'):
-            env.pop(key, None)
-        if name == 'immich-server':
-            env['DB_HOSTNAME'] = 'database'
-            env['REDIS_HOSTNAME'] = 'redis'
-            env['IMMICH_MACHINE_LEARNING_URL'] = 'http://immich-machine-learning:3003'
-            service['environment'] = env
-        # Self-hosted integrations cannot call out through the internal test network.
-        for value in env.values():
-            if value is not None and '$' in str(value):
-                raise RuntimeError('Unresolved environment interpolation in snapshot')
-        for volume in source.get('volumes', []):
-            if volume.get('source') == '/etc/localtime':
-                continue
-            if name == 'immich-server':
-                folder = workspace / 'upload'
-            elif name == 'database':
-                folder = workspace / 'postgres'
-            else:
-                folder = workspace / 'cache' / volume['source']
-            service['volumes'].append(
-                {'type': 'bind', 'source': str(folder), 'target': volume['target'], 'bind': {'create_host_path': False}}
-            )
-        if name == 'immich-server':
-            service['ports'] = [{'target': 2283, 'published': str(port), 'host_ip': '127.0.0.1', 'protocol': 'tcp'}]
-        if 'depends_on' in source:
-            if not isinstance(source['depends_on'], dict) or not set(source['depends_on']) <= SERVICES:
-                raise RuntimeError('Unsupported service dependency')
-            service['depends_on'] = copy.deepcopy(source['depends_on'])
-        result['services'][name] = service
+        result['services'][name] = isolated_service(name, source, workspace, port)
     return result
+
+
+# What a service of the snapshot keeps in the rehearsal; its folders and ports are set anew.
+KEPT_SETTINGS = (
+    'image',
+    'command',
+    'entrypoint',
+    'environment',
+    'healthcheck',
+    'shm_size',
+    'stop_grace_period',
+    'init',
+)
+
+
+def isolated_service(name, source, workspace, port):
+    """One service of the snapshot's Compose settings as the rehearsal runs it: never
+    restarted, its folders in the rehearsal's workspace, Immich itself on `port` of this PC."""
+    service = {k: copy.deepcopy(source[k]) for k in KEPT_SETTINGS if k in source}
+    service['restart'] = 'no'
+    service['volumes'] = []  # filled below: the order of the keys is kept as before
+    env = service.get('environment', {})
+    if not isinstance(env, dict):
+        raise RuntimeError('Canonical service environment required')
+    for key in ('UPLOAD_LOCATION', 'DB_DATA_LOCATION'):
+        env.pop(key, None)
+    if name == 'immich-server':
+        env['DB_HOSTNAME'] = 'database'
+        env['REDIS_HOSTNAME'] = 'redis'
+        env['IMMICH_MACHINE_LEARNING_URL'] = 'http://immich-machine-learning:3003'
+        service['environment'] = env
+    # Self-hosted integrations cannot call out through the internal test network.
+    if any(value is not None and '$' in str(value) for value in env.values()):
+        raise RuntimeError('Unresolved environment interpolation in snapshot')
+    service['volumes'] = isolated_volumes(name, source, workspace)
+    if name == 'immich-server':
+        service['ports'] = [{'target': 2283, 'published': str(port), 'host_ip': '127.0.0.1', 'protocol': 'tcp'}]
+    if 'depends_on' in source:
+        if not isinstance(source['depends_on'], dict) or not set(source['depends_on']) <= SERVICES:
+            raise RuntimeError('Unsupported service dependency')
+        service['depends_on'] = copy.deepcopy(source['depends_on'])
+    return service
+
+
+def isolated_volumes(name, source, workspace):
+    """A service's folders, each bound to its own folder in the rehearsal's workspace
+    (the clock's /etc/localtime left out)."""
+    volumes = []
+    for volume in source.get('volumes', []):
+        if volume.get('source') == '/etc/localtime':
+            continue
+        if name == 'immich-server':
+            folder = workspace / 'upload'
+        elif name == 'database':
+            folder = workspace / 'postgres'
+        else:
+            folder = workspace / 'cache' / volume['source']
+        volumes.append(
+            {'type': 'bind', 'source': str(folder), 'target': volume['target'], 'bind': {'create_host_path': False}}
+        )
+    return volumes
 
 
 def ready_database(base, attempts=60):
@@ -1203,13 +1272,8 @@ def staged_sql(lines):
         yield line
 
 
-def restore_test(config, snapshot_path, workspace, port=2284, apply=False, confirm=''):
-    mounts(config)
-    snapshot_path = safe_path(snapshot_path)
-    meta, model = verify_snapshot(snapshot_path)
-    workspace = new_folder(config, workspace, 'recovery-tests')
-    if within(workspace, snapshot_path) or within(snapshot_path, workspace):
-        raise RuntimeError('Restore workspace and backup must be separate')
+def check_test_port(config, port):
+    """The rehearsal's port is an unprivileged one other than Immich's own, and free now."""
     if type(port) is not int or not 1024 <= port <= 65535 or port == 2283:
         raise RuntimeError('Use a distinct unprivileged restore-test port')
     with socket.socket() as sock:
@@ -1217,6 +1281,64 @@ def restore_test(config, snapshot_path, workspace, port=2284, apply=False, confi
             sock.bind(('127.0.0.1', port))
         except OSError:
             raise RuntimeError(port_in_use(config, port)) from None
+
+
+def new_test_project():
+    """A new Compose project name for the rehearsal, which no container or network has yet."""
+    project = 'neko-restore-' + uuid.uuid4().hex[:12]
+    for argv in (
+        DOCKER + ['ps', '-a', '--filter', PROJECT_LABEL + project, '-q'],
+        DOCKER + ['network', 'ls', '--filter', PROJECT_LABEL + project, '-q'],
+    ):
+        if command(argv).strip():
+            raise RuntimeError('Restore project identity already exists')
+    return project
+
+
+def copy_photos(snapshot_path, workspace, meta):
+    """The snapshot's photos and videos copied into the workspace, each compared with its checksum."""
+    (workspace / 'upload').mkdir(mode=0o700)
+    for name in meta.get('empty_directories', []):
+        (workspace / 'upload' / name).mkdir(parents=True, exist_ok=True, mode=0o700)
+    for source in regular_files(snapshot_path / 'upload'):
+        target = workspace / 'upload' / source.relative_to(snapshot_path / 'upload')
+        copy_verified(source, target)
+        if digest(target) != meta['sha256'][str(source.relative_to(snapshot_path))]:
+            raise RuntimeError('Snapshot photo changed after verification')
+
+
+def make_service_folders(isolated):
+    """Each folder the rehearsal's services are bound to, made in its workspace."""
+    for service in isolated['services'].values():
+        for volume in service['volumes']:
+            safe_path(volume['source']).mkdir(parents=True, exist_ok=True, mode=0o700)
+
+
+def staged_database(snapshot_path, workspace, meta):
+    """The snapshot's database dump, made ready for the rehearsal's database in the
+    workspace (restore.sql, private), and checked against its checksum before and after."""
+    sql = workspace / 'restore.sql'
+    if digest(snapshot_path / SNAPSHOT_SQL) != meta['sha256'][SNAPSHOT_SQL]:
+        raise RuntimeError('Snapshot SQL changed after verification')
+    with (snapshot_path / SNAPSHOT_SQL).open('rb') as inp, sql.open('xb') as out:
+        os.fchmod(out.fileno(), 0o600)
+        for line in staged_sql(inp):
+            out.write(line)
+        out.flush()
+        os.fsync(out.fileno())
+    if digest(snapshot_path / SNAPSHOT_SQL) != meta['sha256'][SNAPSHOT_SQL]:
+        raise RuntimeError('Snapshot SQL changed during restore staging')
+    return sql
+
+
+def restore_test(config, snapshot_path, workspace, port=2284, apply=False, confirm=''):
+    mounts(config)
+    snapshot_path = safe_path(snapshot_path)
+    meta, model = verify_snapshot(snapshot_path)
+    workspace = new_folder(config, workspace, 'recovery-tests')
+    if within(workspace, snapshot_path) or within(snapshot_path, workspace):
+        raise RuntimeError('Restore workspace and backup must be separate')
+    check_test_port(config, port)
     enough_space(workspace, sum(p.stat().st_size for p in regular_files(snapshot_path)) + 2 * meta['database_bytes'])
     isolated = isolated_model(model, meta, workspace, port)
     if not apply:
@@ -1238,41 +1360,16 @@ def restore_test(config, snapshot_path, workspace, port=2284, apply=False, confi
         # takes the first one's new network and containers (made, not yet started) for ones
         # a stopped test left (the review of 0.46.3).
         clear_left_bridge(port)
-        project = 'neko-restore-' + uuid.uuid4().hex[:12]
-        for argv in (
-            DOCKER + ['ps', '-a', '--filter', PROJECT_LABEL + project, '-q'],
-            DOCKER + ['network', 'ls', '--filter', PROJECT_LABEL + project, '-q'],
-        ):
-            if command(argv).strip():
-                raise RuntimeError('Restore project identity already exists')
+        project = new_test_project()
         workspace.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         workspace.mkdir(mode=0o700)
         atomic_write(workspace / INCOMPLETE, 'Restore rehearsal incomplete\n')
         base = DOCKER + ['compose', '-p', project, '-f', str(workspace / 'compose.json')]
         started = False
         try:
-            (workspace / 'upload').mkdir(mode=0o700)
-            for name in meta.get('empty_directories', []):
-                (workspace / 'upload' / name).mkdir(parents=True, exist_ok=True, mode=0o700)
-            for source in regular_files(snapshot_path / 'upload'):
-                target = workspace / 'upload' / source.relative_to(snapshot_path / 'upload')
-                copy_verified(source, target)
-                if digest(target) != meta['sha256'][str(source.relative_to(snapshot_path))]:
-                    raise RuntimeError('Snapshot photo changed after verification')
-            for service in isolated['services'].values():
-                for volume in service['volumes']:
-                    safe_path(volume['source']).mkdir(parents=True, exist_ok=True, mode=0o700)
-            sql = workspace / 'restore.sql'
-            if digest(snapshot_path / 'database.sql') != meta['sha256']['database.sql']:
-                raise RuntimeError('Snapshot SQL changed after verification')
-            with (snapshot_path / 'database.sql').open('rb') as inp, sql.open('xb') as out:
-                os.fchmod(out.fileno(), 0o600)
-                for line in staged_sql(inp):
-                    out.write(line)
-                out.flush()
-                os.fsync(out.fileno())
-            if digest(snapshot_path / 'database.sql') != meta['sha256']['database.sql']:
-                raise RuntimeError('Snapshot SQL changed during restore staging')
+            copy_photos(snapshot_path, workspace, meta)
+            make_service_folders(isolated)
+            sql = staged_database(snapshot_path, workspace, meta)
             atomic_json(workspace / 'compose.json', isolated)
             command(base + ['config', '-q'])
             isolate_host(test_bridge(port))

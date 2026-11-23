@@ -21,9 +21,14 @@ def call(args, timeout=120):
     return proc.stdout.strip()
 
 
+# Folders far too wide to be the data root itself, built from their names. They are only
+# compared with the folder named, never written to.
+TOO_WIDE = frozenset(('/', *('/' + folder for folder in ('home', 'var', 'tmp', 'mnt', 'srv'))))
+
+
 def mounted_data_root(root):
     root = safe_path(root)
-    if not root.is_absolute() or str(root) in ('/', '/home', '/var', '/tmp', '/mnt', '/srv'):
+    if not root.is_absolute() or str(root) in TOO_WIDE:
         raise RuntimeError(
             'Persistent root must be a dedicated absolute directory under a separately mounted filesystem'
         )
@@ -71,6 +76,8 @@ def prepare_daemon_config(path, target):
 
 # Docker's systemd units: the service, and the socket that starts it again on demand.
 DOCKER_SERVICE = 'docker.service'
+# Where the running Docker keeps its images and containers.
+DOCKER_ROOT_DIR = ['docker', 'info', '--format', '{{.DockerRootDir}}']
 DOCKER_SOCKET = 'docker.socket'
 
 # Settings that daemon.json and a flag on Docker's service command line can both set:
@@ -301,30 +308,62 @@ def run(context):
     daemon = prepare_daemon_config(daemon_file, target)
     # Do not mutate a running daemon or silently relocate existing images/volumes.
     active = subprocess.run(['systemctl', 'is-active', '--quiet', 'docker'], check=False, timeout=30).returncode == 0
-    if active and call(['docker', 'info', '--format', '{{.DockerRootDir}}']) != str(target):
-        actual = call(['docker', 'info', '--format', '{{.DockerRootDir}}'])
-        if active_store_in_use():
-            raise already_used(actual, target)
-        # Nothing in it (just installed, or NekoServer uninstalled): it runs from the SSD from now on.
-        context.log(
-            f'Docker runs from {actual} with nothing in it (no container, image or volume): stopped, to run from the SSD'
-        )
-        subprocess.run(['systemctl', 'stop', DOCKER_SOCKET, DOCKER_SERVICE], check=True, timeout=300)
+    if active and call(DOCKER_ROOT_DIR) != str(target):
+        stop_empty_store(context, target)
         active = False
     if active:
-        if not daemon_file.exists() or json.loads(daemon_file.read_text()).get('data-root') != str(target):
-            raise RuntimeError('Active Docker root is correct but daemon.json differs; inspect before changing')
-        override = DOCKER_STORAGE_DROPIN
-        if not override.exists() or f'RequiresMountsFor={root}' not in override.read_text():
-            raise RuntimeError('Active Docker lacks verified storage mount guard; stop service before configuring')
-        ensure_active_compose(settings)
-        context.log('Docker already running with expected data-root and existing SSD guard')
-        verify_classic_store()
-        install_storage_guard(context.config)
-        validate_daemon(daemon)
-        write_atomic(daemon_file, json.dumps(daemon, indent=2) + '\n')
-        context.log('Verified SSD/HDD startup guard installed; running containers were not restarted')
+        keep_running(context, settings, daemon_file, daemon, target, root)
         return
+    check_stopped_store(daemon_file, target)
+    install_engine(settings)
+    for sub in ('compose', 'appdata', 'vm', 'installer', 'secrets', 'docker-engine'):
+        (Path(root) / sub).mkdir(parents=True, exist_ok=True, mode=0o750)
+    # The mount requirement first, then the SSD data-root: a run that stops in between
+    # (Ctrl+C, a failed runtime build) never leaves Docker set to the SSD folder without
+    # the guard, which would let it start at boot before the SSD and fill that folder
+    # on the system disk. RequiresMountsFor works for UUID-backed fstab or native mounts.
+    install_storage_guard(context.config)
+    validate_daemon(daemon)
+    write_atomic(daemon_file, json.dumps(daemon, indent=2) + '\n')
+    if settings.get('enable_service', True):
+        start_on_ssd(target)
+    context.log(f'Docker data-root set to {target}; systemd mount requirement installed')
+
+
+def stop_empty_store(context, target):
+    """Docker runs from another folder: stopped, to run from the SSD, when nothing is in
+    it; refused when something is."""
+    actual = call(DOCKER_ROOT_DIR)
+    if active_store_in_use():
+        raise already_used(actual, target)
+    # Nothing in it (just installed, or NekoServer uninstalled): it runs from the SSD from now on.
+    context.log(
+        f'Docker runs from {actual} with nothing in it (no container, image or volume): stopped, to run from the SSD'
+    )
+    subprocess.run(['systemctl', 'stop', DOCKER_SOCKET, DOCKER_SERVICE], check=True, timeout=300)
+
+
+def keep_running(context, settings, daemon_file, daemon, target, root):
+    """Docker already runs from the SSD: its settings and guard are checked and written
+    again, and the containers it runs are not restarted."""
+    if not daemon_file.exists() or json.loads(daemon_file.read_text()).get('data-root') != str(target):
+        raise RuntimeError('Active Docker root is correct but daemon.json differs; inspect before changing')
+    override = DOCKER_STORAGE_DROPIN
+    if not override.exists() or f'RequiresMountsFor={root}' not in override.read_text():
+        raise RuntimeError('Active Docker lacks verified storage mount guard; stop service before configuring')
+    ensure_active_compose(settings)
+    context.log('Docker already running with expected data-root and existing SSD guard')
+    verify_classic_store()
+    install_storage_guard(context.config)
+    validate_daemon(daemon)
+    write_atomic(daemon_file, json.dumps(daemon, indent=2) + '\n')
+    context.log('Verified SSD/HDD startup guard installed; running containers were not restarted')
+
+
+def check_stopped_store(daemon_file, target):
+    """A stopped Docker: one set up elsewhere is checked as any existing Docker is; one
+    already set to the SSD folder is refused while what is in it is not known to be
+    Docker's classic store."""
     already_configured = daemon_file.exists() and json.loads(daemon_file.read_text()).get('data-root') == str(target)
     if not already_configured:
         check_existing_docker(target)
@@ -336,6 +375,10 @@ def run(context):
         raise RuntimeError(
             'Stopped existing Docker backend is unverified; start and inspect it before changing storage settings'
         )
+
+
+def install_engine(settings):
+    """Docker and its Compose plugin, installed when one is missing and the settings allow it."""
     has_docker = shutil.which('docker') is not None
     has_compose = (
         has_docker
@@ -346,25 +389,18 @@ def run(context):
         if not settings.get('install_engine', False):
             raise RuntimeError('Docker missing; set docker.install_engine=true before --apply')
         host.current().install(['docker', 'docker-compose'])
-    for sub in ('compose', 'appdata', 'vm', 'installer', 'secrets', 'docker-engine'):
-        (Path(root) / sub).mkdir(parents=True, exist_ok=True, mode=0o750)
-    # The mount requirement first, then the SSD data-root: a run that stops in between
-    # (Ctrl+C, a failed runtime build) never leaves Docker set to the SSD folder without
-    # the guard, which would let it start at boot before the SSD and fill that folder
-    # on the system disk. RequiresMountsFor works for UUID-backed fstab or native mounts.
-    install_storage_guard(context.config)
-    validate_daemon(daemon)
-    write_atomic(daemon_file, json.dumps(daemon, indent=2) + '\n')
-    if settings.get('enable_service', True):
-        # Earlier failed starts (the guard missing after a drive problem, say) make systemd
-        # refuse a start with "attempted too often"; that count is cleared first.
-        subprocess.run(
-            ['systemctl', 'reset-failed', DOCKER_SERVICE, DOCKER_SOCKET], capture_output=True, timeout=30, check=False
-        )
-        call(['systemctl', 'enable', '--now', 'docker'], timeout=90)
-        actual = call(['docker', 'info', '--format', '{{.DockerRootDir}}'])
-        if actual != str(target):
-            call(['systemctl', 'stop', 'docker'])
-            raise RuntimeError(f'Docker reports incorrect root {actual}; service stopped')
-        verify_classic_store()
-    context.log(f'Docker data-root set to {target}; systemd mount requirement installed')
+
+
+def start_on_ssd(target):
+    """Docker started, and stopped again unless it says it runs from the SSD folder."""
+    # Earlier failed starts (the guard missing after a drive problem, say) make systemd
+    # refuse a start with "attempted too often"; that count is cleared first.
+    subprocess.run(
+        ['systemctl', 'reset-failed', DOCKER_SERVICE, DOCKER_SOCKET], capture_output=True, timeout=30, check=False
+    )
+    call(['systemctl', 'enable', '--now', 'docker'], timeout=90)
+    actual = call(DOCKER_ROOT_DIR)
+    if actual != str(target):
+        call(['systemctl', 'stop', 'docker'])
+        raise RuntimeError(f'Docker reports incorrect root {actual}; service stopped')
+    verify_classic_store()

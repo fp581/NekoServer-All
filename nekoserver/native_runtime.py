@@ -1,7 +1,7 @@
 """Verify the native runtime built for this release (by install.sh on this PC, or the
 static release build) and deploy it without compiling as root."""
 
-import hashlib, json, platform, subprocess, sys
+import hashlib, json, os, platform, subprocess, sys
 from pathlib import Path
 from neko_common import RECOVERY, SYSTEMD_UNITS, VERSION, safe_path, atomic_write, atomic_json
 
@@ -192,9 +192,16 @@ def in_use(folder, units=SYSTEMD_UNITS):
 
 def release_folders(home):
     """This home's per-release folders (v0.28.9, ...), oldest first."""
-    if not home.is_dir():
+    # The home may come from the settings (the SSD's runtime folder): it is listed by its
+    # real path, and each folder found is named under the home as asked.
+    real = os.path.realpath(home)
+    if not real.startswith(os.sep) or not os.path.isdir(real):
         return []
-    found = [p for p in home.glob('v*') if p.is_dir() and not p.is_symlink() and release_number(p.name)]
+    found = [
+        Path(home) / p.name
+        for p in Path(real).glob('v*')
+        if p.is_dir() and not p.is_symlink() and release_number(p.name)
+    ]
     return sorted(found, key=lambda p: release_number(p.name))
 
 
@@ -416,14 +423,9 @@ def backup_guard(config):
 CONFIG_FLAG = '--config '
 
 
-def acceptance_checks(config, modules):
-    """Inspect native selection, executable bytes, private guard and loaded commands."""
-    import status_checks as health
-
-    root = Path(__file__).resolve().parent
-    expected = hashlib.sha256(payload(root, config)).hexdigest()
-    data = Path(config['data_mount'])
-    rows = []
+def installed_jobs(config, modules):
+    """The services whose program is installed under /usr/local/lib: (unit, program,
+    command, whether it reads the backups' storage guard)."""
     jobs = []
     if 'dashboard' in modules:
         code = Path('/usr/local/lib/nekoserver-dashboard') / ('v' + VERSION) / NAME
@@ -463,7 +465,13 @@ def acceptance_checks(config, modules):
                 False,
             )
         ]
-    code = data / 'installer/runtime' / ('v' + VERSION) / NAME
+    return jobs
+
+
+def ssd_jobs(config, modules):
+    """The services whose program is kept on the app SSD, as installed_jobs gives them."""
+    jobs = []
+    code = Path(config['data_mount']) / 'installer/runtime' / ('v' + VERSION) / NAME
     if 'media_monitor' in modules and config.get('monitoring', {}).get('enabled', True):
         jobs += [('nekoserver-media-health.service', code, 'media-health', False)]
     if 'photo_preservation' in modules:
@@ -486,103 +494,169 @@ def acceptance_checks(config, modules):
 
     if 'backup_cards' in modules and cards_enabled(config):
         jobs += [(SHARED['cards']['service'], code, 'cards', True)]
-    for unit, binary, command, guard in jobs:
-        good = False
-        try:
-            good = hashlib.sha256(safe_path(binary).read_bytes()).hexdigest() == expected
-            rc, loaded = health.run(['systemctl', 'show', unit, '--property=ExecStart,FragmentPath'])
+    return jobs
+
+
+# What systemd says a service runs when it is stopped: the resume of a job cut off.
+STOP_POST = '--property=ExecStopPost'
+
+
+def private_file_named(private, loaded):
+    """The service names `private` as its settings, and only root can read that file."""
+    return CONFIG_FLAG + str(private) in loaded and private.stat().st_uid == 0 and private.stat().st_mode & 0o077 == 0
+
+
+# Each check below takes how the job looked so far (`good`) and returns how it looks
+# after its own part. A check that cannot be made (a file that cannot be read) ends it,
+# and the job keeps what it was found to be until then.
+
+
+def maintenance_ok(good, job, loaded, config, health):
+    unit, binary = job[0], job[1]
+    try:
+        private = safe_path('/etc/nekoserver-backups/maintenance.json')
+        good = (
+            good
+            and health.read_json(private) == config
+            and private.stat().st_uid == 0
+            and private.stat().st_mode & 0o077 == 0
+            and CONFIG_FLAG + str(private) in loaded
+        )
+        rc, recovery = health.run(['systemctl', 'show', unit, STOP_POST])
+        return good and rc == 0 and str(binary) + ' maintenance-resume --config ' + str(private) in recovery
+    except (OSError, RuntimeError):
+        return good
+
+
+def app_snapshot_ok(good, job, loaded, config, health):
+    unit, binary = job[0], job[1]
+    try:
+        from modules import app_backup
+
+        expected_guard = app_backup.guard_config(config)
+        good = (
+            good
+            and health.read_json('/etc/nekoserver-backups/applications.json') == expected_guard
+            and '--config /etc/nekoserver-backups/applications.json' in loaded
+        )
+        rc, recovery = health.run(['systemctl', 'show', unit, STOP_POST])
+        return (
+            good
+            and rc == 0
+            and str(binary) + ' app-resume --config /etc/nekoserver-backups/applications.json' in recovery
+        )
+    except (OSError, RuntimeError):
+        return good
+
+
+def host_snapshot_ok(good, job, loaded, config, health):
+    unit, binary = job[0], job[1]
+    try:
+        from modules import host_backup
+
+        good = (
+            good
+            and health.read_json('/etc/nekoserver-backups/host.json') == host_backup.expected(config)
+            and '--config /etc/nekoserver-backups/host.json' in loaded
+        )
+        rc, recovery = health.run(['systemctl', 'show', unit, STOP_POST])
+        return good and rc == 0 and str(binary) + ' host-resume --config /etc/nekoserver-backups/host.json' in recovery
+    except (OSError, RuntimeError):
+        return good
+
+
+def hdd_policy_ok(good, job, loaded, config, health):
+    try:
+        from modules import server_os
+
+        return (
+            good
+            and health.read_json('/etc/nekoserver-os/storage.json') == server_os.hdd_guard(config)
+            and '--config /etc/nekoserver-os/storage.json' in loaded
+        )
+    except (OSError, RuntimeError):
+        return good
+
+
+def heartbeat_ok(good, job, loaded, config, health):
+    try:
+        private = safe_path('/etc/nekoserver-heartbeat/config.json')
+        from modules import heartbeat
+
+        return (
+            good
+            and private_file_named(private, loaded)
+            and heartbeat.endpoint(health.read_json(private).get('endpoint'))
+        )
+    except (OSError, RuntimeError):
+        return good
+
+
+def notify_ok(good, job, loaded, config, health):
+    try:
+        return good and private_file_named(safe_path('/etc/nekoserver-notifications/config.json'), loaded)
+    except (OSError, RuntimeError):
+        return good
+
+
+def serve_ok(good, job, loaded, config, health):
+    try:
+        return good and job[1].stat().st_mode & 0o005 == 0o005
+    except (OSError, RuntimeError):
+        return good
+
+
+COMMAND_CHECKS = {
+    'maintenance': maintenance_ok,
+    'app-snapshot': app_snapshot_ok,
+    'host-snapshot': host_snapshot_ok,
+    'hdd-policy': hdd_policy_ok,
+    'heartbeat': heartbeat_ok,
+    'notify': notify_ok,
+    'serve': serve_ok,
+}
+
+
+def job_ok(job, expected, config, health):
+    """The service runs this release's program, with the command and settings it should."""
+    unit, binary, command, guard = job
+    good = False
+    try:
+        good = hashlib.sha256(safe_path(binary).read_bytes()).hexdigest() == expected
+        rc, loaded = health.run(['systemctl', 'show', unit, '--property=ExecStart,FragmentPath'])
+        good = (
+            good
+            and rc == 0
+            and ('argv[]=' + str(binary) + ' ' + command + ' ') in loaded
+            and ('FragmentPath=' + str(SYSTEMD_UNITS / unit)) in loaded
+        )
+        if guard:
             good = (
                 good
-                and rc == 0
-                and ('argv[]=' + str(binary) + ' ' + command + ' ') in loaded
-                and ('FragmentPath=' + str(SYSTEMD_UNITS / unit)) in loaded
+                and health.read_json('/etc/nekoserver-backups/storage.json') == storage_config(config)
+                and '--config /etc/nekoserver-backups/storage.json' in loaded
             )
-            if guard:
-                good = (
-                    good
-                    and health.read_json('/etc/nekoserver-backups/storage.json') == storage_config(config)
-                    and '--config /etc/nekoserver-backups/storage.json' in loaded
-                )
-            if command == 'maintenance':
-                private = safe_path('/etc/nekoserver-backups/maintenance.json')
-                good = (
-                    good
-                    and health.read_json(private) == config
-                    and private.stat().st_uid == 0
-                    and private.stat().st_mode & 0o077 == 0
-                    and CONFIG_FLAG + str(private) in loaded
-                )
-                rc, recovery = health.run(['systemctl', 'show', unit, '--property=ExecStopPost'])
-                good = good and rc == 0 and str(binary) + ' maintenance-resume --config ' + str(private) in recovery
-            if command == 'app-snapshot':
-                from modules import app_backup
+    except (OSError, RuntimeError):
+        return good
+    check = COMMAND_CHECKS.get(command)
+    return check(good, job, loaded, config, health) if check else good
 
-                expected_guard = app_backup.guard_config(config)
-                good = (
-                    good
-                    and health.read_json('/etc/nekoserver-backups/applications.json') == expected_guard
-                    and '--config /etc/nekoserver-backups/applications.json' in loaded
-                )
-                rc, recovery = health.run(['systemctl', 'show', unit, '--property=ExecStopPost'])
-                good = (
-                    good
-                    and rc == 0
-                    and str(binary) + ' app-resume --config /etc/nekoserver-backups/applications.json' in recovery
-                )
-            if command == 'host-snapshot':
-                from modules import host_backup
 
-                good = (
-                    good
-                    and health.read_json('/etc/nekoserver-backups/host.json') == host_backup.expected(config)
-                    and '--config /etc/nekoserver-backups/host.json' in loaded
-                )
-                rc, recovery = health.run(['systemctl', 'show', unit, '--property=ExecStopPost'])
-                good = (
-                    good
-                    and rc == 0
-                    and str(binary) + ' host-resume --config /etc/nekoserver-backups/host.json' in recovery
-                )
-            if command == 'hdd-policy':
-                from modules import server_os
+def acceptance_checks(config, modules):
+    """Inspect native selection, executable bytes, private guard and loaded commands."""
+    import status_checks as health
 
-                good = (
-                    good
-                    and health.read_json('/etc/nekoserver-os/storage.json') == server_os.hdd_guard(config)
-                    and '--config /etc/nekoserver-os/storage.json' in loaded
-                )
-            if command == 'heartbeat':
-                private = safe_path('/etc/nekoserver-heartbeat/config.json')
-                from modules import heartbeat
-
-                good = (
-                    good
-                    and CONFIG_FLAG + str(private) in loaded
-                    and private.stat().st_uid == 0
-                    and private.stat().st_mode & 0o077 == 0
-                    and heartbeat.endpoint(health.read_json(private).get('endpoint'))
-                )
-            if command == 'notify':
-                private = safe_path('/etc/nekoserver-notifications/config.json')
-                good = (
-                    good
-                    and CONFIG_FLAG + str(private) in loaded
-                    and private.stat().st_uid == 0
-                    and private.stat().st_mode & 0o077 == 0
-                )
-            if command == 'serve':
-                good = good and binary.stat().st_mode & 0o005 == 0o005
-        except (OSError, RuntimeError):
-            pass
-        rows.append(
-            {
-                'id': 'runtime:' + unit,
-                'name': 'Native ' + unit.removesuffix('.service'),
-                'status': 'pass' if good else 'needs_setup',
-                'detail': 'Selected native executable checksum, loaded command and applicable storage guard must match this release.',
-            }
-        )
-    return rows
+    root = Path(__file__).resolve().parent
+    expected = hashlib.sha256(payload(root, config)).hexdigest()
+    return [
+        {
+            'id': 'runtime:' + job[0],
+            'name': 'Native ' + job[0].removesuffix('.service'),
+            'status': 'pass' if job_ok(job, expected, config, health) else 'needs_setup',
+            'detail': 'Selected native executable checksum, loaded command and applicable storage guard must match this release.',
+        }
+        for job in installed_jobs(config, modules) + ssd_jobs(config, modules)
+    ]
 
 
 if __name__ == '__main__':

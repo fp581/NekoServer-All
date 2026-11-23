@@ -1043,21 +1043,19 @@ fn gathered(buf: &[u8]) -> bool {
         .unwrap_or(0);
     length > MAX_BODY || buf.len() >= end + 4 + length
 }
-/// The server's loop. One thread (the gatherer) watches every connection whose request is
-/// still coming in and hands a request to a worker only once it is in whole. Before, each
-/// connection took a worker straight away: 200 connections that each sent half a request,
-/// opened again as soon as they were closed, kept all 16 workers and the queue full, and the
-/// page got no answer at all for as long as they went on (deep check 238).
-fn serve_on(listener: TcpListener, server: Arc<Server>) -> Result<()> {
-    let (tx, rx) = mpsc::sync_channel::<(TcpStream, Instant, Vec<u8>)>(QUEUE);
+
+/// A connection whose request has come in whole: when it was accepted, and the request.
+type Gathered = (TcpStream, Instant, Vec<u8>);
+
+/// The workers that answer gathered requests, each in a thread of its own.
+fn start_workers(rx: mpsc::Receiver<Gathered>, server: &Arc<Server>) {
     let rx = Arc::new(Mutex::new(rx));
     for _ in 0..WORKERS {
         let rx = rx.clone();
         let server = server.clone();
         thread::spawn(move || loop {
-            let (stream, accepted, first) = match rx.lock().unwrap().recv() {
-                Ok(s) => s,
-                Err(_) => break,
+            let Ok((stream, accepted, first)) = rx.lock().unwrap().recv() else {
+                break;
             };
             // A request that panics must not leave one worker fewer each time, until
             // the server takes connections it never answers: exit, and systemd starts
@@ -1070,6 +1068,67 @@ fn serve_on(listener: TcpListener, server: Arc<Server>) -> Result<()> {
             }
         });
     }
+}
+
+/// One connection after poll: what came in read; Some(it) while its request is still
+/// coming, None once it was handed to a worker, ran out of time or was closed.
+fn read_more(mut p: Pending, readable: bool, tx: &mpsc::SyncSender<Gathered>) -> Option<Pending> {
+    if p.accepted.elapsed() >= REQUEST_TIME {
+        return None; // out of time: closed unanswered
+    }
+    if readable {
+        let mut chunk = [0u8; 4096];
+        match p.stream.read(&mut chunk) {
+            Ok(0) => return None,
+            Ok(n) => p.buf.extend_from_slice(&chunk[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(_) => return None,
+        }
+    }
+    if !gathered(&p.buf) {
+        return Some(p);
+    }
+    let _ = p.stream.set_nonblocking(false);
+    let _ = tx.try_send((p.stream, p.accepted, p.buf));
+    None
+}
+
+/// Every new connection from this PC, kept waiting for its request (the oldest dropped
+/// when too many wait).
+fn accept_new(listener: &TcpListener, pending: &mut VecDeque<Pending>) {
+    loop {
+        match listener.accept() {
+            Ok((stream, peer)) if peer.ip().is_loopback() => {
+                if stream.set_nonblocking(true).is_err() {
+                    continue;
+                }
+                if pending.len() >= PENDING {
+                    pending.pop_front();
+                }
+                pending.push_back(Pending {
+                    stream,
+                    buf: Vec::new(),
+                    accepted: Instant::now(),
+                });
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return,
+            Err(_) => {
+                thread::sleep(Duration::from_millis(50)); // out of file descriptors, say
+                return;
+            }
+        }
+    }
+}
+
+/// The server's loop. One thread (the gatherer) watches every connection whose request is
+/// still coming in and hands a request to a worker only once it is in whole. Before, each
+/// connection took a worker straight away: 200 connections that each sent half a request,
+/// opened again as soon as they were closed, kept all 16 workers and the queue full, and the
+/// page got no answer at all for as long as they went on (deep check 238).
+fn serve_on(listener: TcpListener, server: Arc<Server>) -> Result<()> {
+    let (tx, rx) = mpsc::sync_channel::<Gathered>(QUEUE);
+    start_workers(rx, &server);
     listener.set_nonblocking(true)?;
     let mut pending: VecDeque<Pending> = VecDeque::new();
     loop {
@@ -1084,51 +1143,13 @@ fn serve_on(listener: TcpListener, server: Arc<Server>) -> Result<()> {
         // SAFETY: `watched` is a live array of pollfd of the length given.
         unsafe { libc::poll(watched.as_mut_ptr(), watched.len() as libc::nfds_t, 100) };
         // What came in on each (pending has not changed since `watched` was made).
-        let mut still = VecDeque::with_capacity(pending.len());
-        for (mut p, seen) in pending.drain(..).zip(watched.iter().skip(1)) {
-            if p.accepted.elapsed() >= REQUEST_TIME {
-                continue; // out of time: closed unanswered
-            }
-            if seen.revents != 0 {
-                let mut chunk = [0u8; 4096];
-                match p.stream.read(&mut chunk) {
-                    Ok(0) => continue,
-                    Ok(n) => p.buf.extend_from_slice(&chunk[..n]),
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                    Err(_) => continue,
-                }
-            }
-            if gathered(&p.buf) {
-                let _ = p.stream.set_nonblocking(false);
-                let _ = tx.try_send((p.stream, p.accepted, p.buf));
-            } else {
-                still.push_back(p);
-            }
-        }
+        let still: VecDeque<Pending> = pending
+            .drain(..)
+            .zip(watched.iter().skip(1))
+            .filter_map(|(p, seen)| read_more(p, seen.revents != 0, &tx))
+            .collect();
         pending = still;
-        loop {
-            match listener.accept() {
-                Ok((stream, peer)) if peer.ip().is_loopback() => {
-                    if stream.set_nonblocking(true).is_err() {
-                        continue;
-                    }
-                    if pending.len() >= PENDING {
-                        pending.pop_front();
-                    }
-                    pending.push_back(Pending {
-                        stream,
-                        buf: Vec::new(),
-                        accepted: Instant::now(),
-                    });
-                }
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(_) => {
-                    thread::sleep(Duration::from_millis(50)); // out of file descriptors, say
-                    break;
-                }
-            }
-        }
+        accept_new(&listener, &mut pending);
     }
 }
 
@@ -1898,5 +1919,47 @@ Sec-Fetch-Dest: document
         assert_eq!(error_message("E10"), error_entry("E10").2);
         assert!(error_message("E10").len() > 10);
         assert_eq!(error_message("no such code"), ERRORS[0].2);
+    }
+}
+
+/// Tests the mutation pass of 0.52.2 asked for (G6): the gatherer's two steps.
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+
+    /// A connection with nothing to read yet (the read would block) keeps waiting for its
+    /// request; it is not closed.
+    #[test]
+    fn a_connection_with_nothing_yet_keeps_waiting() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let _client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        let (tx, rx) = mpsc::sync_channel(1);
+        let p = Pending {
+            stream,
+            buf: Vec::new(),
+            accepted: Instant::now(),
+        };
+        let p = read_more(p, true, &tx).expect("still waiting");
+        assert!(p.buf.is_empty());
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// Every new connection from this PC is kept, each waiting for its request.
+    #[test]
+    fn every_new_connection_is_kept() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let _clients: Vec<_> = (0..3)
+            .map(|_| TcpStream::connect(address).unwrap())
+            .collect();
+        let mut pending = VecDeque::new();
+        let start = Instant::now();
+        while pending.len() < 3 && start.elapsed() < Duration::from_secs(2) {
+            accept_new(&listener, &mut pending);
+        }
+        assert_eq!(pending.len(), 3);
     }
 }

@@ -600,6 +600,101 @@ EARLIER_DATA = (
 )
 
 
+def start_cut_off_setup_again(ctx, data, partial):
+    """Setup stopped while writing Nextcloud's settings (compose.yaml is written last, so
+    it marks a finished step). Containers start only after that, so with no app data yet
+    nothing depends on these files: they are written again from the start."""
+    for existing in (data / HTML, data / POSTGRES):
+        if existing.exists() and any(safe_path(existing).iterdir()):
+            raise RuntimeError('Incomplete Nextcloud installation with existing data; preserved for inspection')
+    for leftover in partial:
+        safe_path(leftover).unlink()
+    ctx.log('Nextcloud: finishing a setup that was interrupted')
+
+
+def first_install(ctx, opts, chosen, image, paths):
+    """A new Nextcloud's folders and its three setting files, compose.yaml last; never
+    over data that is there already. `chosen`: the administrator's saved login, or None;
+    `paths`: (their folder, compose.yaml, .env, managed.json)."""
+    config = ctx.config
+    data = Path(config['data_mount'])
+    folder, manifest, env, managed = paths
+    if chosen:
+        opts['admin_user'] = chosen['username']
+        ctx.persist_config()
+    for existing in (data / HTML, data / POSTGRES, cloud_files(config)):
+        safe_path(existing)
+        if existing.exists() and any(existing.iterdir()):
+            raise RuntimeError(EARLIER_DATA.format(folder=existing))
+    image = resolve_image(image)
+    payload = json.dumps(model(config, image), indent=2) + '\n'
+    for target, mode in (
+        (data / 'appdata', 0o755),
+        (data / 'appdata/nextcloud', 0o700),
+        (data / HTML, 0o755),
+        (data / POSTGRES, 0o700),
+        (cloud_files(config).parent, 0o755),
+        (cloud_files(config), 0o750),
+        (folder, 0o700),
+    ):
+        ensure_directory(safe_path(target), mode)
+    # Nextcloud/Apache writes as www-data; only newly empty application data is initialized.
+    files = safe_path(cloud_files(config))
+    if not any(files.iterdir()):
+        os.chown(files, WWW_DATA, WWW_DATA, follow_symlinks=False)
+    password = chosen['password'] if chosen else secrets.token_hex(24)
+    atomic_write(
+        env,
+        'DB_PASSWORD='
+        + secrets.token_hex(32)
+        + '\nADMIN_PASSWORD='
+        + (quote_env(password) if chosen else password)
+        + '\n',
+        0o600,
+    )
+    atomic_json(
+        managed,
+        {
+            'format': 'neko-nextcloud-v1',
+            'image': image,
+            'model': model(config, image),
+            'settings': settings(config, image),
+        },
+    )
+    # Written last: a compose.yaml means every setting file of this step is in place.
+    atomic_write(manifest, payload, 0o600)
+
+
+def refuse_shared_env(env):
+    """Nextcloud's .env holds its passwords: it must be root's own and closed to others."""
+    safe_path(env)
+    if env.stat().st_uid != ROOT_UID or env.stat().st_mode & 0o077:
+        raise RuntimeError('Nextcloud credentials must be private and root-owned')
+
+
+def brought_up_to_date(ctx, owned, image, files):
+    """An installed Nextcloud's settings checked against my-config.json (a change stops
+    setup: a running Nextcloud is never reconfigured on a guess) and its container
+    definition brought up to date when this release runs it differently. `files`:
+    (compose.yaml, managed.json)."""
+    config = ctx.config
+    manifest, managed = files
+    changed = settings_changed(settings_of(owned), settings(config, image))
+    if changed:
+        raise RuntimeError(
+            f'Nextcloud\'s settings in my-config.json changed since it was installed ({changed}), and a '
+            'running Nextcloud is never reconfigured on a guess. Put the earlier values back, or change them '
+            'inside Nextcloud (occ config:system:set); the gateway steps set trusted hosts and the address '
+            'themselves, and the administrator\'s name cannot change after the install'
+        )
+    if json.loads(manifest.read_text()) != model(config, image) or owned['model'] != model(config, image):
+        # Same settings, another definition: this release changed how Nextcloud is run
+        # (a container option, say). compose up applies it to the running containers.
+        atomic_json(managed, {**owned, 'model': model(config, image), 'settings': settings(config, image)})
+        atomic_write(manifest, json.dumps(model(config, image), indent=2) + '\n', 0o600)
+        ctx.log('Nextcloud: its container definition was brought up to date by this release (settings unchanged)')
+
+
 def run(ctx):
     opts = options(ctx.config)
     if not opts.get('enabled', True):
@@ -618,89 +713,23 @@ def run(ctx):
         managed = folder / 'managed.json'
         partial = [f for f in (env, managed, manifest) if f.exists()]
         if partial and not manifest.exists() or manifest.exists() and len(partial) < 3:
-            # Setup stopped while writing its settings (compose.yaml is written last, so
-            # it marks a finished step). Containers start only after that, so with no app
-            # data yet nothing depends on these files: write them again from the start.
-            for existing in (data / HTML, data / POSTGRES):
-                if existing.exists() and any(safe_path(existing).iterdir()):
-                    raise RuntimeError('Incomplete Nextcloud installation with existing data; preserved for inspection')
-            for leftover in partial:
-                safe_path(leftover).unlink()
-            ctx.log('Nextcloud: finishing a setup that was interrupted')
+            start_cut_off_setup_again(ctx, data, partial)
         image = opts.get('image', 'auto')
         chosen = account_store.get(config, 'nextcloud') if account_store.enabled(config) else None
         if account_store.enabled(config) and chosen is None:
             raise RuntimeError('Complete the account_credentials prompts before Nextcloud setup')
         fresh = not manifest.exists()
         if fresh:
-            if chosen:
-                opts['admin_user'] = chosen['username']
-                ctx.persist_config()
-            for existing in (data / HTML, data / POSTGRES, cloud_files(config)):
-                safe_path(existing)
-                if existing.exists() and any(existing.iterdir()):
-                    raise RuntimeError(EARLIER_DATA.format(folder=existing))
-            image = resolve_image(image)
-            payload = json.dumps(model(config, image), indent=2) + '\n'
-            for target, mode in (
-                (data / 'appdata', 0o755),
-                (data / 'appdata/nextcloud', 0o700),
-                (data / HTML, 0o755),
-                (data / POSTGRES, 0o700),
-                (cloud_files(config).parent, 0o755),
-                (cloud_files(config), 0o750),
-                (folder, 0o700),
-            ):
-                ensure_directory(safe_path(target), mode)
-            # Nextcloud/Apache writes as www-data; only newly empty application data is initialized.
-            files = safe_path(cloud_files(config))
-            if not any(files.iterdir()):
-                os.chown(files, WWW_DATA, WWW_DATA, follow_symlinks=False)
-            password = chosen['password'] if chosen else secrets.token_hex(24)
-            atomic_write(
-                env,
-                'DB_PASSWORD='
-                + secrets.token_hex(32)
-                + '\nADMIN_PASSWORD='
-                + (quote_env(password) if chosen else password)
-                + '\n',
-                0o600,
-            )
-            atomic_json(
-                managed,
-                {
-                    'format': 'neko-nextcloud-v1',
-                    'image': image,
-                    'model': model(config, image),
-                    'settings': settings(config, image),
-                },
-            )
-            # Written last: a compose.yaml means every setting file of this step is in place.
-            atomic_write(manifest, payload, 0o600)
+            first_install(ctx, opts, chosen, image, (folder, manifest, env, managed))
         # An install already made whose files folder is gone (a new HDD): given back, and
         # its accounts' folders made again once Nextcloud answers; also when an earlier
         # setup gave it back and stopped before that (its note on the SSD).
         given_back = not fresh and files_folder_to_give_back(config, folder, ctx.log)
-        safe_path(env)
-        if env.stat().st_uid != ROOT_UID or env.stat().st_mode & 0o077:
-            raise RuntimeError('Nextcloud credentials must be private and root-owned')
+        refuse_shared_env(env)
         owned = json.loads(safe_path(managed).read_text())
         image = owned['image']
         adopt_admin(opts, owned, chosen, ctx.persist_config, ctx.log)
-        changed = settings_changed(settings_of(owned), settings(config, image))
-        if changed:
-            raise RuntimeError(
-                f'Nextcloud\'s settings in my-config.json changed since it was installed ({changed}), and a '
-                'running Nextcloud is never reconfigured on a guess. Put the earlier values back, or change them '
-                'inside Nextcloud (occ config:system:set); the gateway steps set trusted hosts and the address '
-                'themselves, and the administrator\'s name cannot change after the install'
-            )
-        if json.loads(manifest.read_text()) != model(config, image) or owned['model'] != model(config, image):
-            # Same settings, another definition: this release changed how Nextcloud is run
-            # (a container option, say). compose up applies it to the running containers.
-            atomic_json(managed, {**owned, 'model': model(config, image), 'settings': settings(config, image)})
-            atomic_write(manifest, json.dumps(model(config, image), indent=2) + '\n', 0o600)
-            ctx.log('Nextcloud: its container definition was brought up to date by this release (settings unchanged)')
+        brought_up_to_date(ctx, owned, image, (manifest, managed))
         verify_storage(config)
         base = [
             'docker',

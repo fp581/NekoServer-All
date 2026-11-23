@@ -761,7 +761,7 @@ def check_existing(payloads, definitions, folders):
     check_folders(folders)
 
 
-def install_smart(cfg, log):
+def install_smart(cfg):
     if not cfg.get('dashboard', {}).get('install_smartmontools', True) or shutil.which('smartctl'):
         return
     family = host.current()
@@ -973,7 +973,7 @@ def run(ctx):
     definitions.update(control_units(code, lighting, control, data, settings=settings, cards=cards))
     folders = (code.parent, code, code / 'dashboard')
     check_existing(payloads, definitions, folders)
-    install_smart(cfg, ctx.log)
+    install_smart(cfg)
     lighting = prepare_control(code, definitions, lighting, ctx.log, control, data, settings, cards)
     write_files(folders, payloads, definitions)
     atomic_json(config, collector_settings(cfg, smart, interval))

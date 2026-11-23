@@ -449,8 +449,9 @@ class SettingsTests(unittest.TestCase):
         self.assertTrue(existing_media.is_full(config, 'movies'))
         self.assertFalse(existing_media.is_full(config, 'tv'))
         self.assertEqual(len({e['slot'] for e in existing_media.extras(config)}), cap)
+        one_too_many = existing_media.entry_for('movies', self.folder('one-too-many'))
         with self.assertRaises(RuntimeError) as caught:
-            existing_media.with_choice(config, existing_media.entry_for('movies', self.folder('one-too-many')))
+            existing_media.with_choice(config, one_too_many)
         self.assertIn(f'more than {cap}', str(caught.exception))
         said = existing_media.full_words('movies')
         self.assertIn(f'{cap} folders connected already', said)
@@ -623,8 +624,9 @@ class MountTests(unittest.TestCase):
         (row,) = existing_media.available(config, **self.pc.how())
         self.assertFalse(row['ready'])
         self.assertIn('the folder chosen before is still connected', row['reason'])
+        how = self.pc.how()
         with self.assertRaises(existing_media.Away):
-            existing_media.guard(config, 'movies', **self.pc.how())
+            existing_media.guard(config, 'movies', **how)
         # Setup disconnects the old folder and connects the new one.
         self.ran.clear()
         (row,) = self.use(config)

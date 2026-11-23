@@ -187,23 +187,21 @@ fn max_age(s: &Value) -> f64 {
         .filter(|v| (180..=630).contains(v))
         .unwrap_or_else(|| crate::collect::late_after(300)) as f64
 }
-fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<String>, bool) {
+/// A snapshot of the dashboard's collector that is recent and has its lists.
+fn fresh_snapshot(s: &Value, now: f64) -> bool {
     let oldest = now - max_age(s);
-    let fresh = s["format"] == "neko-dashboard-v1"
+    s["format"] == "neko-dashboard-v1"
         && s["generated_at"]
             .as_f64()
             .is_some_and(|t| t.is_finite() && t >= oldest && t <= now + crate::collect::LATE_AHEAD)
         && s["alerts"].is_array()
         && s["applications"].is_array()
         && s["storage"].is_array()
-        && s["backups"].is_array();
-    let mut active = BTreeMap::new();
-    let mut unknown = BTreeSet::new();
-    // Everything that can alert starts as unknown and is cleared only by explicit
-    // evidence below (a running, not unhealthy app; a passed job; a mounted, checked
-    // drive), so "RECOVERED" is never sent for a job that is merely running again or an
-    // app whose state cannot be read. The ids come from the same lists the dashboard
-    // uses, so a newly monitored app or job is covered automatically.
+        && s["backups"].is_array()
+}
+/// Everything that can alert, as unknown until evidence clears it. The ids come from the
+/// same lists the dashboard uses, so a newly monitored app or job is covered automatically.
+fn watched_ids() -> BTreeSet<String> {
     let apps = crate::collect::APPS
         .iter()
         .map(|(id, ..)| format!("app:{id}"));
@@ -220,23 +218,45 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
     let services = crate::collect::STARTUP
         .iter()
         .flat_map(|(unit, _)| [format!("startup:{unit}"), format!("startup:{unit}:failed")]);
-    for id in apps.chain(jobs).chain(drives).chain(checks).chain(services) {
-        if label(&id).is_some() {
-            unknown.insert(id);
-        }
-    }
-    if !fresh {
-        active.insert("monitoring-stale".into(), "warning".into());
-        return (active, unknown, false);
-    }
-    for alert in s["alerts"].as_array().unwrap().iter().take(100) {
+    apps.chain(jobs)
+        .chain(drives)
+        .chain(checks)
+        .chain(services)
+        .filter(|id| label(id).is_some())
+        .collect()
+}
+/// The snapshot's alerts that have a message of their own, by id, with their level.
+fn active_alerts(s: &Value) -> BTreeMap<String, String> {
+    let mut active = BTreeMap::new();
+    for alert in s["alerts"].as_array().into_iter().flatten().take(100) {
         let id = alert["id"].as_str().unwrap_or("");
         let level = alert["level"].as_str().unwrap_or("");
         if label(id).is_some() && ["critical", "warning"].contains(&level) {
             active.insert(id.into(), level.into());
         }
     }
-    for row in s["applications"].as_array().unwrap() {
+    active
+}
+fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<String>, bool) {
+    // Everything that can alert starts as unknown and is cleared only by explicit
+    // evidence below (a running, not unhealthy app; a passed job; a mounted, checked
+    // drive), so "RECOVERED" is never sent for a job that is merely running again or an
+    // app whose state cannot be read.
+    let mut unknown = watched_ids();
+    if !fresh_snapshot(s, now) {
+        let active = BTreeMap::from([("monitoring-stale".to_string(), "warning".to_string())]);
+        return (active, unknown, false);
+    }
+    let active = active_alerts(s);
+    recovered_apps_and_jobs(s, &mut unknown);
+    recovered_services_and_checks(s, &mut unknown);
+    recovered_drives(s, &mut unknown);
+    not_known_yet(s, &mut unknown);
+    (active, unknown, true)
+}
+/// Apps running, healthy and answering, and backups that passed: recovered.
+fn recovered_apps_and_jobs(s: &Value, unknown: &mut BTreeSet<String>) {
+    for row in s["applications"].as_array().into_iter().flatten() {
         // Running, healthy and answering (as the dashboard shows it): only then recovered.
         // "responding" is true only when the hourly check reached the app and it answered;
         // null (no current check yet, or the app restarted since the last one) is not
@@ -248,11 +268,15 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
             unknown.remove(&format!("app:{}", row["id"].as_str().unwrap_or("")));
         }
     }
-    for row in s["backups"].as_array().unwrap() {
+    for row in s["backups"].as_array().into_iter().flatten() {
         if row["status"] == "pass" {
             unknown.remove(&format!("backup:{}", row["id"].as_str().unwrap_or("")));
         }
     }
+}
+/// Services enabled at boot or no longer failed, and checksum checks with nothing
+/// damaged after a full check: recovered.
+fn recovered_services_and_checks(s: &Value, unknown: &mut BTreeSet<String>) {
     // A service is good again only when it is listed (the check ran) and is enabled at
     // boot, or no longer failed: a missing list never counts as recovered.
     for row in s["startup"].as_array().cloned().unwrap_or_default() {
@@ -280,7 +304,11 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
             unknown.remove(&format!("integrity:{}", row["id"].as_str().unwrap_or("")));
         }
     }
-    for row in s["storage"].as_array().unwrap() {
+}
+/// Drives mounted, writable and without errors (and their space read, their SMART
+/// passed): recovered.
+fn recovered_drives(s: &Value, unknown: &mut BTreeSet<String>) {
+    for row in s["storage"].as_array().into_iter().flatten() {
         let id = row["id"].as_str().unwrap_or("");
         if row["status"] == "mounted"
             && row["read_only"] != true
@@ -296,6 +324,9 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
             unknown.remove(&format!("smart:{id}"));
         }
     }
+}
+/// What the snapshot says it could not read this time: unknown, never recovered.
+fn not_known_yet(s: &Value, unknown: &mut BTreeSet<String>) {
     for row in s["arrays"].as_array().into_iter().flatten() {
         if row["status"] == "unknown" {
             for kind in ["array-lost", "array-rebuild", "array-errors"] {
@@ -309,6 +340,24 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
     if s["heartbeat"]["status"] == "unknown" && s["heartbeat"]["timer"]["installed"] == true {
         unknown.insert("heartbeat:delivery".into());
     }
+    tailscale_not_known(s, unknown);
+    connections_not_known(s, unknown);
+    if s["media"]["status"] != "current" {
+        unknown.insert("media-failure".into());
+    }
+    // The home-network address: back only once the connections could be listed.
+    if s["home_network"]["status"] == "unknown" {
+        unknown.insert("home-network".into());
+    }
+    if !s["metrics"]["memory_percent"].is_number() {
+        unknown.insert("memory-pressure".into());
+    }
+    if !s["metrics"]["temperature"].is_number() {
+        unknown.insert("temperature".into());
+    }
+}
+/// The Tailscale alerts whose recovery its state can't show yet.
+fn tailscale_not_known(s: &Value, unknown: &mut BTreeSet<String>) {
     // Tailscale's sign-in: only a state it reported counts. While it can't be asked (no
     // answer, a reply that can't be read) neither alert has recovered, and while it is
     // signed out the time left on its sign-in isn't known either.
@@ -329,6 +378,9 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
     } else if tailscale == "NeedsLogin" {
         unknown.insert("tailscale:expiry".into());
     }
+}
+/// The NAS connections and shared folders that have not answered yet.
+fn connections_not_known(s: &Value, unknown: &mut BTreeSet<String>) {
     // A NAS connection is back only when Linux says its session is logged in.
     for t in s["network_storage"]["targets"]
         .as_array()
@@ -350,20 +402,6 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
             unknown.insert(format!("share:{}", row["holds"].as_str().unwrap_or("")));
         }
     }
-    if s["media"]["status"] != "current" {
-        unknown.insert("media-failure".into());
-    }
-    // The home-network address: back only once the connections could be listed.
-    if s["home_network"]["status"] == "unknown" {
-        unknown.insert("home-network".into());
-    }
-    if !s["metrics"]["memory_percent"].is_number() {
-        unknown.insert("memory-pressure".into());
-    }
-    if !s["metrics"]["temperature"].is_number() {
-        unknown.insert("temperature".into());
-    }
-    (active, unknown, true)
 }
 fn send(cfg: &Value, runtime: &Path, message: &str, priority: u8) -> Result<()> {
     let url = cfg["endpoint"].as_str().unwrap_or("");
@@ -514,34 +552,10 @@ fn plan(
     repeat: u64,
 ) -> (Value, Vec<(String, bool, String)>) {
     let (active, unknown, fresh) = observations(s, now);
-    let mut state = if previous["format"] == "neko-notifications-v1" {
-        previous.clone()
-    } else {
-        json!({"format":"neko-notifications-v1","entries":{},"attempts":0})
-    };
-    if !state["entries"].is_object() {
-        state["entries"] = json!({});
-    }
+    let mut state = kept_state(previous);
     let mut events = vec![];
     for (id, level) in &active {
-        if !state["entries"][id].is_object() {
-            state["entries"][id] = json!({"first_seen":now,"last_sent":null,"sent_level":null});
-        }
-        // Back before its recovery was sent: the same problem, still the one sent.
-        if let Some(row) = state["entries"][id].as_object_mut() {
-            row.remove("cleared_at");
-        }
-        let row = &state["entries"][id];
-        let first = row["first_seen"]
-            .as_f64()
-            .filter(|t| t.is_finite() && *t <= now)
-            .unwrap_or(now);
-        let sent = row["last_sent"]
-            .as_f64()
-            .filter(|t| t.is_finite() && *t <= now);
-        let due = sent.is_none_or(|t| now - t >= repeat as f64)
-            || (level == "critical" && row["sent_level"] == "warning");
-        if due && (now - first >= debounce as f64 || id.starts_with("mount:")) {
+        if problem_due(&mut state["entries"], id, level, now, (debounce, repeat)) {
             events.push((id.clone(), false, level.clone()));
         }
     }
@@ -551,33 +565,105 @@ fn plan(
         .keys()
         .cloned()
         .collect::<Vec<_>>();
-    let gone = if fresh { retired(s) } else { BTreeSet::new() };
-    let listed = Listed::of(s);
+    let seen = Seen {
+        active: &active,
+        unknown: &unknown,
+        gone: if fresh { retired(s) } else { BTreeSet::new() },
+        listed: Listed::of(s),
+        fresh,
+    };
     for id in keys {
-        let vanished = fresh && listed.vanished(&id);
-        if label(&id).is_none() || ((gone.contains(&id) || vanished) && !active.contains_key(&id)) {
-            state["entries"].as_object_mut().unwrap().remove(&id);
-            continue;
-        }
-        if !active.contains_key(&id) && fresh && !unknown.contains(&id) && !listed.unread(&id) {
-            if state["entries"][&id]["last_sent"].is_number() {
-                // A recovery is sent once it lasted as long as a problem must before it is
-                // sent: one that lasted a moment sent RECOVERED, then the alert again
-                // (deep check 306).
-                let cleared = state["entries"][&id]["cleared_at"]
-                    .as_f64()
-                    .filter(|t| t.is_finite() && *t <= now)
-                    .unwrap_or(now);
-                state["entries"][&id]["cleared_at"] = json!(cleared);
-                if now - cleared >= debounce as f64 {
-                    events.push((id, true, "recovered".into()));
-                }
-            } else {
-                state["entries"].as_object_mut().unwrap().remove(&id);
+        let entries = &mut state["entries"];
+        if seen.dropped(&id) {
+            entries.as_object_mut().unwrap().remove(&id);
+        } else if seen.cleared(&id) {
+            if !entries[&id]["last_sent"].is_number() {
+                entries.as_object_mut().unwrap().remove(&id);
+            } else if recovery_due(&mut entries[&id], now, debounce) {
+                events.push((id, true, "recovered".into()));
             }
         }
     }
     (state, events)
+}
+/// The alerts' state from the last run, or a new one when there is none of this format.
+fn kept_state(previous: &Value) -> Value {
+    let mut state = if previous["format"] == "neko-notifications-v1" {
+        previous.clone()
+    } else {
+        json!({"format":"neko-notifications-v1","entries":{},"attempts":0})
+    };
+    if !state["entries"].is_object() {
+        state["entries"] = json!({});
+    }
+    state
+}
+/// What this run saw of the alerts it already knows.
+struct Seen<'a> {
+    /// The problems now, with their level.
+    active: &'a BTreeMap<String, String>,
+    /// The ones whose state could not be read.
+    unknown: &'a BTreeSet<String>,
+    /// Things no longer looked after (an app switched off, say).
+    gone: BTreeSet<String>,
+    listed: Listed,
+    /// The readings are this run's own.
+    fresh: bool,
+}
+impl Seen<'_> {
+    /// An alert dropped quietly: of a kind no longer known, or about something no longer
+    /// looked after or listed, and not a problem now.
+    fn dropped(&self, id: &str) -> bool {
+        let vanished = self.fresh && self.listed.vanished(id);
+        label(id).is_none()
+            || ((self.gone.contains(id) || vanished) && !self.active.contains_key(id))
+    }
+    /// A problem that fresh readings show is over.
+    fn cleared(&self, id: &str) -> bool {
+        !self.active.contains_key(id)
+            && self.fresh
+            && !self.unknown.contains(id)
+            && !self.listed.unread(id)
+    }
+}
+/// A problem that is active now: its entry kept (made on its first sight), and whether a
+/// message is due: it lasted the debounce time (a drive that is gone at once), and was
+/// never sent, was sent `repeat` seconds ago, or got worse (warning to critical).
+fn problem_due(
+    entries: &mut Value,
+    id: &str,
+    level: &str,
+    now: f64,
+    (debounce, repeat): (u64, u64),
+) -> bool {
+    if !entries[id].is_object() {
+        entries[id] = json!({"first_seen":now,"last_sent":null,"sent_level":null});
+    }
+    // Back before its recovery was sent: the same problem, still the one sent.
+    if let Some(row) = entries[id].as_object_mut() {
+        row.remove("cleared_at");
+    }
+    let row = &entries[id];
+    let first = row["first_seen"]
+        .as_f64()
+        .filter(|t| t.is_finite() && *t <= now)
+        .unwrap_or(now);
+    let sent = row["last_sent"]
+        .as_f64()
+        .filter(|t| t.is_finite() && *t <= now);
+    let due = sent.is_none_or(|t| now - t >= repeat as f64)
+        || (level == "critical" && row["sent_level"] == "warning");
+    due && (now - first >= debounce as f64 || id.starts_with("mount:"))
+}
+/// A recovery is sent once it lasted as long as a problem must before it is sent: one
+/// that lasted a moment sent RECOVERED, then the alert again (deep check 306).
+fn recovery_due(entry: &mut Value, now: f64, debounce: u64) -> bool {
+    let cleared = entry["cleared_at"]
+        .as_f64()
+        .filter(|t| t.is_finite() && *t <= now)
+        .unwrap_or(now);
+    entry["cleared_at"] = json!(cleared);
+    now - cleared >= debounce as f64
 }
 /// Why the last message was not sent: "unreachable" (the alert server was not reached at
 /// all: the internet down, say) or "refused" (it answered no); null when it was sent.
@@ -670,6 +756,29 @@ fn after_test(old: Value, taken: bool, now: f64) -> Value {
 }
 /// How the notifications' settings file is called when it is missing or damaged.
 const WHOSE: &str = "The notifications'";
+/// The message for `events`: one line each (a reminder says "still": it is the problem
+/// already sent, not a new one).
+fn health_message(events: &[(String, bool, String)], entries: &Value) -> String {
+    let mut message = String::from("NekoServer health update\n");
+    for (id, recovered, level) in events {
+        let still = if !*recovered && reminder(&entries[id.as_str()], level) {
+            "still "
+        } else {
+            ""
+        };
+        let state = if *recovered {
+            "RECOVERED"
+        } else {
+            level.as_str()
+        };
+        message.push_str(&format!(
+            "{still}{state}: {}\n",
+            label(id).unwrap_or_else(|| id.clone())
+        ));
+    }
+    message.push_str("Review the local dashboard and service logs for details.");
+    message
+}
 pub fn run(a: &Args) -> Result<()> {
     common::require_root()?;
     let config_path = a.path("config")?;
@@ -688,13 +797,7 @@ pub fn run(a: &Args) -> Result<()> {
     let root = common::safe(&a.path("state")?)?;
     let runtime = common::safe(&a.path("runtime")?)?;
     for p in [&root, &runtime] {
-        common::directory(p, 0o700)?;
-        use std::os::unix::fs::MetadataExt;
-        if fs::metadata(p)?.mode() & 0o077 != 0 || fs::metadata(p)?.uid() != 0 {
-            return Err(Error::new(
-                "Private root-owned notification directory required",
-            ));
-        }
+        private_folder(p)?;
     }
     let _lock = common::lock(&root.join("worker.lock"))?;
     let path = root.join("state.json");
@@ -706,19 +809,7 @@ pub fn run(a: &Args) -> Result<()> {
         json!({})
     };
     if a.flag("test") {
-        let now = common::now();
-        let result = send(
-            &cfg,
-            &runtime,
-            "NekoServer test: notification delivery is configured.",
-            3,
-        );
-        let mut state = after_test(old, result.is_ok(), now);
-        state["delivery_reason"] = why_not_sent(&result);
-        state["destination"] = json!(destination);
-        common::atomic_json(&path, &state)?;
-        report(&runtime, &state, now, still_waiting(&runtime))?;
-        return test_said(result).map(|said| println!("{said}"));
+        return send_test(&cfg, &runtime, old, (&path, &destination));
     }
     let snapshot = common::json(&a.path("snapshot")?, 2_000_000);
     let now = common::now();
@@ -729,53 +820,16 @@ pub fn run(a: &Args) -> Result<()> {
     let mut failed = false;
     if !events.is_empty() && due {
         let urgency = priority(&events, &state["entries"]);
-        let mut message = String::from("NekoServer health update\n");
-        for (id, recovered, level) in &events {
-            // A reminder says so: it is the problem already sent, not a new one.
-            let still = if !*recovered && reminder(&state["entries"][id.as_str()], level) {
-                "still "
-            } else {
-                ""
-            };
-            message.push_str(&format!(
-                "{still}{}: {}\n",
-                if *recovered {
-                    "RECOVERED"
-                } else {
-                    level.as_str()
-                },
-                label(id).unwrap()
-            ));
-        }
-        message.push_str("Review the local dashboard and service logs for details.");
+        let message = health_message(&events, &state["entries"]);
         state["last_attempt"] = json!(now);
         let sent = send(&cfg, &runtime, &message, urgency);
         state["delivery_reason"] = why_not_sent(&sent);
         if sent.is_ok() {
-            for (id, recovered, level) in &events {
-                if *recovered {
-                    state["entries"].as_object_mut().unwrap().remove(id);
-                } else {
-                    state["entries"][id]["last_sent"] = json!(now);
-                    state["entries"][id]["sent_level"] = json!(level);
-                }
-            }
+            record_sent(&mut state, &events, now, minimum);
             pending = 0;
-            state["attempts"] = json!(0);
-            state["last_success"] = json!(now);
-            state["delivery_status"] = json!("pass");
-            state["next_attempt"] = json!(now + minimum as f64);
         } else {
             failed = true;
-            let attempts = state["attempts"]
-                .as_u64()
-                .unwrap_or(0)
-                .saturating_add(1)
-                .min(10);
-            state["attempts"] = json!(attempts);
-            state["delivery_status"] = json!("fail");
-            state["next_attempt"] =
-                json!(now + (60u64 * 2u64.pow((attempts - 1).min(6) as u32)).min(3600) as f64);
+            record_failed(&mut state, now);
         }
     }
     common::atomic_json(&path, &state)?;
@@ -784,6 +838,68 @@ pub fn run(a: &Args) -> Result<()> {
         return Err(Error::new("Notification delivery failed; retry scheduled"));
     }
     Ok(())
+}
+/// A folder of the alerts' own: made if missing, root's and private.
+fn private_folder(p: &Path) -> Result<()> {
+    common::directory(p, 0o700)?;
+    use std::os::unix::fs::MetadataExt;
+    if fs::metadata(p)?.mode() & 0o077 != 0 || fs::metadata(p)?.uid() != 0 {
+        return Err(Error::new(
+            "Private root-owned notification directory required",
+        ));
+    }
+    Ok(())
+}
+/// Setup's test message sent, and what it did recorded (`path`: the state file,
+/// `destination`: the address it went to, hashed).
+fn send_test(
+    cfg: &Value,
+    runtime: &Path,
+    old: Value,
+    (path, destination): (&Path, &str),
+) -> Result<()> {
+    let now = common::now();
+    let result = send(
+        cfg,
+        runtime,
+        "NekoServer test: notification delivery is configured.",
+        3,
+    );
+    let mut state = after_test(old, result.is_ok(), now);
+    state["delivery_reason"] = why_not_sent(&result);
+    state["destination"] = json!(destination);
+    common::atomic_json(path, &state)?;
+    report(runtime, &state, now, still_waiting(runtime))?;
+    test_said(result).map(|said| println!("{said}"))
+}
+/// The message reached the phone: each problem sent is marked with its level, each
+/// recovery forgotten, and the next message waits at least `minimum` seconds.
+fn record_sent(state: &mut Value, events: &[(String, bool, String)], now: f64, minimum: u64) {
+    for (id, recovered, level) in events {
+        if *recovered {
+            state["entries"].as_object_mut().unwrap().remove(id);
+        } else {
+            state["entries"][id]["last_sent"] = json!(now);
+            state["entries"][id]["sent_level"] = json!(level);
+        }
+    }
+    state["attempts"] = json!(0);
+    state["last_success"] = json!(now);
+    state["delivery_status"] = json!("pass");
+    state["next_attempt"] = json!(now + minimum as f64);
+}
+/// The message did not get through: tried again after a wait that doubles with each
+/// failure (one minute, up to an hour).
+fn record_failed(state: &mut Value, now: f64) {
+    let attempts = state["attempts"]
+        .as_u64()
+        .unwrap_or(0)
+        .saturating_add(1)
+        .min(10);
+    state["attempts"] = json!(attempts);
+    state["delivery_status"] = json!("fail");
+    state["next_attempt"] =
+        json!(now + (60u64 * 2u64.pow((attempts - 1).min(6) as u32)).min(3600) as f64);
 }
 #[cfg(test)]
 mod tests {
@@ -843,8 +959,13 @@ mod tests {
         assert_eq!(record["status"], "pass");
         let run = include_str!("notify.rs");
         let test_branch = &run[run.find("if a.flag(\"test\") {").unwrap()..];
-        let test_branch = &test_branch[..test_branch.find("return test_said").unwrap()];
-        assert!(test_branch.contains("report(&runtime, &state, now, still_waiting(&runtime))"));
+        assert!(test_branch.starts_with(
+            "if a.flag(\"test\") {
+        return send_test("
+        ));
+        let test_branch = &run[run.find("fn send_test(").unwrap()..];
+        let test_branch = &test_branch[..test_branch.find("test_said(result)").unwrap()];
+        assert!(test_branch.contains("report(runtime, &state, now, still_waiting(runtime))"));
         std::fs::remove_dir_all(&runtime).unwrap();
     }
     /// Deep check 249: a home-network address that changed reaches the phone too, and is
@@ -1511,6 +1632,196 @@ mod review_tests {
         assert!(gone.contains("backup:cards") && gone.contains("cards:quiet"));
         assert!(
             !retired(&json!({"backups": [], "cards": {"enabled": true}})).contains("cards:quiet")
+        );
+    }
+}
+/// The short functions 0.52.2 split out of `run` (Sonar S3776): what a send records.
+/// `run` itself needs root; `plan` and `not_known_yet` are tested through `plan`.
+#[cfg(test)]
+mod split_helpers {
+    use super::*;
+
+    #[test]
+    fn a_sent_message_marks_its_problems_and_forgets_its_recoveries() {
+        let mut state = json!({"entries": {"mount:media": {}, "app:jellyfin": {"last_sent": 1.0}}, "attempts": 4});
+        let events = vec![
+            ("mount:media".to_string(), false, "critical".to_string()),
+            ("app:jellyfin".to_string(), true, "recovered".to_string()),
+        ];
+        record_sent(&mut state, &events, 1000.0, 300);
+        assert_eq!(
+            state["entries"],
+            json!({"mount:media": {"last_sent": 1000.0, "sent_level": "critical"}})
+        );
+        assert_eq!(state["attempts"], 0);
+        assert_eq!(state["last_success"], 1000.0);
+        assert_eq!(state["delivery_status"], "pass");
+        assert_eq!(state["next_attempt"], 1300.0);
+    }
+
+    #[test]
+    fn a_failed_message_waits_longer_each_time_up_to_an_hour() {
+        let mut state = json!({"entries": {"mount:media": {}}});
+        let mut waits = vec![];
+        for _ in 0..12 {
+            record_failed(&mut state, 1000.0);
+            waits.push(state["next_attempt"].as_f64().unwrap() - 1000.0);
+        }
+        assert_eq!(
+            waits[..8],
+            [60.0, 120.0, 240.0, 480.0, 960.0, 1920.0, 3600.0, 3600.0]
+        );
+        assert_eq!(state["attempts"], 10);
+        assert_eq!(state["delivery_status"], "fail");
+        // Nothing sent: the entries stay as they were.
+        assert_eq!(state["entries"], json!({"mount:media": {}}));
+    }
+}
+
+/// Tests the mutation pass of 0.52.2 asked for (G6): when a problem or a recovery is
+/// due, what proves a drive recovered, and the message's words.
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+
+    const NOW: f64 = 100_000.0;
+
+    /// A first sighting dated later than now (a clock put back) counts from now: with no
+    /// wait it is sent at once, never held back by a time still to come.
+    #[test]
+    fn a_problem_first_seen_in_the_future_counts_from_now() {
+        let mut entries =
+            json!({"app:x":{"first_seen":NOW + 5000.0,"last_sent":null,"sent_level":null}});
+        assert!(problem_due(
+            &mut entries,
+            "app:x",
+            "warning",
+            NOW,
+            (0, 43200)
+        ));
+    }
+
+    /// A message sent later than now (the clock put back) does not hold the next one back.
+    #[test]
+    fn a_message_sent_in_the_future_does_not_hold_the_next_back() {
+        let mut entries =
+            json!({"app:x":{"first_seen":0.0,"last_sent":NOW + 5000.0,"sent_level":"warning"}});
+        assert!(problem_due(
+            &mut entries,
+            "app:x",
+            "warning",
+            NOW,
+            (300, 43200)
+        ));
+    }
+
+    /// One sent a moment ago waits for the repeat; once the repeat has passed it goes
+    /// again, and one that became urgent goes at once.
+    #[test]
+    fn a_problem_just_sent_waits_for_the_repeat() {
+        let entry = |sent: f64, level: &str| json!({"app:x":{"first_seen":0.0,"last_sent":sent,"sent_level":level}});
+        let times = (300, 43200);
+        assert!(!problem_due(
+            &mut entry(NOW - 10.0, "warning"),
+            "app:x",
+            "warning",
+            NOW,
+            times
+        ));
+        assert!(problem_due(
+            &mut entry(NOW - 43200.0, "warning"),
+            "app:x",
+            "warning",
+            NOW,
+            times
+        ));
+        assert!(problem_due(
+            &mut entry(NOW - 10.0, "warning"),
+            "app:x",
+            "critical",
+            NOW,
+            times
+        ));
+        assert!(!problem_due(
+            &mut entry(NOW - 10.0, "critical"),
+            "app:x",
+            "critical",
+            NOW,
+            times
+        ));
+    }
+
+    /// A recovery dated later than now counts from now, and the date kept is now.
+    #[test]
+    fn a_recovery_cleared_in_the_future_counts_from_now() {
+        let mut entry = json!({"cleared_at":NOW + 5000.0});
+        assert!(recovery_due(&mut entry, NOW, 0));
+        assert_eq!(entry["cleared_at"], json!(NOW));
+        let mut entry = json!({"cleared_at":NOW - 10.0});
+        assert!(!recovery_due(&mut entry, NOW, 300));
+        assert!(recovery_due(&mut entry, NOW + 290.0, 300));
+    }
+
+    /// A drive is recovered only when it is mounted, writable, not waiting and without
+    /// errors; its space only when it was read, its SMART only when it passed.
+    #[test]
+    fn a_drive_is_recovered_only_on_full_evidence() {
+        let drives = ["good", "ro", "waiting", "errors", "nospace", "gone"];
+        let mut unknown: BTreeSet<String> = ["mount", "space", "smart"]
+            .iter()
+            .flat_map(|kind| drives.iter().map(move |d| format!("{kind}:{d}")))
+            .collect();
+        let s = json!({"storage":[
+            {"id":"good","status":"mounted","used_percent":40,"fs_errors":0,"smart":{"status":"pass"}},
+            {"id":"ro","status":"mounted","read_only":true,"used_percent":40,"smart":{"status":"fail"}},
+            {"id":"waiting","status":"mounted","waiting":true,"used_percent":40},
+            {"id":"errors","status":"mounted","fs_errors":3,"used_percent":40},
+            {"id":"nospace","status":"mounted","smart":{"status":"pass"}},
+            {"id":"gone","status":"missing","used_percent":40,"smart":{"status":"pass"}}
+        ]});
+        recovered_drives(&s, &mut unknown);
+        let left: BTreeSet<String> = [
+            "mount:ro",
+            "space:ro",
+            "smart:ro",
+            "mount:waiting",
+            "space:waiting",
+            "smart:waiting",
+            "mount:errors",
+            "space:errors",
+            "smart:errors",
+            "space:nospace",
+            "mount:gone",
+            "space:gone",
+            "smart:gone",
+        ]
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
+        assert_eq!(unknown, left);
+    }
+
+    /// Each line of the message: "still" only for a reminder of a problem, never for a
+    /// recovery, even of a problem sent before.
+    #[test]
+    fn still_is_said_only_for_a_reminder() {
+        let entries = json!({
+            "memory-pressure":{"last_sent":1.0,"sent_level":"warning"},
+            "temperature":{"last_sent":1.0,"sent_level":"warning"},
+            "media-stale":{"last_sent":null}
+        });
+        let events = vec![
+            ("memory-pressure".to_string(), false, "warning".to_string()),
+            ("temperature".to_string(), true, "warning".to_string()),
+            ("media-stale".to_string(), false, "critical".to_string()),
+        ];
+        assert_eq!(
+            health_message(&events, &entries),
+            "NekoServer health update\n\
+             still warning: Available RAM is low\n\
+             RECOVERED: CPU temperature is high\n\
+             critical: Media connection checks are stale\n\
+             Review the local dashboard and service logs for details."
         );
     }
 }

@@ -414,8 +414,9 @@ class WindowTests(unittest.TestCase):
         grab = urllib.request.Request(
             fresh.url, data=b'{}', headers={'Content-Type': 'application/json'}, method='POST'
         )
+        other_window = self.cookie_browser()
         with self.assertRaises(urllib.error.HTTPError) as caught:
-            self.cookie_browser().open(grab, timeout=5)
+            other_window.open(grab, timeout=5)
         self.assertEqual(caught.exception.code, 403)
         browser = self.cookie_browser()
         with browser.open(fresh.url, timeout=5) as response:

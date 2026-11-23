@@ -628,6 +628,88 @@ pub fn restore_output(out: &Channel, original: &Original) -> bool {
 /// `wait(seconds)` sleeps (and lets tests move the fans); it returns false to stop
 /// (cancelled, or a temperature too high), and every output goes back to the
 /// firmware either way.
+/// A fan's speed in RPM; None when it can't be read (unknown, never 0 RPM, which would
+/// look like a slowdown).
+fn rpm(f: &Channel) -> Option<f64> {
+    number(&f.path("_input")).filter(|v| v.is_finite() && *v >= 0.0)
+}
+/// Every fan's speed. All fans are read together; the ones that failed are read again
+/// after a short wait that still watches temperatures, Stop and shutdown (at most twice,
+/// so one measurement never takes more than about two seconds, however many fans fail).
+/// A fan that stays unreadable is left out of that measurement.
+fn fan_speeds<F: FnMut(&Controller, u64) -> bool>(
+    c: &Controller,
+    fans: &[Channel],
+    wait: &mut F,
+) -> Result<BTreeMap<String, Option<f64>>, String> {
+    let mut speeds = fans
+        .iter()
+        .map(|f| (f.id.clone(), rpm(f)))
+        .collect::<BTreeMap<_, _>>();
+    for _ in 0..2 {
+        if speeds.values().all(Option::is_some) {
+            break;
+        }
+        if !wait(c, 1) {
+            return Err("Stopped".to_string());
+        }
+        for f in fans {
+            if speeds[&f.id].is_none() {
+                speeds.insert(f.id.clone(), rpm(f));
+            }
+        }
+    }
+    Ok(speeds)
+}
+/// One output to `pct` % (taken from the firmware first).
+fn set_speed(c: &mut Controller, out: &Channel, pct: f64) -> Result<(), String> {
+    c.take_over(out)
+        .and_then(|_| write(&out.path(""), &pwm_value(pct)))
+        .map_err(|_| format!("{} refused a new speed", out.label))
+}
+/// The fans that slowed down by 30 % or more from at least 100 RPM.
+fn slowed_fans(
+    fans: &[Channel],
+    baseline: &BTreeMap<String, Option<f64>>,
+    now: &BTreeMap<String, Option<f64>>,
+) -> Vec<String> {
+    fans.iter()
+        .filter(|f| match (baseline[&f.id], now[&f.id]) {
+            (Some(before), Some(now)) => before >= 100.0 && now <= before * 0.7,
+            _ => false,
+        })
+        .map(|f| f.id.clone())
+        .collect()
+}
+/// The detection itself, with every output at full speed at the start.
+fn detect_outputs<F: FnMut(&Controller, u64) -> bool>(
+    control: &mut Controller,
+    outputs: &[Channel],
+    fans: &[Channel],
+    wait: &mut F,
+) -> Result<BTreeMap<String, Vec<String>>, String> {
+    for out in outputs {
+        set_speed(control, out, 100.0)?;
+    }
+    if !wait(control, 6) {
+        return Err("Stopped".to_string());
+    }
+    let baseline = fan_speeds(control, fans, wait)?;
+    let mut found = BTreeMap::new();
+    for out in outputs {
+        set_speed(control, out, 35.0)?;
+        if !wait(control, 7) {
+            return Err("Stopped".to_string());
+        }
+        let now = fan_speeds(control, fans, wait)?;
+        found.insert(out.id.clone(), slowed_fans(fans, &baseline, &now));
+        set_speed(control, out, 100.0)?;
+        if !wait(control, 3) {
+            return Err("Stopped".to_string());
+        }
+    }
+    Ok(found)
+}
 pub fn detect<F: FnMut(&Controller, u64) -> bool>(
     control: &mut Controller,
     mut wait: F,
@@ -637,68 +719,7 @@ pub fn detect<F: FnMut(&Controller, u64) -> bool>(
     }
     let outputs = control.inventory.outputs.clone();
     let fans = control.inventory.fans.clone();
-    // A speed that can't be read is unknown, never 0 RPM (which would look like a
-    // slowdown). All fans are read together; the ones that failed are read again after
-    // a short wait that still watches temperatures, Stop and shutdown (at most twice,
-    // so one measurement never takes more than about two seconds, however many fans
-    // fail). A fan that stays unreadable is left out of that measurement.
-    let rpm = |f: &Channel| number(&f.path("_input")).filter(|v| v.is_finite() && *v >= 0.0);
-    let measure = |c: &Controller, wait: &mut F| -> Result<BTreeMap<String, Option<f64>>, String> {
-        let mut speeds = fans
-            .iter()
-            .map(|f| (f.id.clone(), rpm(f)))
-            .collect::<BTreeMap<_, _>>();
-        for _ in 0..2 {
-            if speeds.values().all(Option::is_some) {
-                break;
-            }
-            if !wait(c, 1) {
-                return Err("Stopped".to_string());
-            }
-            for f in &fans {
-                if speeds[&f.id].is_none() {
-                    speeds.insert(f.id.clone(), rpm(f));
-                }
-            }
-        }
-        Ok(speeds)
-    };
-    let set = |c: &mut Controller, out: &Channel, pct: f64| -> Result<(), String> {
-        c.take_over(out)
-            .and_then(|_| write(&out.path(""), &pwm_value(pct)))
-            .map_err(|_| format!("{} refused a new speed", out.label))
-    };
-    let result = (|| {
-        for out in &outputs {
-            set(control, out, 100.0)?;
-        }
-        if !wait(control, 6) {
-            return Err("Stopped".to_string());
-        }
-        let baseline = measure(control, &mut wait)?;
-        let mut found = BTreeMap::new();
-        for out in &outputs {
-            set(control, out, 35.0)?;
-            if !wait(control, 7) {
-                return Err("Stopped".to_string());
-            }
-            let now = measure(control, &mut wait)?;
-            let slowed = fans
-                .iter()
-                .filter(|f| match (baseline[&f.id], now[&f.id]) {
-                    (Some(before), Some(now)) => before >= 100.0 && now <= before * 0.7,
-                    _ => false,
-                })
-                .map(|f| f.id.clone())
-                .collect::<Vec<_>>();
-            found.insert(out.id.clone(), slowed);
-            set(control, out, 100.0)?;
-            if !wait(control, 3) {
-                return Err("Stopped".to_string());
-            }
-        }
-        Ok(found)
-    })();
+    let result = detect_outputs(control, &outputs, &fans, &mut wait);
     control.release_all();
     result
 }
@@ -1252,5 +1273,31 @@ mod stall_tests {
             assert_eq!(b.get("pwm1"), "51", "{reading} linked={linked}");
             assert!(c.status[&out]["note"].is_null());
         }
+    }
+}
+
+/// Tests the mutation pass of 0.52.2 asked for (G6).
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+
+    /// A fan speed below zero is no speed at all (unknown, never a slowdown).
+    #[test]
+    fn a_speed_below_zero_is_unknown() {
+        let dir = std::env::temp_dir().join(format!("neko-fans-rpm-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let fan = Channel {
+            id: "nct6798@/x/fan1".into(),
+            dir: dir.clone(),
+            device: dir.clone(),
+            file: "fan1".into(),
+            label: String::new(),
+            chip: "nct6798".into(),
+        };
+        fs::write(dir.join("fan1_input"), "1200").unwrap();
+        assert_eq!(rpm(&fan), Some(1200.0));
+        fs::write(dir.join("fan1_input"), "-5").unwrap();
+        assert_eq!(rpm(&fan), None);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

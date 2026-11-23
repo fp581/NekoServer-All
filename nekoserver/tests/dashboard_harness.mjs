@@ -164,6 +164,18 @@ try {
 } finally {
   rmSync(folder, { recursive: true, force: true });
 }
+/* Let the page's pending promises go on: `n` turns of the microtask queue, one after
+   the other (each turn may queue the next step of the page). */
+async function ticks(n) {
+  if (n > 0) {
+    await Promise.resolve();
+    await ticks(n - 1);
+  }
+}
+/* `step` for each item, one after another (never two at once); the answers in order. */
+function inTurn(items, step) {
+  return items.reduce(async (earlier, item) => [...(await earlier), await step(item)], Promise.resolve([]));
+}
 /* Calls that take more than the plain argument, by name; every other offered function is
    called with the argument as it is. */
 const summary = issue => ({ id: issue.id, level: issue.level, title: issue.title });
@@ -359,9 +371,7 @@ SPECIAL.askInTurn = async argument => {
     const said = argument.answers[n];
     return { text: said.text ?? '', done: !said.failed, failed: said.failed ?? null, repair: null };
   });
-  for (const question of argument.questions) {
-    await app.askNeko(question);
-  }
+  await inTurn(argument.questions, question => app.askNeko(question));
   return sent.filter(([path]) => path === '/api/control/ask').map(([, body]) => body);
 };
 // Approve on an update's card while `waiting` is the version that waits on the server:
@@ -461,7 +471,7 @@ SPECIAL.askTyped = async argument => {
   app.askNote();
   const typing = byId('ask-note').textContent;
   app.sendQuestion();
-  for (let i = 0; i < 20; i++) await Promise.resolve();
+  await ticks(20);
   return { typing, note: byId('ask-note').textContent, sent, shown: shown(byId('ask-log')) };
 };
 
@@ -474,7 +484,7 @@ SPECIAL.askTyped = async argument => {
    add: {path, downloads, how}}. Returns what was sent, what the page then shows,
    and what the form sent. */
 async function settle() {
-  for (let i = 0; i < 30; i++) await Promise.resolve();
+  await ticks(30);
 }
 SPECIAL.mediaFlow = async argument => {
   const byId = keptPage();
@@ -524,7 +534,12 @@ SPECIAL.mediaFlow = async argument => {
 SPECIAL.mediaHiccup = async () => {
   const byId = keptPage();
   app.state.route = 'media';
-  Object.assign(app.MEDIA, { answer: { ok: true, working: true, result: null }, asked: true, refused: null, formKey: '' });
+  Object.assign(app.MEDIA, {
+    answer: { ok: true, working: true, result: null },
+    asked: true,
+    refused: null,
+    formKey: ''
+  });
   const later = [];
   globalThis.setTimeout = (run, wait) => {
     if (wait === 2000) later.push(run); // the page's next look at the change
@@ -536,7 +551,15 @@ SPECIAL.mediaHiccup = async () => {
       reached = true;
       throw new Error('the network is down for a moment');
     }
-    return { ok: true, status: 200, json: async () => ({ ok: true, working: false, result: { state: 'done', message: 'Your films are connected.', kinds: [] } }) };
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        working: false,
+        result: { state: 'done', message: 'Your films are connected.', kinds: [] }
+      })
+    };
   };
   await app.mediaState();
   await settle();

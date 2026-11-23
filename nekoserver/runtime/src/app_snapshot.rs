@@ -228,7 +228,7 @@ fn entries(
     }
     if m.is_dir() {
         let mut children = fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
-        children.sort_by_key(|p| p.file_name());
+        children.sort_by_key(fs::DirEntry::file_name);
         for child in children {
             entries(
                 root,
@@ -557,6 +557,113 @@ fn done_in_part(refused: Option<String>, short: Option<Value>) -> Option<Value> 
     );
     (!notes.is_empty()).then(|| json!(notes))
 }
+/// The one container of app `name`, checked: its own, not paused or restarting, its
+/// settings folder mounted where the app keeps them, and no writable state elsewhere
+/// (that would make a backup silently incomplete). Returns its row for the journal.
+fn app_container(name: &str, data: &Path, library_drives: &[&Path]) -> Result<Value> {
+    let project = format!("label=com.docker.compose.project=neko-{name}");
+    let service = format!("label=com.docker.compose.service={name}");
+    let ids = docker(&[
+        "ps",
+        "-aq",
+        "--no-trunc",
+        "--filter",
+        &project,
+        "--filter",
+        &service,
+    ])?;
+    let ids = ids.split_whitespace().collect::<Vec<_>>();
+    if ids.len() != 1 {
+        return Err(Error::new("Exactly one container per application required"));
+    }
+    let v = inspect(ids[0])?;
+    if !identity(&v, name, ids[0])
+        || v["State"]["Paused"] == true
+        || v["State"]["Restarting"] == true
+    {
+        return Err(Error::new("Application state unsupported"));
+    }
+    let expected = data.join("appdata").join(name);
+    let mounts = v["Mounts"]
+        .as_array()
+        .ok_or_else(|| Error::new("Container mounts required"))?;
+    let destination = match name {
+        "seerr" => "/app/config",
+        "navidrome" => "/data",
+        _ => "/config",
+    };
+    if !mounts.iter().any(|m| {
+        m["Type"] == "bind"
+            && m["Source"] == expected.to_string_lossy().as_ref()
+            && m["Destination"] == destination
+    }) {
+        return Err(Error::new("Persistent application mount missing"));
+    }
+    if mounts
+        .iter()
+        .any(|m| !covered(m, &expected, library_drives))
+    {
+        return Err(Error::new("Unmanaged writable container state"));
+    }
+    Ok(
+        json!({"id":ids[0],"service":name,"image":v["Image"],"was_running":v["State"]["Running"]==true}),
+    )
+}
+/// No container that is not one of the apps writes into a selected app's settings.
+fn no_other_writer(containers: &[Value], names: &[String], data: &Path) -> Result<()> {
+    let all = docker(&["ps", "-aq", "--no-trunc"])?;
+    for id in all.split_whitespace() {
+        if containers.iter().any(|r| r["id"] == id) {
+            continue;
+        }
+        let v = inspect(id)?;
+        let mounts = v["Mounts"]
+            .as_array()
+            .ok_or_else(|| Error::new("Container mounts required"))?;
+        for m in mounts.iter().filter(|m| m["RW"] == true) {
+            let source = PathBuf::from(m["Source"].as_str().unwrap_or(""));
+            if names.iter().any(|n| {
+                let p = data.join("appdata").join(n);
+                source.starts_with(&p) || p.starts_with(&source)
+            }) {
+                return Err(Error::new("Application storage has another writer"));
+            }
+        }
+    }
+    Ok(())
+}
+/// The running apps stopped, and every app stopped cleanly (not killed, not out of memory).
+fn stop_cleanly(running: &[Value], containers: &[Value]) -> Result<()> {
+    for row in running {
+        docker(&["stop", "--time", "30", row["id"].as_str().unwrap()])?;
+    }
+    for row in containers {
+        let v = inspect(row["id"].as_str().unwrap())?;
+        if v["State"]["Running"] == true {
+            return Err(Error::new("Application writer still running"));
+        }
+        if row["was_running"] == true
+            && (v["State"]["ExitCode"] == 137 || v["State"]["OOMKilled"] == true)
+        {
+            return Err(Error::new("Application did not shut down cleanly"));
+        }
+    }
+    Ok(())
+}
+/// Every listed file copied into the snapshot's payload, with its checksum recorded.
+fn copy_listed(files: &mut [Value], data: &Path, payload: &Path) -> Result<()> {
+    for row in files {
+        let rel = PathBuf::from(row["path"].as_str().unwrap());
+        let target = payload.join(&rel);
+        if row["kind"] == "directory" {
+            common::directory(&target, 0o700)?;
+        } else {
+            common::directory(target.parent().unwrap(), 0o700)?;
+            row["sha256"] = json!(copy_file(&data.join(&rel), &target)?);
+        }
+    }
+    Ok(())
+}
 fn snapshot(
     cfgpath: &Path,
     data: &Path,
@@ -568,99 +675,20 @@ fn snapshot(
     let library_drives = library_drives(cfgpath, data, media);
     let library_drives: Vec<&Path> = library_drives.iter().map(PathBuf::as_path).collect();
     for name in names {
-        let project = format!("label=com.docker.compose.project=neko-{name}");
-        let service = format!("label=com.docker.compose.service={name}");
-        let ids = docker(&[
-            "ps",
-            "-aq",
-            "--no-trunc",
-            "--filter",
-            &project,
-            "--filter",
-            &service,
-        ])?;
-        let ids = ids.split_whitespace().collect::<Vec<_>>();
-        if ids.len() != 1 {
-            return Err(Error::new("Exactly one container per application required"));
-        }
-        let v = inspect(ids[0])?;
-        if !identity(&v, name, ids[0])
-            || v["State"]["Paused"] == true
-            || v["State"]["Restarting"] == true
-        {
-            return Err(Error::new("Application state unsupported"));
-        }
-        let expected = data.join("appdata").join(name);
-        let mounts = v["Mounts"]
-            .as_array()
-            .ok_or_else(|| Error::new("Container mounts required"))?;
-        let destination = match name.as_str() {
-            "seerr" => "/app/config",
-            "navidrome" => "/data",
-            _ => "/config",
-        };
-        if !mounts.iter().any(|m| {
-            m["Type"] == "bind"
-                && m["Source"] == expected.to_string_lossy().as_ref()
-                && m["Destination"] == destination
-        }) {
-            return Err(Error::new("Persistent application mount missing"));
-        }
-        // Refuse extra writable state: it would make a backup silently incomplete.
-        if mounts
-            .iter()
-            .any(|m| !covered(m, &expected, &library_drives))
-        {
-            return Err(Error::new("Unmanaged writable container state"));
-        }
-        let row = json!({"id":ids[0],"service":name,"image":v["Image"],"was_running":v["State"]["Running"]==true});
+        let row = app_container(name, data, &library_drives)?;
         if row["was_running"] == true {
             running.push(row.clone());
         }
         containers.push(row);
     }
-    // Refuse an unselected container writing into any selected appdata subtree.
-    let all = docker(&["ps", "-aq", "--no-trunc"])?;
-    for id in all.split_whitespace() {
-        if containers.iter().any(|r| r["id"] == id) {
-            continue;
-        }
-        let v = inspect(id)?;
-        for m in v["Mounts"]
-            .as_array()
-            .ok_or_else(|| Error::new("Container mounts required"))?
-        {
-            if m["RW"] == true {
-                let source = PathBuf::from(m["Source"].as_str().unwrap_or(""));
-                if names.iter().any(|n| {
-                    let p = data.join("appdata").join(n);
-                    source.starts_with(&p) || p.starts_with(&source)
-                }) {
-                    return Err(Error::new("Application storage has another writer"));
-                }
-            }
-        }
-    }
+    no_other_writer(&containers, names, data)?;
     common::directory(Path::new("/etc/nekoserver-backups"), 0o700)?;
     common::atomic_json(
         Path::new(*JOURNAL),
         &json!({"format":"neko-app-resume-v1","containers":running}),
     )?;
     let result = (|| {
-        for row in &running {
-            docker(&["stop", "--time", "30", row["id"].as_str().unwrap()])?;
-        }
-        for row in &containers {
-            let v = inspect(row["id"].as_str().unwrap())?;
-            if v["State"]["Running"] == true {
-                return Err(Error::new("Application writer still running"));
-            }
-            if row["was_running"] == true
-                && (v["State"]["ExitCode"] == 137 || v["State"]["OOMKilled"] == true)
-            {
-                return Err(Error::new("Application did not shut down cleanly"));
-            }
-        }
+        stop_cleanly(&running, &containers)?;
         backup::guard(cfgpath, data, media)?;
         // A HDD that drops out mid-run stops it (see common::expect_drive).
         let _hdd = common::expect_drive(media)?;
@@ -689,16 +717,7 @@ fn snapshot(
         let made = (|| -> Result<(u64, Option<String>)> {
             let stage = backup::stage_snapshot(&root)?;
             let payload = &stage.payload;
-            for row in &mut files {
-                let rel = PathBuf::from(row["path"].as_str().unwrap());
-                let target = payload.join(&rel);
-                if row["kind"] == "directory" {
-                    common::directory(&target, 0o700)?;
-                } else {
-                    common::directory(target.parent().unwrap(), 0o700)?;
-                    row["sha256"] = json!(copy_file(&data.join(&rel), &target)?);
-                }
-            }
+            copy_listed(&mut files, data, payload)?;
             // Containers are stopped, but installer and settings files can still have
             // other writers. List everything again: a file that changed, appeared or went
             // away since the first listing makes this snapshot inconsistent.
@@ -1220,6 +1239,40 @@ mod tests {
         let removed = common::prune_snapshots(&root, 3, Some("snapshot-400-1"), None).unwrap();
         assert_eq!(removed, ["snapshot-99999999999999999-1", "snapshot-100-1"]);
         assert!(root.join("snapshot-200-1").is_dir() && root.join("snapshot-300-1").is_dir());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+/// The short functions 0.52.2 split out of `snapshot` (Sonar S3776): the one that needs
+/// no Docker.
+#[cfg(test)]
+mod split_helpers {
+    use super::*;
+
+    #[test]
+    fn every_listed_file_and_folder_is_copied_with_its_checksum() {
+        let root = std::env::temp_dir().join(format!("neko-app-copy-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let data = root.join("ssd");
+        fs::create_dir_all(data.join("appdata/jellyfin/empty")).unwrap();
+        fs::write(data.join("appdata/jellyfin/settings.xml"), "<a/>").unwrap();
+        let mut files = vec![
+            json!({"path": "appdata/jellyfin", "kind": "directory"}),
+            json!({"path": "appdata/jellyfin/empty", "kind": "directory"}),
+            json!({"path": "appdata/jellyfin/settings.xml", "kind": "file"}),
+        ];
+        let payload = root.join("payload");
+        copy_listed(&mut files, &data, &payload).unwrap();
+        assert!(payload.join("appdata/jellyfin/empty").is_dir());
+        assert_eq!(
+            fs::read(payload.join("appdata/jellyfin/settings.xml")).unwrap(),
+            b"<a/>"
+        );
+        assert_eq!(
+            files[2]["sha256"],
+            common::digest(&data.join("appdata/jellyfin/settings.xml")).unwrap()
+        );
+        // A folder gets no checksum.
+        assert!(files[0].get("sha256").is_none() && files[1].get("sha256").is_none());
         fs::remove_dir_all(root).unwrap();
     }
 }

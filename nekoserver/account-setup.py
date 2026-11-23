@@ -265,7 +265,7 @@ def main():
         return 0
     if os.geteuid() != 0 or not sys.stdin.isatty():
         parser.error('Run with sudo in an interactive terminal')
-    config = json.loads(safe_path(args.config).read_text())
+    config = json.loads(settings_path(args.config).read_text())
     config['accounts'] = {**config.get('accounts', {}), 'enabled': True}
     verify_storage(config)
     apps = deployed_apps(config)

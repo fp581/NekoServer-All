@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import secrets
@@ -38,12 +39,14 @@ def validate(value):
         raise RuntimeError('Invalid private music token')
 
 
-NAVIDROME = f"http://127.0.0.1:{app_port('navidrome')}"
+# Navidrome on this server, and nowhere else: plain http on the server's own address.
+LOCAL = 'http://127.0.0.1:'
+NAVIDROME = f"{LOCAL}{app_port('navidrome')}"
 
 
 def inspect(value, base=NAVIDROME):
     validate(value)
-    if not re.fullmatch(r'http://127\.0\.0\.1:[0-9]{1,5}', base):
+    if not base.startswith(LOCAL) or not re.fullmatch(r'\d{1,5}', base[len(LOCAL) :], re.ASCII):
         raise RuntimeError('Music setup only contacts the local server')
     opener = local_opener()
 
@@ -97,16 +100,23 @@ def inspect(value, base=NAVIDROME):
 
 
 def check(config):
-    path = credential_path(config)
-    if not path.exists():
+    data = os.path.realpath(config['data_mount'])
+    path = os.path.realpath(credential_path(config))
+    # The SSD's path comes from the settings file: the file is looked at only once it is
+    # proved to lie on the SSD with every link followed.
+    if not path.startswith(data + os.sep):
+        raise RuntimeError('Refusing a music monitor credential outside the SSD')
+    if not os.path.exists(path):
         return {
             'status': 'needs_setup',
             'reason': 'Create a non-admin Navidrome listener and run music-setup.py --configure',
         }
     try:
-        if path.stat().st_uid != 0 or path.stat().st_mode & 0o077 or path.stat().st_size > 64000:
+        info = os.stat(path)
+        if info.st_uid != 0 or info.st_mode & 0o077 or info.st_size > 64000:
             raise RuntimeError('Music monitor credential must be private and root-owned')
-        result = inspect(json.loads(path.read_text()))
+        with open(path) as stream:
+            result = inspect(json.loads(stream.read()))
     except (OSError, ValueError, RuntimeError):
         return {
             'status': 'fail',

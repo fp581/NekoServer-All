@@ -37,6 +37,7 @@ APPS = {
         ),
     )
 }
+CREDENTIALS = 'credentials.json'  # the private store of every login, in the accounts folder on the SSD
 EMAIL_LOGINS = {'immich', 'seerr'}
 STATES = {'planned', 'started', 'verified', 'needs_setup'}
 # Secrets of the server itself, chosen on the accounts page with the app logins (0.50.0):
@@ -206,7 +207,7 @@ def load(config):
     if not root.exists():
         return {'format': 1, 'mode': 'per-app', 'apps': {}}
     private(root, directory=True)
-    path = root / 'credentials.json'
+    path = root / CREDENTIALS
     if not path.exists():
         drop_unfinished(root)
         if any(root.iterdir()):
@@ -258,11 +259,11 @@ def save(config, value):
         private(root, directory=True)
     else:
         ensure_directory(root, 0o700)
-    for name in ('credentials.json', 'APP-CREDENTIALS.txt'):
+    for name in (CREDENTIALS, 'APP-CREDENTIALS.txt'):
         if (root / name).exists():
             private(root / name)
         safe_path(root / name)
-    atomic_json(root / 'credentials.json', value)
+    atomic_json(root / CREDENTIALS, value)
     lines = [
         'NEKOSERVER APP CREDENTIALS',
         'Sensitive plaintext - root only. Keep any offline copy private.',
@@ -498,59 +499,15 @@ def accounts_page(config, apps, others=()):
 def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=print, allow_corrections=True):
     """Persist each answer before deployment; retain saved answers on retry."""
     value = load(config)
+    asking = (prompt, password_prompt, output)
     if allow_corrections:
         for app in apps:
             entry = value['apps'].get(app)
-            if not entry or entry['state'] != 'needs_setup':
-                continue
-            output(APPS[app][0] + ': saved login was not verified.')
-            if entry['allow_create'] and not fresh(config, app):
-                output(
-                    f'  {APPS[app][0]} has its own account from before (its settings were kept), so the login setup '
-                    'made for it is not one it knows. Choose c and type the login it has now.'
-                )
-            elif entry['allow_create']:
-                # Account creation did not finish. If you completed the app's first-run
-                # setup yourself with another login, switch to that existing account.
-                output(
-                    '  If you finished this app\'s setup yourself with a different login, choose c to enter it '
-                    '(the account in the app is not changed or reset).'
-                )
-            while True:
-                answer = questions.ask('login_retry', prompt, app=APPS[app][0]).strip().lower()
-                if answer in ('', 'c'):
-                    break
-                output('Press Enter alone, or type c.')
-            if answer == 'c':
-                username, password = existing_login(config, app, value, prompt, password_prompt, output)
-                entry.update(
-                    username=username, password=password, state='planned', source='custom-existing', allow_create=False
-                )
-                save(config, value)
+            if entry and entry['state'] == 'needs_setup':
+                correct_unverified(config, app, entry, value, asking)
     if AHEAD.get('others'):
-        # The PIN and the shared folders' password chosen on the page before the approval.
-        # One asked for and left empty takes the kept one away: it was asked because the
-        # server has none now (the PIN file removed to choose a new one, say), so the one
-        # kept from before opens nothing, and "Show login" would still show it.
-        others = value.setdefault('others', {})
-        for key, chosen in AHEAD['others'].items():
-            if chosen:
-                others[key] = chosen
-            else:
-                others.pop(key, None)
-    missing = [app for app in apps if app not in value['apps']]
-    # A login made on the accounts page for an app found since to have data of its own
-    # (its drive mounted by the storage step meanwhile) is not one the app knows: asked.
-    ahead = {
-        app: AHEAD['apps'][app]
-        for app in missing
-        if app in AHEAD.get('apps', {}) and not (AHEAD['apps'][app]['allow_create'] and not fresh(config, app))
-    }
-    if ahead:
-        # Chosen on the accounts page before the approval: saved now, nothing is asked.
-        value['mode'] = AHEAD.get('mode', value['mode'])
-        value['apps'].update(ahead)
-        missing = [app for app in missing if app not in ahead]
+        take_others_ahead(value)
+    missing = take_logins_ahead(config, value, [app for app in apps if app not in value['apps']])
     if not missing:
         save(config, value)  # Repair a missing human-readable export from JSON.
         return
@@ -562,40 +519,95 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
         value['mode'] = AHEAD['mode']
     with accounts_page(config, missing) if first else contextlib.nullcontext():
         if first and not chosen:
-            while True:
-                answer = setup_progress.page_field('mode', prompt, questions.terminal('logins_who')).strip()
-                # Enter alone takes the first, the recommended one (gate run B1).
-                if answer in ('', '1', '2'):
-                    value['mode'] = 'custom' if answer == '2' else 'generate'
-                    break
-                output('Type 1 or 2.')
+            value['mode'] = asked_mode(prompt, output)
         for app in missing:
-            output(APPS[app][0])
-            is_fresh = fresh(config, app)
-            # One choice for all of them ("per-app", asked app by app until 0.50.0, reads as your own).
-            mode = 'generate' if value['mode'] == 'generate' else 'custom'
-            if not is_fresh:
-                output('  Existing app data: enter the current login; it will not be reset.')
-                mode = 'custom'
-            if mode == 'generate':
-                username, password = generate(app)
-                output(
-                    f'  Made and saved: username {username}, with a strong password. Wherever setup asks you to '
-                    'sign in, "Show login" shows it (in the setup window, or as a question in the terminal).'
-                )
-            elif not is_fresh:
-                username, password = existing_login(config, app, value, prompt, password_prompt, output, on_page=first)
-            else:
-                username, password = ask_login(app, False, value, prompt, password_prompt, output, on_page=first)
-            value['apps'][app] = {
-                'username': username,
-                'password': password,
-                'state': 'planned',
-                'allow_create': is_fresh,
-                'source': mode,
-            }
+            value['apps'][app] = new_login(config, app, value, asking, on_page=first)
             save(config, value)
     output('Account choices saved privately; passwords are not printed or written to installer logs.')
+
+
+def correct_unverified(config, app, entry, value, asking):
+    """A saved login the app did not take: kept (Enter alone), or replaced by the login
+    the app really has (c), which is then saved."""
+    prompt, password_prompt, output = asking
+    output(APPS[app][0] + ': saved login was not verified.')
+    if entry['allow_create'] and not fresh(config, app):
+        output(
+            f'  {APPS[app][0]} has its own account from before (its settings were kept), so the login setup '
+            'made for it is not one it knows. Choose c and type the login it has now.'
+        )
+    elif entry['allow_create']:
+        # Account creation did not finish. If you completed the app's first-run
+        # setup yourself with another login, switch to that existing account.
+        output(
+            '  If you finished this app\'s setup yourself with a different login, choose c to enter it '
+            '(the account in the app is not changed or reset).'
+        )
+    while True:
+        answer = questions.ask('login_retry', prompt, app=APPS[app][0]).strip().lower()
+        if answer in ('', 'c'):
+            break
+        output('Press Enter alone, or type c.')
+    if answer == 'c':
+        username, password = existing_login(config, app, value, prompt, password_prompt, output)
+        entry.update(
+            username=username, password=password, state='planned', source='custom-existing', allow_create=False
+        )
+        save(config, value)
+
+
+def take_others_ahead(value):
+    """The PIN and the shared folders' password chosen on the page before the approval.
+    One asked for and left empty takes the kept one away: it was asked because the
+    server has none now (the PIN file removed to choose a new one, say), so the one
+    kept from before opens nothing, and "Show login" would still show it."""
+    others = value.setdefault('others', {})
+    for key, chosen in AHEAD['others'].items():
+        if chosen:
+            others[key] = chosen
+        else:
+            others.pop(key, None)
+
+
+def take_logins_ahead(config, value, missing):
+    """The logins chosen on the accounts page before the approval, saved in `value` with
+    its choice; returns the apps that still have none. A login made there for an app
+    found since to have data of its own (its drive mounted by the storage step meanwhile)
+    is not one the app knows: it is asked."""
+    ahead = {
+        app: AHEAD['apps'][app]
+        for app in missing
+        if app in AHEAD.get('apps', {}) and not (AHEAD['apps'][app]['allow_create'] and not fresh(config, app))
+    }
+    if not ahead:
+        return missing
+    value['mode'] = AHEAD.get('mode', value['mode'])
+    value['apps'].update(ahead)
+    return [app for app in missing if app not in ahead]
+
+
+def new_login(config, app, value, asking, on_page):
+    """One app's login, as the choice says: made for you, or typed in; the current login
+    of an app that has data already."""
+    prompt, password_prompt, output = asking
+    output(APPS[app][0])
+    is_fresh = fresh(config, app)
+    # One choice for all of them ("per-app", asked app by app until 0.50.0, reads as your own).
+    mode = 'generate' if value['mode'] == 'generate' else 'custom'
+    if not is_fresh:
+        output('  Existing app data: enter the current login; it will not be reset.')
+        mode = 'custom'
+    if mode == 'generate':
+        username, password = generate(app)
+        output(
+            f'  Made and saved: username {username}, with a strong password. Wherever setup asks you to '
+            'sign in, "Show login" shows it (in the setup window, or as a question in the terminal).'
+        )
+    elif not is_fresh:
+        username, password = existing_login(config, app, value, prompt, password_prompt, output, on_page=on_page)
+    else:
+        username, password = ask_login(app, False, value, prompt, password_prompt, output, on_page=on_page)
+    return {'username': username, 'password': password, 'state': 'planned', 'allow_create': is_fresh, 'source': mode}
 
 
 def shares_account(config):

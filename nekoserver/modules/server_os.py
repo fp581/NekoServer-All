@@ -399,19 +399,7 @@ def run(context):
         return
     if os.geteuid() != 0 or not shutil.which('systemctl'):
         raise RuntimeError('Server OS setup requires root and systemd')
-    for name in definitions:
-        path = safe_path(name)
-        if path.exists() and not path.read_text().startswith(MARKER):
-            raise RuntimeError('Unmanaged OS drop-in preserved')
-    # Masks are deliberate symlinks to /dev/null; inspect their parents separately.
-    for name in TARGETS:
-        path = SYSTEMD_UNITS / name
-        safe_path(path.parent)
-        if path.is_symlink():
-            if os.readlink(path) != '/dev/null':
-                raise RuntimeError('Custom sleep target link preserved')
-        elif path.exists():
-            raise RuntimeError('Custom sleep target unit preserved')
+    refuse_files_of_others(definitions)
     remember_masks(definitions)
     log_journal_limits(context.config, context.log)
     for name, content in definitions.items():
@@ -427,15 +415,44 @@ def run(context):
         'Drive return: when the SSD or HDD comes back after it disappeared, its mount is renewed and the apps start again by themselves'
     )
     if policy == 'unchanged':
-        previous = safe_path(SYSTEMD_UNITS / HDD_UNIT)
-        if previous.exists():
-            if 'Description=NekoServer verified media HDD standby policy\n' not in previous.read_text():
-                raise RuntimeError('Unmanaged HDD unit preserved')
-            subprocess.run(['systemctl', 'disable', '--now', HDD_UNIT], check=True, capture_output=True, timeout=30)
-        context.log(
-            'No HDD command issued; earlier managed boot policy disabled. Restore previously changed hardware settings explicitly if needed.'
-        )
+        hdd_policy_off(context)
         return
+    return hdd_policy_on(context, policy)
+
+
+def refuse_files_of_others(definitions):
+    """Setup's drop-ins and sleep masks go only where there is nothing, or its own: a
+    file, unit or link someone else made stops setup (RuntimeError). Masks are
+    deliberate symlinks to /dev/null; their parents are inspected separately."""
+    for name in definitions:
+        path = safe_path(name)
+        if path.exists() and not path.read_text().startswith(MARKER):
+            raise RuntimeError('Unmanaged OS drop-in preserved')
+    for name in TARGETS:
+        path = SYSTEMD_UNITS / name
+        safe_path(path.parent)
+        if path.is_symlink():
+            if os.readlink(path) != '/dev/null':
+                raise RuntimeError('Custom sleep target link preserved')
+        elif path.exists():
+            raise RuntimeError('Custom sleep target unit preserved')
+
+
+def hdd_policy_off(context):
+    """No HDD power setting: the one setup made before (its own unit) is switched off."""
+    previous = safe_path(SYSTEMD_UNITS / HDD_UNIT)
+    if previous.exists():
+        if 'Description=NekoServer verified media HDD standby policy\n' not in previous.read_text():
+            raise RuntimeError('Unmanaged HDD unit preserved')
+        subprocess.run(['systemctl', 'disable', '--now', HDD_UNIT], check=True, capture_output=True, timeout=30)
+    context.log(
+        'No HDD command issued; earlier managed boot policy disabled. Restore previously changed hardware settings explicitly if needed.'
+    )
+
+
+def hdd_policy_on(context, policy):
+    """The media HDD's power setting applied at every start (hdparm, through the runtime's
+    own service), and what the service did; a needs_setup result when it can't be."""
     verify_storage(context.config)
     if not shutil.which('hdparm'):
         family = host.current()

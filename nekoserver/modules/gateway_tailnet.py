@@ -226,6 +226,23 @@ def answering(result):
     return result
 
 
+def updated_with_https_on(ctx, configure_routes, latest):
+    """secure_addresses with MagicDNS and HTTPS on: a failure is something else then (an
+    app not running, a route someone else made), reported as it is rather than sending
+    you to the DNS settings page again. None when the routes were not made (the question
+    comes next). `latest`: the result configure_routes made."""
+    try:
+        if not configure_routes():
+            return None
+        checked = answering(latest())
+        if checked is latest():
+            ctx.log('Tailscale: MagicDNS and HTTPS already on; secure addresses updated')
+        return checked
+    except RuntimeError as exc:
+        ctx.log('Tailscale addresses: ' + str(exc))
+        return {'status': 'needs_setup', 'reason': 'Secure addresses not set up: ' + str(exc)}
+
+
 def secure_addresses(ctx):
     """Turn on Tailscale HTTPS addresses for the apps; asks only if HTTPS is not on yet."""
     result = {}
@@ -239,18 +256,9 @@ def secure_addresses(ctx):
 
     interactive = guided_setup.interactive(ctx)
     if interactive and gateway_tools.https_ready():
-        # MagicDNS and HTTPS are on: a failure here is something else (an app not
-        # running, a route someone else made), so it is reported as it is rather than
-        # sending you to the DNS settings page again.
-        try:
-            if configure_routes():
-                checked = answering(result)
-                if checked is result:
-                    ctx.log('Tailscale: MagicDNS and HTTPS already on; secure addresses updated')
-                return checked
-        except RuntimeError as exc:
-            ctx.log('Tailscale addresses: ' + str(exc))
-            return {'status': 'needs_setup', 'reason': 'Secure addresses not set up: ' + str(exc)}
+        done = updated_with_https_on(ctx, configure_routes, lambda: result)
+        if done is not None:
+            return done
     if not interactive:
         if gateway_tools.tailscale_status().get('BackendState') == 'Running' and not gateway_tools.https_ready():
             return {'status': 'needs_setup', 'reason': gateway_tools.HTTPS_OFF}
