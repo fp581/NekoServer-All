@@ -217,6 +217,32 @@ class PageTests(unittest.TestCase):
         self.assertEqual(said[3], 'Card 1 · not in · 1200 files · full')
         self.assertEqual(said[4:], [True, False])
 
+    def test_a_task_is_said_in_a_line_while_it_runs_and_after(self):
+        said = page(
+            ('cardsTaskLine', a_task('check', True, 1, 4)),
+            ('cardsTaskLine', a_task('check', True)),
+            ('cardsTaskLine', a_task('take_back', True, 10, 52)),
+            ('cardsTaskLine', a_task('check', False, 4, 4, True, 'Card 2 checked: 4 copies fine.')),
+            ('cardsTaskLine', a_task('take_back', False, 3, 52, False, '')),
+            ('cardsTaskLine', None),
+            ('cardsTaskLine', {'kind': 'format', 'running': True}),
+        )
+        self.assertEqual(said[0], {'line': 'Checking card 2: 1 of 4 files…', 'running': True, 'failed': False})
+        self.assertEqual(said[1]['line'], 'Checking card 2…')
+        self.assertEqual(said[2]['line'], 'Taking the cards back: 10 of 52 files…')
+        self.assertEqual(said[3], {'line': 'Card 2 checked: 4 copies fine.', 'running': False, 'failed': False})
+        self.assertEqual(said[4], {'line': 'It stopped before the end.', 'running': False, 'failed': True})
+        self.assertEqual(said[5:], [None, None])
+
+    def test_a_card_of_the_set_can_be_checked_and_one_of_an_older_set_taken_back(self):
+        said = page(('driveOffer', OUR_CARD), ('driveOffer', OLDER_CARDS[1]))
+        self.assertEqual(said[0]['check'], 2)
+        self.assertIsNone(said[0]['action'])
+        self.assertEqual(said[1]['older'], 2)
+        self.assertIsNone(said[1]['action'])
+        self.assertTrue(said[1]['said'].startswith('Card 2 of a backup set this server made on '), said[1])
+        self.assertIn('2023', said[1]['said'])  # the set's year: 1700000000 is November 2023
+
     def test_each_drive_is_offered_only_as_the_server_judged_it(self):
         empty = {'label': 'CARD', 'size': 64e9, 'fstype': 'exfat', 'usable': True}
         theirs = {'label': 'OLD', 'fstype': 'ext4', 'usable': False, 'why': 'This card belongs to another backup set.'}
@@ -244,10 +270,38 @@ def playwright_works():
         return False
 
 
+OUR_CARD = {'mount': '/run/media/amy/C2', 'label': 'C2', 'size': 64e9, 'fstype': 'exfat', 'card': 2, 'usable': False}
+OLDER_CARDS = [
+    {
+        'mount': f'/run/media/amy/OLD{n}',
+        'label': f'OLD{n}',
+        'size': 32e9,
+        'fstype': 'exfat',
+        'usable': False,
+        'why': 'This card belongs to another backup set.',
+        'older_set': {'made': 1700000000, 'number': n},
+    }
+    for n in (1, 2)
+]
+
+
+def a_task(kind, running, done=0, total=0, ok=True, message=''):
+    card = 2 if kind == 'check' else None
+    return {'kind': kind, 'card': card, 'running': running, 'done': done, 'total': total, 'ok': ok, 'message': message}
+
+
 class StandInControl(socketserver.StreamRequestHandler):
-    """The control service as the page sees it: signed in, one empty card plugged in."""
+    """The control service as the page sees it: signed in, one empty card plugged in.
+    For a check or a take-back: `drives` (None: that empty card), `plan` (the tasks
+    cards-list hands out, one per look, the last one kept), `after_start` (the plan a
+    start sets), `start` (the answer to a start; None: started)."""
 
     asked = []
+    drives = None
+    plan = []
+    after_start = []
+    task = None
+    start = None
 
     def handle(self):
         request = json.loads(self.rfile.readline())
@@ -269,7 +323,24 @@ class StandInControl(socketserver.StreamRequestHandler):
                     'why': 'This card is formatted ntfs, which backup cards are not: they are ext4 or exFAT.',
                 },
             ]
-            answer = {'ok': True, 'set': a_set(time.time()), 'drives': drives, 'next_number': 2}
+            shown = a_set(time.time())
+            if StandInControl.drives is not None:
+                drives = StandInControl.drives
+            if drives is OLDER_CARDS:
+                shown = {**shown, 'cards': [], 'files_on_cards': 0, 'next_number': 1}
+            if len(StandInControl.plan) > 1:
+                StandInControl.task = StandInControl.plan.pop(0)
+            elif StandInControl.plan:
+                StandInControl.task = StandInControl.plan[0]
+            answer = {'ok': True, 'set': shown, 'drives': drives, 'next_number': 2, 'task': StandInControl.task}
+        elif op in ('cards_check', 'cards_take_back') and StandInControl.start:
+            answer = StandInControl.start
+        elif op == 'cards_check':
+            answer = {'ok': True, 'message': 'Checking card 2. Leave it in until the check has finished.'}
+            StandInControl.plan = list(StandInControl.after_start)
+        elif op == 'cards_take_back':
+            answer = {'ok': True, 'message': 'Taking the cards back.'}
+            StandInControl.plan = list(StandInControl.after_start)
         elif op == 'cards_enrol' and request.get('acknowledged') is True:
             answer = {'ok': True, 'number': 2, 'message': 'Card 2 is ready. Write “2” on it.'}
         else:
@@ -371,6 +442,111 @@ class PageInBrowserTests(unittest.TestCase):
                 self.assertEqual(enrol[0]['mount'], '/run/media/amy/CARD')
                 self.assertEqual((enrol[0]['number'], enrol[0]['acknowledged']), (2, True))
                 self.assertLessEqual(seen['widths'][0], seen['widths'][1], 'no sideways scrolling')
+
+
+@unittest.skipUnless(playwright_works(), 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
+class CardTasksInBrowserTests(unittest.TestCase):
+    """ "Check this card" and "Take these cards back" in Chromium, in both themes, against
+    the stand-in: each start, its progress lines, its result, a refusal and the PIN."""
+
+    setUpClass = classmethod(PageInBrowserTests.setUpClass.__func__)
+    tearDownClass = classmethod(PageInBrowserTests.tearDownClass.__func__)
+
+    RUNNING_CHECK = [a_task('check', True, 1, 4), a_task('check', True, 3, 4)]
+    CHECKED = 'Card 2 checked: 3 copies fine, 1 damaged (u1/2024/IMG_1.jpg); the next run copies that file again.'
+
+    def setUp(self):
+        StandInControl.asked.clear()
+        StandInControl.drives, StandInControl.plan, StandInControl.after_start = None, [], []
+        StandInControl.task, StandInControl.start = None, None
+
+    tearDown = setUp
+
+    def run_task(self, **wanted):
+        done = subprocess.run(
+            [NODE, str(BROWSER), self.address, json.dumps([('cardsTask', wanted)])],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=True,
+        )
+        return json.loads(done.stdout)[0]
+
+    def test_a_card_of_the_set_is_checked_through_the_page(self):
+        for look in ('neko', 'professional'):
+            for width in (1280, 390):
+                with self.subTest(look=look, width=width):
+                    self.setUp()
+                    StandInControl.drives = [OUR_CARD]
+                    StandInControl.after_start = [*self.RUNNING_CHECK, a_task('check', False, 4, 4, True, self.CHECKED)]
+                    seen = self.run_task(look=look, width=width, start='Check this card', go='Check card 2')
+                    self.assertIn(['Check this card', True], seen['offered'])
+                    self.assertIn(['Write to the card now', True], seen['offered'])
+                    self.assertNotIn('Take these cards back', [b[0] for b in seen['offered']])
+                    self.assertEqual(seen['dialog'][:2], ['BACKUP CARDS', 'Check card 2?'])
+                    self.assertIn('Nothing on the card is changed or erased.', seen['dialog'][2])
+                    self.assertEqual(seen['toast'], 'Checking card 2. Leave it in until the check has finished.')
+                    self.assertEqual(seen['lines'][0], ['Checking card 2: 1 of 4 files…', False, True])
+                    self.assertIn(['Checking card 2: 3 of 4 files…', False, True], seen['lines'])
+                    self.assertEqual(seen['lines'][-1], [self.CHECKED, False, False])
+                    check = [r for r in StandInControl.asked if r['op'] == 'cards_check']
+                    self.assertEqual((check[0]['mount'], check[0]['number']), ('/run/media/amy/C2', 2))
+                    self.assertEqual(seen['errors'], [])
+                    self.assertLessEqual(seen['widths'][0], seen['widths'][1], 'no sideways scrolling')
+
+    def test_cards_of_an_older_set_are_taken_back_through_the_page(self):
+        for look in ('neko', 'professional'):
+            with self.subTest(look=look):
+                self.setUp()
+                StandInControl.drives = OLDER_CARDS
+                taken = 'Cards 1 and 2 taken back: 52 files are known again; the next run writes on.'
+                StandInControl.after_start = [
+                    a_task('take_back', True, 10, 52),
+                    a_task('take_back', False, 52, 52, True, taken),
+                ]
+                seen = self.run_task(look=look, width=390, start='Take these cards back', go='Take the cards back')
+                self.assertIn(['Take these cards back', True], seen['offered'])
+                self.assertNotIn('Check this card', [b[0] for b in seen['offered']])
+                self.assertEqual(seen['dialog'][:2], ['BACKUP CARDS', 'Take these cards back?'])
+                self.assertIn('cards 1 and 2', seen['dialog'][2])
+                self.assertIn('Only do this with your own cards', seen['dialog'][3])
+                self.assertEqual(seen['toast'], 'Taking the cards back.')
+                self.assertEqual(seen['lines'][0], ['Taking the cards back: 10 of 52 files…', False, True])
+                self.assertEqual(seen['lines'][-1], [taken, False, False])
+                self.assertEqual([r['op'] for r in StandInControl.asked].count('cards_take_back'), 1)
+                self.assertEqual(seen['errors'], [])
+                self.assertLessEqual(seen['widths'][0], seen['widths'][1], 'no sideways scrolling')
+
+    def test_a_check_that_ends_badly_says_so_as_a_failure(self):
+        StandInControl.drives = [OUR_CARD]
+        out = 'Card 2 was taken out during the check: plug it in again and press Check this card again.'
+        StandInControl.after_start = [self.RUNNING_CHECK[0], a_task('check', False, 1, 4, False, out)]
+        seen = self.run_task(look='neko', width=1280, start='Check this card', go='Check card 2')
+        self.assertEqual(seen['lines'][-1], [out, True, False])
+
+    def test_a_refused_start_says_why_and_shows_no_progress(self):
+        StandInControl.drives = [OUR_CARD]
+        why = 'The nightly run is still running: try again when it has finished.'
+        StandInControl.start = {'ok': False, 'error': 'E42', 'message': why}
+        seen = self.run_task(look='professional', width=1280, start='Check this card', go='Check card 2')
+        self.assertEqual(seen['toast'], 'E42 · ' + why)
+        self.assertEqual((seen['asked'], seen['lines']), ([], []))
+
+    def test_the_pin_is_asked_for_when_this_device_is_not_signed_in(self):
+        StandInControl.drives = OLDER_CARDS
+        StandInControl.start = {'ok': False, 'error': 'E43', 'message': 'Enter your PIN to change this'}
+        seen = self.run_task(look='neko', width=1280, start='Take these cards back', go='Take the cards back')
+        self.assertEqual(seen['asked'], ['BACKUP CARDS', 'Unlock changes'])
+        self.assertEqual(seen['lines'], [])
+
+    def test_while_a_task_runs_nothing_else_can_be_started(self):
+        for drives, start in (([OUR_CARD], 'Check this card'), (OLDER_CARDS, 'Take these cards back')):
+            with self.subTest(start=start):
+                StandInControl.drives, StandInControl.plan = drives, [self.RUNNING_CHECK[0]]
+                seen = self.run_task(look='neko', width=1280)
+                self.assertIn([start, False], seen['offered'])
+                self.assertIn(['Write to the card now', False], seen['offered'])
+                self.assertIn(['Look again', True], seen['offered'])
 
 
 class RecoveryMenuTests(unittest.TestCase):

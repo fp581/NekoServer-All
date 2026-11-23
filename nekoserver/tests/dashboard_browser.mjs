@@ -9,11 +9,15 @@ const [address, wanted] = process.argv.slice(2);
 
 /* Open `route` at `width` CSS pixels wide, with the readings in. `missing`: built-ins taken
    out before the page loads ("Array.prototype.findLast"), as in an older browser. What went
-   wrong in the page is kept in page.errorsSeen. */
-async function open(browser, route, width = 1280, missing = []) {
+   wrong in the page is kept in page.errorsSeen. `look`: the theme chosen in Settings
+   ('neko' or 'professional'), as this browser stored it. */
+async function open(browser, route, width = 1280, missing = [], look = null) {
   const page = await browser.newPage({ viewport: { width, height: 900 }, serviceWorkers: 'block' });
   page.errorsSeen = [];
   page.on('pageerror', error => page.errorsSeen.push(error.message));
+  if (look) {
+    await page.addInitScript(chosen => localStorage.setItem('neko-look', JSON.stringify(chosen)), look);
+  }
   if (missing.length) {
     await page.addInitScript(names => {
       for (const name of names) {
@@ -210,6 +214,89 @@ const CHECKS = {
       document.documentElement.clientWidth
     ]);
     return { nav, set, drives, dialog, toast, widths };
+  },
+  /* A check or a take-back on the Backup cards page, in theme `look` at `width`: the
+     page looks for cards, then `start` (a button's name) is pressed, then the dialog's
+     `go` button. Returns the buttons first offered (name, and whether it can be
+     pressed), the dialog (eyebrow, title, its words), the message after, the dialog the
+     PIN opens if it is asked for, each task line shown while the server runs it (with
+     whether it shows as a failure and whether Write is disabled), and the page's widths.
+     No `start`: only the buttons offered. */
+  async cardsTask(browser, { look, width, start, go }) {
+    const page = await open(browser, 'cards', width, [], look);
+    await page.waitForResponse(r => r.url().endsWith('/api/control'), { timeout: 5000 }).catch(() => undefined);
+    await page.getByRole('button', { name: 'Look for cards' }).click();
+    await until(page, () => document.querySelectorAll('#cards-drives article').length > 0);
+    const offered = await page.evaluate(() =>
+      [...document.querySelectorAll('#cards-drives button, #cards-set button')].map(b => {
+        const box = b.getBoundingClientRect();
+        return [b.textContent, !b.disabled && box.width > 0 && box.height > 0];
+      })
+    );
+    if (!start) {
+      return { offered, errors: page.errorsSeen };
+    }
+    await page.getByRole('button', { name: start }).first().click();
+    await page.waitForTimeout(200);
+    const dialog = await page.evaluate(() => {
+      const d = document.getElementById('dialog');
+      const words = [...document.querySelectorAll('#dialog-content p')].map(p => p.textContent);
+      return d.open
+        ? [
+            document.getElementById('dialog-eyebrow').textContent,
+            document.getElementById('dialog-title').textContent,
+            ...words
+          ]
+        : [];
+    });
+    const lines = [];
+    let toast = '',
+      asked = [];
+    if (dialog.length) {
+      await page.getByRole('button', { name: go, exact: true }).click();
+      // A message, or the PIN asked for (the dialog open again).
+      await until(
+        page,
+        () =>
+          !document.getElementById('toast').hidden ||
+          document.getElementById('dialog-title').textContent === 'Unlock changes'
+      );
+      toast = await page.evaluate(() =>
+        document.getElementById('toast').hidden ? '' : document.getElementById('toast').textContent
+      );
+      asked = await page.evaluate(() =>
+        document.getElementById('dialog').open
+          ? [document.getElementById('dialog-eyebrow').textContent, document.getElementById('dialog-title').textContent]
+          : []
+      );
+      const shown = () =>
+        page.evaluate(() => {
+          const line = document.querySelector('[data-focus="cards-task"]');
+          const write = document.querySelector('[data-focus="cards-write"]');
+          return line ? [line.textContent, line.classList.contains('reason'), write.disabled] : null;
+        });
+      // The page looks again every 2 seconds while the task runs: about 8 seconds at most.
+      const watch = async left => {
+        const now = await shown();
+        if (now && (!lines.length || lines.at(-1)[0] !== now[0])) {
+          lines.push(now);
+        }
+        const finished = now && !now[2] && lines.length > 1;
+        const none = !now && left < 32; // nothing started: 2 seconds is enough to tell
+        if (left > 0 && !finished && !none) {
+          await page.waitForTimeout(250);
+          await watch(left - 1);
+        }
+      };
+      if (!asked.length) {
+        await watch(40);
+      }
+    }
+    const widths = await page.evaluate(() => [
+      document.documentElement.scrollWidth,
+      document.documentElement.clientWidth
+    ]);
+    return { offered, dialog, toast, asked, lines, errors: page.errorsSeen, widths };
   }
 };
 

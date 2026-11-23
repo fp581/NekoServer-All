@@ -326,6 +326,7 @@ const state = {
   shown: new Set(), // app actions started here, and those already announced
   upgradeAsked: null, // the reading shown when an upgrade was started here
   cardsLook: null, // the Backup cards page's last look at the drives plugged in
+  cardsPoll: 0, // the timer that looks again while a check or a take-back runs
   routed: false // a page has been shown (its sections, and only they, visible)
 };
 const savedFavorites = readStore('favorites', []);
@@ -2546,7 +2547,21 @@ function cardLine(c) {
 function driveOffer(d, next) {
   const name = joined([text(d.label, 'A drive'), d.size ? bytes(d.size) : '', text(d.fstype)]);
   if (numeric(d.card)) {
-    return { name, said: 'Card ' + d.card + ' of your set.', action: null };
+    return { name, said: 'Card ' + d.card + ' of your set.', action: null, check: d.card };
+  }
+  const older = object(d.older_set);
+  if (numeric(older.number)) {
+    return {
+      name,
+      said:
+        'Card ' +
+        older.number +
+        ' of a backup set this server made' +
+        (numeric(older.made) ? ' on ' + madeOn(older.made) : ' before') +
+        '. It can be taken back.',
+      action: null,
+      older: older.number
+    };
   }
   if (d.usable === true) {
     return {
@@ -2557,22 +2572,115 @@ function driveOffer(d, next) {
   }
   return { name, said: text(d.why, 'It cannot be a backup card.'), action: null };
 }
-async function lookForCards() {
+const CARDS_PIN = 'Choosing, writing and checking backup cards needs your PIN on every device, the server too.';
+/* The day a set was made, with its year ("3 Mar 2025"). */
+function madeOn(at) {
+  return new Date(at * 1000).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
+}
+/* A check or a take-back the server is running, or the last one it ran (cards-list's
+ * task): one line, and whether it ended badly. Null when there is none. */
+function cardsTaskLine(task) {
+  if (!task || (task.kind !== 'check' && task.kind !== 'take_back')) {
+    return null;
+  }
+  const check = task.kind === 'check';
+  if (task.running === true) {
+    const doing = check ? 'Checking card' + (numeric(task.card) ? ' ' + task.card : '') : 'Taking the cards back';
+    const far =
+      numeric(task.total) && task.total > 0 ? ': ' + count(task.done) + ' of ' + plural(task.total, 'file') : '';
+    return { line: doing + far + '…', running: true, failed: false };
+  }
+  const done = check ? 'The check has finished.' : 'The cards are taken back.';
+  return {
+    line: text(task.message, task.ok === false ? 'It stopped before the end.' : done),
+    running: false,
+    failed: task.ok !== true
+  };
+}
+/* Whether a check or a take-back is running now (as the page last looked). */
+function cardsBusy(look = state.cardsLook) {
+  return look?.task?.running === true;
+}
+/* The page's look at the drives. `quiet`: a look the page takes by itself while a task
+ * runs, which never asks for the PIN or shows a message. */
+async function lookForCards(quiet = false) {
   const answer = await postControl('cards-list');
   if (answer.ok) {
     state.cardsLook = answer;
     renderCards();
     return;
   }
+  if (quiet === true) {
+    return;
+  }
   if (answer.error === 'E43' && state.control?.access?.pin_set) {
-    unlockDialog(
-      lookForCards,
-      'BACKUP CARDS',
-      'Choosing and writing backup cards needs your PIN on every device, the server too.'
-    );
+    unlockDialog(lookForCards, 'BACKUP CARDS', CARDS_PIN);
     return;
   }
   toast(controlMessage(answer));
+}
+/* While a task runs, the page looks again every 2 seconds (on this page only). */
+function pollCards() {
+  if (!cardsBusy() || state.route !== 'cards') {
+    clearTimeout(state.cardsPoll);
+    state.cardsPoll = 0;
+  } else if (!state.cardsPoll) {
+    state.cardsPoll = setTimeout(() => {
+      state.cardsPoll = 0;
+      void lookForCards(true);
+    }, 2000);
+  }
+}
+/* Start a check or a take-back; its words come from the server. */
+async function startCardsTask(op, body) {
+  const answer = await postControl(op, body);
+  $('dialog').close();
+  if (answer.ok) {
+    toast(text(answer.message, 'Started.'));
+    await lookForCards(true);
+    return;
+  }
+  if (answer.error === 'E43' && state.control?.access?.pin_set) {
+    unlockDialog(() => startCardsTask(op, body), 'BACKUP CARDS', CARDS_PIN);
+    return;
+  }
+  toast(controlMessage(answer));
+}
+/* A plain question before a check or a take-back, Cancel first. */
+function cardsConfirm(title, words, go, run) {
+  const yes = button(go, run, 'button');
+  const cancel = button('Cancel', () => $('dialog').close(), 'button secondary');
+  const row = el('div', 'dialog-actions');
+  row.append(yes, cancel);
+  openDialog('BACKUP CARDS', title, [...words.map(w => el('p', '', w)), row]);
+  requestAnimationFrame(() => cancel.focus());
+}
+function checkDialog(d, number) {
+  cardsConfirm(
+    'Check card ' + number + '?',
+    [
+      'NekoServer reads every copy on card ' +
+        number +
+        ' and compares it with what it wrote. Nothing on the card is changed or erased.',
+      'A damaged copy is written again by the next run, onto the newest card. A full card can take a while; you can close this page meanwhile. Leave the card in until it has finished.'
+    ],
+    'Check card ' + number,
+    () => startCardsTask('cards-check', { mount: d.mount, number })
+  );
+}
+function takeBackDialog(numbers) {
+  const which = numbers.length === 1 ? 'card ' + numbers[0] : 'cards ' + numbers.join(' and ');
+  cardsConfirm(
+    'Take these cards back?',
+    [
+      'NekoServer reads what is on ' +
+        which +
+        ', so it knows those files are already on a card, and then writes on to them as before. Nothing on the cards is erased.',
+      'Only do this with your own cards: a card from someone else’s server would become part of yours.'
+    ],
+    'Take the cards back',
+    () => startCardsTask('cards-take-back', {})
+  );
 }
 function enrolDialog(d, next) {
   const tick = el('input');
@@ -2619,11 +2727,7 @@ async function writeNow() {
     return;
   }
   if (answer.error === 'E43' && state.control?.access?.pin_set) {
-    unlockDialog(
-      writeNow,
-      'BACKUP CARDS',
-      'Choosing and writing backup cards needs your PIN on every device, the server too.'
-    );
+    unlockDialog(writeNow, 'BACKUP CARDS', CARDS_PIN);
     return;
   }
   toast(controlMessage(answer));
@@ -2648,25 +2752,54 @@ function renderCards() {
   for (const line of cardsSummary(set)) {
     box.append(el('p', '', line));
   }
-  box.append(keyed(button('Write to the card now', writeNow, 'button small'), 'cards-write'));
+  const look = state.cardsLook;
+  const busy = cardsBusy(look);
+  const task = cardsTaskLine(look?.task);
+  if (task) {
+    box.append(keyed(el('p', task.failed ? 'reason' : '', task.line), 'cards-task'));
+  }
+  const write = keyed(button('Write to the card now', writeNow, 'button small'), 'cards-write');
+  write.disabled = busy;
+  box.append(write);
   const rows = list(set.cards).map(c => el('p', 'row', cardLine(c)));
   put('cards-set', [box, ...rows]);
-  const look = state.cardsLook;
-  const found = look
-    ? list(look.drives).map(d => {
-        const offer = driveOffer(d, count(look.next_number) || 1);
-        const row = el('article', 'card');
-        row.append(el('strong', '', offer.name), el('p', offer.action ? '' : 'reason', offer.said));
-        if (offer.action) {
-          row.append(button(offer.action, () => enrolDialog(d, count(look.next_number) || 1), 'button small'));
-        }
-        return row;
-      })
+  const next = count(look?.next_number) || 1;
+  const offers = look ? list(look.drives).map(d => [d, driveOffer(d, next)]) : [];
+  const found = offers.map(([d, offer]) => {
+    const row = el('article', 'card');
+    row.append(el('strong', '', offer.name), el('p', offer.action || offer.check ? '' : 'reason', offer.said));
+    const act = offer.action
+      ? button(offer.action, () => enrolDialog(d, next), 'button small')
+      : offer.check
+        ? button('Check this card', () => checkDialog(d, offer.check), 'button small secondary')
+        : null;
+    if (act) {
+      act.disabled = busy;
+      row.append(act);
+    }
+    return row;
+  });
+  const older = offers.filter(([, offer]) => offer.older).map(([, offer]) => offer.older);
+  const takeBack = older.length
+    ? [
+        keyed(
+          button('Take these cards back', () => takeBackDialog(older), 'button small'),
+          'cards-take-back'
+        )
+      ]
     : [];
+  if (takeBack.length) {
+    takeBack[0].disabled = busy;
+  }
   put('cards-drives', [
+    ...takeBack,
     ...(look && !found.length ? [empty('No card or USB stick is plugged in and mounted.')] : found),
-    keyed(button(look ? 'Look again' : 'Look for cards', lookForCards, 'button small secondary'), 'cards-look')
+    keyed(
+      button(look ? 'Look again' : 'Look for cards', () => lookForCards(), 'button small secondary'),
+      'cards-look'
+    )
   ]);
+  pollCards();
 }
 
 /* ---------- hardware ---------- */
