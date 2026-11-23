@@ -89,11 +89,12 @@ def sent_values(payload):
     return [payload] if isinstance(payload, str) and len(payload) >= 4 else []
 
 
-def refused_because(exc, payload):
+def refused_because(exc, payload, key=''):
     """Why the app refused a request, in its own words: Prowlarr and the other apps answer
     a refused one with a list of {propertyName, errorMessage, attemptedValue} ("Unable to
     access eztvx.to, blocked by CloudFlare Protection."). Only the messages are kept,
-    with any value the request sent cut out. Empty when the body says nothing usable."""
+    with any value the request sent (its API key too) cut out. Empty when the body says
+    nothing usable."""
     try:
         rows = json.loads(exc.read(REASON_READ) or b'null')
     except (OSError, ValueError):
@@ -104,7 +105,7 @@ def refused_because(exc, payload):
         return ''
     said = [str(row['errorMessage']).strip() for row in rows if isinstance(row, dict) and row.get('errorMessage')]
     text = ' '.join(dict.fromkeys(line for line in said if line))
-    for value in sent_values(payload):
+    for value in sent_values([payload, key]):
         text = text.replace(value, '(hidden)')
     return text[:REASON_SHOWN]
 
@@ -135,7 +136,7 @@ def request(app, key, endpoint, method='GET', payload=None, timeout=12):
         # The body is never printed as it is (a provider might echo a secret); only the
         # app's own words for why it refused, with what this request sent cut out of them.
         code = exc.code
-        reason = refused_because(exc, payload)
+        reason = refused_because(exc, payload, key)
         exc.close()
         raise RuntimeError(f'{app} {endpoint}: HTTP {code}' + (f': {reason}' if reason else '')) from None
     except urllib.error.URLError:

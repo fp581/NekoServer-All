@@ -401,13 +401,13 @@ class RefusalReasonTests(unittest.TestCase):
     so "Retry this step" looked useful when Prowlarr had said why (Cloudflare) and a retry
     could not help. Its own words are shown now; nothing the request sent ever is."""
 
-    def refused(self, body, payload):
+    def refused(self, body, payload, key='key'):
         def opener(request, timeout):
             raise urllib.error.HTTPError(request.full_url, 400, 'Bad Request', {}, io.BytesIO(body))
 
         with mock.patch.object(connect.OPENER, 'open', side_effect=opener):
             with self.assertRaises(RuntimeError) as raised:
-                connect.request('prowlarr', 'key', '/indexer', 'POST', payload)
+                connect.request('prowlarr', key, '/indexer', 'POST', payload)
         return str(raised.exception)
 
     def test_prowlarrs_reason_is_shown(self):
@@ -426,6 +426,12 @@ class RefusalReasonTests(unittest.TestCase):
         ]).encode()  # fmt: skip
         said = self.refused(body, {'name': 'Beta', 'fields': [{'name': 'apiKey', 'value': 's3cret-key-123'}]})
         self.assertNotIn('s3cret-key-123', said)
+        self.assertEqual(said, 'prowlarr /indexer: HTTP 400: Invalid API key (hidden)')
+
+    def test_the_api_key_of_the_request_is_never_shown(self):
+        body = json.dumps([{'errorMessage': 'Invalid API key key-abcdef'}]).encode()
+        said = self.refused(body, None, key='key-abcdef')
+        self.assertNotIn('key-abcdef', said)
         self.assertEqual(said, 'prowlarr /indexer: HTTP 400: Invalid API key (hidden)')
 
     def test_a_body_without_reasons_says_the_code_alone(self):
