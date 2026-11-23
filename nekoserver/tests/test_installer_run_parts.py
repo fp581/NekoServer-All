@@ -2,6 +2,7 @@
 which steps run, what an inspection run writes, and what a step that waits says."""
 
 import argparse
+import functools
 import json
 import os
 import sys
@@ -54,7 +55,8 @@ class InstallerRunPartsTests(unittest.TestCase):
         checks.start()
         self.addCleanup(checks.stop)
         # The upgrade's own journal stays untouched, even when the tests run as root on a server.
-        journal = mock.patch.object(upgrade, 'JOURNAL', self.root / 'upgrade-journal.json')
+        settle = functools.partial(upgrade.settle_after_setup, journal=self.root / 'upgrade-journal.json')
+        journal = mock.patch.object(upgrade, 'settle_after_setup', settle)
         journal.start()
         self.addCleanup(journal.stop)
 
