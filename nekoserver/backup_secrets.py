@@ -48,8 +48,9 @@ EARLIER_KEY = (
 # and what to do when it is forgotten (deep check 243: "Wrong password for this backup"
 # alone left the person typing guesses).
 WRONG_PASSWORD = (
-    'Wrong password for this backup; nothing was restored. It is the backup password you chose during setup '
-    '(not your login password, unless you chose that). Forgotten it? Then this list cannot be opened. While '
+    'Wrong password for this backup; nothing was restored. It is the backup password of the server that made '
+    'this backup, chosen in its setup (on a rebuilt server, the old one; not your login password, unless you '
+    'chose that). Forgotten it? Then this list cannot be opened. While '
     'the server works, each app\'s login is still shown by  account-setup.py show  (README.md, "Passwords"), '
     'and  sudo python3 backup_secrets.py --new-password  chooses a new backup password for the backups from '
     'now on'

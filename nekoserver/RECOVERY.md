@@ -238,7 +238,7 @@ Nightly media app snapshots and explicit checksum/new-directory restoration are 
 
 ### App password files
 
-Monthly snapshots store the account inventory encrypted (see MONTHLY-MAINTENANCE.md). To get it back, you need the backup password chosen during setup (for a key made before 0.28.5: the sudo password you had then). Restore it with:
+Monthly snapshots store the account inventory encrypted (see MONTHLY-MAINTENANCE.md). To get it back, you need the backup password of the server that made the snapshot, chosen in its setup (on a rebuilt server, the old password, not a new one chosen since; for a key made before 0.28.5: the sudo password you had then). Restore it with:
 
 ```bash
 sudo python3 backup_secrets.py --restore /ABSOLUTE/BACKUP/RUN --to /ABSOLUTE/NEW-DIRECTORY

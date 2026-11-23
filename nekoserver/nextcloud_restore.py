@@ -377,7 +377,10 @@ def question(files, backup):
         'changed. Answer no to keep it as it is and leave Nextcloud not set up.'
     )
     if backup.sealed:
-        lines.append('It asks for the backup password chosen during setup.')
+        lines.append(
+            'It asks for the backup password of the server that made this backup (on a rebuilt server, the old '
+            'password, not a new one chosen since).'
+        )
     return lines, f'Bring Nextcloud back from the backup of {backup.date}?'
 
 
