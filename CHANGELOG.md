@@ -12,6 +12,8 @@ The first stable release, built on 0.52.3.
 ### Fixed
 - **The README says what to do when `sudo` is missing or refuses**, before the first command: Debian installed with a root password has no sudo, and its first account is not allowed to use it, so `sudo apt install git` stopped with sudo's own "command not found" or "not in the sudoers file". It now gives the steps (`su -`, `apt install sudo`, `usermod -aG sudo`, log out and in again).
 - **An Ask Neko question too long for the dashboard gets its own message.** A question over 4 KB was refused with the connection cut, so the page showed E01 ("Can’t reach the server") instead of E42 ("Request not supported"). The dashboard now reads the rest of a refused request away from its workers and answers 400 with E42.
+- **The README says what setup really does, for a first-time reader**: the no-sudo steps cover Arch too (`pacman -S sudo` and the wheel group); Ask Neko's model is among what setup still asks after the approval; the shared folders are set up when there is something to share (not on a server with no apps, or Nextcloud alone), in the README, nekoserver/README.md and GUIDED-SETUP.md; and the PC must be 64-bit Intel or AMD (x86_64), as install.sh checks.
+- **The drive check says what to do when the settings lost a drive's UUID**: where it goes in my-config.json and that `lsblk -f` shows it, instead of only "has no drive identity in the settings".
 
 ### Tests
 - **Tests of the setup driver's own parts** (split out in 0.52.2), the setup report's folder-access rows, the mistyped-settings warnings and the job-time check, each pinning what it does.
