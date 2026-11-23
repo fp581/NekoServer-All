@@ -42,7 +42,10 @@ LIBRARIES = {'movies': '/data/movies', 'tv': '/data/tv', 'music': '/music'}
 
 def mount_ok(path):
     # The settings name the drive's folder: it is looked at only by its real path, and only
-    # when that is the path asked for (a link is not a mounted drive).
+    # when that is the path asked for (a link is not a mounted drive). A NUL byte names no
+    # folder, so it is no drive either (realpath would raise on it).
+    if '\x00' in str(path):
+        return False
     real = os.path.realpath(path)
     if not real.startswith(os.sep) or real != os.path.abspath(path):
         return False
@@ -186,7 +189,9 @@ def the_two_drives(p, a, config):
     root = safe_path(a.data_root or config['data_mount'])
     media = safe_path(a.media_root or config['media_mount'])
     # Compared by their real paths (the settings name both): two folders of one drive are
-    # refused.
+    # refused. A NUL byte names no folder (realpath would raise on it).
+    if '\x00' in str(root) or '\x00' in str(media):
+        p.error('Expected two distinct mounted data/media filesystems; refusing to proceed')
     real_root, real_media = os.path.realpath(root), os.path.realpath(media)
     if not (real_root.startswith(os.sep) and real_media.startswith(os.sep)):
         p.error('Expected two distinct mounted data/media filesystems; refusing to proceed')

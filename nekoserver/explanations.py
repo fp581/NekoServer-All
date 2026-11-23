@@ -338,6 +338,8 @@ ASKED_DURING = {
 
 
 SOURCES_ASKED = 'which download sources to add (the recommended ones are ticked), once Prowlarr runs'
+# The monthly-backup step asks for it on a first install (modules/maintenance.py).
+BACKUP_PASSWORD_ASKED = 'a backup password for the backup of your app passwords, typed twice'
 
 
 def apps_to_install(config, now):
@@ -380,6 +382,8 @@ def review(config):
     if neko_common.media_group(config, 'downloads'):
         # Once Prowlarr runs (the user's decision after the gate: it needs Prowlarr).
         asked.append(SOURCES_ASKED)
+    if not again:
+        asked.append(BACKUP_PASSWORD_ASKED)
     sections = [('Apps on this server' if again else 'Apps to install', apps or ['None: only what is always set up'])]
     if extras:
         sections.append(('Extras', extras))

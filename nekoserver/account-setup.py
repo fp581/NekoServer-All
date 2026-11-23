@@ -265,7 +265,13 @@ def main():
         return 0
     if os.geteuid() != 0 or not sys.stdin.isatty():
         parser.error('Run with sudo in an interactive terminal')
-    config = json.loads(settings_path(args.config).read_text())
+    try:
+        settings = settings_path(args.config)
+    except RuntimeError as exc:
+        # A settings file not named .json, say: said in one plain line.
+        print(f'Nothing was set up: {exc}', file=sys.stderr)
+        return 2
+    config = json.loads(settings.read_text())
     config['accounts'] = {**config.get('accounts', {}), 'enabled': True}
     verify_storage(config)
     apps = deployed_apps(config)

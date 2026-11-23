@@ -156,6 +156,36 @@ class ReattachDefaultStoreTests(unittest.TestCase):
         reset = calls.index(['systemctl', 'reset-failed', 'docker.service', 'docker.socket'])
         self.assertLess(reset, calls.index(['systemctl', 'enable', '--now', 'docker']))
 
+    def test_a_reattached_store_says_what_is_left_to_do(self):
+        """After the store runs again, the person is told the rest of this Linux still
+        needs setup, and the drives were checked against these settings each time."""
+        with (
+            mock.patch.object(recovery_tools, 'require_root'),
+            mock.patch.object(recovery_tools, 'lock', return_value=mock.MagicMock()),
+            mock.patch.object(recovery_tools.docker_module, 'install_storage_guard'),
+            mock.patch.object(recovery_tools, 'atomic_write'),
+            mock.patch.object(recovery_tools, 'checkpoint', return_value={'docker_version': '27.0.0'}),
+        ):
+            done = recovery_tools.reattach(self.config, Path('/bundle'), True, 'aaaa-1111')
+        self.assertEqual(
+            done,
+            {
+                'status': 'needs_setup',
+                'reason': 'Docker store reattached and running. Next: run  sudo bash install.sh  to set up the rest '
+                'of this Linux again (timers, network, TV), then open each app and check your photos, music and '
+                'videos (RECOVERY.md, step 6)',
+            },
+        )
+        checked = recovery_tools.mounts.call_args_list
+        self.assertTrue(checked)
+        self.assertTrue(all(call.args == (self.config,) for call in checked))
+
+    def test_without_the_ssds_uuid_nothing_is_reattached(self):
+        """`reattach --apply` without --confirm: refused, with the command to run."""
+        with mock.patch.object(recovery_tools, 'require_root'):
+            with self.assertRaisesRegex(RuntimeError, "Nothing was changed: reattaching needs your SSD's UUID"):
+                recovery_tools.reattach(self.config, Path('/bundle'), True)
+
 
 class InstallDockerTests(unittest.TestCase):
     def test_dockers_packages_are_installed_as_setup_does_and_left_stopped(self):

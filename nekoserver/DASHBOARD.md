@@ -160,7 +160,7 @@ When something goes wrong, the dashboard shows a short code at the top of the pa
 | E02 | The server is slow to answer | It may be busy with a backup or update. The page keeps trying by itself. |
 | E10 | Readings not ready yet | Normal for a minute after the server starts. |
 | E11 | Readings could not be read | Usually fixes itself within a minute. If not, run setup again. |
-| E12 | Readings are out of date | No new reading for two collection intervals plus 30 seconds (150 s at the default 60 s): Help → *Readings are old or missing*. |
+| E12 | Readings are out of date | No new reading for two collection intervals plus 30 seconds, and never under 3 minutes (180 s at the default 60 s): Help → *Readings are old or missing*. |
 | E20 | Live readings unavailable | They come back by themselves. If not: `sudo systemctl restart nekoserver-dashboard.service`. Until then, older live readings are dimmed and marked with their time. |
 | E21 | The control service is not running | It handles the PIN, fans and lights, app restarts and Ask Neko: Help → *Fans don't change* shows the command to check it. |
 | E40 | Page not found | Use the menu to go back. |
@@ -216,7 +216,7 @@ There is nothing to configure. The dashboard reads what Linux reports:
 To see everything the dashboard can read on this computer:
 
 ```bash
-/usr/local/lib/nekoserver-dashboard/v0.52.1/nekoserver-runtime hardware
+/usr/local/lib/nekoserver-dashboard/v0.52.2/nekoserver-runtime hardware
 ```
 
 ### Fan control in detail
@@ -261,7 +261,7 @@ The dashboard is part of the normal setup (the full profile installs it). To ins
 sudo bash install.sh --profile dashboard --apply
 ```
 
-Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.52.1` (one folder per release, and when a setup run has finished, the folders of earlier releases that no service uses any more are removed; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
+Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.52.2` (one folder per release, and when a setup run has finished, the folders of earlier releases that no service uses any more are removed; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
 
 ### What runs, and what it can see
 

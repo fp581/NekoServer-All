@@ -57,11 +57,11 @@ On a PC with a desktop a **setup window** opens in your browser beside the termi
 1. **What this server should do** (the switches above).
 2. **Where things go**: a drive for each line, chosen from a list. Nothing is typed, and choosing changes nothing on a drive.
 3. **Films, shows or music you already have** (optional): use a folder where it is, save new ones there too, or copy it into the library. A music folder on a network share can be backed up with the music.
-4. **Your app accounts**: strong passwords made for you (Enter takes this), or your own logins, on one page, with the dashboard PIN and the shared folders' password. **Show login** shows any of them later, in the window and in the terminal.
-5. **Your backups**: when they run and how many are kept.
+4. **Your backups**: when they run and how many are kept.
+5. **Your app accounts**: strong passwords made for you (Enter takes this), or your own logins, on one page, with the dashboard PIN and the shared folders' password. **Show login** shows any of them later, in the window and in the terminal.
 6. **Review and install**: one page lists everything that will happen, and one button starts it.
 
-Then setup works on its own. After the approval only four things stop it: signing in to Tailscale, a drive that is short of room, choosing the download sources once Prowlarr runs (the recommended ones are ticked, so Continue alone takes them), and the phone page. The alerts and outage addresses, if you switched those on, are asked when setup reaches them. If a step does not finish it says why, what usually fixes it, and offers **Retry this step**.
+Then setup works on its own. After the approval only these stop it: signing in to Tailscale, a drive that is short of room, choosing the download sources once Prowlarr runs (the recommended ones are ticked, so Continue alone takes them), the phone page, and, on a first install, choosing a backup password (typed twice) for the backup of your app passwords. The alerts and outage addresses, if you switched those on, are asked when setup reaches them. If a step does not finish it says why, what usually fixes it, and offers **Retry this step**.
 
 Afterwards one page helps you **connect your phone**, and the last page says what is ready, what a program checked, what you tried yourself and what is still waiting for you.
 
@@ -77,7 +77,8 @@ Run `sudo bash install.sh` again at any time: it keeps your answers and asks onl
 
 - **Every night**: the apps' settings and databases, and this PC's own settings. The newest **3** of each are kept; you can choose any number from **1 to 7**. An older one is removed only after a new one has succeeded, with one exception: when the HDD is too full for the next app backup, the oldest app backups are removed first to make room (never the newest). Music kept on a drive of its own is copied every night too.
 - **Every week**: your original photos and the Immich database to the backup drive, and (if you chose a removable drive) photos and Nextcloud files to it. These copies only ever add: a photo you delete stays in the backup.
-- **Every month**: every backup copy is checked, a snapshot of every app is made and a restore is tried, then the apps are updated; an update that fails is undone.
+- **Every month** (on the 1st): every backup copy is checked, a snapshot of every app is made and a restore is tried. Nothing is updated then.
+- **App updates** come once a week, on Wednesday night unless you change it: an app whose new version has waited a week gets a snapshot first, then the update; an update that fails is undone.
 - **Backup cards** (if you switched them on): every night a card of your set is plugged in, what is new among your photos and Nextcloud files is copied onto it. When one is full, the dashboard and your phone say to put in the next ([BACKUP-CARDS.md](nekoserver/BACKUP-CARDS.md)).
 - Films and shows are **not** backed up: the backups page lists them, and what the download apps found can be downloaded again.
 - A backup kept on the same drive as what it copies protects against a mistake, not against that drive failing. The backups page says so for each one.
