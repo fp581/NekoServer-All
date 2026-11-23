@@ -2113,7 +2113,13 @@ mod tests {
     #[test]
     fn the_backup_cards_page_always_needs_the_pin_and_the_switch_on() {
         let board = fans::tests::Board::new("cards-pin");
-        let ops = ["cards_list", "cards_enrol", "cards_write"];
+        let ops = [
+            "cards_list",
+            "cards_enrol",
+            "cards_write",
+            "cards_take_back",
+            "cards_check",
+        ];
         let none = service(&board, None, 1);
         for op in ops {
             let refused = answer(&none, &json!({"op": op, "local": true}));

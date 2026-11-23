@@ -16,6 +16,7 @@ pub mod drives;
 pub mod job;
 pub mod page;
 pub mod status;
+pub mod tasks;
 #[cfg(test)]
 mod tests_loop;
 

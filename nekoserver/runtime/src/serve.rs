@@ -813,6 +813,8 @@ fn control(
             "cards-list" => "cards_list",
             "cards-enrol" => "cards_enrol",
             "cards-write" => "cards_write",
+            "cards-take-back" => "cards_take_back",
+            "cards-check" => "cards_check",
             _ => return Err("E40"),
         },
         _ => return Err("E42"),
