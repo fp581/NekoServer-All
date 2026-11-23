@@ -2227,6 +2227,38 @@ def restore_nightly(config, kind, prompt, output):
         return restore_night(config, kind, prompt, output, usb)
 
 
+def nights_shown(config, kind, folder, on_usb):
+    """(path, label) of the nights to choose from, newest first: the HDD's and, for the
+    app settings, the USB drive's copies; of the same night, the HDD's comes first (it
+    needs no password). A night Steam was open has no Steam files: said in the list,
+    not found out later."""
+    runs = sorted(
+        snapshots(Path(config['media_mount']) / folder) + on_usb,
+        key=lambda r: int(SNAPSHOT.match(r[0].name)[1]),
+        reverse=True,
+    )
+    return [
+        (p, d + (' (no Steam files: Steam was open)' if kind == 'host' and steam_left_out(p) else '')) for p, d in runs
+    ]
+
+
+def night_restored(kind, run, target):
+    """What a finished nightly restore says: where it is and how a file is put back."""
+    lines = [f'\nDone: restored into {target} (checksums verified), with each file\'s owner and permissions.']
+    if kind == 'host' and steam_left_out(run):
+        lines.append('This night has no Steam files (Steam was open then): choose another night for those.')
+    if kind == 'host':
+        lines += [
+            'Its folders are named source0, source1 and so on, one for each folder that was backed up;',
+            f'{target / "restore-report.json"} says which original folder each one is.',
+        ]
+    return lines + [
+        'To use a file from it, stop the app first, copy the file back keeping its owner',
+        '(sudo cp -a <file> <where it belongs>), then start the app.',
+        'See APP-BACKUPS.md or HOST-BACKUPS.md for the exact steps.',
+    ]
+
+
 def restore_night(config, kind, prompt, output, usb):
     folder, script, label = (
         ('backups/media-applications', 'app-recovery.py', 'app settings')
@@ -2234,22 +2266,13 @@ def restore_night(config, kind, prompt, output, usb):
         else ('backups/host-user', 'host-recovery.py', 'Steam and Samba settings')
     )
     on_usb = usb_app_settings(usb) if kind == 'apps' else []
-    # Newest first; the HDD's before the USB drive's copy of the same night (no password).
-    runs = sorted(
-        snapshots(Path(config['media_mount']) / folder) + on_usb,
-        key=lambda r: int(SNAPSHOT.match(r[0].name)[1]),
-        reverse=True,
-    )
-    if not runs:
+    shown = nights_shown(config, kind, folder, on_usb)
+    if not shown:
         output(
             f'No nightly backup of {label} found on the HDD yet'
             + (', nor on the USB drive (or it is not plugged in).' if kind == 'apps' else '.')
         )
         return
-    # A night Steam was open has no Steam files: said in the list, not found out later.
-    shown = [
-        (p, d + (' (no Steam files: Steam was open)' if kind == 'host' and steam_left_out(p) else '')) for p, d in runs
-    ]
     run = choose(f'Which night\'s backup of the {label}? The newest is first.', shown, prompt, output)
     if run is None:
         return
@@ -2281,26 +2304,7 @@ def restore_night(config, kind, prompt, output, usb):
         else:
             done = tool(script, 'restore', '--snapshot', str(run), '--destination', str(target), '--preserve-owners')
     if done:
-        say(
-            output,
-            f'\nDone: restored into {target} (checksums verified), with each file\'s owner and permissions.',
-            *(
-                ('This night has no Steam files (Steam was open then): choose another night for those.',)
-                if kind == 'host' and steam_left_out(run)
-                else ()
-            ),
-            *(
-                (
-                    'Its folders are named source0, source1 and so on, one for each folder that was backed up;',
-                    f'{target / "restore-report.json"} says which original folder each one is.',
-                )
-                if kind == 'host'
-                else ()
-            ),
-            'To use a file from it, stop the app first, copy the file back keeping its owner',
-            '(sudo cp -a <file> <where it belongs>), then start the app.',
-            'See APP-BACKUPS.md or HOST-BACKUPS.md for the exact steps.',
-        )
+        say(output, *night_restored(kind, run, target))
 
 
 def restore_sealed_night(copy, target, script, output):
