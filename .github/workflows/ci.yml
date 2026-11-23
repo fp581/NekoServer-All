@@ -70,7 +70,8 @@ jobs:
     # 1140), the same as on the rig, which runs the same run.sh.
     name: Browser tests (Chromium 130)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # Usually about 7 minutes (2 the runtime build, 1-2 the browser, 1-3 the tests).
+    timeout-minutes: 12
     defaults:
       run:
         working-directory: ${{ env.RELEASE_DIR }}
@@ -91,13 +92,27 @@ jobs:
       - name: Build the runtime for this PC
         run: python3 runtime/build.py
       - name: Playwright and its Chromium, pinned
+        # The install fetches from apt and Playwright's download host. On 2026-11-23 apt-get
+        # update stalled on archive.ubuntu.com for 18 minutes: apt now gives up on a silent
+        # server after 30 s, and an install that still stalls is stopped after 3 minutes and
+        # tried once more.
+        timeout-minutes: 8
         run: |
+          printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "3";\n' |
+            sudo tee /etc/apt/apt.conf.d/99neko-timeouts > /dev/null
           cp ../.github/browser-tests/package.json ../.github/browser-tests/package-lock.json "$RUNNER_TEMP/"
           npm ci --prefix "$RUNNER_TEMP" --no-audit --no-fund --ignore-scripts
           echo "NODE_PATH=$RUNNER_TEMP/node_modules" >> "$GITHUB_ENV"
           echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/pw-browsers" >> "$GITHUB_ENV"
-          PLAYWRIGHT_BROWSERS_PATH="$RUNNER_TEMP/pw-browsers" "$RUNNER_TEMP/node_modules/.bin/playwright" install --with-deps chromium
+          for try in 1 2; do
+            PLAYWRIGHT_BROWSERS_PATH="$RUNNER_TEMP/pw-browsers" timeout 180 "$RUNNER_TEMP/node_modules/.bin/playwright" install --with-deps chromium && exit 0
+            echo "::warning title=Playwright::install try $try stopped or failed"
+            sudo pkill -x apt-get || true  # a stalled apt-get would hold apt's lock
+          done
+          exit 1
       - name: Browser tests
+        # Each test also has its own limit (timed.py).
+        timeout-minutes: 6
         run: bash ../.github/browser-tests/run.sh
 
   restore-tool:
