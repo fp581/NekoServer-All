@@ -41,6 +41,7 @@
       "qbittorrent"
     ]
   },
+  "nextcloud": true,
   "app_backup": {
     "keep_snapshots": 0,
     "earlier": true

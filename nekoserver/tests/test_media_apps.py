@@ -348,15 +348,40 @@ class StepTests(unittest.TestCase):
                 self.assertIn(words, ctx.logs)
 
     def test_the_media_schedules_are_retired(self):
-        # The hourly app check, the music backup and the nightly app backup.
-        for step, unit in (
-            (media_monitor, 'nekoserver-media-health.timer'),
-            (music_backup, 'nekoserver-music-backup.timer'),
-            (app_backup, 'nekoserver-app-backup.timer'),
+        # The hourly app check, the music backup, and the nightly app backup with Nextcloud
+        # switched off too.
+        no_cloud = settings(False)
+        no_cloud['nextcloud']['enabled'] = False
+        for step, unit, config in (
+            (media_monitor, 'nekoserver-media-health.timer', settings(False)),
+            (music_backup, 'nekoserver-music-backup.timer', settings(False)),
+            (app_backup, 'nekoserver-app-backup.timer', no_cloud),
         ):
             with self.subTest(step=step.__name__), mock.patch('modules._schedules.retire') as retire:
-                step.run(context(settings(False)))
+                step.run(context(config))
                 self.assertIn(unit, [Path(p).name for p in retire.call_args.args[0]])
+
+    def test_the_nightly_backup_stays_for_nextcloud(self):
+        """1.0.0 (C-01): Nextcloud is saved to the HDD each night, so the nightly job stays
+        on without the media apps, and is told to back it up."""
+        config = settings(False)
+
+        class Installing(Exception):
+            pass
+
+        with (
+            mock.patch('modules._schedules.retire') as retire,
+            mock.patch.object(app_backup, 'verify_storage', side_effect=Installing),
+        ):
+            with self.assertRaises(Installing):
+                app_backup.run(context(config))
+        retire.assert_not_called()
+        with mock.patch.object(app_backup.native_runtime, 'storage_config', return_value={}):
+            options = app_backup.guard_config(config)
+            self.assertEqual(options['media'], {'services': []})
+            self.assertIs(options['nextcloud'], True)
+            config['nextcloud']['enabled'] = False
+            self.assertIs(app_backup.guard_config(config)['nextcloud'], False)
 
     def test_no_logins_are_made_for_the_apps_left_out(self):
         plan = ['media', 'photos', 'nextcloud']

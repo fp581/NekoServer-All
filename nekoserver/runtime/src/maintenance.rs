@@ -965,7 +965,7 @@ fn no_other_writers(
     }
     Ok(())
 }
-fn tar(root: &Path, paths: &[String], output: &Path, exclude: &[&str]) -> Result<()> {
+pub(crate) fn tar(root: &Path, paths: &[String], output: &Path, exclude: &[&str]) -> Result<()> {
     let root = root.to_string_lossy();
     let output = output.to_string_lossy();
     let mut args = vec![
@@ -1136,7 +1136,17 @@ pub(crate) fn encrypt_secrets_with(
     snapshot: &Path,
     key_dir: &Path,
 ) -> Result<&'static str> {
-    let members = sealed_members(data);
+    encrypt_members_with(data, snapshot, key_dir, &sealed_members(data))
+}
+/// `members` (paths in `data`) sealed for the backup key into `snapshot`, as
+/// encrypt_secrets_with seals the password list (the nightly Nextcloud backup seals its
+/// own two files this way).
+pub(crate) fn encrypt_members_with(
+    data: &Path,
+    snapshot: &Path,
+    key_dir: &Path,
+    members: &[String],
+) -> Result<&'static str> {
     if members.is_empty() {
         return Ok("none");
     }
@@ -1162,7 +1172,7 @@ pub(crate) fn encrypt_secrets_with(
         .args(["--create", "--file", "-", "--acls", "--xattrs", "-C"])
         .arg(data)
         .arg("--")
-        .args(&members)
+        .args(members)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()

@@ -2868,7 +2868,7 @@ fn wants_cloud_database(cloud_selected: bool, data: &Path) -> bool {
     cloud_selected && data.join("compose/nextcloud/compose.yaml").is_file()
 }
 /// The Nextcloud version installed, from its own version.php ("31.0.5"), if readable.
-fn nextcloud_version(data: &Path) -> Option<String> {
+pub(crate) fn nextcloud_version(data: &Path) -> Option<String> {
     let text = common::bytes(&data.join("appdata/nextcloud/html/version.php"), 64000).ok()?;
     let found = regex::Regex::new(r"\$OC_VersionString\s*=\s*'([0-9]+\.[0-9]+\.[0-9]+)'")
         .unwrap()
@@ -3933,7 +3933,7 @@ pub fn make_room(root: &Path, needed: u128, short: &dyn Fn(u128) -> String) -> R
 }
 /// The room removing `folder` gives back: what its files take on the drive. A part that
 /// can't be read counts as nothing, so the room is never overestimated.
-fn tree_bytes(folder: &Path) -> u128 {
+pub(crate) fn tree_bytes(folder: &Path) -> u128 {
     let Ok(entries) = fs::read_dir(folder) else {
         return 0;
     };
@@ -4511,7 +4511,7 @@ fn dump_failed(app: &str, why: &str) -> String {
 }
 /// A logical copy (pg_dump) of `app`'s database, from the `database` service of its
 /// Compose project neko-<app>, as `<dest>/<app>-<UTC stamp>.sql`.
-fn database_of(
+pub(crate) fn database_of(
     app: &str,
     compose: &Path,
     env: &Path,
@@ -4815,7 +4815,7 @@ pub(crate) struct Paused {
     holds: &'static str,
 }
 impl Paused {
-    fn journal(&self) -> &'static str {
+    pub(crate) fn journal(&self) -> &'static str {
         common::journal(self.job)
     }
     fn resume(&self) -> &'static str {
@@ -4943,7 +4943,11 @@ pub(crate) fn resume_immich(ctl: &dyn Containers, journal: &Path) -> Result<()> 
 }
 /// Stop the app's running writers, each written down in `journal` first. Returns the
 /// containers stopped (none when the app was not running: it is not started later either).
-fn pause_app(app: &Paused, ctl: &dyn Containers, journal: &Path) -> Result<Vec<(String, String)>> {
+pub(crate) fn pause_app(
+    app: &Paused,
+    ctl: &dyn Containers,
+    journal: &Path,
+) -> Result<Vec<(String, String)>> {
     let writers = ctl.running_writers()?;
     if writers.is_empty() {
         return Ok(writers);
@@ -4977,7 +4981,7 @@ fn pause_app(app: &Paused, ctl: &dyn Containers, journal: &Path) -> Result<Vec<(
 }
 /// Start what `journal` names again, then remove it. Nothing to do without one. A
 /// container that would not start keeps the journal (the next try starts it).
-fn resume_app(app: &Paused, ctl: &dyn Containers, journal: &Path) -> Result<()> {
+pub(crate) fn resume_app(app: &Paused, ctl: &dyn Containers, journal: &Path) -> Result<()> {
     if !journal.exists() {
         return Ok(());
     }
@@ -5009,7 +5013,7 @@ fn resume_app(app: &Paused, ctl: &dyn Containers, journal: &Path) -> Result<()> 
     }
     if let Some(at) = saved["stopped_at"].as_f64() {
         println!(
-            "{}: started again; it was paused for {} for its weekly backup",
+            "{}: started again; it was paused for {} for its backup",
             app.name,
             common::plural((common::now() - at).max(0.0).round(), "second", "seconds")
         );
@@ -5017,7 +5021,7 @@ fn resume_app(app: &Paused, ctl: &dyn Containers, journal: &Path) -> Result<()> 
     finish_journal(journal)
 }
 /// What the pause says it stopped.
-fn say_paused(app: &Paused, stopped: &[(String, String)]) {
+pub(crate) fn say_paused(app: &Paused, stopped: &[(String, String)]) {
     if stopped.is_empty() {
         println!(
             "{}: not running, so nothing was paused (and it is not started)",
@@ -5124,6 +5128,15 @@ pub fn cloud_resume(a: &Args) -> Result<()> {
 /// Starts `app` again as its journal says, with the real Docker.
 fn resume_in_docker(app: &'static Paused) -> Result<()> {
     resume_app(app, &AppDocker(app), Path::new(app.journal()))
+}
+/// Nextcloud started again from its journal, by a caller that already holds the jobs'
+/// lock (the nightly app backup's resume). Nothing to do without a journal.
+pub(crate) fn resume_cloud_held(cfg: &Value) -> Result<()> {
+    if !Path::new(NEXTCLOUD.journal()).exists() {
+        return Ok(());
+    }
+    live_files_drive_present(&NEXTCLOUD, cfg)?;
+    resume_in_docker(&NEXTCLOUD)
 }
 fn resume_paused(app: &'static Paused, a: &Args) -> Result<()> {
     if !Path::new(app.journal()).exists() {
