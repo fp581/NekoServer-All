@@ -34,12 +34,25 @@ fn task_path(place: &Place) -> PathBuf {
 }
 
 /// The card job's service is running (the nightly run, Write to the card now, or a task).
+/// The service is a oneshot: while it runs, systemd says "activating", not "active".
 pub fn service_running() -> bool {
-    common::probe(
-        &["systemctl", "is-active", "--quiet", super::fact("service")],
+    let (_, state) = common::probe(
+        &[
+            "systemctl",
+            "show",
+            "-p",
+            "ActiveState",
+            "--value",
+            super::fact("service"),
+        ],
         10,
-    )
-    .0 == 0
+    );
+    running_state(&state)
+}
+
+/// Whether systemd's ActiveState of the card service means it runs (or is about to).
+fn running_state(state: &str) -> bool {
+    !matches!(state.trim(), "inactive" | "failed" | "")
 }
 
 /// A card of an older set, plugged in: what taking it back attaches.
@@ -414,6 +427,16 @@ fn check(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_oneshot_that_is_activating_is_running() {
+        for s in ["activating\n", "active", "deactivating", "reloading"] {
+            assert!(running_state(s), "{s}");
+        }
+        for s in ["inactive\n", "failed", ""] {
+            assert!(!running_state(s), "{s}");
+        }
+    }
 
     #[test]
     fn cards_are_named_in_plain_words() {

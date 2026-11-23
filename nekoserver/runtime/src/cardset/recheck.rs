@@ -44,7 +44,16 @@ pub fn check(store: &mut Store, vol: &Volume, progress: &mut dyn FnMut(u64, u64)
     let mut matches = Vec::with_capacity(records.len());
     for (done, r) in records.iter().enumerate() {
         progress(done as u64, total);
-        matches.push(vol.payload_matches(r.txn(), &r.meta.checksum, r.meta.byte_size)?);
+        // A copy that can't be read (a bad sector) is damaged, as long as the card is
+        // still there; a card taken out stops the check.
+        let ok = match vol.payload_matches(r.txn(), &r.meta.checksum, r.meta.byte_size) {
+            Ok(ok) => ok,
+            Err(e) => {
+                vol.confirm().map_err(|_| e)?;
+                false
+            }
+        };
+        matches.push(ok);
     }
     progress(total, total);
     // Still the same card, still there: only now is anything marked.

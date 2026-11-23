@@ -149,6 +149,23 @@ fn a_check_of_a_card_taken_out_marks_nothing() {
 }
 
 #[test]
+fn a_copy_that_cannot_be_read_is_damaged_and_the_check_goes_on() {
+    let s = Scratch::new("bt-unreadable");
+    let (_src, p, v, mut store) = one_card(&s);
+    let bad = &records(&p)[3];
+    let path = p.join(format::ROOT).join(&bad.txn().archive_relative_path);
+    // A payload that can't be read as a file stands for a bad sector.
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+    let checked = recheck::check(&mut store, &v, &mut |_, _| {}).unwrap();
+    assert_eq!(checked.fine, 3);
+    assert_eq!(
+        checked.damaged,
+        vec![bad.txn().original_relative_path.clone()]
+    );
+}
+
+#[test]
 fn a_copy_whose_record_is_gone_is_marked_damaged() {
     let s = Scratch::new("bt-record");
     let (_src, p, v, mut store) = one_card(&s);
