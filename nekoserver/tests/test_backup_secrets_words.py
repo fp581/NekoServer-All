@@ -62,7 +62,28 @@ class WordsTests(unittest.TestCase):
         self.assertEqual(self.keys.stat().st_mode & 0o777, 0o700)
         self.log.clear()
         bs.setup(ask=self.fail, out=self.log.append, key_dir=self.keys)
-        self.assertEqual(self.log, ['Backup password-file key already set up.'])
+        self.assertEqual(len(self.log), 1)
+        self.assertTrue(self.log[0].startswith('Backup password: the one chosen on '))
+
+    def test_a_kept_key_says_which_password_is_in_force_also_on_new_drives(self):
+        """Both data drives replaced and setup run again on the same Linux: the backup key in
+        /etc/nekoserver-backups stays, and setup used to say nothing, so the new backups were
+        sealed with a password chosen long before without the person being told (T4-alma)."""
+        self.make_key()
+        made = 1_793_000_000  # 2026-10-26 (UTC)
+        os.utime(self.keys / bs.KEY_NAME, (made, made))
+        self.log.clear()
+        bs.setup(ask=self.fail, out=self.log.append, key_dir=self.keys)
+        day = __import__('datetime').date.fromtimestamp(made).isoformat()
+        self.assertEqual(
+            self.log,
+            [
+                f'Backup password: the one chosen on {day}, when the backup key of this PC was made. The key stays '
+                f'on this PC ({self.keys}), also when the SSD or the HDD is new, so the backups made from now on are '
+                'sealed with that password too. Forgotten it? Then  sudo python3 backup_secrets.py --new-password  '
+                'chooses a new one.'
+            ],
+        )
 
     def test_no_password_confirmed_says_how_to_try_again(self):
         with self.assertRaises(RuntimeError) as caught:
