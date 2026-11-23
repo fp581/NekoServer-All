@@ -37,10 +37,11 @@ class MistypedSettingsTests(unittest.TestCase):
         settings['dashbord'] = {'port': 8090}
         settings['typo_key'] = 1
         said = self.check(settings)
-        self.assertIn('"media.servics" in my-config.json is not a setting NekoServer knows', said)
-        self.assertIn('Did you mean "media.services"?', said)
-        self.assertIn('Did you mean "dashboard"?', said)
-        self.assertIn('"typo_key" in my-config.json is not a setting', said)
+        lines = said.splitlines()
+        knows = 'in my-config.json is not a setting NekoServer knows, so it does nothing.'
+        self.assertIn(f'Warning: "media.servics" {knows} Did you mean "media.services"? Check its spelling.', lines)
+        self.assertIn(f'Warning: "dashbord" {knows} Did you mean "dashboard"? Check its spelling.', lines)
+        self.assertIn(f'Warning: "typo_key" {knows} Check its spelling.', lines)
 
     def test_the_template_and_setups_own_notes_say_nothing(self):
         settings = json.loads(json.dumps(TEMPLATE))
@@ -55,6 +56,18 @@ class MistypedSettingsTests(unittest.TestCase):
         settings['tv']['wanted'] = True  # an answer setup saved (guided_setup.wanted)
         settings['storage']['usb'] = {'uuid': 'x'}  # drives are names of yours
         self.assertNotIn('Warning', self.check(settings))
+
+
+
+class JobTimeTests(unittest.TestCase):
+    def test_a_job_time_is_hours_and_minutes_of_a_day(self):
+        import config_checks
+
+        for good in ('00:00', '07:30', '23:59'):
+            config_checks._time(good)
+        for bad in ('24:00', '7:30', '07:60', '07:30:00', '٠٧:٣٠', 730, None):
+            with self.subTest(bad=bad), self.assertRaisesRegex(RuntimeError, 'Invalid job time; use HH:MM'):
+                config_checks._time(bad)
 
 
 if __name__ == '__main__':
