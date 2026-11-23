@@ -5,6 +5,7 @@ from media_libraries import (
     Client,
     SetupRequired,
     SEERR_OTHER_JELLYFIN,
+    seerr_server_id,
     folders,
     matching,
     LIBRARIES,
@@ -136,9 +137,10 @@ def seerr_row(client, root, server_id, ids):
     try:
         open_seerr(client, root, 'Seerr first-run setup is incomplete')
         selected = client.call('/settings/jellyfin')
-        if not server_id or not isinstance(selected, dict):
+        linked = seerr_server_id(selected)
+        if not server_id or not linked:
             raise SetupRequired('Seerr/Jellyfin server identity is not verified')
-        if selected.get('serverId', selected.get('serverID')) != server_id:
+        if linked != server_id:
             raise SetupRequired(SEERR_OTHER_JELLYFIN)
         values = client.call('/settings/jellyfin/library')
         if (

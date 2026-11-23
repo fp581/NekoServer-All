@@ -37,6 +37,19 @@ SEERR_OTHER_JELLYFIN = (
     "night as Jellyfin's "
     '(APP-BACKUPS.md, step 2), then run setup again'
 )
+# A Seerr not linked to any Jellyfin yet (its first run not finished) is told that, not the above.
+SEERR_NOT_LINKED = (
+    'Seerr is not linked to a Jellyfin server yet: finish its first-run setup in its web page '
+    '(sign in with Jellyfin there), then run setup again'
+)
+
+
+def seerr_server_id(settings):
+    """The ID of the Jellyfin Seerr is linked to (its /settings/jellyfin), or '' for none."""
+    if not isinstance(settings, dict):
+        return ''
+    found = settings.get('serverId', settings.get('serverID'))
+    return found if isinstance(found, str) else ''
 
 
 def jellyfin_headers(app, headers):
@@ -382,7 +395,10 @@ def open_seerr(client, root, unfinished):
 def seerr(client, root, server_id, library_ids, apply, apps=('sonarr', 'radarr')):
     client.headers['X-Api-Key'] = seerr_key(root)
     settings = client.call('/settings/jellyfin')
-    if not isinstance(settings, dict) or settings.get('serverId', settings.get('serverID')) != server_id:
+    linked = seerr_server_id(settings)
+    if not linked:
+        raise SetupRequired(SEERR_NOT_LINKED)
+    if linked != server_id:
         raise SetupRequired(SEERR_OTHER_JELLYFIN)
     if len(library_ids) != len(LIBRARIES):
         raise SetupRequired('Both Jellyfin movie/TV libraries must be verified before enabling them in Seerr')
