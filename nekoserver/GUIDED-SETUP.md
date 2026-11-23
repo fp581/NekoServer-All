@@ -10,7 +10,7 @@ Have these ready:
 
 - **Your drives plugged in and formatted** (ext4 is the safe choice): a fast one for the apps (this guide calls it the SSD), a big one for your films and the backups (the HDD) and, if you have one, a USB drive for the offline backup. One drive, or the disk Linux runs from, can also hold everything. Setup never formats a drive. It needs at least **20 GB free on the SSD** and **50 GB free on the HDD** to start; **100 GB** and **500 GB** or more are recommended.
 - **Your phone**, with its app store working.
-- **A PIN you will remember** (6 to 8 digits) for the dashboard.
+- **Only if you want to choose your own logins:** a PIN you will remember (6 to 8 digits) for the dashboard. With the recommended choice, setup makes every password and the PIN for you.
 - **About an hour**, and the PC connected to the internet.
 
 Open a **terminal**: press **Ctrl+Alt+T**, or open the apps menu and search for **Terminal**. Then type (or copy and paste) these two lines, pressing Enter after each:
@@ -43,9 +43,9 @@ The window opens in the **Night** look, like the dashboard. The ☾ / ☀ button
 The first page lists what this server can do, each with a switch that says yes or no (in the terminal: a numbered line; type its number to switch it):
 
 - **Apps**: Photos and phone backup (Immich), Movies and shows (Jellyfin), Music (Navidrome), Personal files (Nextcloud). Inside Movies and shows and inside Music is one more switch, **Also find and download new ones**, on unless you switch it off: off leaves Jellyfin, or Navidrome, alone; see [the media groups](#the-media-apps-three-groups-a-yes-or-no-each) below.
-- **Optional extras**, off until you switch them on: a TV connected to this PC (Steam Big Picture), alerts on your phone when something fails, a warning from outside when the server stops checking in, and a local AI assistant for the dashboard ("Ask Neko"; see ASSISTANT.md).
+- **Optional extras**, off until you switch them on: a TV connected to this PC (Steam Big Picture), alerts on your phone when something fails, a warning from outside when the server stops checking in, and a local AI assistant for the dashboard ("Ask Neko"; see ASSISTANT.md). With the drives: media and backup drives in a NAS (a storage box on your home network), and **Backup cards** (SD cards or USB sticks you keep somewhere else). These switches are your answer: no step asks "do you want this?" again.
 
-Each card has a line **Installs N packages** where it adds some: press it to see what that part adds to the PC. Choosing something never moves the rest of the page. **Continue** (in the terminal: Enter) goes on to the drives ([Choosing the drives](#choosing-the-drives), below), and then to the review, **Ready to install NekoServer**: the apps that will be installed, the extras, what is left out, what is always set up, where your apps and files are kept, and what setup still stops to ask you. One button starts it, **Install selected apps** (in the terminal: type `yes`; `back` returns to the first page; Enter alone approves nothing). Nothing is installed, mounted or saved before it. Every switch is saved with its answer then, so no step asks "install this?" again.
+Each card has a line **Installs N packages** where it adds some: press it to see what that part adds to the PC. Choosing something never moves the rest of the page. **Continue** (in the terminal: Enter) goes on to the drives ([Choosing the drives](#choosing-the-drives), below), the backup times, the app passwords ([step 6](#6-app-passwords)), and then to the review, **Ready to install NekoServer**: the apps that will be installed, the extras, what is left out, what is always set up, where your apps and files are kept, and what setup still stops to ask you. One button starts it, **Install selected apps** (in the terminal: type `yes`; `back` returns to the first page; Enter alone approves nothing). Nothing is installed or mounted before it. Each switch is written to `my-config.json` as you press it, and at the approval every switch is saved with its answer, so no step asks "install this?" again.
 
 On a PC that already has NekoServer, setup says so before this page: which release is set up and where, or that a setup was cut off and at which step, with the choices that apply (continue, review this update, change apps or settings, restore from a backup).
 
@@ -94,7 +94,7 @@ The names in the details (`sda1`, `sdb1`) are Linux's own and can change at the 
 7. Then whether you already have films, shows or music: the folder of each (and any other folder of the same kind, up to 8, until you answer **That is all**), whether it is used where it is or copied into the library, and whether new ones are saved there too.
 8. **In the setup window** all of this is one page, **Where should NekoServer store your apps and files?**, with a list to choose from on every line and the recommended drive already chosen. A drive that cannot have a role is in the list with the reason and cannot be chosen. Press **Use these drives**.
 
-Then comes the review, and your `yes` (step 2). Everything after this happens once setup has started.
+Then come two more pages before the review: **the backup times** (Enter keeps the times shown) and **the app passwords** ([step 6](#6-app-passwords)). Then the review, and your `yes` (step 2). Everything from step 4 on happens once setup has started.
 
 ### 4. Tailscale: reaching your server from anywhere
 
@@ -114,7 +114,7 @@ If a drive is too small (less than 20 GB free on the SSD, or 50 GB on the HDD), 
 
 ### 6. App passwords
 
-Every app gets its own administrator login. Setup asks:
+This page comes before the review, right after the drives and the backup times. Every app gets its own administrator login, and the server gets a dashboard PIN and a password for the shared folders. Setup asks:
 
 ```text
 How would you like to set up your app accounts?
@@ -124,9 +124,9 @@ Each selected app has a separate account. NekoServer stores its required credent
 Type 1 or 2, then press Enter. Enter alone takes the first.
 ```
 
-Type `1` and press Enter (recommended). Setup then makes a long random password for each app and saves it on the server. You never have to remember them: [Seeing an app's password](#seeing-an-apps-password) shows how to look one up.
+Type `1` and press Enter (recommended). Setup then makes a long random password for each app, an 8-digit dashboard PIN and the shared-folder password, and saves them on the server. Nothing more is asked. You never have to remember them: [Seeing an app's password](#seeing-an-apps-password) shows how to look one up.
 
-Choose `2` only if you want to type your own login for some apps. Your own passwords need 12 characters or more.
+Choose `2` only if you want to type your own. Then you type a username and password for every new app (12 characters or more), the dashboard PIN (6 to 8 digits; Enter alone for no PIN) and the shared-folder password, each one twice; nothing appears while you type. These are saved on the server too, and "Show login" shows them.
 
 ### 7. Installing the apps (no questions, 15 to 60 minutes)
 
@@ -136,26 +136,26 @@ Setup now downloads and starts the apps: Jellyfin, Immich, Nextcloud, Navidrome 
 
 These three steps ask a few questions of their own. Since 0.50.0 they are asked in the setup window too, like every other question: answer in the window or in the terminal, whichever you like.
 
-- **Connecting the media apps.** Setup may ask which download sources (Prowlarr calls them indexers) to add. If you don't know what to choose, just press Enter: that skips it. You can add sources later in Prowlarr.
+- **Connecting the media apps.** Setup may ask which download sources (Prowlarr calls them indexers) to add. If you don't know what to choose, just press Enter: that adds the recommended ones, which are already ticked (with nothing ticked, Enter skips it). You can add or remove sources later in Prowlarr.
   - **Several at once.** In the setup window the whole of Prowlarr's catalogue is one list that scrolls, with a search box and a tick box on every row; each row says whether the source is public or needs an account, its language, and whether it is for torrents or Usenet. Tick as many as you like (the page counts them) and press **Add the selected ones**. In the terminal, filter the list by name if you like, then type the numbers together: `1 4 7`, or a range such as `1-5`.
   - **The ones that need no account are added at once.** Each one that needs a login or a key then gets a small form of its own (the login is typed hidden). **Skip for now** leaves that one out; the others are not affected.
   - **One that Prowlarr refuses** is shown with Prowlarr's reason and **Retry this step**, which asks for its values again (a mistyped key is the usual cause). The others are added all the same.
-  - **Recommended.** When NekoServer ships a list of recommended sources, they are a group of their own: one button ticks them in the window, and `r` chooses them in the terminal. The list is a small file (`recommended-indexers.json`) of names from Prowlarr's own catalogue; it is empty until its names have been approved, and then there is no such button.
+  - **Recommended.** NekoServer ships a short list of recommended sources. They are a group of their own and are ticked from the start: one button ticks them again in the window, and `r` chooses them in the terminal. The list is a small file (`recommended-indexers.json`) of names from Prowlarr's own catalogue; a name Prowlarr no longer has is left out.
   - Use only providers and content you are authorized to access.
 
 When you run `sudo bash install.sh` again later, setup shows how you answered the optional questions last time (the media apps, the backup times, the download sources, the indexers, the playback test) and asks `Change any of these answers?`. Answer `no` to keep those answers and move on; `yes` asks them again.
 - **Music** (only if the automatic check did not pass). If setup asks for `Listener username:` and a password, type the login of Navidrome's listener, the account the music check signs in with (not your own login on a server set up with 0.50.0 or later). To see it, open a second terminal (Ctrl+Alt+T) and run the command in [Seeing an app's password](#seeing-an-apps-password) with `show navidrome_listener`.
-- **The shared-folder password.** This is the password other computers at home use to open the shared folders. In the terminal, type it, press Enter, then type it again; nothing appears while you type. In the window it is one page with two hidden fields, which must match before it can be sent. Setup hands the password straight to Samba and keeps no copy.
+- **The shared-folder password** (only if it was not chosen on the accounts page, in step 6, for example after three mismatches there). This is the password other computers at home use to open the shared folders. In the terminal, type it, press Enter, then type it again; nothing appears while you type. In the window it is one page with two hidden fields, which must match before it can be sent. A password typed here is handed straight to Samba and not kept. One from the accounts page is kept with the app logins, so "Show login" shows it.
 
 Setup may also ask you to **play something** in Jellyfin as a test. That is optional: answer `yes` once a video played, or press Ctrl+C to skip it (at this one question Ctrl+C skips the test and setup goes on; in the window: **Skip for now**).
 
 ### 9. The dashboard PIN
 
-The dashboard is a page that shows how your server is doing. Setup asks you to choose a **PIN of 6 to 8 digits**, typed twice (nothing appears while you type). With it you can change fans and lights from your phone, and restart an app from the dashboard. Press Enter instead to skip it; you can choose one later by running setup again.
+The dashboard is a page that shows how your server is doing. Its **PIN** (6 to 8 digits) lets you change fans and lights from your phone, and restart an app from the dashboard. It is made or chosen on the accounts page (step 6), and this step only sets it. Only when none was chosen there (left empty, or typed wrong three times) does this step ask for one, typed twice (nothing appears while you type). Press Enter instead to skip it; you can choose one later by running setup again.
 
 ### 10. The TV (optional)
 
-If you did not switch it off in the window, setup asks whether a TV is connected to this PC. Answer `no` if you don't use one. With `yes`, it sets up Steam Big Picture and walks you through a few tests on the TV.
+Only if you switched on **A TV connected to this PC** on the first page: setup then sets up Steam Big Picture and walks you through a few tests on the TV. With the switch off, nothing is asked.
 
 ### 11. Your phone
 
@@ -194,7 +194,7 @@ Setup may then open each app in the browser and ask `Could you sign in to Jellyf
 
 ### 13. Phone alerts and outage alerts (optional)
 
-Setup asks about each one, once. Answer `no` if you don't want it; nothing else depends on them. With `yes`, it explains what to set up on the phone or website, and asks for the private address to send the alerts to. To set one up later, see [NOTIFICATIONS.md](NOTIFICATIONS.md) and [HEARTBEAT.md](HEARTBEAT.md).
+Only the ones you switched on on the first page; nothing else depends on them. For each, setup explains what to set up on the phone or website, and asks for the private address to send the alerts to. To set one up later, see [NOTIFICATIONS.md](NOTIFICATIONS.md) and [HEARTBEAT.md](HEARTBEAT.md).
 
 ### 14. The backup password
 
@@ -287,7 +287,7 @@ During interactive `--apply`, a step that needs a browser, desktop app or phone:
 - Phone setup: open installation guidance on the server, print the actual private app links, explain phone VPN permissions and each app's own login, then walk through photo/file/music/video and mobile-data tests. The server cannot launch apps or grant permissions on a different phone. Their confirmations are labelled user-witnessed, not independent automatic probes. Passwords are never printed by the phone step nor written to its page (`/usr/local/share/nekoserver-pages/phone-setup.html`, readable by every account). Each app's step names `account-setup.py show APP` from the release copy on the SSD instead: it shows one login, to root only, on a terminal only (it refuses a pipe or a file, so nothing lands in a log), passes the password to `qrencode` on its standard input rather than its command line, and clears the screen afterwards.
 - Media sources/providers: after selecting a provider that needs credentials, explain its account/API requirements and open Prowlarr. Rejected provider setup can be completed in its UI and checked for a retained definition. End-to-end acquisition/playback remains a separate witnessed test.
 - After an update, the steps the new release added are added to the `full` profile (and any other profile) in your `my-config.json`, in their place, with a line in the log for each; a step you took out of a profile yourself stays out, and steps you added stay. The finishing screen counts every step the release's `full` profile has, so a settings file from an older release can't read "ready" with a step never run.
-- Optional extras (TV, ntfy phone alerts, outage monitor, the AI assistant) are asked once with yes/no. `no` is saved as `"wanted": false` in `my-config.json` and the step counts as done; set it to `true` to set the extra up on a later run.
+- Optional extras (TV, ntfy phone alerts, outage monitor, the AI assistant) are answered by their switches on the first page: at the approval each is saved as `"wanted": true` or `false` in `my-config.json`, and a step whose extra is off counts as done; set it to `true` to set the extra up on a later run. Only a settings file with no answer at all (edited by hand) is asked once with yes/no.
 - Steps already confirmed are not repeated on a re-run: Tailscale sign-in and HTTPS, the phone walkthrough (for the same app addresses) and each TV hardware test.
 - TV: open Steam, Bluetooth settings when selected, display settings and browser playback; explain main-PC Remote Play and Xbox-controller tests. Hardware results are user-confirmed; package/service checks remain automatic.
 - New ntfy subscriptions and independent heartbeat monitors: open setup guidance, explain the work on the phone/provider, then collect the private address in a hidden field (in the terminal or the setup window) and send one test to it: a test message for the alerts ("did it arrive?"), a test check-in for the outage warning. Subscription/recipient choices are yours.
@@ -295,7 +295,7 @@ During interactive `--apply`, a step that needs a browser, desktop app or phone:
 
 ### The order of the steps
 
-The `full` profile runs: system, tailscale, storage, capacity, recovery, account_credentials, server_os, docker, recovery_checkpoint, media, photos, photo_preservation, photo_backup, nextcloud, accounts, hardware_video, onboarding, music, samba, media_monitor, dashboard (the PIN), assistant (only when chosen; it needs the PIN), tv, desktop, gateway_tailnet (the phone), gateway_lan (the home network), app_backup, notifications, heartbeat, host_backup, maintenance (the backup password). Then the first checkup and backup.
+The `full` profile runs: system, tailscale, storage, capacity, recovery, account_credentials, server_os, docker, recovery_checkpoint, media, photos, photo_preservation, photo_backup, nextcloud, accounts, hardware_video, onboarding, music, samba, media_monitor, dashboard (the PIN), assistant (only when chosen; it needs the PIN), tv, desktop, gateway_tailnet (the phone), gateway_lan (the home network), app_backup, notifications, heartbeat, host_backup, backup_cards (only when switched on), maintenance (the backup password). Then the first checkup and backup.
 
 The Tailscale part, in order: connect this server (sign-in page, free account), turn on secure addresses (MagicDNS and HTTPS), create the private app addresses, then the phone: install Tailscale, then each app with its QR code from the page at `/usr/local/share/nekoserver-pages/phone-setup.html`, then a test on mobile data. If no sign-in page opens, the step explains the `sudo tailscale up` fallback.
 
