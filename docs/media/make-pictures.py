@@ -476,49 +476,68 @@ SIDE_PAGES = [
 SIDE_LOOKS = [('neko', 'Moonlit Neko'), ('professional', 'Professional')]
 
 
-def capture_dashboard(runtime, work, plan, parts):
-    """The dashboard's pictures: the tour and/or the two looks side by side."""
-    with tempfile.TemporaryDirectory() as folder, dashboard(runtime, Path(folder)) as address:
-        now = time.time()
-        common = {'address': address, 'live': live_readings(now), 'ask': ASK}
-        shots = []
-        if 'tour' in parts:
-            for n, (route, _, action) in enumerate(TOUR):
-                shots.append(
-                    {'route': route, 'look': 'neko', 'theme': 'dark', **MOVING, 'action': action,
-                     'out': str(work / f'tour-{n:02d}.png')}
-                )  # fmt: skip
-        if 'looks' in parts:
-            # Pass 1 dark, pass 2 light: both panels always in the same mode.
-            for theme in ('dark', 'light'):
-                for n, (route, action) in enumerate(SIDE_PAGES):
-                    for look, _ in SIDE_LOOKS:
-                        shots.append(
-                            {'route': route, 'look': look, 'theme': theme, **SIDE, 'action': action,
-                             'out': str(work / f'side-{theme}-{n}-{look}.png')}
-                        )  # fmt: skip
-        found = drive({'kind': 'dashboard', **common, 'shots': shots})
-    plan['dashboard'] = found
+# Pass 1 dark, pass 2 light: both panels always in the same mode.
+SIDE_THEMES = ('dark', 'light')
+
+
+def tour_frame(n):
+    return f'tour-{n:02d}.png'
+
+
+def side_frame(theme, n, look=None):
+    """One frame of looks-side-by-side, or (with `look`) one of its two halves."""
+    return f'side-{theme}-{n}-{look}.png' if look else f'side-{theme}-{n}.png'
+
+
+def tour_shots(work):
+    return [
+        {'route': route, 'look': 'neko', 'theme': 'dark', **MOVING, 'action': action, 'out': str(work / tour_frame(n))}
+        for n, (route, _, action) in enumerate(TOUR)
+    ]
+
+
+def side_shots(work):
+    return [
+        {'route': route, 'look': look, 'theme': theme, **SIDE, 'action': action,
+         'out': str(work / side_frame(theme, n, look))}
+        for theme in SIDE_THEMES
+        for n, (route, action) in enumerate(SIDE_PAGES)
+        for look, _ in SIDE_LOOKS
+    ]  # fmt: skip
+
+
+def warn_spoiled(found):
+    """A warning for each picture that shows an error, an issue or late readings."""
     for shot in found:
-        spoiled = {k: shot[k] for k in ('issues', 'errors', 'pageErrors') if shot[k]} | (
-            {'stale': True} if shot['stale'] else {}
-        )
+        spoiled = {k: shot[k] for k in ('issues', 'errors', 'pageErrors') if shot[k]}
+        if shot['stale']:
+            spoiled['stale'] = True
         if spoiled:
             print(f'Warning: {shot["out"]} shows {spoiled}', file=sys.stderr)
-    if 'tour' in parts:
-        plan['animations'].append(
-            {'name': 'dashboard-tour', 'frames': [[f'tour-{n:02d}.png', 1.8] for n in range(len(TOUR))]}
-        )
+
+
+def put_side_by_side(work):
+    """Each pair of looks into one frame, each look under its name."""
+    pages = []
+    for theme in SIDE_THEMES:
+        for n in range(len(SIDE_PAGES)):
+            html = work / f'side-{theme}-{n}.html'
+            html.write_text(side_page([work / side_frame(theme, n, look) for look, _ in SIDE_LOOKS]))
+            pages.append({'url': html.as_uri(), 'out': str(work / side_frame(theme, n))})
+    drive({'kind': 'pages', 'pages': pages, 'width': 2 * PANEL + 3 * 12, 'height': 200, 'full': True})
+
+
+def capture_dashboard(runtime, work, parts):
+    """The dashboard's pictures: the tour and/or the two looks side by side. Returns what
+    the browser found on each page."""
+    with tempfile.TemporaryDirectory() as folder, dashboard(runtime, Path(folder)) as address:
+        shots = (tour_shots(work) if 'tour' in parts else []) + (side_shots(work) if 'looks' in parts else [])
+        found = drive({'kind': 'dashboard', 'address': address, 'live': live_readings(time.time()), 'ask': ASK,
+                       'shots': shots})  # fmt: skip
+    warn_spoiled(found)
     if 'looks' in parts:
-        pages = []
-        for theme in ('dark', 'light'):
-            for n in range(len(SIDE_PAGES)):
-                html = work / f'side-{theme}-{n}.html'
-                html.write_text(side_page([work / f'side-{theme}-{n}-{look}.png' for look, _ in SIDE_LOOKS]))
-                pages.append({'url': html.as_uri(), 'out': str(work / f'side-{theme}-{n}.png')})
-        drive({'kind': 'pages', 'pages': pages, 'width': 2 * PANEL + 3 * 12, 'height': 200, 'full': True})
-        frames = [[Path(page['out']).name, 2.0] for page in pages]
-        plan['animations'].append({'name': 'looks-side-by-side', 'frames': frames, 'gif': True})
+        put_side_by_side(work)
+    return found
 
 
 def side_page(images):
@@ -580,14 +599,21 @@ SWITCHED_ON = ('media_photos', 'media_movies', 'media_music', 'nextcloud', 'noti
                'assistant', 'backup_cards')  # fmt: skip
 
 
-def capture_setup(work, plan):
+# The setup window's frames, in the order they show.
+SETUP_FRAMES = ('apps', 'review', 'progress', 'question', 'finish')
+
+
+def setup_frame(name):
+    return f'setup-{SETUP_FRAMES.index(name)}-{name}.png'
+
+
+def capture_setup(work):
     import finish_page
     import questions
     import setup_gui
     import setup_progress
     import wizard
 
-    frames = []
     with tempfile.TemporaryDirectory() as folder:
         path, config = setup_config(Path(folder))
         # The steps a server without a TV runs.
@@ -596,8 +622,9 @@ def capture_setup(work, plan):
         setup_progress.enable()
 
         def shoot(name, wait=1800):
-            drive({'kind': 'page', 'url': window.url, **SETUP_FRAME, 'wait': wait, 'out': str(work / name)})
-            frames.append(name)
+            drive(
+                {'kind': 'page', 'url': window.url, **SETUP_FRAME, 'wait': wait, 'out': str(work / setup_frame(name))}
+            )
 
         def run_until(stop):
             """Every step before `stop` done (those done already left alone), `stop` running."""
@@ -612,7 +639,7 @@ def capture_setup(work, plan):
             # 1. The first page: the apps and extras, with their switches.
             window.show('apps')
             window.choose(dict.fromkeys(SWITCHED_ON, True))
-            shoot('setup-0-apps.png')
+            shoot('apps')
             # 2. The review, with the drives the storage page chose.
             window.show(
                 'review',
@@ -622,14 +649,14 @@ def capture_setup(work, plan):
                     'Offline backup on a removable drive (optional): drive 4 (SanDisk USB, 64 GB, empty)',
                 ],
             )
-            shoot('setup-1-review.png')
+            shoot('review')
             # 3. Setup at work: the steps done so far, Docker installing its packages.
             window.choose({}, start=True)
             setup_progress.event('plan', steps=steps)
             run_until('docker')
             setup_progress.packages(['docker', 'docker-compose'], ['docker.io', 'docker-compose-v2'])
             setup_progress.note('Downloading the container engine (about 90 MB)…')
-            shoot('setup-2-progress.png')
+            shoot('progress')
             # 4. A question during the phone alerts step, as questions.yes_no asks it.
             setup_progress.step('docker', 'success')
             run_until('notifications')
@@ -649,7 +676,7 @@ def capture_setup(work, plan):
             )
             asking.start()
             time.sleep(0.5)
-            shoot('setup-3-question.png')
+            shoot('question')
             release.set()
             asking.join(10)
             # 5. The finishing page.
@@ -661,11 +688,10 @@ def capture_setup(work, plan):
             setup_progress.event(
                 'finished', lines=['NekoServer is ready.'], complete=True, title='NekoServer is ready.', page=page
             )
-            shoot('setup-4-finish.png', 2500)
+            shoot('finish', 2500)
         finally:
             window.stop()
             setup_progress.disable()
-    plan['animations'].append({'name': 'setup-window', 'frames': [[name, 2.0] for name in frames]})
 
 
 # ----------------------------------------------------------------- the terminal
@@ -696,7 +722,10 @@ def terminal_text():
     return '\n'.join(printed).replace('\n\n\n', '\n\n')
 
 
-def capture_terminal(work, plan):
+TERMINAL_FRAME = 'setup-terminal.png'
+
+
+def capture_terminal(work):
     import html
 
     words = html.escape(terminal_text())
@@ -716,8 +745,7 @@ def capture_terminal(work, plan):
         encoding='utf-8',
     )
     drive({'kind': 'page', 'url': page.as_uri(), 'width': 1300, 'height': 400, 'full': True,
-           'out': str(work / 'setup-terminal.png')})  # fmt: skip
-    plan['stills'].append({'name': 'setup-terminal', 'frame': 'setup-terminal.png'})
+           'out': str(work / TERMINAL_FRAME)})  # fmt: skip
 
 
 # ----------------------------------------------------------------- assembling
@@ -733,63 +761,128 @@ def ffmpeg():
     return found
 
 
-def assemble(work):
-    plan = json.loads((work / 'plan.json').read_text(encoding='utf-8'))
-    tool = ffmpeg()
-    quiet = [tool, '-hide_banner', '-loglevel', 'error', '-y']
+# What assemble makes, every name and frame fixed here: plan.json only says which parts
+# capture made frames for.
+def stills(parts):
+    """(picture, frame) for each still."""
+    return [('setup-terminal', TERMINAL_FRAME)] if 'terminal' in parts else []
+
+
+def animations(parts):
+    """(picture, [(frame, seconds)], whether a GIF is tried first) for each animation."""
     made = []
-    # Lossless while it fits (sharp text, no colour fringes); lossy (-q:v, ffmpeg's quality
-    # for libwebp: its own -quality option is not that) when a picture would be too big.
-    tries = (['-lossless', '1'], ['-lossless', '0', '-q:v', '88'], ['-lossless', '0', '-q:v', '75'],
-             ['-lossless', '0', '-q:v', '60'])  # fmt: skip
-    for still in plan['stills']:
-        out = HERE / (still['name'] + '.webp')
-        for how in tries:
-            subprocess.run(
-                [*quiet, '-i', str(work / still['frame']), '-c:v', 'libwebp', *how, '-compression_level', '6',
-                 str(out)],
-                check=True,
-            )  # fmt: skip
-            if out.stat().st_size <= MOST_STILL:
-                break
-        made.append(out)
-    for animation in plan['animations']:
-        out = HERE / (animation['name'] + '.webp')
-        listing = work / (animation['name'] + '.txt')
-        lines = []
-        for name, seconds in animation['frames']:
-            lines += [f"file '{(work / name).as_posix()}'", f'duration {seconds}']
-        # The concat demuxer's last line: the last frame stays twice as long before the loop.
-        lines.append(f"file '{(work / animation['frames'][-1][0]).as_posix()}'")
-        listing.write_text('\n'.join(lines) + '\n', encoding='utf-8')
-        source = [*quiet, '-f', 'concat', '-safe', '0', '-i', str(listing)]
-        if animation.get('gif'):
-            # A GIF where it fits (it plays everywhere): a palette of its own for each frame,
-            # so the dark and the light frames each keep their colours, and an ordered dither,
-            # so the Moonlit Neko glow does not band. Each frame once, for as long as it shows
-            # (no frame rate: repeated frames would each be stored whole with their own palette).
-            gif = out.with_suffix('.gif')
-            palette = 'split[a][b];[a]palettegen=stats_mode=single[p];[b][p]paletteuse=new=1:dither=bayer:bayer_scale=3'
-            gif_how = ['-filter_complex', palette, '-fps_mode', 'passthrough', '-loop', '0', str(gif)]
-            subprocess.run([*source, *gif_how], check=True)
-            if gif.stat().st_size <= MOST_BYTES:
-                made.append(gif)
-                out.unlink(missing_ok=True)
-                continue
-            gif.unlink()
-        for how in tries:
-            subprocess.run(
-                [*source, '-vf', 'fps=10', '-fps_mode', 'vfr', '-c:v', 'libwebp_anim', *how, '-compression_level', '6', '-loop', '0', str(out)],
-                check=True,
-            )  # fmt: skip
-            if out.stat().st_size <= MOST_BYTES:
-                break
-        made.append(out)
+    if 'setup' in parts:
+        made.append(('setup-window', [(setup_frame(name), 2.0) for name in SETUP_FRAMES], False))
+    if 'tour' in parts:
+        made.append(('dashboard-tour', [(tour_frame(n), 1.8) for n in range(len(TOUR))], False))
+    if 'looks' in parts:
+        frames = [(side_frame(theme, n), 2.0) for theme in SIDE_THEMES for n in range(len(SIDE_PAGES))]
+        made.append(('looks-side-by-side', frames, True))
+    return made
+
+
+def captured_parts(work):
+    plan = json.loads((work / 'plan.json').read_text(encoding='utf-8'))
+    return [part for part in PARTS if part in plan['parts']]
+
+
+# Lossless while it fits (sharp text, no colour fringes); lossy (-q:v, ffmpeg's quality
+# for libwebp: its own -quality option is not that) when a picture would be too big.
+WEBP_TRIES = (['-lossless', '1'], ['-lossless', '0', '-q:v', '88'], ['-lossless', '0', '-q:v', '75'],
+              ['-lossless', '0', '-q:v', '60'])  # fmt: skip
+
+
+def smallest_webp(before, after, out, most):
+    """ffmpeg `before` + each of WEBP_TRIES + `after` into `out`, until it is at most `most` bytes."""
+    for how in WEBP_TRIES:
+        subprocess.run([*before, *how, *after, str(out)], check=True)
+        if out.stat().st_size <= most:
+            break
+    return out
+
+
+def make_still(quiet, work, name, frame):
+    return smallest_webp(
+        [*quiet, '-i', str(work / frame), '-c:v', 'libwebp'], ['-compression_level', '6'], HERE / f'{name}.webp',
+        MOST_STILL,
+    )  # fmt: skip
+
+
+def concat_list(work, name, frames):
+    """The frames as a list for ffmpeg's concat demuxer, each for its seconds."""
+    lines = []
+    for frame, seconds in frames:
+        lines += [f"file '{(work / frame).as_posix()}'", f'duration {seconds}']
+    # The concat demuxer's last line: the last frame stays twice as long before the loop.
+    lines.append(f"file '{(work / frames[-1][0]).as_posix()}'")
+    listing = work / f'{name}.txt'
+    listing.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    return listing
+
+
+def fits_as_gif(source, gif):
+    """A GIF where it fits (it plays everywhere): a palette of its own for each frame,
+    so the dark and the light frames each keep their colours, and an ordered dither,
+    so the Moonlit Neko glow does not band. Each frame once, for as long as it shows
+    (no frame rate: repeated frames would each be stored whole with their own palette)."""
+    palette = 'split[a][b];[a]palettegen=stats_mode=single[p];[b][p]paletteuse=new=1:dither=bayer:bayer_scale=3'
+    subprocess.run(
+        [*source, '-filter_complex', palette, '-fps_mode', 'passthrough', '-loop', '0', str(gif)], check=True
+    )
+    if gif.stat().st_size <= MOST_BYTES:
+        return True
+    gif.unlink()
+    return False
+
+
+def make_animation(quiet, work, name, frames, gif_first):
+    out = HERE / f'{name}.webp'
+    source = [*quiet, '-f', 'concat', '-safe', '0', '-i', str(concat_list(work, name, frames))]
+    if gif_first and fits_as_gif(source, out.with_suffix('.gif')):
+        out.unlink(missing_ok=True)
+        return out.with_suffix('.gif')
+    return smallest_webp(
+        [*source, '-vf', 'fps=10', '-fps_mode', 'vfr', '-c:v', 'libwebp_anim'],
+        ['-compression_level', '6', '-loop', '0'], out, MOST_BYTES,
+    )  # fmt: skip
+
+
+def assemble(work):
+    parts = captured_parts(work)
+    quiet = [ffmpeg(), '-hide_banner', '-loglevel', 'error', '-y']
+    made = [make_still(quiet, work, name, frame) for name, frame in stills(parts)]
+    made += [make_animation(quiet, work, *animation) for animation in animations(parts)]
     for out in made:
         print(f'{out.relative_to(REPO)}: {out.stat().st_size // 1024} KB')
 
 
 PARTS = ('terminal', 'setup', 'tour', 'looks')
+
+
+def check_capture(args):
+    """Says what capturing lacks, before minutes of capturing, not after."""
+    if args.step == 'all':
+        ffmpeg()
+    if not sys.platform.startswith('linux') or os.geteuid() == 0:
+        raise SystemExit('Capture on Linux, not as root (the dashboard refuses to run as root).')
+    if not args.runtime.is_file():
+        raise SystemExit(f'No runtime at {args.runtime}: cd nekoserver/runtime && cargo build --release --locked')
+    if not shutil.which('node'):
+        raise SystemExit('Node was not found (and Playwright with its Chromium is needed too).')
+
+
+def capture(args, work):
+    check_capture(args)
+    parts = [part for part in PARTS if part in (args.only or PARTS)]
+    plan = {'parts': parts}
+    if 'terminal' in parts:
+        capture_terminal(work)
+    if 'setup' in parts:
+        capture_setup(work)
+    if 'tour' in parts or 'looks' in parts:
+        plan['dashboard'] = capture_dashboard(args.runtime, work, parts)
+    (work / 'plan.json').write_text(json.dumps(plan, indent=1), encoding='utf-8')
+    print('Frames in', work)
 
 
 def main(argv=None):
@@ -811,26 +904,7 @@ def main(argv=None):
         work = work.resolve()
         work.mkdir(parents=True, exist_ok=True)
         if args.step in ('all', 'capture'):
-            if args.step == 'all':
-                ffmpeg()  # said before minutes of capturing, not after
-            if not sys.platform.startswith('linux') or os.geteuid() == 0:
-                raise SystemExit('Capture on Linux, not as root (the dashboard refuses to run as root).')
-            if not args.runtime.is_file():
-                raise SystemExit(
-                    f'No runtime at {args.runtime}: cd nekoserver/runtime && cargo build --release --locked'
-                )
-            if not shutil.which('node'):
-                raise SystemExit('Node was not found (and Playwright with its Chromium is needed too).')
-            plan = {'stills': [], 'animations': []}
-            parts = set(args.only or PARTS)
-            if 'terminal' in parts:
-                capture_terminal(work, plan)
-            if 'setup' in parts:
-                capture_setup(work, plan)
-            if parts & {'tour', 'looks'}:
-                capture_dashboard(args.runtime, work, plan, parts)
-            (work / 'plan.json').write_text(json.dumps(plan, indent=1), encoding='utf-8')
-            print('Frames in', work)
+            capture(args, work)
         if args.step in ('all', 'assemble'):
             assemble(work)
 

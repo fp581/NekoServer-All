@@ -24,6 +24,16 @@ async function until(page, test, tries = 200) {
   await until(page, test, tries - 1);
 }
 
+/* `work` on each item in turn, never two at once (one browser takes the pictures);
+   their results in the same order. */
+async function inTurn(items, work, results = []) {
+  if (results.length === items.length) {
+    return results;
+  }
+  results.push(await work(items[results.length]));
+  return inTurn(items, work, results);
+}
+
 /* A dashboard tab in its own browser context: the look and theme saved as the Settings
    dialog saves them, the cat still (one frame, not half an animation), the live readings
    and Ask Neko's answer made up. */
@@ -108,17 +118,16 @@ async function act(page, action) {
 }
 
 const KINDS = {
-  async dashboard(browser) {
-    const found = [];
-    for (const shot of job.shots) {
+  dashboard(browser) {
+    return inTurn(job.shots, async shot => {
       const page = await dashboardPage(browser, shot);
       await openRoute(page, shot.route);
       await act(page, shot.action);
       await page.screenshot({ path: shot.out });
-      found.push({ out: basename(shot.out), ...(await spoilers(page)) });
+      const found = { out: basename(shot.out), ...(await spoilers(page)) };
       await page.context().close();
-    }
-    return found;
+      return found;
+    });
   },
   async page(browser) {
     const context = await browser.newContext({
@@ -137,12 +146,12 @@ const KINDS = {
   /* Several local pages (frames put together), one after another: job.pages [{url, out}]. */
   async pages(browser) {
     const page = await browser.newPage({ viewport: { width: job.width, height: job.height }, deviceScaleFactor: 1 });
-    for (const { url, out } of job.pages) {
+    return inTurn(job.pages, async ({ url, out }) => {
       await page.goto(url);
       await page.waitForLoadState('load');
       await page.screenshot({ path: out, fullPage: !!job.full });
-    }
-    return job.pages.map(p => basename(p.out));
+      return basename(out);
+    });
   }
 };
 
