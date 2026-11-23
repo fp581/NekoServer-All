@@ -184,6 +184,9 @@ def apps_set_up(p, config):
     return tuple(app for app in listed if app_wanted(config, app))
 
 
+NOT_TWO_DRIVES = 'Expected two distinct mounted data/media filesystems; refusing to proceed'
+
+
 def the_two_drives(p, a, config):
     """The app SSD's and the media drive's folders: each a mounted drive of its own."""
     root = safe_path(a.data_root or config['data_mount'])
@@ -191,12 +194,12 @@ def the_two_drives(p, a, config):
     # Compared by their real paths (the settings name both): two folders of one drive are
     # refused. A NUL byte names no folder (realpath would raise on it).
     if '\x00' in str(root) or '\x00' in str(media):
-        p.error('Expected two distinct mounted data/media filesystems; refusing to proceed')
+        p.error(NOT_TWO_DRIVES)
     real_root, real_media = os.path.realpath(root), os.path.realpath(media)
     if not (real_root.startswith(os.sep) and real_media.startswith(os.sep)):
-        p.error('Expected two distinct mounted data/media filesystems; refusing to proceed')
+        p.error(NOT_TWO_DRIVES)
     if not mount_ok(root) or not mount_ok(media) or real_root == real_media:
-        p.error('Expected two distinct mounted data/media filesystems; refusing to proceed')
+        p.error(NOT_TWO_DRIVES)
     return root, media
 
 
