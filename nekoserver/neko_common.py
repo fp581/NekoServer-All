@@ -1376,10 +1376,11 @@ def mount_path(value):
         or not re.fullmatch(r'/[A-Za-z0-9_./-]+', str(value))
     ):
         raise RuntimeError(f'Unsafe mount path: {value}')
-    if os.path.normpath(str(value)).startswith('//'):
+    written = os.path.normpath(str(value))
+    if written.startswith('//'):
         # Linux keeps two slashes at the start as written, but the drive's real folder has
         # one, so later checks would take it for a link and stop setup partway.
-        raise RuntimeError(f'Write the drive folder with one "/" at the start, as /srv/nekoserver: {value}')
+        raise RuntimeError(f'Write the drive folder with one "/" at the start, as {written[1:]}: {value}')
     if any(path == Path(top) or Path(top) in path.parents for top in HIDDEN_FROM_SERVICES):
         raise RuntimeError(
             f'Drives cannot be mounted under /home, /root or /run/user ({value}): NekoServer\'s services '

@@ -69,7 +69,7 @@ class SettingsCheckTests(unittest.TestCase):
                     installer.validate_config({**config, key: '//srv/nekoserver-' + key})
                 self.assertEqual(
                     str(caught.exception),
-                    'Write the drive folder with one "/" at the start, as /srv/nekoserver: //srv/nekoserver-' + key,
+                    f'Write the drive folder with one "/" at the start, as /srv/nekoserver-{key}: //srv/nekoserver-{key}',
                 )
 
     def test_one_slash_or_three_are_taken_as_before(self):
