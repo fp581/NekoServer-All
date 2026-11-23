@@ -202,6 +202,9 @@
   /* The review: what Install will do, as setup's server says it from the settings. */
   function showReview(review) {
     $('review-title').textContent = review.title;
+    // A server set up already is changed, not installed: these say so (explanations.py).
+    if (review.intro) $('review-intro').textContent = review.intro;
+    if (review.note) $('choose-hint').textContent = review.note;
     if (!$('start').disabled) $('start').textContent = review.button;
     startLabel = review.button;
     $('review-sections').replaceChildren(
