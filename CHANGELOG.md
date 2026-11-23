@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.52.4 — (in progress)
+
+Fixes for what the round of tests of 0.52.2 found that 0.52.1 did too.
+
+### Fixed
+- **An Ask Neko answer that was cut off says so**: "Neko's answer was cut off: it reached its length limit before it ended; ask again about one thing at a time". It said "Neko is not available right now", though Neko had answered and its text stayed on the page.
+- **Setup's music step names Lidarr only while Lidarr is set up**, and a desktop shortcut it takes away is said once, not twice.
+
 ## v0.52.3 — 2026-11-23
 
 Fixes found by testing 0.52.2 against 0.52.1, old against new, on a test VM, with the real runtime and in a browser. The server does what 0.52.1 did, as 0.52.2 meant to; what changes is said below.
