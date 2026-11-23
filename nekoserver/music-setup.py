@@ -56,7 +56,11 @@ def main(argv=None):
         del password
         try:
             result = music_client.save(config, value)
-        except (OSError, ValueError, RuntimeError):
+        except RuntimeError as exc:
+            # The check's own words say what to change (they hold no secret).
+            print(f'Listener verification failed: {exc}. No credential was saved.')
+            return 2
+        except (OSError, ValueError):
             print('Listener verification failed; no credential was saved. Check the account and local music service.')
             return 2
     else:
