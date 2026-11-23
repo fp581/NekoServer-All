@@ -437,10 +437,10 @@ class NightlyBackupTests(unittest.TestCase):
                 'CREATE ROLE "oc_alice" LOGIN PASSWORD ' + r"'a''b\c$neko:y'" + '; END IF; END$neko$;\n',
             )
             self.assertEqual((stage / 'role.sql').stat().st_mode & 0o777, 0o600)
+            weird = php.replace(b':y', b'$:y').replace(b'$neko:', b'$neko$')
+            elsewhere = stage / 'x'
             with self.assertRaisesRegex(RuntimeError, 'cannot be given to psql'):
-                nextcloud_restore.role_sql(
-                    stage / 'x', 'oc_alice', php.replace(b':y', b'$:y').replace(b'$neko:', b'$neko$')
-                )
+                nextcloud_restore.role_sql(elsewhere, 'oc_alice', weird)
 
     def test_the_newest_of_nightly_backup_weekly_copy_and_monthly_snapshot_is_used(self):
         cases = {
