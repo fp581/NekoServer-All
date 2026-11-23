@@ -89,6 +89,8 @@ pub trait Catalogue {
     fn copy(&self, record_id: &str) -> Res<Option<CopyRow>>;
     fn orphans(&self, volume_id: &str) -> Res<Vec<OrphanRow>>;
     fn version_count(&self) -> Res<u64>;
+    /// Every file (source, path) with a version that has a healthy copy on a card.
+    fn kept_files(&self) -> Res<Vec<(String, String)>>;
 }
 
 #[cfg_attr(not(test), allow(dead_code))] // the catalogue contract in memory, for the tests
@@ -200,5 +202,20 @@ impl Catalogue for Memory {
     }
     fn version_count(&self) -> Res<u64> {
         Ok(self.versions.len() as u64)
+    }
+    fn kept_files(&self) -> Res<Vec<(String, String)>> {
+        let mut files: Vec<(String, String)> = self
+            .versions
+            .iter()
+            .filter(|v| {
+                self.copies
+                    .iter()
+                    .any(|c| c.version_id == v.version_id && c.state.protects())
+            })
+            .map(|v| (v.source_id.clone(), v.path.clone()))
+            .collect();
+        files.sort();
+        files.dedup();
+        Ok(files)
     }
 }
