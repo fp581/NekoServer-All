@@ -112,6 +112,20 @@ class SetupWindowTests(unittest.TestCase):
         self.assertIn('This setup window is open somewhere else', text)
 
 
+class NoSudoTests(unittest.TestCase):
+    def test_the_readme_says_what_to_do_before_the_first_sudo(self):
+        """1.0 round T5-01: Debian installed with a root password has no sudo, and the
+        README's first commands stopped with sudo's own "command not found" or "not in the
+        sudoers file". Before the first command it says what to do, in install.sh's words."""
+        readme = (ROOT.parent / 'README.md').read_text()
+        before = readme.split('## Install')[1].split('```bash')[0]
+        for words in ('command not found', 'not in the sudoers file', 'su -', 'apt install sudo', 'usermod -aG sudo'):
+            self.assertIn(words, before)
+        script = (ROOT / 'install.sh').read_text()
+        for words in ('su -', 'apt install sudo', 'usermod -aG sudo', 'log out, log in again'):
+            self.assertIn(words, script)
+
+
 class OptionsTests(unittest.TestCase):
     """install.sh --help ended "README.md shows when each is needed", and README.md named
     one of the twelve options."""
