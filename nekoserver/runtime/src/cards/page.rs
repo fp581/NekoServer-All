@@ -101,6 +101,17 @@ pub fn judge(drive: &Drive, mount: &Path, cfg: &Value, set: Option<&(String, Str
         return Verdict::Refused("Something else is mounted on this card's folder: take the card out and put it in again.".into());
     }
     match drives::identity_at(mount) {
+        // A NekoBackup folder copied onto another drive names the set, but not this
+        // drive's filesystem: it is never written to as the card (cards_of_set).
+        Ok(Some(id))
+            if set.is_some_and(|(set_id, _)| *set_id == id.backup_set_id)
+                && id.filesystem_uuid != drive.uuid =>
+        {
+            return Verdict::Refused(format!(
+                "This drive holds a copy of card {}'s NekoBackup folder, not card {} itself (the folder was set up on another card): NekoServer leaves it as it is. Card {} is the one the server writes to; this copy can still be read with the tool in it (CARD-RECOVERY.md).",
+                id.sequence_number, id.sequence_number, id.sequence_number
+            ));
+        }
         Ok(Some(id)) if set.is_some_and(|(set_id, _)| *set_id == id.backup_set_id) => {
             return Verdict::Ours(id.sequence_number)
         }
@@ -376,9 +387,21 @@ mod tests {
         // A card of a set: ours, or another set's (testkit's set is SET).
         let (card, _) = testkit::card(&s, 1);
         let ours = (testkit::SET.to_string(), "Example set".to_string());
+        let enrolled_on = Drive {
+            uuid: testkit::fs_uuid(1),
+            ..drive(&card)
+        };
         assert_eq!(
-            judge(&drive(&card), &card, &cfg, Some(&ours)),
+            judge(&enrolled_on, &card, &cfg, Some(&ours)),
             Verdict::Ours(1)
+        );
+        // The same NekoBackup folder on another drive (copied there): a copy, refused.
+        let Verdict::Refused(why) = judge(&drive(&card), &card, &cfg, Some(&ours)) else {
+            panic!()
+        };
+        assert!(
+            why.starts_with("This drive holds a copy of card 1"),
+            "{why}"
         );
         let theirs = (testkit::OTHER_SET.to_string(), "Mine".to_string());
         let Verdict::Refused(why) = judge(&drive(&card), &card, &cfg, Some(&theirs)) else {

@@ -316,10 +316,11 @@ fn take_back(place: &Place, cfg: &Value, task: &Task) -> std::result::Result<Str
     );
     let files: usize = report.imported.values().sum();
     let mut words = format!(
-        "{} taken back: {} on {} known again. The next run writes on (tonight, or now with Write to the card now).",
+        "{} taken back: {} on {} {} known again. The next run writes on (tonight, or now with Write to the card now).",
         cards_words(&numbers),
         common::plural(files as u64, "file", "files"),
-        if numbers.len() == 1 { "it is" } else { "them are" }
+        if numbers.len() == 1 { "it" } else { "them" },
+        if files == 1 { "is" } else { "are" }
     );
     if !report.damaged.is_empty() {
         words.push_str(&format!(
