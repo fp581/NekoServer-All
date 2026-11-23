@@ -7,6 +7,9 @@ The first stable release, built on 0.52.3.
 ### Changed
 - **The release is stable, not a beta**: tagged `v1.0.0`, not marked Pre-release on GitHub. README, SUPPORT.md and MONTHLY-MAINTENANCE.md no longer say every release is a beta. The Updates page still offers betas by default (`maintenance.nekoserver_channel` `"beta"`); `"stable"` offers stable releases only.
 
+### Tests
+- **Tests of the setup driver's own parts** (split out in 0.52.2), each pinning what it does.
+
 ## v0.52.3 — 2026-11-23
 
 Fixes found by testing 0.52.2 against 0.52.1, old against new, on a test VM, with the real runtime and in a browser: what 0.52.2 did differently, and things 0.52.1 already did wrong. It also adds two buttons to the Backup cards page. What changes is said below.
