@@ -37,6 +37,7 @@ CONTINUE, CHANGE, UPDATE, RESTORE = 'continue', 'change', 'update', 'restore'
 SETUP, UPGRADE, DRIVE_MOVE = 'setup', 'upgrade', 'drive_move'
 
 MIGRATE_JOURNAL = Path('/etc/nekoserver-backups/migrate.json')  # migrate.py JOURNAL
+DATA_MOUNT = '/srv/nekoserver'  # the app drive's folder when the settings name none (config.json)
 BY_UUID = Path('/dev/disk/by-uuid')  # each connected filesystem by its UUID (storage.BY_UUID)
 DRIVE_ROLES = ('data_ssd', 'media_hdd')  # the two drives of the settings (storage.DRIVES)
 JOURNALS = ((UPGRADE, RECOVERY['upgrade'][0]), (DRIVE_MOVE, MIGRATE_JOURNAL))
@@ -83,7 +84,7 @@ def app_drive(config):
     """The folder of the app drive the settings name, every link followed, or None when
     they name none that can be used."""
     try:
-        return Path(os.path.realpath(mount_path(config.get('data_mount') or '/srv/nekoserver')))
+        return Path(os.path.realpath(mount_path(config.get('data_mount') or DATA_MOUNT)))
     except (RuntimeError, ValueError, TypeError, OSError):
         return None
 

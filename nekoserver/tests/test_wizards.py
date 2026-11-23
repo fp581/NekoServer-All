@@ -140,6 +140,7 @@ class WizardFlowTests(unittest.TestCase):
                 units=Path(self.tmp.name) / 'no-units',
                 default_state=default_state,
                 journals=(),
+                by_uuid=Path(self.tmp.name) / 'no-drives',
             )
 
         found = mock.patch.object(wizard, 'what_is_here', here)
@@ -220,6 +221,8 @@ class WizardFlowTests(unittest.TestCase):
     def saved(self, path, uuid):
         settings = json.loads((ROOT / 'config.json').read_text())
         settings['storage']['data_ssd']['uuid'] = uuid
+        # This test's SSD, never the real /srv/nekoserver of the PC the tests run on.
+        settings['data_mount'] = str(self.root / 'ssd')
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(settings))
 
