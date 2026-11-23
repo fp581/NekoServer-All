@@ -54,7 +54,7 @@ Not sure? Start the recovery menu anyway. Choosing something there changes nothi
 Good to know:
 
 - **A file that could not be restored** (damaged or missing on that backup) is named at the end and in `NOT-RESTORED.txt` in the restore folder. Try the other backup (HDD or USB) for it.
-- **Steam and Samba settings** come back in folders called `source1`, `source2` and so on. `restore-report.json` in the restore folder says which original folder each one is. To read it: `sudo cat /mnt/nekoserver-media/restored/FOLDER/restore-report.json`, with the folder name the menu showed in place of `FOLDER`.
+- **Steam and Samba settings** come back in folders called `source0`, `source1` and so on. `restore-report.json` in the restore folder says which original folder each one is. To read it: `sudo cat /mnt/nekoserver-media/restored/FOLDER/restore-report.json`, with the folder name the menu showed in place of `FOLDER`.
 - **The HDD is missing or broken?** Then the menu asks you to type a folder on another drive for the restore, so your system disk never fills up.
 - **A monthly snapshot** holds the settings and databases of every app, and the app versions they were made with. It does not hold Linux itself, your photos, your Nextcloud files, movies, shows or music. The menu looks at which of those app versions are already on this PC. Only when some are missing does it ask whether to put them back too, and the review shows the answer.
 

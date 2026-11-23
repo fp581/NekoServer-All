@@ -46,7 +46,7 @@ read some other folder. A desktop mounts a card under `/media` or `/run/media` b
 
 ## 2. Look at the card
 
-Run these from the card's top folder (or add `--card /mnt/card` from anywhere):
+Run these from the card's top folder (from any other folder, use the tool's full path with `--card` right after it, before the command word: `python3 /mnt/card/NekoBackup/tools/neko-restore.py --card /mnt/card info`):
 
 ```bash
 python3 NekoBackup/tools/neko-restore.py info            # which card this is, how many files

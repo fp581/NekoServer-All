@@ -17,7 +17,7 @@ Type 1 or 2, then press Enter. Enter alone takes the first.
 
 With 1 you never type or remember a password: "To see one app's login", below, shows any of them later.
 
-With option 2, each app asks whether to generate its login or enter it yourself. Custom passwords are typed with hidden input and confirmed a second time. New passwords must be 12-128 characters with no control characters. Usernames use letters, digits, underscores or hyphens and begin with a letter. Immich and Seerr require an email-shaped login instead of a conventional username.
+With option 2, you type a username and password for every new app (nothing is generated for you), then the dashboard PIN (6 to 8 digits, or Enter for none) and the shared folders' password. Custom passwords are typed with hidden input and confirmed a second time. New passwords must be 12-128 characters with no control characters. Usernames use letters, digits, underscores or hyphens and begin with a letter. Immich and Seerr require an email-shaped login instead of a conventional username.
 
 Automatic usernames use Python secrets.token_hex; automatic passwords contain 32 characters generated with secrets.choice (cryptographically secure operating-system randomness). Every app receives its own generated credentials. Generated email logins end in @server.invalid; they are usable local login identifiers but cannot receive password-recovery emails. Choose your actual email manually if you want recovery email later and configure mail in the app.
 

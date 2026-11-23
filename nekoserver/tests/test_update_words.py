@@ -64,6 +64,12 @@ class SourcesSaidTests(unittest.TestCase):
             asked = dict(explanations.review(none))['Setup stops to ask you']
         self.assertFalse([line for line in asked if 'download sources' in line])
 
+    def test_a_first_install_says_the_backup_password_is_asked(self):
+        """The 0.52.2 docs round (T4b-08): the monthly-backup step stops for it after the approval."""
+        line = 'A backup password for the backup of your app passwords, typed twice'
+        self.assertIn(line, sections(False)['Setup stops to ask you'])
+        self.assertNotIn(line, sections(True)['Setup stops to ask you'])
+
 
 if __name__ == '__main__':
     unittest.main()
