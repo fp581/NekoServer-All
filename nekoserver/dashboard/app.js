@@ -2596,7 +2596,10 @@ function cardsTaskLine(task) {
   }
   const check = task.kind === 'check';
   if (task.running === true) {
-    const doing = check ? 'Checking card' + (numeric(task.card) ? ' ' + task.card : '') : 'Taking the cards back';
+    let doing = 'Taking the cards back';
+    if (check) {
+      doing = numeric(task.card) ? 'Checking card ' + task.card : 'Checking card';
+    }
     const far =
       numeric(task.total) && task.total > 0 ? ': ' + count(task.done) + ' of ' + plural(task.total, 'file') : '';
     return { line: doing + far + '…', running: true, failed: false };
@@ -2658,6 +2661,9 @@ async function startCardsTask(op, body) {
     return;
   }
   toast(controlMessage(answer));
+  // Refused: most often the card was taken out or swapped since the last look, so the
+  // list shows what is plugged in now.
+  await lookForCards(true);
 }
 /* A plain question before a check or a take-back, Cancel first. */
 function cardsConfirm(title, words, go, run) {
@@ -2784,11 +2790,12 @@ function renderCards() {
   const found = offers.map(([d, offer]) => {
     const row = el('article', 'card');
     row.append(el('strong', '', offer.name), el('p', offer.action || offer.check ? '' : 'reason', offer.said));
-    const act = offer.action
-      ? button(offer.action, () => enrolDialog(d, next), 'button small')
-      : offer.check
-        ? button('Check this card', () => checkDialog(d, offer.check), 'button small secondary')
-        : null;
+    let act = null;
+    if (offer.action) {
+      act = button(offer.action, () => enrolDialog(d, next), 'button small');
+    } else if (offer.check) {
+      act = button('Check this card', () => checkDialog(d, offer.check), 'button small secondary');
+    }
     if (act) {
       act.disabled = busy;
       row.append(act);
@@ -5981,27 +5988,31 @@ function mediaProgress(p) {
     ')';
   return [bar, el('p', 'media-progress-said', said)];
 }
+/* The Media folders page on a device that is not signed in: nothing of the folders. */
+function renderMediaLocked() {
+  MEDIA.answer = null;
+  MEDIA.asked = false;
+  MEDIA.refused = null;
+  MEDIA.formKey = '';
+  put('media-add', []);
+  const pin = state.control?.access?.pin_set;
+  if (state.controlError) {
+    // Unlocking needs the control service too: no PIN asked for when it can't be reached.
+    put('media-folders', [hint(codeLine(state.controlError))]);
+    return;
+  }
+  put('media-folders', [
+    hint(
+      pin === false
+        ? 'Media folders need a PIN. Run setup again in a terminal on the server to choose one.'
+        : 'Your media folders are shown and changed with your PIN, on every device (the server too).'
+    ),
+    pin === false ? el('span') : button('Unlock media folders', mediaUnlock, 'button small')
+  ]);
+}
 function renderMedia() {
   if (!signedIn()) {
-    MEDIA.answer = null;
-    MEDIA.asked = false;
-    MEDIA.refused = null;
-    MEDIA.formKey = '';
-    put('media-add', []);
-    const pin = state.control?.access?.pin_set;
-    if (state.controlError) {
-      // Unlocking needs the control service too: no PIN asked for when it can't be reached.
-      put('media-folders', [hint(codeLine(state.controlError))]);
-      return;
-    }
-    put('media-folders', [
-      hint(
-        pin === false
-          ? 'Media folders need a PIN. Run setup again in a terminal on the server to choose one.'
-          : 'Your media folders are shown and changed with your PIN, on every device (the server too).'
-      ),
-      pin === false ? el('span') : button('Unlock media folders', mediaUnlock, 'button small')
-    ]);
+    renderMediaLocked();
     return;
   }
   if (!MEDIA.asked) {
