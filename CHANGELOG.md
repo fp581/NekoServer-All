@@ -20,11 +20,12 @@ The first stable release, built on 0.52.3.
 - **Backup cards: files gone from the server still count as on the cards.** With the photos gone from the server (a dead HDD, the library deleted), the dashboard said "0 files on the cards" while the cards held every one; files the catalogue holds a healthy copy of now count too.
 - **Backup cards: a take-back's damaged copies are said in plain words**: "1 copy on the cards no longer matches its checksum: that file is copied again from the server".
 - **RECOVERY.md's Nextcloud database restore brings Nextcloud back** (blocker T1-R2). Loaded as `nextcloud`, as it said, every table belonged to that account, while Nextcloud signs in with an account of its own (`dbuser` in its config.php, `oc_admin` for example): "permission denied for table oc_appconfig", and Nextcloud and the next setup run failed. A step of its own now reads that name; the database is made for that account and the copy loaded as it, stopping at the first error.
+- **After a whole-server restore, Nextcloud takes uploads again** (blocker T1-R3). With Nextcloud's database copy put back on new drives, a restored account had no `files` folder, so Nextcloud refused its uploads while setup said PASS. Setup's Nextcloud step now makes the missing folder of each account that has signed in, and scans it; a folder that is there is never touched, and a new account keeps Nextcloud's welcome files.
 
 ### Tests
 - **Tests of the setup driver's own parts** (split out in 0.52.2), the setup report's folder-access rows, the mistyped-settings warnings and the job-time check, each pinning what it does.
 - **Tests of the home gateway's set-up, start and Tailscale routes, and of what the snapshot verify and restore refuse** (mutation testing found them unpinned).
-- **The tests no longer depend on the PC they run on**: nine tests read the real `/srv/nekoserver` and failed on a PC with NekoServer installed; each uses folders of its own now.
+- **The tests no longer depend on the PC they run on**: ten tests read the real `/srv/nekoserver` and failed on a PC with NekoServer installed; each uses folders of its own now.
 
 ## v0.52.3 — 2026-11-23
 
