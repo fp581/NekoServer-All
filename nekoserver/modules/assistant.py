@@ -367,7 +367,7 @@ def choices(total, room, cores):
     cpus = max(1, (cores or 1) // 2)
     lines = [
         f'This PC has {total:.0f} GB of memory: {room_said(total, room)}.',
-        '  0) No assistant (press Enter)',
+        '  0) No assistant',
     ]
     answers = {'0': 'none', '': 'none'}
     for number, (model, download, need, answers_like) in enumerate(usable, 1):

@@ -20,7 +20,7 @@ When the PC can have it, setup shows a choice:
 ```
 === Optional: AI assistant ("Ask Neko" in the dashboard) ===
 This PC has 16 GB of memory: 9.5 GB free with your apps running, and keeps 3.2 GB for the apps to grow into, which leaves 6.3 GB for the assistant.
-  0) No assistant (press Enter)
+  0) No assistant
   1) qwen3.5:2b-q4_K_M: short, simple answers, the quickest, but the weakest.
      Downloads 1.9 GB. While it answers it uses about 3 GB of your 16 GB
      (its limit), and up to 4 of your 8 processor cores, so a film Jellyfin converts or
@@ -28,7 +28,8 @@ This PC has 16 GB of memory: 9.5 GB free with your apps running, and keeps 3.2 G
   2) qwen3.5:4b (recommended): good everyday answers.
      ...
   Not possible here: qwen3.5:9b needs about 9 GB; this PC has 9.5 GB free with your apps running, and keeps 3.2 GB for the apps to grow into, which leaves 6.3 GB for the assistant.
-Which one? (0-2, Enter for no assistant):
+Which AI assistant do you want?
+Type its number, then press Enter. Enter alone chooses qwen3.5:4b.
 ```
 
 | Model | Download | Memory while it answers (its limit) | Answers |
