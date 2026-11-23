@@ -5,6 +5,7 @@
 Fixes for what the round of tests of 0.52.2 found that 0.52.1 did too.
 
 ### Fixed
+- **Ask Neko's model question says once what Enter does.** The list said "0) No assistant (press Enter)" while the line under it said Enter keeps the model, when the first page's Ask Neko switch was on; now only the line under the list says what Enter alone chooses. ASSISTANT.md shows the question as it is.
 - **An Ask Neko answer that was cut off says so**: "Neko's answer was cut off: it reached its length limit before it ended; ask again about one thing at a time". It said "Neko is not available right now", though Neko had answered and its text stayed on the page.
 - **Setup's music step names Lidarr only while Lidarr is set up**, and a desktop shortcut it takes away is said once, not twice.
 - **Setup's review says when no connected drive can be the offline backup**: "Offline backup: none yet, as no drive connected now can be one. Connect a drive you can unplug and run  sudo bash install.sh  again to choose it". It said nothing about the offline backup then.
