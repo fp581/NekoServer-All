@@ -7278,10 +7278,24 @@ mod tests {
                 let body = &source[source.find(entry).unwrap()..];
                 let body = &body[..body.find("\n}\n").unwrap()];
                 let checked = body.find("backup::coordinate(").expect(file);
-                let resumed = body.find("resume()?").expect(file);
+                let resumed = body.find("resume()").expect(file);
                 assert!(checked < resumed, "{file} {entry}");
             }
         }
+        // Nextcloud, paused by the nightly backup (1.0.0, C-01), is started again under the
+        // same lock, and an app the resume could not start still fails the resume.
+        let source = include_str!("app_snapshot.rs");
+        let body = &source[source.find("pub fn resume_command(").unwrap()..];
+        let body = &body[..body
+            .find(
+                "
+}
+",
+            )
+            .unwrap()];
+        let checked = body.find("backup::coordinate(").unwrap();
+        assert!(checked < body.find("backup::resume_cloud_held(").unwrap());
+        assert!(body.contains("common::first_error(apps, cloud)?;"));
     }
     #[test]
     fn a_clock_jump_never_deletes_the_copy_just_made_or_hides_a_stale_one() {
