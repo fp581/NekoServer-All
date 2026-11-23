@@ -266,14 +266,14 @@ const ERRORS = {
   E20: ['Live readings unavailable', 'Hardware readings come back by themselves. If not, restart the dashboard.'],
   E21: [
     'The control service is not running',
-    'It handles the PIN, fans and lights, app restarts and Ask Neko. Help shows the command to check it.'
+    'It runs the PIN, fans and lights, and every app change and Ask Neko. Help shows the command to check it.'
   ],
   E40: ['Page not found', 'Use the menu to go back.'],
   E41: ['Open the dashboard from its own address', 'Use the address setup gave you (this computer or Tailscale).'],
   E42: ['Request not supported', 'Reload the page.'],
   E43: [
     'Enter your PIN to change this',
-    'Fans and lights need it on other devices; restarting or closing apps on all of them.'
+    'Fans and lights need it on other devices; apps, updates, Ask Neko, media and cards on all of them.'
   ],
   E44: [
     'Wrong PIN',
