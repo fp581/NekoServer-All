@@ -10,7 +10,7 @@
 # It fails when a test fails, and also when a browser test was skipped: a skip here
 # means the browser was not found, which is the thing this job is for.
 set -o pipefail
-if [ "$(id -u)" = 0 ]; then
+if [[ "$(id -u)" = 0 ]]; then
   echo "run.sh: run this as a user other than root" >&2
   exit 2
 fi
