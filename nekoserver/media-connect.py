@@ -1000,7 +1000,7 @@ def mounted_ssd(parser, args, config):
     root = Path(args.data_root or config['data_mount'])
     real = os.path.realpath(root)
     if not real.startswith(os.sep) or real != os.path.abspath(root):
-        parser.error('Data SSD must be mounted at --data-root')
+        parser.error('Data SSD must be mounted at --data-root (no links in the path)')
     if not os.path.isdir(real) or not os.path.ismount(real):
         parser.error('Data SSD must be mounted at --data-root')
     return Path(real)

@@ -3891,3 +3891,44 @@ class OwnerChangeTests(unittest.TestCase):
         self.assertEqual(
             [f for f in found if not f.startswith(('neko_common.py', 'snapshot_restore.py', 'recovery_wizard.py'))], []
         )
+
+
+class PlainRefusalTests(unittest.TestCase):
+    """0.52.2 test round, T5: the stricter path checks of 0.52.2 say in one line what to change."""
+
+    def load(self, name, filename):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(name, ROOT / filename)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_account_setup_apply_names_the_json_rule(self):
+        """Run as a command, a RuntimeError here only said "Account setup incomplete"."""
+        module = self.load('account_setup_cli', 'account-setup.py')
+        with tempfile.TemporaryDirectory() as d:
+            settings = Path(d) / 'settings.conf'
+            settings.write_text('{"data_mount": "/srv/ssd"}')
+            said = io.StringIO()
+            with (
+                mock.patch.object(sys, 'argv', ['account-setup.py', '--apply', '--config', str(settings)]),
+                mock.patch.object(module.os, 'geteuid', return_value=0, create=True),
+                mock.patch.object(sys.stdin, 'isatty', return_value=True),
+                mock.patch.object(module, 'verify_storage', side_effect=AssertionError('read the file')),
+                mock.patch('sys.stderr', said),
+            ):
+                self.assertEqual(module.main(), 2)
+        self.assertEqual(said.getvalue(), f'Nothing was set up: Settings file must be a .json file: {settings}\n')
+
+    def test_media_connect_says_a_link_in_the_data_root_is_the_cause(self):
+        module = self.load('media_connect_cli', 'media-connect.py')
+        parser = mock.Mock()
+        parser.error.side_effect = SystemExit(2)
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / 'real' / 'ssd').mkdir(parents=True)
+            (Path(d) / 'link').symlink_to(Path(d) / 'real')
+            args = mock.Mock(data_root=str(Path(d) / 'link' / 'ssd'))
+            with self.assertRaises(SystemExit):
+                module.mounted_ssd(parser, args, {})
+        parser.error.assert_called_once_with('Data SSD must be mounted at --data-root (no links in the path)')
