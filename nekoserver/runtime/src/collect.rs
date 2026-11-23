@@ -5136,18 +5136,28 @@ mod os_tests {
     #[test]
     fn a_usb_copy_without_the_password_list_says_so_on_the_page() {
         let said = crate::backup::NO_PASSWORD_LIST.to_string();
-        let alone = crate::backup::incomplete(None, None, None, Some(said.clone())).unwrap();
+        let alone = crate::backup::incomplete(None, None, None, Some(said.clone()), None).unwrap();
         assert_eq!(partial_reason(&alone), capitalised(&said));
         let with_database = crate::backup::incomplete(
             None,
             Some("no Immich database copy was found".into()),
             None,
             Some(said),
+            None,
         )
         .unwrap();
         let shown = partial_reason(&with_database);
         assert!(shown.starts_with("No Immich database copy"), "{shown}");
         assert!(shown.contains("sudo bash install.sh"), "{shown}");
+    }
+    /// 1.0.0 (T1-R4): app settings that did not fit on the USB drive, or could not be
+    /// protected, make the copy incomplete, and the page says so in plain words.
+    #[test]
+    fn app_settings_left_off_the_usb_drive_are_said_on_the_page() {
+        let said = crate::usb_app_settings::NO_KEY.to_string();
+        let report = crate::backup::incomplete(None, None, None, None, Some(said.clone())).unwrap();
+        assert_eq!(report["reason"], "The USB backup is incomplete");
+        assert_eq!(partial_reason(&report), capitalised(&said));
     }
     /// Deep check plan 276: what a backup left out was cut at exactly 300 characters, in
     /// the middle of a word. The Nextcloud encryption advice (316) read "or keep your own
@@ -5155,7 +5165,7 @@ mod os_tests {
     #[test]
     fn what_a_backup_left_out_is_never_cut_mid_word() {
         let said = crate::backup::CLOUD_ENCRYPTED.to_string();
-        let cloud = crate::backup::incomplete(None, None, Some(said.clone()), None).unwrap();
+        let cloud = crate::backup::incomplete(None, None, Some(said.clone()), None, None).unwrap();
         assert_eq!(partial_reason(&cloud), capitalised(&said));
         let long = format!("USB check: {}", "the drive would not mount ".repeat(20));
         let shown = partial_reason(&json!([long]));

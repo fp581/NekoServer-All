@@ -5281,7 +5281,7 @@ fn joined(problems: impl Iterator<Item = String>) -> Option<String> {
 /// database copy, a source that could not be copied, the password list. The dashboard
 /// shows each one (collect::partial_reason); it once missed the password list's and said
 /// only "Incomplete; see the job's report".
-pub(crate) const INCOMPLETE_PARTS: [&str; 3] = ["database", "source", "passwords"];
+pub(crate) const INCOMPLETE_PARTS: [&str; 4] = ["database", "source", "passwords", "app_settings"];
 /// The files part of an incomplete report when no file was left out.
 fn none_left_out() -> Value {
     json!({"in_use":0,"unsupported_names":0,"files":[]})
@@ -5315,14 +5315,21 @@ pub(crate) fn incomplete(
     database: Option<String>,
     source: Option<String>,
     passwords: Option<String>,
+    app_settings: Option<String>,
 ) -> Option<Value> {
-    if files.is_none() && database.is_none() && source.is_none() && passwords.is_none() {
+    if files.is_none()
+        && database.is_none()
+        && source.is_none()
+        && passwords.is_none()
+        && app_settings.is_none()
+    {
         return None;
     }
     let mut out = files.unwrap_or_else(none_left_out);
-    for (key, problem) in INCOMPLETE_PARTS
-        .into_iter()
-        .zip([database, source, passwords])
+    for (key, problem) in
+        INCOMPLETE_PARTS
+            .into_iter()
+            .zip([database, source, passwords, app_settings])
     {
         if let Some(problem) = problem {
             out[key] = json!(problem);
@@ -5891,6 +5898,23 @@ fn copy_onto_usb(run: &UsbRun) -> Result<Option<Value>> {
         ],
         dest,
     )?;
+    run.still()?;
+    // The apps' own settings last: the photos and the other backups come first when the
+    // drive is short of room. A copy that fails makes the backup incomplete, it does not
+    // stop the checks below.
+    common::stage("copying the app settings to the USB drive");
+    let app_settings_problem = match crate::usb_app_settings::copy_newest(
+        &run.media,
+        dest,
+        Path::new(crate::maintenance::SECRETS_KEY_DIR),
+        &run.data.join("backups/maintenance-work"),
+    ) {
+        Ok(problem) => problem,
+        Err(e) => Some(format!(
+            "the app settings were not copied to the USB drive ({e})"
+        )),
+    };
+    run.still()?;
     validate_external(dest, &run.uuid)?;
     let cloud_copy = cloud.copy;
     if let Some(photos) = &photos {
@@ -5948,6 +5972,7 @@ fn copy_onto_usb(run: &UsbRun) -> Result<Option<Value>> {
         database_problem,
         source_problem,
         passwords_problem,
+        app_settings_problem,
     ))
 }
 /// What the Nextcloud part of the USB copy did: its files' copy, and what makes the
@@ -6551,8 +6576,8 @@ mod tests {
     }
     #[test]
     fn a_missing_nextcloud_folder_makes_the_backup_incomplete() {
-        assert!(incomplete(None, None, None, None).is_none());
-        let partial = incomplete(None, None, Some(CLOUD_MISSING.into()), None).unwrap();
+        assert!(incomplete(None, None, None, None, None).is_none());
+        let partial = incomplete(None, None, Some(CLOUD_MISSING.into()), None, None).unwrap();
         assert_eq!(partial["source"], CLOUD_MISSING);
         assert_eq!(partial["reason"], "The USB backup is incomplete");
     }
@@ -7065,9 +7090,9 @@ mod tests {
             problem.contains("no record of its Immich version"),
             "{problem}"
         );
-        let report = incomplete(None, Some(problem), None, None).unwrap();
+        let report = incomplete(None, Some(problem), None, None, None).unwrap();
         assert!(report["database"].as_str().unwrap().contains("no record"));
-        assert_eq!(incomplete(None, None, None, None), None);
+        assert_eq!(incomplete(None, None, None, None, None), None);
         let _ = fs::remove_dir_all(root);
     }
     #[test]
@@ -8814,7 +8839,7 @@ mod tests {
         fs::create_dir_all(cloud.join("files_encryption/OC_DEFAULT_MODULE")).unwrap();
         assert!(cloud_encrypted(&cloud));
         // The job's report says so, in the words the dashboard shows.
-        let report = incomplete(None, None, Some(CLOUD_ENCRYPTED.to_string()), None).unwrap();
+        let report = incomplete(None, None, Some(CLOUD_ENCRYPTED.to_string()), None, None).unwrap();
         assert_eq!(report["reason"], "The USB backup is incomplete");
         assert!(report["source"]
             .as_str()
