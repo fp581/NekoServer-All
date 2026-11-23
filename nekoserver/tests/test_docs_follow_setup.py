@@ -126,6 +126,46 @@ class NoSudoTests(unittest.TestCase):
             self.assertIn(words, script)
 
 
+class FirstReadTests(unittest.TestCase):
+    """1.0 round T5-02 to T5-05: what a first-time reader of the README is told matches
+    what setup and install.sh do."""
+
+    def readme(self):
+        return (ROOT.parent / 'README.md').read_text()
+
+    def test_the_no_sudo_passage_covers_arch_too(self):
+        # T5-02: Arch can be installed without sudo too; there it is the wheel group.
+        before = self.readme().split('## Install')[1].split('```bash')[0]
+        for words in ('pacman -S sudo', 'usermod -aG wheel', '%wheel ALL=(ALL:ALL) ALL'):
+            self.assertIn(words, before)
+
+    def test_ask_nekos_model_is_among_what_stops_setup_after_the_approval(self):
+        # T5-03: with Ask Neko switched on, its model is asked during the run.
+        self.assertIn('def ask_model(', (ROOT / 'modules' / 'assistant.py').read_text())
+        stops = self.readme().split('After the approval only these stop it')[1].split(chr(10))[0]
+        self.assertIn('Ask Neko', stops)
+
+    def test_the_shared_folders_are_said_to_need_something_to_share(self):
+        # T5-04: with no app, or Nextcloud alone, the shares step shares nothing.
+        self.assertIn('def anything_to_share(', (ROOT / 'modules' / 'samba.py').read_text())
+        for doc in (ROOT.parent / 'README.md', ROOT / 'README.md', ROOT / 'GUIDED-SETUP.md'):
+            said = [
+                line
+                for line in doc.read_text().splitlines()
+                if 'shared folders' in line and ('lways set up' in line or 'set up either way' in line)
+            ]
+            self.assertTrue(said, doc)
+            for line in said:
+                self.assertIn('something to share', line, doc)
+
+    def test_the_pc_is_said_to_be_intel_or_amd(self):
+        # T5-05: install.sh refuses anything but x86_64 (an ARM board, say).
+        self.assertIn('[[ "$machine" != x86_64 ]]', (ROOT / 'install.sh').read_text())
+        need = self.readme().split('## What you need')[1].split(chr(10) + '- ')[1]
+        for words in ('64-bit Intel or AMD', 'x86_64', 'ARM'):
+            self.assertIn(words, need)
+
+
 class OptionsTests(unittest.TestCase):
     """install.sh --help ended "README.md shows when each is needed", and README.md named
     one of the twelve options."""
