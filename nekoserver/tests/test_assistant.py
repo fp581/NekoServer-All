@@ -461,8 +461,9 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(slept, [15, 15])
         self.assertEqual(assistant.fits(assistant.memory_for_model(total, available)), [assistant.MODELS[0]])
         self.assertEqual(len(said), 1)
-        # The step: the question comes, with the settled numbers.
+        # The step, in the run that sets Photos up: the question comes, with the settled numbers.
         ctx = context({'assistant': {'wanted': True}})
+        ctx.plan, ctx.previous = ['photos', 'assistant'], {}
         readings = iter([(8, 4.6), (8, 5.4)])
         with (
             Ready(self) as ready,
@@ -475,6 +476,24 @@ class MemoryTests(unittest.TestCase):
         asked.assert_called_once()
         self.assertAlmostEqual(asked.call_args.args[2], 3.4)
         ready.install.assert_called_once()
+
+    def test_a_later_run_measures_once_and_waits_for_nothing(self):
+        """Review of 22cf801: on a PC where the apps have run for days (Photos set up by an
+        earlier run), nothing settles, so the step must not wait 3 minutes to say the same."""
+        ctx = context({'assistant': {'wanted': True}})
+        ctx.plan, ctx.previous = ['photos', 'assistant'], {'photos': {'status': 'success'}}
+        readings = iter([(8, 4.6)])
+        with (
+            Ready(self),
+            mock.patch.object(assistant, 'memory_now', side_effect=lambda: next(readings)),
+            mock.patch.object(assistant, 'SETTLE_SECONDS', 180),
+            mock.patch.object(assistant.time, 'sleep') as slept,
+            mock.patch.object(assistant, 'ask_model', return_value=None) as asked,
+        ):
+            self.assertIsNone(assistant.run(ctx))
+        slept.assert_not_called()
+        self.assertAlmostEqual(asked.call_args.args[2], 2.6)
+        self.assertFalse(any('measuring it again' in line for line in ctx.said))
 
     def test_nothing_is_waited_for_when_the_model_fits_at_once(self):
         slept = []

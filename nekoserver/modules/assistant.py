@@ -85,12 +85,15 @@ NAMED_MODEL_GIB = 1
 # free, and a 6 GB server stalled under memory pressure while the model loaded.)
 RESERVE_GIB = 2
 RESERVE_SHARE = 0.2
-# On a first install the apps have just started, at their peak (Immich most of all): the
-# Hyper-V check K7 measured 4.6 GB free on an 8 GB PC, and 5.4 GB a minute later. When the
-# model does not fit at first, the free memory is measured again every SETTLE_EVERY
-# seconds, for up to SETTLE_SECONDS, and the most seen counts.
+# An app set up for the first time in this run has just started, at its peak (Immich most
+# of all): the Hyper-V check K7 measured 4.6 GB free on an 8 GB PC, and 5.4 GB a minute
+# later. Then, when the model does not fit at first, the free memory is measured again
+# every SETTLE_EVERY seconds, for up to SETTLE_SECONDS, and the most seen counts. A later
+# run, with the apps running for days, measures once and waits for nothing.
 SETTLE_SECONDS = 180
 SETTLE_EVERY = 15
+# The steps whose apps use the most memory while they start.
+APP_STEPS = ('photos', 'nextcloud', 'media', 'music')
 # How long after the last question the model leaves memory (OLLAMA_KEEP_ALIVE in the template).
 IDLE_MINUTES = 5
 # Room the SSD must keep: Ollama's image (about 3.4 GB to download, more unpacked), plus
@@ -149,7 +152,10 @@ def _run(ctx):
         processor_ok()
         port_free_for_us(ctx.config)
         own = own_use_gib(ctx.config)
-        total, available = settled_memory(least_need(ctx.config, chosen), own, ctx.log)
+        if apps_just_started(ctx):
+            total, available = settled_memory(least_need(ctx.config, chosen), own, ctx.log)
+        else:
+            total, available = memory_now()
         room = memory_for_model(total, available, own)
         if not chosen:
             model = ask_model(ctx, total, room, os.cpu_count())
@@ -319,6 +325,14 @@ def least_need(config, chosen):
         return MODELS[0][2]
     known = {m[0]: m[2] for m in MODELS}
     return known.get(options(config).get('model'), NAMED_MODEL_GIB)
+
+
+def apps_just_started(ctx):
+    """Whether an app was set up for the first time in this run: its step is in the run,
+    and the run before had not finished it (or there was no run before)."""
+    plan = getattr(ctx, 'plan', None) or ()
+    previous = getattr(ctx, 'previous', None) or {}
+    return any(name in plan and (previous.get(name) or {}).get('status') != 'success' for name in APP_STEPS)
 
 
 def settled_memory(need, own, log, read=None, sleep=None, clock=None):
