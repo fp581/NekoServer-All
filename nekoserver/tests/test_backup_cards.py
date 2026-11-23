@@ -235,13 +235,15 @@ class PageTests(unittest.TestCase):
         self.assertEqual(said[5:], [None, None])
 
     def test_a_card_of_the_set_can_be_checked_and_one_of_an_older_set_taken_back(self):
-        said = page(('driveOffer', OUR_CARD), ('driveOffer', OLDER_CARDS[1]))
+        unsaid = {k: v for k, v in OLDER_CARDS[1].items() if k != 'why'}
+        said = page(('driveOffer', OUR_CARD), ('driveOffer', OLDER_CARDS[1]), ('driveOffer', unsaid))
         self.assertEqual(said[0]['check'], 2)
         self.assertIsNone(said[0]['action'])
         self.assertEqual(said[1]['older'], 2)
         self.assertIsNone(said[1]['action'])
-        self.assertTrue(said[1]['said'].startswith('Card 2 of a backup set this server made on '), said[1])
-        self.assertIn('2023', said[1]['said'])  # the set's year: 1700000000 is November 2023
+        self.assertEqual(said[1]['said'], 'This card belongs to another backup set.')  # the server's words
+        self.assertTrue(said[2]['said'].startswith('Card 2 of an earlier backup set (made on '), said[2])
+        self.assertIn('2023', said[2]['said'])  # the set's year: 1700000000 is November 2023
 
     def test_each_drive_is_offered_only_as_the_server_judged_it(self):
         empty = {'label': 'CARD', 'size': 64e9, 'fstype': 'exfat', 'usable': True}
@@ -302,6 +304,8 @@ class StandInControl(socketserver.StreamRequestHandler):
     after_start = []
     task = None
     start = None
+    fail_look = None  # which look after a start fails (as when Wi-Fi drops for a moment)
+    looks = 0
 
     def handle(self):
         request = json.loads(self.rfile.readline())
@@ -328,6 +332,10 @@ class StandInControl(socketserver.StreamRequestHandler):
                 drives = StandInControl.drives
             if drives is OLDER_CARDS:
                 shown = {**shown, 'cards': [], 'files_on_cards': 0, 'next_number': 1}
+            StandInControl.looks += 1
+            if StandInControl.looks == StandInControl.fail_look:
+                self.wfile.write((json.dumps({'ok': False, 'error': 'E01'}) + '\n').encode())
+                return
             if len(StandInControl.plan) > 1:
                 StandInControl.task = StandInControl.plan.pop(0)
             elif StandInControl.plan:
@@ -337,10 +345,10 @@ class StandInControl(socketserver.StreamRequestHandler):
             answer = StandInControl.start
         elif op == 'cards_check':
             answer = {'ok': True, 'message': 'Checking card 2. Leave it in until the check has finished.'}
-            StandInControl.plan = list(StandInControl.after_start)
+            StandInControl.plan, StandInControl.looks = list(StandInControl.after_start), 0
         elif op == 'cards_take_back':
             answer = {'ok': True, 'message': 'Taking the cards back.'}
-            StandInControl.plan = list(StandInControl.after_start)
+            StandInControl.plan, StandInControl.looks = list(StandInControl.after_start), 0
         elif op == 'cards_enrol' and request.get('acknowledged') is True:
             answer = {'ok': True, 'number': 2, 'message': 'Card 2 is ready. Write “2” on it.'}
         else:
@@ -458,7 +466,7 @@ class CardTasksInBrowserTests(unittest.TestCase):
     def setUp(self):
         StandInControl.asked.clear()
         StandInControl.drives, StandInControl.plan, StandInControl.after_start = None, [], []
-        StandInControl.task, StandInControl.start = None, None
+        StandInControl.task, StandInControl.start, StandInControl.fail_look = None, None, None
 
     tearDown = setUp
 
@@ -523,6 +531,14 @@ class CardTasksInBrowserTests(unittest.TestCase):
         StandInControl.after_start = [self.RUNNING_CHECK[0], a_task('check', False, 1, 4, False, out)]
         seen = self.run_task(look='neko', width=1280, start='Check this card', go='Check card 2')
         self.assertEqual(seen['lines'][-1], [out, True, False])
+
+    def test_a_look_that_fails_mid_check_is_tried_again(self):
+        # T5's review of ca346e3: one failed look (Wi-Fi gone for a moment) stopped the
+        # page looking, and "Checking card 2: 1 of 4 files…" stayed with every button off.
+        StandInControl.drives, StandInControl.fail_look = [OUR_CARD], 2
+        StandInControl.after_start = [*self.RUNNING_CHECK, a_task('check', False, 4, 4, True, self.CHECKED)]
+        seen = self.run_task(look='neko', width=1280, start='Check this card', go='Check card 2')
+        self.assertEqual(seen['lines'][-1], [self.CHECKED, False, False])
 
     def test_a_refused_start_says_why_and_shows_no_progress(self):
         StandInControl.drives = [OUR_CARD]

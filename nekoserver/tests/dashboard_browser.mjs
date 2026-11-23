@@ -275,21 +275,21 @@ const CHECKS = {
           const write = document.querySelector('[data-focus="cards-write"]');
           return line ? [line.textContent, line.classList.contains('reason'), write.disabled] : null;
         });
-      // The page looks again every 2 seconds while the task runs: about 8 seconds at most.
+      // The page looks again every 2 seconds while the task runs: 15 seconds at most.
       const watch = async left => {
         const now = await shown();
         if (now && (!lines.length || lines.at(-1)[0] !== now[0])) {
           lines.push(now);
         }
         const finished = now && !now[2] && lines.length > 1;
-        const none = !now && left < 32; // nothing started: 2 seconds is enough to tell
+        const none = !now && left < 52; // nothing started: 2 seconds is enough to tell
         if (left > 0 && !finished && !none) {
           await page.waitForTimeout(250);
           await watch(left - 1);
         }
       };
       if (!asked.length) {
-        await watch(40);
+        await watch(60);
       }
     }
     const widths = await page.evaluate(() => [

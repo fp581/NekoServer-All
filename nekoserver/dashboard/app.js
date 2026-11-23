@@ -2553,12 +2553,15 @@ function driveOffer(d, next) {
   if (numeric(older.number)) {
     return {
       name,
-      said:
+      // The server's own words say whose set it is and what taking it back does.
+      said: text(
+        d.why,
         'Card ' +
-        older.number +
-        ' of a backup set this server made' +
-        (numeric(older.made) ? ' on ' + madeOn(older.made) : ' before') +
-        '. It can be taken back.',
+          older.number +
+          ' of an earlier backup set' +
+          (numeric(older.made) ? ' (made on ' + madeOn(older.made) + ')' : '') +
+          '. It can be taken back.'
+      ),
       action: null,
       older: older.number
     };
@@ -2594,7 +2597,7 @@ function cardsTaskLine(task) {
   return {
     line: text(task.message, task.ok === false ? 'It stopped before the end.' : done),
     running: false,
-    failed: task.ok !== true
+    failed: task.ok === false
   };
 }
 /* Whether a check or a take-back is running now (as the page last looked). */
@@ -2611,6 +2614,8 @@ async function lookForCards(quiet = false) {
     return;
   }
   if (quiet === true) {
+    // A look that failed (Wi-Fi gone for a moment): the task may still run, so look again.
+    pollCards();
     return;
   }
   if (answer.error === 'E43' && state.control?.access?.pin_set) {
@@ -2669,7 +2674,10 @@ function checkDialog(d, number) {
   );
 }
 function takeBackDialog(numbers) {
-  const which = numbers.length === 1 ? 'card ' + numbers[0] : 'cards ' + numbers.join(' and ');
+  const which =
+    numbers.length === 1
+      ? 'card ' + numbers[0]
+      : 'cards ' + numbers.slice(0, -1).join(', ') + ' and ' + numbers[numbers.length - 1];
   cardsConfirm(
     'Take these cards back?',
     [
