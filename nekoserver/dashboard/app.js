@@ -4639,11 +4639,24 @@ function monitorMessage(v) {
     MONITOR_RESULTS[v.status] || 'Set up; waiting for its first result.'
   );
 }
+/* The badge of a check-in service: its last result, but "Not set up" or "Off" once its
+ * timer is gone or stopped (switched off in setup: a result left from before says
+ * nothing now). */
+function monitorBadge(v, old) {
+  const timer = object(v.timer);
+  if (old) {
+    return ['unknown'];
+  }
+  if (!timer.installed) {
+    return ['neutral', 'Not set up'];
+  }
+  return timer.active ? [v.status] : ['neutral', 'Off'];
+}
 function monitorCard(title, value, guide, old) {
   const card = el('article', 'card'),
     v = object(value);
   card.append(
-    cardHeading(title, badge(old ? 'unknown' : v.status)),
+    cardHeading(title, badge(...monitorBadge(v, old))),
     el('p', '', monitorMessage(v)),
     keyed(
       button('Set up & check', () => showGuide(guide), 'text-button'),
