@@ -21,9 +21,11 @@ import datetime as dt
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import posixpath
 import re
 import shutil
+import stat
 import subprocess
 import tarfile
 import time
@@ -348,6 +350,28 @@ def ours(member):
     return any(name == part or name.startswith(part + '/') for part in PARTS)
 
 
+def by_hand(member):
+    """What tarfile's 'tar' filter does, for a Python without it: an absolute name, a '..'
+    part, a link leading out of the folder or a device is refused; set-user-ID, set-group-ID,
+    sticky and group/other write bits are cleared. Owners are kept."""
+    name = member.name
+    link = posixpath.normpath(posixpath.join(posixpath.dirname(name), member.linkname)) if member.issym() else ''
+    if (
+        name.startswith('/')
+        or '..' in PurePosixPath(name).parts
+        or not (member.isfile() or member.isdir() or member.issym() or member.islnk())
+        or (member.issym() or member.islnk())
+        and member.linkname.startswith('/')
+        or member.issym()
+        and (link == '..' or link.startswith('../'))
+        or member.islnk()
+        and '..' in PurePosixPath(member.linkname).parts
+    ):
+        raise tarfile.TarError(f'{name} leads out of its folder or is not a file, folder or link')
+    member.mode &= ~(stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX | stat.S_IWGRP | stat.S_IWOTH)
+    return member
+
+
 def unpacked(backup, stage):
     """Nextcloud's folders out of the snapshot's data.tar into `stage`, from the same bytes
     that are checked against its checksum (checked first and unpacked afterwards, a file
@@ -356,10 +380,18 @@ def unpacked(backup, stage):
     database's folder is the database's own); nothing lands outside the folder."""
     hidden = stage / '.unpacking'
     hidden.mkdir(mode=0o700)
+    # Every member checked by hand (by_hand): the 'tar' filter lets a link lead out of the
+    # folder, and Python 3.11.0 to 3.11.3 have no filter at all (Debian 12 has 3.11.2;
+    # upgrade.py unpack has the same). Where it exists, the filter is used as well.
+    filtered = {'filter': 'tar'} if hasattr(tarfile, 'data_filter') else {}
     with open(backup.snapshot / 'data.tar', 'rb') as raw:
         counted = Hashing(raw)
-        with tarfile.open(fileobj=counted, mode='r|') as tar:
-            tar.extractall(hidden, members=(m for m in tar if ours(m)), numeric_owner=True, filter='tar')
+        try:
+            with tarfile.open(fileobj=counted, mode='r|') as tar:
+                members = (by_hand(m) for m in tar if ours(m))
+                tar.extractall(hidden, members=members, numeric_owner=True, **filtered)
+        except tarfile.TarError as exc:
+            raise RuntimeError(f'its data.tar holds something setup never unpacks ({exc})') from None
         while counted.read(CHUNK):
             pass
     if counted.digest.hexdigest() != backup.manifest['sha256']['data']:

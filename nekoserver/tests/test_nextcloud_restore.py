@@ -3,6 +3,7 @@ broke and was replaced. Setup's Nextcloud step refused ("already holds files"), 
 gateway step failed after it, and a first-time user had no way on. Now setup offers to
 bring this server's own Nextcloud back from its backup on the HDD, and only that."""
 
+import contextlib
 import hashlib
 import io
 import json
@@ -36,7 +37,9 @@ def config_php(instance):
     )
 
 
-def tar_of(files):
+def tar_of(files, odd=()):
+    """A tar of `files` (name: content), with their folders, and the `odd` members
+    (TarInfo, no content: links, devices, names leading out) at the end."""
     out = io.BytesIO()
     with tarfile.open(fileobj=out, mode='w') as tar:
         folders = sorted({str(Path(*Path(n).parts[:i])) for n in files for i in range(1, len(Path(n).parts))})
@@ -49,13 +52,38 @@ def tar_of(files):
             info = tarfile.TarInfo(name)
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
+        for info in odd:
+            tar.addfile(info, io.BytesIO(b'x' * info.size) if info.isfile() else None)
     return out.getvalue()
+
+
+def odd_member(name, kind=tarfile.REGTYPE, link=''):
+    info = tarfile.TarInfo(name)
+    info.type, info.linkname = kind, link
+    info.size = 1 if kind == tarfile.REGTYPE else 0
+    return info
+
+
+@contextlib.contextmanager
+def python_without_the_filter():
+    """Python 3.11.0 to 3.11.3 (Debian 12 has 3.11.2): no tarfile.data_filter, and
+    extractall takes no filter keyword."""
+    real = tarfile.TarFile.extractall
+
+    def extractall(self, path='.', members=None, *, numeric_owner=False, **given):
+        if given:
+            raise TypeError(f'extractall() got an unexpected keyword argument {next(iter(given))!r}')
+        return real(self, path, members, numeric_owner=numeric_owner, filter='fully_trusted')
+
+    with mock.patch.dict(tarfile.__dict__), mock.patch.object(tarfile.TarFile, 'extractall', extractall):
+        del tarfile.data_filter
+        yield
 
 
 class Server:
     """A server whose SSD was replaced: its HDD keeps the files folder and the backups."""
 
-    def __init__(self, tmp, instance=OWN, sealed=False, dump=True, named=OWN):
+    def __init__(self, tmp, instance=OWN, sealed=False, dump=True, named=OWN, odd=()):
         self.data, self.media = Path(tmp) / 'ssd', Path(tmp) / 'hdd'
         self.data.mkdir()
         self.config = {'data_mount': str(self.data), 'media_mount': str(self.media), 'nextcloud': {'enabled': True}}
@@ -89,7 +117,7 @@ class Server:
             members['appdata/nextcloud/html/config/config.php'] = config_php(instance)
         self.snapshot = self.media / f'backups/monthly/{int(SNAPSHOT_AT * 1e6)}-7'
         self.snapshot.mkdir(parents=True)
-        data_tar = tar_of(members)
+        data_tar = tar_of(members, odd)
         (self.snapshot / 'data.tar').write_bytes(data_tar)
         if sealed:
             (self.snapshot / 'secrets.tar.cms').write_bytes(b'sealed')
@@ -319,6 +347,34 @@ class UnattendedNeverRestoresTests(unittest.TestCase):
                 self.assertIn('never unattended', said)
                 self.assertEqual(list(server.data.iterdir()), [])
                 self.assertEqual(server.calls, [])
+
+
+class OlderPythonTests(unittest.TestCase):
+    """T5's review: tarfile's filter came with Python 3.11.4; on Debian 12 (3.11.2) the
+    restore stopped with a TypeError and nothing came back."""
+
+    def test_the_restore_works_on_a_python_without_tarfiles_filter(self):
+        with tempfile.TemporaryDirectory() as tmp, python_without_the_filter():
+            server = Server(tmp)
+            self.assertEqual(server.offer(), (True, None))
+            self.assertEqual((server.data / 'appdata/nextcloud/html/index.php').read_text(), '<?php\n')
+
+    def test_a_member_leading_out_of_the_folder_is_never_unpacked_with_or_without_the_filter(self):
+        for case, member in (
+            ('a name with ..', odd_member('appdata/nextcloud/html/../../../../../evil')),
+            ('a link to an absolute path', odd_member('appdata/nextcloud/html/etc', tarfile.SYMTYPE, '/etc')),
+            ('a link leading out', odd_member('appdata/nextcloud/html/up', tarfile.SYMTYPE, '../../../../../..')),
+            ('a device', odd_member('appdata/nextcloud/html/disk', tarfile.BLKTYPE)),
+        ):
+            for old in (False, True):
+                with self.subTest(case, old_python=old), tempfile.TemporaryDirectory() as tmp:
+                    server = Server(tmp, odd=[member])
+                    with python_without_the_filter() if old else contextlib.nullcontext():
+                        restored, said = server.offer()
+                    self.assertFalse(restored)
+                    self.assertIn('did not work', said)
+                    self.assertEqual(list(server.data.iterdir()), [])
+                    self.assertFalse((Path(tmp) / 'evil').exists())
 
 
 class FailedStepTests(unittest.TestCase):
