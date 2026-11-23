@@ -61,7 +61,7 @@ The three media groups are on setup's first page, and each can be left out:
 - **Movies and shows**: **Jellyfin** to watch your films and shows, with video on the graphics chip. With **Also find and download new ones** on (it is, unless you switch it off): **Seerr** to ask for new ones, and **Sonarr, Radarr and Prowlarr** with **qBittorrent**, which find and download them.
 - **Music**: **Navidrome**, your music player, with the music backup. With **Also find and download new ones** on: **Lidarr**, with Prowlarr and qBittorrent, finds and downloads music; it does not need Movies and shows.
 
-All three together take about 6 GB on the SSD and about 2 GB of memory when idle. Any combination works: all of them, photos alone, music alone, or none for a smaller server. The dashboard, the backups, Tailscale and the shared folders are set up either way. A group you leave out is not asked about again: no place for its files, no sign-in, no test.
+All three together take about 6 GB on the SSD and about 2 GB of memory when idle. Any combination works: all of them, photos alone, music alone, or none for a smaller server. The dashboard, the backups and Tailscale are set up either way, and the shared folders when there is something to share (photos, films and shows, or music). A group you leave out is not asked about again: no place for its files, no sign-in, no test.
 
 You can change your mind. Run `sudo bash install.sh` again and switch the line on the first page the other way. **Yes later** installs its apps as on any server. **No later never deletes anything**: the apps of that group are stopped, and their settings, your photos, music and films and every backup stay where they are, so yes brings them back as they were.
 

@@ -3266,7 +3266,11 @@ def named_drive(name, folder, record, found):
     one mounted there (`found`: mounted_drive's answer). Raises when it is not."""
     uuid, fstype = record.get('uuid', ''), record.get('fstype', '')
     if not re.fullmatch(r'[A-Za-z0-9-]{8,80}', uuid or ''):
-        raise RuntimeError(f'{name} has no drive identity in the settings')
+        raise RuntimeError(
+            f'{name} has no drive identity in the settings ("uuid" under "storage" in my-config.json), so it '
+            'cannot be checked. Nothing was changed. lsblk -f shows the UUID of the drive: put it back there, then '
+            'choose this again.'
+        )
     if found[2] != uuid:
         # The review of 0.46.1: with another drive mounted there (or settings out of date),
         # one filesystem was unmounted and another, the saved UUID's, checked.

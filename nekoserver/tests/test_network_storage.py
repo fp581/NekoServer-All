@@ -984,6 +984,18 @@ class ReadOnlyCheckTests(unittest.TestCase):
             self.check(['y'])
         self.assertEqual([c[0] for c in self.calls], ['findmnt'])  # nothing stopped or unmounted
 
+    def test_a_drive_with_no_identity_in_the_settings_says_what_to_do(self):
+        """1.0 round T5-07: a settings file whose drive record lost its UUID stopped the
+        check with "has no drive identity in the settings" and no next step."""
+        found = ('/dev/sdb1', 'ext4', 'abcd-1234-ef')
+        with self.assertRaises(RuntimeError) as said:
+            self.wizard.named_drive('the media drive', '/mnt/nekoserver-media', {'fstype': 'ext4'}, found)
+        text = str(said.exception)
+        self.assertIn('the media drive has no drive identity in the settings', text)
+        self.assertIn('Nothing was changed', text)
+        self.assertIn('lsblk -f', text)
+        self.assertIn('"uuid"', text)
+
     def test_nothing_is_done_without_a_yes_or_when_every_drive_writes(self):
         self.check(['n'])
         self.assertEqual(self.order(), ['findmnt'])  # the drive was looked at, nothing more

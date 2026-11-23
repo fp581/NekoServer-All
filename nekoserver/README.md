@@ -23,7 +23,7 @@ It does **not** install Linux and it **never formats a drive**. You prepare thos
 
 Seerr, Sonarr, Radarr, Lidarr, Prowlarr and qBittorrent come with **Also find and download new ones**, a switch inside Movies and shows and inside Music (on unless you switch it off; switched off, you get Jellyfin or Navidrome alone). You never have to use them: Jellyfin, Immich and Navidrome play and show your own files without them.
 
-**Only want some of it?** Setup's first page has a switch for each app: Photos (Immich), Movies and shows (Jellyfin, with Seerr and the download apps when you want them), Music (Navidrome) and Personal files (Nextcloud). Any combination works, photos alone or none included; the dashboard, the backups, Tailscale and the shared folders are always set up. You can answer yes at a later run, and no later never deletes anything ([GUIDED-SETUP.md](GUIDED-SETUP.md#the-media-apps-three-groups-a-yes-or-no-each)).
+**Only want some of it?** Setup's first page has a switch for each app: Photos (Immich), Movies and shows (Jellyfin, with Seerr and the download apps when you want them), Music (Navidrome) and Personal files (Nextcloud). Any combination works, photos alone or none included; the dashboard, the backups and Tailscale are always set up, and the shared folders when there is something to share (photos, films and shows, or music). You can answer yes at a later run, and no later never deletes anything ([GUIDED-SETUP.md](GUIDED-SETUP.md#the-media-apps-three-groups-a-yes-or-no-each)).
 
 Also included: shared folders on your home network (Samba) and, if you want them, watching on a TV connected to the server (Steam Big Picture) and phone alerts when something fails (ntfy).
 
