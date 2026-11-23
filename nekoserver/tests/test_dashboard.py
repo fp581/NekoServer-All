@@ -1030,6 +1030,11 @@ class DashboardPortTests(unittest.TestCase):
     def test_a_page_that_never_answers_fails_the_step_with_the_log_command(self):
         from modules import dashboard
 
+        # An app drive of its own that is not there, never the real /srv/nekoserver of the
+        # PC the tests run on (with NekoServer installed, its folders cannot be read).
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        ssd = Path(folder.name) / 'ssd'
         with (
             mock.patch.object(dashboard, 'answers', return_value=False),
             mock.patch.object(dashboard, 'start_services'),
@@ -1044,14 +1049,14 @@ class DashboardPortTests(unittest.TestCase):
             mock.patch.object(dashboard.native_runtime, 'payload', return_value=b'x'),
             mock.patch.object(dashboard, 'record_payload', return_value=b'{}'),
             mock.patch.object(dashboard, 'asset_payloads', return_value={}),
-            mock.patch.object(dashboard, 'mount_path', return_value=Path('/srv/nekoserver')),
+            mock.patch.object(dashboard, 'mount_path', return_value=ssd),
             mock.patch.object(dashboard, 'verify_storage'),
             mock.patch.object(dashboard.os, 'geteuid', return_value=0),
             mock.patch.object(dashboard.shutil, 'which', return_value='/usr/bin/systemctl'),
             mock.patch.object(dashboard.safe_path.__globals__['Path'], 'mkdir'),
         ):
             ctx = mock.Mock(
-                config={'dashboard': {'port': 8787}, 'data_mount': '/srv/nekoserver', 'media': {}},
+                config={'dashboard': {'port': 8787}, 'data_mount': str(ssd), 'media': {}},
                 apply=True,
                 log=lambda m: None,
             )
