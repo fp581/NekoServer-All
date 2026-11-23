@@ -16,7 +16,7 @@ Setup's first page asks one thing: *What would you like this server to do?* Each
 | 🎬 **Movies and shows** | Jellyfin: watch your films and shows on any device. With **Also find and download new ones** switched on (it is, unless you switch it off) it comes with Seerr, Sonarr, Radarr, Prowlarr and qBittorrent |
 | 🎵 **Music** | Navidrome: play your music from your phone or browser. The same switch adds Lidarr |
 | ☁️ **Personal files** | Nextcloud: your files on your own devices |
-| 📺 **A TV connected to this PC** | Steam Big Picture and a YouTube shortcut (off unless you switch it on) |
+| 📺 **A TV connected to this PC** | Steam Big Picture and a YouTube shortcut. It needs **Movies and shows**: its TV mode opens Jellyfin (off unless you switch it on) |
 | 🔔 **Alerts on your phone** | A message, through the free ntfy app, when a backup or an app fails (off unless you switch it on) |
 | 💓 **A warning when the server stops** | An outside service you choose notices when the server goes quiet (off unless you switch it on) |
 | 🐈 **Ask Neko** | A local AI assistant in the dashboard (off unless you switch it on) |

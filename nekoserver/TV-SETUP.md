@@ -7,6 +7,8 @@ Interactive setup now opens Steam, selected Bluetooth settings, display settings
 
 ## Before applying
 
+The TV needs **Movies and shows** (Jellyfin) switched on on setup's first page: its TV mode opens Jellyfin, so without it setup leaves the TV step out.
+
 This module installs Steam from your Linux's own repositories on x86_64 **Arch/Nyarch, Debian, Ubuntu, Fedora and openSUSE Tumbleweed/Slowroll**. Two systems have no Steam package, so the step reports itself unavailable there: **RHEL and its rebuilds** (Rocky, AlmaLinux, CentOS Stream) and **openSUSE Leap 16** (it dropped the 32-bit libraries Steam needs); Flatpak Steam is the way on those, which NekoServer does not set up yet. Bazzite requires a future backend. Sign into the existing desktop user, connect the TV, and make sure the desktop works.
 
 Steam and its 32-bit libraries live in a part of the repositories that is off by default. NekoServer never switches repositories on itself: when the packages are not offered, the step stops with `needs_setup` and the log says what to run, then you run setup again. Per family:

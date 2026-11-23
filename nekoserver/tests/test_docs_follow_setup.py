@@ -211,6 +211,29 @@ class MessageReferenceTests(unittest.TestCase):
             self.assertIn(f'**{name}**', doc(guide))
 
 
+class NeedsTests(unittest.TestCase):
+    """0.52.4 loop (T3L-01): the TV needs Movies and shows (setup leaves it out without it),
+    and no guide that offers the TV said so: a reader who wanted it for games alone found
+    the switch greyed and setup skipping it."""
+
+    # The guides that offer each extra that needs another (a card of its own; a switch
+    # inside a card needs no words, the card it is in says it).
+    OFFERED_IN = {'tv': ('../README.md', 'GUIDED-SETUP.md', 'TV-SETUP.md')}
+
+    def test_a_guide_that_offers_an_extra_says_what_it_needs(self):
+        import explanations
+
+        titles = {row['id']: row['title'] for row in explanations.EXTRAS}
+        needing = [row for row in explanations.EXTRAS if row.get('needs') and not row.get('under')]
+        self.assertEqual(sorted(row['id'] for row in needing), sorted(self.OFFERED_IN))
+        for row in needing:
+            # "Movies and shows - Jellyfin" is named in the guides as **Movies and shows**.
+            needed = [titles[need].split(' - ')[0] for need in row['needs']]
+            for guide in self.OFFERED_IN[row['id']]:
+                with self.subTest(extra=row['id'], guide=guide):
+                    self.assertTrue(any(f'needs **{name}**' in doc(guide) for name in needed), needed)
+
+
 class StorageGuideTests(unittest.TestCase):
     """Deep check plan 378: STORAGE.md read against setup."""
 
