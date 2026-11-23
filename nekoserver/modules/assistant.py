@@ -85,6 +85,12 @@ NAMED_MODEL_GIB = 1
 # free, and a 6 GB server stalled under memory pressure while the model loaded.)
 RESERVE_GIB = 2
 RESERVE_SHARE = 0.2
+# On a first install the apps have just started, at their peak (Immich most of all): the
+# Hyper-V check K7 measured 4.6 GB free on an 8 GB PC, and 5.4 GB a minute later. When the
+# model does not fit at first, the free memory is measured again every SETTLE_EVERY
+# seconds, for up to SETTLE_SECONDS, and the most seen counts.
+SETTLE_SECONDS = 180
+SETTLE_EVERY = 15
 # How long after the last question the model leaves memory (OLLAMA_KEEP_ALIVE in the template).
 IDLE_MINUTES = 5
 # Room the SSD must keep: Ollama's image (about 3.4 GB to download, more unpacked), plus
@@ -142,8 +148,9 @@ def _run(ctx):
     try:
         processor_ok()
         port_free_for_us(ctx.config)
-        total, available = memory_now()
-        room = memory_for_model(total, available, own_use_gib(ctx.config))
+        own = own_use_gib(ctx.config)
+        total, available = settled_memory(least_need(ctx.config, chosen), own, ctx.log)
+        room = memory_for_model(total, available, own)
         if not chosen:
             model = ask_model(ctx, total, room, os.cpu_count())
             if model is None:
@@ -303,6 +310,35 @@ def memory_for_model(total, available, own=0):
     dashboard shows too, with the assistant's own use counted as free) less the reserve
     the other apps keep."""
     return available + own - reserve_gib(total)
+
+
+def least_need(config, chosen):
+    """The memory, in GiB, the assistant needs at the least: the chosen model's, or the
+    smallest model's when it is still to be chosen."""
+    if not chosen:
+        return MODELS[0][2]
+    known = {m[0]: m[2] for m in MODELS}
+    return known.get(options(config).get('model'), NAMED_MODEL_GIB)
+
+
+def settled_memory(need, own, log, read=None, sleep=None, clock=None):
+    """(total, available) memory in GiB, measured once the other apps have settled: while
+    the room left for a model is under `need`, it is measured again (SETTLE_EVERY seconds
+    apart, for up to SETTLE_SECONDS) and the most free that was seen counts. Nothing is
+    waited for when the model fits at once."""
+    read, sleep, clock = read or memory_now, sleep or time.sleep, clock or time.monotonic
+    total, available = read()
+    until = clock() + SETTLE_SECONDS
+    if memory_for_model(total, available, own) < need and clock() < until:
+        log(
+            f'{TITLE}: less memory is free than a model needs; measuring it again while the apps that just '
+            f'started settle (up to {SETTLE_SECONDS // 60} minutes)'
+        )
+    while memory_for_model(total, available, own) < need and clock() < until:
+        sleep(SETTLE_EVERY)
+        total, now = read()
+        available = max(available, now)
+    return total, available
 
 
 def room_said(total, room, running=True):

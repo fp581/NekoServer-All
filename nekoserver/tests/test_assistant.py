@@ -92,6 +92,7 @@ class Ready:
             mock.patch.object(assistant, 'processor_ok'),
             mock.patch.object(assistant, 'port_free_for_us'),
             mock.patch.object(assistant, 'memory_now', return_value=memory),
+            mock.patch.object(assistant, 'SETTLE_SECONDS', 0),
             mock.patch.object(assistant, 'own_use_gib', return_value=0),
             mock.patch.object(assistant, 'check_space'),
             mock.patch.object(assistant, 'need_pin'),
@@ -441,6 +442,46 @@ class MemoryTests(unittest.TestCase):
                 raise RuntimeError('docker is not running')
 
             self.assertEqual(assistant.own_use_gib(config, run=broken), 0)
+
+    def test_on_a_first_install_the_memory_is_measured_once_the_apps_settle(self):
+        """Hyper-V check K7: on an 8 GB PC the first install measured 4.6 GB free right after
+        Immich started (2.6 GB left for a model of 3 GB: "not available"), and a minute later
+        5.4 GB was free. The review had promised "Which AI model to use"."""
+        readings = iter([(8, 4.6), (8, 4.9), (8, 5.4), (8, 5.2)])
+        slept, said, now = [], [], [0]
+
+        def sleep(seconds):
+            slept.append(seconds)
+            now[0] += seconds
+
+        total, available = assistant.settled_memory(
+            3, 0, said.append, read=lambda: next(readings), sleep=sleep, clock=lambda: now[0]
+        )
+        self.assertEqual((total, available), (8, 5.4))
+        self.assertEqual(slept, [15, 15])
+        self.assertEqual(assistant.fits(assistant.memory_for_model(total, available)), [assistant.MODELS[0]])
+        self.assertEqual(len(said), 1)
+        # The step: the question comes, with the settled numbers.
+        ctx = context({'assistant': {'wanted': True}})
+        readings = iter([(8, 4.6), (8, 5.4)])
+        with (
+            Ready(self) as ready,
+            mock.patch.object(assistant, 'memory_now', side_effect=lambda: next(readings)),
+            mock.patch.object(assistant, 'SETTLE_SECONDS', 180),
+            mock.patch.object(assistant.time, 'sleep'),
+            mock.patch.object(assistant, 'ask_model', return_value='qwen3.5:2b-q4_K_M') as asked,
+        ):
+            self.assertIsNone(assistant.run(ctx))
+        asked.assert_called_once()
+        self.assertAlmostEqual(asked.call_args.args[2], 3.4)
+        ready.install.assert_called_once()
+
+    def test_nothing_is_waited_for_when_the_model_fits_at_once(self):
+        slept = []
+        total, available = assistant.settled_memory(
+            3, 0, self.fail, read=lambda: (16, 11), sleep=slept.append, clock=lambda: 0
+        )
+        self.assertEqual((total, available, slept), (16, 11, []))
 
     def test_docker_sizes(self):
         self.assertAlmostEqual(assistant.size_gib('512MiB '), 0.5)
