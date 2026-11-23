@@ -14,9 +14,16 @@ The first stable release, built on 0.52.3.
 - **An Ask Neko question too long for the dashboard gets its own message.** A question over 4 KB was refused with the connection cut, so the page showed E01 ("Can’t reach the server") instead of E42 ("Request not supported"). The dashboard now reads the rest of a refused request away from its workers and answers 400 with E42.
 - **The README says what setup really does, for a first-time reader**: the no-sudo steps cover Arch too (`pacman -S sudo` and the wheel group); Ask Neko's model is among what setup still asks after the approval; the shared folders are set up when there is something to share (not on a server with no apps, or Nextcloud alone), in the README, nekoserver/README.md and GUIDED-SETUP.md; and the PC must be 64-bit Intel or AMD (x86_64), as install.sh checks.
 - **The drive check says what to do when the settings lost a drive's UUID**: where it goes in my-config.json and that `lsblk -f` shows it, instead of only "has no drive identity in the settings".
+- **A download source Prowlarr refuses says Prowlarr's own reason.** EZTV, one of the three recommended sources, showed only "prowlarr /indexer: HTTP 400" with Retry, while Prowlarr had said the site is blocked by CloudFlare, which a retry cannot fix. Prowlarr's messages are shown now, with the request's own values and API key cut out.
+- **A step left for later says how to finish it in plain words**: "This step is left for later. Run sudo bash install.sh again to finish it; your answers are kept."
+- **The setup window's second run is not told "Nothing is installed yet"**: on a server set up already, the lines beside Continue and under "Review your changes" say nothing changes until the button is pressed.
+- **Backup cards: files gone from the server still count as on the cards.** With the photos gone from the server (a dead HDD, the library deleted), the dashboard said "0 files on the cards" while the cards held every one; files the catalogue holds a healthy copy of now count too.
+- **Backup cards: a take-back's damaged copies are said in plain words**: "1 copy on the cards no longer matches its checksum: that file is copied again from the server".
 
 ### Tests
 - **Tests of the setup driver's own parts** (split out in 0.52.2), the setup report's folder-access rows, the mistyped-settings warnings and the job-time check, each pinning what it does.
+- **Tests of the home gateway's set-up, start and Tailscale routes, and of what the snapshot verify and restore refuse** (mutation testing found them unpinned).
+- **The tests no longer depend on the PC they run on**: nine tests read the real `/srv/nekoserver` and failed on a PC with NekoServer installed; each uses folders of its own now.
 
 ## v0.52.3 — 2026-11-23
 
