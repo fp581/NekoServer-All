@@ -33,6 +33,7 @@ Fixes found by testing 0.52.2 against 0.52.1, old against new, on a test VM, wit
 - **An app switched off is said to be "stopped and its containers removed"**, which is what setup does (your files and the apps' data stay). With Photos switched off, Immich's line now says to run setup again and switch Photos back on, as every other app's does, not to edit the settings file.
 - **A login an app refused names the command that asks for the real one**: "Run  sudo bash install.sh  again and choose c when it asks about this app". It said to run `account-setup.py` and choose c, which asks nothing.
 - **The music listener's check says why it failed** (an administrator typed for the listener, a wrong password, no music folder in Navidrome, Navidrome not running), in setup's Music step and in the nightly check, instead of one line for every case.
+- **A setup step that failed keeps its reason on file before "Retry this step now?"**, so pressing Ctrl+C there, or a closed terminal or dropped SSH connection, no longer leaves the step "running" with its reason lost: the next run and the dashboard's Needs attention say what went wrong.
 
 ### Cleaned
 - **Three pictures nothing showed any more are gone** (`docs/media/dashboard.webp`, `install.webp` and `uninstall.webp`, 2.6 MB), left from the README before 0.50.0.
