@@ -19,7 +19,8 @@ export NEKO_BROWSER
 "$NEKO_BROWSER" --version || exit 2
 log=$(mktemp)
 cd tests || exit 2
-python3 -B -m unittest -v test_dashboard_browser test_backup_cards test_setup_window_look 2>&1 < /dev/null | tee "$log"
+# timed.py: unittest with a time limit on each test (a hang fails in minutes, with its stack).
+python3 -B ../../.github/browser-tests/timed.py test_dashboard_browser test_backup_cards test_setup_window_look 2>&1 < /dev/null | tee "$log"
 status=$?
 if grep -E "skipped '(no browser here|no headless Chrome)" "$log"; then
   echo "::error title=Browser tests::a browser test was skipped: Playwright or its Chromium was not found"
