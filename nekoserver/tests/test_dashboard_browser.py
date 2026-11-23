@@ -125,6 +125,9 @@ class StandInControl(threading.Thread):
     def __init__(self, path):
         super().__init__(daemon=True)
         self.asked = []
+        # The unlock ran out on the service (12 hours, or it restarted) while the page last
+        # read this device as signed in: every app change is refused, as the service does.
+        self.run_out = False
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.server.bind(str(path))
         self.server.listen(16)
@@ -141,6 +144,8 @@ class StandInControl(threading.Thread):
                 'access': access,
                 'apps': {'available': True, 'actions': []},
             }
+        if self.run_out and op.startswith('app_'):
+            return {'ok': False, 'error': 'E43', 'message': 'Enter your PIN to change this'}
         if op == 'app_media_state':
             return media_answer()
         if op == 'app_media_browse':
@@ -355,3 +360,46 @@ class OlderBrowserTests(unittest.TestCase):
         routes += ['updates', 'media', 'cards', 'attention', 'help']
         (errors,) = self.browse(('pageErrors', {'routes': routes, 'missing': NEWER_BUILTINS}))
         self.assertEqual(errors, {route: [] for route in routes})
+
+
+@unittest.skipUnless(playwright_works(), 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
+class PinInBrowserTests(unittest.TestCase):
+    """When the page asks for the PIN, signed in (a stand-in control service answers)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.folder = tempfile.TemporaryDirectory()
+        status = Path(cls.folder.name) / 'status.json'
+        status.write_text(json.dumps(snapshot()))
+        cls.control = StandInControl(Path(cls.folder.name) / 'control.sock')
+        cls.control.start()
+        cls.server, cls.address = serve(status, Path(cls.folder.name) / 'control.sock')
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.terminate()
+        cls.server.wait(timeout=10)
+        cls.control.server.close()
+        cls.folder.cleanup()
+
+    def setUp(self):
+        self.control.run_out = False
+        self.control.asked.clear()
+
+    browse = DashboardInBrowserTests.browse
+
+    def test_updates_knows_this_device_is_signed_in(self):
+        # 0.52.2 test round (T3b-01): Updates never read the control service, so a device
+        # signed in with its PIN was asked for it again by every button there.
+        (answer,) = self.browse(('pinAsked', {'route': 'updates', 'clicks': [['button', 'Check for updates']]}))
+        self.assertEqual(answer, {'dialog': '', 'toast': 'Looking for new versions…'})
+        self.assertIn('app_update_check', [r.get('op') for r in self.control.asked])
+
+    def test_an_unlock_that_ran_out_is_asked_for_in_the_words_of_an_app_change(self):
+        # T3b-01: an app change refused because the unlock ran out asked for the PIN with the
+        # fans and lights words ("only needed on phones, tablets and other computers"),
+        # though app changes need it on the server too.
+        self.control.run_out = True
+        clicks = [['button', 'Actions for Sonarr'], ['menuitem', 'Restart app'], ['button', 'Restart Sonarr']]
+        (answer,) = self.browse(('pinAsked', {'route': 'apps', 'clicks': clicks}))
+        self.assertEqual(answer['dialog'], ['APP CONTROLS', 'Unlock changes'])

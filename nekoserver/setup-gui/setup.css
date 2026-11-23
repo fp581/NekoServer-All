@@ -41,8 +41,7 @@ p {
   margin: 0 0 8px;
   color: var(--muted);
 }
-code,
-.mono {
+code {
   font-family: ui-monospace, 'JetBrains Mono', Menlo, monospace;
   font-size: 12px;
 }
@@ -367,8 +366,9 @@ main > section {
   text-align: right;
   white-space: nowrap;
 }
-/* A switch that needs its card on first (finding and downloading). */
-.extra.unavailable,
+/* A switch that needs its card on first (finding and downloading), or a card that needs
+   another (the TV): greyed, all but the words that say what it needs. */
+.extra.unavailable > :not(.card-needs),
 .sub-switch.unavailable {
   opacity: 0.55;
 }

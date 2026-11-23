@@ -1113,7 +1113,7 @@ class AskNekoPageTests(unittest.TestCase):
     def test_an_answer_that_failed_part_way_is_marked_and_offers_nothing(self):
         """Review of 0.49.0: an answer cut off part-way looked complete."""
         text = 'Restart it.\nACTION: restart_app:jellyfin\nBUG REPORT: the retention st'
-        failed = 'Neko is not available right now: the answer was cut off before it ended; ask again'
+        failed = "Neko's answer was cut off: it stopped before it ended; ask again"
         # Even if a repair came with it, a failed answer never offers one.
         cut = page(('cutOffEntry', {'text': text, 'done': False, 'failed': failed, 'repair': 'restart_app:jellyfin'}))[
             0

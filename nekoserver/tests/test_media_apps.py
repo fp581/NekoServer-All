@@ -314,7 +314,9 @@ class StepTests(unittest.TestCase):
         self.assertEqual([c[c.index('-p') + 1] for c in commands], ['neko-jellyfin', 'neko-sonarr'])
         self.assertTrue(all(c[-1] == 'down' and '-v' not in c and '--volumes' not in c for c in commands))
         self.assertEqual(sorted(kept), ['jellyfin', 'sonarr'])
-        self.assertTrue(any('stopped, as its group is switched off' in line for line in ctx.logs))
+        self.assertTrue(
+            any('stopped and its containers removed, as its group is switched off' in line for line in ctx.logs)
+        )
 
     def test_the_media_step_goes_there_before_anything_else(self):
         ctx = context(settings(False))
