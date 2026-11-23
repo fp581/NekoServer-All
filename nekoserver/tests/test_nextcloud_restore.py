@@ -376,6 +376,29 @@ class OlderPythonTests(unittest.TestCase):
                     self.assertEqual(list(server.data.iterdir()), [])
                     self.assertFalse((Path(tmp) / 'evil').exists())
 
+    def test_a_chain_of_links_each_inside_as_text_never_climbs_out(self):
+        # T5's review of d58e12e: a -> '.', a/b -> '..', b/b2 -> '..' ... each stays inside as
+        # text, but followed on the disk they climb out; without the filter (Debian 12) the
+        # file after them was written outside the folder, as root.
+        escaped = f'OUT-{os.getpid()}-chain'
+        part, path = 'appdata/nextcloud', 'appdata/nextcloud/a/b'
+        chain = [odd_member(f'{part}/a', tarfile.SYMTYPE, '.'), odd_member(path, tarfile.SYMTYPE, '..')]
+        for n in range(2, 8):
+            path += f'/b{n}'
+            chain.append(odd_member(path, tarfile.SYMTYPE, '..'))
+        chain.append(odd_member(f'{path}/{escaped}'))
+        for old in (False, True):
+            with self.subTest(old_python=old), tempfile.TemporaryDirectory() as tmp:
+                server = Server(tmp, odd=chain)
+                with python_without_the_filter() if old else contextlib.nullcontext():
+                    restored, said = server.offer()
+                self.assertFalse(restored)
+                self.assertIn('leads out of its folder', said)
+                self.assertEqual(list(server.data.iterdir()), [])
+                staging = server.data / nextcloud_restore.STAGING / '.unpacking'
+                for folder in staging.parents:
+                    self.assertFalse((folder / escaped).exists(), folder)
+
 
 class FailedStepTests(unittest.TestCase):
     def test_a_step_that_fails_puts_the_ssd_back_as_it_was(self):

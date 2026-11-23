@@ -21,8 +21,7 @@ import datetime as dt
 import hashlib
 import json
 import os
-from pathlib import Path, PurePosixPath
-import posixpath
+from pathlib import Path
 import re
 import shutil
 import stat
@@ -350,24 +349,29 @@ def ours(member):
     return any(name == part or name.startswith(part + '/') for part in PARTS)
 
 
-def by_hand(member):
-    """What tarfile's 'tar' filter does, for a Python without it: an absolute name, a '..'
-    part, a link leading out of the folder or a device is refused; set-user-ID, set-group-ID,
-    sticky and group/other write bits are cleared. Owners are kept."""
+def within(root, path):
+    """Whether `path`, every link on its way followed as it is on the disk now, is in `root`."""
+    real = os.path.realpath(path)
+    return real == root or real.startswith(root + os.sep)
+
+
+def by_hand(member, root):
+    """What tarfile's 'tar' filter does, and more, on every Python (3.11.0 to 3.11.3 have no
+    filter at all). Checked as extractall takes each member, against the links already
+    unpacked (a chain of links each "inside" as text climbs out): where the member goes, and
+    where a link leads, must be in `root` (the real path of the folder it is unpacked
+    into). A device or the like is refused; set-user-ID, set-group-ID, sticky and
+    group/other write bits are cleared. Owners are kept."""
     name = member.name
-    link = posixpath.normpath(posixpath.join(posixpath.dirname(name), member.linkname)) if member.issym() else ''
-    if (
-        name.startswith('/')
-        or '..' in PurePosixPath(name).parts
-        or not (member.isfile() or member.isdir() or member.issym() or member.islnk())
-        or (member.issym() or member.islnk())
-        and member.linkname.startswith('/')
-        or member.issym()
-        and (link == '..' or link.startswith('../'))
-        or member.islnk()
-        and '..' in PurePosixPath(member.linkname).parts
-    ):
-        raise tarfile.TarError(f'{name} leads out of its folder or is not a file, folder or link')
+    places = [os.path.join(root, name)]
+    if member.issym():
+        places.append(os.path.join(root, os.path.dirname(name), member.linkname))
+    elif member.islnk():
+        places.append(os.path.join(root, member.linkname))
+    elif not (member.isfile() or member.isdir()):
+        raise tarfile.TarError(f'{name} is not a file, folder or link')
+    if os.path.isabs(name) or not all(within(root, place) for place in places):
+        raise tarfile.TarError(f'{name} leads out of its folder')
     member.mode &= ~(stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX | stat.S_IWGRP | stat.S_IWOTH)
     return member
 
@@ -388,7 +392,8 @@ def unpacked(backup, stage):
         counted = Hashing(raw)
         try:
             with tarfile.open(fileobj=counted, mode='r|') as tar:
-                members = (by_hand(m) for m in tar if ours(m))
+                root = os.path.realpath(hidden)
+                members = (by_hand(m, root) for m in tar if ours(m))
                 tar.extractall(hidden, members=members, numeric_owner=True, **filtered)
         except tarfile.TarError as exc:
             raise RuntimeError(f'its data.tar holds something setup never unpacks ({exc})') from None
