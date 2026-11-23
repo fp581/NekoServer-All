@@ -52,6 +52,12 @@ CHUNK = 1 << 20
 LOOKED_AT = 3  # the newest monthly snapshots looked at; older ones are older than these anyway
 READY_WAIT = 1800
 
+NONE_YET = (
+    'No backup of Nextcloud\'s settings exists yet, so this server\'s Nextcloud cannot be brought back: the '
+    'monthly maintenance backs them up first, on the 1st of each month, and the HDD holds none (the nightly '
+    'backup of the apps leaves Nextcloud out). Your files stay as they are in {files}: start a new, empty '
+    'Nextcloud as said above, make its accounts again and copy your files into Nextcloud'
+)
 FOREIGN = (
     'The Nextcloud backup on the HDD ({date}) is not this server\'s: it does not name the folder '
     'appdata_{ids} that Nextcloud keeps in {files}, so it was not brought back'
@@ -261,7 +267,7 @@ def found_backup(config, ids, log):
     media = Path(config['media_mount'])
     runs = monthly_snapshots(media / MONTHLY_DIR)[:LOOKED_AT]
     if not runs:
-        return None, f'No monthly snapshot of Nextcloud is on the HDD ({media / MONTHLY_DIR}) to bring it back from'
+        return None, NONE_YET.format(files=cloud_files(config))
     log('Nextcloud: looking at its backup on the HDD (this can take a few minutes)')
     damaged = []
     for path, manifest in runs:
