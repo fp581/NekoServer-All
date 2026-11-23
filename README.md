@@ -52,7 +52,7 @@ sudo bash install.sh
 
 On a PC with a desktop a **setup window** opens in your browser beside the terminal. Both show the same pages; answer in whichever you like. The walk through every page is in **[nekoserver/GUIDED-SETUP.md](nekoserver/GUIDED-SETUP.md)**.
 
-To install one exact release instead of the newest, name its tag when you clone, for example `git clone --branch v0.52.3-beta https://github.com/fp581/NekoServer-All.git`.
+To install one exact release instead of the newest, name its tag when you clone, for example `git clone --branch v1.0.0 https://github.com/fp581/NekoServer-All.git`.
 
 ## What setup looks like
 
@@ -143,7 +143,7 @@ An optional AI assistant on the dashboard. It explains what the dashboard shows 
 
 Each release on GitHub is one of two kinds, and its tag says which:
 
-- **Stable**, tagged `vX.Y.Z` (for example `v1.0.0`). Not yet: every NekoServer release so far is a beta.
+- **Stable**, tagged `vX.Y.Z` (for example `v1.0.0`, the first stable release).
 - **Beta**, tagged `vX.Y.Z-beta` (for example `v0.52.3-beta`; `vX.Y.ZBeta` counts as a beta too). It is marked **Pre-release** on GitHub, so GitHub's "Latest" release is never a beta.
 
 A check on GitHub (the "Release channel" job) marks each new release as its tag says, and fails on a tag that is neither. `git pull` follows the `main` branch, whatever the tags say.

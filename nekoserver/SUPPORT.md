@@ -1,6 +1,6 @@
 # What is supported
 
-Not every way of setting up NekoServer has been tried equally hard. Every release so far is a beta: even a **tested** setup hasn't run on many real servers yet, so try a full round on your own PC (play a video, upload a photo, restore a file) before trusting it. This page says, for each choice, how much you can lean on it. Setup follows the same list: it says so when you pick something experimental, and it refuses what it cannot run safely instead of guessing.
+Not every way of setting up NekoServer has been tried equally hard. NekoServer 1.0.0 is the first stable release, but even a **tested** setup hasn't run on many real servers yet, so try a full round on your own PC (play a video, upload a photo, restore a file) before trusting it. This page says, for each choice, how much you can lean on it. Setup follows the same list: it says so when you pick something experimental, and it refuses what it cannot run safely instead of guessing.
 
 | Level | What it means for you |
 |---|---|
