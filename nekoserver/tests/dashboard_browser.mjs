@@ -7,9 +7,24 @@ const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.NEKO_PLAYWRIGHT || 'playwright');
 const [address, wanted] = process.argv.slice(2);
 
-/* Open `route` at `width` CSS pixels wide, with the readings in. */
-async function open(browser, route, width = 1280) {
+/* Open `route` at `width` CSS pixels wide, with the readings in. `missing`: built-ins taken
+   out before the page loads ("Array.prototype.findLast"), as in an older browser. What went
+   wrong in the page is kept in page.errorsSeen. */
+async function open(browser, route, width = 1280, missing = []) {
   const page = await browser.newPage({ viewport: { width, height: 900 }, serviceWorkers: 'block' });
+  page.errorsSeen = [];
+  page.on('pageerror', error => page.errorsSeen.push(error.message));
+  if (missing.length) {
+    await page.addInitScript(names => {
+      for (const name of names) {
+        const parts = name.split('.');
+        const owner = parts.slice(0, -1).reduce((o, key) => o?.[key], globalThis);
+        if (owner) {
+          delete owner[parts.at(-1)];
+        }
+      }
+    }, missing);
+  }
   await page.goto(address + '#' + route);
   await page.waitForFunction(() => state.status !== null);
   await page.waitForTimeout(300);
@@ -91,6 +106,45 @@ const CHECKS = {
         title.top + 1 < actions.bottom;
       return [document.documentElement.scrollWidth, document.documentElement.clientWidth, overlap];
     });
+  },
+  /* Ask Neko in a browser without the built-ins `missing`: two questions typed and sent
+     (the second goes with the first answer). The questions the page sent, and its errors. */
+  async askSent(browser, { missing }) {
+    const page = await open(browser, 'ask', 1280, missing);
+    const sent = [];
+    await page.route('**/api/control/ask', route => {
+      const asked = route.request().postDataJSON();
+      sent.push(asked);
+      return route.fulfill({ json: { ok: true, id: 'q' + sent.length, question: asked.question } });
+    });
+    await page.route('**/api/ask/*', route => route.fulfill({ json: { text: 'An answer.', done: true } }));
+    const ask = async question => {
+      await page.fill('#ask-input', question);
+      // Its answer is asked for a second after it was sent (none when it was not sent).
+      const answered = page.waitForResponse(r => r.url().includes('/api/ask/'), { timeout: 4000 });
+      await page.click('#ask-send');
+      await answered.catch(() => undefined);
+      await page.waitForTimeout(200);
+    };
+    await ask('Is my server fine?');
+    await ask('And how do I check?');
+    return { sent, errors: page.errorsSeen };
+  },
+  /* Every page in `routes` opened in a browser without the built-ins `missing`: the errors
+     each page had ("never loaded" when its readings never came in). */
+  async pageErrors(browser, { routes, missing }) {
+    const errorsOf = async route => {
+      const page = await open(browser, route, 1280, missing).catch(() => null);
+      const seen = page ? page.errorsSeen : ['never loaded'];
+      await page?.close();
+      return [route, seen];
+    };
+    // One page after another, as the checks run.
+    const pages = await routes.reduce(
+      async (earlier, route) => [...(await earlier), await errorsOf(route)],
+      Promise.resolve([])
+    );
+    return Object.fromEntries(pages);
   },
   /* The words of the element `id` on page `route`. */
   async pageText(browser, { route, id }) {

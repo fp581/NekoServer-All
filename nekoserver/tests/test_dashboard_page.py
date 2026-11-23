@@ -110,10 +110,11 @@ class DashboardPageTests(unittest.TestCase):
 
     def test_the_page_uses_nothing_newer_than_the_browsers_it_runs_in(self):
         # 0.52.2 test round (T3-01): ASK.log.findLast (Chrome 97, Firefox 104) came in with a
-        # clean-up; in Chrome 93-96 and Firefox 92-103, where the rest of the page works (it
-        # needs Object.hasOwn: Chrome 93, Firefox 92), Ask Neko sent no question at all.
+        # clean-up. Ask Neko needs Object.hasOwn (Chrome 93, Firefox 92) and <dialog> for the
+        # PIN (Firefox 98), so in Chrome 93-96 and Firefox 98-103 it worked and then sent no
+        # question at all.
         source = (ROOT / 'dashboard/app.js').read_text()
-        self.assertIn('Object.hasOwn(', source)  # the floor this test is about
+        self.assertIn('Object.hasOwn(', source)  # what the page needs to load at all
         for newer in (
             '.findLast(',
             '.findLastIndex(',
