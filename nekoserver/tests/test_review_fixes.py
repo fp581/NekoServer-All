@@ -3977,3 +3977,18 @@ class PlainRefusalTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 module.mounted_ssd(parser, args, {})
         parser.error.assert_called_once_with('Data SSD must be mounted at --data-root (its real path: no links, no //)')
+
+
+class AccountHintTests(unittest.TestCase):
+    """0.52.2 test round, T5-07: what a refused login says to do must work as said."""
+
+    def test_an_app_with_its_own_account_names_the_command_that_asks_c(self):
+        """`sudo python3 account-setup.py` alone only prints "Read-only: use --apply ..."; setup
+        run again asks about each login the app did not take, and c types the real one."""
+        import account_setup
+
+        with self.assertRaises(RuntimeError) as caught:
+            account_setup.allowed({'allow_create': False})
+        said = str(caught.exception)
+        self.assertIn('Run  sudo bash install.sh  again and choose c when it asks about this app', said)
+        self.assertNotIn('account-setup.py', said)
