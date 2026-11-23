@@ -26,9 +26,23 @@ async function open(browser, route, width = 1280, missing = []) {
     }, missing);
   }
   await page.goto(address + '#' + route);
-  await page.waitForFunction(() => state.status !== null);
+  await until(page, () => state.status !== null);
   await page.waitForTimeout(300);
   return page;
+}
+
+/* Waits until `test` (run in the page) is true, 5 seconds at most. Not waitForFunction: a
+   test that is not true at once is run again through eval there, which the page's own
+   Content Security Policy refuses. */
+async function until(page, test, tries = 100) {
+  if (await page.evaluate(test)) {
+    return;
+  }
+  if (tries <= 0) {
+    throw new Error('waited 5 s in vain for ' + test);
+  }
+  await page.waitForTimeout(50);
+  await until(page, test, tries - 1);
 }
 
 /* Tab pressed until `focused()` names `wanted`, `tries` times at most; then what has focus. */
@@ -167,7 +181,7 @@ const CHECKS = {
     const dialog = await page.evaluate(() => document.getElementById('dialog-title').textContent);
     await page.locator('#cards-ack').check();
     await page.getByRole('button', { name: 'Use this as card 2', exact: true }).click();
-    await page.waitForFunction(() => !document.getElementById('toast').hidden);
+    await until(page, () => !document.getElementById('toast').hidden);
     const toast = await page.evaluate(() => document.getElementById('toast').textContent);
     const widths = await page.evaluate(() => [
       document.documentElement.scrollWidth,
