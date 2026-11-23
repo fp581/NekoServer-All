@@ -229,10 +229,9 @@ class SeerrLinkedToAnotherJellyfinTests(unittest.TestCase):
         self.assertNotIn('custom server selection', text)
 
     def test_connecting_the_apps_says_what_to_do(self):
+        client = self.Seerr({'serverId': 'new-server'})
         with self.assertRaises(media_libraries.SetupRequired) as raised:
-            media_libraries.seerr(
-                self.Seerr({'serverId': 'new-server'}), self.root, 'old-server', ['1', '2'], apply=False
-            )
+            media_libraries.seerr(client, self.root, 'old-server', ['1', '2'], apply=False)
         self.said(str(raised.exception))
 
     def test_the_readiness_row_says_the_same(self):
@@ -249,8 +248,9 @@ class SeerrLinkedToAnotherJellyfinTests(unittest.TestCase):
         # T5's review: a first-time Seerr has no ID; it was told to put settings back.
         for linked in ({'serverId': ''}, {}, {'serverId': None}, None, []):
             with self.subTest(linked=linked):
+                client = self.Seerr(linked)
                 with self.assertRaises(media_libraries.SetupRequired) as raised:
-                    media_libraries.seerr(self.Seerr(linked), self.root, 'this-server', ['1', '2'], apply=False)
+                    media_libraries.seerr(client, self.root, 'this-server', ['1', '2'], apply=False)
                 self.assertIn('not linked to a Jellyfin server yet', str(raised.exception))
                 self.assertNotIn('another Jellyfin', str(raised.exception))
                 row = media_readiness.seerr_row(self.Seerr(linked), self.root, 'this-server', ['1', '2'])
