@@ -113,6 +113,15 @@ pub fn made_at(identity: &Identity) -> Option<i64> {
         .map(|t| t.and_utc().timestamp())
 }
 
+/// What a take-back says of the copies it found damaged.
+fn damaged_words(n: u64) -> String {
+    if n == 1 {
+        " 1 copy on the cards no longer matches its checksum: that file is copied again from the server.".to_string()
+    } else {
+        format!(" {n} copies on the cards no longer match their checksum: those files are copied again from the server.")
+    }
+}
+
 /// "Card 2", "Cards 1 and 2", "Cards 1, 2 and 3".
 fn cards_words(numbers: &[u64]) -> String {
     let n: Vec<String> = numbers.iter().map(u64::to_string).collect();
@@ -323,10 +332,7 @@ fn take_back(place: &Place, cfg: &Value, task: &Task) -> std::result::Result<Str
         if files == 1 { "is" } else { "are" }
     );
     if !report.damaged.is_empty() {
-        words.push_str(&format!(
-            " {} on the cards no longer match their checksum: those files are copied again.",
-            common::plural(report.damaged.len() as u64, "copy", "copies")
-        ));
+        words.push_str(&damaged_words(report.damaged.len() as u64));
     }
     if !report.unobserved_volumes.is_empty() {
         words.push_str(" Other cards of the set are not plugged in: plug each in once, and its files count again.");
@@ -444,6 +450,19 @@ mod tests {
         assert_eq!(cards_words(&[2]), "Card 2");
         assert_eq!(cards_words(&[1, 2]), "Cards 1 and 2");
         assert_eq!(cards_words(&[1, 2, 3]), "Cards 1, 2 and 3");
+    }
+
+    #[test]
+    fn damaged_copies_found_by_a_take_back_are_said_in_plain_words() {
+        // 1.0 round T2-02: "1 copy on the cards no longer match their checksum".
+        assert_eq!(
+            damaged_words(1),
+            " 1 copy on the cards no longer matches its checksum: that file is copied again from the server."
+        );
+        assert_eq!(
+            damaged_words(3),
+            " 3 copies on the cards no longer match their checksum: those files are copied again from the server."
+        );
     }
 
     #[test]
