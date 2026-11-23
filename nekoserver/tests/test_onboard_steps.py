@@ -200,8 +200,9 @@ class WithoutConnectorTests(unittest.TestCase):
 
 class OptionTests(unittest.TestCase):
     def refused(self, *options):
+        onboarding = Onboarding()
         with contextlib.redirect_stderr(io.StringIO()) as said, self.assertRaises(SystemExit):
-            Onboarding()(*options)
+            onboarding(*options)
         return said.getvalue().splitlines()[-1].split(': error: ', 1)[1]
 
     def test_a_wait_is_up_to_ten_minutes(self):
