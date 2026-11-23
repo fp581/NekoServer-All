@@ -6,10 +6,12 @@ tried again while the rest still go in. A "Recommended" group comes from a data 
 whose names the person who ships NekoServer approves."""
 
 import importlib.util
+import io
 import json
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -392,3 +394,41 @@ class AfterTheInstallTests(unittest.TestCase):
     def test_the_window_ticks_them_when_the_list_opens(self):
         script = (ROOT / 'setup-gui' / 'setup.js').read_text()
         self.assertIn('for (const n of page.ticked || [])', script)
+
+
+class RefusalReasonTests(unittest.TestCase):
+    """1.0-rc T3-1: a source Prowlarr refused showed only "prowlarr /indexer: HTTP 400",
+    so "Retry this step" looked useful when Prowlarr had said why (Cloudflare) and a retry
+    could not help. Its own words are shown now; nothing the request sent ever is."""
+
+    def refused(self, body, payload):
+        def opener(request, timeout):
+            raise urllib.error.HTTPError(request.full_url, 400, 'Bad Request', {}, io.BytesIO(body))
+
+        with mock.patch.object(connect.OPENER, 'open', side_effect=opener):
+            with self.assertRaises(RuntimeError) as raised:
+                connect.request('prowlarr', 'key', '/indexer', 'POST', payload)
+        return str(raised.exception)
+
+    def test_prowlarrs_reason_is_shown(self):
+        body = json.dumps([
+            {'propertyName': '', 'errorMessage': 'Unable to access eztvx.to, blocked by CloudFlare Protection.',
+             'attemptedValue': None, 'severity': 'error'},
+        ]).encode()  # fmt: skip
+        said = self.refused(body, {'name': 'EZTV', 'fields': []})
+        self.assertEqual(
+            said, 'prowlarr /indexer: HTTP 400: Unable to access eztvx.to, blocked by CloudFlare Protection.'
+        )
+
+    def test_a_value_the_request_sent_is_never_shown(self):
+        body = json.dumps([
+            {'propertyName': 'ApiKey', 'errorMessage': 'Invalid API key s3cret-key-123', 'attemptedValue': 's3cret-key-123'},
+        ]).encode()  # fmt: skip
+        said = self.refused(body, {'name': 'Beta', 'fields': [{'name': 'apiKey', 'value': 's3cret-key-123'}]})
+        self.assertNotIn('s3cret-key-123', said)
+        self.assertEqual(said, 'prowlarr /indexer: HTTP 400: Invalid API key (hidden)')
+
+    def test_a_body_without_reasons_says_the_code_alone(self):
+        for body in (b'', b'<html>Bad</html>', b'{"message": 1}', b'[1, 2]'):
+            with self.subTest(body=body):
+                self.assertEqual(self.refused(body, None), 'prowlarr /indexer: HTTP 400')
