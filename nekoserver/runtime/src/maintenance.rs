@@ -7210,12 +7210,25 @@ mod tests {
         assert!(!php.contains("strncmp"));
         assert!(!php.contains("getDirectoryListing"));
         // The saved administrator's name replaces this (see health).
-        assert!(php.contains("getUserManager()->get(\"admin\")"));
-        assert!(php.starts_with("require '/var/www/html/lib/base.php'; $u=\\OC::$server"));
+        assert!(php.contains("IUserManager::class)->get(\"admin\")"));
+        assert!(php.starts_with("require '/var/www/html/lib/base.php'; $u="));
         // A user's file that merely starts the same way can never be on the list.
         assert!(!probe_name("neko-maintenance-notes.txt"));
         assert!(!probe_name("neko-maintenance-1'); evil"));
         fs::remove_dir_all(root).unwrap();
+    }
+    /// Nextcloud 35 has no `\OC::$server->getUserManager()` any more: the write test died
+    /// with "Call to undefined method" (docker exec exit 255) and every monthly run failed.
+    /// The test uses the public `\OCP\Server::get()` way, which Nextcloud has had since 25.
+    #[test]
+    fn nextcloud_test_file_uses_the_public_server_api() {
+        let php = probe_script(&[], "neko-maintenance-1-300");
+        assert!(!php.contains("OC::$server"), "{php}");
+        assert!(php.contains(r#"\OCP\Server::get(\OCP\IUserManager::class)->get("admin")"#));
+        assert!(php.contains(
+            r#"\OCP\Server::get(\OCP\Files\IRootFolder::class)->getUserFolder($u->getUID())"#
+        ));
+        assert!(php.contains(r#"\OCP\Server::get(\OCA\Files_Trashbin\Trash\ITrashManager::class)"#));
     }
     #[test]
     fn space_is_counted_per_drive_and_each_image_once() {
