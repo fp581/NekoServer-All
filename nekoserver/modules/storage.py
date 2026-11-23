@@ -2064,11 +2064,25 @@ def own_folder_lines(config):
 
 
 def offline_line(config, named):
-    """The offline backup's drive, or that there is none by choice; nothing when it is not chosen yet."""
+    """The offline backup's drive, that there is none by choice, or that none could be
+    chosen (no drive connected can be one, so nothing was asked: sweep BH5). Nothing when
+    the weekly copy has nothing to take."""
+    from modules.photo_backup import copies
+
     photos = config.get('photos', {})
     if photos.get('external_backup_uuid'):
         return ['Offline backup: ' + named(photos['external_backup_uuid'])]
-    return ['Offline backup: none for now'] if photos.get(OFFLINE_WANTED) is False else []
+    if photos.get(OFFLINE_WANTED) is False:
+        return ['Offline backup: none for now']
+    return [OFFLINE_NONE_YET] if any(copies(config)) else []
+
+
+# The review's line when no connected drive could be the offline backup (as the weekly
+# copy's step then says, photo_backup.NO_DRIVE_YET).
+OFFLINE_NONE_YET = (
+    'Offline backup: none yet, as no drive connected now can be one. Connect a drive you can unplug and run  '
+    'sudo bash install.sh  again to choose it'
+)
 
 
 def ahead_lines(config, inventory, places, installs=None):

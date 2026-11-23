@@ -194,6 +194,20 @@ class AskedAheadTests(unittest.TestCase):
                     line, "Immich's photos and videos: " + storage.ONE_PLACE_SAID + '. ' + storage.SAME_DRIVE_AS_BACKUP
                 )
 
+    def test_no_drive_that_can_be_the_offline_backup_is_said(self):
+        """Sweep BH5: with no drive that could be the offline backup nothing was asked, and
+        the review had no offline-backup line at all."""
+        config = settings(photos={'deploy_immich': True}, nextcloud={'enabled': False})
+        lines = storage.ahead_lines(config, {'blockdevices': []}, {})
+        self.assertIn(
+            'Offline backup: none yet, as no drive connected now can be one. Connect a drive you can unplug and '
+            'run  sudo bash install.sh  again to choose it',
+            lines,
+        )
+        # Nothing for the weekly copy to take: no line, as before.
+        config = settings(photos={'deploy_immich': False}, nextcloud={'enabled': False})
+        self.assertFalse([line for line in storage.ahead_lines(config, {'blockdevices': []}, {}) if 'Offline' in line])
+
     def test_the_review_says_what_happens_to_folders_of_the_persons_own(self):
         own = {'path': '/mnt/tank/films', 'holds': 'movies', 'use': 'in_place', 'new_files': True}
         new = {'path': '/mnt/big/shows', 'holds': 'tv', 'use': 'new_files', 'new_files': True}
