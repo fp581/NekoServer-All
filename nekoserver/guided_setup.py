@@ -454,7 +454,7 @@ def checkpoint(
             elif check_passed(verify, output):
                 return True
     except EOFError:
-        output('\nStep remains pending. Reapply this profile to resume; saved choices are kept.')
+        output('\nThis step is left for later. Run  sudo bash install.sh  again to finish it; your answers are kept.')
         return False
 
 

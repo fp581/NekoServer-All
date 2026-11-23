@@ -654,6 +654,14 @@ class CheckpointKeysTests(unittest.TestCase):
         self.assertIn('Ctrl+D leaves it pending and setup goes on; Ctrl+C stops setup.', '\n'.join(shown))
         self.assertEqual(self.run_step(KeyboardInterrupt)[0], 'stopped')
 
+    def test_a_step_left_for_later_says_how_to_finish_it_in_plain_words(self):
+        # 1.0-rc T3-3: it said "Step remains pending. Reapply this profile to resume".
+        shown = '\n'.join(self.run_step(EOFError)[1])
+        self.assertIn(
+            'This step is left for later. Run  sudo bash install.sh  again to finish it; your answers are kept.', shown
+        )
+        self.assertNotIn('profile', shown)
+
     def test_the_playback_step_says_ctrl_c_skips_it_as_it_does(self):
         from modules import onboarding
 
