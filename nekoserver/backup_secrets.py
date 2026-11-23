@@ -128,12 +128,28 @@ def unlocks(password, key_path):
         return False
 
 
+KEPT_KEY = (
+    'Backup password: the one chosen on {day}, when the backup key of this PC was made. The key stays on this PC '
+    '({folder}), also when the SSD or the HDD is new, so the backups made from now on are sealed with that password '
+    'too. Forgotten it? Then  sudo python3 backup_secrets.py --new-password  chooses a new one.'
+)
+
+
+def kept_key(key_dir=KEY_DIR):
+    """Which backup password is in force: the key is kept in /etc, not on the data drives,
+    so after new drives setup goes on with a password chosen long before (T4-alma)."""
+    import datetime
+
+    day = datetime.date.fromtimestamp((key_dir / KEY_NAME).stat().st_mtime).isoformat()
+    return KEPT_KEY.format(day=day, folder=key_dir)
+
+
 def setup(ask=getpass.getpass, out=print, key_dir=KEY_DIR, tries=3, intro=True):
     """Interactively create the key, protected by a backup password typed twice: a typo
     can't become the password without being noticed. (sudo's own check is not used: a
     passwordless sudo rule lets any text through.)"""
     if configured(key_dir):
-        out('Backup password-file key already set up.')
+        out(kept_key(key_dir))
         return
     if intro:
         out('One-time setup: monthly backups store the app password list encrypted.')
