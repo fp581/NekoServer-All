@@ -1011,6 +1011,7 @@ class RemoveTests(unittest.TestCase):
             self.remove({key for key, *_ in uninstaller.CHOICES})
         self.assert_nothing_deleted()
         self.system.failing = {('systemctl', 'stop', 'docker.service'): (1, 'Failed to stop docker.service')}
+        self.system.running.add('docker.service')  # and it still runs
         with self.assertRaisesRegex(uninstaller.Stopped, 'Docker did not stop \\(Failed to stop docker.service\\)'):
             self.remove({key for key, *_ in uninstaller.CHOICES})
         self.assert_nothing_deleted()
@@ -1039,7 +1040,8 @@ class RemoveTests(unittest.TestCase):
         self.assertIn(['docker', 'rm', '-f', 'c1', 'c2'], calls)
         self.assertIn(['docker', 'network', 'rm', 'neko-jellyfin_default'], calls)
         self.assertNotIn(['docker', 'network', 'rm', 'bridge'], calls)
-        self.assertIn(['systemctl', 'stop', 'docker.service', 'docker.socket'], calls)
+        self.assertIn(['systemctl', 'stop', 'docker.socket'], calls)
+        self.assertIn(['systemctl', 'stop', 'docker.service'], calls)
         self.assertNotIn('data-root', json.loads((self.system.root / 'etc/docker/daemon.json').read_text()))
         fstab = (self.system.root / 'etc/fstab').read_text()
         self.assertEqual(fstab, '# static\nUUID=cccc-3333 / ext4 defaults 0 1\n')
@@ -1050,10 +1052,10 @@ class RemoveTests(unittest.TestCase):
         # Docker's containers went before Docker was stopped, and both before any file.
         self.assertLess(
             calls.index(['docker', 'rm', '-f', 'c1', 'c2']),
-            calls.index(['systemctl', 'stop', 'docker.service', 'docker.socket']),
+            calls.index(['systemctl', 'stop', 'docker.socket']),
         )
         self.assertLess(
-            calls.index(['systemctl', 'stop', 'docker.service', 'docker.socket']),
+            calls.index(['systemctl', 'stop', 'docker.service']),
             next(i for i, line in enumerate(self.shown) if line.startswith('  removing')) + len(calls),
         )
 
@@ -1723,7 +1725,7 @@ class ExclusionTests(unittest.TestCase):
     def assert_docker_untouched(self):
         calls = self.system.calls
         self.assertFalse(any(c[:2] == ['docker', 'rm'] or c[:3] == ['docker', 'network', 'rm'] for c in calls), calls)
-        self.assertNotIn(['systemctl', 'stop', 'docker.service', 'docker.socket'], calls)
+        self.assertFalse(any(c[:2] == ['systemctl', 'stop'] and 'docker' in c[-1] for c in calls), calls)
         daemon = json.loads(self.at('/etc/docker/daemon.json').read_text())
         self.assertEqual(daemon['data-root'], '/srv/nekoserver/docker-engine')
 
@@ -1886,6 +1888,117 @@ class NoContainersHintTests(unittest.TestCase):
         self.assertEqual(why(which=lambda _: None, euid=lambda: 1000), 'Docker is not installed')
         self.assertIn('run with sudo', why(which=lambda _: '/usr/bin/docker', euid=lambda: 1000))
         self.assertNotIn('sudo', why(which=lambda _: '/usr/bin/docker', euid=lambda: 0))
+
+
+class DockerDownTests(unittest.TestCase):
+    """T4-u1 and T4-u2 of the 1.0 round, seen on the rig: the HDD gone, Docker unable to
+    start, a nightly snapshot cut off earlier. The uninstaller sat silent for two minutes,
+    asked everything, took the typed phrase, and only then refused over the cut-off job,
+    with a fix (start its resume service) that cannot work without Docker; set aside, it
+    stopped again at "Job for docker.service canceled" (its socket started it again)."""
+
+    RECORD = '/etc/nekoserver-backups/app-resume.json'
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.system = FakeSystem(self.tmp.name).populate()
+        self.docker_failed = False
+        real_run, real_call = self.system.run, self.system.call
+
+        def run(argv, timeout=0):
+            if argv[:3] == ['systemctl', 'show', 'docker.service'] and self.docker_failed:
+                self.system.calls.append(argv)
+                return 'ActiveState=failed\n'
+            return real_run(argv, timeout)
+
+        def call(argv, timeout=0):
+            if argv == ['systemctl', 'is-active', 'docker.service'] and self.docker_failed:
+                self.system.calls.append(argv)
+                return 3, 'failed'
+            return real_call(argv, timeout)
+
+        self.system.run, self.system.call = run, call
+
+    def main(self, answers):
+        asked, shown = [], []
+
+        def ask(prompt=''):
+            asked.append(prompt)
+            if not answers:
+                raise AssertionError('asked more than expected')
+            return answers.pop(0)
+
+        with (
+            mock.patch.object(uninstaller, 'Plan', return_value=self.system.plan()),
+            mock.patch.object(uninstaller.os, 'geteuid', return_value=0),
+            mock.patch.object(uninstaller, 'busy', return_value=(None, [])),
+            mock.patch.object(uninstaller, 'call', self.system.call),
+            mock.patch.object(uninstaller, 'window_session', return_value=contextlib.nullcontext()),
+            mock.patch('builtins.input', ask),
+            mock.patch('builtins.print', lambda *a, **k: shown.append(' '.join(map(str, a)))),
+        ):
+            code = uninstaller.main([])
+        return code, asked, '\n'.join(shown)
+
+    def test_a_cut_off_job_stops_it_before_any_question(self):
+        self.system.write(self.RECORD, '{}')
+        code, asked, shown = self.main([])
+        self.assertEqual(code, 1)
+        self.assertEqual(asked, [])
+        self.assertIn('app-resume.json is still there', shown)
+        self.assertTrue((self.system.root / 'etc/systemd/system/nekoserver-dashboard.service').exists())
+
+    def test_with_docker_unable_to_start_it_says_how_to_go_on(self):
+        self.system.write(self.RECORD, '{}')
+        self.docker_failed = True
+        code, asked, shown = self.main([])
+        self.assertEqual((code, asked), (1, []))
+        self.assertIn('Docker cannot start now', shown)
+        self.assertIn('Connect the missing drive and restart the computer', shown)
+        self.assertIn(f'sudo mv {self.RECORD} /root/', shown)
+        # A Docker that runs: only the usual words (its resume service can finish the job).
+        self.docker_failed = False
+        _, _, shown = self.main([])
+        self.assertNotIn('Docker cannot start now', shown)
+
+    def test_docker_that_fails_to_start_is_not_asked_and_the_wait_is_said_first(self):
+        self.docker_failed = True
+        code, asked, shown = self.main(['', 'no'])
+        self.assertEqual(code, 2)
+        self.assertFalse(any(c[:2] in (['docker', 'ps'], ['docker', 'network']) for c in self.system.calls))
+        self.assertLess(shown.index('Looking at what NekoServer installed'), shown.index('Settings:'))
+        plan = self.system.plan()
+        self.assertEqual((plan.compose_projects(), plan.docker_networks()), ([], []))
+        self.assertIn('Docker cannot start now', plan.describe({'apps'}))
+
+    def test_a_docker_its_socket_starts_again_does_not_stop_the_removal(self):
+        self.docker_failed = True
+        real_call = self.system.call
+
+        def call(argv, timeout=0):
+            if argv[:3] == ['systemctl', 'stop', 'docker.service'] and 'docker.socket' in argv:
+                return 1, 'Job for docker.service canceled.'  # stopped together, its socket started it again
+            if argv == ['systemctl', 'stop', 'docker.service']:
+                self.system.calls.append(argv)
+                return 1, 'Job for docker.service failed.'  # it fails to start, so it is not running
+            return real_call(argv, timeout)
+
+        self.system.call = call
+        all_parts = {key for key, *_ in uninstaller.CHOICES}
+        with mock.patch.object(uninstaller.shutil, 'which', return_value='/usr/bin/x'):
+            REAL_REMOVE(
+                self.system.plan(),
+                all_parts,
+                run=self.system.run,
+                out=lambda line: None,
+                root=self.system.root,
+                call=call,
+                sleep=lambda seconds: None,
+            )
+        stops = [c for c in self.system.calls if c[:2] == ['systemctl', 'stop'] and 'docker' in c[-1]]
+        self.assertEqual(stops[:2], [['systemctl', 'stop', 'docker.socket'], ['systemctl', 'stop', 'docker.service']])
+        self.assertNotIn('data-root', json.loads((self.system.root / 'etc/docker/daemon.json').read_text()))
 
 
 if __name__ == '__main__':
