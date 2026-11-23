@@ -289,6 +289,26 @@ class ChoiceTests(unittest.TestCase):
         self.assertEqual(picked, 'qwen3.5:2b-q4_K_M')
         self.assertEqual(said.count('Type a number from 0 to 2, or press Enter.'), 2)
 
+    def test_enter_is_said_to_do_one_thing(self):
+        """Hyper-V check K2: with the first page's switch on, the list said "0) No assistant
+        (press Enter)" and the line under it "Enter alone keeps qwen3.5:2b-q4_K_M"."""
+        for wanted, enter_takes in ((True, 'qwen3.5:2b-q4_K_M'), (False, 'no assistant')):
+            said, asked = [], []
+            with self.subTest(wanted=wanted):
+                picked = assistant.ask_model(
+                    context({'assistant': {'wanted': wanted}}),
+                    8,
+                    4.0,
+                    4,
+                    prompt=lambda q: asked.append(q) or '',
+                    output=said.append,
+                )
+                text = '\n'.join(said + asked)
+                self.assertEqual(picked, 'qwen3.5:2b-q4_K_M' if wanted else 'none')
+                self.assertNotIn('(press Enter)', text)
+                self.assertEqual(text.count('Enter alone'), 1, text)
+                self.assertIn(f'Enter alone chooses {enter_takes}.', text)
+
     def test_the_memory_limit_is_the_models_measured_need(self):
         self.assertEqual(assistant.fitting({'assistant': {'model': 'qwen3.5:9b'}}, 16, 9.5), ('qwen3.5:9b', 6.6, '9g'))
 

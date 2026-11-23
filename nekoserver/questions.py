@@ -406,7 +406,7 @@ Q = {
         'title': 'Which AI assistant do you want?',
         'hint': 'Bigger ones answer better and use more memory. The list above says what each needs.',
         'kind': 'choice',
-        'how': 'Type its number, then press Enter. Enter alone keeps {default}.',
+        'how': 'Type its number, then press Enter. Enter alone chooses {default}.',
         'example': {'default': 'no assistant'},
     },
     # ---- the TV
