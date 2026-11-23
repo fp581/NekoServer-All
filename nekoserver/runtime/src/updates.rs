@@ -610,8 +610,8 @@ mod tests {
         // offered 1.0.0, the stable release.
         let beta = json!({"maintenance": {"nekoserver_channel": "beta"}});
         assert_eq!(
-            newest_release(&json!([release("v1.0.0", false)]), channel(&beta), "0.52.3")
-                .unwrap()["tag"],
+            newest_release(&json!([release("v1.0.0", false)]), channel(&beta), "0.52.3").unwrap()
+                ["tag"],
             "v1.0.0"
         );
         // 1.0.0 with no channel chosen: 1.0.1, never a beta.
