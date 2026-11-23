@@ -287,8 +287,9 @@ class MediaFoldersInBrowserTests(unittest.TestCase):
                 self.assertFalse(overlap)
 
 
-# Built-ins newer than what the page needs (its newest is structuredClone: Chrome 98, Firefox 94,
-# Safari 15.4, with <dialog> from Firefox 98): taken out, the page must work the same.
+# Built-ins newer than what the page needs. All of it works from Chrome 98, Firefox 98 and
+# Safari 15.4 (structuredClone, for a fan curve, and <dialog>, for the PIN); Ask Neko from
+# Chrome 93 (Object.hasOwn). Taken out, the page must work the same.
 NEWER_BUILTINS = [
     'Array.prototype.findLast',
     'Array.prototype.findLastIndex',

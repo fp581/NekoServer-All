@@ -2014,7 +2014,7 @@ function sendQuestion() {
 const ASK_BODY = 4096;
 const EARLIER_CHARS = 2500; // what the server keeps of it (assist.rs EARLIER_ANSWER_CHARS)
 /* The last item of `items` that passes `test`, or null. A plain loop from the end, because
- * Array findLast is missing in browsers the rest of the page runs in (Chrome 93-96,
+ * Array findLast is missing in browsers Ask Neko otherwise works in (Chrome 93-96,
  * Firefox 98-103): there, every question to Neko failed before it was sent. */
 function lastMatching(items, test) {
   for (let i = items.length - 1; i >= 0; i--) {
