@@ -126,6 +126,23 @@ class NoSudoTests(unittest.TestCase):
             self.assertIn(words, script)
 
 
+class NextcloudDatabaseRestoreTests(unittest.TestCase):
+    """1.0 round T1-R2: RECOVERY.md loaded Nextcloud's database copy as `nextcloud`, so
+    every table belonged to it, while Nextcloud signs in to its database with an account
+    of its own (config.php's dbuser, made by `occ maintenance:install`): "permission
+    denied for table oc_appconfig", and Nextcloud stayed down. The copy is loaded as that
+    account, into a database it owns, and stops at the first error."""
+
+    def test_the_copy_is_loaded_as_the_account_nextcloud_uses(self):
+        # Nextcloud is installed with the container's superuser, and makes its own account.
+        self.assertIn('--database-user "$POSTGRES_USER"', (ROOT / 'modules' / 'nextcloud.py').read_text())
+        steps = doc('RECOVERY.md').split("### Nextcloud's database")[1].split(chr(10) + '### ')[0]
+        self.assertIn('echo $CONFIG["dbuser"]', steps)
+        self.assertIn('createdb -U nextcloud -O DBUSER nextcloud', steps)
+        self.assertIn('psql -U DBUSER -d nextcloud --single-transaction -v ON_ERROR_STOP=1', steps)
+        self.assertNotIn('psql -U nextcloud', steps)
+
+
 class FirstReadTests(unittest.TestCase):
     """1.0 round T5-02 to T5-05: what a first-time reader of the README is told matches
     what setup and install.sh do."""

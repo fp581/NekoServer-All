@@ -278,21 +278,29 @@ Since 0.39.6 the weekly USB backup first makes a copy of Nextcloud's database (u
 To put a database copy back (after losing the SSD, say), on a server where Nextcloud is set up again with the same major version (the first number in the note's version):
 
 1. Check the copy first: `sha256sum nextcloud-DATE.sql` must print the `sha256` in its `.sql.json` note.
-2. Stop Nextcloud but keep its database running:
+2. Find the name of the database account Nextcloud signs in with. Nextcloud made it for itself when it was set up, and its own settings file (`config.php`) names it. The copy must be loaded as this account, or Nextcloud cannot read its own tables afterwards:
+
+```bash
+sudo docker exec neko-nextcloud-nextcloud-1 php -r 'include "/var/www/html/config/config.php"; echo $CONFIG["dbuser"], PHP_EOL;'
+```
+
+It prints one name, such as `oc_admin`. In step 4, type that name where it says `DBUSER` (twice).
+3. Stop Nextcloud but keep its database running:
 
 ```bash
 cd /srv/nekoserver/compose/nextcloud
 sudo docker compose -p neko-nextcloud -f compose.yaml --env-file .env stop nextcloud cron
 ```
 
-3. Empty the database and load the copy into it:
+4. Empty the database and load the copy into it, with the name from step 2 in place of `DBUSER` and your copy in place of `/path/to/nextcloud-DATE.sql`:
 
 ```bash
-sudo docker compose -p neko-nextcloud -f compose.yaml --env-file .env exec -T database sh -c 'dropdb -U nextcloud nextcloud && createdb -U nextcloud nextcloud'
-sudo docker compose -p neko-nextcloud -f compose.yaml --env-file .env exec -T database psql -U nextcloud -d nextcloud < /path/to/nextcloud-DATE.sql
+sudo docker compose -p neko-nextcloud -f compose.yaml --env-file .env exec -T database sh -c 'dropdb -U nextcloud nextcloud && createdb -U nextcloud -O DBUSER nextcloud'
+sudo docker compose -p neko-nextcloud -f compose.yaml --env-file .env exec -T database psql -U DBUSER -d nextcloud --single-transaction -v ON_ERROR_STOP=1 < /path/to/nextcloud-DATE.sql
 ```
 
-4. Start Nextcloud again with `sudo bash install.sh`. The copy brought back the accounts you had before, with their passwords, so it says Nextcloud did not take its saved login (the one made for the new, empty Nextcloud): run it once more and choose **c** at Nextcloud, and it takes the administrator's login from the list of app passwords you restored (or type it). Then put your files back (above, **Nextcloud files**) and let Nextcloud find them: `sudo docker exec -u www-data neko-nextcloud-nextcloud-1 php occ files:scan --all`.
+   The first line makes a new, empty database that belongs to Nextcloud's account. The second loads the copy as that account, and stops at the first error with nothing half-loaded. If it says `ERROR`, the copy and this Nextcloud do not match: check step 1 and the version in the note.
+5. Start Nextcloud again with `sudo bash install.sh`. The copy brought back the accounts you had before, with their passwords, so it says Nextcloud did not take its saved login (the one made for the new, empty Nextcloud): run it once more and choose **c** at Nextcloud, and it takes the administrator's login from the list of app passwords you restored (or type it). Then put your files back (above, **Nextcloud files**) and let Nextcloud find them: `sudo docker exec -u www-data neko-nextcloud-nextcloud-1 php occ files:scan --all`.
 
 Nextcloud's own guide (docs.nextcloud.com, "Restoring backup") has the details. Some settings Nextcloud keeps encrypted with its own secret (passwords for external storage, for example) need the old `config.php`. It is in each monthly snapshot (**The list of app passwords** in the recovery menu). This restore was not tried on a real server by NekoServer's tests: try it once before you rely on it.
 

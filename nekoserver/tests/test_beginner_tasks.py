@@ -119,7 +119,7 @@ class LoginsAfterARestoreTests(unittest.TestCase):
 
     def test_nextcloud_s_database_restore_says_setup_asks_for_the_old_login(self):
         part = doc('RECOVERY.md').split("### Nextcloud's database")[1].split('\n### ')[0]
-        step = part[part.index('4. Start Nextcloud') :]
+        step = part[part.index('5. Start Nextcloud') :]
         self.assertIn('did not take its saved login', step)
         self.assertIn('choose **c** at Nextcloud', step)
 
