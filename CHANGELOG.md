@@ -2,7 +2,7 @@
 
 ## v0.52.2 — 2026-11-23
 
-A clean-up release: the 212 findings SonarCloud had on the code of 0.52.1 (30 vulnerabilities and 182 code smells), fixed. Nothing changes in what NekoServer does or says: the same steps, the same files written, the same messages, pages and exit codes. The one exception is three checks that are stricter (below).
+A clean-up release: the 212 findings SonarCloud had on the code of 0.52.1 (30 vulnerabilities and 182 code smells), fixed. Nothing changes in what NekoServer does or says: the same steps, the same files written, the same messages, pages and exit codes. The exceptions are three checks that are stricter, and one line added to setup's review page (below).
 
 ### Cleaned: paths checked where they are used
 - **A path that comes from the settings file or the command line is now proved safe on the line that opens it**, not only somewhere before. The file is looked up by its real path (links followed) and used only when that lies inside the folder it belongs in: the SSD's data folder for the music listener's login, a backup's reports, Immich's Compose file and `.env`; the backup's `snapshots` folder for the music restore's list; the folder named for a restored secret; a place Linux mounts a card for the card restore tool. One outside is refused as before (a backup's report outside the SSD reads as "it left no report").
@@ -14,6 +14,11 @@ A clean-up release: the 212 findings SonarCloud had on the code of 0.52.1 (30 vu
 - **The dashboard** (`app.js`): the same, and the line breaks a path's end is trimmed of are written as escapes, not as invisible characters.
 - **The Rust runtime**: collecting the dashboard's figures, backups, app and settings snapshots, the monthly maintenance, media readiness, alerts, fans, the live view and the control service, split the same way.
 - **The Rust splits were checked by mutation testing**: each split file went through cargo-mutants, and the changes no test caught got tests that pin what the code did before the split, wherever a test can reach it without root, Docker or the host's own `/proc`. Each split was also read old against new by a second person; none changed what the code does.
+
+### Fixed: what the guides and the review page say
+- **Setup's review page lists the backup password among what setup stops for**, on a first install: the monthly backup asks for it, typed twice, after the approval. The README says so too.
+- **The guides say what setup asks, and when.** The dashboard PIN, the shared-folder password, the app-account choice and the backup times are asked before the install starts, not during it; the TV, phone-alert and outage-alert questions are answered by the first page's switches; pressing Enter at the download sources adds the ticked recommended ones (it does not skip them); the shared-folder password is kept and shown by *Show login*; app updates run every week, the monthly run checks the backups.
+- **The recovery guides match the tools**: restored Steam and Samba folders start at `source0`; a card restore's `--card` goes before the command word. ACCOUNT-SETUP.md's option 2 is typing every login yourself, and DASHBOARD.md's readings count as late after 3 minutes at the least.
 
 ### Tests
 - **A media folders test passes with any umask.** Its second request was written with the user's umask; on a machine with umask 002 it was group-writable and refused as not the control service's, so the test failed there (it passed on CI, whose umask is 022). It is made private, as the first one is.
