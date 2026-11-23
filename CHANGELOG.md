@@ -7,7 +7,7 @@ A clean-up release: the 212 findings SonarCloud had on the code of 0.52.1 (30 vu
 ### Cleaned: paths checked where they are used
 - **A path that comes from the settings file or the command line is now proved safe on the line that opens it**, not only somewhere before. The file is looked up by its real path (links followed) and used only when that lies inside the folder it belongs in: the SSD's data folder for the music listener's login, a backup's reports, Immich's Compose file and `.env`; the backup's `snapshots` folder for the music restore's list; the folder named for a restored secret; a place Linux mounts a card for the card restore tool. One outside is refused as before (a backup's report outside the SSD reads as "it left no report").
 - **The music check accepts only the server's own address**, `http://127.0.0.1:` and a port, as before, now without a pattern that spells the address out.
-- **Stricter by hand: `account-setup.py --apply` and `source_import.py --config` read only a `.json` settings file, and `media-connect.py` stops at the start for a `--data-root` with a link in its path.**
+- **Stricter by hand: `account-setup.py --apply` and `source_import.py --config` read only a `.json` settings file, and `media-connect.py` stops at the start for a `--data-root` with a link in its path.** Each refusal says in one line what to change.
 
 ### Cleaned: long functions split
 - **Python**: the long functions of setup and its tools (onboarding, the installer, connecting media, importing a source, the permission, config and gateway checks, recovery, restore, accounts, Docker and the other setup modules) split into small named steps that run in the same order, with the same cleanup on every way out. No function is left that SonarCloud scores over 15.
