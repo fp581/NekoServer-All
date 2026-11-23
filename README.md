@@ -40,9 +40,11 @@ How much room each line needs is shown on the storage page, for your own choices
 
 ## Install
 
-In a terminal (Ctrl+Alt+T on most desktops):
+Open a terminal (Ctrl+Alt+T on most desktops).
 
 **Does `sudo` say `command not found`, or that you are `not in the sudoers file`?** Debian does this when a root password was set during its installation. Become root with `su -` (it asks for that root password), then run `apt install sudo` and `usermod -aG sudo yourname` (your own login name), type `exit`, log out, log in again, and go on below.
+
+Then run:
 
 ```bash
 git clone https://github.com/fp581/NekoServer-All.git
