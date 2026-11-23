@@ -108,6 +108,7 @@ jobs:
             PLAYWRIGHT_BROWSERS_PATH="$RUNNER_TEMP/pw-browsers" timeout 180 "$RUNNER_TEMP/node_modules/.bin/playwright" install --with-deps chromium && exit 0
             echo "::warning title=Playwright::install try $try stopped or failed"
             sudo pkill -x apt-get || true  # a stalled apt-get would hold apt's lock
+            sudo dpkg --configure -a || true  # an install stopped halfway is finished first
           done
           exit 1
       - name: Browser tests
