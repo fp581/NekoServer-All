@@ -58,7 +58,6 @@ class MistypedSettingsTests(unittest.TestCase):
         self.assertNotIn('Warning', self.check(settings))
 
 
-
 class JobTimeTests(unittest.TestCase):
     def test_a_job_time_is_hours_and_minutes_of_a_day(self):
         import config_checks

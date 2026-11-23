@@ -141,7 +141,9 @@ class FoldersCheckedTests(unittest.TestCase):
     def test_the_media_account_in_the_settings_is_the_one_checked(self):
         config = {'data_mount': '/srv/nekoserver', 'media': {'services': ['jellyfin'], 'uid': 1500, 'gid': 1600}}
         permission_checks.media_rows(config)
-        self.assertEqual({(owner, frozenset(groups)) for _, _, owner, groups, _, _ in self.calls}, {(1500, frozenset({1600}))})
+        self.assertEqual(
+            {(owner, frozenset(groups)) for _, _, owner, groups, _, _ in self.calls}, {(1500, frozenset({1600}))}
+        )
 
     def samba(self, config, user='alice'):
         record = SimpleNamespace(pw_uid=1001, pw_gid=1001)
