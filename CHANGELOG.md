@@ -31,6 +31,8 @@ Fixes found by testing 0.52.2 against 0.52.1, old against new, on a test VM, wit
 - **Setup's music step names Lidarr only while Lidarr is set up**, and a desktop shortcut it takes away is said once, not twice.
 - **Setup's review says when no connected drive can be the offline backup**: "Offline backup: none yet, as no drive connected now can be one. Connect a drive you can unplug and run  sudo bash install.sh  again to choose it". It said nothing about the offline backup then.
 - **An app switched off is said to be "stopped and its containers removed"**, which is what setup does (your files and the apps' data stay). With Photos switched off, Immich's line now says to run setup again and switch Photos back on, as every other app's does, not to edit the settings file.
+- **A login an app refused names the command that asks for the real one**: "Run  sudo bash install.sh  again and choose c when it asks about this app". It said to run `account-setup.py` and choose c, which asks nothing.
+- **The music listener's check says why it failed** (an administrator typed for the listener, a wrong password, no music folder in Navidrome, Navidrome not running), in setup's Music step and in the nightly check, instead of one line for every case.
 
 ### Cleaned
 - **Three pictures nothing showed any more are gone** (`docs/media/dashboard.webp`, `install.webp` and `uninstall.webp`, 2.6 MB), left from the README before 0.50.0.
