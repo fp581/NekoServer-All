@@ -1806,7 +1806,7 @@ class ImmichSwitchedOffTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.folder = Path(self.tmp.name) / 'compose/immich'
         self.logs = []
-        self.ctx = mock.Mock(log=self.logs.append)
+        self.ctx = mock.Mock(log=self.logs.append, config={})
 
     def test_a_running_deployment_is_taken_down_and_its_data_kept(self):
         from modules import photos
@@ -1827,6 +1827,25 @@ class ImmichSwitchedOffTests(unittest.TestCase):
         self.assertNotIn('--volumes', calls[0])
         self.assertTrue((self.folder / '.env').exists())
         self.assertIn('kept on the SSD', self.logs[-1])
+
+    def test_photos_switched_off_says_what_every_other_app_says(self):
+        """Sweep J10: with Photos switched off, Immich said to edit the settings file, while
+        every other app said to run setup again and switch its group back on."""
+        from modules import photos
+
+        self.folder.mkdir(parents=True)
+        (self.folder / 'compose.yaml').write_text('services: {}\n')
+        self.ctx.config = {'media_apps': {'photos': False, 'movies': True, 'music': True}}
+        photos.switch_off(
+            self.ctx, self.folder, lambda argv, **_: mock.Mock(stdout='', returncode=0), journal=self.folder / 'x'
+        )
+        self.assertEqual(
+            self.logs[-1],
+            'Immich: stopped and its containers removed, as Photos is switched off; its photos, database and '
+            'settings stay on the SSD. To start it again, run  sudo bash install.sh , answer yes to asking the '
+            'questions again and yes to Photos',
+        )
+        self.assertNotIn('deploy_immich', self.logs[-1])
 
     def test_one_still_running_is_reported(self):
         from modules import photos
