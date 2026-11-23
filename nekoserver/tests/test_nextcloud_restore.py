@@ -313,6 +313,31 @@ class NoKeepsTheRefusalTests(unittest.TestCase):
             self.assertIn('The SSD or the HDD broke', str(refused.exception))
 
 
+class YoungServerTests(unittest.TestCase):
+    # Coordinator, T1-R5 follow-up: a server younger than a month has no monthly snapshot
+    # (the nightly app backup leaves Nextcloud out), and the refusal pointed to an offer
+    # that could never come.
+    def test_with_no_backup_of_its_settings_yet_the_refusal_says_so_and_what_to_do(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server = Server(tmp)
+            shutil.rmtree(server.media / 'backups/monthly')  # only the weekly database copy is there
+            restored, said = server.offer()
+            self.assertFalse(restored)
+            self.assertEqual(server.asked, [])
+            self.assertEqual(list(server.data.iterdir()), [])
+            with mock.patch.object(nextcloud, 'resolve_image', side_effect=AssertionError('not reached')):
+                with self.assertRaises(RuntimeError) as refused:
+                    nextcloud.first_install(
+                        server.ctx, {}, None, 'auto', (server.data / 'compose/nextcloud', None, None, None), said
+                    )
+            told = str(refused.exception)
+            self.assertIn('No backup of Nextcloud\'s settings exists yet', told)
+            self.assertIn('on the 1st of each month', told)
+            self.assertIn(f'Your files stay as they are in {server.files}', told)
+            self.assertIn('copy your files into Nextcloud', told)
+            self.assertNotIn('No monthly snapshot', told)
+
+
 class ForeignBackupTests(unittest.TestCase):
     def test_another_servers_backup_is_never_offered(self):
         for sealed in (False, True):
