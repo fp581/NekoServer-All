@@ -18,7 +18,7 @@ When a change went wrong (a setting you regret, a library that got muddled), bri
    sudo docker start neko-jellyfin-jellyfin-1
    ```
 
-   For another app, write its name in place of `jellyfin` everywhere (`sonarr`, `radarr`, `lidarr`, `prowlarr`, `seerr`, `navidrome`, `qbittorrent`). `/srv/nekoserver` is your SSD's folder. `cp -a` keeps each file's owner, which the app needs.
+   For another app, write its name in place of `jellyfin` everywhere (`sonarr`, `radarr`, `lidarr`, `prowlarr`, `seerr`, `navidrome`, `qbittorrent`). Seerr is linked to Jellyfin, Sonarr and Radarr: when you put one of those four back on a rebuilt server, put all four back, from the same night, or Seerr stays linked to the old ones (setup then says "Seerr is linked to another Jellyfin server"). `/srv/nekoserver` is your SSD's folder. `cp -a` keeps each file's owner, which the app needs.
 
    **If `mv` says "Device or resource busy"** (then nothing was copied, and the app started again with its present settings): the app is installed on a drive of its own (a server whose `my-config.json` has `"install"`), and its folder on the SSD only shows that drive's folder. `grep appdata/jellyfin /etc/fstab` prints a line that starts with the app's folder on that drive, for example `/mnt/nekoserver-drives/big/nekoserver/appdata/jellyfin`. With that folder in place of `ONDRIVE`:
 

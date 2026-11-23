@@ -28,6 +28,17 @@ class SetupRequired(RuntimeError):
     pass
 
 
+# Seerr knows one Jellyfin by its ID; setup never changes that choice. A Jellyfin whose
+# settings came back from a backup has the old server's ID, a Seerr made since a new one
+# (T1-R7, after a rebuild): the two match again once their settings are from the same night.
+SEERR_OTHER_JELLYFIN = (
+    'Seerr is linked to another Jellyfin server than this one, which setup leaves as it is. '
+    "After putting app settings back from a backup, put Seerr's, Sonarr's and Radarr's back too, from the same "
+    "night as Jellyfin's "
+    '(APP-BACKUPS.md, step 2), then run setup again'
+)
+
+
 def jellyfin_headers(app, headers):
     """Jellyfin 12 no longer takes a key or session token from the X-Emby-Token
     header alone (401): it wants it in the MediaBrowser Authorization header, as
@@ -372,7 +383,7 @@ def seerr(client, root, server_id, library_ids, apply, apps=('sonarr', 'radarr')
     client.headers['X-Api-Key'] = seerr_key(root)
     settings = client.call('/settings/jellyfin')
     if not isinstance(settings, dict) or settings.get('serverId', settings.get('serverID')) != server_id:
-        raise SetupRequired('Seerr is not linked to this Jellyfin server; custom server selection preserved')
+        raise SetupRequired(SEERR_OTHER_JELLYFIN)
     if len(library_ids) != len(LIBRARIES):
         raise SetupRequired('Both Jellyfin movie/TV libraries must be verified before enabling them in Seerr')
     results = [row('seerr:jellyfin_link', 'pass')]

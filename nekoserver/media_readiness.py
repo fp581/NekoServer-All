@@ -1,7 +1,17 @@
 """Current GET-only Jellyfin/Seerr readiness; no prompts or credentials in reports."""
 
 import json
-from media_libraries import Client, SetupRequired, folders, matching, LIBRARIES, open_seerr, row, readiness_key_path
+from media_libraries import (
+    Client,
+    SetupRequired,
+    SEERR_OTHER_JELLYFIN,
+    folders,
+    matching,
+    LIBRARIES,
+    open_seerr,
+    row,
+    readiness_key_path,
+)
 from neko_common import media_services, safe_path
 import seerr_providers
 
@@ -126,12 +136,10 @@ def seerr_row(client, root, server_id, ids):
     try:
         open_seerr(client, root, 'Seerr first-run setup is incomplete')
         selected = client.call('/settings/jellyfin')
-        if (
-            not server_id
-            or not isinstance(selected, dict)
-            or selected.get('serverId', selected.get('serverID')) != server_id
-        ):
+        if not server_id or not isinstance(selected, dict):
             raise SetupRequired('Seerr/Jellyfin server identity is not verified')
+        if selected.get('serverId', selected.get('serverID')) != server_id:
+            raise SetupRequired(SEERR_OTHER_JELLYFIN)
         values = client.call('/settings/jellyfin/library')
         if (
             len(ids) != 2
