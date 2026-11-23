@@ -105,6 +105,33 @@ class DashboardFilesTests(unittest.TestCase):
             for word in set(words.values()):
                 self.assertIn(word, said.lower(), said)
 
+    def test_skipping_the_pin_says_which_changes_are_then_left_out(self):
+        """Setup run without a terminal, or Enter pressed at the PIN question: the person
+        is told every app change the dashboard then can't make, not only restarts."""
+        noted, shown = [], []
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.object(dashboard, 'CONTROL_CONFIG', Path(d)),
+            mock.patch.object(dashboard.subprocess, 'run') as run,
+            mock.patch('builtins.print', side_effect=lambda *said, **_: shown.append(' '.join(map(str, said)))),
+        ):
+            with mock.patch.object(dashboard.sys.stdin, 'isatty', return_value=False):
+                self.assertFalse(dashboard.choose_pin(Path('/bin/rt'), noted.append))
+            with mock.patch.object(dashboard.sys.stdin, 'isatty', return_value=True):
+                self.assertFalse(dashboard.choose_pin(Path('/bin/rt'), noted.append, ask=lambda _: ''))
+        run.assert_not_called()
+        self.assertEqual(
+            noted[0],
+            "Dashboard: no PIN chosen, so fans and lights change on the server only and apps can't be changed "
+            'from it: no restarts, updates, Ask Neko, media folders or backup cards (run setup in a terminal to '
+            'choose one)',
+        )
+        self.assertEqual(
+            shown[0].splitlines()[-1],
+            'Press Enter to skip: fans and lights then change on the server itself only, and none of those app '
+            'changes can be made from the dashboard.',
+        )
+
     def test_closing_a_desktop_app_is_confirmed_like_force_close(self):
         # A plain "please quit" can lose unsaved work too: no menu entry closes without asking.
         menu = APP[APP.index('function desktopMenu') : APP.index('function processMenu')]
