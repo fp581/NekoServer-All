@@ -28,6 +28,14 @@ class HomeAddressMovedTests(unittest.TestCase):
         self.assertIn('AF_NETLINK', line.split('=', 1)[1].split())
         self.assertIn('AF_UNIX', line.split('=', 1)[1].split())
 
+    def test_the_collector_may_read_addresses_but_not_change_the_network(self):
+        # AF_NETLINK alone would let this root unit add or change links; without
+        # CAP_NET_ADMIN, `ip -j address show up` still reads and every change is refused.
+        units = dashboard.units(Path('/srv/n'), Path('/opt/neko'), Path('/etc/neko/config.json'), 8787, 60)
+        rows = units['nekoserver-dashboard-collect.service'].splitlines()
+        self.assertIn('CapabilityBoundingSet=~CAP_NET_ADMIN', rows)
+        self.assertTrue(any(row.startswith('RestrictAddressFamilies=') and 'AF_NETLINK' in row for row in rows))
+
     def test_setup_restarts_the_gateway_instead_of_joining_a_start_that_still_waits(self):
         ran = []
         with mock.patch.object(gateway_tools, 'command', side_effect=lambda args, **_: ran.append(list(args)) or ''):
