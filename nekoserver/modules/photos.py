@@ -216,8 +216,8 @@ def switch_off(ctx, folder, run=subprocess.run, journal=None):
             + str(len(left))
             + ' of its containers are still running; check  docker ps'
         )
-    if not neko_common.media_group(ctx.config, 'photos'):
-        # As every other app says it (media.LEFT_OUT): the Photos switch brings it back.
+    if not neko_common.media_group(ctx.config, 'photos') and ctx.config.get('photos', {}).get('deploy_immich') is True:
+        # As every other app says it (media.LEFT_OUT): the Photos switch alone brings it back.
         ctx.log(IMMICH_LEFT_OUT)
     else:
         ctx.log(

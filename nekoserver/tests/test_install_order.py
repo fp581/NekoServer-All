@@ -1835,17 +1835,22 @@ class ImmichSwitchedOffTests(unittest.TestCase):
 
         self.folder.mkdir(parents=True)
         (self.folder / 'compose.yaml').write_text('services: {}\n')
-        self.ctx.config = {'media_apps': {'photos': False, 'movies': True, 'music': True}}
-        photos.switch_off(
-            self.ctx, self.folder, lambda argv, **_: mock.Mock(stdout='', returncode=0), journal=self.folder / 'x'
-        )
+        self.ctx.config = {
+            'media_apps': {'photos': False, 'movies': True, 'music': True},
+            'photos': {'deploy_immich': True},
+        }
+        run = lambda argv, **_: mock.Mock(stdout='', returncode=0)  # noqa: E731
+        photos.switch_off(self.ctx, self.folder, run, journal=self.folder / 'x')
         self.assertEqual(
             self.logs[-1],
             'Immich: stopped and its containers removed, as Photos is switched off; its photos, database and '
             'settings stay on the SSD. To start it again, run  sudo bash install.sh , answer yes to asking the '
             'questions again and yes to Photos',
         )
-        self.assertNotIn('deploy_immich', self.logs[-1])
+        # deploy_immich also set to false by hand: yes to Photos alone would not bring it back.
+        self.ctx.config['photos'] = {'deploy_immich': False}
+        photos.switch_off(self.ctx, self.folder, run, journal=self.folder / 'x')
+        self.assertIn('set "deploy_immich": true under "photos"', self.logs[-1])
 
     def test_one_still_running_is_reported(self):
         from modules import photos
