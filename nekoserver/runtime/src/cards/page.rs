@@ -8,6 +8,7 @@
 //! that say why; the enrolment checks everything again on the drive as it is then.
 use super::drives::{self, Drive};
 use super::status::{self, Place, Seen};
+use super::tasks;
 use crate::cardset::format;
 use crate::cardset::fsat::Dir;
 use crate::cardset::lock::SetLock;
@@ -38,6 +39,8 @@ pub fn answer(config: Option<&Path>, tool: &Path, op: &str, request: &Value) -> 
         "cards_list" => drives::plugged_in().and_then(|d| list(&place, &cfg, &d)),
         "cards_enrol" => drives::plugged_in().and_then(|d| enrol(&place, &cfg, &d, tool, request)),
         "cards_write" => write_now(&place, &cfg),
+        "cards_take_back" => drives::plugged_in().and_then(|d| take_back(&place, &cfg, &d)),
+        "cards_check" => check(&place, &cfg, request),
         _ => return refuse("Request not supported"),
     };
     done.unwrap_or_else(|e| refuse(&e.to_string()))
@@ -151,6 +154,8 @@ pub fn list(place: &Place, cfg: &Value, plugged: &[Drive]) -> Result<Value> {
     };
     let shown = place.previous();
     let next = shown["next_number"].as_u64().unwrap_or(1);
+    // Cards of an earlier set the server could take back (only while its own set has none).
+    let older = tasks::older_cards(place, plugged, cfg);
     let mut rows = vec![];
     for d in plugged {
         let Some(mount) = &d.mount else { continue };
@@ -162,12 +167,65 @@ pub fn list(place: &Place, cfg: &Value, plugged: &[Drive]) -> Result<Value> {
             Verdict::Usable => (Value::Null, true, Value::Null),
             Verdict::Refused(why) => (Value::Null, false, json!(why)),
         };
+        let older_set = older.iter().find(|o| &o.mount == mount).map(
+            |o| json!({"made": tasks::made_at(&o.identity), "number": o.identity.sequence_number}),
+        );
         rows.push(
             json!({"mount": mount, "label": d.label, "size": d.size, "fstype": d.fstype,
-                         "card": card, "usable": usable, "why": why}),
+                         "card": card, "usable": usable, "why": why, "older_set": older_set}),
         );
     }
-    Ok(json!({"ok": true, "set": shown, "drives": rows, "next_number": next}))
+    Ok(
+        json!({"ok": true, "set": shown, "drives": rows, "next_number": next, "task": tasks::shown(place)}),
+    )
+}
+
+/// "Take these cards back": the cards of an earlier set plugged in, taken back by the
+/// card job (cards::tasks), which the page then follows.
+pub fn take_back(place: &Place, cfg: &Value, plugged: &[Drive]) -> Result<Value> {
+    let older = tasks::older_cards(place, plugged, cfg);
+    let Some(first) = older.first() else {
+        return Ok(refuse("No card of an earlier set is plugged in (and mounted), or this server already has cards of its own set."));
+    };
+    let set = &first.identity.backup_set_id;
+    if older.iter().any(|o| &o.identity.backup_set_id != set) {
+        return Ok(refuse("Cards of two different sets are plugged in: leave in only the cards of one set, then press Take these cards back again."));
+    }
+    tasks::start(
+        place,
+        json!({"kind": tasks::TAKE_BACK}),
+        "Taking the cards back: reading them…",
+    )
+}
+
+/// "Check this card": card `number` of the set, plugged in at `mount`, read again by the
+/// card job (cards::tasks).
+pub fn check(place: &Place, cfg: &Value, request: &Value) -> Result<Value> {
+    let number = request["number"].as_u64().unwrap_or(0);
+    let mount = PathBuf::from(request["mount"].as_str().unwrap_or(""));
+    let not_ours = || {
+        refuse(
+            "This is not a card of this server's set, or it was taken out: look for cards again.",
+        )
+    };
+    let Some(store) = place.existing()? else {
+        return Ok(not_ours());
+    };
+    let Some((set_id, _)) = store.backup_set().map_err(super::card_error)? else {
+        return Ok(not_ours());
+    };
+    let cards = drives::cards_of_set(&store, &set_id, &drives::plugged_in()?, cfg);
+    if !cards
+        .iter()
+        .any(|c| c.row.sequence_number == number && c.mount == mount)
+    {
+        return Ok(not_ours());
+    }
+    tasks::start(
+        place,
+        json!({"kind": tasks::CHECK, "number": number}),
+        &format!("Checking card {number}: every copy on it is read again…"),
+    )
 }
 
 /// "Use this as card N of the set": the drive mounted at the request's `mount`, checked
@@ -342,5 +400,35 @@ mod tests {
             "the reserve, at least 256 MiB, and room for some photos"
         );
         assert_eq!(too_small(32 << 30, 64 << 30, 4096), None);
+    }
+
+    /// T2b-04 (0.52.4): a card of an earlier set is offered back ("older_set", with its
+    /// number and the day its set was made) only while the server's own set has no card.
+    #[test]
+    fn a_card_of_an_earlier_set_is_offered_back_only_while_the_server_has_no_card() {
+        let s = Scratch::new("page-older");
+        let (card, _) = testkit::card(&s, 2);
+        let d = Drive {
+            uuid: testkit::fs_uuid(2),
+            ..drive(&card)
+        };
+        let place = Place {
+            folder: s.dir("ssd-cards"),
+        };
+        let cfg = json!({});
+        let listed = list(&place, &cfg, std::slice::from_ref(&d)).unwrap();
+        let row = &listed["drives"][0];
+        assert_eq!(row["older_set"]["number"], 2, "{listed}");
+        assert!(row["older_set"]["made"].is_i64(), "{listed}");
+        assert!(listed["task"].is_null());
+        // The server has a card of its own set: nothing is offered back.
+        let mut own = drives::identity_at(&card).unwrap().unwrap();
+        own.backup_set_id = testkit::OTHER_SET.to_string();
+        own.volume_id = testkit::volume_id(9);
+        let mut store = place.open().unwrap();
+        store.take_set(testkit::OTHER_SET, "Mine").unwrap();
+        store.saw_volume(&own, 1 << 30, &format::now()).unwrap();
+        let listed = list(&place, &cfg, std::slice::from_ref(&d)).unwrap();
+        assert!(listed["drives"][0]["older_set"].is_null(), "{listed}");
     }
 }

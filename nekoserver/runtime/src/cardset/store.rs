@@ -538,6 +538,49 @@ impl Store {
             .ok_or_else(|| CardError::new(Kind::Invalid, "the backup set was not kept"))
     }
 
+    /// "Take these cards back" (0.52.4): this catalogue becomes the catalogue of the set
+    /// `set_id` the cards carry. Only while it knows no card at all: a set the server
+    /// already writes is never swapped for another.
+    pub fn take_set(&mut self, set_id: &str, name: &str) -> Res<()> {
+        if !self.volumes()?.is_empty() {
+            return Err(CardError::new(
+                Kind::Exists,
+                "this server already has cards of its own set",
+            ));
+        }
+        let tx = self.begin_tx()?;
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES ('backup_set_id', ?1), ('set_display_name', ?2) \
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            params![set_id, name],
+        )
+        .map_err(|e| db("backup set", e))?;
+        tx.commit().map_err(|e| db("commit", e))
+    }
+
+    /// "Check this card" (0.52.4): a copy whose record is gone from its card, or can no
+    /// longer be read, protects nothing.
+    pub fn copy_damaged(&mut self, record_id: &str) -> Res<()> {
+        self.conn
+            .execute(
+                "UPDATE copies SET state = ?2, verified_at = NULL WHERE record_id = ?1",
+                params![record_id, copy_state_str(CopyState::Damaged)],
+            )
+            .map_err(|e| db("damaged copy", e))?;
+        Ok(())
+    }
+
+    /// "Check this card" (0.52.4): when the card was last read in full, and what was found.
+    pub fn rechecked(&mut self, volume_id: &str, now: &str, result: &str) -> Res<()> {
+        self.conn
+            .execute(
+                "UPDATE volumes SET last_recheck_at = ?2, last_recheck_result = ?3 WHERE volume_id = ?1",
+                params![volume_id, now, result],
+            )
+            .map_err(|e| db("recheck", e))?;
+        Ok(())
+    }
+
     /// The catalogue's epoch and its change counter (`CONTENT_TRIGGERS`).
     pub fn content(&self) -> Res<(String, u64)> {
         let counted = self.meta("content")?.parse().map_err(|_| {
@@ -586,7 +629,6 @@ impl Store {
         Ok(())
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
     /// A rebuilt catalogue is another history: a new epoch, revisions from 1 again.
     pub fn start_epoch(&mut self) -> Res<String> {
         let epoch = format::new_uuid()?;
@@ -630,7 +672,6 @@ impl Store {
         Ok(())
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
     /// A volume known only from an inventory snapshot (not attached): added if new, never
     /// changed if the catalogue knows it already.
     pub fn heard_of_volume(&mut self, v: &VolumeRow) -> Res<()> {
@@ -756,7 +797,6 @@ impl Store {
         )
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
     /// A copy known from an inventory snapshot only (its volume's content not observed),
     /// or as the snapshot says it is (lost, damaged, missing). Never over a copy the
     /// catalogue observed itself.
@@ -798,7 +838,6 @@ impl Store {
         tx.commit().map_err(|e| db("commit", e))
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
     /// The version of this ID, if the catalogue has it.
     pub fn version(&self, version_id: &str) -> Res<Option<VersionRow>> {
         self.conn
@@ -811,7 +850,6 @@ impl Store {
             .map_err(|e| db("version", e))
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
     /// A disagreement kept for a person to review (never resolved by a date).
     pub fn add_conflict(&mut self, what: &str, now: &str) -> Res<()> {
         self.conn

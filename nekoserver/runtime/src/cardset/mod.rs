@@ -33,6 +33,7 @@ pub mod inventory;
 pub mod lock;
 pub mod planner;
 pub mod rebuild;
+pub mod recheck;
 pub mod reconcile;
 pub mod run;
 pub mod source;
@@ -43,6 +44,8 @@ pub mod volume;
 pub mod testkit;
 #[cfg(test)]
 mod tests_accept;
+#[cfg(test)]
+mod tests_buttons;
 #[cfg(test)]
 mod tests_catalogue;
 #[cfg(test)]
