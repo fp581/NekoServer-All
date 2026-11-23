@@ -2022,6 +2022,11 @@ class StaleProfileTests(unittest.TestCase):
     def test_the_finishing_screen_judges_against_the_templates_steps(self):
         import wizard
 
+        # An app drive of its own that is not there, never the real /srv/nekoserver of the
+        # PC the tests run on (with NekoServer installed, its reports cannot be read).
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.old['data_mount'] = str(Path(folder.name) / 'ssd')
         states = {name: {'status': 'success'} for name in self.old['profiles']['full']}
         self.assertFalse(wizard.finishing_screen(self.old, states, None, lambda *_: None, checkup=True))
         states.update(desktop={'status': 'success'}, hardware_video={'status': 'success'})
