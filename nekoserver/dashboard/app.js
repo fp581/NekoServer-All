@@ -2658,6 +2658,9 @@ async function startCardsTask(op, body) {
     return;
   }
   toast(controlMessage(answer));
+  // Refused: most often the card was taken out or swapped since the last look, so the
+  // list shows what is plugged in now.
+  await lookForCards(true);
 }
 /* A plain question before a check or a take-back, Cancel first. */
 function cardsConfirm(title, words, go, run) {

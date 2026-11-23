@@ -305,6 +305,7 @@ class StandInControl(socketserver.StreamRequestHandler):
     task = None
     start = None
     fail_look = None  # which look after a start fails (as when Wi-Fi drops for a moment)
+    gone = False  # a refused start: the card was taken out before the press
     looks = 0
 
     def handle(self):
@@ -343,6 +344,8 @@ class StandInControl(socketserver.StreamRequestHandler):
             answer = {'ok': True, 'set': shown, 'drives': drives, 'next_number': 2, 'task': StandInControl.task}
         elif op in ('cards_check', 'cards_take_back') and StandInControl.start:
             answer = StandInControl.start
+            if StandInControl.gone:
+                StandInControl.drives = None
         elif op == 'cards_check':
             answer = {'ok': True, 'message': 'Checking card 2. Leave it in until the check has finished.'}
             StandInControl.plan, StandInControl.looks = list(StandInControl.after_start), 0
@@ -466,7 +469,7 @@ class CardTasksInBrowserTests(unittest.TestCase):
     def setUp(self):
         StandInControl.asked.clear()
         StandInControl.drives, StandInControl.plan, StandInControl.after_start = None, [], []
-        StandInControl.task, StandInControl.start, StandInControl.fail_look = None, None, None
+        StandInControl.task, StandInControl.start, StandInControl.fail_look, StandInControl.gone = None, None, None, False
 
     tearDown = setUp
 
@@ -547,6 +550,17 @@ class CardTasksInBrowserTests(unittest.TestCase):
         seen = self.run_task(look='professional', width=1280, start='Check this card', go='Check card 2')
         self.assertEqual(seen['toast'], 'E42 · ' + why)
         self.assertEqual((seen['asked'], seen['lines']), ([], []))
+
+    def test_a_card_taken_out_before_the_press_is_gone_from_the_list_after(self):
+        # Seen end to end on loop cards: the refusal said "look for cards again" while the
+        # page still offered the card that had been taken out.
+        StandInControl.drives, StandInControl.gone = [OUR_CARD], True
+        why = "This is not a card of this server's set, or it was taken out: look for cards again."
+        StandInControl.start = {'ok': False, 'error': 'E42', 'message': why}
+        seen = self.run_task(look='neko', width=390, start='Check this card', go='Check card 2')
+        self.assertEqual(seen['toast'], 'E42 · ' + why)
+        self.assertEqual(len(seen['after']), 2, seen['after'])
+        self.assertFalse([a for a in seen['after'] if 'Check this card' in a], seen['after'])
 
     def test_the_pin_is_asked_for_when_this_device_is_not_signed_in(self):
         StandInControl.drives = OLDER_CARDS

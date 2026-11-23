@@ -296,7 +296,10 @@ const CHECKS = {
       document.documentElement.scrollWidth,
       document.documentElement.clientWidth
     ]);
-    return { offered, dialog, toast, asked, lines, errors: page.errorsSeen, widths };
+    const after = await page.evaluate(() =>
+      [...document.querySelectorAll('#cards-drives article')].map(a => a.textContent)
+    );
+    return { offered, dialog, toast, asked, lines, after, errors: page.errorsSeen, widths };
   }
 };
 
