@@ -425,6 +425,23 @@ class NightlyBackupTests(unittest.TestCase):
                 self.assertEqual(server.tree(server.files), files_before)
                 self.assertFalse((data / nextcloud_restore.STAGING).exists())
 
+    def test_the_database_user_is_made_with_its_password_quoted_for_psql(self):
+        # T5: a password with ' and \ in config.php (PHP writes them as \' and \\) reaches psql as one literal.
+        with tempfile.TemporaryDirectory() as tmp:
+            stage = Path(tmp)
+            php = rb"""<?php $CONFIG = array ('dbuser' => 'oc_alice', 'dbpassword' => 'a\'b\\c$neko:y',);"""
+            nextcloud_restore.role_sql(stage, 'oc_alice', php)
+            self.assertEqual(
+                (stage / 'role.sql').read_text(),
+                "DO $neko$BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'oc_alice') THEN "
+                'CREATE ROLE "oc_alice" LOGIN PASSWORD ' + r"'a''b\c$neko:y'" + '; END IF; END$neko$;\n',
+            )
+            self.assertEqual((stage / 'role.sql').stat().st_mode & 0o777, 0o600)
+            with self.assertRaisesRegex(RuntimeError, 'cannot be given to psql'):
+                nextcloud_restore.role_sql(
+                    stage / 'x', 'oc_alice', php.replace(b':y', b'$:y').replace(b'$neko:', b'$neko$')
+                )
+
     def test_the_newest_of_nightly_backup_weekly_copy_and_monthly_snapshot_is_used(self):
         cases = {
             # (nightly time, what is loaded, what the date is)
