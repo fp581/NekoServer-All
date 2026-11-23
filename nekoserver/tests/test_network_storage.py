@@ -1025,6 +1025,8 @@ class ReadOnlyCheckTests(unittest.TestCase):
     def test_a_job_at_work_or_an_unfinished_update_blocks_the_repair(self):
         listed = 'nekoserver-photo-backup.service loaded activating start\nnekoserver-nas-watch.service loaded activating x\n'
         run = lambda argv, **k: mock.Mock(returncode=0, stdout=listed)  # noqa: E731
+        # An SSD that is not there, never the real /srv/nekoserver of the PC the tests run on.
+        self.config = {**self.config, 'data_mount': '/nonexistent/srv'}
         with mock.patch('upgrade.nothing_at_work', return_value=None):
             self.assertEqual(self.wizard.repair_blocked(self.config, run), 'nekoserver-photo-backup.service is at work')
             quiet = lambda argv, **k: mock.Mock(

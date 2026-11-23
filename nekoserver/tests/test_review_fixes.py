@@ -3241,7 +3241,7 @@ class NextcloudReinstalledLinuxTests(unittest.TestCase):
         with (
             mock.patch.object(nextcloud, 'finish_files_folder') as given,
             mock.patch.object(nextcloud, 'account_folders_missing') as missing,
-            mock.patch.object(nextcloud, 'cloud_files', return_value='/mnt/nekoserver-media/cloud/files'),
+            mock.patch.object(nextcloud, 'cloud_files', return_value='/nonexistent/cloud/files'),
         ):
             nextcloud.account_folders(['compose'], {}, Path('/x'), True, False, print)
             self.assertEqual((given.call_count, missing.call_count), (0, 0))

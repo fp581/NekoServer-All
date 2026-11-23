@@ -121,7 +121,11 @@ class WizardFlowTests(unittest.TestCase):
         # A release folder of its own: the folders beside it are this test's too.
         self.root = Path(self.tmp.name) / 'nekoserver-v0.31.0'
         self.root.mkdir()
-        shutil.copy(ROOT / 'config.json', self.root / 'config.json')
+        # The template with this test's own app drive, never the real /srv/nekoserver of
+        # the PC the tests run on (settings made from it name the same folder).
+        template = json.loads((ROOT / 'config.json').read_text())
+        template['data_mount'] = str(self.root / 'ssd')
+        (self.root / 'config.json').write_text(json.dumps(template))
         geteuid = mock.patch('os.geteuid', return_value=0)
         geteuid.start()
         self.addCleanup(geteuid.stop)
@@ -146,6 +150,10 @@ class WizardFlowTests(unittest.TestCase):
         found = mock.patch.object(wizard, 'what_is_here', here)
         found.start()
         self.addCleanup(found.stop)
+        # Settings nobody answered yet are read as none: the app drive is then the default.
+        default = mock.patch.object(install_state, 'DATA_MOUNT', str(self.root / 'ssd'))
+        default.start()
+        self.addCleanup(default.stop)
         # The template names the real /srv/nekoserver: on a PC running NekoServer its setup
         # state there would be read (or refused to a normal user). This test's own folder.
         folder = mock.patch.object(wizard, 'data_folder', return_value=self.root / 'ssd')

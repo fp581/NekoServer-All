@@ -1007,7 +1007,9 @@ class ManualSnapshotTests(unittest.TestCase):
             '/media/you/USB',
             '/home/you/Music',
         ):
-            self.assertEqual(neko_common.plain_folder(fine), Path(fine))
+            # Judged by name; the real /srv/nekoserver of a PC with NekoServer is not looked at.
+            with mock.patch.object(Path, 'is_symlink', return_value=False):
+                self.assertEqual(neko_common.plain_folder(fine), Path(fine))
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / 'real').mkdir()
             (Path(d) / 'link').symlink_to(Path(d) / 'real')
@@ -1689,6 +1691,8 @@ class UsbCopyWithoutImmichTests(unittest.TestCase):
                 photo_backup, 'atomic_write', side_effect=lambda path, text, mode: written.update({path.name: text})
             ),
             mock.patch.object(photo_backup.subprocess, 'run'),
+            # Never the PC's real /etc/systemd/system or /var/lib/systemd/timers.
+            mock.patch.object(photo_backup, 'forget_last_run'),
         ):
             result = photo_backup.run(Ctx())
         return result, written
@@ -1719,6 +1723,7 @@ class UsbCopyWithoutImmichTests(unittest.TestCase):
             mock.patch.object(photo_backup.native_runtime, 'backup_guard', return_value=Path('/guard.json')),
             mock.patch.object(photo_backup, 'atomic_write'),
             mock.patch.object(photo_backup.subprocess, 'run'),
+            mock.patch.object(photo_backup, 'forget_last_run'),  # never the PC's real timers
         ):
             photo_backup.run(Ctx())
             self.assertEqual(saved, [{'transport': 'iscsi', 'wwn': '0x6001'}])

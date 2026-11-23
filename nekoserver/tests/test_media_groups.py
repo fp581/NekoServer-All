@@ -451,10 +451,13 @@ class StepTests(unittest.TestCase):
 
     def test_the_recovery_menu_keeps_the_restores_of_the_groups_that_are_on(self):
         with tempfile.TemporaryDirectory() as hdd:
-            keys = [key for key, _ in recovery_wizard.menu({**settings(**only('photos')), 'media_mount': hdd})]
+            # Never the real /srv/nekoserver of the PC the tests run on (its cards folder).
+            own = {**settings(folder=str(Path(hdd) / 'no-ssd'), **only('photos')), 'media_mount': hdd}
+            keys = [key for key, _ in recovery_wizard.menu(own)]
             self.assertIn('photos', keys)
             self.assertNotIn('apps', keys)
-            keys = [key for key, _ in recovery_wizard.menu({**settings(**only('music')), 'media_mount': hdd})]
+            own = {**settings(folder=str(Path(hdd) / 'no-ssd'), **only('music')), 'media_mount': hdd}
+            keys = [key for key, _ in recovery_wizard.menu(own)]
             self.assertNotIn('photos', keys)
             self.assertIn('apps', keys)
 

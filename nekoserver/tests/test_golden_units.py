@@ -384,7 +384,10 @@ class GoldenFileTests(unittest.TestCase):
 
     def check(self, name):
         make, facts = CONFIGURATIONS[name]
-        with tempfile.TemporaryDirectory() as tmp:
+        # The settings name /srv/nekoserver and /mnt/nekoserver-media, as a server's do: the
+        # files are made from them without looking at those folders on the PC the tests run
+        # on (with NekoServer installed they are root's). Links are checked by other tests.
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(Path, 'is_symlink', return_value=False):
             produced = rendered(make(), facts, tmp)
         folder = GOLDEN / name
         if UPDATE:
