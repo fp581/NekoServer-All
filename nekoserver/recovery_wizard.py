@@ -2164,8 +2164,9 @@ def restore_password_list(config, runs, prompt, output):
         ('Into', f'{target} (a new folder that only the administrator, root, can open)'),
         (
             'Password',
-            'it asks for the backup password chosen during setup (for backups made before 0.28.5: the sudo '
-            'password you had then)'
+            'it asks for the backup password of the server that made this list (chosen in its setup; on a rebuilt '
+            'server, the old password, not a new one chosen since; for lists made before 0.28.5: the sudo password '
+            'you had then)'
             if sealed
             else 'none is asked: this list was saved without a backup key',
         ),
