@@ -32,7 +32,8 @@ Run setup (`sudo bash install.sh`) and, on its first page, under **Storage**, sw
      `NekoBackup` folder to it, with a README and its own restore tool. Write the number
      on the card.
    - *Card N of your set*: it is in use already.
-   - Otherwise it says why it can't be one: a card of another set, a card that already
+   - Otherwise it says why it can't be one: a card of another set (this server's own
+     cards from before it was set up again are one too: see below), a card that already
      holds files, a full card, a filesystem other than ext4 or exFAT, a drive built into
      the PC, the disk Linux runs from or one of NekoServer's own drives.
 
@@ -64,6 +65,17 @@ Each card also holds the set's inventory: which card held which file when it was
 written. Only the newest three are kept on each card, and a new one is written only when
 something changed.
 
+**Check your cards now and then.** The server reads a file on a card only when it writes
+it, and an SD card can go bad over the years. Once a year or so, plug each card in and
+press **Check this card** on its row of the Backup cards page (PIN). Every copy on it is
+read again and compared with its checksum; the page shows how far it got and then what it
+found. A damaged copy is named and no longer counts: the next run copies that file again
+onto the card plugged in then (tonight, or at once with **Write to the card now**). Keep
+the card: its other copies are fine. A check changes nothing on the card, and a card taken
+out during the check changes nothing at all (plug it in and press the button again).
+Without the server, the card's own tool does the same check: `verify`
+([CARD-RECOVERY.md](CARD-RECOVERY.md)).
+
 ## Get files back
 
 - **With the server**: `sudo bash install.sh --recover`, then **Restore something from a
@@ -78,8 +90,22 @@ something changed.
   `nekoserver-cards.timer` and by **Write to the card now**. It holds the backups' lock, so
   it never runs at the same time as another backup or the monthly update. Its report is
   `reports/jobs/cards.json` on the SSD; what the server knows of the set is in `cards/` on
-  the SSD (a catalogue, which the cards can always rebuild, and the status the dashboard
-  shows).
+  the SSD (a catalogue of which file is on which card, which the cards can rebuild with
+  **Take these cards back**, and the status the dashboard shows). The two buttons' work
+  runs in the same service: `cards/request.json` is what the page asked for,
+  `cards/task.json` how far it got and how it ended.
+- **The SSD replaced, or NekoServer set up again.** The new catalogue doesn't know the old
+  cards: the Backup cards page shows each as *card N of a backup set made on* that date.
+  Plug in the cards of your set (all of them, or as many as you can) and press **Take
+  these cards back** (PIN): the server reads them and makes its catalogue again from what
+  is on them and from the inventory each card holds. The cards are then the set's again:
+  what is on them is not copied again, and the next run writes on. A card that was not
+  plugged in is known from the others' inventories; its files count again once it has
+  been plugged in for a run. The button is there only while the server has no card of its
+  own set: a card is never taken in without that click, and once a new card 1 is set up,
+  the old cards stay an old set (they still restore without the server,
+  [CARD-RECOVERY.md](CARD-RECOVERY.md), or with the recovery menu's **From backup
+  cards**).
 - A card is written only when it is removable, mounted, enrolled by this server on that
   very filesystem (its UUID), names this set in its `NekoBackup/identity.json`, and is not
   the system disk or one of NekoServer's drives.

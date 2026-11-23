@@ -234,7 +234,7 @@ pub fn from_page(
             };
             let words = lock
                 .map_err(|e| e.to_string())
-                .and_then(|_lock| check(place, cfg, number, &task));
+                .and_then(|_lock| check(place, cfg, data, number, &task));
             task.end(words)?;
             Ok(true)
         }
@@ -339,6 +339,7 @@ fn put_in_place(place: &Place, store: &Store) -> Result<()> {
 fn check(
     place: &Place,
     cfg: &Value,
+    data: &Path,
     number: u64,
     task: &Task,
 ) -> std::result::Result<String, String> {
@@ -368,11 +369,18 @@ fn check(
         }
     })
     .map_err(|e| read_failed(number, &e, "check"))?;
+    // The dashboard's counts at once: a damaged file now waits for a card.
+    let counts = super::wanted(cfg, data)
+        .and_then(|w| super::sources(&mut store, &w))
+        .and_then(|s| super::candidates(&s))
+        .and_then(|(cands, _)| status::count(&store, &cands))
+        .ok();
     let _ = status::save(
         place,
         &store,
         &Seen {
             plugged: cards.iter().map(|c| c.row.sequence_number).collect(),
+            counts,
             ..Seen::default()
         },
     );

@@ -104,11 +104,19 @@ pub fn judge(drive: &Drive, mount: &Path, cfg: &Value, set: Option<&(String, Str
         Ok(Some(id)) if set.is_some_and(|(set_id, _)| *set_id == id.backup_set_id) => {
             return Verdict::Ours(id.sequence_number)
         }
+        // Every set has the same name, so the card's number and the day its set was made
+        // tell it apart: most often this server's own card from before the server was set
+        // up again (T2b-04).
         Ok(Some(id)) => {
+            let made = id
+                .created_at
+                .get(..10)
+                .map(|day| format!(" made on {day}"))
+                .unwrap_or_default();
             return Verdict::Refused(format!(
-                "This card belongs to another backup set (\u{201c}{}\u{201d}): NekoServer leaves it as it is.",
-                id.set_display_name
-            ))
+                "This is card {} of a backup set{made}, not of this server's set (a set from before NekoServer was set up again, or from another server): NekoServer leaves it as it is. While this server has no card of its own yet, Take these cards back makes the cards of that set its own again. Its files can also be restored without the server, with the tool on the card (CARD-RECOVERY.md).",
+                id.sequence_number
+            ));
         }
         Ok(None) => {}
         Err(_) => {
@@ -376,12 +384,14 @@ mod tests {
         let Verdict::Refused(why) = judge(&drive(&card), &card, &cfg, Some(&theirs)) else {
             panic!()
         };
-        assert!(
-            why.starts_with(
-                "This card belongs to another backup set (\u{201c}Example set\u{201d})"
-            ),
-            "{why}"
-        );
+        // T2b-04: every set has the same name, so the words say which card it is, when
+        // its set was made, and that its files can still be restored.
+        let made = drives::identity_at(&card).unwrap().unwrap().created_at;
+        assert!(why.starts_with("This is card 1 of a backup set "), "{why}");
+        assert!(why.contains(&format!("made on {}", &made[..10])), "{why}");
+        assert!(why.contains("set up again"), "{why}");
+        assert!(why.contains("CARD-RECOVERY.md"), "{why}");
+        assert!(!why.contains("Example set"), "{why}");
         // A card the page looked at is checked against what is mounted on its folder.
         let moved = Drive {
             device: "0:0".into(),
