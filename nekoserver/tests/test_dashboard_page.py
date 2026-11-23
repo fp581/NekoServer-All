@@ -965,7 +965,12 @@ class AskNekoPageTests(unittest.TestCase):
         self.assertIn('(await copied(value))', app)
 
     def test_without_the_assistant_the_page_says_so(self):
-        self.assertIn('not set up on this server', page(('askIntro', {}))[0])
+        self.assertIn('not set up on this server', page(('askIntro', {'status': status()}))[0])
+
+    def test_before_the_first_readings_the_page_does_not_say_the_assistant_is_missing(self):
+        # T3 loop, dashboard API and page: in a server's first minute (/api/status E10) Ask
+        # Neko said "The AI assistant is not set up on this server", set up or not.
+        self.assertEqual(page(('askIntro', {}))[0], 'Waiting for the server’s first readings…')
 
     def test_without_a_pin_the_page_says_so_instead_of_asking_for_one(self):
         ready = status(assistant={'set_up': True, 'model': 'qwen3.5:4b', 'memory': '5g', 'cpus': '2'})
