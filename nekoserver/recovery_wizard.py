@@ -2205,15 +2205,46 @@ def password_list_done(target):
     return lines
 
 
+USB_APP_SETTINGS = 'app-settings'  # the weekly copy's folder on the USB drive for the newest app settings
+FROM_USB = ' (copy on the USB drive, opened with the backup password)'
+
+
+def usb_app_settings(usb):
+    """(path, label) of the app settings the weekly copy keeps on the USB drive (the
+    newest nightly backup, sealed for the backup key), newest first."""
+    if not usb:
+        return []
+    return [(p, d + FROM_USB) for p, d in snapshots(Path(usb) / USB_APP_SETTINGS)]
+
+
 def restore_nightly(config, kind, prompt, output):
+    """A night's backup of the app settings (or of Steam and Samba), into a new folder.
+    The app settings are on the USB drive too (1.0.0): with the HDD lost, the weekly
+    copy's is listed with the HDD's, newest first."""
+    if kind != 'apps':
+        return restore_night(config, kind, prompt, output, None)
+    with usb_if_free(config, output) as usb:
+        return restore_night(config, kind, prompt, output, usb)
+
+
+def restore_night(config, kind, prompt, output, usb):
     folder, script, label = (
         ('backups/media-applications', 'app-recovery.py', 'app settings')
         if kind == 'apps'
         else ('backups/host-user', 'host-recovery.py', 'Steam and Samba settings')
     )
-    runs = snapshots(Path(config['media_mount']) / folder)
+    on_usb = usb_app_settings(usb) if kind == 'apps' else []
+    # Newest first; the HDD's before the USB drive's copy of the same night (no password).
+    runs = sorted(
+        snapshots(Path(config['media_mount']) / folder) + on_usb,
+        key=lambda r: int(SNAPSHOT.match(r[0].name)[1]),
+        reverse=True,
+    )
     if not runs:
-        output(f'No nightly backup of {label} found on the HDD yet.')
+        output(
+            f'No nightly backup of {label} found on the HDD yet'
+            + (', nor on the USB drive (or it is not plugged in).' if kind == 'apps' else '.')
+        )
         return
     # A night Steam was open has no Steam files: said in the list, not found out later.
     shown = [
@@ -2222,7 +2253,8 @@ def restore_nightly(config, kind, prompt, output):
     run = choose(f'Which night\'s backup of the {label}? The newest is first.', shown, prompt, output)
     if run is None:
         return
-    target = restore_target(config, f'{kind}-{stamp()}', prompt, output)
+    sealed = run in dict(on_usb)
+    target = restore_target(config, f'{kind}-{stamp()}', prompt, output, usb)
     if target is None:
         output(NOTHING_CHANGED)
         return
@@ -2230,6 +2262,7 @@ def restore_nightly(config, kind, prompt, output):
         ('Restore', dict(MENU)[kind]),
         ('From', f'{run} (the night of {dict(shown)[run]})'),
         ('Into', f'{target} (a new folder)'),
+        *((('Password', 'it asks for the backup password chosen during setup'),) if sealed else ()),
         (
             'Overwritten',
             'nothing. The settings the apps use now stay as they are. To use a restored file you copy it back '
@@ -2243,7 +2276,10 @@ def restore_nightly(config, kind, prompt, output):
     make_home(config, target)
     # With their owners and permissions, so a file copied back works for its app.
     with part_way(target, output):
-        done = tool(script, 'restore', '--snapshot', str(run), '--destination', str(target), '--preserve-owners')
+        if sealed:
+            done = restore_sealed_night(run, target, script, output)
+        else:
+            done = tool(script, 'restore', '--snapshot', str(run), '--destination', str(target), '--preserve-owners')
     if done:
         say(
             output,
@@ -2265,6 +2301,21 @@ def restore_nightly(config, kind, prompt, output):
             '(sudo cp -a <file> <where it belongs>), then start the app.',
             'See APP-BACKUPS.md or HOST-BACKUPS.md for the exact steps.',
         )
+
+
+def restore_sealed_night(copy, target, script, output):
+    """The USB drive's copy of a night's app settings: opened with the backup password
+    into a private folder beside `target`, then restored from there by the same tool and
+    checks as a night on the HDD (every file against the night's own manifest). The
+    opened copy is removed afterwards, whatever happened."""
+    import backup_secrets
+
+    opened = unused(Path(target).parent / f'.{Path(target).name}-opening')
+    try:
+        backup_secrets.asked_open_app_settings(copy, opened, out=output)
+        return tool(script, 'restore', '--snapshot', str(opened), '--destination', str(target), '--preserve-owners')
+    finally:
+        shutil.rmtree(opened, ignore_errors=True)
 
 
 MUSIC_BACKUP = 'backups/music'  # the nightly music backup on the HDD (runtime music_backup.rs)
@@ -3760,7 +3811,7 @@ DRIVE_ACTIONS = {
 # The restores whose backups the HDD keeps, and those of them the USB drive may hold too.
 # Without the HDD, "no backup found" would read as "no backup was ever made".
 KEPT_ON_HDD = {'photos', 'passwords', 'apps', 'host', 'music', 'monthly'}
-ALSO_ON_USB = {'photos', 'passwords'}
+ALSO_ON_USB = {'photos', 'passwords', 'apps'}
 HDD_AWAY = (
     'The HDD is not mounted at {mount} (or another drive is there), so the backups NekoServer keeps '
     'on it cannot be seen. Connect it (or restart the PC), then choose this again.'

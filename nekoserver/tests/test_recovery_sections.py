@@ -242,7 +242,7 @@ class HddAwayTests(Server, unittest.TestCase):
         return started.called
 
     def test_a_backup_only_the_hdd_holds_is_not_looked_for_without_it(self):
-        for number in ('4', '5', '6'):  # nightly app settings, Steam and Samba, monthly snapshot
+        for number in ('5', '6'):  # Steam and Samba, monthly snapshot
             with self.subTest(choice=number):
                 self.out.clear()
                 self.assertFalse(self.restore(number))
@@ -250,7 +250,8 @@ class HddAwayTests(Server, unittest.TestCase):
                 self.assertIn('so the backups NekoServer keeps on it cannot be seen', self.said())
 
     def test_a_backup_the_usb_drive_may_hold_is_still_looked_for_there(self):
-        for number in ('1', '3'):  # photos, the password list
+        # Photos, the password list, and (1.0.0) the nightly app settings' weekly copy.
+        for number in ('1', '3', '4'):
             with self.subTest(choice=number):
                 self.out.clear()
                 self.assertTrue(self.restore(number))

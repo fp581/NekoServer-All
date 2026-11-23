@@ -377,6 +377,127 @@ def restore(snapshot, destination, password, key_dir=KEY_DIR, out=print):
     return destination
 
 
+USB_APP_SETTINGS = 'app-settings'  # the weekly copy's folder on the USB drive (runtime usb_app_settings.rs)
+USB_APP_SETTINGS_FORMAT = 'neko-usb-app-settings-v1'
+APP_ARCHIVE = 'settings.tar.enc'
+APP_ARCHIVE_KEY = 'archive-key.cms'
+# How the archive's password makes its key: the same as the weekly copy (usb_app_settings.rs ENC_ARGS).
+APP_ENC_ARGS = ['-aes-256-ctr', '-pbkdf2', '-iter', '100000', '-salt']
+APP_COPY_DAMAGED = (
+    'The copy of the app settings on the USB drive is damaged ({what} does not match its checksum); '
+    'nothing was restored. Use a nightly backup on the HDD, or the next weekly copy'
+)
+
+
+def app_settings_files(copy):
+    """The files of a weekly copy of the app settings on the USB drive, each checked
+    against the checksum the copy recorded (decryption does not notice a changed byte),
+    and whether its key copy is damaged."""
+    copy = absolute(copy, 'Copy')
+    try:
+        manifest = json.loads((copy / 'manifest.json').read_text())
+    except (OSError, ValueError):
+        raise RuntimeError('Not a copy of the app settings: manifest.json missing or unreadable') from None
+    if not isinstance(manifest, dict) or manifest.get('format') != USB_APP_SETTINGS_FORMAT:
+        raise RuntimeError('Not a copy of the app settings')
+    sums = manifest.get('sha256') if isinstance(manifest.get('sha256'), dict) else {}
+    files = {}
+    for key, name, what in (
+        ('archive', APP_ARCHIVE, 'the archive'),
+        ('archive_key', APP_ARCHIVE_KEY, 'its sealed password'),
+        ('secrets_key', KEY_NAME, 'its backup key'),
+        ('secrets_cert', CERT_NAME, 'its backup certificate'),
+    ):
+        path = safe_path(copy / name)
+        expected = sums.get(key)
+        if not path.is_file() or not isinstance(expected, str):
+            raise RuntimeError(APP_COPY_DAMAGED.format(what=what))
+        # A damaged key copy can still be stood in for by this server's own key (opening_key).
+        if key != 'secrets_key' and sha256(path) != expected:
+            raise RuntimeError(APP_COPY_DAMAGED.format(what=what))
+        files[key] = path
+    return files, sha256(files['secrets_key']) != sums['secrets_key']
+
+
+def open_app_settings(copy, into, password, key_dir=KEY_DIR, out=print):
+    """Decrypt a weekly copy of the app settings (USB drive, app-settings/<snapshot>) into
+    `into`, a new private folder: the nightly snapshot it was made of, its manifest and
+    payload, for app-recovery.py to restore and check file by file as one on the HDD."""
+    files, damaged = app_settings_files(copy)
+    into = absolute(into, 'Folder')
+    if into.exists() or not into.parent.is_dir():
+        raise RuntimeError(NEW_FOLDER)
+    key = opening_key(files['secrets_key'], files['secrets_cert'], password, damaged, key_dir, out)
+    secret = openssl(
+        [
+            'cms',
+            '-decrypt',
+            '-binary',
+            '-inform',
+            'DER',
+            '-in',
+            str(files['archive_key']),
+            '-inkey',
+            str(key),
+            '-passin',
+            'fd:{fd}',
+            '-recip',
+            str(files['secrets_cert']),
+        ],
+        b'',
+        password,
+    )
+    into.mkdir(mode=0o700)
+    # The archive's password over a pipe (never argv), decrypted straight into tar: the
+    # settings can be gigabytes (Jellyfin's pictures), never held in memory.
+    read, write = os.pipe()
+    os.write(write, secret + b'\n')
+    os.close(write)
+    try:
+        dec = subprocess.Popen(
+            ['openssl', 'enc', '-d', *APP_ENC_ARGS, '-pass', f'fd:{read}', '-in', str(files['archive'])],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            pass_fds=(read,),
+        )
+        try:
+            # Unpacked inside the new folder (its working directory), so no path is an
+            # argument tar could read as an option.
+            unpacked = subprocess.run(
+                ['tar', '--extract', '--file', '-', '--no-same-owner', '--no-same-permissions'],
+                stdin=dec.stdout,
+                capture_output=True,
+                timeout=6 * 3600,
+                check=False,
+                cwd=into,
+            )
+        finally:
+            dec.stdout.close()
+            decrypted = dec.wait()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        shutil.rmtree(into, ignore_errors=True)
+        raise RuntimeError(f'The app settings could not be unpacked ({exc}); nothing was restored') from None
+    finally:
+        os.close(read)
+    if decrypted or unpacked.returncode:
+        reason = (unpacked.stderr or b'').decode(errors='replace').strip().splitlines()[-1:] or ['it did not decrypt']
+        shutil.rmtree(into, ignore_errors=True)
+        raise RuntimeError(
+            f'The app settings could not be unpacked ({reason[0]}); nothing was restored. '
+            'Check the free space there, or choose another folder and try again'
+        )
+    return into
+
+
+def asked_open_app_settings(copy, into, out=print):
+    """open_app_settings, with the backup password asked as asked_restore asks it (the
+    recovery menu's "App settings, from a nightly backup", for the USB drive's copy)."""
+    try:
+        return open_app_settings(copy, into, getpass.getpass(RESTORE_PROMPT), out=out)
+    except OSError as exc:
+        raise RuntimeError(NOT_WRITTEN.format(reason=snapshot_restore.failure_reason(exc))) from None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(

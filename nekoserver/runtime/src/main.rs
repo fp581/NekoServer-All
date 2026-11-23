@@ -29,6 +29,7 @@ mod serve;
 mod shared_folders;
 mod startup;
 mod updates;
+mod usb_app_settings;
 use common::{Error, Result};
 use std::{collections::BTreeMap, env, path::PathBuf};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

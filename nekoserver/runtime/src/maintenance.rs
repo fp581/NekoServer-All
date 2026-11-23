@@ -1200,7 +1200,7 @@ pub(crate) fn encrypt_secrets_with(
 /// (backup_secrets.py --new-password) puts a new certificate and a new key in their
 /// places, one after the other: two reads that agree are of one pair, and reads that
 /// differ are made again a moment later.
-fn key_pair(key: &Path, cert: &Path) -> Result<(Vec<u8>, Vec<u8>)> {
+pub(crate) fn key_pair(key: &Path, cert: &Path) -> Result<(Vec<u8>, Vec<u8>)> {
     let read = || -> Result<(Vec<u8>, Vec<u8>)> {
         Ok((common::bytes(key, 64_000)?, common::bytes(cert, 64_000)?))
     };
@@ -5590,7 +5590,7 @@ fn committed() -> bool {
     load(Path::new(*JOURNAL)).is_ok_and(|j| j["phase"] == "committed")
 }
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     /// The review of 0.47.0: the update's check worked the folders out again (the drive,
     /// then a fixed name) instead of reading the ones setup wrote down.
@@ -6487,7 +6487,7 @@ mod tests {
     }
     /// A backup key in `keys`, locked with `password`: the format backup_secrets.py makes
     /// (fewer rounds, so the tests stay quick).
-    fn backup_key(keys: &Path, password: &str) {
+    pub(crate) fn backup_key(keys: &Path, password: &str) {
         let pass = format!("pass:{password}");
         let plain = sh(
             &[
