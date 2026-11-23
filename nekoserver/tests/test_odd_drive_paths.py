@@ -55,6 +55,30 @@ class TwoSlashesTests(unittest.TestCase):
         self.assertEqual((state_dir, on_the_ssd), (Path('/srv/nekoserver/installer/state'), True))
 
 
+class SettingsCheckTests(unittest.TestCase):
+    """The settings check refuses a drive folder written with two slashes at the start, so
+    setup stops at once with what to write, not later on "Refusing symlink path" (T5-04)."""
+
+    def test_two_slashes_at_the_start_are_refused_with_what_to_write(self):
+        import json
+
+        config = json.loads((ROOT / 'config.json').read_text())
+        for key in ('data_mount', 'media_mount'):
+            with self.subTest(key=key):
+                with self.assertRaises(RuntimeError) as caught:
+                    installer.validate_config({**config, key: '//srv/nekoserver-' + key})
+                self.assertEqual(
+                    str(caught.exception),
+                    'Write the drive folder with one "/" at the start, as /srv/nekoserver: //srv/nekoserver-' + key,
+                )
+
+    def test_one_slash_or_three_are_taken_as_before(self):
+        import neko_common
+
+        self.assertEqual(str(neko_common.mount_path('/srv/nekoserver')), '/srv/nekoserver')
+        self.assertEqual(str(neko_common.mount_path('///srv/nekoserver')), '/srv/nekoserver')
+
+
 class NulByteTests(unittest.TestCase):
     """A NUL byte names no folder: each check says so in its own words, as v0.52.1 did,
     instead of ending on "embedded null byte" (T4-2)."""
