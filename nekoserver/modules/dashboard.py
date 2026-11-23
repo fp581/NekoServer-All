@@ -417,7 +417,8 @@ def units(data, code, config, port, interval, public=None, control=False):
         + str(data / 'dashboard-state')
         # AF_NETLINK: `ip` lists this PC's addresses, so a home-network address the router
         # took away is said on the page (collect.rs home_network) instead of "unknown".
-        + '\nRestrictAddressFamilies=AF_UNIX AF_NETLINK\n',
+        # Without CAP_NET_ADMIN that socket can only read: no link or address is changed.
+        + '\nRestrictAddressFamilies=AF_UNIX AF_NETLINK\nCapabilityBoundingSet=~CAP_NET_ADMIN\n',
         'nekoserver-dashboard-collect.timer': f'[Unit]\nDescription=NekoServer periodic dashboard collection\n[Timer]\nOnBootSec=15s\nOnUnitInactiveSec={interval}s\nUnit=nekoserver-dashboard-collect.service\n[Install]\nWantedBy=timers.target\n',
         SOCKET: '[Unit]\nDescription=NekoServer local dashboard port\n[Socket]\n'
         f'ListenStream=127.0.0.1:{port}\nAccept=no\nNoDelay=yes\n[Install]\nWantedBy=sockets.target\n',
