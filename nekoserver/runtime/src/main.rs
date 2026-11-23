@@ -22,6 +22,7 @@ mod media;
 mod media_folders;
 mod music_backup;
 mod nas_watch;
+mod nextcloud_nightly;
 mod notify;
 mod openrgb;
 mod os_policy;

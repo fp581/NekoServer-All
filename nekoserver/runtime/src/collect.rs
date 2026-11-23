@@ -97,7 +97,7 @@ pub(crate) const JOBS: [(&str, &str, &str, f64); 10] = [
     ),
     (
         "applications",
-        "Media application snapshot",
+        "Nightly app snapshot (media apps and Nextcloud)",
         "nekoserver-app-backup",
         172800.0,
     ),
@@ -1426,13 +1426,16 @@ fn retired(cfg: &Value, key: &str) -> Option<&'static str> {
         "music" if !common::media_group(cfg, "music") => {
             Some("Switched off: Music (Navidrome) is left out")
         }
-        // The nightly app backup is of the media apps: off when none of them is set up
-        // (their groups off, or a list of apps that is empty).
+        // The nightly app backup is of the media apps and, since 1.0.0, of Nextcloud: off
+        // when none of the media apps is set up (their groups off, or a list of apps that
+        // is empty) and Nextcloud is switched off (on unless "enabled" is false, as
+        // neko_common.nextcloud_enabled reads it).
         "applications"
-            if cfg["media"]["services"].is_array() && common::media_services(cfg).is_empty()
-                || !(common::media_group(cfg, "movies") || common::media_group(cfg, "music")) =>
+            if (cfg["media"]["services"].is_array() && common::media_services(cfg).is_empty()
+                || !(common::media_group(cfg, "movies") || common::media_group(cfg, "music")))
+                && cfg["nextcloud"]["enabled"] == false =>
         {
-            Some("Switched off: the media apps are left out")
+            Some("Switched off: neither the media apps nor Nextcloud is set up")
         }
         "archive" | "database" if !immich => Some("Switched off: Immich is not set up"),
         "external" if !immich && cfg["nextcloud"]["enabled"] != true => {
@@ -4425,12 +4428,19 @@ mod os_tests {
         // The media apps left out (0.50.0): their backups are off, the others expected.
         let no_media = json!({"media_apps":{"wanted":false},"photos":{"deploy_immich":true},
             "nextcloud":{"enabled":true}});
-        for key in ["music", "applications", "archive", "database"] {
+        for key in ["music", "archive", "database"] {
             assert!(retired(&no_media, key).is_some(), "{key}");
         }
-        for key in ["external", "host"] {
+        // 1.0.0 (C-01): the nightly app backup goes on for Nextcloud; off with it off too.
+        for key in ["applications", "external", "host"] {
             assert_eq!(retired(&no_media, key), None, "{key}");
         }
+        let mut no_cloud = no_media.clone();
+        no_cloud["nextcloud"]["enabled"] = json!(false);
+        assert_eq!(
+            retired(&no_cloud, "applications"),
+            Some("Switched off: neither the media apps nor Nextcloud is set up")
+        );
         // One group off (0.50.0): only that group's backups are off.
         let apps = json!(["jellyfin", "navidrome"]);
         let no_music = json!({"media_apps":{"music":false},"media":{"services":apps},
@@ -4441,10 +4451,8 @@ mod os_tests {
         }
         let photos_only = json!({"media_apps":{"movies":false,"music":false},
             "media":{"services":apps},"photos":{"deploy_immich":true}});
-        for key in ["music", "applications"] {
-            assert!(retired(&photos_only, key).is_some(), "{key}");
-        }
-        for key in ["archive", "database", "external"] {
+        assert!(retired(&photos_only, "music").is_some());
+        for key in ["applications", "archive", "database", "external"] {
             assert_eq!(retired(&photos_only, key), None, "{key}");
         }
     }

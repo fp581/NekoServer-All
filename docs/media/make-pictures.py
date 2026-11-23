@@ -146,7 +146,7 @@ def healthy_status(now):
         }
 
     backups = [
-        job('applications', 'Media application snapshot', 'nekoserver-app-backup.service',
+        job('applications', 'Nightly app snapshot (media apps and Nextcloud)', 'nekoserver-app-backup.service',
             now - 9 * hour, tonight(2, 15), ['app_restore']),
         job('host', 'Host and user snapshot', 'nekoserver-host-backup.service',
             now - 8 * hour, tonight(3, 15), ['host_restore']),

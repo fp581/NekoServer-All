@@ -3,7 +3,7 @@
 use crate::{
     backup,
     common::{self, Error, Result},
-    Args, VERSION,
+    nextcloud_nightly, Args, VERSION,
 };
 use serde_json::{json, Value};
 use std::{
@@ -180,7 +180,12 @@ pub fn resume_command(a: &Args) -> Result<()> {
     // below (neko_common.RESUME_TIMEOUT).
     let _lock = common::lock_wait(Path::new(LOCK), std::time::Duration::from_secs(15 * 60))?;
     let _recovery_lock = backup::coordinate(&job.cfgpath, &job.data, &job.media)?;
-    resume()?;
+    // A run cut off while Nextcloud was paused for its nightly backup (1.0.0): started
+    // again here too, under the same lock, as servers without the weekly USB copy have
+    // no Nextcloud resume service of their own.
+    let cloud = backup::resume_cloud_held(&job.cfg);
+    let apps = resume();
+    common::first_error(apps, cloud)?;
     backup::mark_interrupted(&report)
 }
 /// Collect regular files and directories. Symlinks, sockets, FIFOs, devices and
@@ -436,7 +441,9 @@ fn selected(cfg: &Value) -> Result<Vec<String>> {
         }
         names.push(s.to_string());
     }
-    if names.is_empty() {
+    // 1.0.0 (C-01): Nextcloud is backed up each night too, so a server with Nextcloud and
+    // none of the media apps runs this job for Nextcloud alone.
+    if names.is_empty() && cfg["nextcloud"] != true {
         return Err(Error::new("No application services"));
     }
     Ok(names)
@@ -447,14 +454,47 @@ pub fn run(a: &Args) -> Result<()> {
     let _lock = common::lock(Path::new(LOCK))?;
     let _recovery_lock = backup::coordinate(&job.cfgpath, &job.data, &job.media)?;
     resume()?;
+    let cloud = job.cfg["nextcloud"] == true;
     let result = backup::execute_with(Some(&job.data), "applications", &job.cfgpath, || {
         backup::no_unfinished_update()?;
-        snapshot(&job.cfgpath, &job.data, &job.media, &names)
+        // The media apps first, exactly as before; then Nextcloud, which runs whether
+        // their backup went well or not, and whose failure leaves theirs as it is.
+        let apps = if names.is_empty() {
+            Ok(backup::Outcome { partial: None })
+        } else {
+            snapshot(&job.cfgpath, &job.data, &job.media, &names)
+        };
+        let missed = cloud
+            .then(|| nextcloud_nightly::run(&job.cfgpath, &job.data, &job.media).err())
+            .flatten()
+            .map(|e| nextcloud_nightly::not_saved(&e));
+        with_cloud(apps, missed)
     });
     if result.is_ok() {
         record_docker_version(&job.data);
     }
     result
+}
+/// The night's result with what became of Nextcloud's backup: one that was not made
+/// (`missed`, said in plain words) makes the night "done in part", or is added to the
+/// media apps' own failure.
+fn with_cloud(apps: Result<backup::Outcome>, missed: Option<String>) -> Result<backup::Outcome> {
+    let Some(missed) = missed else {
+        return apps;
+    };
+    println!("{missed}");
+    match apps {
+        Ok(backup::Outcome { partial }) => {
+            let mut notes = partial
+                .and_then(|p| p.as_array().cloned())
+                .unwrap_or_default();
+            notes.push(json!(missed));
+            Ok(backup::Outcome {
+                partial: Some(json!(notes)),
+            })
+        }
+        Err(e) => Err(Error::new(&format!("{e}. Also: {missed}"))),
+    }
 }
 /// The host checkpoint, setup's record for taking the apps over after Linux is
 /// reinstalled, names the Docker version they must run with. The OS's own updates move
@@ -758,6 +798,62 @@ fn snapshot(
 mod tests {
     use super::*;
     use std::os::unix::fs::DirBuilderExt;
+    /// 1.0.0 (C-01): Nextcloud alone is enough for the nightly job; with neither, it is
+    /// refused as before; the media apps' list is read as before.
+    #[test]
+    fn nextcloud_alone_is_backed_up_each_night() {
+        let only_cloud = json!({"media": {"services": []}, "nextcloud": true});
+        assert_eq!(selected(&only_cloud).unwrap(), Vec::<String>::new());
+        let neither = json!({"media": {"services": []}, "nextcloud": false});
+        assert_eq!(
+            selected(&neither).unwrap_err().to_string(),
+            "No application services"
+        );
+        // A settings file from before 1.0.0 has no "nextcloud": unchanged.
+        let before = json!({"media": {"services": []}});
+        assert_eq!(
+            selected(&before).unwrap_err().to_string(),
+            "No application services"
+        );
+        let both = json!({"media": {"services": ["sonarr", "radarr"]}, "nextcloud": true});
+        assert_eq!(selected(&both).unwrap(), ["sonarr", "radarr"]);
+    }
+    /// A Nextcloud backup that was not made makes the night "done in part" in plain
+    /// words; the media apps' outcome is kept as it was.
+    #[test]
+    fn a_missed_nextcloud_backup_leaves_the_other_apps_backup_as_it_is() {
+        let ok = || Ok(backup::Outcome { partial: None });
+        assert!(with_cloud(ok(), None).unwrap().partial.is_none());
+        let missed = Some("Nextcloud was not backed up tonight: disk full".to_string());
+        assert_eq!(
+            with_cloud(ok(), missed.clone()).unwrap().partial,
+            Some(json!(["Nextcloud was not backed up tonight: disk full"]))
+        );
+        let short = Ok(backup::Outcome {
+            partial: Some(json!(["2 older backups were removed for room"])),
+        });
+        assert_eq!(
+            with_cloud(short, missed.clone()).unwrap().partial,
+            Some(json!([
+                "2 older backups were removed for room",
+                "Nextcloud was not backed up tonight: disk full"
+            ]))
+        );
+        let failed = with_cloud(
+            Err(Error::new("Application did not shut down cleanly")),
+            missed,
+        );
+        assert_eq!(
+            failed.unwrap_err().to_string(),
+            "Application did not shut down cleanly. Also: Nextcloud was not backed up tonight: disk full"
+        );
+        assert_eq!(
+            with_cloud(Err(Error::new("x")), None)
+                .unwrap_err()
+                .to_string(),
+            "x"
+        );
+    }
     #[test]
     fn a_night_with_docker_stopped_says_so_and_what_to_do() {
         // Deep check 613: the real app-snapshot run with Docker stopped left only
