@@ -1,23 +1,8 @@
 # Changelog
 
-## Next release (0.52.4) — in progress
-
-Fixes for what the round of tests of 0.52.2 found that 0.52.1 did too.
-
-### Fixed
-- **The dashboard's Updates page knows a device is signed in with its PIN**: Check for updates, Update now and the other buttons there asked for the PIN again. When the unlock has run out (after 12 hours, or a restart of the control service), an app change asks for the PIN in the words app changes use, not the fans and lights ones.
-- **In the setup window, a card that needs another says which** ("Needs Movies and shows - Jellyfin switched on."), so a TV card that went grey with Movies and shows off no longer looks impossible on this PC.
-- **On a phone at 200 % zoom, the dashboard's banner link ("What does this mean?") wraps**, so the Fans & lights page no longer scrolls sideways by 2 pixels.
-- **Ask Neko is set up on a first install of an 8 GB PC.** Setup measured the free memory just after Immich started, at its peak, and said there was not enough for a model; a minute later there was. When the apps have just started, setup now looks again for up to 3 minutes before deciding. A later run that finds the apps running measures once and waits for nothing.
-- **Ask Neko's model question says once what Enter does.** The list said "0) No assistant (press Enter)" while the line under it said Enter keeps the model, when the first page's Ask Neko switch was on; now only the line under the list says what Enter alone chooses. ASSISTANT.md shows the question as it is.
-- **An Ask Neko answer that was cut off says so**: "Neko's answer was cut off: it reached its length limit before it ended; ask again about one thing at a time". It said "Neko is not available right now", though Neko had answered and its text stayed on the page.
-- **Setup's music step names Lidarr only while Lidarr is set up**, and a desktop shortcut it takes away is said once, not twice.
-- **Setup's review says when no connected drive can be the offline backup**: "Offline backup: none yet, as no drive connected now can be one. Connect a drive you can unplug and run  sudo bash install.sh  again to choose it". It said nothing about the offline backup then.
-- **An app switched off is said to be "stopped and its containers removed"**, which is what setup does (your files and the apps' data stay). With Photos switched off, Immich's line now says to run setup again and switch Photos back on, as every other app's does, not to edit the settings file.
-
 ## v0.52.3 — 2026-11-23
 
-Fixes found by testing 0.52.2 against 0.52.1, old against new, on a test VM, with the real runtime and in a browser. The server does what 0.52.1 did, as 0.52.2 meant to; what changes is said below.
+Fixes found by testing 0.52.2 against 0.52.1, old against new, on a test VM, with the real runtime and in a browser: what 0.52.2 did differently, and things 0.52.1 already did wrong. What changes is said below.
 
 ### Fixed: the upgrade
 - **The release says its own number.** 0.52.2's download said it was 0.52.1, so every server refused to upgrade to v0.52.2-beta. 0.52.3 says 0.52.3 everywhere the number is kept, and a test now fails when the code's number and the changelog's newest entry differ.
@@ -32,12 +17,25 @@ Fixes found by testing 0.52.2 against 0.52.1, old against new, on a test VM, wit
 - **The guides say what setup asks, and when.** The dashboard PIN, the shared-folder password, the app-account choice and the backup times are asked before the install starts, not during it; the TV, phone-alert and outage-alert questions are answered by the first page's switches; pressing Enter at the download sources adds the ticked recommended ones (it does not skip them); the shared-folder password is kept and shown by *Show login*; app updates run every week, the monthly run checks the backups.
 - **The recovery guides match the tools**: restored Steam and Samba folders start at `source0`; a card restore's `--card` goes before the command word. ACCOUNT-SETUP.md's option 2 is typing every login yourself, and DASHBOARD.md's readings count as late after 3 minutes at the least.
 
+### Fixed: what 0.52.1 did too
+- **The dashboard's Updates page knows a device is signed in with its PIN**: Check for updates, Update now and the other buttons there asked for the PIN again. When the unlock has run out (after 12 hours, or a restart of the control service), an app change asks for the PIN in the words app changes use, not the fans and lights ones.
+- **In the setup window, a card that needs another says which** ("Needs Movies and shows - Jellyfin switched on."), so a TV card that went grey with Movies and shows off no longer looks impossible on this PC.
+- **On a phone at 200 % zoom, the dashboard's banner link ("What does this mean?") wraps**, so the Fans & lights page no longer scrolls sideways by 2 pixels.
+- **Ask Neko is set up on a first install of an 8 GB PC.** Setup measured the free memory just after Immich started, at its peak, and said there was not enough for a model; a minute later there was. When the apps have just started, setup now looks again for up to 3 minutes before deciding. A later run that finds the apps running measures once and waits for nothing.
+- **Ask Neko's model question says once what Enter does.** The list said "0) No assistant (press Enter)" while the line under it said Enter keeps the model, when the first page's Ask Neko switch was on; now only the line under the list says what Enter alone chooses. ASSISTANT.md shows the question as it is.
+- **An Ask Neko answer that was cut off says so**: "Neko's answer was cut off: it reached its length limit before it ended; ask again about one thing at a time". It said "Neko is not available right now", though Neko had answered and its text stayed on the page.
+- **Setup's music step names Lidarr only while Lidarr is set up**, and a desktop shortcut it takes away is said once, not twice.
+- **Setup's review says when no connected drive can be the offline backup**: "Offline backup: none yet, as no drive connected now can be one. Connect a drive you can unplug and run  sudo bash install.sh  again to choose it". It said nothing about the offline backup then.
+- **An app switched off is said to be "stopped and its containers removed"**, which is what setup does (your files and the apps' data stay). With Photos switched off, Immich's line now says to run setup again and switch Photos back on, as every other app's does, not to edit the settings file.
+
 ### Cleaned
 - **Three pictures nothing showed any more are gone** (`docs/media/dashboard.webp`, `install.webp` and `uninstall.webp`, 2.6 MB), left from the README before 0.50.0.
+- **The setup window's unused `.mono` style is gone**; nothing on the window used it.
 - **The card restore tool's folder check and a reading of `systemctl show`** are written as SonarCloud asks (S8707, S7494), doing the same.
 
 ### Tests
 - **Tests for what mutation testing found untested** in the split Python (the settings file and source drive checks of the source import, its progress with linked files, `media-connect.py`'s steps and drive check, the store a recovery reattaches), each pinning what 0.52.1 does.
+- **The dashboard's browser tests wait the way the page's security policy allows**, so the backup cards test runs instead of erroring every time.
 
 ## v0.52.2 — 2026-11-23
 
