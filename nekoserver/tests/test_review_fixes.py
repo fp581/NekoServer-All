@@ -3178,11 +3178,22 @@ class NextcloudReinstalledLinuxTests(unittest.TestCase):
             '| Folders | Files | New | Updated | Removed | Errors | Elapsed time |\n'
             '| 1       | 0     | 0   | 0       | 0       | 0      | 00:00:01     |\n'
         )
-        listed = json.dumps({'alice': 'Alice', 'neko_530a354d3d6b': 'x', 'bob': 'Bob'})
+        # occ user:list --info, as Nextcloud 35 answers: carol never signed in (dave neither,
+        # as an older Nextcloud says it).
+        listed = json.dumps(
+            {
+                'alice': {'display_name': 'Alice', 'last_seen': '2026-11-20T10:00:00+00:00'},
+                'neko_530a354d3d6b': {'display_name': 'x', 'last_seen': '2026-11-01T09:00:00+00:00'},
+                'bob': {'display_name': 'Bob', 'last_seen': '2026-11-02T09:00:00+00:00'},
+                'carol': {'display_name': 'Carol', 'last_seen': 'never'},
+                'dave': {'display_name': 'Dave', 'last_seen': '1970-01-01T00:00:00+00:00'},
+            }
+        )
         scans = []
 
         def run(argv, **kw):
             if 'user:list' in argv:
+                self.assertIn('--info', argv)
                 return mock.Mock(returncode=0, stdout=listed, stderr='')
             scans.append(argv[-1])
             return mock.Mock(returncode=0, stdout=table)
@@ -3210,6 +3221,20 @@ class NextcloudReinstalledLinuxTests(unittest.TestCase):
                 scans.clear(), said.clear()
                 self.assertEqual(nextcloud.account_folders_missing(['compose'], files, said.append, run=run), 0)
                 self.assertEqual((scans, said), ([], []))
+                # Never signed in (carol, dave): no folder made, so Nextcloud gives the account
+                # its welcome files at the first sign-in.
+                self.assertFalse((files / 'carol').exists() or (files / 'dave').exists())
+
+        # It runs on every setup run, an unattended upgrade too: occ failing is said and the
+        # step goes on (the given-back repair still raises, see the test below).
+        said = []
+
+        def failing(argv, **kw):
+            return mock.Mock(returncode=1, stdout='', stderr='')
+
+        self.assertEqual(nextcloud.account_folders_missing(['compose'], Path('/nonexistent'), said.append, failing), 0)
+        self.assertIn('could not check that every account has its folder', said[0])
+        self.assertIn('ended with error 1', said[0])
 
         # The step: a first install makes no folders; a given-back files folder makes them all;
         # any later run makes the missing ones.
