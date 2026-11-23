@@ -1248,6 +1248,12 @@ fn held_by(path: &Path, setup: &Path) -> bool {
 /// Whether setup (`sudo bash install.sh`) is running: some process holds its lock.
 /// Read-only, like held_by: a setup starting this moment is never kept from its lock.
 pub fn setup_running() -> bool {
+    // Unit tests never read this PC's own setup lock (as apps::journals): a setup or an
+    // install test holding it on the same PC would answer before the check a test is
+    // about. setup_held is tested with a lock of its own.
+    if cfg!(test) {
+        return false;
+    }
     setup_held(Path::new(*SETUP_LOCK))
 }
 /// install.sh takes its lock with the flock command on a descriptor bash keeps
