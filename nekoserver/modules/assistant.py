@@ -30,6 +30,7 @@ from pathlib import Path
 
 import guided_setup
 import importlib.util
+from finish_states import BROKEN_STEP
 from neko_common import (
     ASSISTANT,
     OLLAMA_PORT,
@@ -328,11 +329,17 @@ def least_need(config, chosen):
 
 
 def apps_just_started(ctx):
-    """Whether an app was set up for the first time in this run: its step is in the run,
-    and the run before had not finished it (or there was no run before)."""
+    """Whether an app may start for the first time in this run: its step is in the run, and
+    the run before has no record of it or left it where the app may not have run (failed,
+    blocked, cut off). A step left as 'needs_setup' (Music waiting for its listener, say)
+    has its app running already."""
     plan = getattr(ctx, 'plan', None) or ()
     previous = getattr(ctx, 'previous', None) or {}
-    return any(name in plan and (previous.get(name) or {}).get('status') != 'success' for name in APP_STEPS)
+
+    def new(name):
+        return name not in previous or (previous[name] or {}).get('status') in BROKEN_STEP
+
+    return any(name in plan and new(name) for name in APP_STEPS)
 
 
 def settled_memory(need, own, log, read=None, sleep=None, clock=None):

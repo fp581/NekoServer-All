@@ -479,21 +479,31 @@ class MemoryTests(unittest.TestCase):
 
     def test_a_later_run_measures_once_and_waits_for_nothing(self):
         """Review of 22cf801: on a PC where the apps have run for days (Photos set up by an
-        earlier run), nothing settles, so the step must not wait 3 minutes to say the same."""
-        ctx = context({'assistant': {'wanted': True}})
-        ctx.plan, ctx.previous = ['photos', 'assistant'], {'photos': {'status': 'success'}}
-        readings = iter([(8, 4.6)])
-        with (
-            Ready(self),
-            mock.patch.object(assistant, 'memory_now', side_effect=lambda: next(readings)),
-            mock.patch.object(assistant, 'SETTLE_SECONDS', 180),
-            mock.patch.object(assistant.time, 'sleep') as slept,
-            mock.patch.object(assistant, 'ask_model', return_value=None) as asked,
-        ):
-            self.assertIsNone(assistant.run(ctx))
-        slept.assert_not_called()
-        self.assertAlmostEqual(asked.call_args.args[2], 2.6)
-        self.assertFalse(any('measuring it again' in line for line in ctx.said))
+        earlier run), nothing settles, so the step must not wait 3 minutes to say the same.
+        Music left as needs_setup (its listener not finished yet) is running too."""
+        for step, status in (('photos', 'success'), ('music', 'needs_setup')):
+            with self.subTest(step=step, status=status):
+                ctx = context({'assistant': {'wanted': True}})
+                ctx.plan, ctx.previous = [step, 'assistant'], {step: {'status': status}}
+                readings = iter([(8, 4.6)])
+                with (
+                    Ready(self),
+                    mock.patch.object(assistant, 'memory_now', side_effect=lambda: next(readings)),
+                    mock.patch.object(assistant, 'SETTLE_SECONDS', 180),
+                    mock.patch.object(assistant.time, 'sleep') as slept,
+                    mock.patch.object(assistant, 'ask_model', return_value=None) as asked,
+                ):
+                    self.assertIsNone(assistant.run(ctx))
+                slept.assert_not_called()
+                self.assertAlmostEqual(asked.call_args.args[2], 2.6)
+                self.assertFalse(any('measuring it again' in line for line in ctx.said))
+
+    def test_an_app_that_did_not_run_before_is_waited_for(self):
+        """A step the run before left failed or blocked may start its app now."""
+        for status in ('failed', 'blocked'):
+            with self.subTest(status=status):
+                ctx = SimpleNamespace(plan=['photos', 'assistant'], previous={'photos': {'status': status}})
+                self.assertTrue(assistant.apps_just_started(ctx))
 
     def test_nothing_is_waited_for_when_the_model_fits_at_once(self):
         slept = []
