@@ -65,6 +65,7 @@ DUMP = re.compile(r'nextcloud-\d{8}T\d{6}Z\.sql', re.ASCII)  # ASCII: \d is [0-9
 CHUNK = 1 << 20
 LOOKED_AT = 3  # the newest monthly snapshots looked at; older ones are older than these anyway
 READY_WAIT = 1800
+STOP_ON_ERROR = 'ON_ERROR_STOP=1'  # psql -v: stop at the first error (and exit non-zero)
 
 NONE_YET = (
     'No backup of Nextcloud\'s settings exists yet, so this server\'s Nextcloud cannot be brought back: the '
@@ -622,7 +623,7 @@ def database_loaded(base, user, dump, run):
     exec_db = base + ['exec', '-T', 'database']
     steps = [
         (
-            exec_db + ['psql', '-q', '-U', 'nextcloud', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1'],
+            exec_db + ['psql', '-q', '-U', 'nextcloud', '-d', 'postgres', '-v', STOP_ON_ERROR],
             dump.parent / 'role.sql',
         ),
         (
@@ -638,7 +639,7 @@ def database_loaded(base, user, dump, run):
         ),
         (
             exec_db
-            + ['psql', '-q', '-U', user, '-d', 'nextcloud_restoring', '--single-transaction', '-v', 'ON_ERROR_STOP=1'],
+            + ['psql', '-q', '-U', user, '-d', 'nextcloud_restoring', '--single-transaction', '-v', STOP_ON_ERROR],
             dump,
         ),
         (
@@ -651,7 +652,7 @@ def database_loaded(base, user, dump, run):
                 '-d',
                 'postgres',
                 '-v',
-                'ON_ERROR_STOP=1',
+                STOP_ON_ERROR,
                 '-c',
                 'ALTER DATABASE nextcloud RENAME TO nextcloud_before',
                 '-c',
