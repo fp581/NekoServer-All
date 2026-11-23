@@ -190,13 +190,18 @@ class SetupWindowTests(unittest.TestCase):
         self.assertEqual(seen['cards'][1], ['extra unavailable', 'no', True])
         self.assertEqual(
             seen['smallPrint'],
-            [['Movies and shows - Jellyfin', []], ['A TV connected to this PC', ['Needs Movies and shows - Jellyfin switched on.']]],
+            [
+                ['Movies and shows - Jellyfin', []],
+                ['A TV connected to this PC', ['Needs Movies and shows - Jellyfin switched on.']],
+            ],
         )
         # Movies and shows switched on: the TV card is offered again; the words stay (still
         # true, and nothing moves).
         seen = self.page([{**state, 'press': 'Movies and shows - Jellyfin'}])
         self.assertEqual(seen['cards'][1], ['extra on', 'yes', False])
-        self.assertEqual(seen['smallPrint'][1], ['A TV connected to this PC', ['Needs Movies and shows - Jellyfin switched on.']])
+        self.assertEqual(
+            seen['smallPrint'][1], ['A TV connected to this PC', ['Needs Movies and shows - Jellyfin switched on.']]
+        )
 
     def test_a_refused_start_gives_the_button_back_with_the_reason(self):
         # post() took any status for a success: after the server's 409 (the settings
