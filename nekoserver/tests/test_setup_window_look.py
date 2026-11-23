@@ -4,6 +4,7 @@ Edge; skipped where none is installed), its Night / Lamplight switch, and the co
 of its text in both themes."""
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -28,7 +29,8 @@ BROWSERS = (
 
 
 def browser():
-    for name in BROWSERS:
+    # NEKO_BROWSER first: CI's browser job and the rig name their pinned Chromium there.
+    for name in filter(None, (os.environ.get('NEKO_BROWSER'), *BROWSERS)):
         found = shutil.which(name) or (name if Path(name).is_file() else None)
         if found:
             return found
