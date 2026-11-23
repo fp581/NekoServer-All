@@ -15,4 +15,5 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 ReadWritePaths=/run/nekoserver-dashboard -/srv/nekoserver/dashboard-state
-RestrictAddressFamilies=AF_UNIX
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+CapabilityBoundingSet=~CAP_NET_ADMIN
