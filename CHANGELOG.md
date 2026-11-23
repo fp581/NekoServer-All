@@ -1,10 +1,24 @@
 # Changelog
 
-## v0.52.2 — (in progress)
+## v0.52.2 — 2026-11-23
 
-A clean-up release: the findings SonarCloud has on the code as it is (vulnerabilities and code smells), fixed without changing what NekoServer does or says. Each fix is listed here as it lands.
+A clean-up release: the 212 findings SonarCloud had on the code of 0.52.1 (30 vulnerabilities and 182 code smells), fixed. Nothing changes in what NekoServer does or says: the same steps, the same files written, the same messages, pages and exit codes.
 
-## v0.52.1 — (in progress; the release number is 0.52.1)
+### Cleaned: paths checked where they are used
+- **A path that comes from the settings file or the command line is now proved safe on the line that opens it**, not only somewhere before. The file is looked up by its real path (links followed) and used only when that lies inside the folder it belongs in: the SSD's data folder for the music listener's login, a backup's reports, Immich's Compose file and `.env`; the backup's `snapshots` folder for the music restore's list; the folder named for a restored secret; a place Linux mounts a card for the card restore tool. One outside is refused as before (a backup's report outside the SSD reads as "it left no report").
+- **The music check accepts only the server's own address**, `http://127.0.0.1:` and a port, as before, now without a pattern that spells the address out.
+- **`account-setup.py --apply` reads `--config` the way its other actions do**, through the same settings lookup.
+
+### Cleaned: long functions split
+- **Python**: the long functions of setup and its tools (onboarding, the installer, connecting media, importing a source, the permission, config and gateway checks, recovery, restore, accounts, Docker and the other setup modules) split into small named steps that run in the same order, with the same cleanup on every way out. No function is left that SonarCloud scores over 15.
+- **The dashboard** (`app.js`): the same, and the line breaks a path's end is trimmed of are written as escapes, not as invisible characters.
+- **The Rust runtime**: collecting the dashboard's figures, backups, app and settings snapshots, the monthly maintenance, media readiness, alerts, fans, the live view and the control service, split the same way.
+- **The Rust splits were checked by mutation testing**: each split file went through cargo-mutants, and the changes no test caught got tests that pin what the code did before the split, wherever a test can reach it without root, Docker or the host's own `/proc`. Each split was also read old against new by a second person; none changed what the code does.
+
+### Tests
+- **A media folders test passes with any umask.** Its second request was written with the user's umask; on a machine with umask 002 it was group-writable and refused as not the control service's, so the test failed there (it passed on CI, whose umask is 022). It is made private, as the first one is.
+
+## v0.52.1 — 2026-11-22
 
 ### Added: favourite shows keep coming
 - **A show marked as a favourite in Jellyfin gets its missing episodes and its new ones.** Every hour NekoServer looks at each Jellyfin user's favourite shows; one Sonarr does not follow yet is given to Sonarr, watching every new episode and season, with the quality Seerr's requests use. An hour later, once Sonarr has the show's list of episodes, the episodes that aired and that Jellyfin does not have are searched for (specials left out). What Jellyfin has is what counts, so nothing you have is downloaded again, also from a folder of yours the download apps can't see. Nothing is removed when a show stops being a favourite. This closes the gap for shows from your own folders, which Sonarr did not know.
