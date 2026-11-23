@@ -1,9 +1,9 @@
 /* The browser half of make-pictures.py: Chromium (Playwright) opens the real pages and
    takes the pictures. argv[2] is one job as JSON:
      {kind: 'dashboard', address, live, ask, shots: [{route, look, theme, width, height, out, action}]}
-     {kind: 'switch', address, live, ask, width, height, out: '.../switch-{n}.png'}
      {kind: 'page', url, width, height, out, wait, full}
-   What it found is printed as JSON (the switch's frame names). */
+     {kind: 'pages', pages: [{url, out}], width, height, full}
+   What it found is printed as JSON. */
 import { createRequire } from 'node:module';
 import { basename } from 'node:path';
 
@@ -100,6 +100,11 @@ async function act(page, action) {
     await page.waitForTimeout(900);
     await page.evaluate(() => document.activeElement?.blur());
   }
+  if (action === 'settings') {
+    await page.click('#preferences');
+    await page.waitForTimeout(400);
+    await page.evaluate(() => document.activeElement?.blur());
+  }
 }
 
 const KINDS = {
@@ -115,39 +120,6 @@ const KINDS = {
     }
     return found;
   },
-  /* Settings -> Theme: the dialog opened on Home, then each look chosen in it. */
-  async switch(browser) {
-    const page = await dashboardPage(browser, { look: 'neko', theme: 'dark', width: job.width, height: job.height });
-    await openRoute(page, 'home');
-    const frames = [];
-    const shoot = async () => {
-      await page.waitForTimeout(500);
-      const name = job.out.replace('{n}', String(frames.length).padStart(2, '0'));
-      await page.screenshot({ path: name });
-      frames.push(basename(name));
-    };
-    const choose = async (label, value) => {
-      await page.locator('#dialog label.field', { hasText: label }).locator('select').selectOption(value);
-      await page.evaluate(() => document.activeElement?.blur());
-    };
-    await shoot(); // Moonlit Neko, Neko night
-    await page.click('#preferences');
-    await shoot(); // Settings open
-    await choose('Appearance', 'light');
-    await shoot(); // Lamplight
-    await choose('Theme', 'professional');
-    await shoot(); // Professional, Light
-    await choose('Appearance', 'dark');
-    await shoot(); // Professional, Dark
-    await page.click('#close-dialog');
-    await shoot();
-    await page.click('#preferences');
-    await choose('Theme', 'neko');
-    await shoot(); // back to Moonlit Neko
-    await page.click('#close-dialog');
-    await shoot();
-    return frames;
-  },
   async page(browser) {
     const context = await browser.newContext({
       viewport: { width: job.width, height: job.height },
@@ -161,6 +133,16 @@ const KINDS = {
     await page.waitForTimeout(job.wait || 500);
     await page.screenshot({ path: job.out, fullPage: !!job.full });
     return { out: basename(job.out), pageErrors: errors };
+  },
+  /* Several local pages (frames put together), one after another: job.pages [{url, out}]. */
+  async pages(browser) {
+    const page = await browser.newPage({ viewport: { width: job.width, height: job.height }, deviceScaleFactor: 1 });
+    for (const { url, out } of job.pages) {
+      await page.goto(url);
+      await page.waitForLoadState('load');
+      await page.screenshot({ path: out, fullPage: !!job.full });
+    }
+    return job.pages.map(p => basename(p.out));
   }
 };
 

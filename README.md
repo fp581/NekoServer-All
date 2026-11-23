@@ -117,15 +117,7 @@ One page on the server and on your phone shows how everything is: the apps, the 
 The dashboard has two looks, each light or dark: **Moonlit Neko**, with its cat (dark: Neko night, light: Lamplight), and a quiet **Professional** one with no cat, where only the status has colour. Choose in **Settings → Theme** (in Moonlit Neko the Settings window is called *Make yourself at home*); each browser remembers its own choice. The setup window has its own light and dark switch.
 
 <p align="center">
-  <img src="docs/media/looks-compare.webp" alt="The dashboard's Home page four times: Moonlit Neko dark and light, Professional dark and light." width="720">
-</p>
-
-<p align="center">
-  <img src="docs/media/looks-busy.webp" alt="The Backups page in the four looks: Moonlit Neko dark and light, Professional dark and light." width="720">
-</p>
-
-<p align="center">
-  <img src="docs/media/looks-switch.webp" alt="Switching the look in Settings, Theme: from Moonlit Neko to Professional, light and dark." width="720">
+  <img src="docs/media/looks-side-by-side.gif" alt="The two looks side by side, Moonlit Neko on the left and Professional on the right, walking the same pages together: Home, Your apps, Backups, Hardware, Ask Neko and Settings, first dark, then light." width="100%">
 </p>
 
 ## Ask Neko

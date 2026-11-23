@@ -3,9 +3,7 @@
 made-up data for a healthy server (nine apps running, two drives, last night's backups
 done, backup cards in):
 
-  looks-compare.webp   Home in the four looks (Moonlit Neko and Professional, dark and light)
-  looks-busy.webp      Backups in the same four looks
-  looks-switch.webp    Settings -> Theme and Appearance switching through the looks (animated)
+  looks-side-by-side.gif  Moonlit Neko beside Professional on the same pages, dark then light (animated)
   setup-window.webp    The setup window: apps, review, progress, a question, finish (animated)
   setup-terminal.webp  The terminal setup's first page
   dashboard-tour.webp  Home, drives, backups, backup cards, media folders, Ask Neko, updates (animated)
@@ -28,12 +26,13 @@ Needs:
   * Not as root (the dashboard's web server refuses to run as root).
 
 Run (from the repository):
-  python3 docs/media/make-pictures.py                    # capture + assemble
+  python3 docs/media/make-pictures.py                    # capture + assemble, every picture
+  python3 docs/media/make-pictures.py --only looks       # one of them (terminal, setup, tour, looks)
   python3 docs/media/make-pictures.py --step capture --work /tmp/neko-pics
   python3 docs/media/make-pictures.py --step assemble --work /tmp/neko-pics
 The two steps can run on different computers (ffmpeg on one, Linux and Chromium on the
 other) when --work is a folder both can read: capture writes PNG frames and a plan.json
-there; assemble turns them into the WebP files in docs/media.
+there; assemble turns them into the WebP (and GIF) files in docs/media.
 """
 
 import argparse
@@ -54,9 +53,9 @@ SERVER = REPO / 'nekoserver'
 DRIVER = HERE / 'make-pictures.mjs'
 VERSION = '0.52.3'
 
-STILL = {'width': 1000, 'height': 700}  # each look in the grids
 MOVING = {'width': 1000, 'height': 680}  # the animations' frames
-GRID_WIDTH = 1400
+SIDE = {'width': 800, 'height': 620}  # each look of looks-side-by-side, shown at 640 px wide
+PANEL = 640
 MOST_BYTES = 3 * 1024 * 1024 - 64 * 1024  # each animation stays under 3 MB
 MOST_STILL = 1024 * 1024  # and each still under 1 MB
 sys.path[:0] = [str(SERVER), str(SERVER / 'tests')]  # NekoServer's own modules and the browser tests
@@ -304,11 +303,63 @@ def live_readings(now):
     """What /api/live answers (live.rs), for a quiet evening."""
     return {
         'generated_at': now,
-        'cpu': {'percent': 7.5, 'name': 'Example 8-core processor', 'logical_cpus': 16, 'clock_mhz': 4200},
+        'cpu': {
+            'percent': 7.5,
+            'name': 'Example 8-core processor',
+            'logical_cpus': 16,
+            'clock_mhz': 4200,
+            'cores': [4, 12, 6, 3, 9, 5, 2, 18, 7, 4, 3, 11, 6, 2, 8, 5],
+        },
         'memory': {'percent': 31.0, 'used': 9.9e9, 'total': 32e9, 'swap_used': 0},
         'gpus': [],
-        'network': [{'name': 'enp5s0', 'receive_bps': 2.4e6, 'send_bps': 0.9e6}],
-        'disks': [{'name': 'nvme0n1', 'read_bps': 1.1e6, 'write_bps': 0.4e6}],
+        'network': [
+            {
+                'id': 'enp5s0',
+                'kind': 'ethernet',
+                'receive_bps': 2.4e6,
+                'send_bps': 0.9e6,
+                'speed_mbps': 1000,
+                'up': True,
+                'received': 41e9,
+            },
+            {
+                'id': 'tailscale0',
+                'kind': 'tailscale',
+                'receive_bps': 0.2e6,
+                'send_bps': 1.6e6,
+                'up': True,
+                'received': 3e9,
+            },
+        ],
+        'disks': [
+            {
+                'id': 'nvme0n1',
+                'kind': 'nvme',
+                'model': 'Example NVMe SSD',
+                'size': 0.5e12,
+                'busy_percent': 1,
+                'read_bps': 0.2e6,
+                'write_bps': 0.1e6,
+            },
+            {
+                'id': 'nvme1n1',
+                'kind': 'nvme',
+                'model': 'Example NVMe SSD',
+                'size': 1e12,
+                'busy_percent': 3,
+                'read_bps': 1.1e6,
+                'write_bps': 0.4e6,
+            },
+            {
+                'id': 'sda',
+                'kind': 'hdd',
+                'model': 'Example 8 TB NAS drive',
+                'size': 8e12,
+                'busy_percent': 6,
+                'read_bps': 2.3e6,
+                'write_bps': 0,
+            },
+        ],
         'sensors': [{'name': 'CPU', 'kind': 'cpu', 'celsius': 47.0}],
     }
 
@@ -391,12 +442,6 @@ def dashboard(runtime, folder):
         control.server.close()
 
 
-LOOKS = [
-    ('neko', 'dark', 'Moonlit Neko · Neko night'),
-    ('neko', 'light', 'Moonlit Neko · Lamplight'),
-    ('professional', 'dark', 'Professional · Dark'),
-    ('professional', 'light', 'Professional · Light'),
-]
 TOUR = [
     ('home', 'Home', None),
     ('health', 'Server health: drives', None),
@@ -419,24 +464,40 @@ def drive(job):
     return json.loads(done.stdout or 'null')
 
 
-def capture_dashboard(runtime, work, plan):
+# The pages both looks walk, in step: (route, what is done there).
+SIDE_PAGES = [
+    ('home', None),
+    ('apps', None),
+    ('backups', None),
+    ('hardware', 'scroll:section:has(#network)'),  # Network & drives
+    ('ask', 'ask'),
+    ('home', 'settings'),
+]
+SIDE_LOOKS = [('neko', 'Moonlit Neko'), ('professional', 'Professional')]
+
+
+def capture_dashboard(runtime, work, plan, parts):
+    """The dashboard's pictures: the tour and/or the two looks side by side."""
     with tempfile.TemporaryDirectory() as folder, dashboard(runtime, Path(folder)) as address:
         now = time.time()
         common = {'address': address, 'live': live_readings(now), 'ask': ASK}
         shots = []
-        for page in ('home', 'backups'):
-            for look, theme, _ in LOOKS:
+        if 'tour' in parts:
+            for n, (route, _, action) in enumerate(TOUR):
                 shots.append(
-                    {'route': page, 'look': look, 'theme': theme, **STILL,
-                     'out': str(work / f'looks-{page}-{look}-{theme}.png')}
+                    {'route': route, 'look': 'neko', 'theme': 'dark', **MOVING, 'action': action,
+                     'out': str(work / f'tour-{n:02d}.png')}
                 )  # fmt: skip
-        for n, (route, _, action) in enumerate(TOUR):
-            shots.append(
-                {'route': route, 'look': 'neko', 'theme': 'dark', **MOVING, 'action': action,
-                 'out': str(work / f'tour-{n:02d}.png')}
-            )  # fmt: skip
+        if 'looks' in parts:
+            # Pass 1 dark, pass 2 light: both panels always in the same mode.
+            for theme in ('dark', 'light'):
+                for n, (route, action) in enumerate(SIDE_PAGES):
+                    for look, _ in SIDE_LOOKS:
+                        shots.append(
+                            {'route': route, 'look': look, 'theme': theme, **SIDE, 'action': action,
+                             'out': str(work / f'side-{theme}-{n}-{look}.png')}
+                        )  # fmt: skip
         found = drive({'kind': 'dashboard', **common, 'shots': shots})
-        switch = drive({'kind': 'switch', **common, **MOVING, 'out': str(work / 'switch-{n}.png')})
     plan['dashboard'] = found
     for shot in found:
         spoiled = {k: shot[k] for k in ('issues', 'errors', 'pageErrors') if shot[k]} | (
@@ -444,29 +505,35 @@ def capture_dashboard(runtime, work, plan):
         )
         if spoiled:
             print(f'Warning: {shot["out"]} shows {spoiled}', file=sys.stderr)
-    for page, name in (('home', 'looks-compare'), ('backups', 'looks-busy')):
-        grid = work / f'{name}.html'
-        grid.write_text(grid_page([(work / f'looks-{page}-{lk}-{th}.png', label) for lk, th, label in LOOKS]))
-        drive({'kind': 'page', 'url': grid.as_uri(), 'width': GRID_WIDTH, 'height': 400, 'full': True,
-               'out': str(work / f'{name}.png')})  # fmt: skip
-        plan['stills'].append({'name': name, 'frame': f'{name}.png'})
-    plan['animations'].append(
-        {'name': 'dashboard-tour', 'frames': [[f'tour-{n:02d}.png', 1.8] for n in range(len(TOUR))]}
-    )
-    plan['animations'].append({'name': 'looks-switch', 'frames': [[name, 1.4] for name in switch]})
+    if 'tour' in parts:
+        plan['animations'].append(
+            {'name': 'dashboard-tour', 'frames': [[f'tour-{n:02d}.png', 1.8] for n in range(len(TOUR))]}
+        )
+    if 'looks' in parts:
+        pages = []
+        for theme in ('dark', 'light'):
+            for n in range(len(SIDE_PAGES)):
+                html = work / f'side-{theme}-{n}.html'
+                html.write_text(side_page([work / f'side-{theme}-{n}-{look}.png' for look, _ in SIDE_LOOKS]))
+                pages.append({'url': html.as_uri(), 'out': str(work / f'side-{theme}-{n}.png')})
+        drive({'kind': 'pages', 'pages': pages, 'width': 2 * PANEL + 3 * 12, 'height': 200, 'full': True})
+        frames = [[Path(page['out']).name, 2.0] for page in pages]
+        plan['animations'].append({'name': 'looks-side-by-side', 'frames': frames, 'gif': True})
 
 
-def grid_page(images):
+def side_page(images):
+    """One frame of looks-side-by-side: the two looks, each under its name."""
     cells = ''.join(
-        f'<figure><img src="{path.as_uri()}" alt=""><figcaption>{label}</figcaption></figure>' for path, label in images
+        f'<figure><figcaption>{name}</figcaption><img src="{path.as_uri()}" alt=""></figure>'
+        for path, (_, name) in zip(images, SIDE_LOOKS)
     )
     return (
         '<!doctype html><meta charset="utf-8"><style>'
         'html,body{margin:0;background:#101018}'
-        f'body{{width:{GRID_WIDTH}px;display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:14px;box-sizing:border-box}}'
+        f'body{{display:grid;grid-template-columns:{PANEL}px {PANEL}px;gap:12px;padding:12px;width:max-content}}'
         'figure{margin:0;border-radius:10px;overflow:hidden;background:#1c1c28}'
-        'img{display:block;width:100%;height:auto}'
-        'figcaption{font:600 17px/1.2 system-ui,"DejaVu Sans",sans-serif;color:#e8e6f0;padding:9px 12px}'
+        f'img{{display:block;width:{PANEL}px;height:auto}}'
+        'figcaption{font:700 20px/1.2 system-ui,"DejaVu Sans",sans-serif;color:#f0eef6;padding:10px 14px}'
         '</style>' + cells
     )
 
@@ -695,10 +762,24 @@ def assemble(work):
         # The concat demuxer's last line: the last frame stays twice as long before the loop.
         lines.append(f"file '{(work / animation['frames'][-1][0]).as_posix()}'")
         listing.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+        source = [*quiet, '-f', 'concat', '-safe', '0', '-i', str(listing)]
+        if animation.get('gif'):
+            # A GIF where it fits (it plays everywhere): a palette of its own for each frame,
+            # so the dark and the light frames each keep their colours, and an ordered dither,
+            # so the Moonlit Neko glow does not band. Each frame once, for as long as it shows
+            # (no frame rate: repeated frames would each be stored whole with their own palette).
+            gif = out.with_suffix('.gif')
+            palette = 'split[a][b];[a]palettegen=stats_mode=single[p];[b][p]paletteuse=new=1:dither=bayer:bayer_scale=3'
+            gif_how = ['-filter_complex', palette, '-fps_mode', 'passthrough', '-loop', '0', str(gif)]
+            subprocess.run([*source, *gif_how], check=True)
+            if gif.stat().st_size <= MOST_BYTES:
+                made.append(gif)
+                out.unlink(missing_ok=True)
+                continue
+            gif.unlink()
         for how in tries:
             subprocess.run(
-                [*quiet, '-f', 'concat', '-safe', '0', '-i', str(listing), '-vf', 'fps=10', '-fps_mode', 'vfr',
-                 '-c:v', 'libwebp_anim', *how, '-compression_level', '6', '-loop', '0', str(out)],
+                [*source, '-vf', 'fps=10', '-fps_mode', 'vfr', '-c:v', 'libwebp_anim', *how, '-compression_level', '6', '-loop', '0', str(out)],
                 check=True,
             )  # fmt: skip
             if out.stat().st_size <= MOST_BYTES:
@@ -706,6 +787,9 @@ def assemble(work):
         made.append(out)
     for out in made:
         print(f'{out.relative_to(REPO)}: {out.stat().st_size // 1024} KB')
+
+
+PARTS = ('terminal', 'setup', 'tour', 'looks')
 
 
 def main(argv=None):
@@ -718,6 +802,7 @@ def main(argv=None):
         default=SERVER / 'runtime/target/release/nekoserver-runtime',
         help='the built nekoserver-runtime',
     )
+    parser.add_argument('--only', choices=PARTS, nargs='+', help='make only these pictures (all of them when left out)')
     args = parser.parse_args(argv)
     if args.step != 'all' and not args.work:
         parser.error('--step capture and --step assemble need --work')
@@ -737,9 +822,13 @@ def main(argv=None):
             if not shutil.which('node'):
                 raise SystemExit('Node was not found (and Playwright with its Chromium is needed too).')
             plan = {'stills': [], 'animations': []}
-            capture_terminal(work, plan)
-            capture_setup(work, plan)
-            capture_dashboard(args.runtime, work, plan)
+            parts = set(args.only or PARTS)
+            if 'terminal' in parts:
+                capture_terminal(work, plan)
+            if 'setup' in parts:
+                capture_setup(work, plan)
+            if parts & {'tour', 'looks'}:
+                capture_dashboard(args.runtime, work, plan, parts)
             (work / 'plan.json').write_text(json.dumps(plan, indent=1), encoding='utf-8')
             print('Frames in', work)
         if args.step in ('all', 'assemble'):
