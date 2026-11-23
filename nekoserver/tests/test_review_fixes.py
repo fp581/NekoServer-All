@@ -3931,4 +3931,4 @@ class PlainRefusalTests(unittest.TestCase):
             args = mock.Mock(data_root=str(Path(d) / 'link' / 'ssd'))
             with self.assertRaises(SystemExit):
                 module.mounted_ssd(parser, args, {})
-        parser.error.assert_called_once_with('Data SSD must be mounted at --data-root (no links in the path)')
+        parser.error.assert_called_once_with('Data SSD must be mounted at --data-root (its real path: no links, no //)')

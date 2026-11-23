@@ -268,7 +268,7 @@ def main():
     try:
         settings = settings_path(args.config)
     except RuntimeError as exc:
-        # A settings file not named .json, say: one plain line, as show and signin say it.
+        # A settings file not named .json, say: said in one plain line.
         print(f'Nothing was set up: {exc}', file=sys.stderr)
         return 2
     config = json.loads(settings.read_text())
