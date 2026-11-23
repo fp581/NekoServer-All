@@ -29,7 +29,7 @@ This PC has 16 GB of memory: 9.5 GB free with your apps running, and keeps 3.2 G
      ...
   Not possible here: qwen3.5:9b needs about 9 GB; this PC has 9.5 GB free with your apps running, and keeps 3.2 GB for the apps to grow into, which leaves 6.3 GB for the assistant.
 Which AI assistant do you want?
-Type its number, then press Enter. Enter alone chooses no assistant.
+Type its number, then press Enter. Enter alone chooses qwen3.5:4b.
 ```
 
 | Model | Download | Memory while it answers (its limit) | Answers |
