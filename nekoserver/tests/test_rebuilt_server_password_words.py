@@ -49,7 +49,7 @@ class RebuiltServerPasswordWordsTests(unittest.TestCase):
         self.assertFalse((root / 'restored').exists())
 
     def test_setups_nextcloud_offer_names_the_old_servers_password(self):
-        backup = SimpleNamespace(manifest={'created_at': 1793000000}, dump=None, sealed=True, date='2026-11-01')
+        backup = SimpleNamespace(manifest={'created_at': 1793000000}, dump=None, sealed=True, nightly=False, date='2026-11-01')
         lines, _ = nextcloud_restore.question('/mnt/nekoserver-media/cloud/files', backup)
         said = ' '.join(lines)
         self.assertIn('the backup password of the server that made this backup', said)
