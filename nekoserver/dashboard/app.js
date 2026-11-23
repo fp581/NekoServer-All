@@ -2013,20 +2013,19 @@ function sendQuestion() {
  * the web service takes (serve.rs MAX_BODY, 4096 bytes) with the new question. */
 const ASK_BODY = 4096;
 const EARLIER_CHARS = 2500; // what the server keeps of it (assist.rs EARLIER_ANSWER_CHARS)
-/* The newest entry Neko answered whole. Looked for from the end by hand: Array findLast
- * is missing in browsers the page otherwise runs in (Chrome 93-96, Firefox 92-103), where
- * every question failed before it was sent. */
-function lastAnswered() {
-  for (let i = ASK.log.length - 1; i >= 0; i--) {
-    const e = ASK.log[i];
-    if (text(e.answer).trim() && !e.error) {
-      return e;
+/* The last item of `items` that passes `test`, or null. A plain loop from the end, because
+ * Array findLast is missing in browsers the rest of the page runs in (Chrome 93-96,
+ * Firefox 98-103): there, every question to Neko failed before it was sent. */
+function lastMatching(items, test) {
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (test(items[i])) {
+      return items[i];
     }
   }
   return null;
 }
 function earlierExchange(asked) {
-  const last = lastAnswered();
+  const last = lastMatching(ASK.log, e => text(e.answer).trim() && !e.error);
   if (!last) {
     return null;
   }

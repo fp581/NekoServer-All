@@ -285,3 +285,72 @@ class MediaFoldersInBrowserTests(unittest.TestCase):
             with self.subTest(width=width):
                 self.assertLessEqual(scroll, window)
                 self.assertFalse(overlap)
+
+
+# Built-ins newer than what the page needs (its newest is structuredClone: Chrome 98, Firefox 94,
+# Safari 15.4, with <dialog> from Firefox 98): taken out, the page must work the same.
+NEWER_BUILTINS = [
+    'Array.prototype.findLast',
+    'Array.prototype.findLastIndex',
+    'Array.prototype.toSorted',
+    'Array.prototype.toReversed',
+    'Array.prototype.toSpliced',
+    'Array.prototype.with',
+    'Array.fromAsync',
+    'Object.groupBy',
+    'Map.groupBy',
+    'Promise.withResolvers',
+    'String.prototype.isWellFormed',
+    'String.prototype.toWellFormed',
+    'Set.prototype.union',
+    'Set.prototype.intersection',
+    'Set.prototype.difference',
+]
+
+
+@unittest.skipUnless(playwright_works(), 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
+class OlderBrowserTests(unittest.TestCase):
+    """The page in a browser that lacks the newest built-ins, signed in, with the assistant set up."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.folder = tempfile.TemporaryDirectory()
+        status = Path(cls.folder.name) / 'status.json'
+        assistant = {'set_up': True, 'model': 'qwen3:4b', 'memory': '6g', 'cpus': 2}
+        status.write_text(json.dumps({**snapshot(), 'assistant': assistant}))
+        cls.control = StandInControl(Path(cls.folder.name) / 'control.sock')
+        cls.control.start()
+        cls.server, cls.address = serve(status, Path(cls.folder.name) / 'control.sock')
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.terminate()
+        cls.server.wait(timeout=10)
+        cls.control.server.close()
+        cls.folder.cleanup()
+
+    browse = DashboardInBrowserTests.browse
+    maxDiff = None
+
+    def test_ask_neko_sends_the_question_without_array_find_last(self):
+        # 0.52.2 test round (T3-01): a clean-up gave Ask Neko Array findLast (Chrome 97,
+        # Firefox 104). In Chrome 93-96 and Firefox 98-103, pressing Ask emptied the box and
+        # sent nothing.
+        (answer,) = self.browse(('askSent', {'missing': ['Array.prototype.findLast']}))
+        self.assertEqual(answer['errors'], [])
+        self.assertEqual(
+            answer['sent'],
+            [
+                {'question': 'Is my server fine?'},
+                {
+                    'question': 'And how do I check?',
+                    'before': {'question': 'Is my server fine?', 'answer': 'An answer.'},
+                },
+            ],
+        )
+
+    def test_no_page_needs_a_built_in_newer_than_the_page_does(self):
+        routes = ['home', 'ask', 'apps', 'backups', 'hardware', 'sensors', 'cooling', 'processes', 'health']
+        routes += ['updates', 'media', 'cards', 'attention', 'help']
+        (errors,) = self.browse(('pageErrors', {'routes': routes, 'missing': NEWER_BUILTINS}))
+        self.assertEqual(errors, {route: [] for route in routes})
