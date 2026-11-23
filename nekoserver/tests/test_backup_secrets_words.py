@@ -384,7 +384,13 @@ class CommandLineTests(unittest.TestCase):
             contextlib.redirect_stderr(err),
             contextlib.ExitStack() as stack,
         ):
-            for name, value in patches.items():
+            # The three tasks never run for real here (as root they would use /etc/nekoserver-backups):
+            # a test that means one to run passes its own stand-in.
+            never = {
+                name: mock.Mock(side_effect=AssertionError(name + ' was not meant to run'))
+                for name in ('setup', 'new_password', 'asked_restore')
+            }
+            for name, value in {**never, **patches}.items():
                 stack.enter_context(mock.patch.object(bs, name, value))
             try:
                 bs.main()
