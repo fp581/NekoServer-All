@@ -5,7 +5,9 @@ The case: only the SSD broke and was replaced. Nextcloud's settings, its program
 and its database were on the SSD and are gone; its files are still on the HDD, and so is
 its backup: the monthly snapshots (backups/monthly: appdata/nextcloud and
 compose/nextcloud, the password files sealed for the backup key) and the weekly copies of
-its database (backups/nextcloud-database). Setup refused ("already holds files") and no
+its database (backups/nextcloud-database), and since row C-01 of the 1.0 round the
+nightly backup (backups/nextcloud-nightly: its program folder, settings and database, from
+the first night on). The newest of them is used. Setup refused ("already holds files") and no
 path was left for a first-time user.
 
 Now setup, at the terminal or in the setup window only (never unattended: a dashboard
@@ -34,7 +36,17 @@ import guided_setup
 from neko_common import checked_run, cloud_files, compose_up, safe_path
 
 MONTHLY_DIR = 'backups/monthly'  # on the HDD (recovery_wizard.MONTHLY_DIR)
+# The nightly backup of Nextcloud (row C-01, made by the nightly app backup, app_snapshot.rs):
+# snapshot-<time>-<number> folders (named as the nightly app snapshots), with its program folder and settings in
+# data.tar (never the database's folder), its database as nextcloud.sql, and the password
+# files sealed in secrets.tar.cms as a monthly snapshot's.
+NIGHTLY_DIR = 'backups/nextcloud-nightly'
+NIGHTLY = 'nextcloud-nightly'  # its manifest's kind
+SQL = 'nextcloud.sql'
+HTML = 'appdata/nextcloud/html'
+POSTGRES = 'appdata/nextcloud/postgres'
 MONTHLY = re.compile(r'\d+-\d+', re.ASCII)  # a monthly snapshot's folder: <time>-<number>
+NIGHTLY_RUN = re.compile(r'snapshot-\d+-\d+', re.ASCII)  # a nightly backup's folder (app_snapshot.rs naming)
 DUMPS_DIR = 'backups/nextcloud-database'  # on the HDD (backup.rs NEXTCLOUD_DUMPS)
 PARTS = ('appdata/nextcloud', 'compose/nextcloud')  # what a monthly snapshot keeps of Nextcloud
 CONFIG_PHP = 'appdata/nextcloud/html/config/config.php'
@@ -47,6 +59,7 @@ WWW_DATA = 33
 OWN_FOLDER = re.compile(r'appdata_([a-z0-9]{2,40})')
 INSTANCE_ID = re.compile(rb"'instanceid'\s*=>\s*'([a-z0-9]{2,40})'")
 DB_USER = re.compile(rb"'dbuser'\s*=>\s*'(\w{1,63})'")  # bytes: \w is [A-Za-z0-9_] only
+DB_PASSWORD = re.compile(rb"'dbpassword'\s*=>\s*'((?:[^'\\]|\\.)*)'")  # PHP: \' and \\ inside
 VERSION = re.compile(rb"\$OC_VersionString\s*=\s*'(\d+)\.\d+\.\d+'")
 DUMP = re.compile(r'nextcloud-\d{8}T\d{6}Z\.sql', re.ASCII)  # ASCII: \d is [0-9] only
 CHUNK = 1 << 20
@@ -55,17 +68,17 @@ READY_WAIT = 1800
 
 NONE_YET = (
     'No backup of Nextcloud\'s settings exists yet, so this server\'s Nextcloud cannot be brought back: the '
-    'monthly maintenance backs them up first, on the 1st of each month, and the HDD holds none (the nightly '
-    'backup of the apps leaves Nextcloud out). Your files stay as they are in {files}: start a new, empty '
-    'Nextcloud as said above, make its accounts again and copy your files into Nextcloud'
+    'nightly backup saves them first in the first night after setup, and the HDD holds none. Your files stay '
+    'as they are in {files}: start a new, empty Nextcloud as said above, make its accounts again and copy your '
+    'files into Nextcloud'
 )
 FOREIGN = (
     'The Nextcloud backup on the HDD ({date}) is not this server\'s: it does not name the folder '
     'appdata_{ids} that Nextcloud keeps in {files}, so it was not brought back'
 )
 DAMAGED = (
-    'The Nextcloud backup on the HDD (the monthly snapshot of {dates}) is damaged: its data.tar does not match '
-    'its checksum, so it was not brought back'
+    'The Nextcloud backup on the HDD (of {dates}) is damaged: a file of it does not match its checksum, so it '
+    'was not brought back'
 )
 
 
@@ -81,8 +94,17 @@ class Backup:
         return self.manifest.get('password_files') == 'encrypted'
 
     @property
+    def nightly(self):
+        return self.manifest.get('kind') == NIGHTLY
+
+    @property
+    def made(self):
+        """When what it brings back was saved: its database copy's time, else its own."""
+        return self.dump[1]['created_at'] if self.dump else self.manifest['created_at']
+
+    @property
     def date(self):
-        return shown(self.dump[1]['created_at'] if self.dump else self.manifest['created_at'])
+        return shown(self.made)
 
 
 def shown(seconds):
@@ -93,12 +115,13 @@ def shown(seconds):
         return 'unknown date'
 
 
-def monthly_snapshots(folder):
-    """(path, manifest) of the monthly snapshots (<time>-<number> folders) that keep
-    Nextcloud whole, newest first. Setup reads them itself: the recovery menu is never
-    started by setup (tests/test_recovery_sections.py)."""
+def monthly_snapshots(folder, nightly=False):
+    """(path, manifest) of the monthly snapshots or nightly backups (<time>-<number>, snapshot-<time>-<number>
+    folders) in `folder` that keep Nextcloud whole, newest first. Setup reads them itself:
+    the recovery menu is never started by setup (tests/test_recovery_sections.py)."""
     try:
-        paths = [Path(folder) / name for name in os.listdir(folder) if MONTHLY.fullmatch(name)]
+        named = NIGHTLY_RUN if nightly else MONTHLY
+        paths = [Path(folder) / name for name in os.listdir(folder) if named.fullmatch(name)]
     except OSError:
         return []
     found = [
@@ -106,7 +129,7 @@ def monthly_snapshots(folder):
         for path in paths
         if path.is_dir() and not path.is_symlink()
         for manifest in [snapshot_manifest(path)]
-        if manifest
+        if manifest and (manifest.get('kind') == NIGHTLY) == nightly
     ]
     return sorted(found, key=lambda run: run[1]['created_at'], reverse=True)
 
@@ -149,22 +172,31 @@ class Hashing:
 
 
 def snapshot_manifest(path):
-    """A monthly snapshot's manifest when it keeps Nextcloud whole, else None."""
+    """A monthly snapshot's or a nightly backup's manifest when it keeps Nextcloud whole,
+    else None."""
     try:
         manifest = json.loads((path / 'manifest.json').read_text())
     except (OSError, ValueError):
         return None
     if not isinstance(manifest, dict) or manifest.get('format') != 'neko-maintenance-v1':
         return None
-    data = (manifest.get('paths') or {}).get('data') or []
     sums = manifest.get('sha256') if isinstance(manifest.get('sha256'), dict) else {}
-    if 'nextcloud' not in (manifest.get('apps') or []) or not all(p in data for p in PARTS):
-        return None
     if not isinstance(sums.get('data'), str) or not isinstance(manifest.get('created_at'), (int, float)):
         return None
     if manifest.get('password_files') == 'encrypted' and not (path / 'secrets.tar.cms').is_file():
         return None
-    return manifest
+    return manifest if keeps_nextcloud(path, manifest, sums) else None
+
+
+def keeps_nextcloud(path, manifest, sums):
+    """Whether a manifest lists all of Nextcloud: a nightly backup its program folder,
+    settings and database copy, a monthly snapshot appdata/nextcloud and its settings."""
+    data = (manifest.get('paths') or {}).get('data') or []
+    nightly = manifest.get('kind') == NIGHTLY
+    parts = (HTML, PARTS[1]) if nightly else PARTS
+    if 'nextcloud' not in (manifest.get('apps') or []) or not all(p in data for p in parts):
+        return False
+    return not nightly or (isinstance(sums.get('database'), str) and (path / SQL).is_file())
 
 
 def read_rest(stream):
@@ -202,8 +234,9 @@ def member_facts(tar, wanted):
 
 
 def looked_at(snapshot, manifest, ids):
-    """(this server's, Nextcloud's major version, config.php) of a monthly snapshot, read in
-    one pass over its data.tar; (None, None, None) when it does not match its checksum.
+    """(this server's, Nextcloud's major version, config.php) of a monthly snapshot or a
+    nightly backup, read in one pass over its data.tar (and its nextcloud.sql); (None, None,
+    None) when one does not match its checksum.
     "This server's": its config.php names one of `ids` (a snapshot made without a backup
     key keeps it in data.tar), or, with config.php sealed, its database names the folder
     appdata_<id>."""
@@ -216,6 +249,11 @@ def looked_at(snapshot, manifest, ids):
     if found is None:
         return None, None, None
     named, version, config_php = found
+    if manifest.get('kind') == NIGHTLY:
+        # A nightly backup keeps its database as nextcloud.sql, not as the database's folder.
+        named = read_checked(snapshot / SQL, manifest['sha256']['database'], lambda s: holds(s, needles(ids)))
+        if named is None:
+            return None, None, None
     if config_php is not None:
         instance = INSTANCE_ID.search(config_php)
         named = bool(instance) and instance[1].decode() in ids
@@ -266,39 +304,73 @@ def newer_dump(media, after, version, ids, log):
     return None
 
 
-def found_backup(config, ids, log):
-    """(Backup, None) for this server's newest Nextcloud backup on the HDD, or (None, what
-    was found instead)."""
-    media = Path(config['media_mount'])
-    runs = monthly_snapshots(media / MONTHLY_DIR)[:LOOKED_AT]
-    if not runs:
-        return None, NONE_YET.format(files=cloud_files(config))
-    log('Nextcloud: looking at its backup on the HDD (this can take a few minutes)')
-    damaged = []
+def own_sql(backup):
+    """A nightly backup's own database copy, as (path, note) like a weekly copy's."""
+    sums = backup.manifest['sha256']
+    note = {k: backup.manifest.get(k) for k in ('created_at', 'nextcloud_version')}
+    return backup.snapshot / SQL, {**note, 'sha256': sums['database']}
+
+
+def own_backup(media, runs, ids, log, damaged):
+    """This server's newest backup among `runs`, with the newest database copy for it (a
+    newer weekly copy, else a nightly backup's own); None when none is. The dates of the
+    damaged ones are added to `damaged`."""
     for path, manifest in runs:
         mine, version, config_php = looked_at(path, manifest, ids)
         if mine:
             backup = Backup(path, manifest, version, config_php)
             backup.dump = newer_dump(media, manifest['created_at'], version, ids, log)
-            return backup, None
+            if backup.dump is None and backup.nightly:
+                backup.dump = own_sql(backup)
+            return backup
         if mine is None:
             damaged.append(shown(manifest['created_at']))
-    if len(damaged) == len(runs):
-        return None, DAMAGED.format(dates=', '.join(damaged))
+    return None
+
+
+def could_be_newer(media, monthly, made):
+    """Whether a monthly snapshot or a weekly database copy is newer than `made`, so the
+    monthly snapshots are looked at too (reading one takes minutes)."""
+    copies = dump_notes(media / DUMPS_DIR)[:1]
+    return any(m['created_at'] > made for _, m in monthly) or any(n['created_at'] > made for _, n in copies)
+
+
+def found_backup(config, ids, log):
+    """(Backup, None) for this server's newest Nextcloud backup on the HDD: its newest
+    nightly backup, or a monthly snapshot (with a newer weekly database copy) when that
+    is newer; or (None, what was found instead)."""
+    media = Path(config['media_mount'])
+    nightly = monthly_snapshots(media / NIGHTLY_DIR, nightly=True)[:LOOKED_AT]
+    monthly = monthly_snapshots(media / MONTHLY_DIR)[:LOOKED_AT]
     files = cloud_files(config)
-    return None, FOREIGN.format(date=shown(runs[0][1]['created_at']), ids=' or appdata_'.join(sorted(ids)), files=files)
+    if not nightly and not monthly:
+        return None, NONE_YET.format(files=files)
+    log('Nextcloud: looking at its backup on the HDD (this can take a few minutes)')
+    damaged = []
+    newest = own_backup(media, nightly, ids, log, damaged)
+    if newest is None or could_be_newer(media, monthly, newest.made):
+        other = own_backup(media, monthly, ids, log, damaged)
+        if other and (newest is None or other.made > newest.made):
+            newest = other
+    if newest:
+        return newest, None
+    if len(damaged) == len(nightly) + len(monthly):
+        return None, DAMAGED.format(dates=', '.join(damaged))
+    latest = max(m['created_at'] for _, m in nightly + monthly)
+    return None, FOREIGN.format(date=shown(latest), ids=' or appdata_'.join(sorted(ids)), files=files)
 
 
 def question(files, backup):
     lines = [
         f'Nextcloud is not set up on this SSD yet, but {files} holds this server\'s Nextcloud files, and the HDD '
         'holds this server\'s own Nextcloud backup:',
-        f'  settings and program: the monthly snapshot of {shown(backup.manifest["created_at"])}',
+        f'  settings and program: the {"nightly backup" if backup.nightly else "monthly snapshot"} of '
+        f'{shown(backup.manifest["created_at"])}',
     ]
-    if backup.dump:
+    if backup.dump and backup.made != backup.manifest['created_at']:
         lines.append(f'  database (accounts, shares, calendars, contacts): the newer copy of {backup.date}')
     else:
-        lines.append('  database (accounts, shares, calendars, contacts): from the same snapshot')
+        lines.append('  database (accounts, shares, calendars, contacts): from the same backup')
     lines.append(
         'Setup can bring Nextcloud back from it, then let it find the files again. The files folder itself is not '
         'changed. Answer no to keep it as it is and leave Nextcloud not set up.'
@@ -387,6 +459,15 @@ def by_hand(member, root):
     return member
 
 
+def made_empty(hidden):
+    """The two folders a nightly backup leaves out, made empty as setup makes them: the
+    database's (its database comes back from nextcloud.sql into a new one) and data,
+    where the files folder on the HDD is mounted."""
+    (hidden / POSTGRES).mkdir(mode=0o700)
+    (hidden / HTML / 'data').mkdir(mode=0o750, exist_ok=True)
+    os.chown(hidden / HTML / 'data', WWW_DATA, WWW_DATA, follow_symlinks=False)
+
+
 def unpacked(backup, stage):
     """Nextcloud's folders out of the snapshot's data.tar into `stage`, from the same bytes
     that are checked against its checksum (checked first and unpacked afterwards, a file
@@ -414,6 +495,10 @@ def unpacked(backup, stage):
     for part in PARTS:
         if not (hidden / part).is_dir():
             raise RuntimeError(f'the backup holds no {part}')
+    if not (hidden / VERSION_PHP).is_file():
+        raise RuntimeError(f'the backup holds no {VERSION_PHP}')  # never a bare config.php
+    if backup.nightly:
+        made_empty(hidden)
     for top in {part.split('/')[0] for part in PARTS}:
         os.rename(hidden / top, stage / top)
     os.rmdir(hidden)
@@ -473,7 +558,27 @@ def prepared(backup, ids, stage, app):
     if backup.dump:
         dump = stage / backup.dump[0].name
         checked_copy(backup.dump[0], dump, backup.dump[1]['sha256'])
+        role_sql(stage, user[1].decode(), config_php)
     return user[1].decode(), dump, admin
+
+
+def role_sql(stage, user, config_php):
+    """stage/role.sql: Nextcloud's own database user made with its password from
+    config.php when the database has no such user (a nightly backup's database comes back
+    into a new, empty one; a monthly snapshot's database has it already). The password
+    goes to psql on its standard input, never on a command line."""
+    found = DB_PASSWORD.search(config_php)
+    if not found:
+        raise RuntimeError('its config.php names no database password')
+    password = re.sub(rb"\\([\\'])", rb'\1', found[1]).decode().replace("'", "''")
+    if '$neko$' in password:
+        raise RuntimeError('its database password cannot be given to psql as it is')
+    text = (
+        f"DO $neko$BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{user}') THEN "
+        f"CREATE ROLE \"{user}\" LOGIN PASSWORD '{password}'; END IF; END$neko$;\n"
+    )
+    with open(stage / 'role.sql', 'x', encoding='utf-8', opener=lambda p, f: os.open(p, f, 0o600)) as out:
+        out.write(text)
 
 
 def switched(data, stage):
@@ -511,10 +616,15 @@ def put_back(data, stage, base, run, made):
 
 
 def database_loaded(base, user, dump, run):
-    """The newer database copy loaded as Nextcloud's own database user into a new
-    database, which takes the snapshot's place only once it loaded without an error."""
+    """The database copy loaded as Nextcloud's own database user (made first when the
+    database has none: role_sql) into a new database, which takes the place of the one
+    there only once it loaded without an error."""
     exec_db = base + ['exec', '-T', 'database']
     steps = [
+        (
+            exec_db + ['psql', '-q', '-U', 'nextcloud', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1'],
+            dump.parent / 'role.sql',
+        ),
         (
             exec_db
             + [

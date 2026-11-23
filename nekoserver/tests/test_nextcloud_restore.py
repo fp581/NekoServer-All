@@ -209,6 +209,57 @@ class Server:
     def commands(self):
         return [' '.join(argv) for argv, _ in self.calls]
 
+    def add_nightly(self, at, named=OWN, sealed=False, sql_sum=None, version=True, instance=None):
+        """A nightly backup (row C-01, T2's layout): the program folder and settings in
+        data.tar (no database folder, no html/data), the database as nextcloud.sql."""
+        run = self.media / f'backups/nextcloud-nightly/snapshot-{int(at * 1e6)}-4242'
+        run.mkdir(parents=True)
+        members = {
+            'appdata/nextcloud/html/index.php': '<?php // nightly\n',
+            'compose/nextcloud/compose.yaml': 'services: {}\n',
+            'compose/nextcloud/managed.json': json.dumps(
+                {
+                    'format': 'neko-nextcloud-v1',
+                    'image': 'nextcloud:32-apache',
+                    'model': {},
+                    'settings': nextcloud.settings(
+                        {**self.config, 'nextcloud': {'admin_user': 'alice'}}, 'nextcloud:32-apache'
+                    ),
+                }
+            ),
+        }
+        if version:
+            members['appdata/nextcloud/html/version.php'] = "<?php\n$OC_VersionString = '32.0.6';\n"
+        if not sealed:
+            members['compose/nextcloud/.env'] = 'DB_PASSWORD=x\nADMIN_PASSWORD=y\n'
+            members['appdata/nextcloud/html/config/config.php'] = config_php(instance or self.instance)
+        data_tar = tar_of(members)
+        (run / 'data.tar').write_bytes(data_tar)
+        sql = f"COPY public.oc_filecache FROM stdin;\n1\tappdata_{named}/preview\n2\tnightly\n\\.\n".encode()
+        (run / 'nextcloud.sql').write_bytes(sql)
+        if sealed:
+            (run / 'secrets.tar.cms').write_bytes(b'sealed')
+        (run / 'manifest.json').write_text(
+            json.dumps(
+                {
+                    'format': 'neko-maintenance-v1',
+                    'kind': 'nextcloud-nightly',
+                    'apps': ['nextcloud'],
+                    'created_at': at,
+                    'nextcloud_version': '32.0.6',
+                    'paused_seconds': 12,
+                    'paths': {'data': ['appdata/nextcloud/html', 'compose/nextcloud'], 'media': []},
+                    'sha256': {
+                        'data': hashlib.sha256(data_tar).hexdigest(),
+                        'database': sql_sum or hashlib.sha256(sql).hexdigest(),
+                    },
+                    'password_files': 'encrypted' if sealed else 'unencrypted_in_data_tar',
+                }
+            )
+        )
+        self.nightly_sql = sql
+        return run
+
 
 class OfferedOnlyThenTests(unittest.TestCase):
     def test_the_offer_comes_only_when_the_ssd_is_new_and_the_files_and_this_servers_backup_are_on_the_hdd(self):
@@ -314,8 +365,8 @@ class NoKeepsTheRefusalTests(unittest.TestCase):
 
 
 class YoungServerTests(unittest.TestCase):
-    # Coordinator, T1-R5 follow-up: a server younger than a month has no monthly snapshot
-    # (the nightly app backup leaves Nextcloud out), and the refusal pointed to an offer
+    # Coordinator, T1-R5 follow-up: a server before its first night has no backup of Nextcloud
+    # at all (row C-01 added the nightly one), and the refusal pointed to an offer
     # that could never come.
     def test_with_no_backup_of_its_settings_yet_the_refusal_says_so_and_what_to_do(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -332,10 +383,106 @@ class YoungServerTests(unittest.TestCase):
                     )
             told = str(refused.exception)
             self.assertIn('No backup of Nextcloud\'s settings exists yet', told)
-            self.assertIn('on the 1st of each month', told)
+            self.assertIn('the nightly backup saves them first in the first night after setup', told)
             self.assertIn(f'Your files stay as they are in {server.files}', told)
             self.assertIn('copy your files into Nextcloud', told)
             self.assertNotIn('No monthly snapshot', told)
+
+
+class NightlyBackupTests(unittest.TestCase):
+    # Row C-01 (the user's decision): Nextcloud is backed up nightly in 1.0.0, so a server
+    # younger than a month is brought back too; the newest of the nightly backup, the
+    # weekly database copy and the monthly snapshot is used, through the same checked code.
+    def test_a_nightly_backup_alone_is_offered_and_brings_nextcloud_back(self):
+        for sealed in (False, True):
+            with self.subTest(sealed=sealed), tempfile.TemporaryDirectory() as tmp:
+                server = Server(tmp, dump=False)
+                shutil.rmtree(server.media / 'backups/monthly')
+                night = SNAPSHOT_AT + 3 * 86400
+                server.add_nightly(night, sealed=sealed)
+                files_before = server.tree(server.files)
+                self.assertEqual(server.offer(), (True, None))
+                self.assertIn(f'the backup of {nextcloud_restore.shown(night)}?', server.asked[0])
+                told = '\n'.join(server.said)
+                self.assertIn(f'the nightly backup of {nextcloud_restore.shown(night)}', told)
+                self.assertIn('database (accounts, shares, calendars, contacts): from the same backup', told)
+                data = server.data
+                # The program folder came back whole: never a bare config.php without version.php.
+                self.assertIn('32.0.6', (data / 'appdata/nextcloud/html/version.php').read_text())
+                self.assertIn(OWN, (data / 'appdata/nextcloud/html/config/config.php').read_text())
+                self.assertEqual(list((data / 'appdata/nextcloud/postgres').iterdir()), [])
+                self.assertTrue((data / 'appdata/nextcloud/html/data').is_dir())
+                said = server.commands()
+                # Its own database user is made (password on stdin only), then its database loaded.
+                role = next(
+                    i for i, c in enumerate(said) if c.endswith('psql -q -U nextcloud -d postgres -v ON_ERROR_STOP=1')
+                )
+                self.assertIn(b'CREATE ROLE "oc_admin" LOGIN PASSWORD \'secret\'', server.calls[role][1])
+                self.assertFalse(any('secret' in c for c in said))
+                load = next(i for i, c in enumerate(said) if '-U oc_admin -d nextcloud_restoring' in c)
+                self.assertLess(role, load)
+                self.assertEqual(server.calls[load][1], server.nightly_sql)
+                self.assertEqual(server.tree(server.files), files_before)
+                self.assertFalse((data / nextcloud_restore.STAGING).exists())
+
+    def test_the_database_user_is_made_with_its_password_quoted_for_psql(self):
+        # T5: a password with ' and \ in config.php (PHP writes them as \' and \\) reaches psql as one literal.
+        with tempfile.TemporaryDirectory() as tmp:
+            stage = Path(tmp)
+            php = rb"""<?php $CONFIG = array ('dbuser' => 'oc_alice', 'dbpassword' => 'a\'b\\c$neko:y',);"""
+            nextcloud_restore.role_sql(stage, 'oc_alice', php)
+            self.assertEqual(
+                (stage / 'role.sql').read_text(),
+                "DO $neko$BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'oc_alice') THEN "
+                'CREATE ROLE "oc_alice" LOGIN PASSWORD ' + r"'a''b\c$neko:y'" + '; END IF; END$neko$;\n',
+            )
+            self.assertEqual((stage / 'role.sql').stat().st_mode & 0o777, 0o600)
+            with self.assertRaisesRegex(RuntimeError, 'cannot be given to psql'):
+                nextcloud_restore.role_sql(
+                    stage / 'x', 'oc_alice', php.replace(b':y', b'$:y').replace(b'$neko:', b'$neko$')
+                )
+
+    def test_the_newest_of_nightly_backup_weekly_copy_and_monthly_snapshot_is_used(self):
+        cases = {
+            # (nightly time, what is loaded, what the date is)
+            'the nightly backup is the newest': (DUMP_AT + 86400, 'nightly', DUMP_AT + 86400),
+            'a weekly copy newer than the nightly backup': (DUMP_AT - 86400, 'weekly', DUMP_AT),
+        }
+        for case, (night, loaded, date) in cases.items():
+            with self.subTest(case), tempfile.TemporaryDirectory() as tmp:
+                server = Server(tmp)  # monthly snapshot and a weekly copy a week later
+                server.add_nightly(night)
+                self.assertEqual(server.offer(), (True, None))
+                self.assertIn(f'the backup of {nextcloud_restore.shown(date)}?', server.asked[0])
+                # Settings and program from the nightly backup, newer than the monthly snapshot.
+                self.assertIn('nightly', (server.data / 'appdata/nextcloud/html/index.php').read_text())
+                said = server.commands()
+                load = next(i for i, c in enumerate(said) if '-U oc_admin -d nextcloud_restoring' in c)
+                expected = server.nightly_sql if loaded == 'nightly' else server.dump.read_bytes()
+                self.assertEqual(server.calls[load][1], expected)
+
+    def test_a_damaged_or_foreign_nightly_backup_is_passed_over_for_the_monthly_snapshot(self):
+        for case, kw in {
+            'damaged': {'sql_sum': '0' * 64},
+            'another server\'s': {'named': OTHER, 'instance': OTHER},
+        }.items():
+            with self.subTest(case), tempfile.TemporaryDirectory() as tmp:
+                server = Server(tmp)
+                server.add_nightly(DUMP_AT + 86400, **kw)
+                self.assertEqual(server.offer(), (True, None))
+                self.assertEqual((server.data / 'appdata/nextcloud/html/index.php').read_text(), '<?php\n')
+                self.assertIn(f'the backup of {nextcloud_restore.shown(DUMP_AT)}?', server.asked[0])
+
+    def test_a_nightly_backup_without_its_program_folder_puts_the_ssd_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server = Server(tmp, dump=False)
+            shutil.rmtree(server.media / 'backups/monthly')
+            server.add_nightly(SNAPSHOT_AT, version=False)
+            restored, said = server.offer()
+            self.assertFalse(restored)
+            self.assertIn('the backup holds no appdata/nextcloud/html/version.php', said)
+            self.assertIn('the SSD was put back as it was', said)
+            self.assertEqual(list(server.data.iterdir()), [])
 
 
 class PatternTests(unittest.TestCase):
@@ -344,6 +491,9 @@ class PatternTests(unittest.TestCase):
     def test_folder_and_copy_names_take_ascii_digits_only(self):
         self.assertTrue(nextcloud_restore.MONTHLY.fullmatch('1790000000000000-7'))
         self.assertIsNone(nextcloud_restore.MONTHLY.fullmatch(chr(0x661) * 2 + '-7'))  # Arabic-Indic digits
+        self.assertTrue(nextcloud_restore.NIGHTLY_RUN.fullmatch('snapshot-1790000000000000-4242'))
+        self.assertIsNone(nextcloud_restore.NIGHTLY_RUN.fullmatch('snapshot-' + chr(0x661) + '-4242'))
+        self.assertIsNone(nextcloud_restore.NIGHTLY_RUN.fullmatch('.snapshot-1790000000000000-4242.partial'))
         self.assertTrue(nextcloud_restore.DUMP.fullmatch('nextcloud-20260901T030000Z.sql'))
         self.assertIsNone(nextcloud_restore.DUMP.fullmatch('nextcloud-2026090' + chr(0x661) + 'T030000Z.sql'))
         self.assertIsNone(nextcloud_restore.DUMP.fullmatch('nextcloud-20260901T030000Zxsql'))
