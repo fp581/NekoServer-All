@@ -4,6 +4,11 @@
 
 Fixes found by testing 0.52.2 against 0.52.1, old against new, on a test VM, with the real runtime and in a browser: what 0.52.2 did differently, and things 0.52.1 already did wrong. What changes is said below.
 
+### Added: two buttons on the Backup cards page
+- **Take these cards back**: after the SSD is replaced or NekoServer is set up again, the page shows the old cards as an earlier set. Plug them in and press the button: the server makes its catalogue again from what is on them, and the next run writes on, without copying again what they hold. It is there only while the server has no card of its own set.
+- **Check this card**: every copy on a plugged-in card is read again and compared with its checksum. A damaged copy is named and no longer counts, and the next run copies that file again; the check changes nothing on the card.
+- Both run in the card job, show their progress and result on the page, and need the PIN like the page's other actions. BACKUP-CARDS.md and CARD-RECOVERY.md say how.
+
 ### Fixed: the upgrade
 - **The release says its own number.** 0.52.2's download said it was 0.52.1, so every server refused to upgrade to v0.52.2-beta. 0.52.3 says 0.52.3 everywhere the number is kept, and a test now fails when the code's number and the changelog's newest entry differ.
 
@@ -25,6 +30,7 @@ Fixes found by testing 0.52.2 against 0.52.1, old against new, on a test VM, wit
 - **The dashboard's Updates page knows a device is signed in with its PIN**: Check for updates, Update now and the other buttons there asked for the PIN again. When the unlock has run out (after 12 hours, or a restart of the control service), an app change asks for the PIN in the words app changes use, not the fans and lights ones.
 - **The dashboard, its guide, setup's PIN question and the README say every app change asks for the PIN on every device**, the server too (restart or close, updates and the upgrade, Ask Neko, media folders, the Backup cards page), not only restarting or closing apps.
 - **The dashboard's pages that need the control service say E21 when it is not running**, and Media folders no longer asks for a PIN it cannot check then.
+- **Phone alerts and the outage check-in switched off in setup show "Off" and raise no alert**: their last result from before was shown as Passed or Failed beside "Its schedule is off.", and an old failure raised an alert on Home.
 - **In the setup window, a card that needs another says which** ("Needs Movies and shows - Jellyfin switched on."), so a TV card that went grey with Movies and shows off no longer looks impossible on this PC.
 - **On a phone at 200 % zoom, the dashboard's banner link ("What does this mean?") wraps**, so the Fans & lights page no longer scrolls sideways by 2 pixels.
 - **Ask Neko is set up on a first install of an 8 GB PC.** Setup measured the free memory just after Immich started, at its peak, and said there was not enough for a model; a minute later there was. When the apps have just started, setup now looks again for up to 3 minutes before deciding. A later run that finds the apps running measures once and waits for nothing.
