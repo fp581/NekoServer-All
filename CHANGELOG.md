@@ -29,10 +29,13 @@ The first stable release, built on 0.52.3.
 - **RECOVERY.md's Nextcloud database restore brings Nextcloud back** (blocker T1-R2). Loaded as `nextcloud`, as it said, every table belonged to that account, while Nextcloud signs in with an account of its own (`dbuser` in its config.php, `oc_admin` for example): "permission denied for table oc_appconfig", and Nextcloud and the next setup run failed. A step of its own now reads that name; the database is made for that account and the copy loaded as it, stopping at the first error.
 - **After a whole-server restore, Nextcloud takes uploads again** (blocker T1-R3). With Nextcloud's database copy put back on new drives, a restored account had no `files` folder, so Nextcloud refused its uploads while setup said PASS. Setup's Nextcloud step now makes the missing folder of each account that has signed in, and scans it; a folder that is there is never touched, and a new account keeps Nextcloud's welcome files.
 
+- **A Seerr restored beside another Jellyfin is told what goes with it** (T1-R7). Seerr linked to another Jellyfin now says to put Seerr, Sonarr and Radarr back from the same night as Jellyfin; a Seerr linked to none says to finish its first run. APP-BACKUPS.md step 2 says the four go together.
+- **Every recovery text names whose backup password it asks for** (T1-R8, T3-R8b): the password of the server that made the backup, so on a rebuilt server the old one, not a new one chosen since. In the USB copy's review, the password-list review, setup's Nextcloud offer, the wrong-password message and RECOVERY.md.
 ### Tests
 - **Tests of the setup driver's own parts** (split out in 0.52.2), the setup report's folder-access rows, the mistyped-settings warnings and the job-time check, each pinning what it does.
 - **Tests of the home gateway's set-up, start and Tailscale routes, and of what the snapshot verify and restore refuse, and of the backup password tool's words and recover.py's commands** (mutation testing found them unpinned).
 - **The tests no longer depend on the PC they run on**: 28 tests looked at the real `/srv/nekoserver`, `/mnt/nekoserver-media` or systemd's units and failed on a PC with NekoServer installed (one would have removed a real timer's record when run as root); each uses folders of its own now.
+- **Tests of the recovery tools' command words, their Docker socket check and the Immich services they name** (mutation testing found them unpinned).
 
 ## v0.52.3 — 2026-11-23
 
