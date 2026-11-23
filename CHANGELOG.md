@@ -18,6 +18,7 @@ Fixes found by testing 0.52.2 against 0.52.1, old against new, on a test VM, wit
 - **The recovery guides match the tools**: restored Steam and Samba folders start at `source0`; a card restore's `--card` goes before the command word. ACCOUNT-SETUP.md's option 2 is typing every login yourself, and DASHBOARD.md's readings count as late after 3 minutes at the least.
 
 ### Fixed: what 0.52.1 did too
+- **A drive folder written with two slashes at its start (`//srv/nekoserver`) is refused at the settings check**, saying how to write it: 'Write the drive folder with one "/" at the start, as /srv/nekoserver'. Setup stopped later with "Refusing symlink path", which names no link.
 - **The dashboard's Updates page knows a device is signed in with its PIN**: Check for updates, Update now and the other buttons there asked for the PIN again. When the unlock has run out (after 12 hours, or a restart of the control service), an app change asks for the PIN in the words app changes use, not the fans and lights ones.
 - **In the setup window, a card that needs another says which** ("Needs Movies and shows - Jellyfin switched on."), so a TV card that went grey with Movies and shows off no longer looks impossible on this PC.
 - **On a phone at 200 % zoom, the dashboard's banner link ("What does this mean?") wraps**, so the Fans & lights page no longer scrolls sideways by 2 pixels.
