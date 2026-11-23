@@ -1373,6 +1373,12 @@ def review(rows, prompt, output):
 
 # The review's last lines for a restore that stops no app.
 APPS_KEEP_RUNNING = ('Apps', 'none is stopped. They keep running while this is restored.')
+# A USB copy opens with the password of the server that made it: on a rebuilt server that is
+# the old one, not the one its new setup chose (T1-R8).
+USB_COPY_PASSWORD = (
+    'it asks for the backup password of the server that made this backup (chosen in its setup; '
+    'on a rebuilt server, the old password, not a new one chosen since)'
+)
 
 
 def files_approved(config, what, source, chosen, target, untouched, prompt, output):
@@ -2287,7 +2293,7 @@ def restore_night(config, kind, prompt, output, usb):
         ('Restore', dict(MENU)[kind]),
         ('From', f'{run} (the night of {dict(shown)[run]})'),
         ('Into', f'{target} (a new folder)'),
-        *((('Password', 'it asks for the backup password chosen during setup'),) if sealed else ()),
+        *((('Password', USB_COPY_PASSWORD),) if sealed else ()),
         (
             'Overwritten',
             'nothing. The settings the apps use now stay as they are. To use a restored file you copy it back '

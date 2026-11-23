@@ -194,7 +194,9 @@ class UsbAppSettingsTests(unittest.TestCase):
         target, calls, seen, asked, where = self.restore('1', 'yes')
         said = '\n'.join(self.out)
         self.assertIn(f'1. {recovery_wizard.when("1792900000000000")}{recovery_wizard.FROM_USB}', said)
-        self.assertIn('  Password:     it asks for the backup password chosen during setup', said)
+        # T1-R8: on a rebuilt server the copy opens with the old server's password.
+        self.assertIn('  Password:     it asks for the backup password of the server that made this backup', said)
+        self.assertIn('the old password, not a new one chosen since', said)
         self.assertEqual(where.call_args.args[-1], self.usb)  # never restored onto the USB drive itself
         asked.assert_called_once()
         self.assertEqual(seen, [['manifest.json', 'payload']])
