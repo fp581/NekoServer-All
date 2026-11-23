@@ -1800,6 +1800,11 @@ function askNeedsPin(control = state.control) {
 }
 function askIntro(s = state.status, control = state.control) {
   const a = object(s?.assistant);
+  if (!s) {
+    // The first readings are not in yet (a server just started): whether the assistant is
+    // set up is not known, so no claim either way.
+    return 'Waiting for the server’s first readings…';
+  }
   if (!assistantSetUp(s)) {
     return 'The AI assistant is not set up on this server. Setup offers it when the server has room for it.';
   }
