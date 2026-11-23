@@ -43,7 +43,7 @@ Fixes found by testing 0.52.2 against 0.52.1, old against new, on a test VM, wit
 
 ### Tests
 - **Tests for what mutation testing found untested** in the split Python (the settings file and source drive checks of the source import, its progress with linked files, `media-connect.py`'s steps and drive check, the store a recovery reattaches), each pinning what 0.52.1 does.
-- **Tests of setup's onboarding report and the snapshot rehearsal's steps**: what each step prints and runs, and the two-drives check, pinned as they are.
+- **Tests of setup's onboarding report, the snapshot rehearsal's steps and preview, and the words said when the dashboard PIN is skipped**, pinned as they are.
 - **The dashboard's browser tests wait the way the page's security policy allows**, so the backup cards test runs instead of erroring every time.
 - **CI runs the dashboard's and the setup window's browser tests in a job of their own** (Playwright 1.48.2 with its Chromium, Node 18.19.1), and fails when one is skipped.
 
