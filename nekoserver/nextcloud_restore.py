@@ -53,6 +53,7 @@ CONFIG_PHP = 'appdata/nextcloud/html/config/config.php'
 VERSION_PHP = 'appdata/nextcloud/html/version.php'
 ENV = 'compose/nextcloud/.env'
 MANAGED = 'compose/nextcloud/managed.json'
+PINS = 'compose/nextcloud/maintenance-images.json'  # the monthly update's image IDs (sha256:...)
 STAGING = '.nextcloud-restoring'  # under the data SSD: the restore is put together here
 WWW_DATA = 33
 # Nextcloud's own folder in its files folder, named by its instance id (backup.rs nextcloud_internal).
@@ -619,6 +620,41 @@ def put_back(data, stage, base, run, made):
             os.rmdir(folder)
 
 
+def pinned_images(pins):
+    """The images maintenance-images.json pins, or None when it cannot be read."""
+    try:
+        services = json.loads(pins.read_text()).get('services')
+        return [str((service or {}).get('image') or '') for service in services.values()]
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def pins_kept(data, base, run, log):
+    """The monthly update's pins (maintenance-images.json) kept only when Docker on this PC
+    has every image they name. Docker keeps its images on the SSD: on a new SSD they went
+    with the old one, and Docker cannot download an image by its ID ("pull access denied
+    for sha256"), so Nextcloud never started (T1-R9). The pins are taken out then: the
+    versions compose.yaml names are downloaded, and the monthly update pins them again
+    before its next download, as it pins every app that runs unpinned. Returns whether
+    the pins are kept."""
+    pins = data / PINS
+    if not pins.is_file():
+        return False
+    docker = base[: base.index('compose')] if 'compose' in base else ['docker']
+    images = pinned_images(pins)
+    if images and all(
+        run([*docker, 'image', 'inspect', image], capture_output=True, timeout=60, check=False).returncode == 0
+        for image in images
+    ):
+        return True
+    pins.unlink()
+    log(
+        'Nextcloud: the app versions its monthly update had pinned are not on this PC (Docker kept them on the old '
+        'SSD); the versions its settings name are downloaded instead, and the monthly update pins them again'
+    )
+    return False
+
+
 def database_loaded(base, user, dump, run):
     """The database copy loaded as Nextcloud's own database user (made first when the
     database has none: role_sql) into a new database, which takes the place of the one
@@ -720,6 +756,8 @@ def restore(ctx, backup, ids, app, run, ask_password=None):
         user, dump, admin = prepared(backup, ids, stage, app)
         switched(data, stage)
         base = app.compose_base(data / 'compose/nextcloud/compose.yaml', data / ENV)
+        if not pins_kept(data, base, run, ctx.log):
+            base = app.compose_base(data / 'compose/nextcloud/compose.yaml', data / ENV)  # without the pins
         ctx.log('Nextcloud: its settings, program and database are back on the SSD; starting it')
         checked_run(base + ['up', '-d', '--wait', 'database'], 1800, 'Nextcloud\'s database (docker compose up)')
         if dump:

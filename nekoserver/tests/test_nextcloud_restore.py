@@ -28,6 +28,8 @@ OWN = 'ocabc1234567'
 OTHER = 'ocxyz7654321'
 SNAPSHOT_AT = 1_790_000_000.0  # the monthly snapshot's time
 DUMP_AT = SNAPSHOT_AT + 7 * 86400  # a week later: the weekly database copy
+PINS = 'compose/nextcloud/maintenance-images.json'
+PINNED = {'services': {s: {'image': 'sha256:' + c * 64} for s, c in (('nextcloud', 'a'), ('database', 'b'))}}
 
 
 def config_php(instance):
@@ -83,7 +85,7 @@ def python_without_the_filter():
 class Server:
     """A server whose SSD was replaced: its HDD keeps the files folder and the backups."""
 
-    def __init__(self, tmp, instance=OWN, sealed=False, dump=True, named=OWN, odd=()):
+    def __init__(self, tmp, instance=OWN, sealed=False, dump=True, named=OWN, odd=(), pins=None):
         self.data, self.media = Path(tmp) / 'ssd', Path(tmp) / 'hdd'
         self.data.mkdir()
         self.config = {'data_mount': str(self.data), 'media_mount': str(self.media), 'nextcloud': {'enabled': True}}
@@ -115,6 +117,8 @@ class Server:
         if not sealed:
             members['compose/nextcloud/.env'] = 'DB_PASSWORD=x\nADMIN_PASSWORD=y\n'
             members['appdata/nextcloud/html/config/config.php'] = config_php(instance)
+        if pins:
+            members[PINS] = json.dumps(pins)
         self.snapshot = self.media / f'backups/monthly/{int(SNAPSHOT_AT * 1e6)}-7'
         self.snapshot.mkdir(parents=True)
         data_tar = tar_of(members, odd)
@@ -209,7 +213,7 @@ class Server:
     def commands(self):
         return [' '.join(argv) for argv, _ in self.calls]
 
-    def add_nightly(self, at, named=OWN, sealed=False, sql_sum=None, version=True, instance=None):
+    def add_nightly(self, at, named=OWN, sealed=False, sql_sum=None, version=True, instance=None, pins=None):
         """A nightly backup (row C-01, T2's layout): the program folder and settings in
         data.tar (no database folder, no html/data), the database as nextcloud.sql."""
         run = self.media / f'backups/nextcloud-nightly/snapshot-{int(at * 1e6)}-4242'
@@ -233,6 +237,8 @@ class Server:
         if not sealed:
             members['compose/nextcloud/.env'] = 'DB_PASSWORD=x\nADMIN_PASSWORD=y\n'
             members['appdata/nextcloud/html/config/config.php'] = config_php(instance or self.instance)
+        if pins:
+            members[PINS] = json.dumps(pins)
         data_tar = tar_of(members)
         (run / 'data.tar').write_bytes(data_tar)
         sql = f"COPY public.oc_filecache FROM stdin;\n1\tappdata_{named}/preview\n2\tnightly\n\\.\n".encode()
@@ -483,6 +489,40 @@ class NightlyBackupTests(unittest.TestCase):
             self.assertIn('the backup holds no appdata/nextcloud/html/version.php', said)
             self.assertIn('the SSD was put back as it was', said)
             self.assertEqual(list(server.data.iterdir()), [])
+
+
+class PinnedImagesTests(unittest.TestCase):
+    """Blocker T1-R9: after a monthly update compose/nextcloud keeps maintenance-images.json,
+    which pins each service to an image ID. Those images lived in Docker on the dead SSD,
+    and Docker cannot download an image by its ID ("pull access denied for sha256"): the
+    bring-back failed on every server that had had a monthly update."""
+
+    def brought_back(self, backup, gone):
+        with tempfile.TemporaryDirectory() as tmp:
+            server = Server(tmp, pins=PINNED)
+            if backup == 'nightly':
+                server.add_nightly(DUMP_AT + 86400, pins=PINNED)
+            self.assertEqual(server.offer(fail='image inspect' if gone else None), (True, None))
+            said = server.commands()
+            database = next(i for i, c in enumerate(said) if c.endswith('up -d --wait database'))
+            looked = [i for i, c in enumerate(said) if 'image inspect sha256:' in c]
+            self.assertTrue(looked)
+            self.assertLess(max(looked), database)  # looked at before anything starts
+            return (server.data / PINS).exists(), '\n'.join(server.said)
+
+    def test_pins_to_images_not_on_this_pc_are_taken_out_so_the_named_versions_are_downloaded(self):
+        for backup in ('monthly', 'nightly'):
+            with self.subTest(backup):
+                kept, told = self.brought_back(backup, gone=True)
+                self.assertFalse(kept)
+                self.assertIn('the monthly update pins them again', told)
+
+    def test_pins_to_images_this_pc_has_are_kept(self):
+        for backup in ('monthly', 'nightly'):
+            with self.subTest(backup):
+                kept, told = self.brought_back(backup, gone=False)
+                self.assertTrue(kept)
+                self.assertNotIn('pins them again', told)
 
 
 class PatternTests(unittest.TestCase):
