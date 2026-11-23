@@ -454,7 +454,12 @@ class StepTests(unittest.TestCase):
         # Everything but the music backup's line, which is there only with such a backup,
         # and the backup cards' line, there only with backup cards.
         everything = [item for item in recovery_wizard.MENU if item[0] not in ('music', 'cards')]
-        self.assertEqual(recovery_wizard.menu(settings()), everything)
+        # Drives that are not there, never the real ones of the PC the tests run on (with
+        # NekoServer installed, its /srv/nekoserver/cards adds the cards' line).
+        with tempfile.TemporaryDirectory() as folder:
+            config = settings(folder=str(Path(folder) / 'ssd'))
+            config['media_mount'] = str(Path(folder) / 'hdd')
+            self.assertEqual(recovery_wizard.menu(config), everything)
 
 
 class RuntimeHandOffTests(unittest.TestCase):
