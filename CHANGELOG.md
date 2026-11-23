@@ -55,6 +55,7 @@ Fixes found by testing 0.52.2 against 0.52.1, old against new, on a test VM, wit
 - **Tests of setup's onboarding report, the snapshot rehearsal's steps and preview, and the words said when the dashboard PIN is skipped**, pinned as they are.
 - **The dashboard's browser tests wait the way the page's security policy allows**, so the backup cards test runs instead of erroring every time.
 - **CI runs the dashboard's and the setup window's browser tests in a job of their own** (Playwright 1.48.2 with its Chromium, Node 18.19.1), and fails when one is skipped.
+- **The runtime's unit tests no longer read the PC's own setup lock**, so a setup running on the same PC can't fail them.
 
 ## v0.52.2 — 2026-11-23
 
