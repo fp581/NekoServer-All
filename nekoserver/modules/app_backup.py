@@ -177,6 +177,5 @@ def run(context):
         subprocess.run(command, check=True, capture_output=True, timeout=1200)
     context.log(
         'Nightly private app snapshots enabled on media HDD (the media apps and Nextcloud); apps stop briefly during '
-        'each run. '
-        + retention(keep_snapshots(context.config))
+        'each run. ' + retention(keep_snapshots(context.config))
     )
