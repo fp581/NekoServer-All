@@ -159,72 +159,97 @@ def snapshot_manifest(path):
     return manifest
 
 
+def read_checked(path, expected, reader):
+    """`reader` over every byte of the file at `path`, each byte also counted into its
+    checksum; what `reader` returned, or None when the file does not match `expected`."""
+    with open(path, 'rb') as raw:
+        counted = Hashing(raw)
+        result = reader(counted)
+        while counted.read(CHUNK):
+            pass
+    return result if counted.digest.hexdigest() == expected else None
+
+
+def member_facts(tar, wanted):
+    """(names one of `wanted` in its database, Nextcloud's major version, config.php) of
+    the members of a snapshot's data.tar."""
+    named, version, config_php = False, None, None
+    for member in tar:
+        if not member.isfile():
+            continue
+        name = member.name.removeprefix('./')
+        stream = tar.extractfile(member)
+        if name == CONFIG_PHP:
+            config_php = stream.read(1_000_000)
+        elif name == VERSION_PHP:
+            found = VERSION.search(stream.read(1_000_000))
+            version = found[1].decode() if found else None
+        elif not named and name.startswith('appdata/nextcloud/postgres/'):
+            named = holds(stream, wanted)
+    return named, version, config_php
+
+
 def looked_at(snapshot, manifest, ids):
     """(this server's, Nextcloud's major version, config.php) of a monthly snapshot, read in
     one pass over its data.tar; (None, None, None) when it does not match its checksum.
-    "This server's": its
-    config.php names one of `ids` (a snapshot made without a backup key keeps it in
-    data.tar), or, with config.php sealed, its database names the folder appdata_<id>."""
-    wanted = needles(ids)
-    named, version, config_php = False, None, None
-    with open(snapshot / 'data.tar', 'rb') as raw:
-        counted = Hashing(raw)
-        with tarfile.open(fileobj=counted, mode='r|') as tar:
-            for member in tar:
-                if not member.isfile():
-                    continue
-                name = member.name.removeprefix('./')
-                stream = tar.extractfile(member)
-                if name in (CONFIG_PHP, VERSION_PHP):
-                    text = stream.read(1_000_000)
-                    if name == CONFIG_PHP:
-                        config_php = text
-                    else:
-                        found = VERSION.search(text)
-                        version = found[1].decode() if found else None
-                elif not named and name.startswith('appdata/nextcloud/postgres/'):
-                    named = holds(stream, wanted)
-        while counted.read(CHUNK):
-            pass
-    if counted.digest.hexdigest() != manifest['sha256']['data']:
+    "This server's": its config.php names one of `ids` (a snapshot made without a backup
+    key keeps it in data.tar), or, with config.php sealed, its database names the folder
+    appdata_<id>."""
+
+    def facts(stream):
+        with tarfile.open(fileobj=stream, mode='r|') as tar:
+            return member_facts(tar, needles(ids))
+
+    found = read_checked(snapshot / 'data.tar', manifest['sha256']['data'], facts)
+    if found is None:
         return None, None, None
+    named, version, config_php = found
     if config_php is not None:
-        found = INSTANCE_ID.search(config_php)
-        named = bool(found) and found[1].decode() in ids
+        instance = INSTANCE_ID.search(config_php)
+        named = bool(instance) and instance[1].decode() in ids
     return named, version, config_php
+
+
+def dump_notes(folder):
+    """(path, note) of the database copies in `folder` that have a note with their time,
+    newest first (they are named by their time)."""
+    try:
+        names = sorted((n for n in os.listdir(folder) if DUMP.fullmatch(n)), reverse=True)
+    except OSError:
+        return []
+    found = []
+    for name in names:
+        try:
+            note = json.loads((folder / f'{name}.json').read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(note, dict) and isinstance(note.get('created_at'), (int, float)):
+            found.append((folder / name, note))
+    return found
+
+
+def same_major(path, note, version, log):
+    """Whether a database copy was made by the major Nextcloud version the snapshot holds."""
+    major = str(note.get('nextcloud_version') or '').split('.')[0]
+    if not version or major == version:
+        return True
+    log(
+        f'Nextcloud: the database copy {path.name} was made by Nextcloud {note.get("nextcloud_version")}, '
+        f'the snapshot holds Nextcloud {version}: not used'
+    )
+    return False
 
 
 def newer_dump(media, after, version, ids, log):
     """The newest database copy made after the snapshot (`after`, its time) by the same
     major Nextcloud version, that matches its checksum and names this server's folder:
     (path, note), or None."""
-    folder = media / DUMPS_DIR
-    try:
-        names = sorted((n for n in os.listdir(folder) if DUMP.fullmatch(n)), reverse=True)
-    except OSError:
-        return None
-    for name in names:
-        path = folder / name
-        try:
-            note = json.loads((folder / f'{name}.json').read_text())
-        except (OSError, ValueError):
-            continue
-        made = note.get('created_at') if isinstance(note, dict) else None
-        if not isinstance(made, (int, float)) or made <= after:
-            break  # the copies are named by their time: the rest are older still
-        major = str(note.get('nextcloud_version') or '').split('.')[0]
-        if version and major != version:
-            log(
-                f'Nextcloud: the database copy {name} was made by Nextcloud {note.get("nextcloud_version")}, '
-                f'the snapshot holds Nextcloud {version}: not used'
-            )
-            continue
-        with open(path, 'rb') as raw:
-            counted = Hashing(raw)
-            named = holds(counted, needles(ids))
-            while counted.read(CHUNK):
-                pass
-        if counted.digest.hexdigest() == note.get('sha256') and named:
+    for path, note in dump_notes(media / DUMPS_DIR):
+        if note['created_at'] <= after:
+            break  # the rest are older still
+        if same_major(path, note, version, log) and read_checked(
+            path, note.get('sha256'), lambda stream: holds(stream, needles(ids))
+        ):
             return path, note
     return None
 
