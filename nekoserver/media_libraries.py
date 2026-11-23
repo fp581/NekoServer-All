@@ -281,6 +281,8 @@ def jellyfin_library(client, media, apply, category, name, kind):
     media drive: (its row, its id once it is there, whether it is on a network share)."""
     try:
         host = safe_path(Path(media) / 'library' / category)
+        if '\x00' in str(host):  # names no folder (realpath would raise on it)
+            raise SetupRequired('Expected HDD library folder is missing')
         # The settings name the media drive: the folder is looked at only by its real path,
         # and only when that is the path asked for (safe_path refused links on the way).
         real = os.path.realpath(host)

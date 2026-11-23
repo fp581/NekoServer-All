@@ -193,7 +193,10 @@ def in_use(folder, units=SYSTEMD_UNITS):
 def release_folders(home):
     """This home's per-release folders (v0.28.9, ...), oldest first."""
     # The home may come from the settings (the SSD's runtime folder): it is listed by its
-    # real path, and each folder found is named under the home as asked.
+    # real path, and each folder found is named under the home as asked. A NUL byte names
+    # no folder (realpath would raise on it).
+    if '\x00' in str(home):
+        return []
     real = os.path.realpath(home)
     if not real.startswith(os.sep) or not os.path.isdir(real):
         return []

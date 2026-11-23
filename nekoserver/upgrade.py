@@ -3,7 +3,7 @@
 (the NekoServer tab, "Upgrade NekoServer"): a background service runs this, so closing
 the page stops nothing.
 
-  sudo python3 upgrade.py run --tag v0.52.1Beta    the upgrade (nekoserver-upgrade@<tag>)
+  sudo python3 upgrade.py run --tag v0.52.2Beta    the upgrade (nekoserver-upgrade@<tag>)
   sudo python3 upgrade.py resume                   after a restart: put a cut-off one right
 
 What it does, in order (a record in /etc/nekoserver-backups/upgrade.json says how far
@@ -86,7 +86,7 @@ CUT_OFF = (
 
 
 def numbers(text):
-    """(0, 44, 0) from "v0.52.1Beta" or "0.52.1"; None for anything else."""
+    """(0, 44, 0) from "v0.52.2Beta" or "0.52.2"; None for anything else."""
     match = TAG.fullmatch(text)
     return tuple(int(n) for n in match.groups()[:3]) if match else None
 
