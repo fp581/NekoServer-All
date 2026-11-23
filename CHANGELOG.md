@@ -19,6 +19,7 @@ The first stable release, built on 0.52.3.
 - **The setup window's second run is not told "Nothing is installed yet"**: on a server set up already, the lines beside Continue and under "Review your changes" say nothing changes until the button is pressed.
 - **Backup cards: files gone from the server still count as on the cards.** With the photos gone from the server (a dead HDD, the library deleted), the dashboard said "0 files on the cards" while the cards held every one; files the catalogue holds a healthy copy of now count too.
 - **Backup cards: a take-back's damaged copies are said in plain words**: "1 copy on the cards no longer matches its checksum: that file is copied again from the server".
+- **RECOVERY.md's Nextcloud database restore brings Nextcloud back** (blocker T1-R2). Loaded as `nextcloud`, as it said, every table belonged to that account, while Nextcloud signs in with an account of its own (`dbuser` in its config.php, `oc_admin` for example): "permission denied for table oc_appconfig", and Nextcloud and the next setup run failed. A step of its own now reads that name; the database is made for that account and the copy loaded as it, stopping at the first error.
 
 ### Tests
 - **Tests of the setup driver's own parts** (split out in 0.52.2), the setup report's folder-access rows, the mistyped-settings warnings and the job-time check, each pinning what it does.
