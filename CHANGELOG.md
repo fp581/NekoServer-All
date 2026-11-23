@@ -26,6 +26,7 @@ Fixes found by testing 0.52.2 against 0.52.1, old against new, on a test VM, wit
 
 ### Fixed: what 0.52.1 did too
 - **The monthly update failed on every server with Nextcloud** ("Nextcloud could not write a test file", and it asked you to repair a files folder that was fine): Nextcloud 35 no longer has the call the write test used. The test now uses Nextcloud's public way.
+- **After a restart in which the router gave the server another home address**, opening the apps at home stopped working and the dashboard said nothing; running setup again failed at the home gateway ("took over 30 seconds"). The dashboard now says the address moved, and setup moves the gateway at once.
 - **`account-setup.py --apply` says why it stopped**: with the app SSD not mounted, or the saved logins unreadable, it says "Nothing was set up:" and what it found, and how to put the logins back from a backup. It said only "Account setup incomplete".
 - **A drive folder written with two slashes at its start (`//srv/nekoserver`) is refused at the settings check**, saying how to write it: 'Write the drive folder with one "/" at the start, as /srv/nekoserver'. Setup stopped later with "Refusing symlink path", which names no link.
 - **The dashboard's Updates page knows a device is signed in with its PIN**: Check for updates, Update now and the other buttons there asked for the PIN again. When the unlock has run out (after 12 hours, or a restart of the control service), an app change asks for the PIN in the words app changes use, not the fans and lights ones.
