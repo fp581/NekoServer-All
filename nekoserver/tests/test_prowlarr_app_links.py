@@ -237,7 +237,9 @@ class DataDriveTests(unittest.TestCase):
             with mock.patch.object(connect.os.path, 'ismount', return_value=True):
                 with self.assertRaises(SystemExit):
                     connect.mounted_ssd(parser, args, {})
-                parser.error.assert_called_once_with('Data SSD must be mounted at --data-root')
+                parser.error.assert_called_once_with(
+                    'Data SSD must be mounted at --data-root (its real path: no links, no //)'
+                )
                 self.assertEqual(connect.mounted_ssd(parser, mock.Mock(data_root=str(drive)), {}), drive)
 
 
