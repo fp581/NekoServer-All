@@ -443,7 +443,7 @@ class StepTests(unittest.TestCase):
 
     def test_the_recovery_menu_offers_the_media_restores_only_with_a_backup_of_theirs(self):
         with tempfile.TemporaryDirectory() as hdd:
-            config = settings(False)
+            config = settings(False, folder=str(Path(hdd) / 'no-ssd'))  # not the real /srv/nekoserver
             config['media_mount'] = hdd
             keys = [key for key, _ in recovery_wizard.menu(config)]
             self.assertNotIn('photos', keys)
