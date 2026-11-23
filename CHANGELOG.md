@@ -8,6 +8,7 @@ Fixes for what the round of tests of 0.52.2 found that 0.52.1 did too.
 - **An Ask Neko answer that was cut off says so**: "Neko's answer was cut off: it reached its length limit before it ended; ask again about one thing at a time". It said "Neko is not available right now", though Neko had answered and its text stayed on the page.
 - **Setup's music step names Lidarr only while Lidarr is set up**, and a desktop shortcut it takes away is said once, not twice.
 - **Setup's review says when no connected drive can be the offline backup**: "Offline backup: none yet, as no drive connected now can be one. Connect a drive you can unplug and run  sudo bash install.sh  again to choose it". It said nothing about the offline backup then.
+- **An app switched off is said to be "stopped and its containers removed"**, which is what setup does (your files and the apps' data stay). With Photos switched off, Immich's line now says to run setup again and switch Photos back on, as every other app's does, not to edit the settings file.
 
 ## v0.52.3 — 2026-11-23
 
