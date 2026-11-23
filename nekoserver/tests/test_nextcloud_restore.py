@@ -212,7 +212,7 @@ class Server:
     def add_nightly(self, at, named=OWN, sealed=False, sql_sum=None, version=True, instance=None):
         """A nightly backup (row C-01, T2's layout): the program folder and settings in
         data.tar (no database folder, no html/data), the database as nextcloud.sql."""
-        run = self.media / f'backups/nextcloud-nightly/{int(at * 1e6)}-4242'
+        run = self.media / f'backups/nextcloud-nightly/snapshot-{int(at * 1e6)}-4242'
         run.mkdir(parents=True)
         members = {
             'appdata/nextcloud/html/index.php': '<?php // nightly\n',

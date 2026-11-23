@@ -36,7 +36,7 @@ from neko_common import checked_run, cloud_files, compose_up, safe_path
 
 MONTHLY_DIR = 'backups/monthly'  # on the HDD (recovery_wizard.MONTHLY_DIR)
 # The nightly backup of Nextcloud (row C-01, made by the nightly app backup, app_snapshot.rs):
-# <time>-<number> folders like a monthly snapshot's, with its program folder and settings in
+# snapshot-<time>-<number> folders (named as the nightly app snapshots), with its program folder and settings in
 # data.tar (never the database's folder), its database as nextcloud.sql, and the password
 # files sealed in secrets.tar.cms as a monthly snapshot's.
 NIGHTLY_DIR = 'backups/nextcloud-nightly'
@@ -45,6 +45,7 @@ SQL = 'nextcloud.sql'
 HTML = 'appdata/nextcloud/html'
 POSTGRES = 'appdata/nextcloud/postgres'
 MONTHLY = re.compile(r'[0-9]+-[0-9]+')  # a monthly snapshot's folder: <time>-<number>
+NIGHTLY_RUN = re.compile(r'snapshot-[0-9]+-[0-9]+')  # a nightly backup's folder (app_snapshot.rs naming)
 DUMPS_DIR = 'backups/nextcloud-database'  # on the HDD (backup.rs NEXTCLOUD_DUMPS)
 PARTS = ('appdata/nextcloud', 'compose/nextcloud')  # what a monthly snapshot keeps of Nextcloud
 CONFIG_PHP = 'appdata/nextcloud/html/config/config.php'
@@ -114,11 +115,12 @@ def shown(seconds):
 
 
 def monthly_snapshots(folder, nightly=False):
-    """(path, manifest) of the monthly snapshots or nightly backups (<time>-<number>
+    """(path, manifest) of the monthly snapshots or nightly backups (<time>-<number>, snapshot-<time>-<number>
     folders) in `folder` that keep Nextcloud whole, newest first. Setup reads them itself:
     the recovery menu is never started by setup (tests/test_recovery_sections.py)."""
     try:
-        paths = [Path(folder) / name for name in os.listdir(folder) if MONTHLY.fullmatch(name)]
+        named = NIGHTLY_RUN if nightly else MONTHLY
+        paths = [Path(folder) / name for name in os.listdir(folder) if named.fullmatch(name)]
     except OSError:
         return []
     found = [
