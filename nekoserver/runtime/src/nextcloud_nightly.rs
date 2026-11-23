@@ -154,7 +154,7 @@ fn sealed_members(data: &Path) -> Vec<String> {
     SEALED
         .iter()
         .filter(|m| data.join(m).is_file())
-        .map(|m| m.to_string())
+        .map(ToString::to_string)
         .collect()
 }
 
@@ -185,7 +185,7 @@ pub(crate) fn make(
     if sealing {
         exclude.extend(members.iter().map(String::as_str));
     }
-    let paths: Vec<String> = PATHS.iter().map(|p| p.to_string()).collect();
+    let paths: Vec<String> = PATHS.iter().map(ToString::to_string).collect();
     let started = Instant::now();
     let password_files = paused(ctl, journal, || {
         let copy = dump(&stage.dir)?;

@@ -369,12 +369,13 @@ class StepTests(unittest.TestCase):
         class Installing(Exception):
             pass
 
+        ctx = context(config)
         with (
             mock.patch('modules._schedules.retire') as retire,
             mock.patch.object(app_backup, 'verify_storage', side_effect=Installing),
         ):
             with self.assertRaises(Installing):
-                app_backup.run(context(config))
+                app_backup.run(ctx)
         retire.assert_not_called()
         with mock.patch.object(app_backup.native_runtime, 'storage_config', return_value={}):
             options = app_backup.guard_config(config)
