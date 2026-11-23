@@ -16,6 +16,7 @@ together in a staging folder on the SSD first and switched into place only at th
 a step that fails puts the SSD back as it was, and the files folder is never written
 over, moved or deleted."""
 
+import collections
 import contextlib
 import datetime as dt
 import hashlib
@@ -33,7 +34,7 @@ import guided_setup
 from neko_common import checked_run, cloud_files, compose_up, safe_path
 
 MONTHLY_DIR = 'backups/monthly'  # on the HDD (recovery_wizard.MONTHLY_DIR)
-MONTHLY = re.compile(r'[0-9]+-[0-9]+')  # a monthly snapshot's folder: <time>-<number>
+MONTHLY = re.compile(r'\d+-\d+', re.ASCII)  # a monthly snapshot's folder: <time>-<number>
 DUMPS_DIR = 'backups/nextcloud-database'  # on the HDD (backup.rs NEXTCLOUD_DUMPS)
 PARTS = ('appdata/nextcloud', 'compose/nextcloud')  # what a monthly snapshot keeps of Nextcloud
 CONFIG_PHP = 'appdata/nextcloud/html/config/config.php'
@@ -45,9 +46,9 @@ WWW_DATA = 33
 # Nextcloud's own folder in its files folder, named by its instance id (backup.rs nextcloud_internal).
 OWN_FOLDER = re.compile(r'appdata_([a-z0-9]{2,40})')
 INSTANCE_ID = re.compile(rb"'instanceid'\s*=>\s*'([a-z0-9]{2,40})'")
-DB_USER = re.compile(rb"'dbuser'\s*=>\s*'([A-Za-z0-9_]{1,63})'")
-VERSION = re.compile(rb"\$OC_VersionString\s*=\s*'([0-9]+)\.[0-9]+\.[0-9]+'")
-DUMP = re.compile(r'nextcloud-[0-9]{8}T[0-9]{6}Z\.sql')
+DB_USER = re.compile(rb"'dbuser'\s*=>\s*'(\w{1,63})'")  # bytes: \w is [A-Za-z0-9_] only
+VERSION = re.compile(rb"\$OC_VersionString\s*=\s*'(\d+)\.\d+\.\d+'")
+DUMP = re.compile(r'nextcloud-\d{8}T\d{6}Z\.sql', re.ASCII)  # ASCII: \d is [0-9] only
 CHUNK = 1 << 20
 LOOKED_AT = 3  # the newest monthly snapshots looked at; older ones are older than these anyway
 READY_WAIT = 1800
@@ -166,14 +167,18 @@ def snapshot_manifest(path):
     return manifest
 
 
+def read_rest(stream):
+    """The rest of `stream` read and dropped (a Hashing stream counts it into its checksum)."""
+    collections.deque(iter(lambda: stream.read(CHUNK), b''), maxlen=0)
+
+
 def read_checked(path, expected, reader):
     """`reader` over every byte of the file at `path`, each byte also counted into its
     checksum; what `reader` returned, or None when the file does not match `expected`."""
     with open(path, 'rb') as raw:
         counted = Hashing(raw)
         result = reader(counted)
-        while counted.read(CHUNK):
-            pass
+        read_rest(counted)
     return result if counted.digest.hexdigest() == expected else None
 
 
@@ -403,8 +408,7 @@ def unpacked(backup, stage):
                 tar.extractall(hidden, members=members, numeric_owner=True, **filtered)
         except tarfile.TarError as exc:
             raise RuntimeError(f'its data.tar holds something setup never unpacks ({exc})') from None
-        while counted.read(CHUNK):
-            pass
+        read_rest(counted)
     if counted.digest.hexdigest() != backup.manifest['sha256']['data']:
         raise RuntimeError('the snapshot\'s data.tar changed since it was looked at (checksum mismatch)')
     for part in PARTS:
