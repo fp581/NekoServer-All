@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 import config_checks
 import installer
+import upgrade
 
 LOOKER = '''DEPENDENCIES = []
 def run(ctx):
@@ -52,6 +53,10 @@ class InstallerRunPartsTests(unittest.TestCase):
         checks = mock.patch('config_checks.validate')
         checks.start()
         self.addCleanup(checks.stop)
+        # The upgrade's own journal stays untouched, even when the tests run as root on a server.
+        journal = mock.patch.object(upgrade, 'JOURNAL', self.root / 'upgrade-journal.json')
+        journal.start()
+        self.addCleanup(journal.stop)
 
     def args(self, **extra):
         return argparse.Namespace(
