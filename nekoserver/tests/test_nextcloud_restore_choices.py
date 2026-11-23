@@ -306,8 +306,9 @@ class StepTests(unittest.TestCase):
                 (b'', 'no details'),
                 (None, 'no details'),
             ):
+                failing = self.run_recorded(3, stderr)
                 with self.subTest(stderr=stderr), self.assertRaises(RuntimeError) as raised:
-                    ncr.database_loaded(['compose'], 'oc_admin', dump, self.run_recorded(3, stderr))
+                    ncr.database_loaded(['compose'], 'oc_admin', dump, failing)
                 self.assertEqual(str(raised.exception), f'its database copy did not load: {said}')
 
     def test_the_file_scan_runs_as_nextcloud_with_six_hours(self):
@@ -321,8 +322,9 @@ class StepTests(unittest.TestCase):
                 )
             ],
         )
+        failing = self.run_recorded(2)
         with self.assertRaises(RuntimeError) as raised:
-            ncr.scanned_all(['compose'], self.run_recorded(2))
+            ncr.scanned_all(['compose'], failing)
         self.assertEqual(str(raised.exception), 'its file scan ended with error 2')
 
     def test_the_containers_are_removed_when_the_ssd_is_put_back(self):
