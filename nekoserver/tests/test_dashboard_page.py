@@ -868,6 +868,18 @@ class CatCompanionTests(unittest.TestCase):
         source = (ROOT / 'dashboard/app.js').read_text()
         self.assertIn('if (upgradeAtWork(r, s, state.upgradeAsked))', source)
 
+    def test_the_nekoserver_tab_shows_the_channel_and_stable_when_none_is_read(self):
+        # 1.0.0: "stable" is the default channel; a reading with none says so, not "beta".
+        def reading(release):
+            return status(nekoserver_release=release, backups=[])
+
+        beta, unread = page(
+            ('nekoserverWords', reading({'channel': 'beta', 'checked_at': None})),
+            ('nekoserverWords', reading({})),
+        )
+        self.assertIn('Channel: beta', beta)
+        self.assertIn('Channel: stable', unread)
+
     def test_each_cat_has_its_animation_and_the_page_serves_every_one(self):
         files = page(
             ('catFile', {'mood': 'afraid', 'small': False}),

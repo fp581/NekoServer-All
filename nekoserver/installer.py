@@ -347,17 +347,45 @@ def review_backup_counts(config, ask=None, held=None):
     return lines, True
 
 
+# Set in the settings once the release channel was reviewed (1.0.0): a "beta" seen after
+# that is the owner's choice and is kept.
+CHANNEL_REVIEWED = 'channel_reviewed'
+
+
+def stable_channel_once(config):
+    """1.0.0 makes "stable" the default channel. Before it, every settings file said
+    "beta" (the template did), and a file cannot tell that from a choice, so a "beta"
+    from before 1.0.0 moves to "stable" once, without a question (the dashboard's
+    upgrade has nobody at the keyboard), with a line saying how to get betas back.
+    Returns (lines for the log, whether the settings changed)."""
+    if config.get(CHANNEL_REVIEWED) is True:
+        return [], False
+    options = config.get('maintenance')
+    lines = []
+    if isinstance(options, dict) and options.get('nekoserver_channel') == 'beta':
+        options['nekoserver_channel'] = 'stable'
+        lines.append(
+            'Updates: this server is offered stable NekoServer releases only from now on '
+            '(stable is the default since 1.0.0). To be offered betas again, set '
+            '"nekoserver_channel": "beta" under "maintenance" in my-config.json and run setup again'
+        )
+    config[CHANNEL_REVIEWED] = True
+    return lines, True
+
+
 def review_retention(ctx, apply):
     """The earlier backup counts reviewed (retire_old_defaults, review_backup_counts),
-    asking only when someone is at the keyboard; the answers saved with --apply."""
+    asking only when someone is at the keyboard, and the channel moved to stable once
+    (stable_channel_once); the answers saved with --apply."""
     import backup_plan
 
     ask = guided_setup.yes_no if apply and sys.stdin.isatty() else None
     lines, changed = retire_old_defaults(ctx.config, ask)
     more, counts = review_backup_counts(ctx.config, ask, lambda group: backup_plan.held(ctx.config, group))
-    for line in lines + more:
+    moved, channel = stable_channel_once(ctx.config)
+    for line in lines + more + moved:
         ctx.log(line)
-    if (changed or counts) and apply:
+    if (changed or counts or channel) and apply:
         ctx.persist_config()
 
 

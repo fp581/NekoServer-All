@@ -7,6 +7,7 @@ The first stable release, built on 0.52.3.
 ### Changed
 - **The release is stable, not a beta**: tagged `v1.0.0`, not marked Pre-release on GitHub. README, SUPPORT.md and MONTHLY-MAINTENANCE.md no longer say every release is a beta.
 - **A new server is offered stable releases only.** The Updates page's channel (`maintenance.nekoserver_channel`) is `"stable"` by default now; `"beta"` offers betas too.
+- **A server upgraded from before 1.0.0 moves to the stable channel once.** Every older settings file says `"beta"` (it was the default), so setup changes it to `"stable"` one time, without a question, and prints one line saying so and how to get betas back (set `"beta"` again and run setup). Setup marks the settings (`channel_reviewed`), so a `"beta"` chosen on 1.0.0 or later is kept.
 
 ### Fixed
 - **The README says what to do when `sudo` is missing or refuses**, before the first command: Debian installed with a root password has no sudo, and its first account is not allowed to use it, so `sudo apt install git` stopped with sudo's own "command not found" or "not in the sudoers file". It now gives the steps (`su -`, `apt install sudo`, `usermod -aG sudo`, log out and in again).

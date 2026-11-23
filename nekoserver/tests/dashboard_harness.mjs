@@ -71,11 +71,13 @@ const DETAILED = new Set([
   'mediaHiccup',
   'mediaSignedOut',
   'askInTurn',
-  'wordsIn'
+  'wordsIn',
+  'nekoserverWords'
 ]);
 /* What those need of the page script besides the functions above. */
 const ASK_PAGE = [
   'ASK',
+  'nekoserverTab',
   'state',
   'askNeko',
   'approveRepair',
@@ -584,6 +586,12 @@ SPECIAL.mediaSignedOut = async () => {
   app.renderMedia();
   await settle();
   return { sent, page: shown(byId('media-folders')), form: byId('media-add').children.length };
+};
+
+// The Updates page's NekoServer tab for a reading: every word it shows.
+SPECIAL.nekoserverWords = s => {
+  keptPage();
+  return app.nekoserverTab(s).map(shown).join('\n');
 };
 
 /* One call after the other: the ones above each bring their own page and server. */
