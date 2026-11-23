@@ -576,6 +576,7 @@ SPECIAL.mediaSignedOut = async () => {
   const byId = keptPage();
   app.state.route = 'media';
   app.state.control = { access: { signed_in: false, pin_set: true } };
+  app.state.controlError = null; // the control service answered
   Object.assign(app.MEDIA, { answer: null, asked: false, formKey: '' });
   const sent = server(() => ({ ok: true }));
   app.renderMedia();

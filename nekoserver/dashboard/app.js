@@ -1027,11 +1027,14 @@ function problem() {
   if (state.route === 'processes' && state.processError) {
     return state.processError;
   }
-  if (state.route === 'cooling' && state.controlError) {
+  if (NEEDS_CONTROL.has(state.route) && state.controlError) {
     return state.controlError;
   }
   return null;
 }
+/* Pages whose work is done by the control service: while it can't be reached (E21), they
+ * say so at the top, not only after a button is pressed or a PIN typed. */
+const NEEDS_CONTROL = new Set(['cooling', 'media', 'cards', 'updates', 'ask']);
 function renderProblem(code, s) {
   $('problem').hidden = !code;
   if (!code) {
@@ -5827,6 +5830,11 @@ function renderMedia() {
     MEDIA.formKey = '';
     put('media-add', []);
     const pin = state.control?.access?.pin_set;
+    if (state.controlError) {
+      // Unlocking needs the control service too: no PIN asked for when it can't be reached.
+      put('media-folders', [hint(codeLine(state.controlError))]);
+      return;
+    }
     put('media-folders', [
       hint(
         pin === false
