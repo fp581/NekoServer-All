@@ -485,6 +485,23 @@ class NightlyBackupTests(unittest.TestCase):
             self.assertEqual(list(server.data.iterdir()), [])
 
 
+class PatternTests(unittest.TestCase):
+    # SonarCloud (python:S6353) asked for \d and \w: they keep meaning ASCII digits and
+    # letters only, as [0-9] and [A-Za-z0-9_] did (re.ASCII on the str patterns).
+    def test_folder_and_copy_names_take_ascii_digits_only(self):
+        self.assertTrue(nextcloud_restore.MONTHLY.fullmatch('1790000000000000-7'))
+        self.assertIsNone(nextcloud_restore.MONTHLY.fullmatch(chr(0x661) * 2 + '-7'))  # Arabic-Indic digits
+        self.assertTrue(nextcloud_restore.NIGHTLY_RUN.fullmatch('snapshot-1790000000000000-4242'))
+        self.assertIsNone(nextcloud_restore.NIGHTLY_RUN.fullmatch('snapshot-' + chr(0x661) + '-4242'))
+        self.assertIsNone(nextcloud_restore.NIGHTLY_RUN.fullmatch('.snapshot-1790000000000000-4242.partial'))
+        self.assertTrue(nextcloud_restore.DUMP.fullmatch('nextcloud-20260901T030000Z.sql'))
+        self.assertIsNone(nextcloud_restore.DUMP.fullmatch('nextcloud-2026090' + chr(0x661) + 'T030000Z.sql'))
+        self.assertIsNone(nextcloud_restore.DUMP.fullmatch('nextcloud-20260901T030000Zxsql'))
+        self.assertEqual(nextcloud_restore.DB_USER.search(b"'dbuser' => 'oc_Alice9'")[1], b'oc_Alice9')
+        self.assertIsNone(nextcloud_restore.DB_USER.search(("'dbuser' => 'oc_" + chr(0xE9) + "'").encode()))
+        self.assertEqual(nextcloud_restore.VERSION.search(b"$OC_VersionString = '32.0.3';")[1], b'32')
+
+
 class ForeignBackupTests(unittest.TestCase):
     def test_another_servers_backup_is_never_offered(self):
         for sealed in (False, True):
