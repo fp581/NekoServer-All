@@ -46,8 +46,8 @@ Both update buttons start a background service (`nekoserver-update-now@<app>.ser
 ## Upgrading NekoServer itself
 
 The daily check also looks for new NekoServer releases on GitHub, on your channel (`maintenance.nekoserver_channel`):
-- `"beta"`, the default, offers the newest release, stable or beta.
-- `"stable"` offers stable releases only.
+- `"stable"`, the default since 1.0.0, offers stable releases only.
+- `"beta"` offers the newest release, stable or beta. A server set up before 1.0.0 has `"beta"` in its settings (it was the default then) and keeps it until you change it.
 
 Only a release with newer numbers is offered. The stable release of the numbers you run (`v0.52.3` on a server running `v0.52.3Beta`) is the same NekoServer as far as an upgrade goes: both keep their files in the same folder on the SSD, so one can't be the way back to the other.
 

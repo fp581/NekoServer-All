@@ -4888,7 +4888,7 @@ function nekoserverTab(s) {
       'p',
       'section-note',
       joined([
-        'Channel: ' + text(r.channel, 'beta'),
+        'Channel: ' + text(r.channel, 'stable'),
         numeric(r.checked_at) ? 'checked ' + ago(r.checked_at) : 'not checked yet',
         jobLine('last upgrade', job)
       ])

@@ -86,7 +86,7 @@ CUT_OFF = (
 
 
 def numbers(text):
-    """(0, 44, 0) from "v1.0.0" or "1.0.0"; None for anything else."""
+    """(1, 0, 0) from "v1.0.0" or "1.0.0"; None for anything else."""
     match = TAG.fullmatch(text)
     return tuple(int(n) for n in match.groups()[:3]) if match else None
 

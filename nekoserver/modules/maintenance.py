@@ -66,7 +66,7 @@ def options(config):
             raise RuntimeError(
                 'Invalid maintenance.' + key + ': leave it empty, or use the version the dashboard shows'
             )
-    if opts.get('nekoserver_channel', 'beta') not in ('beta', 'stable'):
+    if opts.get('nekoserver_channel', 'stable') not in ('beta', 'stable'):
         raise RuntimeError('Invalid maintenance.nekoserver_channel: use "beta" or "stable"')
     if opts.get('update_day', 'Wed') not in DAYS:
         raise RuntimeError('Invalid maintenance.update_day: use Mon, Tue, Wed, Thu, Fri, Sat or Sun')

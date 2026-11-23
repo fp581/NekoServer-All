@@ -464,7 +464,7 @@
     "health_wait_seconds": 300,
     "settle_days": 7,
     "update_day": "Wed",
-    "nekoserver_channel": "beta",
+    "nekoserver_channel": "stable",
     "immich_major_update": "",
     "nextcloud_major_update": "",
     "time": "02:30"
