@@ -73,6 +73,10 @@ def has_files(folder):
 # (docs.immich.app/administration/system-integrity).
 IMMICH_FOLDERS = ('upload', 'library', 'thumbs', 'encoded-video', 'profile', 'backups')
 MARKER = '.immich'
+# Immich reads its markers as root (its server runs as root in its container: setup's Compose
+# check, maintenance.rs immich_binds_ok, refuses a `user`), so the owner alone may read the
+# empty file; others get nothing.
+MARKER_MODE = 0o600
 
 
 def immich_folders_back(upload, db, log):
@@ -101,10 +105,10 @@ def immich_folders_back(upload, db, log):
             made.append(name)
         marker = folder / MARKER
         if folder.is_dir() and not marker.exists() and not marker.is_symlink():
-            handle = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+            handle = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, MARKER_MODE)
             try:
                 os.fchown(handle, like.st_uid, like.st_gid)
-                os.fchmod(handle, 0o644)
+                os.fchmod(handle, MARKER_MODE)
             finally:
                 os.close(handle)
             if name not in made:

@@ -337,7 +337,8 @@ class ImmichFoldersAfterANewDriveTests(unittest.TestCase):
                 self.assertTrue(folder.is_dir() and marker.is_file())
                 self.assertEqual(marker.read_bytes(), b'')
                 self.assertEqual(oct(folder.stat().st_mode & 0o7777), oct(0o750))  # as upload
-                self.assertEqual(oct(marker.stat().st_mode & 0o7777), oct(0o644))
+                # Its owner alone (Immich reads it as root); others get no access (SonarCloud S2612).
+                self.assertEqual(oct(marker.stat().st_mode & 0o7777), oct(0o600))
                 for item in (folder, marker):
                     self.assertEqual((item.stat().st_uid, item.stat().st_gid), (upload.st_uid, upload.st_gid))
         self.assertEqual(len(self.said), 1)
