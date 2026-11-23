@@ -1791,7 +1791,8 @@ fn probe_name(name: &str) -> bool {
 }
 /// The PHP that writes, reads back and removes one test file in the administrator's
 /// files (the trash paused), after removing this run's earlier test files that are still
-/// exactly what NekoServer wrote.
+/// exactly what NekoServer wrote. It reaches Nextcloud through `\OCP\Server::get()`, the
+/// public way (Nextcloud 25 and later; 35 no longer has `\OC::$server->getUserManager()`).
 fn probe_script(earlier: &[String], token: &str) -> String {
     let list = earlier
         .iter()
@@ -1799,7 +1800,7 @@ fn probe_script(earlier: &[String], token: &str) -> String {
         .map(|n| format!("'{n}'"))
         .collect::<Vec<_>>()
         .join(",");
-    format!("require '/var/www/html/lib/base.php'; $u=\\OC::$server->getUserManager()->get(\"admin\"); if(!$u){{exit(3);}} $root=\\OC::$server->getUserFolder($u->getUID()); $t=null; try{{$t=\\OC::$server->get(\\OCA\\Files_Trashbin\\Trash\\ITrashManager::class); $t->pauseTrash();}}catch(\\Throwable $e){{$t=null;}} foreach([{list}] as $old){{if($root->nodeExists($old)){{$o=$root->get($old); if($o instanceof \\OCP\\Files\\File && $o->getContent()===$old){{$o->delete();}}}}}} $n='{token}'; if($root->nodeExists($n)){{exit(4);}} $f=$root->newFile($n); $f->putContent('{token}'); if($f->getContent()!=='{token}'){{exit(5);}} $f->delete(); if($t){{$t->resumeTrash();}}")
+    format!("require '/var/www/html/lib/base.php'; $u=\\OCP\\Server::get(\\OCP\\IUserManager::class)->get(\"admin\"); if(!$u){{exit(3);}} $root=\\OCP\\Server::get(\\OCP\\Files\\IRootFolder::class)->getUserFolder($u->getUID()); $t=null; try{{$t=\\OCP\\Server::get(\\OCA\\Files_Trashbin\\Trash\\ITrashManager::class); $t->pauseTrash();}}catch(\\Throwable $e){{$t=null;}} foreach([{list}] as $old){{if($root->nodeExists($old)){{$o=$root->get($old); if($o instanceof \\OCP\\Files\\File && $o->getContent()===$old){{$o->delete();}}}}}} $n='{token}'; if($root->nodeExists($n)){{exit(4);}} $f=$root->newFile($n); $f->putContent('{token}'); if($f->getContent()!=='{token}'){{exit(5);}} $f->delete(); if($t){{$t->resumeTrash();}}")
 }
 fn database_only_table(name: &str) -> Option<&'static str> {
     match name {
