@@ -299,6 +299,13 @@ const subs = (elements.extras?.children ?? [])
         sub.children[2].children[0].disabled
       ])
   );
+// The small print each card shows now: [the card's title, its lines] (a greyed card says why).
+const smallPrint = (elements.extras?.children ?? [])
+  .filter(card => card.className.startsWith('extra'))
+  .map(card => [
+    card.children[0].textContent,
+    card.children.filter(child => (child.className ?? '').split(' ').includes('card-small') && !child.hidden).map(child => child.textContent)
+  ]);
 const parts = (elements.extras?.children ?? [])
   .filter(card => card.className === 'part-title')
   .map(title => title.textContent);
@@ -361,6 +368,7 @@ console.log(
     marks: marks(elements['steps-final']),
     progressHidden: elements.progress?.hidden ?? null,
     cards,
+    smallPrint,
     pageHidden: elements['ask-page']?.hidden ?? null,
     answerHidden: elements['ask-answer']?.hidden ?? null,
     backups: (elements['ask-page-backups']?.children ?? []).map(line => line.children.map(part => part.textContent)),

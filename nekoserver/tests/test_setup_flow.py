@@ -175,6 +175,29 @@ class SetupWindowTests(unittest.TestCase):
         seen = self.page([{**self.choose(), 'stage': 'review', 'review': review, 'revision': 4}], 'start')
         self.assertEqual(seen['posts'], [['api/start', {'choices': {}, 'reviewed': 4}]])
 
+    def test_a_card_greyed_by_another_says_which_it_needs(self):
+        # 0.52.2 test round (T3b-02): with Movies and shows off, the TV card went grey and
+        # could not be pressed, and nothing said why (the TV mode opens Jellyfin; the
+        # terminal says so). Someone who wanted the TV for games read it as not possible.
+        extras = [
+            {'id': 'media_movies', 'title': 'Movies and shows - Jellyfin', 'part': 'Apps', 'needs': [], 'on': False},
+            {'id': 'tv', 'title': 'A TV connected to this PC', 'part': 'Optional extras', 'on': True},
+        ]
+        extras[1]['needs'] = ['media_movies']
+        extras = [{'explanation': '', 'installs': [], **extra} for extra in extras]
+        state = {**self.choose(), 'extras': extras}
+        seen = self.page([state])
+        self.assertEqual(seen['cards'][1], ['extra unavailable', 'no', True])
+        self.assertEqual(
+            seen['smallPrint'],
+            [['Movies and shows - Jellyfin', []], ['A TV connected to this PC', ['Needs Movies and shows - Jellyfin switched on.']]],
+        )
+        # Movies and shows switched on: the TV card is offered again; the words stay (still
+        # true, and nothing moves).
+        seen = self.page([{**state, 'press': 'Movies and shows - Jellyfin'}])
+        self.assertEqual(seen['cards'][1], ['extra on', 'yes', False])
+        self.assertEqual(seen['smallPrint'][1], ['A TV connected to this PC', ['Needs Movies and shows - Jellyfin switched on.']])
+
     def test_a_refused_start_gives_the_button_back_with_the_reason(self):
         # post() took any status for a success: after the server's 409 (the settings
         # file cannot be read right now, or setup has started) the button stayed

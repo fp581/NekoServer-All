@@ -156,6 +156,12 @@
     );
   }
 
+  /* Why a card cannot be switched on now: the cards it needs, by their titles. */
+  function needsSaid(extra, extras) {
+    const titles = extras.filter(other => extra.needs.includes(other.id)).map(other => other.title);
+    return 'Needs ' + titles.join(' or ') + ' switched on.';
+  }
+
   /* One card for each part a person can leave out, under the heading of its kind. */
   function buildChoices(extras) {
     const box = $('extras');
@@ -180,6 +186,11 @@
         const change = { [extra.id]: input.checked };
         saving = saving.then(() => save(change));
       });
+      // A card of its own that needs another says so (the TV mode opens Jellyfin), always,
+      // so it reads before the card goes grey and nothing moves when it does; a switch
+      // inside its card needs no words, the card it is in says it.
+      if (!parent && (extra.needs || []).length)
+        node.append(el('small', { class: 'card-small card-needs', text: needsSaid(extra, extras) }));
       if (extra.installs.length) node.append(...installsOf(extra));
       if (parent) parent.node.append(node);
       else box.append(node);
