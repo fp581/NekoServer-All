@@ -308,6 +308,22 @@ class StandInControl(socketserver.StreamRequestHandler):
     gone = False  # a refused start: the card was taken out before the press
     looks = 0
 
+    STARTED = {
+        'cards_check': 'Checking card 2. Leave it in until the check has finished.',
+        'cards_take_back': 'Taking the cards back.',
+    }
+    PLUGGED = [
+        {'mount': '/run/media/amy/CARD', 'label': 'CARD', 'size': 64e9, 'fstype': 'exfat', 'usable': True},
+        {
+            'mount': '/media/amy/WIN',
+            'label': 'WIN',
+            'size': 32e9,
+            'fstype': 'ntfs',
+            'usable': False,
+            'why': 'This card is formatted ntfs, which backup cards are not: they are ext4 or exFAT.',
+        },
+    ]
+
     def handle(self):
         request = json.loads(self.rfile.readline())
         StandInControl.asked.append(request)
@@ -317,46 +333,38 @@ class StandInControl(socketserver.StreamRequestHandler):
             answer = {'ok': True, 'format': 'neko-control-v1', 'fans': {}, 'lights': {}, 'access': access}
             answer['apps'] = {'available': True, 'actions': []}
         elif op == 'cards_list':
-            drives = [
-                {'mount': '/run/media/amy/CARD', 'label': 'CARD', 'size': 64e9, 'fstype': 'exfat', 'usable': True},
-                {
-                    'mount': '/media/amy/WIN',
-                    'label': 'WIN',
-                    'size': 32e9,
-                    'fstype': 'ntfs',
-                    'usable': False,
-                    'why': 'This card is formatted ntfs, which backup cards are not: they are ext4 or exFAT.',
-                },
-            ]
-            shown = a_set(time.time())
-            if StandInControl.drives is not None:
-                drives = StandInControl.drives
-            if drives is OLDER_CARDS:
-                shown = {**shown, 'cards': [], 'files_on_cards': 0, 'next_number': 1}
-            StandInControl.looks += 1
-            if StandInControl.looks == StandInControl.fail_look:
-                self.wfile.write((json.dumps({'ok': False, 'error': 'E01'}) + '\n').encode())
-                return
-            if len(StandInControl.plan) > 1:
-                StandInControl.task = StandInControl.plan.pop(0)
-            elif StandInControl.plan:
-                StandInControl.task = StandInControl.plan[0]
-            answer = {'ok': True, 'set': shown, 'drives': drives, 'next_number': 2, 'task': StandInControl.task}
-        elif op in ('cards_check', 'cards_take_back') and StandInControl.start:
-            answer = StandInControl.start
-            if StandInControl.gone:
-                StandInControl.drives = None
-        elif op == 'cards_check':
-            answer = {'ok': True, 'message': 'Checking card 2. Leave it in until the check has finished.'}
-            StandInControl.plan, StandInControl.looks = list(StandInControl.after_start), 0
-        elif op == 'cards_take_back':
-            answer = {'ok': True, 'message': 'Taking the cards back.'}
-            StandInControl.plan, StandInControl.looks = list(StandInControl.after_start), 0
+            answer = self.cards_list()
+        elif op in self.STARTED:
+            answer = self.started(op)
         elif op == 'cards_enrol' and request.get('acknowledged') is True:
             answer = {'ok': True, 'number': 2, 'message': 'Card 2 is ready. Write “2” on it.'}
         else:
             answer = {'ok': False, 'error': 'E42', 'message': 'Tick that you understand first.'}
         self.wfile.write((json.dumps(answer) + '\n').encode())
+
+    @staticmethod
+    def cards_list():
+        drives = StandInControl.PLUGGED if StandInControl.drives is None else StandInControl.drives
+        shown = a_set(time.time())
+        if drives is OLDER_CARDS:
+            shown = {**shown, 'cards': [], 'files_on_cards': 0, 'next_number': 1}
+        StandInControl.looks += 1
+        if StandInControl.looks == StandInControl.fail_look:
+            return {'ok': False, 'error': 'E01'}
+        if len(StandInControl.plan) > 1:
+            StandInControl.task = StandInControl.plan.pop(0)
+        elif StandInControl.plan:
+            StandInControl.task = StandInControl.plan[0]
+        return {'ok': True, 'set': shown, 'drives': drives, 'next_number': 2, 'task': StandInControl.task}
+
+    @staticmethod
+    def started(op):
+        if StandInControl.start:
+            if StandInControl.gone:
+                StandInControl.drives = None
+            return StandInControl.start
+        StandInControl.plan, StandInControl.looks = list(StandInControl.after_start), 0
+        return {'ok': True, 'message': StandInControl.STARTED[op]}
 
 
 @unittest.skipUnless(playwright_works(), 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
@@ -469,7 +477,12 @@ class CardTasksInBrowserTests(unittest.TestCase):
     def setUp(self):
         StandInControl.asked.clear()
         StandInControl.drives, StandInControl.plan, StandInControl.after_start = None, [], []
-        StandInControl.task, StandInControl.start, StandInControl.fail_look, StandInControl.gone = None, None, None, False
+        StandInControl.task, StandInControl.start, StandInControl.fail_look, StandInControl.gone = (
+            None,
+            None,
+            None,
+            False,
+        )
 
     tearDown = setUp
 
