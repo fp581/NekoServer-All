@@ -221,3 +221,7 @@ Full check on a fresh copy of the working tree (version 0.39.2):
 | `cargo fmt --check` | clean |
 | `cargo clippy --all-targets -- -D warnings` | clean |
 | `cargo test --release` | 244 passed, 0 failed |
+
+## 1.0 round: recovery_wizard expected survivors (2026-11-23)
+
+mutmut 2.5 on recovery_wizard.py (main 35ea7bc, lines 255-2434) against all 26 test modules that import it: the 320 survivors that only wrap a sentence in "XX" are expected survivors (the tests check wording with assertIn, which the wrapped text still passes), and so are the logic survivors where a wrong result would not lose data, restore the wrong thing or report success on a failure (ownership hand-over words, timeouts and capture flags of lsblk/findmnt/mount/umount, size and count wording); list in runs/t6/killwiz.log and wiz-group-*.txt.
