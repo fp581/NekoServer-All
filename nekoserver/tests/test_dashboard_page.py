@@ -1431,5 +1431,18 @@ class MediaFoldersPageTests(unittest.TestCase):
         self.assertIn('Unlock media folders', out['page'])
 
 
+@unittest.skipUnless(NODE, 'node is not installed')
+class MonitorCardTests(unittest.TestCase):
+    def test_a_check_in_switched_off_shows_not_set_up_not_its_old_result(self):
+        # T3 loop, dashboard API and page: the heartbeat switched off in setup leaves its
+        # last result in /run (collect.rs reads it with the timer gone), and Server health
+        # showed "Passed" beside "Not set up. This is optional."
+        gone = {'status': 'pass', 'timer': {'installed': False, 'active': False}}
+        off = {'status': 'fail', 'timer': {'installed': True, 'active': False}}  # setup: wanted false
+        on = {'status': 'fail', 'timer': {'installed': True, 'active': True}}
+        said = page(('monitorBadge', gone), ('monitorBadge', off), ('monitorBadge', on))
+        self.assertEqual(said, [['neutral', 'Not set up'], ['neutral', 'Off'], ['fail']])
+
+
 if __name__ == '__main__':
     unittest.main()

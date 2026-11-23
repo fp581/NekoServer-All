@@ -3026,17 +3026,21 @@ fn setup_alerts(out: &mut Alerts, s: &Value) {
 }
 /// Phone alerts, the battery, the home network and the outside monitor.
 fn delivery_alerts(out: &mut Alerts, s: &Value) {
+    // A check-in switched off by choice keeps its last result in /run until a restart
+    // (its timer stopped, _schedules.switched_off): that result raises nothing now.
+    let on = |k: &str| s[k]["timer"]["active"] != false;
     // Alerts that fail to reach anyone are still said on the page.
     // The alert server not reached at all (the internet down for a day, say) is told
     // apart: setup run then could only fail its downloads too (deep check 879).
-    if s["notifications"]["status"] == "fail" && s["notifications"]["reason"] == "unreachable" {
+    let failed = on("notifications") && s["notifications"]["status"] == "fail";
+    if failed && s["notifications"]["reason"] == "unreachable" {
         out.add(
             "notifications:delivery".into(),
             "warning",
             "Phone alerts are not being delivered".into(),
             "This server could not reach your alert server: its internet connection is probably down (check the router), or its clock is wrong (check it with  timedatectl). The alerts wait and are sent by themselves once it is reached again. If the internet works, run  sudo bash install.sh  again: it sends a test message.",
         );
-    } else if s["notifications"]["status"] == "fail" {
+    } else if failed {
         out.add(
             "notifications:delivery".into(),
             "warning",
@@ -3067,7 +3071,7 @@ fn delivery_alerts(out: &mut Alerts, s: &Value) {
             ),
         );
     }
-    if ["fail", "stale"].contains(&text(&s["heartbeat"]["status"])) {
+    if on("heartbeat") && ["fail", "stale"].contains(&text(&s["heartbeat"]["status"])) {
         out.add(
             "heartbeat:delivery".into(),
             "warning",
@@ -4266,6 +4270,14 @@ mod os_tests {
         assert_eq!(ids, ["notifications:delivery", "heartbeat:delivery"]);
         assert_eq!(
             alerts(&json!({"notifications":{"status":"pass"},"heartbeat":{"status":"unknown"}})),
+            json!([])
+        );
+        // Switched off in setup (the timer stopped), with a failed result left from before.
+        let off = json!({"active": false, "installed": true});
+        assert_eq!(
+            alerts(
+                &json!({"notifications":{"status":"fail","timer":off},"heartbeat":{"status":"fail","timer":off}})
+            ),
             json!([])
         );
     }
