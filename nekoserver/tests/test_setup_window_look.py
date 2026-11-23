@@ -175,6 +175,16 @@ TOO_WIDE = """(async () => {
 })();"""
 
 
+# After setup.js: the words beside Continue, and the review's title and the line under it.
+SAID = """(async () => {
+  await new Promise(r => setTimeout(r, 2500));
+  const pre = document.createElement('pre');
+  pre.id = 'measured';
+  pre.textContent = JSON.stringify(['choose-hint', 'review-title', 'review-intro'].map(id => document.getElementById(id).textContent));
+  document.body.append(pre);
+})();"""
+
+
 @unittest.skipUnless(browser(), 'no headless Chrome, Chromium or Edge here')
 class NothingMovesTests(unittest.TestCase):
     """The page measured in a real browser at the window's usual size and narrow."""
@@ -282,6 +292,23 @@ class NothingMovesTests(unittest.TestCase):
         measured = self.measure(finished, [], '390,900', script=TOO_WIDE)
         self.assertTrue(measured['shown'], 'the finishing page was not shown')
         self.assertEqual(measured['too_wide'], [])
+
+    def test_a_second_run_says_nothing_changes_not_nothing_is_installed(self):
+        """1.0-rc T3-2: on a server set up already the window kept the page's first-install
+        words ("Nothing is installed yet") beside Continue and under the review's title."""
+        import explanations
+
+        review = {
+            'title': explanations.REVIEW_TITLE_AGAIN,
+            'button': explanations.APPLY,
+            'intro': explanations.REVIEW_INTRO_AGAIN,
+            'note': explanations.CHOOSE_NOTE_AGAIN,
+            'sections': [],
+        }
+        measured = self.measure({**CHOOSE, 'review': review}, [], '1180,860', script=SAID)
+        self.assertEqual(
+            measured, [explanations.CHOOSE_NOTE_AGAIN, explanations.REVIEW_TITLE_AGAIN, explanations.REVIEW_INTRO_AGAIN]
+        )
 
     def test_a_question_coming_and_going_moves_nothing(self):
         # 0.49.0: the "needs an answer" strip pushed the page down when a question came, and

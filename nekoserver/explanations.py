@@ -316,6 +316,12 @@ def offered(config, extra):
 # ---- the review before anything is installed ("Ready to install NekoServer")
 REVIEW_TITLE = 'Ready to install NekoServer'
 REVIEW_TITLE_AGAIN = 'Review your changes'
+# Under the review's title, and beside Continue on the page before it. On a server that is
+# set up already its apps are there: what holds is that nothing changes before the button.
+REVIEW_INTRO = 'Nothing has been installed yet. Read what setup will do, then press the button.'
+REVIEW_INTRO_AGAIN = 'Nothing changes until you press the button. Read what setup will do first.'
+CHOOSE_NOTE = 'Nothing is installed yet. The next page shows what will be.'
+CHOOSE_NOTE_AGAIN = 'Nothing changes until you approve. The next page shows what will change.'
 STORAGE_HEADING = 'Where your apps and files are kept'
 INSTALL = 'Install selected apps'
 APPLY = 'Apply these changes'

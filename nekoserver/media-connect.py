@@ -75,6 +75,41 @@ RESPONSE_LIMIT = 64_000_000
 CATEGORY_FIELDS = qbit_setup.CATEGORY_FIELDS
 
 
+# How much of a refusal's body is read for its reason, and how much of the reason is shown.
+REASON_READ = 65536
+REASON_SHOWN = 300
+
+
+def sent_values(payload):
+    """Every text this request sent (a provider's key or password among them)."""
+    if isinstance(payload, dict):
+        return [value for item in payload.values() for value in sent_values(item)]
+    if isinstance(payload, list):
+        return [value for item in payload for value in sent_values(item)]
+    return [payload] if isinstance(payload, str) and len(payload) >= 4 else []
+
+
+def refused_because(exc, payload, key=''):
+    """Why the app refused a request, in its own words: Prowlarr and the other apps answer
+    a refused one with a list of {propertyName, errorMessage, attemptedValue} ("Unable to
+    access eztvx.to, blocked by CloudFlare Protection."). Only the messages are kept,
+    with any value the request sent (its API key too) cut out. Empty when the body says
+    nothing usable."""
+    try:
+        rows = json.loads(exc.read(REASON_READ) or b'null')
+    except (OSError, ValueError):
+        return ''
+    if isinstance(rows, dict):
+        rows = [rows]
+    if not isinstance(rows, list):
+        return ''
+    said = [str(row['errorMessage']).strip() for row in rows if isinstance(row, dict) and row.get('errorMessage')]
+    text = ' '.join(dict.fromkeys(line for line in said if line))
+    for value in sent_values([payload, key]):
+        text = text.replace(value, '(hidden)')
+    return text[:REASON_SHOWN]
+
+
 def request(app, key, endpoint, method='GET', payload=None, timeout=12):
     if app not in PORTS or not endpoint.startswith('/'):
         raise ValueError('Unknown application or unsafe endpoint')
@@ -98,10 +133,12 @@ def request(app, key, endpoint, method='GET', payload=None, timeout=12):
             except ValueError:
                 raise RuntimeError(ODD_ANSWER.format(app=app, endpoint=endpoint)) from None
     except urllib.error.HTTPError as exc:
-        # Do not print response bodies: providers might echo secrets.
+        # The body is never printed as it is (a provider might echo a secret); only the
+        # app's own words for why it refused, with what this request sent cut out of them.
         code = exc.code
+        reason = refused_because(exc, payload, key)
         exc.close()
-        raise RuntimeError(f'{app} {endpoint}: HTTP {code}') from None
+        raise RuntimeError(f'{app} {endpoint}: HTTP {code}' + (f': {reason}' if reason else '')) from None
     except urllib.error.URLError:
         raise RuntimeError(f'{app} {endpoint}: unavailable on localhost') from None
     except TimeoutError:

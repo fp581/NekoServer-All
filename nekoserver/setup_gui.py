@@ -388,6 +388,8 @@ class Window:
             return {
                 'title': explanations.REVIEW_TITLE_AGAIN if again else explanations.REVIEW_TITLE,
                 'button': explanations.APPLY if again else explanations.INSTALL,
+                'intro': explanations.REVIEW_INTRO_AGAIN if again else explanations.REVIEW_INTRO,
+                'note': explanations.CHOOSE_NOTE_AGAIN if again else explanations.CHOOSE_NOTE,
                 'sections': [{'title': title, 'lines': lines} for title, lines in explanations.review(self.config)]
                 + (
                     [{'title': explanations.STORAGE_HEADING, 'lines': self.storage_lines}] if self.storage_lines else []
