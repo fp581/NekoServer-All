@@ -8,7 +8,7 @@ The first stable release, built on 0.52.3.
 - **The release is stable, not a beta**: tagged `v1.0.0`, not marked Pre-release on GitHub. README, SUPPORT.md and MONTHLY-MAINTENANCE.md no longer say every release is a beta. The Updates page still offers betas by default (`maintenance.nekoserver_channel` `"beta"`); `"stable"` offers stable releases only.
 
 ### Tests
-- **Tests of the setup driver's own parts** (split out in 0.52.2), each pinning what it does.
+- **Tests of the setup driver's own parts** (split out in 0.52.2), the setup report's folder-access rows, the mistyped-settings warnings and the job-time check, each pinning what it does.
 
 ## v0.52.3 — 2026-11-23
 
