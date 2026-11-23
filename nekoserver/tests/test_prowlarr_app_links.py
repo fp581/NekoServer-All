@@ -242,6 +242,73 @@ class DataDriveTests(unittest.TestCase):
                 )
                 self.assertEqual(connect.mounted_ssd(parser, mock.Mock(data_root=str(drive)), {}), drive)
 
+    def test_a_folder_that_is_not_a_mounted_drive_is_refused(self):
+        """The SSD not plugged in leaves its empty folder: nothing is connected there."""
+        with tempfile.TemporaryDirectory() as tmp:
+            parser = mock.Mock()
+            parser.error.side_effect = SystemExit(2)
+            with mock.patch.object(connect.os.path, 'ismount', return_value=False):
+                with self.assertRaises(SystemExit):
+                    connect.mounted_ssd(parser, mock.Mock(data_root=tmp), {})
+            parser.error.assert_called_once_with('Data SSD must be mounted at --data-root')
+
+    def test_the_connector_checks_the_drive_before_any_step(self):
+        settings = {'data_mount': '/nowhere/nekoserver', 'media': {'services': ['prowlarr', 'sonarr']}}
+        with (
+            mock.patch.object(connect, 'read_settings', return_value=settings),
+            mock.patch.object(connect, 'chosen_actions') as chosen,
+            contextlib.redirect_stderr(io.StringIO()) as said,
+        ):
+            with self.assertRaises(SystemExit):
+                connect.main(['--config', '/x/my-settings.json', '--applications'])
+        chosen.assert_not_called()
+        self.assertIn('Data SSD must be mounted at --data-root', said.getvalue())
+
+
+class StepTests(unittest.TestCase):
+    """run_actions: the steps chosen, each in turn, and what is said for one that stops."""
+
+    def run_steps(self, selected, stop=None):
+        ran = []
+
+        def step(label):
+            def action():
+                if label == stop:
+                    raise KeyboardInterrupt
+                ran.append(label)
+
+            return label, action
+
+        labels = ['indexers', 'applications', connect.CLIENTS_STEP, 'pass on login']
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            failed = connect.run_actions([step(label) for label in labels], selected)
+        return ran, failed, said.getvalue().splitlines()
+
+    def test_without_prowlarr_its_two_steps_say_so_and_the_rest_run(self):
+        ran, failed, said = self.run_steps(['qbittorrent'])
+        self.assertEqual(ran, [connect.CLIENTS_STEP, 'pass on login'])
+        self.assertEqual(failed, ['indexers', 'applications'])
+        self.assertEqual(
+            said,
+            [
+                'indexers: incomplete (Prowlarr is not selected for deployment)',
+                'applications: incomplete (Prowlarr is not selected for deployment)',
+            ],
+        )
+
+    def test_without_qbittorrent_the_download_client_step_says_so(self):
+        ran, failed, said = self.run_steps(['prowlarr'])
+        self.assertEqual(ran, ['indexers', 'applications', 'pass on login'])
+        self.assertEqual(failed, [connect.CLIENTS_STEP])
+        self.assertEqual(said, [f'{connect.CLIENTS_STEP}: incomplete (qBittorrent is not selected for deployment)'])
+
+    def test_ctrl_c_in_one_step_stops_the_steps_after_it(self):
+        ran, failed, said = self.run_steps(['prowlarr', 'qbittorrent'], stop='applications')
+        self.assertEqual(ran, ['indexers'])
+        self.assertEqual(failed, ['applications'])
+        self.assertEqual(said, ['applications: incomplete (stopped)'])
+
 
 if __name__ == '__main__':
     unittest.main()
