@@ -244,13 +244,15 @@ def account_names(accounts):
     return None
 
 
-def listed_accounts(base, run=subprocess.run):
-    """The account names Nextcloud lists (occ user:list). A command that fails, does not
+def listed_accounts(base, run=subprocess.run, signed_in=False):
+    """The account names Nextcloud lists (occ user:list); with `signed_in`, only those that
+    have signed in at least once (see has_signed_in). A command that fails, does not
     answer or answers with something other than a list of accounts is an error, never an
     empty list: an empty list would make no folder and still say "uploads work again"."""
+    info = ['--info'] if signed_in else []
     try:
         listed = run(
-            base + ['exec', '-T', '-u', 'www-data', 'nextcloud', 'php', 'occ', 'user:list', '--output=json'],
+            base + ['exec', '-T', '-u', 'www-data', 'nextcloud', 'php', 'occ', 'user:list', *info, '--output=json'],
             capture_output=True,
             text=True,
             timeout=120,
@@ -260,7 +262,8 @@ def listed_accounts(base, run=subprocess.run):
         raise RuntimeError(UNLISTED.format(why='it did not answer within 2 minutes')) from None
     if listed.returncode != 0:
         raise RuntimeError(UNLISTED.format(why=f'occ user:list ended with error {listed.returncode}'))
-    names = account_names(neko_common.occ_json(listed.stdout))
+    answer = neko_common.occ_json(listed.stdout)
+    names = account_names(answer)
     if names is None:
         raise RuntimeError(UNLISTED.format(why='its answer was not a list of accounts'))
     # Every account gets its folder: one whose name Nextcloud itself would not accept is
@@ -272,7 +275,17 @@ def listed_accounts(base, run=subprocess.run):
                 why='it lists accounts whose names are not valid account names: ' + ', '.join(map(repr, odd))
             )
         )
+    if signed_in:
+        details = answer if isinstance(answer, dict) else dict(zip(names, answer))
+        return [name for name in names if has_signed_in(details[name])]
     return names
+
+
+def has_signed_in(details):
+    """Whether occ user:list --info says this account has signed in: its last_seen is a
+    date ("never" before the first sign-in; 1970-01-01 in older Nextclouds)."""
+    seen = details.get('last_seen') if isinstance(details, dict) else None
+    return isinstance(seen, str) and seen not in ('', 'never') and not seen.startswith('1970-01-01')
 
 
 def scan_errors(text):
@@ -298,8 +311,45 @@ def account_folders_given_back(base, files, log, run=subprocess.run):
     the folder there and its scan's Errors at 0. The number of accounts done; an error
     (naming the accounts left) otherwise, so the recovery note stays for the next run."""
     named = listed_accounts(base, run)
+    folders_made(base, files, named, run)
+    log(
+        f'Nextcloud: the folders of its {len(named)} account(s) were made on the new drive and its file list '
+        'refreshed, so uploads work again'
+    )
+    return len(named)
+
+
+def account_folders_missing(base, files, log, run=subprocess.run):
+    """The same for each account Nextcloud's database lists as signed in before whose
+    `files` folder is not on the drive at all: its database copy put back on a server
+    whose HDD is new (RECOVERY.md, "Nextcloud's database"), where the files folder was
+    never empty, so nothing was given back, and every upload of a restored account was
+    refused (1.0 round T1-R3). A folder that is there is never touched. An account that
+    never signed in is left alone: Nextcloud makes its folder, with its welcome files, at
+    the first sign-in. This runs on every setup run (an unattended upgrade too), so a
+    failure is said and setup goes on, never stopped or rolled back for it. The number
+    of folders made."""
+    try:
+        signed_in = listed_accounts(base, run, signed_in=True)
+        missing = [name for name in signed_in if not os.path.lexists(files / name / 'files')]
+        if missing:
+            folders_made(base, files, missing, run)
+    except RuntimeError as error:
+        log(f'Nextcloud: could not check that every account has its folder on the drive. {error}')
+        return 0
+    if missing:
+        log(
+            f'Nextcloud: {len(missing)} account(s) its database lists had no folder on the drive (a database '
+            'copy put back?): made and their file lists refreshed, so their uploads work'
+        )
+    return len(missing)
+
+
+def folders_made(base, files, names, run=subprocess.run):
+    """Each account's `files` folder made (Nextcloud's own, 755) and its file list
+    refreshed; an error naming the accounts left when one is not done."""
     left = []
-    for name in named:
+    for name in names:
         folder = safe_path(files / name / 'files')
         ensure_directory(folder, 0o755, WWW_DATA, WWW_DATA)
         if not folder.is_dir() or folder.is_symlink():
@@ -314,11 +364,16 @@ def account_folders_given_back(base, files, log, run=subprocess.run):
             + '; '.join(left)
             + '. Run  sudo bash install.sh  again: it tries them again'
         )
-    log(
-        f'Nextcloud: the folders of its {len(named)} account(s) were made on the new drive and its file list '
-        'refreshed, so uploads work again'
-    )
-    return len(named)
+
+
+def account_folders(base, config, folder, fresh, given_back, log):
+    """The accounts' folders after Nextcloud is up: all of them made again when the files
+    folder was given back; else, on a Nextcloud set up before, those its database lists
+    and the drive lacks."""
+    if given_back:
+        finish_files_folder(base, config, folder, log)
+    elif not fresh:
+        account_folders_missing(base, safe_path(cloud_files(config)), log)
 
 
 def scanned(base, name, run=subprocess.run):
@@ -747,8 +802,7 @@ def run(ctx):
         command(base + ['config', '-q'])
         compose_up(base, 'Nextcloud', ctx.log, 1800)
         finish_install(base, ctx.log)
-        if given_back:
-            finish_files_folder(base, config, folder, ctx.log)
+        account_folders(base, config, folder, fresh, given_back, ctx.log)
         if opts.get('image', 'auto') == 'auto':
             config['nextcloud']['image'] = image
             ctx.persist_config()
