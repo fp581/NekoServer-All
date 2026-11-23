@@ -128,6 +128,8 @@ class StandInControl(threading.Thread):
         # The unlock ran out on the service (12 hours, or it restarted) while the page last
         # read this device as signed in: every app change is refused, as the service does.
         self.run_out = False
+        # This device not signed in (the Media folders page then offers to unlock).
+        self.signed_out = False
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.server.bind(str(path))
         self.server.listen(16)
@@ -135,7 +137,8 @@ class StandInControl(threading.Thread):
     def answer(self, request):
         op = request.get('op')
         if op == 'status':
-            access = {'local': True, 'pin_set': True, 'unlocked': True, 'signed_in': True}
+            signed = not self.signed_out
+            access = {'local': True, 'pin_set': True, 'unlocked': signed, 'signed_in': signed}
             return {
                 'ok': True,
                 'format': 'neko-control-v1',
@@ -228,12 +231,27 @@ class DashboardInBrowserTests(unittest.TestCase):
             ('home', 'Actions for Immich', 'control'),
             ('updates', 'Install at the next update night', 'status'),
             ('updates', 'Check for updates', 'status'),
-            ('media', 'Unlock media folders', 'control'),
         ]
         answers = self.browse(*[('focusAfterRefresh', {'route': r, 'label': l, 'reload': k}) for r, l, k in checks])
         for (route, label, _), answer in zip(checks, answers):
             with self.subTest(route=route, label=label):
                 self.assertEqual(answer, {'before': label, 'after': label})
+
+    def test_a_page_whose_work_needs_the_control_service_says_it_is_not_running(self):
+        # T3 loop, dashboard API and page: no control service here (E21). Only Fans &
+        # lights said so; Media folders offered "Unlock media folders", asked for the PIN
+        # and said E21 only after it was typed, and Updates and Ask Neko said nothing.
+        routes = ['cooling', 'media', 'updates', 'ask', 'home', 'apps']
+        answers = self.browse(*[('pageText', {'route': r, 'id': 'problem'}) for r in routes])
+        for route, said in zip(routes, answers):
+            with self.subTest(route=route):
+                if route in ('home', 'apps'):  # their own work goes on without it
+                    self.assertNotIn('E21', said)
+                else:
+                    self.assertIn('E21 · The control service is not running', said)
+        (media,) = self.browse(('pageText', {'route': 'media', 'id': 'media-folders'}))
+        self.assertIn('E21', media)
+        self.assertNotIn('Unlock', media)
 
     def test_a_phone_at_200_percent_zoom_needs_no_sideways_scrolling(self):
         # Deep check 170: a 390 px phone at 200% zoom is 195 CSS pixels wide. The cards'
@@ -387,6 +405,18 @@ class PinInBrowserTests(unittest.TestCase):
         self.control.asked.clear()
 
     browse = DashboardInBrowserTests.browse
+
+    def test_focus_stays_on_unlock_media_folders_when_the_page_refreshes(self):
+        # Deep check 156, for the Media folders page: it offers to unlock only when the
+        # control service answers and this device is not signed in.
+        self.control.signed_out = True
+        try:
+            (answer,) = self.browse(
+                ('focusAfterRefresh', {'route': 'media', 'label': 'Unlock media folders', 'reload': 'control'})
+            )
+        finally:
+            self.control.signed_out = False
+        self.assertEqual(answer, {'before': 'Unlock media folders', 'after': 'Unlock media folders'})
 
     def test_updates_knows_this_device_is_signed_in(self):
         # 0.52.2 test round (T3b-01): Updates never read the control service, so a device
