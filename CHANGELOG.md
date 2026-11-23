@@ -2,7 +2,7 @@
 
 ## v0.52.3 — 2026-11-23
 
-Fixes found by testing 0.52.2 against 0.52.1, old against new, on a test VM, with the real runtime and in a browser: what 0.52.2 did differently, and things 0.52.1 already did wrong. What changes is said below.
+Fixes found by testing 0.52.2 against 0.52.1, old against new, on a test VM, with the real runtime and in a browser: what 0.52.2 did differently, and things 0.52.1 already did wrong. It also adds two buttons to the Backup cards page. What changes is said below.
 
 ### Added: two buttons on the Backup cards page
 - **Take these cards back**: after the SSD is replaced or NekoServer is set up again, the page shows the old cards as an earlier set. Plug them in and press the button: the server makes its catalogue again from what is on them, and the next run writes on, without copying again what they hold. It is there only while the server has no card of its own set.
