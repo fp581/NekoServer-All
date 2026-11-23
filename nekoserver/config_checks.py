@@ -172,7 +172,13 @@ SETTINGS_BEYOND_TEMPLATE = {
     '': (
         *('locations', 'placement', 'drives', 'media_apps', 'install', 'acceptance_scope'),
         # setup's own notes: installer.RETENTION_REVIEWED, CHANNEL_REVIEWED, existing_page.ASKED and COPIES
-        *('profile_steps_known', 'retention_reviewed', 'channel_reviewed', 'existing_media_asked', 'existing_media_copy'),
+        *(
+            'profile_steps_known',
+            'retention_reviewed',
+            'channel_reviewed',
+            'existing_media_asked',
+            'existing_media_copy',
+        ),
         'existing_media_answered',  # existing_page.ANSWERED
         'cards',  # the backup cards switch (explanations.EXTRAS "backup_cards"), saved once chosen
     ),
