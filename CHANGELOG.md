@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.52.4 — (in progress)
+## Next release (0.52.4) — in progress
 
 Fixes for what the round of tests of 0.52.2 found that 0.52.1 did too.
 
