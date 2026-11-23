@@ -11,6 +11,7 @@ The first stable release, built on 0.52.3.
 
 ### Fixed
 - **The README says what to do when `sudo` is missing or refuses**, before the first command: Debian installed with a root password has no sudo, and its first account is not allowed to use it, so `sudo apt install git` stopped with sudo's own "command not found" or "not in the sudoers file". It now gives the steps (`su -`, `apt install sudo`, `usermod -aG sudo`, log out and in again).
+- **An Ask Neko question too long for the dashboard gets its own message.** A question over 4 KB was refused with the connection cut, so the page showed E01 ("Can’t reach the server") instead of E42 ("Request not supported"). The dashboard now reads the rest of a refused request away from its workers and answers 400 with E42.
 
 ### Tests
 - **Tests of the setup driver's own parts** (split out in 0.52.2), the setup report's folder-access rows, the mistyped-settings warnings and the job-time check, each pinning what it does.
