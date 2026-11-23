@@ -7286,13 +7286,7 @@ mod tests {
         // same lock, and an app the resume could not start still fails the resume.
         let source = include_str!("app_snapshot.rs");
         let body = &source[source.find("pub fn resume_command(").unwrap()..];
-        let body = &body[..body
-            .find(
-                "
-}
-",
-            )
-            .unwrap()];
+        let body = &body[..body.find("\n}\n").unwrap()];
         let checked = body.find("backup::coordinate(").unwrap();
         assert!(checked < body.find("backup::resume_cloud_held(").unwrap());
         assert!(body.contains("common::first_error(apps, cloud)?;"));
