@@ -47,7 +47,7 @@ On a phone the main pages are in the bar at the bottom; **More** opens the rest.
 
 ## Themes
 
-Settings (⚙) → *Theme* picks one of two, on each device on its own:
+Settings (⚙) → *Theme* picks one of two, in each browser on its own:
 
 | Theme | What it is |
 | --- | --- |

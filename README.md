@@ -14,7 +14,7 @@ Setup's first page asks one thing: *What would you like this server to do?* Each
 | --- | --- |
 | 📷 **Photos and phone backup** | Immich: store and browse your photos, and back them up from your phone |
 | 🎬 **Movies and shows** | Jellyfin: watch your films and shows on any device. With **Also find and download new ones** switched on (it is, unless you switch it off) it comes with Seerr, Sonarr, Radarr, Prowlarr and qBittorrent |
-| 🎵 **Music** | Navidrome: play your music from your phone or browser. The same switch adds Lidarr |
+| 🎵 **Music** | Navidrome: play your music from your phone or browser. With **Also find and download new ones** switched on (it is, unless you switch it off) it comes with Lidarr, Prowlarr and qBittorrent |
 | ☁️ **Personal files** | Nextcloud: your files on your own devices |
 | 📺 **A TV connected to this PC** | Steam Big Picture and a YouTube shortcut. It needs **Movies and shows**: its TV mode opens Jellyfin (off unless you switch it on) |
 | 🔔 **Alerts on your phone** | A message, through the free ntfy app, when a backup or an app fails (off unless you switch it on) |
@@ -52,6 +52,22 @@ sudo bash install.sh
 
 On a PC with a desktop a **setup window** opens in your browser beside the terminal. Both show the same pages; answer in whichever you like. The walk through every page is in **[nekoserver/GUIDED-SETUP.md](nekoserver/GUIDED-SETUP.md)**.
 
+To install one exact release instead of the newest, name its tag when you clone, for example `git clone --branch v0.52.3-beta https://github.com/fp581/NekoServer-All.git`.
+
+## What setup looks like
+
+The setup window shows the same pages as the terminal: the apps you want, the review before anything is installed, the steps as they run (with a question when a step needs you), and the last page.
+
+<p align="center">
+  <img src="docs/media/setup-window.webp" alt="The setup window: the first page with a card for each app, the review before anything is installed, the steps running, a question during a step, and the last page that says NekoServer is ready." width="720">
+</p>
+
+Without a desktop, the same pages are asked in the terminal:
+
+<p align="center">
+  <img src="docs/media/setup-terminal.webp" alt="Setup's first page in a terminal: each app and extra as a numbered switch." width="720">
+</p>
+
 ## What setup asks, once
 
 1. **What this server should do** (the switches above).
@@ -61,7 +77,7 @@ On a PC with a desktop a **setup window** opens in your browser beside the termi
 5. **Your app accounts**: strong passwords made for you (Enter takes this), or your own logins, on one page, with the dashboard PIN and the shared folders' password. **Show login** shows any of them later, in the window and in the terminal.
 6. **Review and install**: one page lists everything that will happen, and one button starts it.
 
-Then setup works on its own. After the approval only these stop it: signing in to Tailscale, a drive that is short of room, choosing the download sources once Prowlarr runs (the recommended ones are ticked, so Continue alone takes them), the phone page, and, on a first install, choosing a backup password (typed twice) for the backup of your app passwords. The alerts and outage addresses, if you switched those on, are asked when setup reaches them. If a step does not finish it says why, what usually fixes it, and offers **Retry this step**.
+Then setup works on its own. After the approval only these stop it: signing in to Tailscale, a drive that is short of room, choosing the download sources once Prowlarr runs (the recommended ones are ticked, so Continue alone takes them; Torrentio is in the list too, not ticked, and finds only what Sonarr and Radarr search for), the phone page, and, on a first install, choosing a backup password (typed twice) for the backup of your app passwords. The alerts and outage addresses, if you switched those on, are asked when setup reaches them. If a step does not finish it says why, what usually fixes it, and offers **Retry this step**.
 
 Afterwards one page helps you **connect your phone**, and the last page says what is ready, what a program checked, what you tried yourself and what is still waiting for you.
 
@@ -88,6 +104,30 @@ Run `sudo bash install.sh` again at any time: it keeps your answers and asks onl
 
 Tailscale gives each app a private address that works at home and away, on your own devices only. Nothing is opened to the internet. The phone page shows what setup checked itself (the server signed in, the addresses answering, each app's login verified) and what only you can see (that an app opened on mobile data).
 
+## The dashboard
+
+One page on the server and on your phone shows how everything is: the apps, the drives, the backups and backup cards, your media folders, the updates, and Ask Neko if you switched it on. Changing anything needs the dashboard PIN.
+
+<p align="center">
+  <img src="docs/media/dashboard-tour.webp" alt="A short tour of the dashboard: Home, the drives, the backups and backup cards, the media folders, Ask Neko and the updates." width="720">
+</p>
+
+## Two looks
+
+The dashboard has two looks, each light or dark: **Moonlit Neko**, with its cat (dark: Neko night, light: Lamplight), and a quiet **Professional** one with no cat, where only the status has colour. Choose in **Settings → Theme** (in Moonlit Neko the Settings window is called *Make yourself at home*); each browser remembers its own choice. The setup window has its own light and dark switch.
+
+<p align="center">
+  <img src="docs/media/looks-compare.webp" alt="The dashboard's Home page four times: Moonlit Neko dark and light, Professional dark and light." width="720">
+</p>
+
+<p align="center">
+  <img src="docs/media/looks-busy.webp" alt="The Backups page in the four looks: Moonlit Neko dark and light, Professional dark and light." width="720">
+</p>
+
+<p align="center">
+  <img src="docs/media/looks-switch.webp" alt="Switching the look in Settings, Theme: from Moonlit Neko to Professional, light and dark." width="720">
+</p>
+
 ## Ask Neko
 
 An optional AI assistant on the dashboard. It explains what the dashboard shows and what to do about a problem, and can suggest a fix from a fixed list, which runs only when you approve it. Its model runs on this PC. See [ASSISTANT.md](nekoserver/ASSISTANT.md) for what it needs.
@@ -102,7 +142,8 @@ An optional AI assistant on the dashboard. It explains what the dashboard shows 
 
 ## Updating, and taking it off
 
-- **Update**: `git pull`, then `sudo bash install.sh` in the same folder. Your settings, accounts and files stay. A server keeps exactly the apps it has, and nothing is removed from its backups until you choose a number.
+- **Update**: press **Upgrade NekoServer** on the dashboard's Updates page when it offers a new release, or `git pull`, then `sudo bash install.sh` in the same folder. Your settings, accounts and files stay. A server keeps exactly the apps it has, and nothing is removed from its backups until you choose a number.
+- **Linux's own updates** are never installed by NekoServer: the Updates page shows what is waiting and whether the PC needs a restart, and you install them yourself.
 - **Cloned before 0.40.0?** `git pull` does not work once: clone it again and copy your `my-config.json` into the new folder; [Updating from a clone made before 0.40.0](nekoserver/README.md#install) shows the commands.
 - **Uninstall**: `sudo bash uninstall.sh`. It lists what it would remove, you choose, and it asks twice.
 
@@ -111,7 +152,7 @@ An optional AI assistant on the dashboard. It explains what the dashboard shows 
 Each release on GitHub is one of two kinds, and its tag says which:
 
 - **Stable**, tagged `vX.Y.Z` (for example `v1.0.0`). Not yet: every NekoServer release so far is a beta.
-- **Beta**, tagged `vX.Y.ZBeta` (for example `v0.41.7Beta`; `vX.Y.Z-beta` counts as a beta too). It is marked **Pre-release** on GitHub, so GitHub's "Latest" release is never a beta.
+- **Beta**, tagged `vX.Y.Z-beta` (for example `v0.52.3-beta`; `vX.Y.ZBeta` counts as a beta too). It is marked **Pre-release** on GitHub, so GitHub's "Latest" release is never a beta.
 
 A check on GitHub (the "Release channel" job) marks each new release as its tag says, and fails on a tag that is neither. `git pull` follows the `main` branch, whatever the tags say.
 
