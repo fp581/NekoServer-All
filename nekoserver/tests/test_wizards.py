@@ -940,6 +940,8 @@ class RecoveryWizardTests(unittest.TestCase):
         # The rebuild command names the library Immich really uses (the 0.46.0 review, H08).
         rebuild = f'sudo cp -a {restored}/upload {restored}/library {self.root}/ssd/photos/immich-library/'
         self.assertIn(rebuild, '\n'.join(out))
+        # Then setup, which makes Immich's other folders again (T1-R6: Immich stayed down).
+        self.assertIn('Then run  sudo bash install.sh  again', '\n'.join(out))
         # Other accounts never get in (the restore itself is given to the person's own).
         self.assertEqual((self.media / 'restored').stat().st_mode & 0o007, 0)
 

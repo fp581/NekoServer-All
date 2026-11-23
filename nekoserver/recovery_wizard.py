@@ -1695,6 +1695,8 @@ def restore_photos(config, prompt, output):
         'USB drive")? Then put both folders into the library Immich uses instead:',
         f'  sudo cp -a {shlex.quote(str(target / "upload"))} {shlex.quote(str(target / "library"))} '
         f'{shlex.quote(str(photo_library(config)))}/',
+        "Then run  sudo bash install.sh  again: it makes Immich's other folders (thumbnails,",
+        'converted videos) on that drive, which Immich needs to start.',
     )
 
 

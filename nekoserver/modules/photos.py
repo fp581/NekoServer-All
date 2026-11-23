@@ -1,7 +1,7 @@
 """Immich upstream Compose deployment and additive photo archive configuration."""
 
 from neko_common import checked_run, compose_image_override, compose_up, fetch, findmnt
-import os, re, secrets, subprocess, urllib.request, json, shutil
+import os, re, secrets, stat, subprocess, urllib.request, json, shutil
 from pathlib import Path
 from neko_common import (
     photo_library,
@@ -9,6 +9,7 @@ from neko_common import (
     relative_path,
     atomic_write,
     ensure_directory,
+    made_whole,
     verify_storage,
     host_timezone,
     immich_wanted,
@@ -65,6 +66,55 @@ def has_files(folder):
         return any(Path(folder).iterdir())
     except FileNotFoundError:
         return False
+
+
+# Immich's own folders in its upload location. Once its database knows one, Immich checks
+# the empty `.immich` file in it at every start and stops when it is gone
+# (docs.immich.app/administration/system-integrity).
+IMMICH_FOLDERS = ('upload', 'library', 'thumbs', 'encoded-video', 'profile', 'backups')
+MARKER = '.immich'
+
+
+def immich_folders_back(upload, db, log):
+    """Immich's folders that a new drive lacks, made again (T1-R6). After a dead HDD with
+    the photos on it, the database on the SSD still knows every folder, but a photo restore
+    brings back only `upload` and `library`: Immich then never starts. Each missing folder
+    is made empty, with its marker, owned and with the mode of the first of Immich's folders
+    that is there (`upload` first); a missing marker in a folder that is there is made too.
+    Nothing that exists is changed. Only for this Immich: its database has files and some of
+    its folders are there (a new Immich makes its own; a drive that is not mounted has
+    none). Returns what was made."""
+    upload = safe_path(upload)
+    if not has_files(db):
+        return []
+    there = [upload / name for name in IMMICH_FOLDERS if (upload / name).is_dir() and not (upload / name).is_symlink()]
+    if not there:
+        return []
+    like = there[0].stat()
+    made = []
+    for name in IMMICH_FOLDERS:
+        folder = upload / name
+        if folder.is_symlink():
+            continue  # never followed, and left as it is
+        if not folder.exists():
+            made_whole(folder, stat.S_IMODE(like.st_mode), like.st_uid, like.st_gid)
+            made.append(name)
+        marker = folder / MARKER
+        if folder.is_dir() and not marker.exists() and not marker.is_symlink():
+            handle = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+            try:
+                os.fchown(handle, like.st_uid, like.st_gid)
+                os.fchmod(handle, 0o644)
+            finally:
+                os.close(handle)
+            if name not in made:
+                made.append(f'{name}/{MARKER}')
+    if made:
+        log(
+            f'Immich: made again in {upload}: ' + ', '.join(made) + '. Immich needs them to start; '
+            'it makes the thumbnails and converted videos again by itself'
+        )
+    return made
 
 
 def env_value(content, key):
@@ -350,6 +400,7 @@ def _run(ctx):
     for target in (upload, archive, inbox):
         ensure_directory(target, 0o755)
     verify_storage(cfg)
+    immich_folders_back(upload, db, ctx.log)
     base = [
         'docker',
         'compose',
