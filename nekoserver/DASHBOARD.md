@@ -47,7 +47,7 @@ On a phone the main pages are in the bar at the bottom; **More** opens the rest.
 
 ## Themes
 
-Settings (⚙) → *Theme* picks one of two, on each device on its own:
+Settings (⚙) → *Theme* picks one of two, in each browser on its own:
 
 | Theme | What it is |
 | --- | --- |
@@ -105,7 +105,7 @@ To leave fans and lights completely alone, set `"fan_control": false` under `"da
 
 ## Your PIN
 
-**On the server itself**, anyone using the dashboard can change fans and lights. **Phones, tablets and other computers** can always look, but need the **PIN** chosen during setup to change anything. **Restarting or closing apps needs the PIN on every device**, the server too. Once unlocked, a device stays unlocked for 12 hours, or until the page is closed.
+**On the server itself**, anyone using the dashboard can change fans and lights. **Phones, tablets and other computers** can always look, but need the **PIN** chosen during setup to change anything. **Restarting or closing apps, updates, Ask Neko, the Media folders page and the Backup cards page need the PIN on every device**, the server too. Once unlocked, a device stays unlocked for 12 hours, or until the page is closed.
 
 Five wrong PINs lock out that device for 5 minutes (each further five, twice as long). Other devices, and the server itself, are not locked out. The PIN box says how many tries are left, and when a device is locked out, how long it must wait and until what time (on that device's clock).
 
@@ -160,13 +160,13 @@ When something goes wrong, the dashboard shows a short code at the top of the pa
 | E02 | The server is slow to answer | It may be busy with a backup or update. The page keeps trying by itself. |
 | E10 | Readings not ready yet | Normal for a minute after the server starts. |
 | E11 | Readings could not be read | Usually fixes itself within a minute. If not, run setup again. |
-| E12 | Readings are out of date | No new reading for two collection intervals plus 30 seconds (150 s at the default 60 s): Help → *Readings are old or missing*. |
+| E12 | Readings are out of date | No new reading for two collection intervals plus 30 seconds, and never under 3 minutes (180 s at the default 60 s): Help → *Readings are old or missing*. |
 | E20 | Live readings unavailable | They come back by themselves. If not: `sudo systemctl restart nekoserver-dashboard.service`. Until then, older live readings are dimmed and marked with their time. |
-| E21 | The control service is not running | It handles the PIN, fans and lights, app restarts and Ask Neko: Help → *Fans don't change* shows the command to check it. |
+| E21 | The control service is not running | It handles the PIN, fans and lights, and every app change: restarts, updates, Ask Neko, media folders and backup cards. Help → *Fans don't change* shows the command to check it. |
 | E40 | Page not found | Use the menu to go back. |
 | E41 | Open the dashboard from its own address | Use 127.0.0.1:8787 on the server, or the Tailscale address. |
 | E42 | Request not supported | Reload the page. (For a fan or light change, the message says what was wrong.) |
-| E43 | Enter your PIN to change this | Phones, tablets and other computers need the PIN chosen during setup for fans and lights; restarting or closing apps needs it on every device. Press *Unlock changes* (the page asks by itself for app controls). |
+| E43 | Enter your PIN to change this | Phones, tablets and other computers need the PIN chosen during setup for fans and lights; restarting or closing apps, updates, Ask Neko, the Media folders page and the Backup cards page need it on every device. Press *Unlock changes* (the page asks by itself for those). |
 | E44 | Wrong PIN | Check the PIN and try again. The message says how many tries this device has left; after the last one, how long it must wait. Forgot it? "Your PIN" above says how to find it or choose a new one. |
 | E45 | Too many tries; wait a while | The message says how long, and until what time. Five wrong PINs lock out that device for 5 minutes; each further five, twice as long. Other devices and the server itself are not locked out. When the message says *other devices together* typed too many wrong PINs, phones and tablets get one more try every two hours; on the server itself you can still unlock. |
 | E46 | The change could not be saved | Nothing was changed, because it wouldn't survive a restart. The server's system drive may be full or failing. |
@@ -216,7 +216,7 @@ There is nothing to configure. The dashboard reads what Linux reports:
 To see everything the dashboard can read on this computer:
 
 ```bash
-/usr/local/lib/nekoserver-dashboard/v0.52.1/nekoserver-runtime hardware
+/usr/local/lib/nekoserver-dashboard/v0.52.3/nekoserver-runtime hardware
 ```
 
 ### Fan control in detail
@@ -261,7 +261,7 @@ The dashboard is part of the normal setup (the full profile installs it). To ins
 sudo bash install.sh --profile dashboard --apply
 ```
 
-Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.52.1` (one folder per release, and when a setup run has finished, the folders of earlier releases that no service uses any more are removed; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
+Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.52.3` (one folder per release, and when a setup run has finished, the folders of earlier releases that no service uses any more are removed; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
 
 ### What runs, and what it can see
 

@@ -1,5 +1,6 @@
 """Regression tests for the compose-path, Seerr UID and timezone fixes."""
 
+import contextlib
 import hashlib
 import io
 import http.cookiejar
@@ -3891,3 +3892,103 @@ class OwnerChangeTests(unittest.TestCase):
         self.assertEqual(
             [f for f in found if not f.startswith(('neko_common.py', 'snapshot_restore.py', 'recovery_wizard.py'))], []
         )
+
+
+class PlainRefusalTests(unittest.TestCase):
+    """0.52.2 test round, T5: the stricter path checks of 0.52.2 say in one line what to change."""
+
+    def load(self, name, filename):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(name, ROOT / filename)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_account_setup_apply_names_the_json_rule(self):
+        """Run as a command, a RuntimeError here only said "Account setup incomplete"."""
+        module = self.load('account_setup_cli', 'account-setup.py')
+        with tempfile.TemporaryDirectory() as d:
+            settings = Path(d) / 'settings.conf'
+            settings.write_text('{"data_mount": "/srv/ssd"}')
+            said = io.StringIO()
+            with (
+                mock.patch.object(sys, 'argv', ['account-setup.py', '--apply', '--config', str(settings)]),
+                mock.patch.object(module.os, 'geteuid', return_value=0, create=True),
+                mock.patch.object(sys.stdin, 'isatty', return_value=True),
+                mock.patch.object(module, 'verify_storage', side_effect=AssertionError('read the file')),
+                mock.patch('sys.stderr', said),
+            ):
+                self.assertEqual(module.main(), 2)
+        self.assertEqual(said.getvalue(), f'Nothing was set up: Settings file must be a .json file: {settings}\n')
+
+    def apply_said(self, **patches):
+        """What `account-setup.py --apply` says on its error output, and its exit code."""
+        module = self.load('account_setup_cli', 'account-setup.py')
+        with tempfile.TemporaryDirectory() as d:
+            settings = Path(d) / 'my-config.json'
+            settings.write_text('{"data_mount": "/srv/ssd"}')
+            said = io.StringIO()
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(
+                    mock.patch.object(sys, 'argv', ['account-setup.py', '--apply', '--config', str(settings)])
+                )
+                stack.enter_context(mock.patch.object(module.os, 'geteuid', return_value=0, create=True))
+                stack.enter_context(mock.patch.object(sys.stdin, 'isatty', return_value=True))
+                stack.enter_context(mock.patch('sys.stderr', said))
+                for name, value in patches.items():
+                    stack.enter_context(mock.patch.object(module, name, value))
+                code = module.main()
+        return code, said.getvalue()
+
+    def test_account_setup_apply_says_the_drives_are_not_there(self):
+        """0.52.2 test round, T5-06: with the SSD not mounted it said only "Account setup incomplete"."""
+        refused = mock.Mock(side_effect=RuntimeError('the app SSD (data_ssd) is not connected.'))
+        self.assertEqual(
+            self.apply_said(verify_storage=refused),
+            (
+                2,
+                'Nothing was set up: the app SSD (data_ssd) is not connected.\n',
+            ),
+        )
+
+    def test_account_setup_apply_says_the_saved_logins_could_not_be_read(self):
+        store = mock.Mock()
+        store.get.side_effect = RuntimeError('Invalid private account store; contents preserved')
+        code, said = self.apply_said(
+            verify_storage=mock.Mock(), deployed_apps=mock.Mock(return_value=['jellyfin']), account_store=store
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(
+            said,
+            'Nothing was set up: the saved app logins could not be read (Invalid private account store; contents '
+            'preserved). They are left as they are. To put back the list from a backup:  sudo bash install.sh '
+            '--recover , then "Restore something from a backup" and "The list of app passwords".\n',
+        )
+
+    def test_media_connect_says_a_link_in_the_data_root_is_the_cause(self):
+        module = self.load('media_connect_cli', 'media-connect.py')
+        parser = mock.Mock()
+        parser.error.side_effect = SystemExit(2)
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / 'real' / 'ssd').mkdir(parents=True)
+            (Path(d) / 'link').symlink_to(Path(d) / 'real')
+            args = mock.Mock(data_root=str(Path(d) / 'link' / 'ssd'))
+            with self.assertRaises(SystemExit):
+                module.mounted_ssd(parser, args, {})
+        parser.error.assert_called_once_with('Data SSD must be mounted at --data-root (its real path: no links, no //)')
+
+
+class AccountHintTests(unittest.TestCase):
+    """0.52.2 test round, T5-07: what a refused login says to do must work as said."""
+
+    def test_an_app_with_its_own_account_names_the_command_that_asks_c(self):
+        """`sudo python3 account-setup.py` alone only prints "Read-only: use --apply ..."; setup
+        run again asks about each login the app did not take, and c types the real one."""
+        import account_setup
+
+        with self.assertRaises(RuntimeError) as caught:
+            account_setup.allowed({'allow_create': False})
+        said = str(caught.exception)
+        self.assertIn('Run  sudo bash install.sh  again and choose c when it asks about this app', said)
+        self.assertNotIn('account-setup.py', said)

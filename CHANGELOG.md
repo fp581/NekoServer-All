@@ -1,10 +1,85 @@
 # Changelog
 
-## v0.52.2 — (in progress)
+## v0.52.3 — 2026-11-23
 
-A clean-up release: the findings SonarCloud has on the code as it is (vulnerabilities and code smells), fixed without changing what NekoServer does or says. Each fix is listed here as it lands.
+Fixes found by testing 0.52.2 against 0.52.1, old against new, on a test VM, with the real runtime and in a browser: what 0.52.2 did differently, and things 0.52.1 already did wrong. It also adds two buttons to the Backup cards page. What changes is said below.
 
-## v0.52.1 — (in progress; the release number is 0.52.1)
+### Added: two buttons on the Backup cards page
+- **Take these cards back**: after the SSD is replaced or NekoServer is set up again, the page shows the old cards as an earlier set. Plug them in and press the button: the server makes its catalogue again from what is on them, and the next run writes on, without copying again what they hold. It is there only while the server has no card of its own set.
+- **Check this card**: every copy on a plugged-in card is read again and compared with its checksum. A damaged copy is named and no longer counts, and the next run copies that file again; the check changes nothing on the card.
+- Both run in the card job, show their progress and result on the page, and need the PIN like the page's other actions. BACKUP-CARDS.md and CARD-RECOVERY.md say how.
+
+### Fixed: the upgrade
+- **The release says its own number.** 0.52.2's download said it was 0.52.1, so every server refused to upgrade to v0.52.2-beta. 0.52.3 says 0.52.3 everywhere the number is kept, and a test now fails when the code's number and the changelog's newest entry differ.
+
+### Fixed: things 0.52.2 did differently from 0.52.1
+- **Ask Neko works again in older browsers** (Chrome 93 to 96, Firefox 98 to 103). There, pressing Ask emptied the box and sent nothing, because 0.52.2 used a newer browser function. A test opens the dashboard in a browser without the newer functions.
+- **A data folder written with two slashes at its start (`//srv/nekoserver`) or with a NUL character is refused at once, as in 0.52.1.** 0.52.2 let setup go on with such a folder and kept its state in the home folder, as if the SSD were not there; with a NUL, the tools ended with a Python error instead of saying what is wrong.
+
+### Fixed: what the tools, the guides and the review page say
+- **`account-setup.py --apply` and `media-connect.py` say plainly what they refuse.** A settings file not named `.json`, or a `--data-root` that is not its own real path (a link, or `//`), is refused in one line that says what to change; `account-setup.py` said only "Account setup incomplete".
+- **Setup's review page lists the backup password among what setup stops for**, on a first install: the monthly backup asks for it, typed twice, after the approval. The README says so too.
+- **The guides say what setup asks, and when.** The dashboard PIN, the shared-folder password, the app-account choice and the backup times are asked before the install starts, not during it; the TV, phone-alert and outage-alert questions are answered by the first page's switches; pressing Enter at the download sources adds the ticked recommended ones (it does not skip them); the shared-folder password is kept and shown by *Show login*; app updates run every week, the monthly run checks the backups.
+- **The recovery guides match the tools**: restored Steam and Samba folders start at `source0`; a card restore's `--card` goes before the command word. ACCOUNT-SETUP.md's option 2 is typing every login yourself, and DASHBOARD.md's readings count as late after 3 minutes at the least.
+- **The guides say the TV needs Movies and shows** (README, GUIDED-SETUP, TV-SETUP): setup leaves the TV out without it, as the TV mode opens Jellyfin.
+- **The README shows the real pages**: new pictures of the dashboard, its two looks side by side and the setup window and terminal (made by `docs/media/make-pictures.py` from the real pages with made-up data), and both READMEs say what the code does (the Music switch brings Lidarr, Prowlarr and qBittorrent; Nextcloud has its own switch; installing one exact release; Linux's own updates are never installed).
+
+### Fixed: what 0.52.1 did too
+- **The monthly update failed on every server with Nextcloud** ("Nextcloud could not write a test file", and it asked you to repair a files folder that was fine): Nextcloud 35 no longer has the call the write test used. The test now uses Nextcloud's public way.
+- **After a restart in which the router gave the server another home address**, opening the apps at home stopped working and the dashboard said nothing; running setup again failed at the home gateway ("took over 30 seconds"). The dashboard now says the address moved, and setup moves the gateway at once.
+- **`account-setup.py --apply` says why it stopped**: with the app SSD not mounted, or the saved logins unreadable, it says "Nothing was set up:" and what it found, and how to put the logins back from a backup. It said only "Account setup incomplete".
+- **A drive folder written with two slashes at its start (`//srv/nekoserver`) is refused at the settings check**, saying how to write it: 'Write the drive folder with one "/" at the start, as /srv/nekoserver'. Setup stopped later with "Refusing symlink path", which names no link.
+- **The dashboard's Updates page knows a device is signed in with its PIN**: Check for updates, Update now and the other buttons there asked for the PIN again. When the unlock has run out (after 12 hours, or a restart of the control service), an app change asks for the PIN in the words app changes use, not the fans and lights ones.
+- **The dashboard, its guide, setup's PIN question and the README say every app change asks for the PIN on every device**, the server too (restart or close, updates and the upgrade, Ask Neko, media folders, the Backup cards page), not only restarting or closing apps.
+- **The dashboard's pages that need the control service say E21 when it is not running**, and Media folders no longer asks for a PIN it cannot check then.
+- **Phone alerts and the outage check-in switched off in setup show "Off" and raise no alert**: their last result from before was shown as Passed or Failed beside "Its schedule is off.", and an old failure raised an alert on Home.
+- **In the setup window, a card that needs another says which** ("Needs Movies and shows - Jellyfin switched on."), so a TV card that went grey with Movies and shows off no longer looks impossible on this PC.
+- **On a phone at 200 % zoom, the dashboard's banner link ("What does this mean?") wraps**, so the Fans & lights page no longer scrolls sideways by 2 pixels.
+- **Ask Neko is set up on a first install of an 8 GB PC.** Setup measured the free memory just after Immich started, at its peak, and said there was not enough for a model; a minute later there was. When the apps have just started, setup now looks again for up to 3 minutes before deciding. A later run that finds the apps running measures once and waits for nothing.
+- **Ask Neko's model question says once what Enter does.** The list said "0) No assistant (press Enter)" while the line under it said Enter keeps the model, when the first page's Ask Neko switch was on; now only the line under the list says what Enter alone chooses. ASSISTANT.md shows the question as it is.
+- **In a server's first minute, Ask Neko says it is waiting for the server's first readings**, instead of "The AI assistant is not set up on this server" whether it was set up or not.
+- **An Ask Neko answer that was cut off says so**: "Neko's answer was cut off: it reached its length limit before it ended; ask again about one thing at a time". It said "Neko is not available right now", though Neko had answered and its text stayed on the page.
+- **Setup's music step names Lidarr only while Lidarr is set up**, and a desktop shortcut it takes away is said once, not twice.
+- **Setup's review says when no connected drive can be the offline backup**: "Offline backup: none yet, as no drive connected now can be one. Connect a drive you can unplug and run  sudo bash install.sh  again to choose it". It said nothing about the offline backup then.
+- **An app switched off is said to be "stopped and its containers removed"**, which is what setup does (your files and the apps' data stay). With Photos switched off, Immich's line now says to run setup again and switch Photos back on, as every other app's does, not to edit the settings file.
+- **A login an app refused names the command that asks for the real one**: "Run  sudo bash install.sh  again and choose c when it asks about this app". It said to run `account-setup.py` and choose c, which asks nothing.
+- **The music listener's check says why it failed** (an administrator typed for the listener, a wrong password, no music folder in Navidrome, Navidrome not running), in setup's Music step and in the nightly check, instead of one line for every case.
+- **A setup step that failed keeps its reason on file before "Retry this step now?"**, so pressing Ctrl+C there, or a closed terminal or dropped SSH connection, no longer leaves the step "running" with its reason lost: the next run and the dashboard's Needs attention say what went wrong.
+
+### Cleaned
+- **Three pictures nothing showed any more are gone** (`docs/media/dashboard.webp`, `install.webp` and `uninstall.webp`, 2.6 MB), left from the README before 0.50.0.
+- **The setup window's unused `.mono` style is gone**; nothing on the window used it.
+- **The card restore tool's folder check and a reading of `systemctl show`** are written as SonarCloud asks (S8707, S7494), doing the same.
+- **The backup cards catalogue's search is gone**: nothing offered it.
+
+### Tests
+- **Tests for what mutation testing found untested** in the split Python (the settings file and source drive checks of the source import, its progress with linked files, `media-connect.py`'s steps and drive check, the store a recovery reattaches), each pinning what 0.52.1 does.
+- **Tests of setup's onboarding report, the snapshot rehearsal's steps and preview, and the words said when the dashboard PIN is skipped**, pinned as they are.
+- **The dashboard's browser tests wait the way the page's security policy allows**, so the backup cards test runs instead of erroring every time.
+- **CI runs the dashboard's and the setup window's browser tests in a job of their own** (Playwright 1.48.2 with its Chromium, Node 18.19.1), and fails when one is skipped.
+- **The runtime's unit tests no longer read the PC's own setup lock**, so a setup running on the same PC can't fail them.
+
+## v0.52.2 — 2026-11-23
+
+**Upgrade to 0.52.3, not to this one.** The download of v0.52.2-beta says it is 0.52.1 inside, so a server refuses to upgrade to it ("The download says it is 0.52.1, not v0.52.2; nothing was changed"); testing it also found a few things it did differently from 0.52.1, fixed in 0.52.3.
+
+A clean-up release: the 212 findings SonarCloud had on the code of 0.52.1 (30 vulnerabilities and 182 code smells), fixed. Nothing changes in what NekoServer does or says: the same steps, the same files written, the same messages, pages and exit codes. The exception is three checks that are stricter (below).
+
+### Cleaned: paths checked where they are used
+- **A path that comes from the settings file or the command line is now proved safe on the line that opens it**, not only somewhere before. The file is looked up by its real path (links followed) and used only when that lies inside the folder it belongs in: the SSD's data folder for the music listener's login, a backup's reports, Immich's Compose file and `.env`; the backup's `snapshots` folder for the music restore's list; the folder named for a restored secret; a place Linux mounts a card for the card restore tool. One outside is refused as before (a backup's report outside the SSD reads as "it left no report").
+- **The music check accepts only the server's own address**, `http://127.0.0.1:` and a port, as before, now without a pattern that spells the address out.
+- **Stricter by hand: `account-setup.py --apply` and `source_import.py --config` read only a `.json` settings file, and `media-connect.py` stops at the start for a `--data-root` with a link in its path.**
+
+### Cleaned: long functions split
+- **Python**: the long functions of setup and its tools (onboarding, the installer, connecting media, importing a source, the permission, config and gateway checks, recovery, restore, accounts, Docker and the other setup modules) split into small named steps that run in the same order, with the same cleanup on every way out. No function is left that SonarCloud scores over 15.
+- **The dashboard** (`app.js`): the same, and the line breaks a path's end is trimmed of are written as escapes, not as invisible characters.
+- **The Rust runtime**: collecting the dashboard's figures, backups, app and settings snapshots, the monthly maintenance, media readiness, alerts, fans, the live view and the control service, split the same way.
+- **The Rust splits were checked by mutation testing**: each split file went through cargo-mutants, and the changes no test caught got tests that pin what the code did before the split, wherever a test can reach it without root, Docker or the host's own `/proc`. Each split was also read old against new by a second person; none changed what the code does.
+
+### Tests
+- **A media folders test passes with any umask.** Its second request was written with the user's umask; on a machine with umask 002 it was group-writable and refused as not the control service's, so the test failed there (it passed on CI, whose umask is 022). It is made private, as the first one is.
+
+## v0.52.1 — 2026-11-22
 
 ### Added: favourite shows keep coming
 - **A show marked as a favourite in Jellyfin gets its missing episodes and its new ones.** Every hour NekoServer looks at each Jellyfin user's favourite shows; one Sonarr does not follow yet is given to Sonarr, watching every new episode and season, with the quality Seerr's requests use. An hour later, once Sonarr has the show's list of episodes, the episodes that aired and that Jellyfin does not have are searched for (specials left out). What Jellyfin has is what counts, so nothing you have is downloaded again, also from a folder of yours the download apps can't see. Nothing is removed when a show stops being a favourite. This closes the gap for shows from your own folders, which Sonarr did not know.

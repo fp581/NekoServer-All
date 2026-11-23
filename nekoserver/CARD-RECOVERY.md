@@ -46,7 +46,7 @@ read some other folder. A desktop mounts a card under `/media` or `/run/media` b
 
 ## 2. Look at the card
 
-Run these from the card's top folder (or add `--card /mnt/card` from anywhere):
+Run these from the card's top folder (from any other folder, use the tool's full path with `--card` right after it, before the command word: `python3 /mnt/card/NekoBackup/tools/neko-restore.py --card /mnt/card info`):
 
 ```bash
 python3 NekoBackup/tools/neko-restore.py info            # which card this is, how many files
@@ -60,7 +60,10 @@ copied (a checksum is a fingerprint of a file's content: it no longer matches wh
 one byte changed). It names each file that is `damaged` or `missing`, ends with the
 counts (`ok 4, damaged 0, missing 0, unusable records 0`) and changes nothing. Files whose
 names hold unusual characters are shown with those characters escaped (a line break as
-`\n`), so nothing is hidden.
+`\n`), so nothing is hidden. On the server, **Check this card** on the Backup cards page
+does the same check, and the next run copies a damaged file again; after the server's SSD
+is replaced, **Take these cards back** makes your cards its own again
+([BACKUP-CARDS.md](BACKUP-CARDS.md)).
 
 To look at, check or restore single files, add `--record` with the file's ID from `list`
 (more than once for several files); it works with `list`, `verify` and `restore`.

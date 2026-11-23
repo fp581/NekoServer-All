@@ -2,7 +2,7 @@
 //! all-or-nothing import of D7, and the lookups a normal run makes.
 //!
 //! The decided store is SQLite inside the runtime (Q2); it is built with the rest of the
-//! catalogue (inventory, rebuild, search) in the next step. `Memory` keeps the same
+//! catalogue (inventory, rebuild) in the next step. `Memory` keeps the same
 //! contract in memory: every method is one all-or-nothing change, as one SQLite
 //! transaction will be. The cards' records stay the authority either way.
 use super::error::Res;

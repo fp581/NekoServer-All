@@ -472,13 +472,14 @@ def left_out(context, run=None):
 
 # What the log says of an app stopped because the media apps were left out.
 LEFT_OUT = (
-    '{name}: stopped, as its group is switched off; its settings, data and media stay. To start it again, '
+    '{name}: stopped and its containers removed, as its group is switched off; its settings, data and media '
+    'stay. To start it again, '
     'run  sudo bash install.sh , answer yes to asking the questions again and yes to its group'
 )
 # ... and of one taken out of media.services.
 TAKEN_OUT = (
     '{name}: not among your apps any more (its group is switched off, or it was taken out of media.services), '
-    'so it is stopped; its settings and data stay (switch it back on to start it again)'
+    'so it is stopped and its containers removed; its settings and data stay (switch it back on to start it again)'
 )
 
 

@@ -144,33 +144,6 @@ fn crash_at_second(point: Point) -> impl FnMut(Point) -> super::error::Res<()> {
 }
 
 #[test]
-fn a_search_names_the_card_that_holds_a_file() {
-    let s = Scratch::new("sq-search");
-    let src = source(&s, "photos", 1);
-    put(&src, "2001/beach 100%.jpg", &bytes(1, 1000));
-    put(&src, "2001/beach_x.jpg", &bytes(2, 1000));
-    put(&src, "2002/city.jpg", &bytes(3, 1000));
-    let (p, v) = card(&s, 1);
-    let mut store = Store::in_memory().unwrap();
-    run_on(&mut store, &v, &p, USABLE, &src);
-    let found = store.search("beach", 10).unwrap();
-    assert_eq!(found.len(), 2);
-    let (copy, label) = &found[0].copies[0];
-    assert_eq!(label.as_deref(), Some("Example set - 001"));
-    assert_eq!(copy.state, CopyState::Committed);
-    // `%` and `_` are what they are, not patterns.
-    let percent = store.search("100%", 10).unwrap();
-    assert_eq!(percent.len(), 1);
-    assert_eq!(percent[0].version.path, "2001/beach 100%.jpg");
-    assert_eq!(
-        store.search("h_1", 10).unwrap().len(),
-        0,
-        "_ is no wildcard (\"h 1\" is there)"
-    );
-    assert!(store.search("nothing like it", 10).unwrap().is_empty());
-}
-
-#[test]
 fn the_export_is_a_consistent_copy_and_never_overwrites() {
     let s = Scratch::new("sq-export");
     let src = source(&s, "photos", 1);

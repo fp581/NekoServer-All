@@ -150,6 +150,26 @@ class InstallerFlowTests(unittest.TestCase):
             self.assertEqual(installer.main(['--recover', '--config', str(self.config)]), 130)
         self.assertIn('sudo bash install.sh --recover', printed[-1])
 
+    def test_ctrl_c_at_retry_this_step_keeps_why_the_step_failed(self):
+        """J03: a step failed, and the person pressed Ctrl+C (or the SSH connection dropped)
+        at "Retry this step now?". The state file kept the step "running", with no reason,
+        so the next run and the dashboard could not say what had gone wrong."""
+
+        def fails(ctx):
+            raise RuntimeError('the drive is busy')
+
+        modules = {'photos': {'object': mock.Mock(run=fails)}}
+        self.state.mkdir(parents=True)
+        state = self.state / 'state.json'
+        log = mock.Mock(path=self.root / 'setup.log')
+        with (
+            mock.patch.object(guided_setup, 'retry_question', side_effect=KeyboardInterrupt),
+            mock.patch.object(installer.sys.stdin, 'isatty', return_value=True),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            installer.tried_step('photos', modules, mock.Mock(), {}, state, log, True)
+        self.assertEqual(json.loads(state.read_text())['photos'], {'status': 'failed', 'reason': 'the drive is busy'})
+
     def test_a_closed_terminal_stops_setup_as_ctrl_c_does(self):
         """Deep check 457: a closed terminal or a dropped SSH connection (SIGHUP), and a
         `kill` or the PC shutting down (SIGTERM), ended setup on the spot. Nothing a step

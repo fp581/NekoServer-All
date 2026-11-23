@@ -108,6 +108,28 @@ class DashboardPageTests(unittest.TestCase):
             self.assertIn(f'words({field})', source)
             self.assertNotIn(f'list({field})', source)
 
+    def test_the_page_uses_nothing_newer_than_the_browsers_it_runs_in(self):
+        # 0.52.2 test round (T3-01): ASK.log.findLast (Chrome 97, Firefox 104) came in with a
+        # clean-up. Ask Neko needs Object.hasOwn (Chrome 93, Firefox 92) and <dialog> for the
+        # PIN (Firefox 98), so in Chrome 93-96 and Firefox 98-103 it worked and then sent no
+        # question at all.
+        source = (ROOT / 'dashboard/app.js').read_text()
+        self.assertIn('Object.hasOwn(', source)  # what the page needs to load at all
+        for newer in (
+            '.findLast(',
+            '.findLastIndex(',
+            '.toSorted(',
+            '.toReversed(',
+            '.toSpliced(',
+            'Object.groupBy(',
+            'Map.groupBy(',
+            'Promise.withResolvers(',
+            'Array.fromAsync(',
+            '.union(',
+            '.intersection(',
+        ):
+            self.assertNotIn(newer, source)
+
     def test_the_updates_page_links_each_apps_own_release_notes(self):
         answers = page(
             ('releaseNotes', {'app': 'immich', 'version': 'v2.3.1'}),
@@ -943,7 +965,12 @@ class AskNekoPageTests(unittest.TestCase):
         self.assertIn('(await copied(value))', app)
 
     def test_without_the_assistant_the_page_says_so(self):
-        self.assertIn('not set up on this server', page(('askIntro', {}))[0])
+        self.assertIn('not set up on this server', page(('askIntro', {'status': status()}))[0])
+
+    def test_before_the_first_readings_the_page_does_not_say_the_assistant_is_missing(self):
+        # T3 loop, dashboard API and page: in a server's first minute (/api/status E10) Ask
+        # Neko said "The AI assistant is not set up on this server", set up or not.
+        self.assertEqual(page(('askIntro', {}))[0], 'Waiting for the server’s first readings…')
 
     def test_without_a_pin_the_page_says_so_instead_of_asking_for_one(self):
         ready = status(assistant={'set_up': True, 'model': 'qwen3.5:4b', 'memory': '5g', 'cpus': '2'})
@@ -1091,7 +1118,7 @@ class AskNekoPageTests(unittest.TestCase):
     def test_an_answer_that_failed_part_way_is_marked_and_offers_nothing(self):
         """Review of 0.49.0: an answer cut off part-way looked complete."""
         text = 'Restart it.\nACTION: restart_app:jellyfin\nBUG REPORT: the retention st'
-        failed = 'Neko is not available right now: the answer was cut off before it ended; ask again'
+        failed = "Neko's answer was cut off: it stopped before it ended; ask again"
         # Even if a repair came with it, a failed answer never offers one.
         cut = page(('cutOffEntry', {'text': text, 'done': False, 'failed': failed, 'repair': 'restart_app:jellyfin'}))[
             0
@@ -1407,6 +1434,19 @@ class MediaFoldersPageTests(unittest.TestCase):
         self.assertEqual(out['sent'], [])
         self.assertEqual(out['form'], 0)
         self.assertIn('Unlock media folders', out['page'])
+
+
+@unittest.skipUnless(NODE, 'node is not installed')
+class MonitorCardTests(unittest.TestCase):
+    def test_a_check_in_switched_off_shows_not_set_up_not_its_old_result(self):
+        # T3 loop, dashboard API and page: the heartbeat switched off in setup leaves its
+        # last result in /run (collect.rs reads it with the timer gone), and Server health
+        # showed "Passed" beside "Not set up. This is optional."
+        gone = {'status': 'pass', 'timer': {'installed': False, 'active': False}}
+        off = {'status': 'fail', 'timer': {'installed': True, 'active': False}}  # setup: wanted false
+        on = {'status': 'fail', 'timer': {'installed': True, 'active': True}}
+        said = page(('monitorBadge', gone), ('monitorBadge', off), ('monitorBadge', on))
+        self.assertEqual(said, [['neutral', 'Not set up'], ['neutral', 'Off'], ['fail']])
 
 
 if __name__ == '__main__':

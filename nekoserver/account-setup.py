@@ -231,6 +231,13 @@ def deployed_apps(config):
     return apps
 
 
+# What to do when --apply cannot read the saved logins (it stops before it changes anything).
+LOGINS_HINT = (
+    'They are left as they are. To put back the list from a backup:  sudo bash install.sh --recover , '
+    'then "Restore something from a backup" and "The list of app passwords".'
+)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, epilog=SHOW_HELP)
     parser.add_argument(
@@ -265,13 +272,31 @@ def main():
         return 0
     if os.geteuid() != 0 or not sys.stdin.isatty():
         parser.error('Run with sudo in an interactive terminal')
-    config = json.loads(settings_path(args.config).read_text())
+    try:
+        settings = settings_path(args.config)
+    except RuntimeError as exc:
+        # A settings file not named .json, say: said in one plain line.
+        print(f'Nothing was set up: {exc}', file=sys.stderr)
+        return 2
+    config = json.loads(settings.read_text())
     config['accounts'] = {**config.get('accounts', {}), 'enabled': True}
-    verify_storage(config)
+    try:
+        verify_storage(config)
+    except RuntimeError as exc:
+        # The drive check's own words say what is wrong and what to do.
+        print(f'Nothing was set up: {exc}', file=sys.stderr)
+        return 2
     apps = deployed_apps(config)
     if not apps:
         parser.error('No selected deployed app manifests found; run the installer first')
-    before = account_store.get(config, 'qbittorrent')
+    try:
+        before = account_store.get(config, 'qbittorrent')  # the first read of the saved logins
+    except (RuntimeError, OSError) as exc:
+        print(
+            f'Nothing was set up: the saved app logins could not be read ({str(exc).rstrip(".")}). {LOGINS_HINT}',
+            file=sys.stderr,
+        )
+        return 2
     with lock(config):
         account_store.collect(config, apps)
         pending = account_setup.provision(config, apps)

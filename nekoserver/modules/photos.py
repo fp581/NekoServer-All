@@ -216,10 +216,22 @@ def switch_off(ctx, folder, run=subprocess.run, journal=None):
             + str(len(left))
             + ' of its containers are still running; check  docker ps'
         )
-    ctx.log(
-        'Immich switched off: its containers were removed. Its photos, database and settings are kept on the SSD; '
-        'set "deploy_immich": true under "photos" and run setup again to bring it back.'
-    )
+    if not neko_common.media_group(ctx.config, 'photos') and ctx.config.get('photos', {}).get('deploy_immich') is True:
+        # As every other app says it (media.LEFT_OUT): the Photos switch alone brings it back.
+        ctx.log(IMMICH_LEFT_OUT)
+    else:
+        ctx.log(
+            'Immich switched off: its containers were removed. Its photos, database and settings are kept on the SSD; '
+            'set "deploy_immich": true under "photos" and run setup again to bring it back.'
+        )
+
+
+# What the log says when Immich is stopped because Photos was switched off.
+IMMICH_LEFT_OUT = (
+    'Immich: stopped and its containers removed, as Photos is switched off; its photos, database and settings '
+    'stay on the SSD. To start it again, run  sudo bash install.sh , answer yes to asking the questions again '
+    'and yes to Photos'
+)
 
 
 def start_cut_off_setup_again(ctx, compose, db):

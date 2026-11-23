@@ -125,8 +125,8 @@ def allowed(entry):
     if not entry['allow_create']:
         raise RuntimeError(
             'the app did not accept the saved username and password, and it already has an account, '
-            'so none is made or reset. Run  sudo python3 account-setup.py  and choose c to enter the '
-            'login the app really has'
+            'so none is made or reset. Run  sudo bash install.sh  again and choose c when it asks about '
+            'this app, to enter the login the app really has'
         )
 
 

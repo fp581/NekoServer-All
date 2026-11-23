@@ -1343,17 +1343,20 @@ def default_card():
 
 
 def card_folder(top):
-    """`top` (every link resolved) when it is where a card is mounted: the card this tool
+    """`top`, by its real path, when it is where a card is mounted: the card this tool
     runs from, or a folder where Linux mounts a removable card, /mnt itself too (`sudo
     mount /dev/sdb1 /mnt` is a usual way to mount a card). None anywhere else."""
+    # Resolved here, on the path that is checked and returned, so the folder opened is
+    # the one proved to lie under a mount place (the caller resolves it too: no change).
+    real = os.path.realpath(top)
     own = default_card()
-    if top == own:
+    if real == own:
         return own
     for root in CARD_ROOTS:
-        if top + '/' == root:
+        if real + '/' == root:
             return root[:-1]
-        if top.startswith(root):
-            return top
+        if real.startswith(root):
+            return real
     return None
 
 

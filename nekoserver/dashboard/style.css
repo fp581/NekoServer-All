@@ -2427,6 +2427,10 @@ body.tv {
     flex-shrink: 1;
     white-space: normal;
   }
+  /* The banner's "What does this mean?" is wider than the banner on one line. */
+  .banner-link {
+    white-space: normal;
+  }
 }
 @media (prefers-reduced-motion: no-preference) {
   .app-card,

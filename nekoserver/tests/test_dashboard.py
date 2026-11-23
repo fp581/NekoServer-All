@@ -76,6 +76,62 @@ class DashboardFilesTests(unittest.TestCase):
             self.assertLessEqual(len(title.split()), 7, code)  # short enough to read at a glance
             self.assertLessEqual(len(fix), 110, code)
 
+    def test_the_pin_words_name_every_change_that_needs_it_on_every_device(self):
+        # control.rs asks for the PIN on every device, the server too, for its app_,
+        # desktop_ and cards_ ops. The page's names for them (serve.rs) come in families,
+        # each with the word a first-time reader looks for; a new family is named here.
+        control = (ROOT / 'runtime/src/control.rs').read_text()
+        for prefix in ('app_', 'desktop_', 'cards_'):
+            self.assertIn(f'op.starts_with("{prefix}")', control)
+        ops = re.findall(r'"([a-z-]+)" => "(?:app|desktop|cards)_[a-z_]+"', SERVE)
+        words = {
+            'app': 'apps',
+            'desktop': 'apps',
+            'update': 'updates',
+            'upgrade': 'updates',
+            'ask': 'ask neko',
+            'assist': 'ask neko',
+            'media': 'media',
+            'cards': 'cards',
+        }
+        self.assertEqual({page.split('-')[0] for page in ops}, set(words))
+        guide = (ROOT / 'DASHBOARD.md').read_text()
+        your_pin = guide[guide.index('## Your PIN') :].split('\n\n')[1]
+        e43_row = re.search(r'^\| E43 \|.*$', guide, re.M).group(0)
+        e43_page = re.search(r"E43: \[\s*'[^']+',\s*'([^']+)'", APP).group(1)
+        setup = inspect.getsource(dashboard.choose_pin)
+        question = setup[setup.index('Choose a PIN') : setup.index('# In the setup window')]
+        for said in (your_pin, e43_row, e43_page, question):
+            for word in set(words.values()):
+                self.assertIn(word, said.lower(), said)
+
+    def test_skipping_the_pin_says_which_changes_are_then_left_out(self):
+        """Setup run without a terminal, or Enter pressed at the PIN question: the person
+        is told every app change the dashboard then can't make, not only restarts."""
+        noted, shown = [], []
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.object(dashboard, 'CONTROL_CONFIG', Path(d)),
+            mock.patch.object(dashboard.subprocess, 'run') as run,
+            mock.patch('builtins.print', side_effect=lambda *said, **_: shown.append(' '.join(map(str, said)))),
+        ):
+            with mock.patch.object(dashboard.sys.stdin, 'isatty', return_value=False):
+                self.assertFalse(dashboard.choose_pin(Path('/bin/rt'), noted.append))
+            with mock.patch.object(dashboard.sys.stdin, 'isatty', return_value=True):
+                self.assertFalse(dashboard.choose_pin(Path('/bin/rt'), noted.append, ask=lambda _: ''))
+        run.assert_not_called()
+        self.assertEqual(
+            noted[0],
+            "Dashboard: no PIN chosen, so fans and lights change on the server only and apps can't be changed "
+            'from it: no restarts, updates, Ask Neko, media folders or backup cards (run setup in a terminal to '
+            'choose one)',
+        )
+        self.assertEqual(
+            shown[0].splitlines()[-1],
+            'Press Enter to skip: fans and lights then change on the server itself only, and none of those app '
+            'changes can be made from the dashboard.',
+        )
+
     def test_closing_a_desktop_app_is_confirmed_like_force_close(self):
         # A plain "please quit" can lose unsaved work too: no menu entry closes without asking.
         menu = APP[APP.index('function desktopMenu') : APP.index('function processMenu')]

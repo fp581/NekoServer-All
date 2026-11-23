@@ -12,8 +12,8 @@
 //!
 //! The report says plainly what cannot be known: a card enrolled, or a file copied, after
 //! the newest snapshot that was read is unknown to this catalogue.
-// The rebuild of a lost catalogue from the cards and their inventories: built and
-// tested, not offered yet by a page or a menu (0.52.0 writes and restores cards).
+// The rebuild of a lost catalogue from the cards and their inventories, offered by the
+// Backup cards page as "Take these cards back" (0.52.3); parts of its report are read by tests only.
 #![cfg_attr(not(test), allow(dead_code))]
 use super::catalogue::{CopyRow, CopyState};
 use super::error::{CardError, Kind, Res};
@@ -71,7 +71,7 @@ impl RebuildReport {
 }
 
 /// The records of one attached card: (valid records, quarantined file names).
-fn card_records(vol: &Volume) -> Res<(Vec<Record>, Vec<String>)> {
+pub(crate) fn card_records(vol: &Volume) -> Res<(Vec<Record>, Vec<String>)> {
     let mut good = Vec::new();
     let mut bad = Vec::new();
     for hh in vol.records.names()? {

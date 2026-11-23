@@ -813,6 +813,8 @@ fn control(
             "cards-list" => "cards_list",
             "cards-enrol" => "cards_enrol",
             "cards-write" => "cards_write",
+            "cards-take-back" => "cards_take_back",
+            "cards-check" => "cards_check",
             _ => return Err("E40"),
         },
         _ => return Err("E42"),
@@ -1779,16 +1781,25 @@ Sec-Fetch-Dest: document
         ));
         assert!(no_origin.contains("\"E41\""), "{no_origin}");
         assert!(post("/api/control/fan", &local, &here, "", "[1]").contains("\"E42\""));
-        // What came back is said when it is not the refusal: on CI this once failed with
-        // no way to tell an empty reply (a reset connection) from another answer.
-        let oversized = post(
-            "/api/control/fan",
-            &local,
-            &here,
-            "",
-            &"x".repeat(MAX_BODY + 1),
+        // A body over MAX_BODY is refused from its Content-Length alone, before any of it is
+        // read. The head is sent and the answer read before the body is: had the body been
+        // sent with the head, the server would close with it unread, and that close can
+        // reset the connection before the answer is read (it failed so on CI twice).
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        write!(
+            s,
+            "POST /api/control/fan HTTP/1.1\r\nHost: {local}\r\nOrigin: {here}\r\nSec-Fetch-Site: same-origin\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            MAX_BODY + 1
+        )
+        .unwrap();
+        let mut oversized = String::new();
+        let _ = s.read_to_string(&mut oversized);
+        assert!(
+            oversized.starts_with("HTTP/1.1 400") && oversized.contains("\"E42\""),
+            "got {oversized:?}"
         );
-        assert!(oversized.contains("\"E42\""), "got {oversized:?}");
+        // The body sent after the answer is not read: the connection is closed.
+        let _ = s.write_all("x".repeat(MAX_BODY + 1).as_bytes());
         assert!(post("/api/control/format-disk", &local, &here, "", "{}").contains("\"E40\""));
         assert!(post("/api/status", &local, &here, "", "{}").contains("\"E42\""));
         // Reading what can be controlled is a plain GET.

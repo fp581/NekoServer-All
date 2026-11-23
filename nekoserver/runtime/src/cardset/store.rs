@@ -1,4 +1,4 @@
-//! The server's catalogue in SQLite (decision Q2): what the cards hold, searchable, and
+//! The server's catalogue in SQLite (decision Q2): what the cards hold, and
 //! what the engine needs for D1 and D7 (the `Catalogue` contract).
 //!
 //! Each change is one SQLite transaction, so a killed process leaves either the state
@@ -211,14 +211,6 @@ pub struct SourceRow {
     pub retired_at: Option<String>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // the catalogue's search, not offered yet
-/// One search result: a version and where its copies are.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Found {
-    pub version: VersionRow,
-    pub copies: Vec<(CopyRow, Option<String>)>,
-}
-
 pub fn db(what: &str, e: rusqlite::Error) -> CardError {
     CardError::new(Kind::Io, &format!("the catalogue: {what}: {e}"))
 }
@@ -310,20 +302,6 @@ fn volume_row(row: &Row) -> rusqlite::Result<VolumeRow> {
 const VOLUME_COLUMNS: &str = "volume_id, backup_set_id, sequence_number, label, filesystem_type, \
      filesystem_uuid, enrolled_at, state, state_since, last_seen_at, last_recheck_at, \
      last_recheck_result, capacity_bytes, observed";
-
-#[cfg_attr(not(test), allow(dead_code))] // the catalogue's search, not offered yet
-/// `text` for a LIKE pattern: its own `%`, `_` and `\` match only themselves.
-fn like_pattern(text: &str) -> String {
-    let mut out = String::from("%");
-    for c in text.chars() {
-        if matches!(c, '%' | '_' | '\\') {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out.push('%');
-    out
-}
 
 /// D7 inside an open transaction: the version once, the copy keyed by its record.
 fn insert_copy(
@@ -538,6 +516,49 @@ impl Store {
             .ok_or_else(|| CardError::new(Kind::Invalid, "the backup set was not kept"))
     }
 
+    /// "Take these cards back" (0.52.3): this catalogue becomes the catalogue of the set
+    /// `set_id` the cards carry. Only while it knows no card at all: a set the server
+    /// already writes is never swapped for another.
+    pub fn take_set(&mut self, set_id: &str, name: &str) -> Res<()> {
+        if !self.volumes()?.is_empty() {
+            return Err(CardError::new(
+                Kind::Exists,
+                "this server already has cards of its own set",
+            ));
+        }
+        let tx = self.begin_tx()?;
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES ('backup_set_id', ?1), ('set_display_name', ?2) \
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            params![set_id, name],
+        )
+        .map_err(|e| db("backup set", e))?;
+        tx.commit().map_err(|e| db("commit", e))
+    }
+
+    /// "Check this card" (0.52.3): a copy whose record is gone from its card, or can no
+    /// longer be read, protects nothing.
+    pub fn copy_damaged(&mut self, record_id: &str) -> Res<()> {
+        self.conn
+            .execute(
+                "UPDATE copies SET state = ?2, verified_at = NULL WHERE record_id = ?1",
+                params![record_id, copy_state_str(CopyState::Damaged)],
+            )
+            .map_err(|e| db("damaged copy", e))?;
+        Ok(())
+    }
+
+    /// "Check this card" (0.52.3): when the card was last read in full, and what was found.
+    pub fn rechecked(&mut self, volume_id: &str, now: &str, result: &str) -> Res<()> {
+        self.conn
+            .execute(
+                "UPDATE volumes SET last_recheck_at = ?2, last_recheck_result = ?3 WHERE volume_id = ?1",
+                params![volume_id, now, result],
+            )
+            .map_err(|e| db("recheck", e))?;
+        Ok(())
+    }
+
     /// The catalogue's epoch and its change counter (`CONTENT_TRIGGERS`).
     pub fn content(&self) -> Res<(String, u64)> {
         let counted = self.meta("content")?.parse().map_err(|_| {
@@ -586,7 +607,6 @@ impl Store {
         Ok(())
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
     /// A rebuilt catalogue is another history: a new epoch, revisions from 1 again.
     pub fn start_epoch(&mut self) -> Res<String> {
         let epoch = format::new_uuid()?;
@@ -630,7 +650,6 @@ impl Store {
         Ok(())
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
     /// A volume known only from an inventory snapshot (not attached): added if new, never
     /// changed if the catalogue knows it already.
     pub fn heard_of_volume(&mut self, v: &VolumeRow) -> Res<()> {
@@ -756,7 +775,6 @@ impl Store {
         )
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
     /// A copy known from an inventory snapshot only (its volume's content not observed),
     /// or as the snapshot says it is (lost, damaged, missing). Never over a copy the
     /// catalogue observed itself.
@@ -798,7 +816,6 @@ impl Store {
         tx.commit().map_err(|e| db("commit", e))
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
     /// The version of this ID, if the catalogue has it.
     pub fn version(&self, version_id: &str) -> Res<Option<VersionRow>> {
         self.conn
@@ -811,7 +828,6 @@ impl Store {
             .map_err(|e| db("version", e))
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // for the rebuild of a lost catalogue from the cards, not offered yet
     /// A disagreement kept for a person to review (never resolved by a date).
     pub fn add_conflict(&mut self, what: &str, now: &str) -> Res<()> {
         self.conn
@@ -839,32 +855,6 @@ impl Store {
         let tx = self.begin_tx()?;
         insert_copy(&tx, record, state, verified_at).map_err(|e| db("import", e))?;
         tx.commit().map_err(|e| db("commit", e))
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))] // the catalogue's search, not offered yet
-    /// Versions whose path holds `text` (as typed, any part of the path), newest first,
-    /// each with its copies and the label of the volume that holds each.
-    pub fn search(&self, text: &str, limit: u32) -> Res<Vec<Found>> {
-        let versions = self.rows(
-            &format!(
-                "SELECT {VERSION_COLUMNS} FROM versions WHERE path LIKE ?1 ESCAPE '\\' \
-                 ORDER BY seq DESC LIMIT ?2"
-            ),
-            params![like_pattern(text), limit],
-            version_row,
-        )?;
-        let mut found = Vec::new();
-        for version in versions {
-            let copies = self.rows(
-                "SELECT c.record_id, c.version_id, c.volume_id, c.state, c.verified_at, v.label \
-                 FROM copies c LEFT JOIN volumes v ON v.volume_id = c.volume_id \
-                 WHERE c.version_id = ?1 ORDER BY v.sequence_number, c.record_id",
-                params![version.version_id],
-                |r| Ok((copy_row(r)?, r.get(5)?)),
-            )?;
-            found.push(Found { version, copies });
-        }
-        Ok(found)
     }
 
     #[cfg_attr(not(test), allow(dead_code))] // what no card protects, not shown yet

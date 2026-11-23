@@ -125,6 +125,11 @@ class StandInControl(threading.Thread):
     def __init__(self, path):
         super().__init__(daemon=True)
         self.asked = []
+        # The unlock ran out on the service (12 hours, or it restarted) while the page last
+        # read this device as signed in: every app change is refused, as the service does.
+        self.run_out = False
+        # This device not signed in (the Media folders page then offers to unlock).
+        self.signed_out = False
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.server.bind(str(path))
         self.server.listen(16)
@@ -132,7 +137,8 @@ class StandInControl(threading.Thread):
     def answer(self, request):
         op = request.get('op')
         if op == 'status':
-            access = {'local': True, 'pin_set': True, 'unlocked': True, 'signed_in': True}
+            signed = not self.signed_out
+            access = {'local': True, 'pin_set': True, 'unlocked': signed, 'signed_in': signed}
             return {
                 'ok': True,
                 'format': 'neko-control-v1',
@@ -141,6 +147,8 @@ class StandInControl(threading.Thread):
                 'access': access,
                 'apps': {'available': True, 'actions': []},
             }
+        if self.run_out and op.startswith('app_'):
+            return {'ok': False, 'error': 'E43', 'message': 'Enter your PIN to change this'}
         if op == 'app_media_state':
             return media_answer()
         if op == 'app_media_browse':
@@ -223,12 +231,27 @@ class DashboardInBrowserTests(unittest.TestCase):
             ('home', 'Actions for Immich', 'control'),
             ('updates', 'Install at the next update night', 'status'),
             ('updates', 'Check for updates', 'status'),
-            ('media', 'Unlock media folders', 'control'),
         ]
         answers = self.browse(*[('focusAfterRefresh', {'route': r, 'label': l, 'reload': k}) for r, l, k in checks])
         for (route, label, _), answer in zip(checks, answers):
             with self.subTest(route=route, label=label):
                 self.assertEqual(answer, {'before': label, 'after': label})
+
+    def test_a_page_whose_work_needs_the_control_service_says_it_is_not_running(self):
+        # T3 loop, dashboard API and page: no control service here (E21). Only Fans &
+        # lights said so; Media folders offered "Unlock media folders", asked for the PIN
+        # and said E21 only after it was typed, and Updates and Ask Neko said nothing.
+        routes = ['cooling', 'media', 'updates', 'ask', 'home', 'apps']
+        answers = self.browse(*[('pageText', {'route': r, 'id': 'problem'}) for r in routes])
+        for route, said in zip(routes, answers):
+            with self.subTest(route=route):
+                if route in ('home', 'apps'):  # their own work goes on without it
+                    self.assertNotIn('E21', said)
+                else:
+                    self.assertIn('E21 · The control service is not running', said)
+        (media,) = self.browse(('pageText', {'route': 'media', 'id': 'media-folders'}))
+        self.assertIn('E21', media)
+        self.assertNotIn('Unlock', media)
 
     def test_a_phone_at_200_percent_zoom_needs_no_sideways_scrolling(self):
         # Deep check 170: a 390 px phone at 200% zoom is 195 CSS pixels wide. The cards'
@@ -285,3 +308,128 @@ class MediaFoldersInBrowserTests(unittest.TestCase):
             with self.subTest(width=width):
                 self.assertLessEqual(scroll, window)
                 self.assertFalse(overlap)
+
+
+# Built-ins newer than what the page needs. All of it works from Chrome 98, Firefox 98 and
+# Safari 15.4 (structuredClone, for a fan curve, and <dialog>, for the PIN); Ask Neko from
+# Chrome 93 (Object.hasOwn). Taken out, the page must work the same.
+NEWER_BUILTINS = [
+    'Array.prototype.findLast',
+    'Array.prototype.findLastIndex',
+    'Array.prototype.toSorted',
+    'Array.prototype.toReversed',
+    'Array.prototype.toSpliced',
+    'Array.prototype.with',
+    'Array.fromAsync',
+    'Object.groupBy',
+    'Map.groupBy',
+    'Promise.withResolvers',
+    'String.prototype.isWellFormed',
+    'String.prototype.toWellFormed',
+    'Set.prototype.union',
+    'Set.prototype.intersection',
+    'Set.prototype.difference',
+]
+
+
+@unittest.skipUnless(playwright_works(), 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
+class OlderBrowserTests(unittest.TestCase):
+    """The page in a browser that lacks the newest built-ins, signed in, with the assistant set up."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.folder = tempfile.TemporaryDirectory()
+        status = Path(cls.folder.name) / 'status.json'
+        assistant = {'set_up': True, 'model': 'qwen3:4b', 'memory': '6g', 'cpus': 2}
+        status.write_text(json.dumps({**snapshot(), 'assistant': assistant}))
+        cls.control = StandInControl(Path(cls.folder.name) / 'control.sock')
+        cls.control.start()
+        cls.server, cls.address = serve(status, Path(cls.folder.name) / 'control.sock')
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.terminate()
+        cls.server.wait(timeout=10)
+        cls.control.server.close()
+        cls.folder.cleanup()
+
+    browse = DashboardInBrowserTests.browse
+    maxDiff = None
+
+    def test_ask_neko_sends_the_question_without_array_find_last(self):
+        # 0.52.2 test round (T3-01): a clean-up gave Ask Neko Array findLast (Chrome 97,
+        # Firefox 104). In Chrome 93-96 and Firefox 98-103, pressing Ask emptied the box and
+        # sent nothing.
+        (answer,) = self.browse(('askSent', {'missing': ['Array.prototype.findLast']}))
+        self.assertEqual(answer['errors'], [])
+        self.assertEqual(
+            answer['sent'],
+            [
+                {'question': 'Is my server fine?'},
+                {
+                    'question': 'And how do I check?',
+                    'before': {'question': 'Is my server fine?', 'answer': 'An answer.'},
+                },
+            ],
+        )
+
+    def test_no_page_needs_a_built_in_newer_than_the_page_does(self):
+        routes = ['home', 'ask', 'apps', 'backups', 'hardware', 'sensors', 'cooling', 'processes', 'health']
+        routes += ['updates', 'media', 'cards', 'attention', 'help']
+        (errors,) = self.browse(('pageErrors', {'routes': routes, 'missing': NEWER_BUILTINS}))
+        self.assertEqual(errors, {route: [] for route in routes})
+
+
+@unittest.skipUnless(playwright_works(), 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
+class PinInBrowserTests(unittest.TestCase):
+    """When the page asks for the PIN, signed in (a stand-in control service answers)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.folder = tempfile.TemporaryDirectory()
+        status = Path(cls.folder.name) / 'status.json'
+        status.write_text(json.dumps(snapshot()))
+        cls.control = StandInControl(Path(cls.folder.name) / 'control.sock')
+        cls.control.start()
+        cls.server, cls.address = serve(status, Path(cls.folder.name) / 'control.sock')
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.terminate()
+        cls.server.wait(timeout=10)
+        cls.control.server.close()
+        cls.folder.cleanup()
+
+    def setUp(self):
+        self.control.run_out = False
+        self.control.asked.clear()
+
+    browse = DashboardInBrowserTests.browse
+
+    def test_focus_stays_on_unlock_media_folders_when_the_page_refreshes(self):
+        # Deep check 156, for the Media folders page: it offers to unlock only when the
+        # control service answers and this device is not signed in.
+        self.control.signed_out = True
+        try:
+            (answer,) = self.browse(
+                ('focusAfterRefresh', {'route': 'media', 'label': 'Unlock media folders', 'reload': 'control'})
+            )
+        finally:
+            self.control.signed_out = False
+        self.assertEqual(answer, {'before': 'Unlock media folders', 'after': 'Unlock media folders'})
+
+    def test_updates_knows_this_device_is_signed_in(self):
+        # 0.52.2 test round (T3b-01): Updates never read the control service, so a device
+        # signed in with its PIN was asked for it again by every button there.
+        (answer,) = self.browse(('pinAsked', {'route': 'updates', 'clicks': [['button', 'Check for updates']]}))
+        self.assertEqual(answer, {'dialog': '', 'toast': 'Looking for new versions…'})
+        self.assertIn('app_update_check', [r.get('op') for r in self.control.asked])
+
+    def test_an_unlock_that_ran_out_is_asked_for_in_the_words_of_an_app_change(self):
+        # T3b-01: an app change refused because the unlock ran out asked for the PIN with the
+        # fans and lights words ("only needed on phones, tablets and other computers"),
+        # though app changes need it on the server too.
+        self.control.run_out = True
+        clicks = [['button', 'Actions for Sonarr'], ['menuitem', 'Restart app'], ['button', 'Restart Sonarr']]
+        (answer,) = self.browse(('pinAsked', {'route': 'apps', 'clicks': clicks}))
+        self.assertEqual(answer['dialog'], ['APP CONTROLS', 'Unlock changes'])

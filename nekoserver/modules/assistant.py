@@ -30,6 +30,7 @@ from pathlib import Path
 
 import guided_setup
 import importlib.util
+from finish_states import BROKEN_STEP
 from neko_common import (
     ASSISTANT,
     OLLAMA_PORT,
@@ -85,6 +86,15 @@ NAMED_MODEL_GIB = 1
 # free, and a 6 GB server stalled under memory pressure while the model loaded.)
 RESERVE_GIB = 2
 RESERVE_SHARE = 0.2
+# An app set up for the first time in this run has just started, at its peak (Immich most
+# of all): the Hyper-V check K7 measured 4.6 GB free on an 8 GB PC, and 5.4 GB a minute
+# later. Then, when the model does not fit at first, the free memory is measured again
+# every SETTLE_EVERY seconds, for up to SETTLE_SECONDS, and the most seen counts. A later
+# run, with the apps running for days, measures once and waits for nothing.
+SETTLE_SECONDS = 180
+SETTLE_EVERY = 15
+# The steps whose apps use the most memory while they start.
+APP_STEPS = ('photos', 'nextcloud', 'media', 'music')
 # How long after the last question the model leaves memory (OLLAMA_KEEP_ALIVE in the template).
 IDLE_MINUTES = 5
 # Room the SSD must keep: Ollama's image (about 3.4 GB to download, more unpacked), plus
@@ -142,8 +152,12 @@ def _run(ctx):
     try:
         processor_ok()
         port_free_for_us(ctx.config)
-        total, available = memory_now()
-        room = memory_for_model(total, available, own_use_gib(ctx.config))
+        own = own_use_gib(ctx.config)
+        if apps_just_started(ctx):
+            total, available = settled_memory(least_need(ctx.config, chosen), own, ctx.log)
+        else:
+            total, available = memory_now()
+        room = memory_for_model(total, available, own)
         if not chosen:
             model = ask_model(ctx, total, room, os.cpu_count())
             if model is None:
@@ -305,6 +319,49 @@ def memory_for_model(total, available, own=0):
     return available + own - reserve_gib(total)
 
 
+def least_need(config, chosen):
+    """The memory, in GiB, the assistant needs at the least: the chosen model's, or the
+    smallest model's when it is still to be chosen."""
+    if not chosen:
+        return MODELS[0][2]
+    known = {m[0]: m[2] for m in MODELS}
+    return known.get(options(config).get('model'), NAMED_MODEL_GIB)
+
+
+def apps_just_started(ctx):
+    """Whether an app may start for the first time in this run: its step is in the run, and
+    the run before has no record of it or left it where the app may not have run (failed,
+    blocked, cut off). A step left as 'needs_setup' (Music waiting for its listener, say)
+    has its app running already."""
+    plan = getattr(ctx, 'plan', None) or ()
+    previous = getattr(ctx, 'previous', None) or {}
+
+    def new(name):
+        return name not in previous or (previous[name] or {}).get('status') in BROKEN_STEP
+
+    return any(name in plan and new(name) for name in APP_STEPS)
+
+
+def settled_memory(need, own, log, read=None, sleep=None, clock=None):
+    """(total, available) memory in GiB, measured once the other apps have settled: while
+    the room left for a model is under `need`, it is measured again (SETTLE_EVERY seconds
+    apart, for up to SETTLE_SECONDS) and the most free that was seen counts. Nothing is
+    waited for when the model fits at once."""
+    read, sleep, clock = read or memory_now, sleep or time.sleep, clock or time.monotonic
+    total, available = read()
+    until = clock() + SETTLE_SECONDS
+    if memory_for_model(total, available, own) < need and clock() < until:
+        log(
+            f'{TITLE}: less memory is free than a model needs; measuring it again while the apps that just '
+            f'started settle (up to {SETTLE_SECONDS // 60} minutes)'
+        )
+    while memory_for_model(total, available, own) < need and clock() < until:
+        sleep(SETTLE_EVERY)
+        total, now = read()
+        available = max(available, now)
+    return total, available
+
+
 def room_said(total, room, running=True):
     """The free memory, the reserve and what that leaves, in numbers (gate run B: "0.0 GB
     free with your apps running" on a server that had 1.6 GB free and kept 2 GB of it for
@@ -367,7 +424,7 @@ def choices(total, room, cores):
     cpus = max(1, (cores or 1) // 2)
     lines = [
         f'This PC has {total:.0f} GB of memory: {room_said(total, room)}.',
-        '  0) No assistant (press Enter)',
+        '  0) No assistant',
     ]
     answers = {'0': 'none', '': 'none'}
     for number, (model, download, need, answers_like) in enumerate(usable, 1):

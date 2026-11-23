@@ -526,12 +526,18 @@ def state_folders(args, config):
     given = safe_path(given)
     if given != DEFAULT_STATE:
         return given, given, False
-    # The SSD's path comes from the settings file: it is looked at only by its real path,
-    # and only when that is the path the settings name.
+    # The SSD's path comes from the settings file: it is looked at only by its real path.
+    # A NUL byte names no folder, so no mounted SSD (realpath would raise on it).
+    if '\x00' in str(config['data_mount']):
+        return given, given, False
     data = os.path.realpath(config['data_mount'])
-    if not data.startswith(os.sep) or data != os.path.abspath(config['data_mount']) or not os.path.ismount(data):
+    if not data.startswith(os.sep) or not os.path.ismount(data):
         return given, given, False
     state_dir = Path(config['data_mount']) / 'installer' / 'state'
+    # A mounted SSD named another way than its real path ("//srv/...", a link on the way)
+    # is refused before any step runs, with the words the first state write gave before.
+    if data != os.path.abspath(config['data_mount']):
+        raise RuntimeError(f'Refusing symlink path: {state_dir / "state.json"}')
     # The SSD's path comes from the settings file: the folder is used only once it
     # is proved to lie on the SSD with every link followed.
     if not os.path.realpath(state_dir).startswith(os.path.realpath(config['data_mount']) + os.sep):
@@ -636,6 +642,9 @@ def tried_step(name, modules, ctx, states, state_path, log, apply):
         except Exception as exc:
             reason = code_error_reason(exc, log.path) if isinstance(exc, CODE_ERRORS) else failure_reason(exc)
             states[name] = {'status': 'failed', 'reason': reason}
+            # Written now, before "Retry this step now?": Ctrl+C or a closed terminal at
+            # that question would leave the step "running" on file, its reason lost.
+            atomic_json_write(state_path, states)
             log(f'FAILED {name}: {reason}')
             # Avoid tracebacks from providers that may contain sensitive arguments.
             # With a person at the terminal: the reason, the fix when it is a known

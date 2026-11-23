@@ -699,7 +699,9 @@ def start_lan_gateway():
     """The home gateway's service started again with its new settings (stopped when it
     cannot start)."""
     command(['systemctl', 'daemon-reload'])
-    command(['systemctl', 'enable', '--now', GATEWAY_LAN_UNIT])
+    # Enabled only: a restart below starts it. `enable --now` would join a start still
+    # waiting for an old home-network address (minutes) and time out; restart replaces it.
+    command(['systemctl', 'enable', GATEWAY_LAN_UNIT])
     try:
         command(['systemctl', 'restart', GATEWAY_LAN_UNIT])
     except RuntimeError:

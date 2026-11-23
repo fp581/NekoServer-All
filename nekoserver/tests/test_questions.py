@@ -90,7 +90,7 @@ class WordsTests(unittest.TestCase):
             [{'answer': '0', 'label': 'No assistant'}, {'answer': '1', 'label': 'qwen3.5:4b'}],
         )
         self.assertIn('  0) No assistant\n  1) qwen3.5:4b\n', person.prompts[0])
-        self.assertTrue(person.prompts[0].endswith('Enter alone keeps no assistant. '))
+        self.assertTrue(person.prompts[0].endswith('Enter alone chooses no assistant. '))
 
     def test_the_questions_own_lines_are_not_shown_again_as_what_came_before(self):
         setup_progress.enable()

@@ -998,9 +998,11 @@ def mounted_ssd(parser, args, config):
     """The app SSD's folder, as a mounted drive: looked at only by its real path, and only
     when that is the path asked for (the settings name it; a link is not the drive)."""
     root = Path(args.data_root or config['data_mount'])
+    if '\x00' in str(root):  # names no folder (realpath would raise on it)
+        parser.error('Data SSD must be mounted at --data-root')
     real = os.path.realpath(root)
     if not real.startswith(os.sep) or real != os.path.abspath(root):
-        parser.error('Data SSD must be mounted at --data-root')
+        parser.error('Data SSD must be mounted at --data-root (its real path: no links, no //)')
     if not os.path.isdir(real) or not os.path.ismount(real):
         parser.error('Data SSD must be mounted at --data-root')
     return Path(real)

@@ -56,6 +56,9 @@ pub const LIMITS: Limits = Limits {
 };
 /// Said when Ollama cannot answer, before the reason.
 pub const NOT_AVAILABLE: &str = "Neko is not available right now";
+/// Said instead, before the reason, when Neko answered but the answer is not whole
+/// (Hyper-V check K5: it began "Neko is not available right now").
+pub const ANSWER_CUT: &str = "Neko's answer was cut off";
 
 /// The repairs Neko may suggest (the user's list, 0.49.0): each one an operation the
 /// dashboard already has, run only after the person approves it with the PIN.
@@ -1260,9 +1263,20 @@ pub fn progress(id: &str, owner: &str) -> Option<Value> {
     Some(json!({
         "text": a.text,
         "done": a.done,
-        "failed": a.failed.as_ref().map(|why| format!("{NOT_AVAILABLE}: {why}")),
+        "failed": a.failed.as_deref().map(failed_words),
         "repair": a.repair,
     }))
+}
+
+/// What the page shows when there is no whole answer: why, after the words that say
+/// whether Neko answered in part (cut off) or not at all (not available).
+fn failed_words(why: &str) -> String {
+    let start = if why == CUT_OFF || why == LENGTH_LIMIT {
+        ANSWER_CUT
+    } else {
+        NOT_AVAILABLE
+    };
+    format!("{start}: {why}")
 }
 
 /// The answer is still wanted: not ended (its time limit ends it in progress), and its
@@ -1497,12 +1511,12 @@ fn answer_line(
 }
 
 /// Said when the answer stopped before Ollama marked it as finished.
-pub const CUT_OFF: &str = "the answer was cut off before it ended; ask again";
+pub const CUT_OFF: &str = "it stopped before it ended; ask again";
 
 /// Said when the answer reached the length an answer may have (ANSWER_TOKENS) before the
 /// model had finished it.
 pub const LENGTH_LIMIT: &str =
-    "the answer reached its length limit before it ended, so it is not whole; ask again about one thing at a time";
+    "it reached its length limit before it ended; ask again about one thing at a time";
 
 /// Said when the model could not have the memory it needs: free memory comes back when
 /// the apps need less, and a smaller model needs less (ASSISTANT.md, "Changing your mind").
@@ -2815,11 +2829,7 @@ mod tests {
         wait_until(|| asks().get(&id).is_some_and(|a| a.ended.is_some()));
         wait_until(|| Turn::take().is_some());
         let cut = progress(&id, "local").unwrap();
-        assert_eq!(
-            cut["failed"],
-            format!("{NOT_AVAILABLE}: {CUT_OFF}"),
-            "{cut}"
-        );
+        assert_eq!(cut["failed"], format!("{ANSWER_CUT}: {CUT_OFF}"), "{cut}");
         assert_eq!(cut["done"], false, "{cut}");
         assert_eq!(cut["repair"], Value::Null, "{cut}");
         assert_eq!(cut["text"], said);
@@ -3062,6 +3072,24 @@ mod tests {
         wait_until(|| Turn::take().is_some());
     }
 
+    /// Hyper-V check K5: an answer cut off part-way began "Neko is not available right
+    /// now", though Neko had answered. Only a reason with no answer says that.
+    #[test]
+    fn a_cut_off_answer_says_it_was_cut_off() {
+        assert_eq!(
+            failed_words(LENGTH_LIMIT),
+            "Neko's answer was cut off: it reached its length limit before it ended; ask again about one thing at a time"
+        );
+        assert_eq!(
+            failed_words(CUT_OFF),
+            "Neko's answer was cut off: it stopped before it ended; ask again"
+        );
+        assert_eq!(
+            failed_words(TOO_LONG),
+            format!("Neko is not available right now: {TOO_LONG}")
+        );
+    }
+
     /// Review of the 0.50.0 fixes: an answer that Ollama ended at its token limit
     /// ("done": true, "done_reason": "length") counted as whole: a repair was read from
     /// it and a bug report made from half a report.
@@ -3096,7 +3124,7 @@ mod tests {
         assert_eq!(cut["repair"], Value::Null, "{cut}");
         assert_eq!(
             cut["failed"],
-            format!("{NOT_AVAILABLE}: {LENGTH_LIMIT}"),
+            format!("{ANSWER_CUT}: {LENGTH_LIMIT}"),
             "{cut}"
         );
         // The page still gets what came, to show it marked as cut off.

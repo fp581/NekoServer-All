@@ -117,7 +117,11 @@ def check(config):
             raise RuntimeError('Music monitor credential must be private and root-owned')
         with open(path) as stream:
             result = inspect(json.loads(stream.read()))
-    except (OSError, ValueError, RuntimeError):
+    except RuntimeError as exc:
+        # inspect's own words (an administrator used, no music library, a wrong password,
+        # Navidrome not answering) say what to change; they hold no secret.
+        return {'status': 'fail', 'reason': f'Authenticated music catalogue check failed: {exc}'}
+    except (OSError, ValueError):
         return {
             'status': 'fail',
             'reason': 'Authenticated music catalogue check failed; inspect the local service/account',

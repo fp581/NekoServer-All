@@ -252,8 +252,9 @@ const ROUTES = {
 /* Pages that show live hardware readings (polled every few seconds). */
 const LIVE_ROUTES = new Set(['home', 'hardware', 'sensors']);
 /* Pages whose buttons change something: they read whether this device may (the PIN).
- * Ask Neko is one: asking and approving a fix need the PIN. */
-const CONTROL_ROUTES = new Set(['cooling', 'apps', 'processes', 'home', 'ask', 'media', 'cards']);
+ * Ask Neko is one: asking and approving a fix need the PIN; Updates too (an update, an
+ * upgrade). */
+const CONTROL_ROUTES = new Set(['cooling', 'apps', 'processes', 'home', 'ask', 'media', 'cards', 'updates']);
 /* Short, stable error codes. E10-E42 come from the server; E01, E02 and E12 are
  * noticed by this page. DASHBOARD.md lists the same table. */
 const ERRORS = {
@@ -265,14 +266,14 @@ const ERRORS = {
   E20: ['Live readings unavailable', 'Hardware readings come back by themselves. If not, restart the dashboard.'],
   E21: [
     'The control service is not running',
-    'It handles the PIN, fans and lights, app restarts and Ask Neko. Help shows the command to check it.'
+    'It runs the PIN, fans and lights, and every app change and Ask Neko. Help shows the command to check it.'
   ],
   E40: ['Page not found', 'Use the menu to go back.'],
   E41: ['Open the dashboard from its own address', 'Use the address setup gave you (this computer or Tailscale).'],
   E42: ['Request not supported', 'Reload the page.'],
   E43: [
     'Enter your PIN to change this',
-    'Fans and lights need it on other devices; restarting or closing apps on all of them.'
+    'Fans and lights need it on other devices; apps, updates, Ask Neko, media and cards on all of them.'
   ],
   E44: [
     'Wrong PIN',
@@ -325,6 +326,7 @@ const state = {
   shown: new Set(), // app actions started here, and those already announced
   upgradeAsked: null, // the reading shown when an upgrade was started here
   cardsLook: null, // the Backup cards page's last look at the drives plugged in
+  cardsPoll: 0, // the timer that looks again while a check or a take-back runs
   routed: false // a page has been shown (its sections, and only they, visible)
 };
 const savedFavorites = readStore('favorites', []);
@@ -1026,11 +1028,14 @@ function problem() {
   if (state.route === 'processes' && state.processError) {
     return state.processError;
   }
-  if (state.route === 'cooling' && state.controlError) {
+  if (NEEDS_CONTROL.has(state.route) && state.controlError) {
     return state.controlError;
   }
   return null;
 }
+/* Pages whose work is done by the control service: while it can't be reached (E21), they
+ * say so at the top, not only after a button is pressed or a PIN typed. */
+const NEEDS_CONTROL = new Set(['cooling', 'media', 'cards', 'updates', 'ask']);
 function renderProblem(code, s) {
   $('problem').hidden = !code;
   if (!code) {
@@ -1796,6 +1801,11 @@ function askNeedsPin(control = state.control) {
 }
 function askIntro(s = state.status, control = state.control) {
   const a = object(s?.assistant);
+  if (!s) {
+    // The first readings are not in yet (a server just started): whether the assistant is
+    // set up is not known, so no claim either way.
+    return 'Waiting for the server’s first readings…';
+  }
   if (!assistantSetUp(s)) {
     return 'The AI assistant is not set up on this server. Setup offers it when the server has room for it.';
   }
@@ -2013,8 +2023,19 @@ function sendQuestion() {
  * the web service takes (serve.rs MAX_BODY, 4096 bytes) with the new question. */
 const ASK_BODY = 4096;
 const EARLIER_CHARS = 2500; // what the server keeps of it (assist.rs EARLIER_ANSWER_CHARS)
+/* The last item of `items` that passes `test`, or null. A plain loop from the end, because
+ * Array findLast is missing in browsers Ask Neko otherwise works in (Chrome 93-96,
+ * Firefox 98-103): there, every question to Neko failed before it was sent. */
+function lastMatching(items, test) {
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (test(items[i])) {
+      return items[i];
+    }
+  }
+  return null;
+}
 function earlierExchange(asked) {
-  const last = ASK.log.findLast(e => text(e.answer).trim() && !e.error);
+  const last = lastMatching(ASK.log, e => text(e.answer).trim() && !e.error);
   if (!last) {
     return null;
   }
@@ -2534,7 +2555,24 @@ function cardLine(c) {
 function driveOffer(d, next) {
   const name = joined([text(d.label, 'A drive'), d.size ? bytes(d.size) : '', text(d.fstype)]);
   if (numeric(d.card)) {
-    return { name, said: 'Card ' + d.card + ' of your set.', action: null };
+    return { name, said: 'Card ' + d.card + ' of your set.', action: null, check: d.card };
+  }
+  const older = object(d.older_set);
+  if (numeric(older.number)) {
+    return {
+      name,
+      // The server's own words say whose set it is and what taking it back does.
+      said: text(
+        d.why,
+        'Card ' +
+          older.number +
+          ' of an earlier backup set' +
+          (numeric(older.made) ? ' (made on ' + madeOn(older.made) + ')' : '') +
+          '. It can be taken back.'
+      ),
+      action: null,
+      older: older.number
+    };
   }
   if (d.usable === true) {
     return {
@@ -2545,22 +2583,126 @@ function driveOffer(d, next) {
   }
   return { name, said: text(d.why, 'It cannot be a backup card.'), action: null };
 }
-async function lookForCards() {
+const CARDS_PIN = 'Choosing, writing and checking backup cards needs your PIN on every device, the server too.';
+/* The day a set was made, with its year ("3 Mar 2025"). */
+function madeOn(at) {
+  return new Date(at * 1000).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
+}
+/* A check or a take-back the server is running, or the last one it ran (cards-list's
+ * task): one line, and whether it ended badly. Null when there is none. */
+function cardsTaskLine(task) {
+  if (!task || (task.kind !== 'check' && task.kind !== 'take_back')) {
+    return null;
+  }
+  const check = task.kind === 'check';
+  if (task.running === true) {
+    let doing = 'Taking the cards back';
+    if (check) {
+      doing = numeric(task.card) ? 'Checking card ' + task.card : 'Checking card';
+    }
+    const far =
+      numeric(task.total) && task.total > 0 ? ': ' + count(task.done) + ' of ' + plural(task.total, 'file') : '';
+    return { line: doing + far + '…', running: true, failed: false };
+  }
+  const done = check ? 'The check has finished.' : 'The cards are taken back.';
+  return {
+    line: text(task.message, task.ok === false ? 'It stopped before the end.' : done),
+    running: false,
+    failed: task.ok === false
+  };
+}
+/* Whether a check or a take-back is running now (as the page last looked). */
+function cardsBusy(look = state.cardsLook) {
+  return look?.task?.running === true;
+}
+/* The page's look at the drives. `quiet`: a look the page takes by itself while a task
+ * runs, which never asks for the PIN or shows a message. */
+async function lookForCards(quiet = false) {
   const answer = await postControl('cards-list');
   if (answer.ok) {
     state.cardsLook = answer;
     renderCards();
     return;
   }
+  if (quiet === true) {
+    // A look that failed (Wi-Fi gone for a moment): the task may still run, so look again.
+    pollCards();
+    return;
+  }
   if (answer.error === 'E43' && state.control?.access?.pin_set) {
-    unlockDialog(
-      lookForCards,
-      'BACKUP CARDS',
-      'Choosing and writing backup cards needs your PIN on every device, the server too.'
-    );
+    unlockDialog(lookForCards, 'BACKUP CARDS', CARDS_PIN);
     return;
   }
   toast(controlMessage(answer));
+}
+/* While a task runs, the page looks again every 2 seconds (on this page only). */
+function pollCards() {
+  if (!cardsBusy() || state.route !== 'cards') {
+    clearTimeout(state.cardsPoll);
+    state.cardsPoll = 0;
+  } else if (!state.cardsPoll) {
+    state.cardsPoll = setTimeout(() => {
+      state.cardsPoll = 0;
+      void lookForCards(true);
+    }, 2000);
+  }
+}
+/* Start a check or a take-back; its words come from the server. */
+async function startCardsTask(op, body) {
+  const answer = await postControl(op, body);
+  $('dialog').close();
+  if (answer.ok) {
+    toast(text(answer.message, 'Started.'));
+    await lookForCards(true);
+    return;
+  }
+  if (answer.error === 'E43' && state.control?.access?.pin_set) {
+    unlockDialog(() => startCardsTask(op, body), 'BACKUP CARDS', CARDS_PIN);
+    return;
+  }
+  toast(controlMessage(answer));
+  // Refused: most often the card was taken out or swapped since the last look, so the
+  // list shows what is plugged in now.
+  await lookForCards(true);
+}
+/* A plain question before a check or a take-back, Cancel first. */
+function cardsConfirm(title, words, go, run) {
+  const yes = button(go, run, 'button');
+  const cancel = button('Cancel', () => $('dialog').close(), 'button secondary');
+  const row = el('div', 'dialog-actions');
+  row.append(yes, cancel);
+  openDialog('BACKUP CARDS', title, [...words.map(w => el('p', '', w)), row]);
+  requestAnimationFrame(() => cancel.focus());
+}
+function checkDialog(d, number) {
+  cardsConfirm(
+    'Check card ' + number + '?',
+    [
+      'NekoServer reads every copy on card ' +
+        number +
+        ' and compares it with what it wrote. Nothing on the card is changed or erased.',
+      'A damaged copy is written again by the next run, onto the newest card. A full card can take a while; you can close this page meanwhile. Leave the card in until it has finished.'
+    ],
+    'Check card ' + number,
+    () => startCardsTask('cards-check', { mount: d.mount, number })
+  );
+}
+function takeBackDialog(numbers) {
+  const which =
+    numbers.length === 1
+      ? 'card ' + numbers[0]
+      : 'cards ' + numbers.slice(0, -1).join(', ') + ' and ' + numbers[numbers.length - 1];
+  cardsConfirm(
+    'Take these cards back?',
+    [
+      'NekoServer reads what is on ' +
+        which +
+        ', so it knows those files are already on a card, and then writes on to them as before. Nothing on the cards is erased.',
+      'Only do this with your own cards: a card from someone else’s server would become part of yours.'
+    ],
+    'Take the cards back',
+    () => startCardsTask('cards-take-back', {})
+  );
 }
 function enrolDialog(d, next) {
   const tick = el('input');
@@ -2607,11 +2749,7 @@ async function writeNow() {
     return;
   }
   if (answer.error === 'E43' && state.control?.access?.pin_set) {
-    unlockDialog(
-      writeNow,
-      'BACKUP CARDS',
-      'Choosing and writing backup cards needs your PIN on every device, the server too.'
-    );
+    unlockDialog(writeNow, 'BACKUP CARDS', CARDS_PIN);
     return;
   }
   toast(controlMessage(answer));
@@ -2636,25 +2774,55 @@ function renderCards() {
   for (const line of cardsSummary(set)) {
     box.append(el('p', '', line));
   }
-  box.append(keyed(button('Write to the card now', writeNow, 'button small'), 'cards-write'));
+  const look = state.cardsLook;
+  const busy = cardsBusy(look);
+  const task = cardsTaskLine(look?.task);
+  if (task) {
+    box.append(keyed(el('p', task.failed ? 'reason' : '', task.line), 'cards-task'));
+  }
+  const write = keyed(button('Write to the card now', writeNow, 'button small'), 'cards-write');
+  write.disabled = busy;
+  box.append(write);
   const rows = list(set.cards).map(c => el('p', 'row', cardLine(c)));
   put('cards-set', [box, ...rows]);
-  const look = state.cardsLook;
-  const found = look
-    ? list(look.drives).map(d => {
-        const offer = driveOffer(d, count(look.next_number) || 1);
-        const row = el('article', 'card');
-        row.append(el('strong', '', offer.name), el('p', offer.action ? '' : 'reason', offer.said));
-        if (offer.action) {
-          row.append(button(offer.action, () => enrolDialog(d, count(look.next_number) || 1), 'button small'));
-        }
-        return row;
-      })
+  const next = count(look?.next_number) || 1;
+  const offers = look ? list(look.drives).map(d => [d, driveOffer(d, next)]) : [];
+  const found = offers.map(([d, offer]) => {
+    const row = el('article', 'card');
+    row.append(el('strong', '', offer.name), el('p', offer.action || offer.check ? '' : 'reason', offer.said));
+    let act = null;
+    if (offer.action) {
+      act = button(offer.action, () => enrolDialog(d, next), 'button small');
+    } else if (offer.check) {
+      act = button('Check this card', () => checkDialog(d, offer.check), 'button small secondary');
+    }
+    if (act) {
+      act.disabled = busy;
+      row.append(act);
+    }
+    return row;
+  });
+  const older = offers.filter(([, offer]) => offer.older).map(([, offer]) => offer.older);
+  const takeBack = older.length
+    ? [
+        keyed(
+          button('Take these cards back', () => takeBackDialog(older), 'button small'),
+          'cards-take-back'
+        )
+      ]
     : [];
+  if (takeBack.length) {
+    takeBack[0].disabled = busy;
+  }
   put('cards-drives', [
+    ...takeBack,
     ...(look && !found.length ? [empty('No card or USB stick is plugged in and mounted.')] : found),
-    keyed(button(look ? 'Look again' : 'Look for cards', lookForCards, 'button small secondary'), 'cards-look')
+    keyed(
+      button(look ? 'Look again' : 'Look for cards', () => lookForCards(), 'button small secondary'),
+      'cards-look'
+    )
   ]);
+  pollCards();
 }
 
 /* ---------- hardware ---------- */
@@ -4184,6 +4352,8 @@ window.addEventListener('hashchange', closeMenu);
 function signedIn() {
   return state.control?.access?.signed_in === true;
 }
+const APP_PIN =
+  'Changes to your apps and to NekoServer (a restart, an update, an upgrade) need your PIN on every device, the server too.';
 function withPin(then) {
   if (signedIn()) {
     then();
@@ -4193,11 +4363,7 @@ function withPin(then) {
     toast('App controls need a PIN. Run setup again in a terminal on the server to choose one.');
     return;
   }
-  unlockDialog(
-    then,
-    'APP CONTROLS',
-    'Changes to your apps and to NekoServer (a restart, an update, an upgrade) need your PIN on every device, the server too.'
-  );
+  unlockDialog(then, 'APP CONTROLS', APP_PIN);
 }
 async function appAction(op, body, starting, started = null) {
   const answer = await postControl(op, body);
@@ -4209,7 +4375,9 @@ async function appAction(op, body, starting, started = null) {
     return;
   }
   if (answer.error === 'E43' && state.control?.access?.pin_set) {
-    unlockDialog(() => appAction(op, body, starting, started));
+    // The unlock ran out (12 hours, or the control service restarted): asked again in
+    // the words of an app change, not of fans and lights.
+    unlockDialog(() => appAction(op, body, starting, started), 'APP CONTROLS', APP_PIN);
     return;
   }
   toast(controlMessage(answer));
@@ -4478,11 +4646,24 @@ function monitorMessage(v) {
     MONITOR_RESULTS[v.status] || 'Set up; waiting for its first result.'
   );
 }
+/* The badge of a check-in service: its last result, but "Not set up" or "Off" once its
+ * timer is gone or stopped (switched off in setup: a result left from before says
+ * nothing now). */
+function monitorBadge(v, old) {
+  const timer = object(v.timer);
+  if (old) {
+    return ['unknown'];
+  }
+  if (!timer.installed) {
+    return ['neutral', 'Not set up'];
+  }
+  return timer.active ? [v.status] : ['neutral', 'Off'];
+}
 function monitorCard(title, value, guide, old) {
   const card = el('article', 'card'),
     v = object(value);
   card.append(
-    cardHeading(title, badge(old ? 'unknown' : v.status)),
+    cardHeading(title, badge(...monitorBadge(v, old))),
     el('p', '', monitorMessage(v)),
     keyed(
       button('Set up & check', () => showGuide(guide), 'text-button'),
@@ -5807,22 +5988,31 @@ function mediaProgress(p) {
     ')';
   return [bar, el('p', 'media-progress-said', said)];
 }
+/* The Media folders page on a device that is not signed in: nothing of the folders. */
+function renderMediaLocked() {
+  MEDIA.answer = null;
+  MEDIA.asked = false;
+  MEDIA.refused = null;
+  MEDIA.formKey = '';
+  put('media-add', []);
+  const pin = state.control?.access?.pin_set;
+  if (state.controlError) {
+    // Unlocking needs the control service too: no PIN asked for when it can't be reached.
+    put('media-folders', [hint(codeLine(state.controlError))]);
+    return;
+  }
+  put('media-folders', [
+    hint(
+      pin === false
+        ? 'Media folders need a PIN. Run setup again in a terminal on the server to choose one.'
+        : 'Your media folders are shown and changed with your PIN, on every device (the server too).'
+    ),
+    pin === false ? el('span') : button('Unlock media folders', mediaUnlock, 'button small')
+  ]);
+}
 function renderMedia() {
   if (!signedIn()) {
-    MEDIA.answer = null;
-    MEDIA.asked = false;
-    MEDIA.refused = null;
-    MEDIA.formKey = '';
-    put('media-add', []);
-    const pin = state.control?.access?.pin_set;
-    put('media-folders', [
-      hint(
-        pin === false
-          ? 'Media folders need a PIN. Run setup again in a terminal on the server to choose one.'
-          : 'Your media folders are shown and changed with your PIN, on every device (the server too).'
-      ),
-      pin === false ? el('span') : button('Unlock media folders', mediaUnlock, 'button small')
-    ]);
+    renderMediaLocked();
     return;
   }
   if (!MEDIA.asked) {
