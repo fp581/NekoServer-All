@@ -32,6 +32,8 @@ from neko_common import SETUP_LOCK, SHARED, answered_within
 ROOT = Path(__file__).resolve().parent
 SETTINGS = 'my-config.json'
 TEMPLATE = 'config.json'
+DOCKER_SERVICE = 'docker.service'
+NOTHING_REMOVED = 'Nothing was removed.'  # the end of every refusal before anything was removed
 UNITS = '/etc/systemd/system'
 SAMBA_SHARES = '/etc/samba/nekoserver.conf'
 REMOVING = '  removing '  # how each thing removed is listed as it goes
@@ -824,7 +826,7 @@ class Plan:
         """Whether Docker cannot start (docker.service failed: a drive it keeps its data on is
         missing, say). Asking it then waited out each call's minute while its socket tried
         to start it again, and the terminal stayed empty for two minutes (T4-u2)."""
-        said = self.run(['systemctl', 'show', 'docker.service', '--property=ActiveState'], 30)
+        said = self.run(['systemctl', 'show', DOCKER_SERVICE, '--property=ActiveState'], 30)
         return 'ActiveState=failed' in said.split()
 
     def compose_projects(self):
@@ -1610,7 +1612,7 @@ def _admitted(plan, call):
 
     blocked = neko_common.pending_maintenance(
         plan.at(str(neko_common.MAINTENANCE_JOURNAL)),
-        outcome='Nothing was removed.',
+        outcome=NOTHING_REMOVED,
         running=lambda: not _maintenance_idle(call, raises=False),
     )
     if blocked:
@@ -1640,7 +1642,7 @@ def _no_cut_off_job(plan, call):
     for job, (path, unit) in neko_common.RECOVERY.items():
         record = str(path)
         if job != 'maintenance' and plan.at(record).exists():
-            down = (call(['systemctl', 'is-active', 'docker.service'], 30)[1].split() or [''])[0] == 'failed'
+            down = (call(['systemctl', 'is-active', DOCKER_SERVICE], 30)[1].split() or [''])[0] == 'failed'
             raise Stopped(
                 'A NekoServer job was cut off and is not finished yet: its record ' + record + ' is still there, and '
                 'removing NekoServer now would delete what finishes it. Run  sudo systemctl start '
@@ -1659,7 +1661,7 @@ def _before_the_questions(plan, call):
 
     blocked = neko_common.pending_maintenance(
         plan.at(str(neko_common.MAINTENANCE_JOURNAL)),
-        outcome='Nothing was removed.',
+        outcome=NOTHING_REMOVED,
         running=lambda: not _maintenance_idle(call, raises=False),
     )
     if blocked:
@@ -1842,8 +1844,8 @@ def _reset_docker_root(path, call, out):
     # started again by its socket, and the stop ended "Job for docker.service canceled"
     # (T4-u1). A Docker that is not running afterwards (stopped or failed) is what matters.
     call(['systemctl', 'stop', 'docker.socket'], 120)
-    code, said = call(['systemctl', 'stop', 'docker.service'], 300)
-    _, state = call(['systemctl', 'is-active', 'docker.service'], 30)
+    code, said = call(['systemctl', 'stop', DOCKER_SERVICE], 300)
+    _, state = call(['systemctl', 'is-active', DOCKER_SERVICE], 30)
     stopped = (state.split() or [''])[0] in STOPPED
     if code != 0 and not stopped or (state.split()[:1] and state.split()[0] in STILL_RUNNING):
         raise Stopped(
@@ -2421,9 +2423,7 @@ def busy(locks=SETUP_LOCKS, journal=None):
     finish or roll it back."""
     import neko_common
 
-    blocked = neko_common.pending_maintenance(
-        **({'journal': journal} if journal else {}), outcome='Nothing was removed.'
-    )
+    blocked = neko_common.pending_maintenance(**({'journal': journal} if journal else {}), outcome=NOTHING_REMOVED)
     if blocked is None and neko_common.maintenance_running():
         blocked = (
             'A monthly update is running right now. Let it finish (sudo systemctl status nekoserver-maintenance.service '
@@ -2438,7 +2438,7 @@ def busy(locks=SETUP_LOCKS, journal=None):
     if held is None:
         return (
             'NekoServer setup is running right now. Let it finish (or stop it), then run  sudo bash uninstall.sh  again. '
-            'Nothing was removed.'
+            + NOTHING_REMOVED
         ), []
     return None, held
 
