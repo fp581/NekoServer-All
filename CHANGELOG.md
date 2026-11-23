@@ -16,11 +16,13 @@ Fixes found by testing 0.52.2 against 0.52.1, old against new, on a test VM, wit
 - **Setup's review page lists the backup password among what setup stops for**, on a first install: the monthly backup asks for it, typed twice, after the approval. The README says so too.
 - **The guides say what setup asks, and when.** The dashboard PIN, the shared-folder password, the app-account choice and the backup times are asked before the install starts, not during it; the TV, phone-alert and outage-alert questions are answered by the first page's switches; pressing Enter at the download sources adds the ticked recommended ones (it does not skip them); the shared-folder password is kept and shown by *Show login*; app updates run every week, the monthly run checks the backups.
 - **The recovery guides match the tools**: restored Steam and Samba folders start at `source0`; a card restore's `--card` goes before the command word. ACCOUNT-SETUP.md's option 2 is typing every login yourself, and DASHBOARD.md's readings count as late after 3 minutes at the least.
+- **The guides say the TV needs Movies and shows** (README, GUIDED-SETUP, TV-SETUP): setup leaves the TV out without it, as the TV mode opens Jellyfin.
 
 ### Fixed: what 0.52.1 did too
 - **`account-setup.py --apply` says why it stopped**: with the app SSD not mounted, or the saved logins unreadable, it says "Nothing was set up:" and what it found, and how to put the logins back from a backup. It said only "Account setup incomplete".
 - **A drive folder written with two slashes at its start (`//srv/nekoserver`) is refused at the settings check**, saying how to write it: 'Write the drive folder with one "/" at the start, as /srv/nekoserver'. Setup stopped later with "Refusing symlink path", which names no link.
 - **The dashboard's Updates page knows a device is signed in with its PIN**: Check for updates, Update now and the other buttons there asked for the PIN again. When the unlock has run out (after 12 hours, or a restart of the control service), an app change asks for the PIN in the words app changes use, not the fans and lights ones.
+- **The dashboard, its guide, setup's PIN question and the README say every app change asks for the PIN on every device**, the server too (restart or close, updates and the upgrade, Ask Neko, media folders, the Backup cards page), not only restarting or closing apps.
 - **In the setup window, a card that needs another says which** ("Needs Movies and shows - Jellyfin switched on."), so a TV card that went grey with Movies and shows off no longer looks impossible on this PC.
 - **On a phone at 200 % zoom, the dashboard's banner link ("What does this mean?") wraps**, so the Fans & lights page no longer scrolls sideways by 2 pixels.
 - **Ask Neko is set up on a first install of an 8 GB PC.** Setup measured the free memory just after Immich started, at its peak, and said there was not enough for a model; a minute later there was. When the apps have just started, setup now looks again for up to 3 minutes before deciding. A later run that finds the apps running measures once and waits for nothing.
@@ -34,10 +36,12 @@ Fixes found by testing 0.52.2 against 0.52.1, old against new, on a test VM, wit
 - **Three pictures nothing showed any more are gone** (`docs/media/dashboard.webp`, `install.webp` and `uninstall.webp`, 2.6 MB), left from the README before 0.50.0.
 - **The setup window's unused `.mono` style is gone**; nothing on the window used it.
 - **The card restore tool's folder check and a reading of `systemctl show`** are written as SonarCloud asks (S8707, S7494), doing the same.
+- **The backup cards catalogue's search is gone**: nothing offered it.
 
 ### Tests
 - **Tests for what mutation testing found untested** in the split Python (the settings file and source drive checks of the source import, its progress with linked files, `media-connect.py`'s steps and drive check, the store a recovery reattaches), each pinning what 0.52.1 does.
 - **The dashboard's browser tests wait the way the page's security policy allows**, so the backup cards test runs instead of erroring every time.
+- **CI runs the dashboard's and the setup window's browser tests in a job of their own** (Playwright 1.48.2 with its Chromium, Node 18.19.1), and fails when one is skipped.
 
 ## v0.52.2 — 2026-11-23
 
