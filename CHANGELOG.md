@@ -7,6 +7,7 @@ Fixes for what the round of tests of 0.52.2 found that 0.52.1 did too.
 ### Fixed
 - **The dashboard's Updates page knows a device is signed in with its PIN**: Check for updates, Update now and the other buttons there asked for the PIN again. When the unlock has run out (after 12 hours, or a restart of the control service), an app change asks for the PIN in the words app changes use, not the fans and lights ones.
 - **In the setup window, a card that needs another says which** ("Needs Movies and shows - Jellyfin switched on."), so a TV card that went grey with Movies and shows off no longer looks impossible on this PC.
+- **On a phone at 200 % zoom, the dashboard's banner link ("What does this mean?") wraps**, so the Fans & lights page no longer scrolls sideways by 2 pixels.
 - **Ask Neko's model question says once what Enter does.** The list said "0) No assistant (press Enter)" while the line under it said Enter keeps the model, when the first page's Ask Neko switch was on; now only the line under the list says what Enter alone chooses. ASSISTANT.md shows the question as it is.
 - **An Ask Neko answer that was cut off says so**: "Neko's answer was cut off: it reached its length limit before it ended; ask again about one thing at a time". It said "Neko is not available right now", though Neko had answered and its text stayed on the page.
 - **Setup's music step names Lidarr only while Lidarr is set up**, and a desktop shortcut it takes away is said once, not twice.
