@@ -9,6 +9,9 @@ import re
 import secrets
 import subprocess
 import time
+from types import SimpleNamespace
+
+import nextcloud_restore
 
 from neko_common import (
     LOCATIONS,
@@ -651,7 +654,8 @@ EARLIER_DATA = (
     'Nextcloud is not set up yet, but {folder} already holds files (from another or an earlier Nextcloud, '
     'say). Setup never writes over them. To start a new, empty Nextcloud, move that folder away (sudo mv '
     '{folder} {folder}.before), run setup again, and copy your files into Nextcloud afterwards. To bring '
-    'back an earlier NekoServer Nextcloud instead, restore it from its backup (RECOVERY.md)'
+    'back this server\'s own Nextcloud after a new SSD instead, run  sudo bash install.sh  yourself: setup '
+    'offers it when this server\'s backup is on the HDD (RECOVERY.md, "The SSD or the HDD broke")'
 )
 
 
@@ -667,10 +671,11 @@ def start_cut_off_setup_again(ctx, data, partial):
     ctx.log('Nextcloud: finishing a setup that was interrupted')
 
 
-def first_install(ctx, opts, chosen, image, paths):
+def first_install(ctx, opts, chosen, image, paths, found=None):
     """A new Nextcloud's folders and its three setting files, compose.yaml last; never
     over data that is there already. `chosen`: the administrator's saved login, or None;
-    `paths`: (their folder, compose.yaml, .env, managed.json)."""
+    `paths`: (their folder, compose.yaml, .env, managed.json); `found`: what setup found of
+    a backup for the files folder (nextcloud_restore.offered), said with the refusal."""
     config = ctx.config
     data = Path(config['data_mount'])
     folder, manifest, env, managed = paths
@@ -680,7 +685,8 @@ def first_install(ctx, opts, chosen, image, paths):
     for existing in (data / HTML, data / POSTGRES, cloud_files(config)):
         safe_path(existing)
         if existing.exists() and any(existing.iterdir()):
-            raise RuntimeError(EARLIER_DATA.format(folder=existing))
+            said = f'. {found}' if found and existing == cloud_files(config) else ''
+            raise RuntimeError(EARLIER_DATA.format(folder=existing) + said)
     image = resolve_image(image)
     payload = json.dumps(model(config, image), indent=2) + '\n'
     for target, mode in (
@@ -750,6 +756,46 @@ def brought_up_to_date(ctx, owned, image, files):
         ctx.log('Nextcloud: its container definition was brought up to date by this release (settings unchanged)')
 
 
+def compose_base(manifest, env):
+    """Docker Compose for Nextcloud's project, with its settings files."""
+    base = [
+        'docker',
+        '--host',
+        'unix:///var/run/docker.sock',
+        'compose',
+        '-p',
+        'neko-nextcloud',
+        '-f',
+        str(manifest),
+        '--env-file',
+        str(env),
+    ]
+    return base + compose_image_override(manifest)
+
+
+def restore_pieces(ctx, opts):
+    """What bringing Nextcloud back from its backup needs of this step: its Compose
+    command, its status, and the check of the backup's settings against my-config.json.
+    The administrator's name setup made up (or "admin") gives way to the backed-up one, as
+    adopt_admin does; any other difference refuses the restore before anything changed."""
+    config = ctx.config
+
+    def settings_problem(owned):
+        installed = settings_of(owned)
+        wanted = settings(config, owned.get('image'))
+        named, admin = opts.get('admin_user', 'admin'), installed.get('admin_user')
+        if admin and named != admin and (named == 'admin' or GENERATED_NAME.fullmatch(named)):
+            wanted['admin_user'] = admin
+        return settings_changed(installed, wanted), wanted['admin_user']
+
+    def adopt(admin):
+        if opts.get('admin_user', 'admin') != admin:
+            opts['admin_user'] = admin
+            ctx.persist_config()
+
+    return SimpleNamespace(compose_base=compose_base, status=status, settings_problem=settings_problem, adopt=adopt)
+
+
 def run(ctx):
     opts = options(ctx.config)
     if not opts.get('enabled', True):
@@ -775,7 +821,12 @@ def run(ctx):
             raise RuntimeError('Complete the account_credentials prompts before Nextcloud setup')
         fresh = not manifest.exists()
         if fresh:
-            first_install(ctx, opts, chosen, image, (folder, manifest, env, managed))
+            # Only the SSD replaced: setup offers to bring this server's own Nextcloud back
+            # from its backup on the HDD (nextcloud_restore), else it installs a new one.
+            restored, found = nextcloud_restore.offered(ctx, restore_pieces(ctx, opts))
+            fresh = not restored
+            if fresh:
+                first_install(ctx, opts, chosen, image, (folder, manifest, env, managed), found)
         # An install already made whose files folder is gone (a new HDD): given back, and
         # its accounts' folders made again once Nextcloud answers; also when an earlier
         # setup gave it back and stopped before that (its note on the SSD).
@@ -786,19 +837,7 @@ def run(ctx):
         adopt_admin(opts, owned, chosen, ctx.persist_config, ctx.log)
         brought_up_to_date(ctx, owned, image, (manifest, managed))
         verify_storage(config)
-        base = [
-            'docker',
-            '--host',
-            'unix:///var/run/docker.sock',
-            'compose',
-            '-p',
-            'neko-nextcloud',
-            '-f',
-            str(manifest),
-            '--env-file',
-            str(env),
-        ]
-        base += compose_image_override(manifest)
+        base = compose_base(manifest, env)
         command(base + ['config', '-q'])
         compose_up(base, 'Nextcloud', ctx.log, 1800)
         finish_install(base, ctx.log)
