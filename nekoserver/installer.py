@@ -642,6 +642,9 @@ def tried_step(name, modules, ctx, states, state_path, log, apply):
         except Exception as exc:
             reason = code_error_reason(exc, log.path) if isinstance(exc, CODE_ERRORS) else failure_reason(exc)
             states[name] = {'status': 'failed', 'reason': reason}
+            # Written now, before "Retry this step now?": Ctrl+C or a closed terminal at
+            # that question would leave the step "running" on file, its reason lost.
+            atomic_json_write(state_path, states)
             log(f'FAILED {name}: {reason}')
             # Avoid tracebacks from providers that may contain sensitive arguments.
             # With a person at the terminal: the reason, the fix when it is a known
