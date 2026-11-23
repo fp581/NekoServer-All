@@ -473,7 +473,8 @@ def install_openrgb(log):
 
 def choose_pin(binary, log, ask=getpass.getpass):
     """Phones and tablets need a PIN to change fans and lights (the server itself
-    doesn't), and restarting or closing apps needs it everywhere. Asked once; skipped
+    doesn't), and app changes (restart or close, updates, Ask Neko, media folders, backup
+    cards) need it everywhere (control.rs). Asked once; skipped
     without a keyboard. Only a slow salted hash is kept."""
     if (CONTROL_CONFIG / 'pin.json').exists():
         return False
@@ -485,12 +486,13 @@ def choose_pin(binary, log, ask=getpass.getpass):
         return save_pin(binary, log, chosen)
     if not sys.stdin.isatty():
         log(
-            'Dashboard: no PIN chosen, so fans and lights change on the server only and apps can\'t be restarted or closed from it (run setup in a terminal to choose one)'
+            'Dashboard: no PIN chosen, so fans and lights change on the server only and apps can\'t be changed from it: no restarts, updates, Ask Neko, media folders or backup cards (run setup in a terminal to choose one)'
         )
         return False
     print(
         '\nChoose a PIN (6 to 8 digits) for the dashboard: it lets you change fans and lights from your phone or tablet,\n'
-        'and restart or close apps (on every device, the server too).\nPress Enter to skip: fans and lights then change on the server itself only, and apps can\'t be restarted or closed from the dashboard.'
+        'and change apps: restart or close them, updates, Ask Neko, media folders and backup cards (on every device, the server too).\n'
+        'Press Enter to skip: fans and lights then change on the server itself only, and none of those app changes can be made from the dashboard.'
     )
     # In the setup window the PIN and its second entry are one page (hidden, checked to
     # match before they are sent); the terminal is asked twice.
