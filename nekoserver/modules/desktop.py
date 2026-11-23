@@ -112,14 +112,17 @@ def ours(path):
         return False
 
 
-def retire(folder, files, log):
+def retire(folder, files):
     """Take away NekoServer's own shortcut of an app that is no longer set up (switched
-    off since): it would open a page that is not there. One of yours is never touched."""
+    off since): it would open a page that is not there. One of yours is never touched.
+    Returns the apps whose shortcut was taken away."""
+    taken = []
     for app in APPS:
         path = safe_path(folder / f'nekoserver-{app}.desktop')
         if path.name not in files and path.is_file() and ours(path):
             path.unlink()
-            log(f'Desktop: took away the {APPS[app][0]} shortcut (it is switched off in setup)')
+            taken.append(app)
+    return taken
 
 
 def place(path, text, user, home, log):
@@ -176,10 +179,14 @@ def run(ctx):
             )
         else:
             folders.append(desktop)
+    taken = []
     for folder in folders:
-        retire(folder, files, ctx.log)
+        taken += [app for app in retire(folder, files) if app not in taken]
         for name, text in files.items():
             place(folder / name, text, user, home, ctx.log)
+    # Said once per app, though its shortcut is in the menu and on the Desktop (sweep J05).
+    for app in taken:
+        ctx.log(f'Desktop: took away the {APPS[app][0]} shortcut (it is switched off in setup)')
     ctx.log(
         'Desktop shortcuts: ' + ', '.join(sorted(t.split('\nName=', 1)[1].split('\n', 1)[0] for t in files.values()))
     )

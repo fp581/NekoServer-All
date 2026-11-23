@@ -457,6 +457,16 @@ class MusicTests(unittest.TestCase):
         ):
             return music.run(ctx), made, ctx
 
+    def test_lidarr_is_named_only_while_it_is_set_up(self):
+        """Sweep J05: with Lidarr taken out, the step still said "Lidarr imports into the
+        same folder"."""
+        _, _, ctx = self.music_step([])
+        self.assertTrue([line for line in ctx.logs if 'Lidarr imports into the same folder' in line])
+        _, _, ctx = self.music_step([], music_downloads=False)
+        said = [line for line in ctx.logs if line.startswith('Music uses ')]
+        self.assertEqual(len(said), 1)
+        self.assertNotIn('Lidarr', said[0])
+
     def test_a_server_without_jellyfin_gets_it_too(self):
         """Review of 0.51.2: the library was made with Jellyfin's (onboard.py --libraries,
         given only with Jellyfin among the apps), so a music-only server never got it."""

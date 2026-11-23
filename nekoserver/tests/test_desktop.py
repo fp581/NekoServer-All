@@ -87,6 +87,21 @@ class DesktopShortcutTests(unittest.TestCase):
         self.assertTrue(yours.is_file())  # not NekoServer's: left alone
         self.assertTrue((home / 'Desktop/nekoserver-jellyfin.desktop').is_file())
 
+    def test_a_shortcut_taken_away_is_said_once(self):
+        """Sweep J05: "Desktop: took away the Lidarr shortcut" was printed twice, once for
+        the menu's copy and once for the Desktop's."""
+        self.set_up('nextcloud')
+        home = self.root / 'home'
+        (home / 'Desktop').mkdir(parents=True)
+        self.run_step(home)
+        self.config['nextcloud'] = {'enabled': False}
+        said = []
+        self.run_step(home, said.append)
+        self.assertEqual(
+            [line for line in said if 'took away' in line],
+            ['Desktop: took away the Nextcloud shortcut (it is switched off in setup)'],
+        )
+
     def test_the_browser_steam_and_the_dashboard_window(self):
         launcher = self.root / 'nekoserver-dashboard'
         launcher.write_text('#!/bin/sh\n')
@@ -101,10 +116,10 @@ class DesktopShortcutTests(unittest.TestCase):
         self.config['music'] = {'create_desktop_shortcut': False}
         self.assertNotIn('nekoserver-navidrome.desktop', self.files())
 
-    def run_step(self, home):
+    def run_step(self, home, log=lambda message: None):
         me = pwd.getpwuid(os.getuid())
         user = mock.Mock(pw_uid=me.pw_uid, pw_gid=me.pw_gid, pw_name=me.pw_name)
-        ctx = mock.Mock(apply=True, config=self.config, log=lambda message: None)
+        ctx = mock.Mock(apply=True, config=self.config, log=log)
         with (
             mock.patch('os.geteuid', return_value=0),
             mock.patch.object(tv, 'desktop_user', return_value=(user, home)),

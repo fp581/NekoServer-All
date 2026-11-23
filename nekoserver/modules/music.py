@@ -48,8 +48,10 @@ def run(ctx):
             raise RuntimeError('Music listener setup failed; credentials/configuration preserved')
         result = music_client.check(ctx.config)
     atomic_json(Path(ctx.config['data_mount']) / 'reports/music-setup.json', result)
+    # Lidarr only while it is set up (sweep J05: it was said with Lidarr taken out).
+    lidarr = '; Lidarr imports into the same folder' if 'lidarr' in media_services(ctx.config) else ''
     ctx.log(
-        f'Music uses {music_library(ctx.config)} read-only; Lidarr imports into the same folder. Music gateway: the HTTPS address setup printed for Music (port 8446 unless another program had it; the phone setup page lists it). Phone/desktop client login and real playback remain acceptance steps.'
+        f'Music uses {music_library(ctx.config)} read-only{lidarr}. Music gateway: the HTTPS address setup printed for Music (port 8446 unless another program had it; the phone setup page lists it). Phone/desktop client login and real playback remain acceptance steps.'
     )
     left = own_folder(ctx)
     if result['status'] != 'pass':
