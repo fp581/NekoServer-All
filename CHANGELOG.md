@@ -30,7 +30,7 @@ The first stable release, built on 0.52.3.
 ### Tests
 - **Tests of the setup driver's own parts** (split out in 0.52.2), the setup report's folder-access rows, the mistyped-settings warnings and the job-time check, each pinning what it does.
 - **Tests of the home gateway's set-up, start and Tailscale routes, and of what the snapshot verify and restore refuse, and of the backup password tool's words and recover.py's commands** (mutation testing found them unpinned).
-- **The tests no longer depend on the PC they run on**: eleven tests read the real `/srv/nekoserver` and failed on a PC with NekoServer installed; each uses folders of its own now.
+- **The tests no longer depend on the PC they run on**: 28 tests looked at the real `/srv/nekoserver`, `/mnt/nekoserver-media` or systemd's units and failed on a PC with NekoServer installed (one would have removed a real timer's record when run as root); each uses folders of its own now.
 
 ## v0.52.3 — 2026-11-23
 
