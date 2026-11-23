@@ -146,6 +146,28 @@ const CHECKS = {
     );
     return Object.fromEntries(pages);
   },
+  /* Page `route` once it has read the control service (whether this device is signed in),
+     then the controls `clicks` pressed in turn, each [role, name]: the dialog open after
+     them (its eyebrow and title, '' when none) and the message shown. */
+  async pinAsked(browser, { route, clicks }) {
+    const page = await open(browser, route);
+    await page.waitForResponse(r => r.url().endsWith('/api/control'), { timeout: 5000 }).catch(() => undefined);
+    await page.waitForTimeout(200);
+    await clicks.reduce(async (earlier, [role, name]) => {
+      await earlier;
+      await page.getByRole(role, { name }).first().click();
+      await page.waitForTimeout(300);
+    }, Promise.resolve());
+    return page.evaluate(() => {
+      const dialog = document.getElementById('dialog'),
+        toast = document.getElementById('toast');
+      const words = id => document.getElementById(id).textContent;
+      return {
+        dialog: dialog.open ? [words('dialog-eyebrow'), words('dialog-title')] : '',
+        toast: toast.hidden ? '' : toast.textContent
+      };
+    });
+  },
   /* The words of the element `id` on page `route`. */
   async pageText(browser, { route, id }) {
     const page = await open(browser, route);

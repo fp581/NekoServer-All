@@ -252,8 +252,9 @@ const ROUTES = {
 /* Pages that show live hardware readings (polled every few seconds). */
 const LIVE_ROUTES = new Set(['home', 'hardware', 'sensors']);
 /* Pages whose buttons change something: they read whether this device may (the PIN).
- * Ask Neko is one: asking and approving a fix need the PIN. */
-const CONTROL_ROUTES = new Set(['cooling', 'apps', 'processes', 'home', 'ask', 'media', 'cards']);
+ * Ask Neko is one: asking and approving a fix need the PIN; Updates too (an update, an
+ * upgrade). */
+const CONTROL_ROUTES = new Set(['cooling', 'apps', 'processes', 'home', 'ask', 'media', 'cards', 'updates']);
 /* Short, stable error codes. E10-E42 come from the server; E01, E02 and E12 are
  * noticed by this page. DASHBOARD.md lists the same table. */
 const ERRORS = {
@@ -4195,6 +4196,8 @@ window.addEventListener('hashchange', closeMenu);
 function signedIn() {
   return state.control?.access?.signed_in === true;
 }
+const APP_PIN =
+  'Changes to your apps and to NekoServer (a restart, an update, an upgrade) need your PIN on every device, the server too.';
 function withPin(then) {
   if (signedIn()) {
     then();
@@ -4204,11 +4207,7 @@ function withPin(then) {
     toast('App controls need a PIN. Run setup again in a terminal on the server to choose one.');
     return;
   }
-  unlockDialog(
-    then,
-    'APP CONTROLS',
-    'Changes to your apps and to NekoServer (a restart, an update, an upgrade) need your PIN on every device, the server too.'
-  );
+  unlockDialog(then, 'APP CONTROLS', APP_PIN);
 }
 async function appAction(op, body, starting, started = null) {
   const answer = await postControl(op, body);
@@ -4220,7 +4219,9 @@ async function appAction(op, body, starting, started = null) {
     return;
   }
   if (answer.error === 'E43' && state.control?.access?.pin_set) {
-    unlockDialog(() => appAction(op, body, starting, started));
+    // The unlock ran out (12 hours, or the control service restarted): asked again in
+    // the words of an app change, not of fans and lights.
+    unlockDialog(() => appAction(op, body, starting, started), 'APP CONTROLS', APP_PIN);
     return;
   }
   toast(controlMessage(answer));
