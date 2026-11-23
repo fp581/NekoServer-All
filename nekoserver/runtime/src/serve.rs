@@ -1921,3 +1921,45 @@ Sec-Fetch-Dest: document
         assert_eq!(error_message("no such code"), ERRORS[0].2);
     }
 }
+
+/// Tests the mutation pass of 0.52.2 asked for (G6): the gatherer's two steps.
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+
+    /// A connection with nothing to read yet (the read would block) keeps waiting for its
+    /// request; it is not closed.
+    #[test]
+    fn a_connection_with_nothing_yet_keeps_waiting() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let _client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        let (tx, rx) = mpsc::sync_channel(1);
+        let p = Pending {
+            stream,
+            buf: Vec::new(),
+            accepted: Instant::now(),
+        };
+        let p = read_more(p, true, &tx).expect("still waiting");
+        assert!(p.buf.is_empty());
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// Every new connection from this PC is kept, each waiting for its request.
+    #[test]
+    fn every_new_connection_is_kept() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let _clients: Vec<_> = (0..3)
+            .map(|_| TcpStream::connect(address).unwrap())
+            .collect();
+        let mut pending = VecDeque::new();
+        let start = Instant::now();
+        while pending.len() < 3 && start.elapsed() < Duration::from_secs(2) {
+            accept_new(&listener, &mut pending);
+        }
+        assert_eq!(pending.len(), 3);
+    }
+}

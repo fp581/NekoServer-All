@@ -1259,3 +1259,137 @@ mod status_line_tests {
         assert_eq!(status_code(b"garbage"), 0);
     }
 }
+
+/// Tests the mutation pass of 0.52.2 asked for (G6): what the split-out helpers of the
+/// media checks do, each told apart from what a changed condition would do.
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+    use std::io::Write;
+    use std::net::TcpListener;
+
+    /// A key goes out only in a header the app reads, and only when it is plain printable
+    /// text: one bad part alone is enough to refuse it.
+    #[test]
+    fn a_key_is_sent_only_in_its_own_header_and_only_as_plain_text() {
+        assert_eq!(auth_headers(None).unwrap(), "");
+        assert_eq!(
+            auth_headers(Some(("X-Api-Key", "abc123"))).unwrap(),
+            "X-Api-Key: abc123\r\n"
+        );
+        let jellyfin = auth_headers(Some(("X-Emby-Token", "abc123"))).unwrap();
+        assert!(
+            jellyfin.starts_with("X-Emby-Token: abc123\r\nAuthorization: MediaBrowser "),
+            "{jellyfin}"
+        );
+        assert!(jellyfin.ends_with("Token=\"abc123\"\r\n"), "{jellyfin}");
+        for (header, key) in [
+            ("Cookie", "abc123"),
+            ("X-Api-Key", ""),
+            ("X-Api-Key", "a b"),
+            ("X-Api-Key", "a\r\nHost: x"),
+        ] {
+            let refused = auth_headers(Some((header, key))).unwrap_err().to_string();
+            assert_eq!(refused, "Invalid local credential", "{header} {key:?}");
+        }
+    }
+
+    /// An address that is not one path on the app itself is refused before anything is
+    /// sent.
+    #[test]
+    fn only_a_plain_path_on_the_app_is_asked_for() {
+        for endpoint in [
+            "System/Info",
+            "//elsewhere/x",
+            "/a\r\nHost: elsewhere",
+            "/a\n",
+        ] {
+            let refused = get("jellyfin", endpoint, None).unwrap_err().to_string();
+            assert_eq!(refused, "Invalid local endpoint", "{endpoint:?}");
+        }
+    }
+
+    /// The whole answer is read until the app closes, and where its headers end is found.
+    #[test]
+    fn the_whole_answer_is_read_with_the_end_of_its_headers() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let answer: &[u8] =
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"Id\":\"x\"}";
+        let app = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.write_all(&answer[..20]).unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+            stream.write_all(&answer[20..]).unwrap();
+        });
+        let mut stream = TcpStream::connect(address).unwrap();
+        let (bytes, header_end) = read_answer(&mut stream, Instant::now()).unwrap();
+        app.join().unwrap();
+        assert_eq!(bytes, answer.to_vec());
+        assert_eq!(header_end, Some(answer.len() - "{\"Id\":\"x\"}".len()));
+    }
+
+    /// What read_answer makes of an app that sends `answer` and closes.
+    fn answered(answer: Vec<u8>) -> Result<(Vec<u8>, Option<usize>)> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = stream.write_all(&answer);
+        });
+        let mut stream = TcpStream::connect(address).unwrap();
+        let read = read_answer(&mut stream, Instant::now());
+        drop(stream);
+        app.join().unwrap();
+        read
+    }
+
+    /// An answer may be as large as LIMIT, and its headers as long as 32 KB; one byte
+    /// more is refused.
+    #[test]
+    fn an_answer_up_to_its_limits_is_read_and_one_byte_more_is_refused() {
+        let head = b"HTTP/1.1 200 OK\r\n\r\n".to_vec();
+        let whole = |size: usize| [head.clone(), vec![b'x'; size - head.len()]].concat();
+        assert_eq!(answered(whole(LIMIT)).unwrap().0.len(), LIMIT);
+        let refused = answered(whole(LIMIT + 1)).unwrap_err().to_string();
+        assert_eq!(refused, "API response too large");
+        let (bytes, header_end) = answered(vec![b'h'; 32768]).unwrap();
+        assert_eq!((bytes.len(), header_end), (32768, None));
+        let refused = answered(vec![b'h'; 32769]).unwrap_err().to_string();
+        assert_eq!(refused, "API headers too large");
+    }
+
+    /// The library is the one of its kind at its folder (a trailing / is the same folder),
+    /// with an ID; two at that folder, another kind or no ID is none.
+    #[test]
+    fn a_library_counts_only_when_it_is_the_one_of_its_kind_at_its_folder() {
+        let library = |dir: &str, kind: &str, id: &str| json!({"Locations":[dir],"CollectionType":kind,"ItemId":id});
+        let movies = library("/data/movies/", "movies", "m1");
+        let shows = library("/data/tv", "tvshows", "t1");
+        let both = [movies.clone(), shows.clone()];
+        assert_eq!(
+            library_id(&both, "/data/movies", "movies").as_deref(),
+            Some("m1")
+        );
+        assert_eq!(
+            library_id(&both, "/data/tv", "tvshows").as_deref(),
+            Some("t1")
+        );
+        assert_eq!(library_id(&both, "/data/tv", "movies"), None);
+        let twice = [movies.clone(), movies];
+        assert_eq!(library_id(&twice, "/data/movies", "movies"), None);
+        assert_eq!(library_id(&[shows], "/data/movies", "movies"), None);
+        let no_id = [library("/data/movies", "movies", "")];
+        assert_eq!(library_id(&no_id, "/data/movies", "movies"), None);
+        let nowhere = [json!({"CollectionType":"movies","ItemId":"m1"})];
+        assert_eq!(library_id(&nowhere, "/data/movies", "movies"), None);
+    }
+
+    /// A check's outcome in the readiness report's words.
+    #[test]
+    fn each_outcome_has_its_own_word() {
+        assert_eq!(state_word(&Ok(true)), "pass");
+        assert_eq!(state_word(&Ok(false)), "needs_setup");
+        assert_eq!(state_word(&Err(Error::new("down"))), "fail");
+    }
+}

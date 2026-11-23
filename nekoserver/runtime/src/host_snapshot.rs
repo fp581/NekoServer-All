@@ -392,6 +392,162 @@ pub fn run(a: &Args) -> Result<()> {
         snapshot(&job.cfgpath, &job.cfg, &job.data, &job.media, &selected)
     })
 }
+/// The Samba server setup manages, checked before its files are copied: (whether it is
+/// running, its unit). A standalone Samba server only (not AD/DC or winbind), with
+/// NekoServer's own settings and its databases in their usual places.
+fn managed_samba() -> Result<(bool, &'static str)> {
+    probe_absent(&["pgrep", "-x", "winbindd|nmbd|samba"])?;
+    let (unit, state) = samba_state()?;
+    if state == "absent" {
+        return Ok((false, unit));
+    }
+    if common::bytes(Path::new("/etc/samba/smb.conf"), 64000)?
+        != b"[global]\n   include = /etc/samba/nekoserver.conf\n"
+    {
+        return Err(Error::new("Unmanaged Samba refused"));
+    }
+    for parameter in ["state directory", "private dir"] {
+        let value = command(&["testparm", "-s", &format!("--parameter-name={parameter}")])?;
+        let path = common::safe(Path::new(&value))?;
+        if !path.starts_with("/etc/samba") && !path.starts_with("/var/lib/samba") {
+            return Err(Error::new("Unsupported Samba database location"));
+        }
+    }
+    if command(&["testparm", "-s", "--parameter-name=passdb backend"])? != "tdbsam" {
+        return Err(Error::new("Unsupported Samba authentication backend"));
+    }
+    Ok((state == "active", unit))
+}
+/// Room on the HDD for every file and the reserve setup chose.
+fn room_for(cfg: &Value, root: &Path, files: &[Value], media: &Path) -> Result<()> {
+    let total = files.iter().try_fold(0u64, |n, r| {
+        n.checked_add(r["size"].as_u64().unwrap_or(0))
+            .ok_or_else(|| Error::new("Snapshot too large"))
+    })?;
+    let reserve = cfg["host_backup"]["minimum_free_bytes"]
+        .as_u64()
+        .ok_or_else(|| Error::new("Free-space reserve required"))?;
+    if !(1024 * 1024 * 1024..=1024 * 1024 * 1024 * 1024).contains(&reserve) {
+        return Err(Error::new("Invalid free-space reserve"));
+    }
+    let have = common::free_bytes(root)?;
+    let needed = total as u128 + reserve as u128;
+    if have < needed {
+        return Err(Error::new(&short_of_space(media, have, needed, reserve)));
+    }
+    Ok(())
+}
+/// Every listed file copied into the snapshot's payload, with its checksum recorded (a
+/// link as a small file of its target, a folder made).
+fn copy_files(files: &mut [Value], selected: &[Source], payload: &Path) -> Result<()> {
+    for row in files {
+        let rel = Path::new(row["path"].as_str().unwrap());
+        let (id, source, _, _) = selected.iter().find(|s| rel.starts_with(&s.0)).unwrap();
+        let suffix = rel.strip_prefix(id).unwrap();
+        let original = if suffix.as_os_str().is_empty() {
+            source.clone()
+        } else {
+            source.join(suffix)
+        };
+        let target = payload.join(rel);
+        common::directory(target.parent().unwrap(), 0o700)?;
+        if row["kind"] == "directory" {
+            common::directory(&target, 0o700)?;
+        } else if row["kind"] == "symlink" {
+            common::atomic(
+                &target,
+                row["link_target"].as_str().unwrap().as_bytes(),
+                0o600,
+            )?;
+            row["size"] = json!(fs::metadata(&target)?.len());
+            row["sha256"] = json!(common::digest(&target)?);
+        } else {
+            row["sha256"] = json!(app_snapshot::copy_file(&original, &target)?);
+        }
+    }
+    Ok(())
+}
+/// The sources listed again after the copy: the same files, else the run is not kept
+/// and the error names what changed.
+fn unchanged_while_copied(files: &[Value], missing: &[String], selected: &[Source]) -> Result<()> {
+    let (after, after_missing, _) = inventory(selected)?;
+    let mut before = files.to_vec();
+    for row in &mut before {
+        row.as_object_mut().unwrap().remove("sha256");
+        if row["kind"] == "symlink" {
+            row["size"] = json!(0);
+        }
+    }
+    if before == after && missing == after_missing.as_slice() {
+        return Ok(());
+    }
+    let mut changed = changed_paths(&before, &after, selected);
+    changed.extend(
+        missing
+            .iter()
+            .chain(&after_missing)
+            .filter(|m| !(missing.contains(m) && after_missing.contains(m)))
+            .cloned(),
+    );
+    let shown = changed
+        .iter()
+        .take(3)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = changed.len().saturating_sub(3);
+    Err(Error::new(&format!(
+        "Host inventory changed during snapshot: {shown}{} changed while it was copied, so this run is not kept; the next one tries again",
+        if more > 0 { format!(" and {more} more") } else { String::new() }
+    )))
+}
+/// The HDD's folder of settings backups: root's own and private, without the half-made
+/// snapshots of runs that failed or were cut off (they take space too).
+fn host_root(media: &Path) -> Result<PathBuf> {
+    let root = media.join("backups/host-user");
+    common::directory(&root, 0o700)?;
+    let m = fs::metadata(&root)?;
+    if m.uid() != 0 || m.mode() & 0o077 != 0 {
+        return Err(Error::new("Private host backup root required"));
+    }
+    common::clear_leftovers(&root, true)?;
+    Ok(root)
+}
+/// The snapshot's manifest: what it holds, what was left out (Steam's files while it is
+/// open) or skipped, and whether the managed Samba was running.
+fn host_manifest(
+    cfg: &Value,
+    files: &[Value],
+    (missing, skipped, left_out): (&[String], &[Value], &[String]),
+    active: bool,
+) -> Value {
+    let consistency = if left_out.is_empty() {
+        "Steam closed; managed Samba stopped; other files checked for changes"
+    } else {
+        "Steam open: its files left out; managed Samba stopped; other files checked for changes"
+    };
+    json!({"format":"neko-host-snapshot-v1","version":VERSION,"created_at":common::now(),"files":files,"sources":cfg["host_backup"]["sources"],"missing_optional":missing,"left_out":left_out,"skipped":skipped,"smb_was_active":active,"links_are_inert":true,"application_consistency":consistency})
+}
+/// How many snapshots are kept, and the one that is never retired: a run that left
+/// Steam out keeps the last complete snapshot, which has it.
+fn host_keep(cfg: &Value, root: &Path, left_out: &[String]) -> (u64, Option<String>) {
+    // 1 to 7 (0.50.0), or the earlier count setup marked; a count that is neither
+    // removes nothing, and the journal says so.
+    let (keep, refused) = backup::keep_count(
+        &cfg["host_backup"]["keep_snapshots"],
+        &cfg["host_backup"]["earlier"],
+        "host_backup",
+    );
+    if let Some(why) = refused {
+        println!("Host snapshot: {why}");
+    }
+    let protected = if left_out.is_empty() {
+        None
+    } else {
+        newest_complete(root)
+    };
+    (keep, protected)
+}
 fn snapshot(
     cfgpath: &Path,
     cfg: &Value,
@@ -405,34 +561,7 @@ fn snapshot(
     let samba = cfg["host_backup"]["samba"]
         .as_bool()
         .ok_or_else(|| Error::new("Samba policy required"))?;
-    let mut samba_unit = "";
-    let active = if samba {
-        // This installer supports a standalone Samba server, not AD/DC or winbind.
-        probe_absent(&["pgrep", "-x", "winbindd|nmbd|samba"])?;
-        let (unit, state) = samba_state()?;
-        samba_unit = unit;
-        if state != "absent"
-            && common::bytes(Path::new("/etc/samba/smb.conf"), 64000)?
-                != b"[global]\n   include = /etc/samba/nekoserver.conf\n"
-        {
-            return Err(Error::new("Unmanaged Samba refused"));
-        }
-        if state != "absent" {
-            for parameter in ["state directory", "private dir"] {
-                let value = command(&["testparm", "-s", &format!("--parameter-name={parameter}")])?;
-                let path = common::safe(Path::new(&value))?;
-                if !path.starts_with("/etc/samba") && !path.starts_with("/var/lib/samba") {
-                    return Err(Error::new("Unsupported Samba database location"));
-                }
-            }
-            if command(&["testparm", "-s", "--parameter-name=passdb backend"])? != "tdbsam" {
-                return Err(Error::new("Unsupported Samba authentication backend"));
-            }
-        }
-        state == "active"
-    } else {
-        false
-    };
+    let (active, samba_unit) = if samba { managed_samba()? } else { (false, "") };
     common::directory(Path::new("/etc/nekoserver-backups"), 0o700)?;
     common::atomic_json(
         Path::new(*JOURNAL),
@@ -450,110 +579,17 @@ fn snapshot(
         // A HDD that drops out mid-run stops it (see common::expect_drive).
         let _hdd = common::expect_drive(media)?;
         let (mut files, missing, skipped) = inventory(selected)?;
-        let root = media.join("backups/host-user");
-        common::directory(&root, 0o700)?;
-        let m = fs::metadata(&root)?;
-        if m.uid() != 0 || m.mode() & 0o077 != 0 {
-            return Err(Error::new("Private host backup root required"));
-        }
-        // Half-made snapshots of runs that failed or were cut off take space too.
-        common::clear_leftovers(&root, true)?;
-        let total = files.iter().try_fold(0u64, |n, r| {
-            n.checked_add(r["size"].as_u64().unwrap_or(0))
-                .ok_or_else(|| Error::new("Snapshot too large"))
-        })?;
-        let reserve = cfg["host_backup"]["minimum_free_bytes"]
-            .as_u64()
-            .ok_or_else(|| Error::new("Free-space reserve required"))?;
-        if !(1024 * 1024 * 1024..=1024 * 1024 * 1024 * 1024).contains(&reserve) {
-            return Err(Error::new("Invalid free-space reserve"));
-        }
-        let have = common::free_bytes(&root)?;
-        if have < total as u128 + reserve as u128 {
-            return Err(Error::new(&short_of_space(
-                media,
-                have,
-                total as u128 + reserve as u128,
-                reserve,
-            )));
-        }
+        let root = host_root(media)?;
+        room_for(cfg, &root, &files, media)?;
         let stage = backup::stage_snapshot(&root)?;
-        let payload = &stage.payload;
-        for row in &mut files {
-            let rel = Path::new(row["path"].as_str().unwrap());
-            let (id, source, _, _) = selected.iter().find(|s| rel.starts_with(&s.0)).unwrap();
-            let suffix = rel.strip_prefix(id).unwrap();
-            let original = if suffix.as_os_str().is_empty() {
-                source.clone()
-            } else {
-                source.join(suffix)
-            };
-            let target = payload.join(rel);
-            common::directory(target.parent().unwrap(), 0o700)?;
-            if row["kind"] == "directory" {
-                common::directory(&target, 0o700)?;
-            } else if row["kind"] == "symlink" {
-                common::atomic(
-                    &target,
-                    row["link_target"].as_str().unwrap().as_bytes(),
-                    0o600,
-                )?;
-                row["size"] = json!(fs::metadata(&target)?.len());
-                row["sha256"] = json!(common::digest(&target)?);
-            } else {
-                row["sha256"] = json!(app_snapshot::copy_file(&original, &target)?);
-            }
-        }
-        let (after, after_missing, _) = inventory(selected)?;
-        let mut before = files.clone();
-        for row in &mut before {
-            row.as_object_mut().unwrap().remove("sha256");
-            if row["kind"] == "symlink" {
-                row["size"] = json!(0);
-            }
-        }
-        if before != after || missing != after_missing {
-            let mut changed = changed_paths(&before, &after, selected);
-            changed.extend(
-                missing
-                    .iter()
-                    .chain(&after_missing)
-                    .filter(|m| !(missing.contains(m) && after_missing.contains(m)))
-                    .cloned(),
-            );
-            let shown = changed
-                .iter()
-                .take(3)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ");
-            let more = changed.len().saturating_sub(3);
-            return Err(Error::new(&format!(
-                "Host inventory changed during snapshot: {shown}{} changed while it was copied, so this run is not kept; the next one tries again",
-                if more > 0 { format!(" and {more} more") } else { String::new() }
-            )));
-        }
+        copy_files(&mut files, selected, &stage.payload)?;
+        unchanged_while_copied(&files, &missing, selected)?;
         steam_still_closed(cfg, steam_included)?;
         if samba {
             probe_absent(&["pgrep", "-x", "smbd|winbindd|nmbd|samba"])?;
         }
-        let manifest = json!({"format":"neko-host-snapshot-v1","version":VERSION,"created_at":common::now(),"files":files,"sources":cfg["host_backup"]["sources"],"missing_optional":missing,"left_out":left_out,"skipped":skipped,"smb_was_active":active,"links_are_inert":true,"application_consistency":if left_out.is_empty() {"Steam closed; managed Samba stopped; other files checked for changes"} else {"Steam open: its files left out; managed Samba stopped; other files checked for changes"}});
-        // 1 to 7 (0.50.0), or the earlier count setup marked; a count that is neither
-        // removes nothing, and the journal says so.
-        let (keep, refused) = backup::keep_count(
-            &cfg["host_backup"]["keep_snapshots"],
-            &cfg["host_backup"]["earlier"],
-            "host_backup",
-        );
-        if let Some(why) = refused {
-            println!("Host snapshot: {why}");
-        }
-        // A run that left Steam out never retires the last snapshot that has it.
-        let protected = if left_out.is_empty() {
-            None
-        } else {
-            newest_complete(&root)
-        };
+        let manifest = host_manifest(cfg, &files, (&missing, &skipped, &left_out), active);
+        let (keep, protected) = host_keep(cfg, &root, &left_out);
         backup::publish_snapshot(
             &root,
             &stage,
@@ -772,5 +808,176 @@ mod tests {
     fn root_refused() {
         let cfg = json!({"host_backup":{"sources":[{"id":"source0","path":"/","optional":true}]}});
         assert!(sources(&cfg, Path::new("/media")).is_err());
+    }
+}
+/// The short functions 0.52.2 split out of `snapshot` (Sonar S3776): those that need no
+/// root, Samba or Docker.
+#[cfg(test)]
+mod split_helpers {
+    use super::*;
+
+    #[test]
+    fn the_manifest_says_what_was_left_out_and_the_keep_count_spares_steams_snapshot() {
+        let cfg = json!({"host_backup": {"sources": [{"id": "source1"}], "keep_snapshots": 3}});
+        let files = [json!({"path": "source1", "kind": "directory"})];
+        let skipped = [json!({"path": "source1/x", "reason": "special file"})];
+        let missing = ["source2".to_string()];
+        let closed = host_manifest(&cfg, &files, (&missing, &skipped, &[]), true);
+        assert_eq!(closed["format"], "neko-host-snapshot-v1");
+        assert_eq!(closed["files"], json!(files));
+        assert_eq!(closed["sources"], cfg["host_backup"]["sources"]);
+        assert_eq!(closed["missing_optional"], json!(["source2"]));
+        assert_eq!(closed["skipped"], json!(skipped));
+        assert_eq!(closed["smb_was_active"], true);
+        assert_eq!(closed["links_are_inert"], true);
+        assert_eq!(
+            closed["application_consistency"],
+            "Steam closed; managed Samba stopped; other files checked for changes"
+        );
+        let steam = ["source3".to_string()];
+        let open = host_manifest(&cfg, &files, (&[], &[], &steam), false);
+        assert_eq!(open["left_out"], json!(["source3"]));
+        assert_eq!(
+            open["application_consistency"],
+            "Steam open: its files left out; managed Samba stopped; other files checked for changes"
+        );
+        let root = std::env::temp_dir().join(format!("neko-host-keep2-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        // Steam copied: nothing is spared.
+        assert_eq!(host_keep(&cfg, &root, &[]), (3, None));
+        // Steam left out: the newest complete snapshot (none here yet) is spared.
+        assert_eq!(host_keep(&cfg, &root, &steam), (3, newest_complete(&root)));
+        // A count that is neither 1 to 7 nor an earlier one: nothing removed.
+        let odd = json!({"host_backup": {"keep_snapshots": 9}});
+        assert_eq!(host_keep(&odd, &root, &[]).0, 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn a_snapshot_needs_room_for_its_files_and_the_chosen_reserve() {
+        let root = std::env::temp_dir().join(format!("neko-host-room-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let gib = 1024u64 * 1024 * 1024;
+        let files = [
+            json!({"size": 10}),
+            json!({"size": 20}),
+            json!({"kind": "directory"}),
+        ];
+        let cfg = |reserve: Value| json!({"host_backup": {"minimum_free_bytes": reserve}});
+        let media = Path::new("/mnt/media");
+        let said = |r: Result<()>| r.unwrap_err().to_string();
+        assert_eq!(
+            said(room_for(&json!({}), &root, &files, media)),
+            "Free-space reserve required"
+        );
+        for reserve in [gib - 1, 1024 * gib + 1] {
+            assert_eq!(
+                said(room_for(&cfg(json!(reserve)), &root, &files, media)),
+                "Invalid free-space reserve"
+            );
+        }
+        let huge = [json!({"size": u64::MAX}), json!({"size": 1})];
+        assert_eq!(
+            said(room_for(&cfg(json!(gib)), &root, &huge, media)),
+            "Snapshot too large"
+        );
+        // More than any drive holds: the message names the drive.
+        let big = [json!({"size": u64::MAX / 2})];
+        assert!(said(room_for(&cfg(json!(gib)), &root, &big, media)).contains("/mnt/media"));
+        if common::free_bytes(&root).unwrap() > 2 * gib as u128 {
+            room_for(&cfg(json!(gib)), &root, &files, media).unwrap();
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_copy_keeps_each_file_and_link_and_notices_a_change_meanwhile() {
+        let root = std::env::temp_dir().join(format!("neko-host-copy-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let source = root.join("gateway");
+        fs::create_dir_all(source.join("caddy")).unwrap();
+        fs::write(source.join("caddy/a.crt"), "cert").unwrap();
+        std::os::unix::fs::symlink("a.crt", source.join("caddy/current")).unwrap();
+        let selected: Vec<Source> = vec![("source1".into(), source.clone(), false, false)];
+        let (mut files, missing, _) = inventory(&selected).unwrap();
+        let payload = root.join("payload");
+        copy_files(&mut files, &selected, &payload).unwrap();
+        let row = |path: &str| files.iter().find(|r| r["path"] == path).unwrap().clone();
+        assert!(payload.join("source1/caddy").is_dir());
+        assert_eq!(
+            fs::read(payload.join("source1/caddy/a.crt")).unwrap(),
+            b"cert"
+        );
+        assert_eq!(
+            row("source1/caddy/a.crt")["sha256"],
+            common::digest(&source.join("caddy/a.crt")).unwrap()
+        );
+        // A link is kept as a small file of its target.
+        assert_eq!(
+            fs::read(payload.join("source1/caddy/current")).unwrap(),
+            b"a.crt"
+        );
+        assert_eq!(row("source1/caddy/current")["size"], 5);
+        // Listed again: the same (the checksums and the links' sizes aside).
+        unchanged_while_copied(&files, &missing, &selected).unwrap();
+        // A file written meanwhile: the run is not kept, and the file is named.
+        fs::write(source.join("caddy/a.crt"), "a new cert").unwrap();
+        let said = unchanged_while_copied(&files, &missing, &selected)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            said.starts_with("Host inventory changed during snapshot: "),
+            "{said}"
+        );
+        assert!(
+            said.contains(&source.join("caddy/a.crt").display().to_string()),
+            "{said}"
+        );
+        // An optional source that went away meanwhile is named too.
+        let gone = vec![("source2".to_string(), root.join("steam"), true, false)];
+        let with_gone: Vec<Source> = selected.iter().cloned().chain(gone).collect();
+        let (files, missing, _) = inventory(&with_gone).unwrap();
+        assert_eq!(missing, ["source2"]);
+        assert!(unchanged_while_copied(&files, &[], &with_gone)
+            .unwrap_err()
+            .to_string()
+            .contains("source2"));
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+/// Tests the mutation pass of 0.52.2 asked for (G6): the free-space reserve's bounds.
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    /// The reserve setup chose is taken from 1 GiB to 1 TiB; outside that it is refused
+    /// before the drive is even looked at.
+    #[test]
+    fn the_reserve_is_taken_from_one_gib_to_one_tib() {
+        let root = std::env::temp_dir();
+        let reserve = |bytes: u64| json!({"host_backup":{"minimum_free_bytes":bytes}});
+        let said = |bytes: u64| {
+            room_for(&reserve(bytes), &root, &[], &root)
+                .err()
+                .map(|e| e.to_string())
+        };
+        for refused in [GIB / 2, GIB - 1, 1024 * GIB + 1, 2048 * GIB] {
+            assert_eq!(
+                said(refused).as_deref(),
+                Some("Invalid free-space reserve"),
+                "{refused}"
+            );
+        }
+        // Taken: whether this computer has that much room is another question.
+        for taken in [GIB, 2 * GIB, 1024 * GIB] {
+            assert_ne!(
+                said(taken).as_deref(),
+                Some("Invalid free-space reserve"),
+                "{taken}"
+            );
+        }
     }
 }

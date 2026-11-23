@@ -1275,3 +1275,29 @@ mod stall_tests {
         }
     }
 }
+
+/// Tests the mutation pass of 0.52.2 asked for (G6).
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+
+    /// A fan speed below zero is no speed at all (unknown, never a slowdown).
+    #[test]
+    fn a_speed_below_zero_is_unknown() {
+        let dir = std::env::temp_dir().join(format!("neko-fans-rpm-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let fan = Channel {
+            id: "nct6798@/x/fan1".into(),
+            dir: dir.clone(),
+            device: dir.clone(),
+            file: "fan1".into(),
+            label: String::new(),
+            chip: "nct6798".into(),
+        };
+        fs::write(dir.join("fan1_input"), "1200").unwrap();
+        assert_eq!(rpm(&fan), Some(1200.0));
+        fs::write(dir.join("fan1_input"), "-5").unwrap();
+        assert_eq!(rpm(&fan), None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
