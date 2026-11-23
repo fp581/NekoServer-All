@@ -516,7 +516,7 @@ impl Store {
             .ok_or_else(|| CardError::new(Kind::Invalid, "the backup set was not kept"))
     }
 
-    /// "Take these cards back" (0.52.4): this catalogue becomes the catalogue of the set
+    /// "Take these cards back" (0.52.3): this catalogue becomes the catalogue of the set
     /// `set_id` the cards carry. Only while it knows no card at all: a set the server
     /// already writes is never swapped for another.
     pub fn take_set(&mut self, set_id: &str, name: &str) -> Res<()> {
@@ -536,7 +536,7 @@ impl Store {
         tx.commit().map_err(|e| db("commit", e))
     }
 
-    /// "Check this card" (0.52.4): a copy whose record is gone from its card, or can no
+    /// "Check this card" (0.52.3): a copy whose record is gone from its card, or can no
     /// longer be read, protects nothing.
     pub fn copy_damaged(&mut self, record_id: &str) -> Res<()> {
         self.conn
@@ -548,7 +548,7 @@ impl Store {
         Ok(())
     }
 
-    /// "Check this card" (0.52.4): when the card was last read in full, and what was found.
+    /// "Check this card" (0.52.3): when the card was last read in full, and what was found.
     pub fn rechecked(&mut self, volume_id: &str, now: &str, result: &str) -> Res<()> {
         self.conn
             .execute(

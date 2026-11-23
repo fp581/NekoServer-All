@@ -1,4 +1,4 @@
-//! "Check this card" (0.52.4): every copy on an attached card read in full and hashed
+//! "Check this card" (0.52.3): every copy on an attached card read in full and hashed
 //! against its record. A copy whose bytes changed (an SD card goes bad over the years),
 //! whose payload is gone, or whose record can no longer be read is marked damaged in the
 //! catalogue, so the next run copies that file again (run::decide: a version with no

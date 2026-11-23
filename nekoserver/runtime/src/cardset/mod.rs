@@ -4,7 +4,7 @@
 //! `plans/0.51.0-archive-format-v1.md` ("archive format 1"); the step names D1 to D8 in
 //! the comments are that document's. The card job, the Backup cards page and the status
 //! the dashboard shows (`crate::cards`, 0.52.0) call it; the few parts nothing calls yet
-//! (the rebuild of a lost catalogue) say so where they are.
+//! say so where they are.
 //!
 //! Parts:
 //! - `error`: the engine's own error, with a kind the job can act on.

@@ -13,7 +13,7 @@
 //! The report says plainly what cannot be known: a card enrolled, or a file copied, after
 //! the newest snapshot that was read is unknown to this catalogue.
 // The rebuild of a lost catalogue from the cards and their inventories, offered by the
-// Backup cards page as "Take these cards back" (0.52.4); parts of its report are read by tests only.
+// Backup cards page as "Take these cards back" (0.52.3); parts of its report are read by tests only.
 #![cfg_attr(not(test), allow(dead_code))]
 use super::catalogue::{CopyRow, CopyState};
 use super::error::{CardError, Kind, Res};

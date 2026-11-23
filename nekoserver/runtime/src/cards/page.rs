@@ -412,7 +412,7 @@ mod tests {
         assert_eq!(too_small(32 << 30, 64 << 30, 4096), None);
     }
 
-    /// T2b-04 (0.52.4): a card of an earlier set is offered back ("older_set", with its
+    /// T2b-04 (0.52.3): a card of an earlier set is offered back ("older_set", with its
     /// number and the day its set was made) only while the server's own set has no card.
     #[test]
     fn a_card_of_an_earlier_set_is_offered_back_only_while_the_server_has_no_card() {

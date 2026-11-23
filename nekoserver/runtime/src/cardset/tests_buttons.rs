@@ -1,4 +1,4 @@
-//! The Backup cards page's two buttons (0.52.4), on the engine: "Take these cards back"
+//! The Backup cards page's two buttons (0.52.3), on the engine: "Take these cards back"
 //! (a lost catalogue rebuilt from the set's own cards and given their set) and "Check this
 //! card" (every copy read again; a damaged one marked, and copied again by the next run).
 use super::catalogue::{Catalogue, CopyState};

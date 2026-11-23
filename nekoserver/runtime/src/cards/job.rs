@@ -35,7 +35,7 @@ pub fn run(a: &Args) -> Result<()> {
         return Ok(());
     }
     let place = Place::on(&data);
-    // "Take these cards back" or "Check this card" on the Backup cards page (0.52.4).
+    // "Take these cards back" or "Check this card" on the Backup cards page (0.52.3).
     if super::tasks::from_page(&place, &cfg, &cfgpath, &data, &media)? {
         return Ok(());
     }

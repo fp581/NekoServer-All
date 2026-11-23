@@ -1,4 +1,4 @@
-//! The Backup cards page's two longer tasks (0.52.4), run by the card job's own service so
+//! The Backup cards page's two longer tasks (0.52.3), run by the card job's own service so
 //! that they hold the backups' lock and go on when the page is closed:
 //!
 //! - "Take these cards back": the server's own set has no card (the app SSD was replaced,

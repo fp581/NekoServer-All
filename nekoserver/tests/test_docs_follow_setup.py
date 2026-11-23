@@ -212,7 +212,7 @@ class MessageReferenceTests(unittest.TestCase):
 
 
 class NeedsTests(unittest.TestCase):
-    """0.52.4 loop (T3L-01): the TV needs Movies and shows (setup leaves it out without it),
+    """0.52.3 loop (T3L-01): the TV needs Movies and shows (setup leaves it out without it),
     and no guide that offers the TV said so: a reader who wanted it for games alone found
     the switch greyed and setup skipping it."""
 
