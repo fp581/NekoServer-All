@@ -307,5 +307,69 @@ class RehearsalCopyTests(unittest.TestCase):
             recovery_tools.staged_database(self.snapshot.path, self.workspace, self.meta)
 
 
+class RehearsalPreviewTests(unittest.TestCase):
+    """`recover.py restore-test` without --apply: the snapshot is checked, the test copy's
+    folder and port are chosen, and nothing is made."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.ssd = Path(tmp.name) / 'ssd'
+        (self.ssd / 'recovery-tests').mkdir(parents=True)
+        self.config = {'data_mount': str(self.ssd), 'media_mount': str(Path(tmp.name) / 'hdd')}
+        self.snapshot = Snapshot(self.ssd / 'backups')
+        for patch in (
+            mock.patch.object(recovery_tools, 'mounts'),
+            mock.patch.object(recovery_tools, 'mount_path', side_effect=Path),
+            mock.patch.object(recovery_tools, 'validate_model'),
+            mock.patch.object(recovery_tools, 'check_test_port'),
+            mock.patch.object(recovery_tools, 'isolated_model', return_value={}),
+            mock.patch.object(recovery_tools, 'require_root', side_effect=AssertionError('asked for root')),
+        ):
+            patch.start()
+        self.addCleanup(mock.patch.stopall)
+
+    def test_a_good_snapshot_is_checked_and_nothing_is_made(self):
+        workspace = self.ssd / 'recovery-tests' / 'try-1'
+        answer = recovery_tools.restore_test(self.config, self.snapshot.path, workspace)
+        self.assertEqual(
+            answer,
+            {
+                'status': 'needs_setup',
+                'reason': 'The snapshot checked out; nothing was changed. To build the separate test copy, run the '
+                'same command again with  --apply --confirm RESTORE-ISOLATED  added',
+                'immich_version': 'v1.140.0',
+                'url': 'http://127.0.0.1:2284/',
+            },
+        )
+        self.assertFalse(workspace.exists())
+
+    def test_the_test_copy_goes_in_a_new_folder_inside_recovery_tests(self):
+        for workspace, message in (
+            (
+                self.ssd / 'elsewhere' / 'try-1',
+                'Use a new named directory directly inside recovery-tests on the SSD or HDD',
+            ),
+            (self.ssd / 'recovery-tests', 'Use a new named directory directly inside recovery-tests on the SSD or HDD'),
+        ):
+            with self.subTest(workspace=workspace), self.assertRaises(RuntimeError) as caught:
+                recovery_tools.restore_test(self.config, self.snapshot.path, workspace)
+            self.assertEqual(str(caught.exception), message)
+
+    def test_a_test_copy_inside_the_snapshot_is_refused(self):
+        # A snapshot copied straight into recovery-tests, and the test copy put beside its files.
+        self.snapshot.path = self.ssd / 'recovery-tests'
+        self.snapshot.write()
+        with self.assertRaises(RuntimeError) as caught:
+            recovery_tools.restore_test(self.config, self.snapshot.path, self.snapshot.path / 'try-1')
+        self.assertEqual(str(caught.exception), 'Restore workspace and backup must be separate')
+
+    def test_a_folder_that_is_there_already_is_not_used(self):
+        (self.ssd / 'recovery-tests' / 'try-1').mkdir()
+        with self.assertRaises(RuntimeError) as caught:
+            recovery_tools.restore_test(self.config, self.snapshot.path, self.ssd / 'recovery-tests' / 'try-1')
+        self.assertEqual(str(caught.exception), 'Recovery destination exists; use a new empty name')
+
+
 if __name__ == '__main__':
     unittest.main()
