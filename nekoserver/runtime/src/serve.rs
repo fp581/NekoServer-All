@@ -218,18 +218,41 @@ fn reply_error(stream: &mut TcpStream, code: &str, head: bool) {
     reply(stream, status, &body, "application/json", head);
 }
 /// At most this much of a refused request is read and dropped after the answer, for at
-/// most this long.
+/// most this long, by at most DRAINERS threads at once.
 const UNREAD_BYTES: usize = 256 * 1024;
 const UNREAD_TIME: Duration = Duration::from_secs(2);
+const DRAINERS: usize = 8;
+static DRAINING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 /// A refusal answered before the request was read whole (a body over MAX_BODY: a long
 /// log pasted into Ask Neko). Closed with part of the request unread, the connection was
 /// reset, and the reset threw away the part of the answer not sent yet: the page said
 /// "Can't reach the server" instead of the refusal. So the answer is ended first (all of it
-/// is sent, then the end), and what the client still sends is read and dropped, within
-/// UNREAD_BYTES and UNREAD_TIME, before the connection is closed.
+/// is sent, then the end), and what the client still sends is read and dropped before the
+/// connection is closed. That is done off the workers, by a thread of its own (at most
+/// DRAINERS of them; with all busy it is closed at once, as before): a client that sends a
+/// head and then nothing must never keep a worker (deep check 238).
 fn refuse_unread(stream: &mut TcpStream, code: &str, head: bool) {
+    use std::sync::atomic::Ordering;
     reply_error(stream, code, head);
     let _ = stream.shutdown(std::net::Shutdown::Write);
+    if DRAINING.fetch_add(1, Ordering::SeqCst) >= DRAINERS {
+        DRAINING.fetch_sub(1, Ordering::SeqCst);
+        return;
+    }
+    let started = stream.try_clone().ok().and_then(|copy| {
+        thread::Builder::new()
+            .spawn(move || {
+                drain(copy);
+                DRAINING.fetch_sub(1, Ordering::SeqCst);
+            })
+            .ok()
+    });
+    if started.is_none() {
+        DRAINING.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+/// What the client still sends, read and dropped within UNREAD_BYTES and UNREAD_TIME.
+fn drain(mut stream: TcpStream) {
     let until = Instant::now() + UNREAD_TIME;
     let mut left = UNREAD_BYTES;
     let mut chunk = [0u8; 4096];
@@ -1410,6 +1433,54 @@ mod tests {
     /// Deep check 238: 200 connections that each sent half a request, opened again as soon as
     /// they were closed, kept every worker and the queue full, and the page got no answer.
     /// With the gatherer they cost a worker nothing: a request is answered meanwhile.
+    #[test]
+    fn refused_heads_whose_body_never_comes_keep_no_worker() {
+        // T5's review of INT-flake-1b: 64 heads that name a body too big and then send
+        // nothing. What is left of them is read off the workers, so the page is answered.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let root = std::env::temp_dir().join(format!("neko-unread-{}", std::process::id()));
+        let server = Arc::new(Server {
+            assets: root.join("assets"),
+            status: root.join("status.json"),
+            control: root.join("control.sock"),
+            port,
+            public: None,
+            live: Mutex::new(Live::default()),
+            tables: vec![],
+        });
+        thread::spawn(move || serve_on(listener, server));
+        let head =
+            format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 100000\r\n\r\n");
+        let mut held = vec![];
+        for _ in 0..64 {
+            let mut each = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            each.write_all(head.as_bytes()).unwrap();
+            held.push(each);
+        }
+        thread::sleep(Duration::from_millis(200));
+        let started = Instant::now();
+        let mut asked = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let _ = asked.set_read_timeout(Some(Duration::from_secs(10)));
+        asked
+            .write_all(
+                format!("GET /api/none HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").as_bytes(),
+            )
+            .unwrap();
+        let mut answer = String::new();
+        let _ = asked.read_to_string(&mut answer);
+        assert!(answer.starts_with("HTTP/1.1 404"), "answered: {answer:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        // Each held one got its refusal.
+        let mut first = String::new();
+        let _ = held[0].set_read_timeout(Some(Duration::from_secs(5)));
+        let _ = held[0].read_to_string(&mut first);
+        assert!(first.contains("\"E42\""), "{first:?}");
+    }
     #[test]
     fn slow_connections_do_not_keep_a_request_waiting() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
