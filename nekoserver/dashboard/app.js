@@ -2013,8 +2013,20 @@ function sendQuestion() {
  * the web service takes (serve.rs MAX_BODY, 4096 bytes) with the new question. */
 const ASK_BODY = 4096;
 const EARLIER_CHARS = 2500; // what the server keeps of it (assist.rs EARLIER_ANSWER_CHARS)
+/* The newest entry Neko answered whole. Looked for from the end by hand: Array findLast
+ * is missing in browsers the page otherwise runs in (Chrome 93-96, Firefox 92-103), where
+ * every question failed before it was sent. */
+function lastAnswered() {
+  for (let i = ASK.log.length - 1; i >= 0; i--) {
+    const e = ASK.log[i];
+    if (text(e.answer).trim() && !e.error) {
+      return e;
+    }
+  }
+  return null;
+}
 function earlierExchange(asked) {
-  const last = ASK.log.findLast(e => text(e.answer).trim() && !e.error);
+  const last = lastAnswered();
   if (!last) {
     return null;
   }

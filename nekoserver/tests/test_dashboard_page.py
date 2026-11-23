@@ -108,6 +108,27 @@ class DashboardPageTests(unittest.TestCase):
             self.assertIn(f'words({field})', source)
             self.assertNotIn(f'list({field})', source)
 
+    def test_the_page_uses_nothing_newer_than_the_browsers_it_runs_in(self):
+        # 0.52.2 test round (T3-01): ASK.log.findLast (Chrome 97, Firefox 104) came in with a
+        # clean-up; in Chrome 93-96 and Firefox 92-103, where the rest of the page works (it
+        # needs Object.hasOwn: Chrome 93, Firefox 92), Ask Neko sent no question at all.
+        source = (ROOT / 'dashboard/app.js').read_text()
+        self.assertIn('Object.hasOwn(', source)  # the floor this test is about
+        for newer in (
+            '.findLast(',
+            '.findLastIndex(',
+            '.toSorted(',
+            '.toReversed(',
+            '.toSpliced(',
+            'Object.groupBy(',
+            'Map.groupBy(',
+            'Promise.withResolvers(',
+            'Array.fromAsync(',
+            '.union(',
+            '.intersection(',
+        ):
+            self.assertNotIn(newer, source)
+
     def test_the_updates_page_links_each_apps_own_release_notes(self):
         answers = page(
             ('releaseNotes', {'app': 'immich', 'version': 'v2.3.1'}),
