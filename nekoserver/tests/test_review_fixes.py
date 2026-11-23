@@ -1,5 +1,6 @@
 """Regression tests for the compose-path, Seerr UID and timezone fixes."""
 
+import contextlib
 import hashlib
 import io
 import http.cookiejar
@@ -3920,6 +3921,50 @@ class PlainRefusalTests(unittest.TestCase):
             ):
                 self.assertEqual(module.main(), 2)
         self.assertEqual(said.getvalue(), f'Nothing was set up: Settings file must be a .json file: {settings}\n')
+
+    def apply_said(self, **patches):
+        """What `account-setup.py --apply` says on its error output, and its exit code."""
+        module = self.load('account_setup_cli', 'account-setup.py')
+        with tempfile.TemporaryDirectory() as d:
+            settings = Path(d) / 'my-config.json'
+            settings.write_text('{"data_mount": "/srv/ssd"}')
+            said = io.StringIO()
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(
+                    mock.patch.object(sys, 'argv', ['account-setup.py', '--apply', '--config', str(settings)])
+                )
+                stack.enter_context(mock.patch.object(module.os, 'geteuid', return_value=0, create=True))
+                stack.enter_context(mock.patch.object(sys.stdin, 'isatty', return_value=True))
+                stack.enter_context(mock.patch('sys.stderr', said))
+                for name, value in patches.items():
+                    stack.enter_context(mock.patch.object(module, name, value))
+                code = module.main()
+        return code, said.getvalue()
+
+    def test_account_setup_apply_says_the_drives_are_not_there(self):
+        """0.52.2 test round, T5-06: with the SSD not mounted it said only "Account setup incomplete"."""
+        refused = mock.Mock(side_effect=RuntimeError('the app SSD (data_ssd) is not connected.'))
+        self.assertEqual(
+            self.apply_said(verify_storage=refused),
+            (
+                2,
+                'Nothing was set up: the app SSD (data_ssd) is not connected.\n',
+            ),
+        )
+
+    def test_account_setup_apply_says_the_saved_logins_could_not_be_read(self):
+        store = mock.Mock()
+        store.get.side_effect = RuntimeError('Invalid private account store; contents preserved')
+        code, said = self.apply_said(
+            verify_storage=mock.Mock(), deployed_apps=mock.Mock(return_value=['jellyfin']), account_store=store
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(
+            said,
+            'Nothing was set up: the saved app logins could not be read (Invalid private account store; contents '
+            'preserved). They are left as they are. To put back the list from a backup:  sudo bash install.sh '
+            '--recover , then "Restore something from a backup" and "The list of app passwords".\n',
+        )
 
     def test_media_connect_says_a_link_in_the_data_root_is_the_cause(self):
         module = self.load('media_connect_cli', 'media-connect.py')
