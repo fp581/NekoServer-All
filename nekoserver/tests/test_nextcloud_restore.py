@@ -163,7 +163,11 @@ class Server:
 
     def app(self, status=None):
         return SimpleNamespace(
-            compose_base=lambda manifest, env: ['compose', str(manifest)],
+            # Like the real one: the pins file is added when it is there at the time of the call.
+            compose_base=lambda manifest, env: (
+                ['compose', str(manifest)]
+                + (['-f', PINS] if (Path(manifest).parent / 'maintenance-images.json').exists() else [])
+            ),
             status=status or (lambda base: {'installed': True, 'maintenance': False, 'needsDbUpgrade': False}),
             settings_problem=lambda owned: ('', owned['settings']['admin_user']),
             adopt=self.adopted.append,
@@ -508,7 +512,9 @@ class PinnedImagesTests(unittest.TestCase):
             looked = [i for i, c in enumerate(said) if 'image inspect sha256:' in c]
             self.assertTrue(looked)
             self.assertLess(max(looked), database)  # looked at before anything starts
-            return (server.data / PINS).exists(), '\n'.join(server.said)
+            kept = (server.data / PINS).exists()
+            self.assertEqual(PINS in said[database], kept)  # the database starts with the pins only if kept
+            return kept, '\n'.join(server.said)
 
     def test_pins_to_images_not_on_this_pc_are_taken_out_so_the_named_versions_are_downloaded(self):
         for backup in ('monthly', 'nightly'):
