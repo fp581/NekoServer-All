@@ -298,8 +298,35 @@ def account_folders_given_back(base, files, log, run=subprocess.run):
     the folder there and its scan's Errors at 0. The number of accounts done; an error
     (naming the accounts left) otherwise, so the recovery note stays for the next run."""
     named = listed_accounts(base, run)
+    folders_made(base, files, named, run)
+    log(
+        f'Nextcloud: the folders of its {len(named)} account(s) were made on the new drive and its file list '
+        'refreshed, so uploads work again'
+    )
+    return len(named)
+
+
+def account_folders_missing(base, files, log, run=subprocess.run):
+    """The same for each account Nextcloud's database lists whose `files` folder is not on
+    the drive at all: its database copy put back on a server whose HDD is new (RECOVERY.md,
+    "Nextcloud's database"), where the files folder was never empty, so nothing was given
+    back, and every upload of a restored account was refused (1.0 round T1-R3). A folder
+    that is there is never touched. The number of folders made."""
+    missing = [name for name in listed_accounts(base, run) if not os.path.lexists(files / name / 'files')]
+    if missing:
+        folders_made(base, files, missing, run)
+        log(
+            f'Nextcloud: {len(missing)} account(s) its database lists had no folder on the drive (a database '
+            'copy put back?): made and their file lists refreshed, so their uploads work'
+        )
+    return len(missing)
+
+
+def folders_made(base, files, names, run=subprocess.run):
+    """Each account's `files` folder made (Nextcloud's own, 755) and its file list
+    refreshed; an error naming the accounts left when one is not done."""
     left = []
-    for name in named:
+    for name in names:
         folder = safe_path(files / name / 'files')
         ensure_directory(folder, 0o755, WWW_DATA, WWW_DATA)
         if not folder.is_dir() or folder.is_symlink():
@@ -314,11 +341,16 @@ def account_folders_given_back(base, files, log, run=subprocess.run):
             + '; '.join(left)
             + '. Run  sudo bash install.sh  again: it tries them again'
         )
-    log(
-        f'Nextcloud: the folders of its {len(named)} account(s) were made on the new drive and its file list '
-        'refreshed, so uploads work again'
-    )
-    return len(named)
+
+
+def account_folders(base, config, folder, fresh, given_back, log):
+    """The accounts' folders after Nextcloud is up: all of them made again when the files
+    folder was given back; else, on a Nextcloud set up before, those its database lists
+    and the drive lacks."""
+    if given_back:
+        finish_files_folder(base, config, folder, log)
+    elif not fresh:
+        account_folders_missing(base, safe_path(cloud_files(config)), log)
 
 
 def scanned(base, name, run=subprocess.run):
@@ -747,8 +779,7 @@ def run(ctx):
         command(base + ['config', '-q'])
         compose_up(base, 'Nextcloud', ctx.log, 1800)
         finish_install(base, ctx.log)
-        if given_back:
-            finish_files_folder(base, config, folder, ctx.log)
+        account_folders(base, config, folder, fresh, given_back, ctx.log)
         if opts.get('image', 'auto') == 'auto':
             config['nextcloud']['image'] = image
             ctx.persist_config()
