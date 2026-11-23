@@ -820,15 +820,22 @@ class Plan:
             return None
         return value if isinstance(value, str) and value.startswith(self.data.rstrip('/') + '/') else None
 
+    def docker_down(self):
+        """Whether Docker cannot start (docker.service failed: a drive it keeps its data on is
+        missing, say). Asking it then waited out each call's minute while its socket tried
+        to start it again, and the terminal stayed empty for two minutes (T4-u2)."""
+        said = self.run(['systemctl', 'show', 'docker.service', '--property=ActiveState'], 30)
+        return 'ActiveState=failed' in said.split()
+
     def compose_projects(self):
         """The apps' Docker projects (neko-jellyfin, neko-immich, ...) with containers."""
-        if not shutil.which('docker'):
+        if not shutil.which('docker') or self.docker_down():
             return []
         out = self.run(['docker', 'ps', '-a', '--format', '{{.Label "com.docker.compose.project"}}'], 60)
         return sorted({line.strip() for line in out.splitlines() if line.strip().startswith(COMPOSE_PREFIX)})
 
     def docker_networks(self):
-        if not shutil.which('docker'):
+        if not shutil.which('docker') or self.docker_down():
             return []
         out = self.run(['docker', 'network', 'ls', '--format', '{{.Name}}'], 60)
         return sorted({line.strip() for line in out.splitlines() if line.strip().startswith(COMPOSE_PREFIX)})
@@ -1072,7 +1079,13 @@ class Plan:
         if networks:
             notes.append('Remove the Docker networks ' + ', '.join(networks))
         if not projects and not networks:
-            notes.append('No app containers found (' + no_containers_why() + ')')
+            why = (
+                'Docker cannot start now (docker.service failed: often a drive it keeps its data on is missing), so '
+                'it could not be asked which it has'
+                if shutil.which('docker') and self.docker_down()
+                else no_containers_why()
+            )
+            notes.append('No app containers found (' + why + ')')
         for path in custom_indexers.installed(self.at(self.data)) if self.identified.get('data') else ():
             notes.append(f"Take NekoServer's download source {path.stem} out of Prowlarr's catalogue ({path})")
         return {'paths': [], 'notes': notes}
@@ -1603,20 +1616,55 @@ def _admitted(plan, call):
     if blocked:
         raise Stopped(blocked)
     _maintenance_idle(call)
-    # A NekoServer job that was cut off keeps its recovery record until it is finished (by
-    # its resume service, at the next start at the latest): uninstalling then would delete
-    # what can finish it, and leave the apps stopped or half restored. The monthly
-    # update's record is checked above, with its own message.
+    _no_cut_off_job(plan, call)
+
+
+# Said with a cut-off job's record when Docker cannot start (a drive it needs is missing,
+# say): its resume service needs Docker, so "start it, or restart" could not work, and
+# NekoServer could not be removed at all (T4-u1 of the 1.0 round).
+DOCKER_DOWN = (
+    ' That service needs Docker, and Docker cannot start now (docker.service failed: often a drive it keeps its '
+    'data on is missing), so it cannot finish yet. Connect the missing drive and restart the computer. If that '
+    'drive is gone for good, the cut-off job can never finish: set its record aside with  sudo mv {record} /root/  '
+    'and run  sudo bash uninstall.sh  again.'
+)
+
+
+def _no_cut_off_job(plan, call):
+    """A NekoServer job that was cut off keeps its recovery record until it is finished (by
+    its resume service, at the next start at the latest): uninstalling then would delete
+    what can finish it, and leave the apps stopped or half restored. Stopped then, saying
+    how to go on. The monthly update's record has its own message (_admitted)."""
+    import neko_common
+
     for job, (path, unit) in neko_common.RECOVERY.items():
         record = str(path)
         if job != 'maintenance' and plan.at(record).exists():
+            down = (call(['systemctl', 'is-active', 'docker.service'], 30)[1].split() or [''])[0] == 'failed'
             raise Stopped(
                 'A NekoServer job was cut off and is not finished yet: its record ' + record + ' is still there, and '
                 'removing NekoServer now would delete what finishes it. Run  sudo systemctl start '
                 + unit
                 + '  (or restart the computer) and let it finish.'
+                + (DOCKER_DOWN.format(record=record) if down else '')
                 + NOTHING_DELETED
             )
+
+
+def _before_the_questions(plan, call):
+    """What stops an uninstall whatever is chosen, checked before anything is asked: a
+    cut-off job, an unfinished monthly update. The person was asked everything, typed the
+    phrase, and only then was told it cannot go on (T4-u1). Checked again later as before."""
+    import neko_common
+
+    blocked = neko_common.pending_maintenance(
+        plan.at(str(neko_common.MAINTENANCE_JOURNAL)),
+        outcome='Nothing was removed.',
+        running=lambda: not _maintenance_idle(call, raises=False),
+    )
+    if blocked:
+        raise Stopped(blocked)
+    _no_cut_off_job(plan, call)
 
 
 def _maintenance_idle(call, raises=True):
@@ -1790,9 +1838,14 @@ def _reset_docker_root(path, call, out):
     """Docker stopped (and checked stopped) before its data-root setting changes, so it
     never writes into a folder that is about to go."""
     out('Stopping Docker and taking its data-root setting out of ' + DAEMON_JSON)
-    code, said = call(['systemctl', 'stop', 'docker.service', 'docker.socket'], 300)
+    # The socket first: stopped together, a Docker that fails to start (a drive missing) was
+    # started again by its socket, and the stop ended "Job for docker.service canceled"
+    # (T4-u1). A Docker that is not running afterwards (stopped or failed) is what matters.
+    call(['systemctl', 'stop', 'docker.socket'], 120)
+    code, said = call(['systemctl', 'stop', 'docker.service'], 300)
     _, state = call(['systemctl', 'is-active', 'docker.service'], 30)
-    if code != 0 or (state.split()[:1] and state.split()[0] in STILL_RUNNING):
+    stopped = (state.split() or [''])[0] in STOPPED
+    if code != 0 and not stopped or (state.split()[:1] and state.split()[0] in STILL_RUNNING):
         raise Stopped(
             'Docker did not stop ('
             + (said or state or 'still running')
@@ -2416,6 +2469,8 @@ def main(argv):
     settings, source = find_settings()
     if dry:
         return dry_run(settings, source)
+    # Said first: looking (Docker's containers, the drives) can take a while (T4-u2).
+    print('Looking at what NekoServer installed on this PC...', flush=True)
     plan = Plan(settings)
     print('Settings: ' + source)
     print('This removes NekoServer from this PC. Nothing is formatted; what you keep stays as it is.')
@@ -2471,6 +2526,7 @@ def window_session(settings):
 def removal(plan):
     """The questions, the removal itself and what is left to say (main)."""
     try:
+        _before_the_questions(plan, call)
         chosen = choose(input, print)
         if not confirm(plan, chosen, input, print):
             print('Stopped. Nothing was changed.')
