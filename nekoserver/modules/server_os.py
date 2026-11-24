@@ -9,6 +9,7 @@ import subprocess
 import native_runtime
 import host
 from neko_common import (
+    MANAGED_UNIT,
     SHARED,
     whole_number,
     SYSTEMD_UNITS,
@@ -376,7 +377,7 @@ def mirror_units(mdadm):
 
 
 def own_unit(path):
-    return path.is_file() and path.read_text().startswith('[Unit]\nDescription=NekoServer ')
+    return path.is_file() and path.read_text().startswith(MANAGED_UNIT)
 
 
 def switch_mirror_start(mdadm, run):
@@ -386,7 +387,7 @@ def switch_mirror_start(mdadm, run):
         return
     run(['systemctl', 'disable', MIRROR_START_TIMER], check=False, capture_output=True, timeout=30)
     for name in (MIRROR_START, MIRROR_START_TIMER):
-        unit = Path('/etc/systemd/system') / name
+        unit = SYSTEMD_UNITS / name
         if own_unit(unit):
             unit.unlink()
 
