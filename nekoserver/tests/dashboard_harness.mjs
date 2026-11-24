@@ -59,7 +59,8 @@ const CALLS = new Set([
   'backupHolds',
   'driveOutcome',
   'diskLine',
-  'confirmMatches'
+  'confirmMatches',
+  'moveWords'
 ]);
 /* Calls answered from another function's result, with more of it; the ask* and media*
    ones run a piece of the page on a page that keeps what is put on it (ASK_PAGE below). */
@@ -195,6 +196,7 @@ const SPECIAL = {
   backupSummary: argument => app.backupSummary(app.validStatus(argument)),
   jobLine: ([label, job]) => app.jobLine(label, job),
   confirmMatches: ([typed, wanted]) => app.confirmMatches(typed, wanted),
+  moveWords: ([words, result]) => app.moveWords(words, result),
   upgradeAtWork: ([release, s, asked]) => app.upgradeAtWork(release, s, asked),
   gettingStarted: argument => app.gettingStarted(app.validStatus(argument)),
   companionWords: ([mood, s, issues]) => app.companionWords(mood, app.validStatus(s), issues),

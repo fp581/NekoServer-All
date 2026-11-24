@@ -6619,15 +6619,25 @@ function driveDiskCard(d, look, busy, signed) {
   }
   return card;
 }
+/* What a move does to the apps, said before it starts: all of them pause for its last step
+ * (the last copy, the compare and the switch; storage_jobs.py), with how long that took the
+ * last time when the last job's result says (paused_seconds). */
+function moveWords(words, result) {
+  const n = object(result).paused_seconds;
+  const said =
+    'Your ' +
+    words +
+    ' are copied while the apps keep running. For the last step all apps pause and start again by themselves.';
+  return Number.isInteger(n) && n >= 0 ? said + ' Last time that took ' + plural(n, 'second') + '.' : said;
+}
 function moveDialog(k, busy) {
   const targets = list(k.targets);
   const nodes = [
     el(
       'p',
       '',
-      'Your ' +
-        text(k.words, 'data').toLowerCase() +
-        ' are copied while the apps keep running; the apps that use them stop only for the last copy. The copy on the ' +
+      moveWords(text(k.words, 'data').toLowerCase(), storageJob().result) +
+        ' The copy on the ' +
         text(k.place_words, 'drive') +
         ' stays there until you delete it.'
     )
