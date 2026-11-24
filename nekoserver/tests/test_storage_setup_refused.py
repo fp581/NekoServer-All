@@ -470,52 +470,82 @@ class FolderModeTests(Jobs):
         self.assertEqual((self.root / 'drives/d3/library/movies/film.mkv').read_text(), 'x')
         self.assertEqual((self.root / 'drives/d3/library').stat().st_mode & 0o777, 0o755)
 
-    def test_a_parent_folder_with_none_at_the_old_place_is_made_0755(self):
+    def test_a_parent_folder_with_none_at_the_old_place_takes_the_mode_of_the_one_above_it(self):
         here, to = self.root / 'media', self.root / 'drives/d3'
-        to.mkdir(parents=True, exist_ok=True)
-        before = os.umask(0o077)
-        try:
-            storage_jobs.parents_like(to / 'photos/archive/x', here, to)
-        finally:
-            os.umask(before)
-        for folder in (to / 'photos', to / 'photos/archive'):
-            self.assertEqual(folder.stat().st_mode & 0o777, 0o755)
-        self.assertFalse((to / 'photos/archive/x').exists())
+        for mode in (0o755, 0o750):
+            with self.subTest(mode=oct(mode)):
+                to.mkdir(parents=True, exist_ok=True)
+                os.chmod(to, mode)
+                before = os.umask(0o077)
+                try:
+                    storage_jobs.parents_like(to / 'photos/archive/x', here, to)
+                finally:
+                    os.umask(before)
+                for folder in (to / 'photos', to / 'photos/archive'):
+                    self.assertEqual(folder.stat().st_mode & 0o777, mode)
+                self.assertFalse((to / 'photos/archive/x').exists())
+                self.assertEqual(sorted(p.name for p in to.iterdir()), ['photos'])
+                (to / 'photos/archive').rmdir()
+                (to / 'photos').rmdir()
 
-    def test_a_parent_folder_is_0755_already_before_its_mode_is_set(self):
+    def test_a_parent_folder_has_its_name_only_once_it_has_its_mode(self):
         here, to = self.root / 'media', self.root / 'drives/d3'
         to.mkdir(parents=True, exist_ok=True)
-        modes = []
+        os.chmod(to, 0o755)
+        (to / '.photos.making').mkdir()  # left by a power cut
+        renamed, rename = [], os.rename
+
+        def watched(source, target):
+            renamed.append((Path(source).stat().st_mode & 0o777, Path(target).exists()))
+            rename(source, target)
+
         before = os.umask(0o077)
         try:
-            with mock.patch.object(
-                storage_jobs.os, 'chmod', lambda path, mode: modes.append(Path(path).stat().st_mode)
-            ):
+            with mock.patch.object(storage_jobs.os, 'rename', watched):
                 storage_jobs.parents_like(to / 'photos/archive/x', here, to)
         finally:
             os.umask(before)
-        self.assertEqual([mode & 0o777 for mode in modes], [0o755, 0o755])
+        self.assertEqual(renamed, [(0o755, False), (0o755, False)])
+        self.assertEqual(sorted(p.name for p in to.iterdir()), ['photos'])
 
-    def test_setup_run_again_by_a_job_runs_with_the_umask_setup_has_by_hand(self):
+    def test_setup_run_again_by_a_job_runs_with_the_systems_umask(self):
         import migrate
 
-        seen = []
-
-        def setup(*args, **kwargs):
-            seen.append(os.umask(0o022))
-
+        status = self.root / 'login.defs'
         job = SimpleNamespace(
             state=self.root / 'state', id=ID, config=self.config, settings_files=self.settings, out=print
         )
-        before = os.umask(0o077)
-        try:
-            with mock.patch.object(migrate, 'setup_again', setup):
-                REAL_SETUP_AGAIN(job)
-            after = os.umask(before)
-        finally:
-            os.umask(before)
-        self.assertEqual(seen, [0o022])
-        self.assertEqual(after, 0o077)
+        for said, wanted in (
+            ('UMASK\t\t022\n', 0o022),
+            ('UMASK 027\n', 0o027),
+            ('UMASK\t002\n', 0o077),  # the group could write: not taken
+            ('UMASK 000\n', 0o077),
+            ('#UMASK 022\n', 0o077),
+            (None, 0o077),
+        ):
+            with self.subTest(said=said):
+                status.unlink(missing_ok=True)
+                if said:
+                    status.write_text('# login settings\nPASS_MAX_DAYS\t99999\n' + said + 'USERGROUPS_ENAB yes\n')
+                seen = []
+
+                def setup(*args, **kwargs):
+                    mask = os.umask(0o077)
+                    os.umask(mask)
+                    seen.append(mask)
+
+                before = os.umask(0o077)
+                try:
+                    with (
+                        mock.patch.object(migrate, 'setup_again', setup),
+                        mock.patch.object(storage_jobs, 'LOGIN_DEFS', (self.root / 'etc-none', status)),
+                    ):
+                        REAL_SETUP_AGAIN(job)
+                    after = os.umask(before)
+                finally:
+                    os.umask(before)
+                self.assertEqual(seen, [wanted])
+                self.assertEqual(after, 0o077)
 
 
 if __name__ == '__main__':

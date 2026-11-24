@@ -1076,13 +1076,32 @@ def setup_again(job):
 
     log = job.state / f'setup-{job.id}.log'
     # The job's unit keeps its own files private (UMask=0077); setup makes folders others
-    # use (the drives' mount folders, the apps' folders), so it runs with the umask it has
-    # when started by hand (sudo: 022), not this one.
-    before = os.umask(0o022)
+    # use (the drives' mount folders, the apps' folders), so it runs with the system's
+    # umask, the one it has when started by hand, not this one.
+    wanted = system_umask()
+    before = None if wanted is None else os.umask(wanted)
     try:
         migrate.setup_again(job.config, job.settings_files[-1], log, out=job.out)
     finally:
-        os.umask(before)
+        if before is not None:
+            os.umask(before)
+
+
+# Where the system's umask is read: the one a login starts with, so the one setup has when
+# started by hand (022 on Debian, Ubuntu, Fedora, openSUSE and Arch). Not PID 1's: that is
+# 0000 (systemd's own; its services get DefaultUMask). openSUSE keeps only the vendor copy.
+LOGIN_DEFS = (Path('/etc/login.defs'), Path('/usr/etc/login.defs'))
+
+
+def system_umask():
+    """The system's umask (login.defs UMASK), or None when it is not said or would let the
+    group or others write (the job's own private umask then stays)."""
+    text = next((path.read_text(errors='replace') for path in LOGIN_DEFS if path.is_file()), '')
+    found = re.search(r'^[ \t]*UMASK[ \t]+(0?[0-7]{3})[ \t]*$', text, re.MULTILINE)
+    if not found:
+        return None
+    mask = int(found[1], 8)
+    return mask if mask & 0o022 == 0o022 else None
 
 
 # ---- B: move one kind of data -----------------------------------------------------------------
@@ -1108,9 +1127,11 @@ def gone_or_empty(folder):
 
 def parents_like(target, here_root, to_root):
     """The folders above a kind's folder at its new place that are not there yet, made
-    with the mode and owner of the same folders at the old place (0755, root's, where
-    there is none): the job's unit makes its files private (UMask=0077), and a 0700
-    library/ kept Sonarr and Radarr, which do not run as root, out of their folders."""
+    with the mode and owner of the same folders at the old place (of the folder above it
+    at the new place, where the old place has none): the job's unit makes its files
+    private (UMask=0077), and a 0700 library/ kept Sonarr and Radarr, which do not run as
+    root, out of their folders. Each is made under a hidden name and renamed once it has
+    its mode, so a power cut never leaves one with the unit's 0700 (T5 on 4c34bb6)."""
     import stat
 
     missing = []
@@ -1119,21 +1140,16 @@ def parents_like(target, here_root, to_root):
         missing.append(folder)
         folder = folder.parent
     for folder in reversed(missing):
-        # 0755 from the start, whatever the unit's umask: a power cut before the chmod
-        # below leaves a folder the apps can still go through (T5 on 4c34bb6).
-        before = os.umask(0o022)
-        try:
-            folder.mkdir(mode=0o755)
-        finally:
-            os.umask(before)
         like = here_root / folder.relative_to(to_root)
-        if like.is_dir():
-            seen = like.stat()
-            os.chmod(folder, stat.S_IMODE(seen.st_mode))
-            if seen.st_uid != folder.stat().st_uid or seen.st_gid != folder.stat().st_gid:
-                os.chown(folder, seen.st_uid, seen.st_gid, follow_symlinks=False)
-        else:
-            os.chmod(folder, 0o755)
+        seen = (like if like.is_dir() else folder.parent).stat()
+        making = folder.with_name(f'.{folder.name}.making')
+        if making.is_dir() and not making.is_symlink():
+            making.rmdir()  # an empty one a power cut left
+        making.mkdir()
+        os.chmod(making, stat.S_IMODE(seen.st_mode))
+        if (seen.st_uid, seen.st_gid) != (making.stat().st_uid, making.stat().st_gid):
+            os.chown(making, seen.st_uid, seen.st_gid, follow_symlinks=False)
+        os.rename(making, folder)
 
 
 def shutil_which(name):
