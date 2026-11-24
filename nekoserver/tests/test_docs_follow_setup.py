@@ -774,5 +774,21 @@ class ToolHelpTests(unittest.TestCase):
             self.assertIn(' '.join(neko_common.SETTINGS_HELP.split()[:6]), ' '.join(self.help_of(tool).split()))
 
 
+class MirrorThatLostADriveTests(unittest.TestCase):
+    """1.0 round T1-R19: a mirror (mdadm) with a drive missing is started on the drive left
+    about a minute into the start (nekoserver-mirror-start.timer), so the docs say the
+    server starts on it after a restart too, and the rebuild is the mdadm --add steps (1.0.0
+    has no rebuild button)."""
+
+    def test_recovery_says_the_server_starts_on_the_drive_left_and_how_to_rebuild(self):
+        row = doc('RECOVERY.md').split('**A drive of a RAID array failed**')[1].split(chr(10))[0]
+        self.assertIn('starts on it after a restart too', row)
+        self.assertIn('sudo mdadm /dev/md0 --add /dev/sdX', row)
+        self.assertNotIn('button', row)
+
+    def test_storage_names_the_timer_that_starts_the_mirror(self):
+        self.assertIn('nekoserver-mirror-start.timer', doc('STORAGE.md'))
+
+
 if __name__ == '__main__':
     unittest.main()
