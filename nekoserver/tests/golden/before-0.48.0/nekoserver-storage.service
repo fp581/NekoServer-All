@@ -1,0 +1,9 @@
+[Unit]
+Description=NekoServer change your drives (from the dashboard)
+RequiresMountsFor=/srv/nekoserver
+After=docker.service
+[Service]
+Type=oneshot
+UMask=0077
+TimeoutStartSec=infinity
+ExecStart=/usr/bin/python3 -Es /srv/nekoserver/installer/releases/v1.0.1/storage_jobs.py run --config /srv/nekoserver/installer/releases/v1.0.1/config.json --config "/home/amy/NekoServer All/nekoserver/my-config.json" --request /run/nekoserver-control/storage/request.json

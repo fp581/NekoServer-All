@@ -1,0 +1,13 @@
+[Unit]
+Description=NekoServer finish or undo a drives change a power cut stopped
+RequiresMountsFor=/srv/nekoserver
+After=local-fs.target nekoserver-mirror-start.service
+Before=docker.service
+ConditionPathExists=/etc/nekoserver-backups/storage/journal.json
+[Service]
+Type=oneshot
+UMask=0077
+TimeoutStartSec=30min
+ExecStart=/usr/bin/python3 -Es /srv/nekoserver/installer/releases/v1.0.1/storage_jobs.py resume --config /srv/nekoserver/installer/releases/v1.0.1/config.json --config "/home/amy/NekoServer All/nekoserver/my-config.json"
+[Install]
+WantedBy=multi-user.target
