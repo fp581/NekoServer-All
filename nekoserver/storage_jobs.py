@@ -1135,7 +1135,8 @@ def steps_working(config):
 
     try:
         return migrate.steps_working(config)
-    except Exception:  # noqa: BLE001  (no record of the steps: the check after the move is the dashboard's)
+    except Exception:  # noqa: BLE001
+        # No record of the steps: the check after the move is the dashboard's.
         return []
 
 
@@ -1268,7 +1269,8 @@ def finish_move(job, kind, here, stopped):
             # Setup never mounts the backups' new place over files at the old one.
             retire_old(job, kind, here)
         setup_again(job)
-    except Exception as error:  # noqa: BLE001  (a refusal of the place undoes the move, never half)
+    except Exception as error:  # noqa: BLE001
+        # A refusal of the place undoes the move, never half.
         if refused_place(job, kind):
             unswitch(job, kind, here, stopped, error)
         other = error
@@ -1393,7 +1395,8 @@ def unswitch(job, kind, here, stopped, why):
     also = ''
     try:
         setup_again(job)
-    except Exception as error:  # noqa: BLE001  (said; the files and the settings are as before)
+    except Exception as error:  # noqa: BLE001
+        # Said; the files and the settings are as before.
         also = f' Setup run again for {place_words(here)} stopped too: {error}'
     finally:
         migrate.start_again(stopped, job.out)
@@ -1618,7 +1621,8 @@ def worked(job):
         job.result('failed', f'{refused} Nothing was changed.')
         job.done()
         return 1
-    except Exception as error:  # noqa: BLE001  (said on the page; the journal decides what the boot does)
+    except Exception as error:  # noqa: BLE001
+        # Said on the page; the journal decides what the boot does.
         saved = read_state(JOURNAL, job.state)
         if saved and saved.get('committed'):
             job.result('failed', f'The job stopped after the switch: {error}', 'It is finished at the next start.')
