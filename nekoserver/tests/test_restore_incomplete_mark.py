@@ -49,6 +49,21 @@ class IncompleteMarkTests(unittest.TestCase):
             raise KeyboardInterrupt
         self.assertEqual(self.marks(), ['nextcloud-neko-20261124-110719-INCOMPLETE.txt'])
 
+    def test_a_restore_ended_by_an_error_keeps_its_mark_and_one_that_returns_early_does_not(self):
+        with self.assertRaises(OSError), recovery_wizard.part_way(self.target, print):
+            self.target.mkdir()
+            raise OSError('No space left on device')
+        self.assertEqual(self.marks(), ['nextcloud-neko-20261124-110719-INCOMPLETE.txt'])
+        other = self.home / 'photos-neko-20261124-120000'
+
+        def returns_from_inside():
+            with recovery_wizard.part_way(other, print):
+                other.mkdir()
+                return 65
+
+        self.assertEqual(returns_from_inside(), 65)  # as Chosen.copy returns its count
+        self.assertEqual(self.marks(), ['nextcloud-neko-20261124-110719-INCOMPLETE.txt'])
+
     def test_the_next_menu_run_names_a_marked_folder_with_the_words_ctrl_c_uses(self):
         def killed():
             with recovery_wizard.part_way(self.target, lambda line: None):

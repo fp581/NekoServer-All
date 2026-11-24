@@ -1638,13 +1638,19 @@ def part_way(target, output):
         mark.write_text(PART_WAY.format(target=target).strip() + '\n')
     except OSError:
         pass  # no mark, as before: the restore itself is not stopped for it
+    finished = False
     try:
         yield
+        finished = True
     except KeyboardInterrupt:
         if os.path.lexists(target):
             output(PART_WAY.format(target=target))
         raise
-    mark.unlink(missing_ok=True)
+    finally:
+        # Only a restore that ran to its end loses the mark; one stopped by anything
+        # (Ctrl+C, an error, the menu closed) is not finished, and keeps it.
+        if finished:
+            mark.unlink(missing_ok=True)
 
 
 def name_incomplete(config, output):
