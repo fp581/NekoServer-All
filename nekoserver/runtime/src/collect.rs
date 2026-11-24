@@ -3804,6 +3804,12 @@ pub fn run(a: &Args) -> Result<()> {
     result["battery"] = battery(Path::new("/sys/class/power_supply"));
     result["network_storage"] = network_storage(&cfg, Path::new("/sys/class/iscsi_session"));
     result["arrays"] = arrays;
+    // The Drives page (1.0.1): every disk and what it is to NekoServer.
+    result["disks"] = json!(crate::drives::disks(&cfg));
+    // Where each kind of data is, and the Drives page's job (storage.rs).
+    let storage = crate::storage::Storage::default();
+    result["data_kinds"] = json!(crate::storage::data_kinds(&cfg, &storage.look()));
+    result["storage_job"] = storage.job();
     mark_held(&mut result);
     result["alerts"] = alerts(&result);
     // The readings are published even when the SSD can't keep the collector's own state

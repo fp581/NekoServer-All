@@ -93,6 +93,11 @@ class DashboardFilesTests(unittest.TestCase):
             'assist': 'ask neko',
             'media': 'media',
             'cards': 'cards',
+            # The Drives page (1.0.1).
+            'storage': 'drives',
+            'drive': 'drives',
+            'data': 'drives',
+            'mirror': 'drives',
         }
         self.assertEqual({page.split('-')[0] for page in ops}, set(words))
         guide = (ROOT / 'DASHBOARD.md').read_text()
