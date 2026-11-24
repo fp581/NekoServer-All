@@ -1391,7 +1391,7 @@ fn parse_startup(out: &str) -> Vec<Value> {
 /// (deep check 301).
 fn failed_advice(unit: &str) -> &'static str {
     match unit {
-        "nekoserver-gateway-lan.service" => "It gave up after several failed starts and stays stopped until a drive comes back, the NAS check runs or setup runs. Once the drives are connected, start it now: sudo systemctl start nekoserver-gateway-lan.service (if it stops again, sudo journalctl -u nekoserver-gateway-lan.service says why). Until then the apps' home addresses don't answer; the Tailscale addresses keep working.",
+        "nekoserver-gateway-lan.service" => "It gave up after several failed starts and stays stopped until a drive comes back, the NAS check runs or setup runs. Once the drives are connected, start it now: sudo systemctl reset-failed nekoserver-gateway-lan.service && sudo systemctl start nekoserver-gateway-lan.service (the first command clears its give-up: a plain start is refused for up to 30 minutes after it; if it stops again, sudo journalctl -u nekoserver-gateway-lan.service says why). Until then the apps' home addresses don't answer; the Tailscale addresses keep working.",
         _ => "Its last start or run failed. The guide shows how to read its log; setup can start it again.",
     }
 }
@@ -4808,7 +4808,9 @@ mod os_tests {
             "{said}"
         );
         assert!(
-            said.contains("sudo systemctl start nekoserver-gateway-lan.service"),
+            said.contains(
+                "sudo systemctl reset-failed nekoserver-gateway-lan.service && sudo systemctl start nekoserver-gateway-lan.service"
+            ),
             "{said}"
         );
     }
