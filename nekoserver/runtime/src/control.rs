@@ -939,8 +939,32 @@ fn restore_tool() -> PathBuf {
         .unwrap_or_default()
 }
 
+/// The app controls that start, stop, update or move an app (or Docker with it).
+const CHANGES_APPS: [&str; 5] = [
+    "app_restart",
+    "app_update_now",
+    "app_upgrade_nekoserver",
+    "app_update_run",
+    "app_media_change",
+];
+
+/// Refused while another program holds the operation lock: a Drives job stops Docker and
+/// the apps while it moves their files, and an app started then would write onto the old
+/// place (T1-10/T1-11). Looking (state, checks, the Drives page) goes on.
+fn apps_held(op: &str, operation_lock: &Path) -> Option<Value> {
+    (CHANGES_APPS.contains(&op) && assist::held(operation_lock)).then(|| {
+        refuse(
+            "E47",
+            "A drives job (or another NekoServer job) is at work; try again when it has finished. Nothing was changed.",
+        )
+    })
+}
+
 /// Restart a server app, or close a desktop app (the PIN is already checked).
 fn app_control(service: &Arc<Service>, op: &str, request: &Value) -> Value {
+    if let Some(refused) = apps_held(op, Path::new(*common::OPERATION_LOCK)) {
+        return refused;
+    }
     let process = || {
         let pid = request["pid"]
             .as_u64()
@@ -2097,6 +2121,41 @@ mod tests {
 
     /// 1.0.1 contract §3: the Drives page needs the PIN like every app control, and the
     /// PIN typed again to erase a drive or delete an old copy (wrong ones count as unlock's).
+    #[test]
+    fn no_app_is_changed_while_a_drives_job_holds_the_lock() {
+        use std::os::unix::io::AsRawFd;
+        let lock = std::env::temp_dir().join(format!("neko-op-lock-{}", std::process::id()));
+        fs::write(&lock, "").unwrap();
+        let holder = fs::File::open(&lock).unwrap();
+        // SAFETY: flock on a descriptor this test owns, as the Python job takes it.
+        assert_eq!(unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX) }, 0);
+        for op in CHANGES_APPS {
+            let refused = apps_held(op, &lock).expect(op);
+            assert_eq!(refused["error"], "E47", "{op}");
+            assert!(refused["message"].as_str().unwrap().contains("drives job"));
+        }
+        // Looking goes on: the Drives page follows its own job, checks only look.
+        for op in [
+            "app_storage_state",
+            "app_storage_look",
+            "app_update_check",
+            "app_media_state",
+            "desktop_close",
+        ] {
+            assert!(apps_held(op, &lock).is_none(), "{op}");
+        }
+        drop(holder);
+        assert!(
+            apps_held("app_restart", &lock).is_none(),
+            "let go: allowed again"
+        );
+        fs::remove_file(&lock).unwrap();
+        assert!(
+            apps_held("app_restart", &lock).is_none(),
+            "no lock file: nothing at work"
+        );
+    }
+
     #[test]
     fn the_drives_page_needs_the_pin_and_again_to_erase() {
         let board = fans::tests::Board::new("drives-page");
