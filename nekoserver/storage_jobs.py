@@ -1248,10 +1248,10 @@ WORK = {'use': use, 'release': release, 'move': move, 'back': back, 'delete_old'
 def mirror_context(job):
     import mirror_add
 
-    def ran(argv):
+    def ran(argv, timeout=None):
         import subprocess
 
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=600, check=False)
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
         return done.returncode, done.stdout + done.stderr
 
     return mirror_add.Context(
@@ -1499,15 +1499,15 @@ def finish(config, settings_files, state=None, folder=None, out=print):
 
 def finish_mirror(job, saved):
     """A Btrfs replacement a power cut stopped: Btrfs goes on with it by itself; it is
-    waited for here (after the start, never holding it up) and the balance run."""
+    waited for here (after the start, never holding it up) and the balance run. The journal
+    is mirror_add's to clear: a pool that is not open keeps it for the next start."""
     import mirror_add
 
-    ctx = mirror_context(job)
-    array = mirror_add.find(saved['undo'].get('array'), ctx.run, ctx.sys_block)
-    if array is None:
-        return mirror_result(job, mirror_add.resume(saved, ctx), power_cut=True)
-    fields = mirror_add.finish_btrfs(array, ctx)
-    return mirror_result(job, dict(fields, state='resumed' if fields['state'] == 'done' else fields['state']), True)
+    fields = mirror_add.finish(saved, mirror_context(job))
+    state = 'resumed' if fields['state'] == 'done' else fields['state']
+    job.result(state, fields['message'], fields.get('advice'), power_cut=True)
+    (job.folder / PROGRESS).unlink(missing_ok=True)
+    return 0 if state == 'resumed' else 1
 
 
 def main(argv=None):
