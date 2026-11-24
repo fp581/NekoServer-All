@@ -1613,7 +1613,7 @@ impl JobSeen {
         };
         // An update undone after the apps did not start well: the backup was made and the
         // apps are back as they were, so only the update is still to come (done in part).
-        let undone = key == "maintenance" && rolled_back(&saved);
+        let undone = undone(key, &saved);
         let status = job_status(&saved, undone);
         // A success saved while the clock was ahead still counts (shown as now): hiding
         // it would read as "never succeeded" after the clock was put back.
@@ -1750,7 +1750,7 @@ fn job_reason(
     if status == "fail" {
         Some(with_full_usb_advice(key, failure_reason(saved)))
     } else if undone {
-        Some(undone_reason(saved))
+        Some(undone_reason(key, saved))
     } else if status == "partial" {
         Some(partial_reason(&saved["missing"]))
     } else if never_succeeded && stale {
@@ -1914,14 +1914,19 @@ fn rolled_back(saved: &Value) -> bool {
             || (saved["stage"] == UPDATED_APPS_STAGE
                 && !text(&saved["reason"]).contains("; then: ")))
 }
+/// An update the monthly run or the weekly app updates (and Update now) put back as it was.
+fn undone(key: &str, saved: &Value) -> bool {
+    ["maintenance", "updates"].contains(&key) && rolled_back(saved)
+}
 /// "The update was undone: …", in plain words, with why in short (the first sentence of
 /// the reason; the advice for engineers after it is left to the guide).
-fn undone_reason(saved: &Value) -> String {
+fn undone_reason(key: &str, saved: &Value) -> String {
     let said = text(&saved["reason"]);
     let why = said.split(". ").next().unwrap_or("").trim_end_matches('.');
     // A failed run that was set to try again says when (the next night, a few nights).
     let again = match saved["retry_at"].as_str() {
         Some(when) if !when.trim().is_empty() => format!("{}.", capitalised(&whole(when, 200))),
+        _ if key == "updates" => "It is tried again next week.".to_string(),
         _ => "It is tried again next month.".to_string(),
     };
     let mut out = format!(
@@ -5908,14 +5913,14 @@ mod user_panel_tests {
         assert!(!rolled_back(
             &json!({"status": "pass", "rolled_back": true})
         ));
-        let said = undone_reason(&saved);
+        let said = undone_reason("maintenance", &saved);
         assert_eq!(said, "The update was undone: your apps are back on their previous version and work as before. It is tried again next month. Why: Jellyfin was not ready after 5 minutes (Container not healthy).");
         assert!(!said.contains("health_wait_seconds"));
         // A run set to try again the next night says so instead of "next month".
         let mut soon = saved.clone();
         soon["retry_at"] =
             json!("the monthly update tries again on 2026-11-03 02:30:00 Europe/Lisbon");
-        assert!(undone_reason(&soon).contains(
+        assert!(undone_reason("maintenance", &soon).contains(
             "work as before. The monthly update tries again on 2026-11-03 02:30:00 Europe/Lisbon. Why:"
         ));
         let mut worse = saved.clone();
@@ -5939,6 +5944,41 @@ mod user_panel_tests {
         assert_eq!(
             shown[0]["title"],
             "Monthly backup and updates: the update was undone, your apps work"
+        );
+    }
+    /// T1-R11: a weekly app update (or Update now) whose app did not start is undone as
+    /// the monthly one is, and the page says so the same way: the apps work, the update
+    /// is tried again next week, the reason the report cut at 300 characters still read.
+    #[test]
+    fn a_rolled_back_weekly_update_says_the_apps_are_back_and_working() {
+        let said = common::sanitize(concat!(
+            "Failed while starting the updated apps: prowlarr 3.1.0.5799-ls170: prowlarr was not ",
+            "ready after 5 minutes (Missing healthy services). If it was still updating its database, ",
+            "raise \"health_wait_seconds\" under \"maintenance\" (up to 1800) and run  sudo bash ",
+            "install.sh  again; the next monthly update then waits longer; undone, prowlarr runs its ",
+            "previous version and the update is tried again next week"
+        ));
+        let saved = json!({"status": "fail", "rolled_back": true, "reason": said});
+        assert!(undone("updates", &saved));
+        assert!(undone("maintenance", &saved));
+        assert!(!undone("applications", &saved), "only an update is undone");
+        assert!(!undone(
+            "updates",
+            &json!({"status": "fail", "reason": said})
+        ));
+        assert_eq!(
+            undone_reason("updates", &saved),
+            "The update was undone: your apps are back on their previous version and work as before. It is tried again next week. Why: Failed while starting the updated apps: prowlarr 3.1.0.5799-ls170: prowlarr was not ready after 5 minutes (Missing healthy services)."
+        );
+        assert_eq!(job_status(&saved, undone("updates", &saved)), "partial");
+        let shown = alerts(
+            &json!({"backups": [{"id": "updates", "name": "Weekly app updates",
+            "status": "partial", "rolled_back": true, "reason": undone_reason("updates", &saved)}]}),
+        );
+        assert_eq!(shown[0]["level"], "warning");
+        assert_eq!(
+            shown[0]["title"],
+            "Weekly app updates: the update was undone, your apps work"
         );
     }
     /// UP-06: a reason the report cut at 300 characters ends at a whole sentence or word,
@@ -6809,7 +6849,7 @@ mod split_helpers {
         );
         assert_eq!(
             job_reason("maintenance", &saved, ("partial", true), true, true),
-            Some(undone_reason(&saved))
+            Some(undone_reason("maintenance", &saved))
         );
         assert_eq!(
             job_reason("external", &saved, ("fail", true), true, true),
