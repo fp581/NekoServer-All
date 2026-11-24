@@ -5135,6 +5135,17 @@ pub fn update_apps(a: &Args) -> Result<()> {
     }
     result
 }
+/// An app whose update failed and could not be put back either: the night is a failure,
+/// not "undone", even when an earlier app's update was undone that night (T1-R11).
+fn left_broken(
+    app: &str,
+    failure: &impl std::fmt::Display,
+    then: &impl std::fmt::Display,
+    undone: &std::cell::Cell<bool>,
+) -> Error {
+    undone.set(false);
+    Error::new(&format!("{app}: {failure}; then: {then}"))
+}
 /// "Update now"'s `<app>:<sig>`: the app (one set up here) and the version chosen. No
 /// value: the update night, every app.
 fn update_now_target(value: &str, apps: &[String]) -> Result<Option<(String, String)>> {
@@ -5240,7 +5251,7 @@ fn install_due(
                     .ok()
                     .and_then(|j| j["phase"].as_str().map(str::to_string));
                 if let Err(e) = resume(cfgpath, cfg) {
-                    return Err(Error::new(&format!("{app}: {failure}; then: {e}")));
+                    return Err(left_broken(&app, &failure, &e, undone));
                 }
                 tidy_after_failure(cfg);
                 if installed {
@@ -8703,6 +8714,24 @@ pub(crate) mod tests {
         let source = include_str!("maintenance.rs");
         assert!(
             source.contains("note_failed_report(&cfgpath, &data, \"maintenance\", \"rolled_back\"")
+        );
+    }
+    /// T1-R11 review: on an update night app A's update is undone, then app B's fails and
+    /// putting B back fails too. The night's report must not say "rolled_back" (the page
+    /// would read "undone, your apps work" while B is broken).
+    #[test]
+    fn an_app_left_broken_after_an_undone_one_makes_the_night_a_failure() {
+        let undone = std::cell::Cell::new(true); // A's update was undone earlier
+        let said = left_broken(
+            "sonarr",
+            &"sonarr was not ready after 5 minutes",
+            &"Rollback state incomplete",
+            &undone,
+        );
+        assert!(!undone.get(), "the report would say rolled_back");
+        assert_eq!(
+            said.to_string(),
+            "sonarr: sonarr was not ready after 5 minutes; then: Rollback state incomplete"
         );
     }
     #[test]
