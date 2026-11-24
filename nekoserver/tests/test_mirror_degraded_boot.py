@@ -34,6 +34,7 @@ class BindLinesTests(unittest.TestCase):
     def test_setup_run_again_puts_its_new_line_in_place_of_the_one_it_wrote_before(self):
         lines = ['UUID=1234 / ext4 defaults 0 1', OLD_LINE]
         entry = storage.bind_line(APPS, '/srv/nekoserver')
+        self.assertNotEqual(entry, OLD_LINE)
         self.assertEqual(storage.bind_line_index(lines, '/srv/nekoserver', entry), 1)
         self.assertTrue(storage.own_bind_line(entry.split()))
 
