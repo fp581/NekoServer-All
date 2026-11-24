@@ -60,7 +60,7 @@ class Marked(Jobs):
             mock.patch.object(job, 'result', resulted),
             mock.patch.object(migrate, 'copy', copied),
             mock.patch.object(migrate, 'server_check', checked),
-            mock.patch.object(storage_jobs, 'du', lambda paths: 7),
+            mock.patch.object(storage_jobs, 'du', return_value=7),
             mock.patch.object(storage_jobs, 'run', self.tools),
             mock.patch.object(
                 storage_jobs, 'shutil_which', lambda name: '/usr/bin/chattr' if name == 'chattr' else None
@@ -71,6 +71,10 @@ class Marked(Jobs):
 
     def journals(self):
         return [m[1:] for m in self.marks if m[0] == 'journal']
+
+    def world_now(self, config):
+        # The disk as the test has it when the job looks (a test may change it after patching).
+        return world(self.disk)
 
     def job(self, job, **fields):
         return storage_jobs.Job(
@@ -182,10 +186,13 @@ class BackupsTests(Marked):
         self.unbound, self.rebound = [], []
         for patch in (
             mock.patch.object(storage_jobs, 'unbind_backups', lambda config: self.unbound.append(config)),
-            mock.patch.object(storage_jobs, 'rebind_backups', lambda config, out=print: self.rebound.append(1)),
+            mock.patch.object(storage_jobs, 'rebind_backups', self.rebind),
         ):
             patch.start()
             self.addCleanup(patch.stop)
+
+    def rebind(self, config, out=print):
+        self.rebound.append(1)
 
     def test_backups_back_on_the_media_drive_leave_their_binds_and_their_setting(self):
         self.config['locations'] = {'backups': 'd3'}
@@ -255,7 +262,7 @@ class StoppedTests(Marked):
         self.disk = disk('sdc', serial='S-AAAA')
         refused = storage_jobs.Refused('busy', 'Linux is using the disk right now: nothing was erased.')
         with (
-            mock.patch.object(storage_jobs, 'world_now', lambda config: world(self.disk)),
+            mock.patch.object(storage_jobs, 'world_now', self.world_now),
             mock.patch.object(storage_jobs, 'erase', side_effect=refused),
         ):
             shown = storage_jobs.describe(dict(world(self.disk), named={}))[0]
@@ -499,7 +506,7 @@ class UseAndReleaseTests(Marked):
     def setUp(self):
         super().setUp()
         self.disk = disk('sdc', serial='S-AAAA', children=[part('sdc1', fstype='ext4', uuid='u-new')])
-        patch = mock.patch.object(storage_jobs, 'world_now', lambda config: world(self.disk))
+        patch = mock.patch.object(storage_jobs, 'world_now', self.world_now)
         patch.start()
         self.addCleanup(patch.stop)
 
@@ -536,7 +543,7 @@ class UseAndReleaseTests(Marked):
         mounted = self.root / 'drives/d3'
         with (
             mock.patch.object(storage_jobs.os.path, 'ismount', lambda path: Path(path) == mounted),
-            mock.patch.object(storage_jobs, 'drop_fstab_line', lambda mountpoint: None),
+            mock.patch.object(storage_jobs, 'drop_fstab_line', return_value=None),
         ):
             self.assertEqual(self.run_job('release', drive='d3'), 0)
         self.tools.assert_called_once_with(['umount', str(mounted)])
