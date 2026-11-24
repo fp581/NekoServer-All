@@ -165,6 +165,39 @@ class DashboardFilesTests(unittest.TestCase):
             self.assertIn(f'cat-{mood}.png', dashboard.ASSETS)
 
 
+class CollectorPlacesTests(unittest.TestCase):
+    """The Drives page shows each kind of files where the settings put it (/api/status
+    data_kinds, storage.rs), read from the collector's settings: a server with two drives and
+    photos on the media drive showed them on the Apps drive (T1-1)."""
+
+    def settings(self):
+        return {
+            'data_mount': '/srv/nekoserver',
+            'media_mount': '/mnt/nekoserver-media',
+            'external_backup_mount': '/mnt/nekoserver-backup',
+            'storage': {},
+            'media': {'services': []},
+            'locations': {'photos': 'media', 'music': 'media', 'backups': 'media', 'note': 1},
+        }
+
+    def test_every_place_reaches_the_collector_with_two_drives_too(self):
+        written = dashboard.collector_settings(self.settings(), 1800)
+        self.assertEqual(written['locations'], {'photos': 'media', 'music': 'media', 'backups': 'media'})
+        plain = dict(self.settings(), locations={})
+        self.assertNotIn('locations', dashboard.collector_settings(plain, 1800), 'no places of its own: as before')
+
+    def test_an_upgrade_writes_the_places_into_a_file_from_before(self):
+        cfg = self.settings()
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / 'config.json'
+            before = dashboard.collector_settings(cfg, 1800)
+            before.pop('locations')  # as 1.0.0 wrote it
+            target.write_text(json.dumps(before))
+            with mock.patch.object(dashboard, 'refresh_public_host', lambda cfg, log: False):
+                self.assertTrue(dashboard.refresh(cfg, lambda line: None, target))
+            self.assertEqual(json.loads(target.read_text())['locations']['photos'], 'media')
+
+
 class ReadingFreshnessTests(unittest.TestCase):
     def test_late_readings_use_the_configured_interval_everywhere(self):
         import neko_common

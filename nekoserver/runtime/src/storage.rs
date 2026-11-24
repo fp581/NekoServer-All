@@ -407,6 +407,23 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    /// The collector's settings as setup writes them for a server with photos, music and
+    /// Nextcloud's files on the media drive and no third drive (tests/golden, made by
+    /// dashboard.collector_settings): each kind is shown where it is (T1-1).
+    #[test]
+    fn each_kind_is_where_the_settings_setup_writes_say() {
+        let cfg: Value = serde_json::from_str(include_str!(
+            "../../tests/golden/media-drive/dashboard-config.json"
+        ))
+        .unwrap();
+        let kinds = data_kinds(&cfg, &json!({}));
+        let place = |kind: &str| kinds.iter().find(|k| k["kind"] == kind).unwrap()["place"].clone();
+        for kind in ["photos", "music", "cloud"] {
+            assert_eq!(place(kind), "media", "{kind}");
+        }
+        assert_eq!(place("movies"), "media");
+    }
+
     struct Systemd {
         active: AtomicBool,
         asked: Mutex<Vec<String>>,

@@ -647,6 +647,11 @@ def collector_settings(cfg, smart, interval=60):
     acceptance report must match."""
     clean = {k: cfg[k] for k in ('data_mount', 'media_mount', 'external_backup_mount', 'storage')}
     clean.update(placed_on_other_drives(cfg))
+    # Where each kind of files is, with two drives too: the Drives page shows it from here
+    # (storage.rs data_kinds; T1-1). A server with no places of its own keeps the file it had.
+    places = {k: v for k, v in (cfg.get('locations') or {}).items() if isinstance(v, str)}
+    if places:
+        clean['locations'] = places
     clean['media'] = {'services': media_services(cfg)}
     # Whether any media group is on, and each group once one has an answer of its own (a
     # server with none keeps the file it had: "wanted" alone says it all).

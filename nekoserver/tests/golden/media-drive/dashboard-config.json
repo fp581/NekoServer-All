@@ -12,6 +12,11 @@
       "fstype": "ext4"
     }
   },
+  "locations": {
+    "photos": "media",
+    "music": "media",
+    "cloud": "media"
+  },
   "media": {
     "services": [
       "jellyfin",
