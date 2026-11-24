@@ -5,6 +5,7 @@ start finish a move whose data never reached its new place; one that said it too
 would undo a move whose settings already name the new place. The copies, the stops and
 setup are migrate.py's, faked as in test_storage_jobs."""
 
+import shutil
 import sys
 import unittest
 from pathlib import Path
@@ -15,9 +16,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import migrate
 import storage_jobs
 from tests.test_storage_jobs import ID, Jobs, copy
-from tests.test_storage_refusals import disk, world
+from tests.test_storage_refusals import disk, part, world
 
 UNIT = 'nekoserver-immich.service'
+# setup_again as the release has it (the tests of test_storage_jobs fake it).
+SETUP_AGAIN = storage_jobs.setup_again
 
 
 class Marked(Jobs):
@@ -465,6 +468,96 @@ class FinishedAtTheStartTests(Marked):
         self.assertEqual(self.result()['message'], 'Finishing the job at the start stopped: setup failed')
         self.assertEqual(self.result()['advice'], 'It is tried again at the next start.')
         self.assertIsNotNone(self.journal())
+
+
+class OldCopiesTests(Marked):
+    def test_only_real_folders_with_an_old_copys_name_are_offered_or_deleted(self):
+        ssd = self.root / 'ssd'
+        (self.root / 'elsewhere').mkdir()
+        (ssd / 'aaa-not-a-copy').mkdir()
+        (ssd / f'nekoserver-old-movies-{ID}').symlink_to(self.root / 'elsewhere')
+        (ssd / f'nekoserver-old-music-{ID}').write_text('a file, not a copy')
+        self.files(ssd / f'nekoserver-old-photos-{ID}', **{'photos/immich-library/x.jpg': 'one'})
+        copies = storage_jobs.old_copies(self.config, measure=lambda paths: 5)
+        self.assertEqual([(c['kind'], c['place'], c['bytes']) for c in copies], [('photos', 'ssd', 5)])
+        self.assertEqual(copies[0]['at'], (ssd / f'nekoserver-old-photos-{ID}').stat().st_mtime)
+        self.assertEqual(self.run_job('delete_old', kind='movies', copy=ID, confirm='delete films and shows'), 1)
+        self.assertIn('not there any more', self.result()['message'])
+        self.assertTrue((self.root / 'elsewhere').is_dir())
+
+    def test_a_drive_that_is_away_hides_no_other_drives_copies(self):
+        shutil.rmtree(self.root / 'media')
+        self.files(self.root / f'drives/d3/nekoserver-old-music-{ID}', **{'library/music/a.flac': 'a'})
+        copies = storage_jobs.old_copies(self.config, measure=lambda paths: 0)
+        self.assertEqual([(c['kind'], c['place']) for c in copies], [('music', 'd3')])
+
+
+class UseAndReleaseTests(Marked):
+    def setUp(self):
+        super().setUp()
+        self.disk = disk('sdc', serial='S-AAAA', children=[part('sdc1', fstype='ext4', uuid='u-new')])
+        patch = mock.patch.object(storage_jobs, 'world_now', lambda config: world(self.disk))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def asked(self):
+        shown = storage_jobs.describe(dict(world(self.disk), named={}))[0]
+        return {k: shown[k] for k in ('by_id', 'serial', 'size_bytes')}
+
+    def test_a_drive_the_settings_name_is_never_taken_even_when_not_mounted(self):
+        self.disk = disk('sdc', serial='S-AAAA', children=[part('sdc1', fstype='ext4', uuid='ssd-1')])
+        self.assertEqual(self.run_job('use', how='take_over', disk=self.asked()), 1)
+        self.assertEqual(
+            self.result()['message'],
+            'NekoServer does not use that disk: NekoServer keeps your apps or your media and backups on it. '
+            'Nothing was changed.',
+        )
+        self.assertFalse(self.settings[0].exists())
+
+    def test_an_erased_disk_is_added_by_the_id_its_erase_gave_it(self):
+        asked = []
+
+        def erase(by_id, serial, size, label=None, config=None, journal=None):
+            asked.append((by_id, serial, size, label))
+            journal({'phase': 'format', 'partuuid': 'p-1', 'uuid': 'u-erased', 'partition': '/dev/sdc1'})
+            return '/dev/sdc1'
+
+        with mock.patch.object(storage_jobs, 'erase', erase):
+            self.assertEqual(self.run_job('use', how='erase', disk=self.asked(), confirm='4 TB AAAA'), 0)
+        self.assertEqual(asked, [(self.asked()['by_id'], 'S-AAAA', self.asked()['size_bytes'], 'neko-d4')])
+        self.assertEqual(self.saved()['storage']['d4'], {'uuid': 'u-erased', 'fstype': 'ext4', 'added': True})
+        self.assertIn(('progress', 'erase', None), self.marks)
+        self.assertIn(('progress', 'mount', None), self.marks)
+
+    def test_a_drive_given_up_is_unmounted_by_its_place(self):
+        mounted = self.root / 'drives/d3'
+        with (
+            mock.patch.object(storage_jobs.os.path, 'ismount', lambda path: Path(path) == mounted),
+            mock.patch.object(storage_jobs, 'drop_fstab_line', lambda mountpoint: None),
+        ):
+            self.assertEqual(self.run_job('release', drive='d3'), 0)
+        self.tools.assert_called_once_with(['umount', str(mounted)])
+
+    def test_only_the_drives_own_line_leaves_fstab(self):
+        fstab = self.root / 'fstab'
+        line = f'UUID=d3-uuid {self.root}/drives/d3 ext4 defaults,nofail 0 2\n'
+        kept = 'UUID=x / ext4 defaults 0 1\nUUID=y /home ext4 defaults 0 2\n'
+        fstab.write_text(kept + line)
+        with (
+            mock.patch('modules.storage.FSTAB', fstab),
+            mock.patch('modules.storage.own_line', lambda f: 'd3' in f[1]),
+        ):
+            storage_jobs.drop_fstab_line(self.root / 'drives/d3')
+        self.assertEqual(fstab.read_text(), kept)
+        self.assertEqual(fstab.stat().st_mode & 0o777, 0o644)
+        self.tools.assert_called_once_with(['systemctl', 'daemon-reload'])
+
+    def test_setup_runs_again_with_the_persons_settings_and_a_log_of_its_own(self):
+        called = []
+        job = self.job('move', kind='photos', to='media')
+        with mock.patch.object(migrate, 'setup_again', lambda *given, **named: called.append(given)):
+            SETUP_AGAIN(job)
+        self.assertEqual(called, [(self.config, self.settings[-1], self.root / f'state/setup-{ID}.log')])
 
 
 class MirrorJournalTests(Marked):

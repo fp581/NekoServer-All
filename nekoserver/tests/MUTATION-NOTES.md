@@ -247,3 +247,17 @@ them decides what is restored or whether a restore is reported as passed; the mo
 need a real drive to say anything and are covered by the recovery drills on the VM instead.
 Seen on the way: as a normal user the `chown` of the restore folder's parent fails first, so
 `restore_music`'s hand-over success branch is never run by CI.
+
+## 1.0.1 round: storage_jobs.py and mirror_add.py expected survivors (2026-11-24)
+
+storage_jobs.py (04024a1; the refusals, the erase and its re-check, the move's compare, switch and
+commit point, the journal's resume and finish, old copies, use and release): 568 mutants, the ones left
+after test_storage_erase_steps and test_storage_journal_steps are wording (error texts, "delete it."),
+defaults that never change a result (`or 0` against `or 1` on a size or minimum, a staging path
+defaulting to "" or "XXXX", the measure of old_copy, `tell` returning 0), the phase names of commits that
+no code reads back ('mount', 'release'), `settings_files[+1]` with two files, `parents=False` one
+level deep, and `job.reapply(... and saved)` (add_settings writes the settings itself).
+mirror_add.py (c2c491d): 131 mutants, 43 left: wording and `[:301]` advice slices, the journal's
+unused undo keys ('disk', 'array'), the btrfs dict's unused 'dev', `find`'s `found[2]`, `offers`' code
+of a refusal nobody reads, the sleep and the status time limit by one, and three that are a finding,
+not a missing test: 363/364/366, "Never started" counted as finished (plans/1.0.1-findings.md T6-101-1).
