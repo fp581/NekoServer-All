@@ -135,7 +135,7 @@ class NextcloudDatabaseRestoreTests(unittest.TestCase):
 
     def test_the_copy_is_loaded_as_the_account_nextcloud_uses(self):
         # Nextcloud is installed with the container's superuser, and makes its own account.
-        self.assertIn('--database-user "$POSTGRES_USER"', (ROOT / 'modules' / 'nextcloud.py').read_text())
+        self.assertIn('--database-user="$POSTGRES_USER"', (ROOT / 'modules' / 'nextcloud.py').read_text())
         steps = doc('RECOVERY.md').split("### Nextcloud's database")[1].split(chr(10) + '### ')[0]
         self.assertIn('echo $CONFIG["dbuser"]', steps)
         self.assertIn('createdb -U nextcloud -O DBUSER nextcloud', steps)
