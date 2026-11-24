@@ -1333,8 +1333,10 @@ KIND_STEPS = {
     'backups': ('app_backup', 'host_backup', 'photo_backup', 'maintenance', 'backup_cards'),
 }
 STEP_LINE = re.compile(r'(?:^|\] )(START|PASS|FAILED|NEEDS SETUP|UNAVAILABLE|BLOCKED) ([a-z_]+)')
-# NEEDS SETUP: the step ran to its end and waits for the person (a sign-in, a drive plugged in).
-FINE = ('PASS', 'UNAVAILABLE', 'NEEDS SETUP')
+FINE = ('PASS', 'UNAVAILABLE')
+# NEEDS SETUP is a pass only for the backup steps (their drive not plugged in): a step that
+# points an app at its folders may stop for the person before it wrote them (T5 on 2515163).
+BACKUP_STEPS = ('photo_backup', 'music_backup', 'backup_cards', 'app_backup', 'host_backup')
 
 
 def refused_place(job, kind):
@@ -1352,7 +1354,10 @@ def refused_place(job, kind):
             last[found[2]], ended = found[1], False
         elif 'Finished:' in line:
             ended = True
-    return not ended or any(last.get(step, 'PASS') not in FINE for step in (*PLACE_STEPS, *KIND_STEPS.get(kind, ())))
+    return not ended or any(
+        last.get(step, 'PASS') not in (*FINE, *(('NEEDS SETUP',) if step in BACKUP_STEPS else ()))
+        for step in (*PLACE_STEPS, *KIND_STEPS.get(kind, ()))
+    )
 
 
 def unswitch(job, kind, here, stopped, why):

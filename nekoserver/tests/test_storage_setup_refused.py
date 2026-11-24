@@ -234,6 +234,18 @@ class UnswitchTests(Jobs):
         self.assertTrue(refused('cloud', 'FAILED storage: the drive is not mounted'))
         self.assertTrue(refused('music', 'PASS storage', 'PASS media', finished=False))
         self.assertFalse(refused('photos', 'PASS photos', 'NEEDS SETUP photo_backup: plug in the USB drive'))
+        self.assertFalse(refused('backups', 'PASS app_backup', 'NEEDS SETUP backup_cards: no card in'))
+        # A step that points an app at its folders may wait for the person before it wrote them.
+        for kind, step in (
+            ('photos', 'photos'),
+            ('cloud', 'nextcloud'),
+            ('movies', 'media'),
+            ('music', 'samba'),
+            ('backups', 'storage'),
+            ('photos', 'docker'),
+        ):
+            with self.subTest(step=step):
+                self.assertTrue(refused(kind, 'PASS storage', f'NEEDS SETUP {step}: sign in first'))
         self.assertFalse(
             refused('photos', 'PASS storage', 'PASS photos', 'FAILED gateway_tailnet: x', 'FAILED heartbeat: y')
         )
