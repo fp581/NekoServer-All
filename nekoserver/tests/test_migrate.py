@@ -196,17 +196,27 @@ class StopTests(unittest.TestCase):
         self.assertEqual(sum(waits), migrate.SHORT_JOBS_WAIT)  # a few minutes, not for ever
 
     def test_a_short_job_at_work_is_waited_for_not_a_reason_to_stop_the_move(self):
-        # Plan 370: the dashboard's collector runs every minute for a few seconds; caught at
-        # work when the timers stopped, it ended a move after hours of copying.
-        self.units['activating'] = ['nekoserver-dashboard-collect.service']
+        # Plan 370: a short job caught at work when the timers stopped ended a move after
+        # hours of copying; it is given a few minutes to end.
+        self.units['activating'] = ['nekoserver-app-backup.service']
         said = []
 
-        def collector_ends(seconds):
+        def backup_ends(seconds):
             self.units['activating'] = []
 
-        stopped = migrate.stop_writers(self.journal, out=said.append, sleep=collector_ends)
+        stopped = migrate.stop_writers(self.journal, out=said.append, sleep=backup_ends)
         self.assertEqual(stopped, ['nekoserver-app-backup.timer', 'nekoserver-dashboard.service'])
-        self.assertIn('Waiting for nekoserver-dashboard-collect.service to finish', said[0])
+        self.assertIn('Waiting for nekoserver-app-backup.service to finish', said[0])
+
+    def test_a_service_that_writes_no_data_is_stopped_not_waited_for(self):
+        # T1-6: the dashboard's collector, or a LAN gateway waiting for its address (T1-R18),
+        # at work never holds a move up: it is stopped with the rest and started again.
+        self.units['activating'] = ['nekoserver-dashboard-collect.service']
+        said, waits = [], []
+        stopped = migrate.stop_writers(self.journal, out=said.append, sleep=waits.append)
+        self.assertEqual((said, waits), ([], []))
+        self.assertIn('nekoserver-dashboard-collect.service', stopped)
+        self.assertIn(['systemctl', 'stop', 'nekoserver-dashboard-collect.service'], self.calls)
 
     def test_a_timer_that_does_not_stop_stops_the_move(self):
         """The review of 0.47.9: a timer whose stop failed was passed over (the final check

@@ -396,11 +396,40 @@ TIMER = '.timer'
 SHORT_JOBS_WAIT = 200
 
 
-def jobs_at_work(out=print, sleep=time.sleep, wait=SHORT_JOBS_WAIT):
-    """NekoServer's services at work (not timers), once short ones had `wait` seconds to end."""
+# NekoServer's services that write none of its data: one of them at work (a gateway
+# waiting for its address, the dashboard's collector) never holds a move up. Any other
+# service of NekoServer's at work does, one not named here too (a backup, an update, a
+# card, the media folders, a Drives job of someone else's, a unit added later).
+QUIET = frozenset(
+    {
+        'nekoserver-dashboard.service',
+        'nekoserver-dashboard-collect.service',
+        'nekoserver-control.service',
+        'nekoserver-gateway-lan.service',
+        'nekoserver-openrgb.service',
+        'nekoserver-openrgb-proxy.service',
+        'nekoserver-notifications.service',
+        'nekoserver-heartbeat.service',
+        'nekoserver-nas-watch.service',
+        'nekoserver-hdd-policy.service',
+        'nekoserver-media-health.service',
+        'nekoserver-update-check.service',
+        'nekoserver-system-check.service',
+    }
+)
+
+
+def at_work_now(own=()):
+    """The services at work that a move must wait for: not timers, not QUIET ones, and
+    not `own`, the units of the job asking (a Drives job's oneshot is at work itself)."""
+    return [u for u in nekoserver_units(AT_WORK) if not u.endswith(TIMER) and u not in QUIET and u not in own]
+
+
+def jobs_at_work(out=print, sleep=time.sleep, wait=SHORT_JOBS_WAIT, own=()):
+    """NekoServer's services at work (at_work_now), once short ones had `wait` seconds to end."""
     waited = 0
     while True:
-        busy = [u for u in nekoserver_units(AT_WORK) if not u.endswith(TIMER)]
+        busy = at_work_now(own)
         if not busy or waited >= wait:
             return busy
         if waited == 0:
@@ -409,12 +438,13 @@ def jobs_at_work(out=print, sleep=time.sleep, wait=SHORT_JOBS_WAIT):
         waited += 5
 
 
-def stop_writers(journal=JOURNAL, out=print, sleep=time.sleep, note=None):
+def stop_writers(journal=JOURNAL, out=print, sleep=time.sleep, note=None, own=()):
     """Everything that writes to the drives stops; what ran is noted to start again. The
     timers go first, so no job starts meanwhile; a job already at work (a backup worker,
     a oneshot service: "activating") is given a few minutes to end, then stops the move
     rather than being cut off half-way. `note(stopped)`: where that is written down (this
-    move's journal unless named: the dashboard's storage jobs keep their own)."""
+    move's journal unless named: the dashboard's storage jobs keep their own). `own`: the
+    units of the job asking, never waited for, stopped or counted."""
     note = note or (lambda stopped: record(journal, phase='stopped', stopped=stopped))
     timers = [u for u in nekoserver_units() if u.endswith(TIMER)]
     note(timers)
@@ -425,15 +455,19 @@ def stop_writers(journal=JOURNAL, out=print, sleep=time.sleep, note=None):
     ticking = [u for u in nekoserver_units('active,' + AT_WORK) if u.endswith(TIMER)]
     if ticking:
         raise RuntimeError('These did not stop: ' + ', '.join(ticking))
-    busy = jobs_at_work(out, sleep)
+    busy = jobs_at_work(out, sleep, own=own)
     if busy:
         raise RuntimeError(', '.join(busy) + ' is at work (a backup or another job); try again once it has finished')
-    rest = active(WRITERS) + [u for u in nekoserver_units() if not u.endswith(TIMER)]
+    # What is left at work is QUIET (the check above): stopped too, and started again after.
+    running = [u for u in nekoserver_units('active,' + AT_WORK) if not u.endswith(TIMER) and u not in own]
+    rest = list(dict.fromkeys(active(WRITERS) + running))
     stopped = timers + rest
     note(stopped)
     for unit in rest:
         run(['systemctl', 'stop', unit], 600, check=False)
-    still = active(WRITERS) + [u for u in nekoserver_units('active,' + AT_WORK) if not u.endswith(TIMER)]
+    still = active(WRITERS) + [
+        u for u in nekoserver_units('active,' + AT_WORK) if not u.endswith(TIMER) and u not in own
+    ]
     if still:
         raise RuntimeError('These did not stop: ' + ', '.join(still))
     return stopped

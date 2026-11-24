@@ -439,7 +439,7 @@ class FinishedAtTheStartTests(Marked):
         storage_jobs.write_state('journal.json', saved, self.root / 'state')
         seen = []
 
-        def stop_writers(out=print, note=None):
+        def stop_writers(out=print, note=None, own=()):
             note([UNIT])
             seen.append(self.saved_journal())
             return [UNIT]
