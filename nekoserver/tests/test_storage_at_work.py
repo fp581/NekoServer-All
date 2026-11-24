@@ -101,12 +101,16 @@ class AtWorkTests(unittest.TestCase):
         self.assertEqual(systemd.at_work, ['nekoserver-storage.service'])  # the gateway was stopped
 
     def test_the_dashboard_keeps_showing_a_drives_job_while_the_apps_are_stopped(self):
-        page = ['nekoserver-dashboard.service', 'nekoserver-control.service', 'nekoserver-dashboard-collect.service']
-        systemd = Systemd(at_work=['nekoserver-storage.service'], running=[*page, 'nekoserver-cards.service'])
-        self.assertEqual(self.stop(systemd), ['nekoserver-cards.service'])
+        page = ['nekoserver-dashboard.service', 'nekoserver-dashboard-collect.service']
+        # The control service and the other quiet ones are stopped: an app button pressed
+        # meanwhile (restart, update) would start an app between the last copy and the switch.
+        others = ['nekoserver-control.service', 'nekoserver-system-check.service', 'nekoserver-cards.service']
+        systemd = Systemd(at_work=['nekoserver-storage.service'], running=[*page, *others])
+        self.assertEqual(self.stop(systemd), others)
         self.assertEqual(systemd.running, page)
         # A whole-drive move stops them too: the drive they run from goes away.
         self.assertEqual(self.stop(Systemd(running=list(page)), own=()), page)
+        self.assertFalse(set(storage_jobs.PAGE_UNITS) - migrate.QUIET)
 
     def test_the_finish_after_docker_never_waits_for_itself(self):
         self.stop(Systemd(at_work=['nekoserver-storage-finish.service']))

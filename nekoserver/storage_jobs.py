@@ -820,14 +820,16 @@ OWN_UNITS = (
 )
 
 
-def left_alone():
-    """The units a move of one kind leaves running: its own, and those that write none of
-    NekoServer's data (migrate.QUIET) and are not writers of the drives: the dashboard and
-    its control service keep showing the job while the apps are stopped for the last copy.
-    A whole-drive move stops them all (the drive itself goes away)."""
-    import migrate
+# The page's own units, which only read: the Drives page keeps showing the job while the
+# apps are stopped for the last copy. The control service is stopped with the rest: its
+# app buttons (restart, update) would start an app in the middle of the move.
+PAGE_UNITS = ('nekoserver-dashboard.service', 'nekoserver-dashboard-collect.service')
 
-    return (*OWN_UNITS, *sorted(migrate.QUIET - set(migrate.WRITERS)))
+
+def left_alone():
+    """The units a move of one kind leaves running: its own and the page's. A whole-drive
+    move stops them all (the drive itself goes away)."""
+    return (*OWN_UNITS, *PAGE_UNITS)
 
 
 JOBS = ('look', 'use', 'release', 'move', 'back', 'delete_old', 'mirror_add')
