@@ -379,6 +379,18 @@ def own_unit(path):
     return path.is_file() and path.read_text().startswith('[Unit]\nDescription=NekoServer ')
 
 
+def switch_mirror_start(mdadm, run):
+    """The mirror start on with mdadm there (its units just written), off and taken away without."""
+    if mdadm:
+        run(['systemctl', 'reenable', MIRROR_START_TIMER], check=True, capture_output=True, timeout=30)
+        return
+    run(['systemctl', 'disable', MIRROR_START_TIMER], check=False, capture_output=True, timeout=30)
+    for name in (MIRROR_START, MIRROR_START_TIMER):
+        unit = Path('/etc/systemd/system') / name
+        if own_unit(unit):
+            unit.unlink()
+
+
 def install_drive_return(config, project, run=subprocess.run):
     binary = native_runtime.deploy(project, config, Path('/usr/local/lib/nekoserver-os') / ('v' + VERSION))
     check_units([DRIVE_UNIT, NAS_WATCH, NAS_WATCH_TIMER, MIRROR_START, MIRROR_START_TIMER], 'Drive return')
@@ -394,14 +406,7 @@ def install_drive_return(config, project, run=subprocess.run):
     # Re-enabled each run: the drives' IDs (and so the devices it waits for) may change.
     run(['systemctl', 'reenable', DRIVE_UNIT], check=True, capture_output=True, timeout=30)
     # Written on every run, so a server set up before gets it too (1.0 round T1-R19).
-    if mdadm:
-        run(['systemctl', 'reenable', MIRROR_START_TIMER], check=True, capture_output=True, timeout=30)
-    else:
-        run(['systemctl', 'disable', MIRROR_START_TIMER], check=False, capture_output=True, timeout=30)
-        for name in (MIRROR_START, MIRROR_START_TIMER):
-            unit = Path('/etc/systemd/system') / name
-            if own_unit(unit):
-                unit.unlink()
+    switch_mirror_start(mdadm, run)
     if on_a_nas(config):
         run(['systemctl', 'enable', '--now', NAS_WATCH_TIMER], check=True, capture_output=True, timeout=30)
     else:
