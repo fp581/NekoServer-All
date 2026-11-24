@@ -26,7 +26,7 @@ from neko_common import (
 DEPENDENCIES = ['system', 'network_storage']
 # The two roles every server has: (its record under "storage", the setting that says where it is mounted).
 OLD_ROLES = (('data_ssd', 'data_mount'), ('media_hdd', 'media_mount'))
-DESCRIPTION = 'Inspect disks; --apply mounts explicitly identified data SSD and media HDD by UUID'
+DESCRIPTION = 'Inspect disks; --apply mounts explicitly identified apps drive and media and backups drive by UUID'
 
 
 # How /etc/fstab names a drive by its UUID ("UUID=1234-..."), and the file itself.
@@ -390,8 +390,12 @@ def empty_disk(dev):
 
 # The drives setup asks for: (settings key, what it is for, its short name).
 DRIVES = (
-    ('data_ssd', 'the SSD (apps, photos and music)', 'the SSD'),
-    ('media_hdd', 'the HDD (movies, shows, Nextcloud files and backups)', 'the HDD'),
+    ('data_ssd', 'the apps drive (apps, photos and music)', 'the apps drive'),
+    (
+        'media_hdd',
+        'the media and backups drive (movies, shows, Nextcloud files and backups)',
+        'the media and backups drive',
+    ),
 )
 
 
@@ -462,9 +466,9 @@ def local_ssd(key, device):
         import drive_table
 
         raise RuntimeError(
-            f"{drive_table.said(device, first=True)} is a disk on the NAS. The SSD for the apps must be connected to "
+            f"{drive_table.said(device, first=True)} is a disk on the NAS. The apps drive must be connected to "
             'this PC (by USB 3, or inside it): it holds the databases and setup\'s own records, and is what makes '
-            'the apps fast. Choose the NAS disk for the media HDD, then run setup again. Nothing was changed.'
+            'the apps fast. Choose the NAS disk for the media and backups drive, then run setup again. Nothing was changed.'
         )
     return device
 
@@ -554,7 +558,7 @@ def resolve_storage_identity(config, inventory, apply=False, interactive=False, 
         if uuid is None:
             continue
         if uuid in selected:
-            raise RuntimeError('SSD and HDD cannot use the same filesystem')
+            raise RuntimeError('The apps drive and the media and backups drive cannot use the same filesystem')
         selected_disks |= own_disks(uuid, items, selected_disks, apply)
         selected.add(uuid)
     return configured
@@ -674,8 +678,17 @@ def bind_line(folder, mountpoint):
     if any(c.isspace() for c in mountpoint):
         raise RuntimeError('Mountpoint cannot contain whitespace')
     if on_one_drive(folder):
-        return f'{folder} {mountpoint} none bind,x-systemd.requires-mounts-for={ONE_DRIVE} 0 0'
+        # nofail: a drive that is late or missing (a mirror that lost a disk, 1.0 round
+        # T1-R19) never stops the PC from starting; the apps wait for these mounts.
+        return f'{folder} {mountpoint} none bind,nofail,x-systemd.requires-mounts-for={ONE_DRIVE} 0 0'
     return f'{folder} {mountpoint} none bind 0 0'
+
+
+# The options of the shared drive's folders, as setup writes them now and wrote before.
+ONE_DRIVE_BINDS = (
+    f'bind,nofail,x-systemd.requires-mounts-for={ONE_DRIVE}',
+    f'bind,x-systemd.requires-mounts-for={ONE_DRIVE}',
+)
 
 
 def own_bind_line(found):
@@ -683,7 +696,7 @@ def own_bind_line(found):
         return False
     if found[0] in SYSTEM_FOLDERS.values():
         return found[3] == 'bind'
-    return on_one_drive(found[0]) and found[3] == f'bind,x-systemd.requires-mounts-for={ONE_DRIVE}'
+    return on_one_drive(found[0]) and found[3] in ONE_DRIVE_BINDS
 
 
 def bind_line_index(lines, mountpoint, entry, connected=None, notes=None):
@@ -727,7 +740,7 @@ def shared_folder(record, key):
     export = nfs_exports.checked_record(record, f'"{key}" under "storage"')
     if export and key == 'data_ssd':
         raise RuntimeError(
-            f'The SSD for the apps cannot be a folder shared over NFS ({export}): it holds the databases and '
+            f'The apps drive cannot be a folder shared over NFS ({export}): it holds the databases and '
             "setup's own records, and must be connected to this PC (by USB 3, or inside it). Take \"data_ssd\" out "
             'of "storage" in my-config.json and run  sudo bash install.sh  again. Nothing was changed.'
         )
@@ -902,13 +915,13 @@ def own_disks(uuid, items, taken, apply):
     array), none of which the other drive may share."""
     physical = set(next(v['physical_disks'] for v in items if v['uuid'] == uuid))
     if physical & taken:
-        raise RuntimeError('SSD and HDD must be on different physical disks')
+        raise RuntimeError('The apps drive and the media and backups drive must be on different physical disks')
     if not physical and apply:
         name = next((v['name'] for v in items if v['uuid'] == uuid), uuid)
         raise RuntimeError(
             f'Setup cannot tell which physical drive /dev/{name} is on (it sits on something Linux does not '
-            'list as a disk, such as a loop device or a disk image), so it cannot make sure the SSD and the '
-            'HDD are two different drives. Choose a partition of a real drive instead.'
+            'list as a disk, such as a loop device or a disk image), so it cannot make sure the apps drive and '
+            'the media and backups drive are two different drives. Choose a partition of a real drive instead.'
         )
     return physical
 
@@ -1903,7 +1916,7 @@ INSTALLED_NAMES = {
     'music': 'Navidrome',
     'cloud': 'Nextcloud',
 }
-INSTALL_HERE = 'Recommended: same drive as NekoServer and your apps'
+INSTALL_HERE = 'Recommended: the apps drive'
 
 
 def install_drives(config, inventory):
@@ -1923,7 +1936,7 @@ def asked_install(context, what, others):
 
     name = INSTALLED_NAMES[what]
     context.log(f'Where should {name} be installed (the settings and the database)?')
-    context.log('  1) the same drive as NekoServer and your apps  (recommended)')
+    context.log('  1) the apps drive  (recommended)')
     for n, row in enumerate(others, 2):
         context.log(f'  {n}) a drive of its own: {drive_table.brief(row)}')
     for _ in range(3):
@@ -1989,7 +2002,7 @@ def settle_installs(context):
     for what, row in drive_table.INSTALL_AHEAD.items():
         name = INSTALLED_NAMES[what]
         if any(has_files(data / 'appdata' / app) for app in placement.apps_of(what)):
-            context.log(f'{name}: kept on the drive of NekoServer and your apps, where its settings already are')
+            context.log(f'{name}: kept on the apps drive, where its settings already are')
             continue
         config.setdefault('install', {})[what] = placed_on(config, row)
         context.log(f'{name}: installed on {drive_table.brief(row)}, a drive of its own')
@@ -2019,7 +2032,7 @@ def free_on(row):
     return int((size_bytes(row['size']) or 0) * (100 - (row['full'] or 0)) / 100) // 10**9
 
 
-PLACE_SAID = {'ssd': 'on the drive of NekoServer and your apps', 'media': 'on the drive of the backups'}
+PLACE_SAID = {'ssd': 'on the apps drive', 'media': 'on the media and backups drive'}
 ONE_PLACE_SAID = 'on the one drive of this server, with the apps and the backups'
 
 
@@ -2167,17 +2180,17 @@ PAGE_HINT = (
 )
 # How the page names the drive roles and the places (the terminal's own words are drive_table's).
 PAGE_ROLES = {
-    'data_ssd': 'NekoServer and your apps',
-    'media_hdd': 'Backups',
-    'usb': 'Offline backup on a removable drive (optional)',
+    'data_ssd': 'Apps drive',
+    'media_hdd': 'Media and backups drive',
+    'usb': 'Offline backup drive (optional)',
 }
 PAGE_PLACES = {
-    'ssd': 'Same drive as NekoServer and your apps',
-    'media': 'Same drive as the backups',
+    'ssd': 'Apps drive',
+    'media': 'Media and backups drive',
 }
 # What the Backups line holds, as the page says it: your files are there too unless their
 # own line names another drive.
-BACKUPS_HOLD = 'every backup NekoServer makes, and your files where a line below says "Same drive as the backups"'
+BACKUPS_HOLD = 'every backup NekoServer makes, and your files where a line below says "Media and backups drive"'
 SAME_DRIVE_AS_BACKUP = (
     'Their backup is then on the same drive: it protects against a mistake, not against losing that drive. '
     'Only the offline backup is a copy on another drive'
@@ -2532,7 +2545,7 @@ def free_gb(folder):
     return found.f_bavail * found.f_frsize // 10**9
 
 
-DRIVE_WORDS = {'ssd': 'the SSD', 'media': 'the media drive'}
+DRIVE_WORDS = {'ssd': 'the apps drive', 'media': 'the media and backups drive'}
 # The roles by the names a place has ("ssd", "media").
 WINDOW_ROLES = {'data_ssd': 'ssd', 'media_hdd': 'media'}
 
@@ -2611,9 +2624,9 @@ def choose_locations(context, input_fn=None, interactive=None, inventory=None):
 # Said when the photos are on the media drive: its weekly photo archive is on that drive
 # too (backup.rs), so only the USB copy is on another drive (the 0.46.1 audit).
 PHOTOS_ON_MEDIA = (
-    "Immich's photos are on the media drive, and so is their weekly archive copy: it keeps older versions, "
-    'but does not survive losing that drive. Your only copy on another drive is the weekly USB backup, so '
-    'set it up (setup asks for the USB drive next).'
+    "Immich's photos are on the media and backups drive, and so is their weekly archive copy: it keeps older versions, "
+    'but does not survive losing that drive. Your only copy on another drive is the weekly offline backup, so '
+    'set it up (setup asks for the offline backup drive next).'
 )
 
 
@@ -2628,7 +2641,7 @@ def photos_on_media(config):
         'but does not survive losing that drive.'
     )
     if photos.get('external_backup_uuid'):
-        return said + ' Your only copy on another drive is the weekly USB backup.'
+        return said + ' Your only copy on another drive is the weekly offline backup.'
     if photos.get(OFFLINE_WANTED) is False:
         return said + (
             ' No copy is on another drive: to add one, connect a drive you can unplug and run  '
@@ -2653,7 +2666,7 @@ def backed_up_beside(config):
 
 
 MUSIC_ON_MEDIA = (
-    'The music is on the media drive, and so is its backup: that protects against a mistake, not against '
+    'The music is on the media and backups drive, and so is its backup: that protects against a mistake, not against '
     'losing that drive.'
 )
 
@@ -2732,7 +2745,7 @@ def where_kept(context, what, words, kept):
     """The drive that already holds `what`'s files; with files on both, setup stops."""
     if len(kept) > 1:
         raise RuntimeError(
-            f'{words.capitalize()} have files on both the SSD and the media drive, and setup can\'t tell '
+            f'{words.capitalize()} have files on both the apps drive and the media and backups drive, and setup can\'t tell '
             'which ones the app uses. Look in both folders, then say which one it is: put '
             f'"locations": {{"{what}": "ssd"}} (or "media") in my-config.json and run setup again. '
             'The other folder is left as it is. Nothing was changed.'
@@ -2778,8 +2791,8 @@ def asked_location(context, words, best, room, on_nas, input_fn=None, key=None, 
     # 24 GB free beside an SSD with 26).
     most = ', the most room' if room['media'] > room['ssd'] else ''
     said = {
-        'media': f'the media drive{" (on the NAS)" if on_nas else ""}: {room["media"]} GB free{most}',
-        'ssd': f'the SSD: {room["ssd"]} GB free, faster',
+        'media': f'the media and backups drive{" (on the NAS)" if on_nas else ""}: {room["media"]} GB free{most}',
+        'ssd': f'the apps drive: {room["ssd"]} GB free, faster',
     }
     options = [best, 'ssd' if best == 'media' else 'media']
     if one_place(context.config):
@@ -2851,7 +2864,7 @@ def choose_usb(context):
     try:
         chosen = select_external(context.config, inventory, out_fn=context.log)
     except RuntimeError as exc:
-        context.log(f'USB backup drive not chosen yet ({exc}); you will be asked again at the weekly backup step')
+        context.log(f'Offline backup drive not chosen yet ({exc}); you will be asked again at the weekly backup step')
         return
     if chosen is None:
         # "None for now" is an answer: the weekly copy is left out, and nothing asks again.

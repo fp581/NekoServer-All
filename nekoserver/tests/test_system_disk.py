@@ -209,7 +209,7 @@ class RoomTests(unittest.TestCase):
             apps_there = {'storage': {'data_ssd': role(APPS)}}
             self.assertEqual(
                 drive_table.system_verdict('media_hdd', apps_there),
-                'it has too little room: 60 GB free, and the media HDD needs at least 70 GB there together with what '
+                'it has too little room: 60 GB free, and the media and backups drive needs at least 70 GB there together with what '
                 'is already kept there. Free 10 GB more on it to use it',
             )
             self.assertEqual(drive_table.system_verdict('usb', {}), drive_table.SYSTEM_NOT_OFFLINE)

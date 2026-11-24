@@ -3026,6 +3026,63 @@ class NextcloudFirstInstallTests(unittest.TestCase):
         self.assertIn('trusted_domains', argv[-1])
         self.assertIn('finishing it now', logged[0])
 
+    def test_a_password_starting_with_a_dash_reaches_occ_as_the_options_own_value(self):
+        # T1-R12: a made-up (or typed) password "-…" after a separate --admin-pass was read
+        # by occ as an option ("--admin-pass option requires a value"), so Nextcloud never
+        # installed, on every setup run. Here the install line runs in a real sh, with a
+        # php that writes down its arguments, on a server already in that state (the
+        # image gave up, then started Apache: "resuming normal operations").
+        import shutil
+
+        from modules import nextcloud
+
+        if not shutil.which('sh'):
+            self.skipTest('needs sh')
+        values = {
+            'NEXTCLOUD_ADMIN_USER': '-admin',
+            'NEXTCLOUD_ADMIN_PASSWORD': '-pw_1',
+            'POSTGRES_DB': '-db',
+            'POSTGRES_USER': '-dbuser',
+            'POSTGRES_PASSWORD': '--dbpw',
+            'POSTGRES_HOST': '-host',
+            'NEXTCLOUD_TRUSTED_DOMAINS': 'localhost -name',
+        }
+        run, _, state = self.fake(False, 'AH00094: Command line: apache2 -D FOREGROUND\nresuming normal operations\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            php, said = Path(tmp) / 'php', Path(tmp) / 'said'
+            php.write_text(
+                '#!/bin/sh\nfor a in "$@"; do printf "%s\\n" "$a"; done >> "$SAID"\nprintf "end\\n" >> "$SAID"\n'
+            )
+            php.chmod(0o755)
+            env = {'PATH': tmp + os.pathsep + os.environ.get('PATH', ''), 'SAID': str(said), **values}
+
+            def install(argv, *args):
+                subprocess.run(['sh', '-c', argv[-1]], env=env, check=True, timeout=30)
+                state.update(installed=True)
+
+            with mock.patch.object(nextcloud, 'checked_run', side_effect=install):
+                self.assertTrue(nextcloud.finish_install(self.BASE, lambda m: None, run=run, sleep=lambda s: None))
+            calls = [c.split('\n')[:-1] for c in said.read_text().split('end\n')[:-1]]
+        setup = calls[0]
+        self.assertEqual(setup[:2], ['occ', 'maintenance:install'])
+        for option, name in [
+            ('--admin-user', 'NEXTCLOUD_ADMIN_USER'),
+            ('--admin-pass', 'NEXTCLOUD_ADMIN_PASSWORD'),
+            ('--database-name', 'POSTGRES_DB'),
+            ('--database-user', 'POSTGRES_USER'),
+            ('--database-pass', 'POSTGRES_PASSWORD'),
+            ('--database-host', 'POSTGRES_HOST'),
+        ]:
+            self.assertIn(option + '=' + values[name], setup)  # one argument: never read as an option
+            self.assertNotIn(option, setup)
+        self.assertEqual(
+            calls[1:],
+            [
+                ['occ', 'config:system:set', 'trusted_domains', '0', '--value=localhost'],
+                ['occ', 'config:system:set', 'trusted_domains', '1', '--value=-name'],
+            ],
+        )
+
     def test_an_install_still_running_is_waited_for_then_named(self):
         from modules import nextcloud
 
@@ -3164,6 +3221,93 @@ class NextcloudReinstalledLinuxTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "not valid account names: '../evil'"):
             nextcloud.listed_accounts(['compose'], run)
         self.assertIsNone(nextcloud.scan_errors('Scanned nothing\n'))
+
+    def test_accounts_the_restored_database_lists_get_their_missing_folders(self):
+        # 1.0 round T1-R3: a whole-server restore onto new drives, Nextcloud's database copy
+        # put back (RECOVERY.md). The new HDD's files folder was never empty, so nothing was
+        # given back: the restored account had no `files` folder, Nextcloud refused every
+        # upload (PUT 403) and files:scan said "exists in cache but not on disk", while setup
+        # said PASS. Setup's Nextcloud step now makes each missing folder and scans that
+        # account; a folder that is there is never touched or scanned.
+        from modules import nextcloud
+
+        table = (
+            '| Folders | Files | New | Updated | Removed | Errors | Elapsed time |\n'
+            '| 1       | 0     | 0   | 0       | 0       | 0      | 00:00:01     |\n'
+        )
+        # occ user:list --info, as Nextcloud 35 answers: carol never signed in (dave neither,
+        # as an older Nextcloud says it).
+        listed = json.dumps(
+            {
+                'alice': {'display_name': 'Alice', 'last_seen': '2026-11-20T10:00:00+00:00'},
+                'neko_530a354d3d6b': {'display_name': 'x', 'last_seen': '2026-11-01T09:00:00+00:00'},
+                'bob': {'display_name': 'Bob', 'last_seen': '2026-11-02T09:00:00+00:00'},
+                'carol': {'display_name': 'Carol', 'last_seen': 'never'},
+                'dave': {'display_name': 'Dave', 'last_seen': '1970-01-01T00:00:00+00:00'},
+            }
+        )
+        scans = []
+
+        def run(argv, **kw):
+            if 'user:list' in argv:
+                self.assertIn('--info', argv)
+                return mock.Mock(returncode=0, stdout=listed, stderr='')
+            scans.append(argv[-1])
+            return mock.Mock(returncode=0, stdout=table)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            files = Path(tmp) / 'cloud/files'
+            (files / 'alice/files').mkdir(parents=True)
+            (files / 'alice/files/note.txt').write_text('mine')
+            (files / 'neko_530a354d3d6b/cache').mkdir(parents=True)  # what the VM's new HDD had
+            made = []
+
+            def ensure(path, mode, uid, gid):
+                made.append((path, mode, uid, gid))
+                path.mkdir(parents=True, exist_ok=True)
+
+            said = []
+            with mock.patch.object(nextcloud, 'ensure_directory', ensure):
+                self.assertEqual(nextcloud.account_folders_missing(['compose'], files, said.append, run=run), 2)
+                self.assertEqual(scans, ['neko_530a354d3d6b', 'bob'])
+                self.assertEqual([m[0] for m in made], [files / 'neko_530a354d3d6b/files', files / 'bob/files'])
+                self.assertTrue(all(m[1:] == (0o755, nextcloud.WWW_DATA, nextcloud.WWW_DATA) for m in made))
+                self.assertEqual((files / 'alice/files/note.txt').read_text(), 'mine')
+                self.assertIn('2 account(s)', said[0])
+                # Every folder there: nothing made, nothing scanned, nothing said.
+                scans.clear(), said.clear()
+                self.assertEqual(nextcloud.account_folders_missing(['compose'], files, said.append, run=run), 0)
+                self.assertEqual((scans, said), ([], []))
+                # Never signed in (carol, dave): no folder made, so Nextcloud gives the account
+                # its welcome files at the first sign-in.
+                self.assertFalse((files / 'carol').exists() or (files / 'dave').exists())
+
+        # It runs on every setup run, an unattended upgrade too: occ failing is said and the
+        # step goes on (the given-back repair still raises, see the test below).
+        said = []
+
+        def failing(argv, **kw):
+            return mock.Mock(returncode=1, stdout='', stderr='')
+
+        self.assertEqual(nextcloud.account_folders_missing(['compose'], Path('/nonexistent'), said.append, failing), 0)
+        self.assertIn('could not check that every account has its folder', said[0])
+        self.assertIn('ended with error 1', said[0])
+
+        # The step: a first install makes no folders; a given-back files folder makes them all;
+        # any later run makes the missing ones.
+        with (
+            mock.patch.object(nextcloud, 'finish_files_folder') as given,
+            mock.patch.object(nextcloud, 'account_folders_missing') as missing,
+            mock.patch.object(nextcloud, 'cloud_files', return_value='/nonexistent/cloud/files'),
+        ):
+            nextcloud.account_folders(['compose'], {}, Path('/x'), True, False, print)
+            self.assertEqual((given.call_count, missing.call_count), (0, 0))
+            nextcloud.account_folders(['compose'], {}, Path('/x'), False, True, print)
+            self.assertEqual((given.call_count, missing.call_count), (1, 0))
+            nextcloud.account_folders(['compose'], {}, Path('/x'), False, False, print)
+            self.assertEqual((given.call_count, missing.call_count), (1, 1))
+        source = Path(nextcloud.__file__).read_text()
+        self.assertIn('account_folders(base, config, folder, fresh, given_back, ctx.log)', source)
 
     def test_an_interrupted_recovery_finishes_at_the_next_setup_run(self):
         # The owner's review of 0.41.4: setup stopped between giving the folder back and making

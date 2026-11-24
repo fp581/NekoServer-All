@@ -1491,6 +1491,12 @@ def installer_modules():
 
 
 class AccountCorrectionTests(unittest.TestCase):
+    def setUp(self):
+        # An empty SSD of its own, never the real /srv/nekoserver of the PC the tests run on.
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.ssd = folder.name
+
     def test_pending_new_account_can_switch_to_the_login_you_set_yourself(self):
         from unittest import mock
         import account_store
@@ -1516,7 +1522,7 @@ class AccountCorrectionTests(unittest.TestCase):
             mock.patch.object(account_store, 'save', lambda config, v: saved.append(json.loads(json.dumps(v)))),
         ):
             account_store.collect(
-                {'data_mount': '/srv/nekoserver'},
+                {'data_mount': self.ssd},
                 ['jellyfin'],
                 prompt=lambda q='': next(answers),
                 password_prompt=lambda q='': next(passwords),
@@ -1551,7 +1557,7 @@ class AccountCorrectionTests(unittest.TestCase):
             mock.patch.object(account_store, 'save', return_value=None),
         ):
             account_store.collect(
-                {'data_mount': '/srv/nekoserver'},
+                {'data_mount': self.ssd},
                 ['jellyfin'],
                 prompt=lambda q='': '',
                 password_prompt=lambda q='': '',

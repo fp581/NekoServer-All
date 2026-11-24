@@ -90,19 +90,21 @@ Q = {
     # ---- drives
     'drive_space': {
         'screen': 'Your drives',
-        'title': 'One of your drives is small. Go on anyway?',
-        'hint': 'The list above says which drive and how much room it has. It will fill up sooner.',
+        'title': 'Continue with {which}?',
+        'hint': 'It meets the minimum, so setup can go on; it will fill up sooner than a drive of the recommended size.',
         'kind': 'yesno',
         'above': True,
         'yes': 'Go on',
         'no': 'Stop, I will change the drive',
+        'example': {'which': 'this drive'},
     },
     'install_drive_lost': {
         'screen': 'Your drives',
-        'title': 'Is the drive that {apps} are installed on lost?',
+        'title': 'Is this drive permanently unavailable?',
         'hint': (
-            'It is not connected. If it is only unplugged, connect it and run setup again. If it is lost, '
-            'these apps are set up again on NekoServer\'s own drive with empty settings, and the recovery menu '
+            'The drive that {apps} are installed on is not connected. If it is temporarily disconnected, reconnect it '
+            'instead, then run setup again. If it is permanently unavailable, these apps are set up again on the '
+            'apps drive with empty settings, and the recovery menu '
             '(sudo bash install.sh --recover) can bring their settings back from a backup.'
         ),
         'kind': 'yesno',
@@ -116,7 +118,7 @@ Q = {
         'title': 'What is the address of your NAS?',
         'hint': 'It is what you open in a browser to reach it, such as 192.168.1.20.',
         'kind': 'text',
-        'send': 'Look there',
+        'send': 'Find my NAS',
     },
     'nas_kind': {
         'screen': NAS,
@@ -144,7 +146,7 @@ Q = {
         'hint': 'Most do not: only if you gave this disk a password on the NAS (the NAS calls it CHAP). The disk is {iqn}.',
         'kind': 'yesno',
         'yes': 'Yes, it has a password',
-        'no': 'No password',
+        'no': 'This disk does not require a login.',
         'how': 'Type yes or no, then press Enter. Enter alone means no.',
         'example': {'iqn': 'iqn.2000-01.com.synology:nas.Target-1'},
     },
@@ -193,7 +195,7 @@ Q = {
     },
     'login_retry': {
         'screen': LOGINS,
-        'title': '{app} did not take the saved login. What now?',
+        'title': "NekoServer couldn't sign in to {app} with the saved credentials. What now?",
         'hint': 'If you changed the password in {app} yourself, tell NekoServer the new one.',
         'kind': 'choice',
         'choices': [('', 'Try the saved login again'), ('c', 'I changed it: here is the new one')],
@@ -342,7 +344,7 @@ Q = {
     },
     'existing_more_folder': {
         'screen': YOUR_MEDIA,
-        'title': 'Is any other folder holding your {what}?',
+        'title': 'Do you have {what} in another folder?',
         'hint': 'Your {what} can be in up to {cap} folders, each one used where it is. Nothing in them is changed.',
         'kind': 'text',
         'send': USE_FOLDER,
@@ -404,7 +406,8 @@ Q = {
     'assistant_model': {
         'screen': 'Ask Neko, the AI assistant',
         'title': 'Which AI assistant do you want?',
-        'hint': 'Bigger ones answer better and use more memory. The list above says what each needs.',
+        'hint': 'Larger models may give more detailed answers, but use more memory and can respond more slowly. '
+        'The list above says what each needs.',
         'kind': 'choice',
         'how': 'Type its number, then press Enter. Enter alone chooses {default}.',
         'example': {'default': 'no assistant'},

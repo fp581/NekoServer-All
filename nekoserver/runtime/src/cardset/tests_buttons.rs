@@ -131,6 +131,22 @@ fn a_check_marks_a_damaged_copy_and_the_next_run_copies_it_again() {
     assert!(again.waiting.is_empty(), "{again:?}");
 }
 
+/// 1.0 round T2-01: the photos gone from the server (a dead HDD) said "0 files on the
+/// cards" on the dashboard while the cards held every one of them.
+#[test]
+fn files_gone_from_the_server_are_still_counted_on_the_cards() {
+    use crate::cards::status::count;
+    let s = Scratch::new("bt-gone");
+    let (src, _p, _v, store) = one_card(&s);
+    assert_eq!(count(&store, &cands(&src)).unwrap(), (4, 0));
+    fs::remove_dir_all(&src.root).unwrap();
+    fs::create_dir_all(&src.root).unwrap();
+    assert_eq!(count(&store, &cands(&src)).unwrap(), (4, 0));
+    // One of them back, changed: its new version waits, the other three are on the card.
+    put(&src, "2001/0.jpg", &bytes(7, 1000));
+    assert_eq!(count(&store, &cands(&src)).unwrap(), (3, 1));
+}
+
 #[test]
 fn a_check_of_a_card_taken_out_marks_nothing() {
     let s = Scratch::new("bt-pulled");

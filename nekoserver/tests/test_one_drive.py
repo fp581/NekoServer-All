@@ -101,7 +101,7 @@ class MountTests(unittest.TestCase):
     def test_the_folders_lines_wait_for_the_drive_and_are_known_as_setups_own(self):
         line = storage.bind_line(APPS, '/srv/nekoserver')
         self.assertEqual(
-            line, f'{APPS} /srv/nekoserver none bind,x-systemd.requires-mounts-for={storage.ONE_DRIVE} 0 0'
+            line, f'{APPS} /srv/nekoserver none bind,nofail,x-systemd.requires-mounts-for={storage.ONE_DRIVE} 0 0'
         )
         self.assertTrue(storage.own_bind_line(line.split()))
         system = storage.bind_line(storage.SYSTEM_FOLDERS['data_ssd'], '/srv/nekoserver')
@@ -174,5 +174,5 @@ class OneDriveWordsTests(unittest.TestCase):
         self.assertNotIn('only copy on another drive', none)
         self.assertIn('run  sudo bash install.sh  again', none)
         usb = storage.photos_on_media(self.one(external_backup_uuid='usb-1'))
-        self.assertIn('Your only copy on another drive is the weekly USB backup.', usb)
+        self.assertIn('Your only copy on another drive is the weekly offline backup.', usb)
         self.assertEqual(storage.photos_on_media({'photos': {}}), storage.PHOTOS_ON_MEDIA)

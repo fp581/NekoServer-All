@@ -17,10 +17,12 @@ Cleanup: take the post-install snapshot; later stages restore it
 
 Finishing screen (`finishing_screen`, wizard.py:430; `headline`, wizard.py:337):
 
-- `NekoServer is ready!` on the first ruled line, then `Done: 32 of 32 steps.` (the count
-  is the installer's plan for the VM with a desktop; 31 of 32 while the phone step waits).
-- The `NEXT_DONE` lines (wizard.py:385): `Everything is set up. Backups and monthly
-  updates run on their own;` and `the dashboard shows how they are doing.`
+- `NekoServer is ready!` on the first ruled line, then `Done: 34 of 34 steps.` (the count
+  is the installer's plan for the VM with a desktop and the SSD, the HDD and the USB drive,
+  in 1.0.0; 33 of 34 while the phone step waits).
+- The `NEXT_DONE` lines (wizard.py): `Installation complete. Scheduled backups and updates
+  are enabled: the nightly backups, the weekly` and `app updates and the monthly backup check run
+  on their own; the dashboard shows how they are doing.`
 - `Dashboard:          http://127.0.0.1:8787  (on this PC)` and `Dashboard PIN:      set`
   (`show_dashboard`, wizard.py:351; the port is `dashboard.port` in config.json).
 - `Your apps:` with the home address and the Tailscale links (`show_addresses`, wizard.py:371).
@@ -59,3 +61,12 @@ The phone step (Tailscale sign-in, Immich upload) is confirmed by a person; the 
 runs the phone checks as their own stage. Everything else is driven by the rig's rules.
 0.48.1 gate (2026-11-09, VM, commit ee30d0e): passed, 31 of 32 with the phone step
 held, rerun 32 of 32.
+
+1.0.0 round (`tests/COVERAGE-MAP.md`): partly proved. VM, 37843d5: the fresh install failed at
+random, Nextcloud never installed (28 of 34) when its made-up admin password started with
+"-" (T1-R12; fixed in 9df689b and 7946397). A Debian update that wants a restart stops setup
+first (`No restart pending from an earlier update is required`), which is right. WSL fresh
+installs with the recommended answers on Arch, Fedora, AlmaLinux and openSUSE passed, apart
+from what WSL cannot do. The fresh install on the final commit 597c800 passed (T1-gate-597c800): 33 of 34 (the phone
+check), 16 of 16 containers, Nextcloud installed, the nightly backup and a settings restore
+worked, and after a restart every app answered.

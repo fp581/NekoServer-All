@@ -40,7 +40,7 @@ from modules import (  # noqa: E402
     photo_preservation,
     server_os,
 )
-from neko_common import VERSION, atomic_json, media_apps_wanted, media_services  # noqa: E402
+from neko_common import VERSION, atomic_json, media_apps_wanted, media_services, nextcloud_enabled  # noqa: E402
 
 GOLDEN = ROOT / 'tests' / 'golden'
 UPDATE = os.environ.get('NEKO_UPDATE_GOLDEN') == '1'
@@ -305,9 +305,10 @@ def rendered(cfg, facts, tmp):
     def lib(step):
         return Path('/usr/local/lib/nekoserver-' + step) / RELEASE / native_runtime.NAME
 
-    # The nightly snapshots and their settings files (the media apps' and the music's only
-    # with the media apps: left out, those steps retire their schedules).
-    if media_services(cfg):
+    # The nightly snapshots and their settings files (the apps' with the media apps or
+    # Nextcloud, the music's only with the media apps: left out, those steps retire their
+    # schedules).
+    if media_services(cfg) or nextcloud_enabled(cfg):
         out.update(app_backup.definitions(cfg, runtime, app_backup.GUARD))
         out['applications.json'] = as_json(tmp, app_backup.guard_config(cfg))
     out.update(host_backup.definitions(cfg, runtime, host_backup.PRIVATE))
@@ -384,7 +385,10 @@ class GoldenFileTests(unittest.TestCase):
 
     def check(self, name):
         make, facts = CONFIGURATIONS[name]
-        with tempfile.TemporaryDirectory() as tmp:
+        # The settings name /srv/nekoserver and /mnt/nekoserver-media, as a server's do: the
+        # files are made from them without looking at those folders on the PC the tests run
+        # on (with NekoServer installed they are root's). Links are checked by other tests.
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(Path, 'is_symlink', return_value=False):
             produced = rendered(make(), facts, tmp)
         folder = GOLDEN / name
         if UPDATE:
@@ -437,8 +441,11 @@ class GoldenFileTests(unittest.TestCase):
 
     def test_no_media(self):
         produced = self.check('no-media')
+        # 1.0.0 (C-01): the nightly app backup stays for Nextcloud, with no media app in it.
+        self.assertIn('nekoserver-app-backup.timer', produced)
+        guard = json.loads(produced['applications.json'])
+        self.assertEqual((guard['media'], guard['nextcloud']), ({'services': []}, True))
         for left_out in (
-            'nekoserver-app-backup.timer',
             'nekoserver-music-backup.timer',
             'nekoserver-media-health.timer',
             'nekoserver-photo-preservation.timer',

@@ -965,7 +965,7 @@ fn no_other_writers(
     }
     Ok(())
 }
-fn tar(root: &Path, paths: &[String], output: &Path, exclude: &[&str]) -> Result<()> {
+pub(crate) fn tar(root: &Path, paths: &[String], output: &Path, exclude: &[&str]) -> Result<()> {
     let root = root.to_string_lossy();
     let output = output.to_string_lossy();
     let mut args = vec![
@@ -1136,7 +1136,17 @@ pub(crate) fn encrypt_secrets_with(
     snapshot: &Path,
     key_dir: &Path,
 ) -> Result<&'static str> {
-    let members = sealed_members(data);
+    encrypt_members_with(data, snapshot, key_dir, &sealed_members(data))
+}
+/// `members` (paths in `data`) sealed for the backup key into `snapshot`, as
+/// encrypt_secrets_with seals the password list (the nightly Nextcloud backup seals its
+/// own two files this way).
+pub(crate) fn encrypt_members_with(
+    data: &Path,
+    snapshot: &Path,
+    key_dir: &Path,
+    members: &[String],
+) -> Result<&'static str> {
     if members.is_empty() {
         return Ok("none");
     }
@@ -1162,7 +1172,7 @@ pub(crate) fn encrypt_secrets_with(
         .args(["--create", "--file", "-", "--acls", "--xattrs", "-C"])
         .arg(data)
         .arg("--")
-        .args(&members)
+        .args(members)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -1200,7 +1210,7 @@ pub(crate) fn encrypt_secrets_with(
 /// (backup_secrets.py --new-password) puts a new certificate and a new key in their
 /// places, one after the other: two reads that agree are of one pair, and reads that
 /// differ are made again a moment later.
-fn key_pair(key: &Path, cert: &Path) -> Result<(Vec<u8>, Vec<u8>)> {
+pub(crate) fn key_pair(key: &Path, cert: &Path) -> Result<(Vec<u8>, Vec<u8>)> {
     let read = || -> Result<(Vec<u8>, Vec<u8>)> {
         Ok((common::bytes(key, 64_000)?, common::bytes(cert, 64_000)?))
     };
@@ -5125,6 +5135,17 @@ pub fn update_apps(a: &Args) -> Result<()> {
     }
     result
 }
+/// An app whose update failed and could not be put back either: the night is a failure,
+/// not "undone", even when an earlier app's update was undone that night (T1-R11).
+fn left_broken(
+    app: &str,
+    failure: &impl std::fmt::Display,
+    then: &impl std::fmt::Display,
+    undone: &std::cell::Cell<bool>,
+) -> Error {
+    undone.set(false);
+    Error::new(&format!("{app}: {failure}; then: {then}"))
+}
 /// "Update now"'s `<app>:<sig>`: the app (one set up here) and the version chosen. No
 /// value: the update night, every app.
 fn update_now_target(value: &str, apps: &[String]) -> Result<Option<(String, String)>> {
@@ -5230,7 +5251,7 @@ fn install_due(
                     .ok()
                     .and_then(|j| j["phase"].as_str().map(str::to_string));
                 if let Err(e) = resume(cfgpath, cfg) {
-                    return Err(Error::new(&format!("{app}: {failure}; then: {e}")));
+                    return Err(left_broken(&app, &failure, &e, undone));
                 }
                 tidy_after_failure(cfg);
                 if installed {
@@ -5590,7 +5611,7 @@ fn committed() -> bool {
     load(Path::new(*JOURNAL)).is_ok_and(|j| j["phase"] == "committed")
 }
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     /// The review of 0.47.0: the update's check worked the folders out again (the drive,
     /// then a fixed name) instead of reading the ones setup wrote down.
@@ -6487,7 +6508,7 @@ mod tests {
     }
     /// A backup key in `keys`, locked with `password`: the format backup_secrets.py makes
     /// (fewer rounds, so the tests stay quick).
-    fn backup_key(keys: &Path, password: &str) {
+    pub(crate) fn backup_key(keys: &Path, password: &str) {
         let pass = format!("pass:{password}");
         let plain = sh(
             &[
@@ -8693,6 +8714,24 @@ mod tests {
         let source = include_str!("maintenance.rs");
         assert!(
             source.contains("note_failed_report(&cfgpath, &data, \"maintenance\", \"rolled_back\"")
+        );
+    }
+    /// T1-R11 review: on an update night app A's update is undone, then app B's fails and
+    /// putting B back fails too. The night's report must not say "rolled_back" (the page
+    /// would read "undone, your apps work" while B is broken).
+    #[test]
+    fn an_app_left_broken_after_an_undone_one_makes_the_night_a_failure() {
+        let undone = std::cell::Cell::new(true); // A's update was undone earlier
+        let said = left_broken(
+            "sonarr",
+            &"sonarr was not ready after 5 minutes",
+            &"Rollback state incomplete",
+            &undone,
+        );
+        assert!(!undone.get(), "the report would say rolled_back");
+        assert_eq!(
+            said.to_string(),
+            "sonarr: sonarr was not ready after 5 minutes; then: Rollback state incomplete"
         );
     }
     #[test]

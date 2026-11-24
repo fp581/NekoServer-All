@@ -756,28 +756,28 @@ class DriveSizeTests(unittest.TestCase):
         self.assertEqual(config['storage']['media_hdd']['uuid'], 'hdd-0001')
         self.assertEqual(out[0], 'Everything connected to this PC:')  # the list comes first (0.50.0)
         self.assertIn(
-            'Now choose the drive for your apps, photos and music (the app SSD). It needs at least 20 GB free, so '
+            'Now choose the drive for your apps, photos and music (the apps drive). It needs at least 20 GB free, so '
             'a drive of 22 GB or more (100 GB or more is recommended).',
             out,
         )
-        too_small = 'it is too small: the app SSD needs a drive of at least 22 GB (20 GB free once formatted)'
+        too_small = 'it is too small: the apps drive needs a drive of at least 22 GB (20 GB free once formatted)'
         self.assertIn(f'  3) Cruzer, 16 GB drive, named "SSD"  - not this one: {too_small}', out)
         self.assertIn('  4) Samsung SSD 870, 466 GB drive, named "Fast"  (recommended)', out)
         self.assertIn(
-            '  2) WD SN770, 477 GB NVMe SSD  - not this one: it has too little room: 0 GB free, and the app SSD needs at least 20 GB there',
+            '  2) WD SN770, 477 GB NVMe SSD  - not this one: it has too little room: 0 GB free, and the apps drive needs at least 20 GB there',
             out,
         )
         self.assertIn(
-            f'Drive 3 (Cruzer, 16 GB drive, named "SSD") cannot be the app SSD: {too_small}. '
+            f'Drive 3 (Cruzer, 16 GB drive, named "SSD") cannot be the apps drive: {too_small}. '
             'Choose another one from the list.',
             out,
         )
         self.assertIn(
-            'Number of the drive for your apps, photos and music (the app SSD) (Enter for 4, the recommended one): ',
+            'Number of the drive for your apps, photos and music (the apps drive) (Enter for 4, the recommended one): ',
             out,
         )
         self.assertIn(
-            'Drive 4 (Samsung SSD 870, 466 GB drive, named "Fast") is the app SSD. '
+            'Drive 4 (Samsung SSD 870, 466 GB drive, named "Fast") is the apps drive. '
             'Nothing on it is changed by choosing it.',
             out,
         )
@@ -788,7 +788,7 @@ class DriveSizeTests(unittest.TestCase):
         row = next(
             line for line in out if line.startswith('  4) Samsung SSD 870') and 'media' not in line.split('(')[0]
         )
-        self.assertNotIn('it is already the app SSD', row)
+        self.assertNotIn('it is already the apps drive', row)
         # The UUID is shown in the drive's details and never has to be typed.
         self.assertIn('       Details: sdc1 on sdc; ext4, UUID ssd-0001; not open', out)
         self.assertFalse(any('UUID=' in line or 'mounted=' in line for line in out))
@@ -797,9 +797,9 @@ class DriveSizeTests(unittest.TestCase):
         inventory = {'blockdevices': self.INVENTORY['blockdevices'][:5]}
         with self.assertRaises(RuntimeError) as caught:
             self.resolve([], inventory=inventory)
-        self.assertIn('No drive here can be the app SSD (your apps, photos and music).', str(caught.exception))
+        self.assertIn('No drive here can be the apps drive (your apps, photos and music).', str(caught.exception))
         self.assertIn(
-            'drive 3 (Cruzer, 16 GB drive, named "SSD"): it is too small: the app SSD needs a drive of at '
+            'drive 3 (Cruzer, 16 GB drive, named "SSD"): it is too small: the apps drive needs a drive of at '
             'least 22 GB (20 GB free once formatted)',
             str(caught.exception),
         )
@@ -816,7 +816,7 @@ class DriveSizeTests(unittest.TestCase):
 
     def test_no_drive_chosen_says_how_to_go_on(self):
         with self.assertRaisesRegex(
-            RuntimeError, r'No drive was chosen for the app SSD\. Run  sudo bash install\.sh  again'
+            RuntimeError, r'No drive was chosen for the apps drive\. Run  sudo bash install\.sh  again'
         ):
             self.resolve(['99', '99', '99'])
 
@@ -856,8 +856,8 @@ class DriveSizeTests(unittest.TestCase):
         config, out = self.resolve(['4', 'sdc1', '5', 'sdd1'], config)
         self.assertEqual(config['storage']['data_ssd']['uuid'], 'ssd-0001')
         self.assertIn(
-            'Drive 3 (Cruzer, 16 GB drive, named "SSD"), the drive saved as the app SSD, is too small: it '
-            'needs a drive of at least 22 GB (20 GB free once formatted). Choose the SSD (your apps, photos and music) again:',
+            'Drive 3 (Cruzer, 16 GB drive, named "SSD"), the drive saved as the apps drive, is too small: it '
+            'needs a drive of at least 22 GB (20 GB free once formatted). Choose the apps drive (your apps, photos and music) again:',
             out,
         )
 

@@ -19,7 +19,7 @@ With 1 you never type or remember a password: "To see one app's login", below, s
 
 With option 2, you type a username and password for every new app (nothing is generated for you), then the dashboard PIN (6 to 8 digits, or Enter for none) and the shared folders' password. Custom passwords are typed with hidden input and confirmed a second time. New passwords must be 12-128 characters with no control characters. Usernames use letters, digits, underscores or hyphens and begin with a letter. Immich and Seerr require an email-shaped login instead of a conventional username.
 
-Automatic usernames use Python secrets.token_hex; automatic passwords contain 32 characters generated with secrets.choice (cryptographically secure operating-system randomness). Every app receives its own generated credentials. Generated email logins end in @server.invalid; they are usable local login identifiers but cannot receive password-recovery emails. Choose your actual email manually if you want recovery email later and configure mail in the app.
+Automatic usernames use Python secrets.token_hex; automatic passwords contain 32 characters generated with secrets.choice (cryptographically secure operating-system randomness), letters, digits, "-" and "_", and always start with a letter or digit, so no command reads one as an option. Every app receives its own generated credentials. Generated email logins end in @server.invalid; they are usable local login identifiers but cannot receive password-recovery emails. Choose your actual email manually if you want recovery email later and configure mail in the app.
 
 ## What is configured
 
@@ -52,7 +52,7 @@ The text file has a heading for each app/account, its local URL, setup status, u
 **To see one app's login** (to type it on a phone, say), show it on the screen, one app at a time, with a QR code of the password to scan:
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.52.3/account-setup.py show
+sudo python3 /srv/nekoserver/installer/releases/v1.0.0/account-setup.py show
 ```
 
 It lists the saved logins: type a number to show one, Enter to hide it again (the screen is cleared). `show jellyfin` (or `immich`, `seerr`, `nextcloud`, `navidrome`…) goes straight to one; for Navidrome's two logins it says which one is yours. It runs only with sudo and only in a terminal: it refuses to print into a file or another program, so a password never lands in a log. The QR code is drawn by `qrencode`, which gets the password on its input, not its command line (other accounts can read command lines).

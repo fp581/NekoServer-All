@@ -101,18 +101,28 @@ class RetentionTests(unittest.TestCase):
 
     def test_the_count_is_applied_by_one_function_called_from_one_place(self):
         callers = lambda goal: sorted(caller for caller, called in self.calls.items() if goal in called)  # noqa: E731
-        self.assertEqual(callers(('common', 'prune_snapshots')), [('backup', 'publish_snapshot')])
+        # 1.0.0 (C-01): Nextcloud's nightly backup, made by the same nightly job, is kept by
+        # the same count in its own folder.
+        self.assertEqual(
+            callers(('common', 'prune_snapshots')), [('backup', 'publish_snapshot'), ('nextcloud_nightly', 'make')]
+        )
         self.assertEqual(
             callers(('common', 'remove_snapshot')), [('backup', 'make_room_with'), ('common', 'prune_snapshots')]
         )
         self.assertEqual(
             callers(('backup', 'publish_snapshot')), [('app_snapshot', 'snapshot'), ('host_snapshot', 'snapshot')]
         )
-        self.assertEqual(callers(('backup', 'make_room')), [('app_snapshot', 'snapshot')])
+        self.assertEqual(callers(('backup', 'make_room')), [('app_snapshot', 'snapshot'), ('nextcloud_nightly', 'run')])
 
     def test_the_app_backup_count_is_read_only_by_the_app_backup_job(self):
         readers = [name for name, body in self.functions.items() if '["app_backup"]["keep_snapshots"]' in body]
-        self.assertEqual(readers, [('app_snapshot', 'snapshot')])
+        # The nightly job's two parts: the media apps' snapshot and Nextcloud's (1.0.0, C-01).
+        self.assertEqual(readers, [('app_snapshot', 'snapshot'), ('nextcloud_nightly', 'run')])
+        self.assertIn('media.join(FOLDER)', self.functions[('nextcloud_nightly', 'run')])
+        self.assertIn(
+            'pub(crate) const FOLDER: &str = "backups/nextcloud-nightly";',
+            (Path(__file__).resolve().parents[1] / 'runtime/src/nextcloud_nightly.rs').read_text(),
+        )
         # Each count has its own setting; the app backup's is not borrowed anywhere.
         # The settings backup reads its own count in host_keep, which its snapshot calls.
         self.assertIn('host_keep(cfg, &root, &left_out)', self.functions[('host_snapshot', 'snapshot')])

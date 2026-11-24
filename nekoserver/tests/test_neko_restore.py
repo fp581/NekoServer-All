@@ -214,7 +214,7 @@ class WhereACardMustBeTests(unittest.TestCase):
         # Every place a card may be is named (deep check plan 380: /run/media, where Fedora,
         # Arch and openSUSE desktops mount a card by themselves, was left out).
         self.assertIn('is not where a card is mounted. Mount the card under /media, /run/media or /mnt', said)
-        self.assertIn('or run this tool from the card', said)
+        self.assertRegex(said, r'/mnt \(a desktop does that by itself\), or run this tool from the card(?!\w)')
 
     def test_a_link_out_of_those_places_is_refused(self):
         outside = Card(self.tmp / 'home' / 'CARD')

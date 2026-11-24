@@ -44,3 +44,8 @@ Cleanup: restore the snapshot
 
 - The restart, the photo upload and the nightly backup on the gate machine.
 - Reading `/etc/fstab` before and after the uninstaller.
+
+1.0.0 round: partly proved. VM 37843d5: the one-drive layout on an mdadm RAID1 array of two
+blank disks (setup takes an array as one drive and says what that protects against), and the
+2-drive layout: install, the nightly backup, a restore of app settings and a restart passed.
+The system disk as the only drive, as above, was not run; nor was a mirror losing a drive.

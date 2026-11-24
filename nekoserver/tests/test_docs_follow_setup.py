@@ -112,6 +112,136 @@ class SetupWindowTests(unittest.TestCase):
         self.assertIn('This setup window is open somewhere else', text)
 
 
+class NoSudoTests(unittest.TestCase):
+    def test_the_readme_says_what_to_do_before_the_first_sudo(self):
+        """1.0 round T5-01: Debian installed with a root password has no sudo, and the
+        README's first commands stopped with sudo's own "command not found" or "not in the
+        sudoers file". Before the first command it says what to do, in install.sh's words."""
+        readme = (ROOT.parent / 'README.md').read_text()
+        before = readme.split('## Install')[1].split('```bash')[0]
+        for words in ('command not found', 'not in the sudoers file', 'su -', 'apt install sudo', 'usermod -aG sudo'):
+            self.assertIn(words, before)
+        script = (ROOT / 'install.sh').read_text()
+        for words in ('su -', 'apt install sudo', 'usermod -aG sudo', 'log out, log in again'):
+            self.assertIn(words, script)
+
+
+class NextcloudDatabaseRestoreTests(unittest.TestCase):
+    """1.0 round T1-R2: RECOVERY.md loaded Nextcloud's database copy as `nextcloud`, so
+    every table belonged to it, while Nextcloud signs in to its database with an account
+    of its own (config.php's dbuser, made by `occ maintenance:install`): "permission
+    denied for table oc_appconfig", and Nextcloud stayed down. The copy is loaded as that
+    account, into a database it owns, and stops at the first error."""
+
+    def test_the_copy_is_loaded_as_the_account_nextcloud_uses(self):
+        # Nextcloud is installed with the container's superuser, and makes its own account.
+        self.assertIn('--database-user="$POSTGRES_USER"', (ROOT / 'modules' / 'nextcloud.py').read_text())
+        steps = doc('RECOVERY.md').split("### Nextcloud's database")[1].split(chr(10) + '### ')[0]
+        self.assertIn('echo $CONFIG["dbuser"]', steps)
+        self.assertIn('createdb -U nextcloud -O DBUSER nextcloud', steps)
+        self.assertIn('psql -U DBUSER -d nextcloud --single-transaction -v ON_ERROR_STOP=1', steps)
+        self.assertNotIn('psql -U nextcloud', steps)
+
+
+def root_only_steps(text):
+    """The commands of RECOVERY.md's two by-hand database restores."""
+    immich = text.split('### Rebuild Immich from the USB drive')[1].split(chr(10) + '### ')[0]
+    nextcloud = text.split("### Nextcloud's database")[1].split(chr(10) + '### ')[0]
+    return immich + nextcloud
+
+
+class RootOnlyFolderTests(unittest.TestCase):
+    """1.0 round T1-R1: the by-hand Immich and Nextcloud database restores, followed word for
+    word as the normal user with sudo, stopped at their first command: `cd
+    /srv/nekoserver/compose/immich` said "Permission denied", as did `sha256sum` in the USB
+    drive's nextcloud-database folder and the `< copy` that loads it, and "open it in the file
+    manager" cannot open a folder only root may. Setup makes these folders root's alone, so
+    every step reaches them through sudo."""
+
+    def test_the_folders_the_steps_use_are_roots_alone(self):
+        self.assertIn('ensure_directory(compose_dir, 0o700)', (ROOT / 'modules' / 'photos.py').read_text())
+        backup = (ROOT / 'runtime' / 'src' / 'backup.rs').read_text()
+        self.assertIn('let folder = usb.join(kind.folder);\n    common::directory(&folder, 0o700)?;', backup)
+
+    def test_every_step_reaches_a_root_only_folder_through_sudo(self):
+        steps = root_only_steps(doc('RECOVERY.md'))
+        self.assertNotIn('file manager to see', steps)
+        self.assertNotRegex(steps, r'(?m)^\s*cd /srv/')
+        self.assertNotRegex(steps, r'< /')
+        blocks = '\n'.join(re.findall(r'```bash\n(.*?)```', steps, re.S))
+        inline = re.findall(r'`([^`\n]+)`', re.sub(r'```bash\n.*?```', '', steps, flags=re.S))
+        for command in inline + [line.strip() for line in blocks.splitlines()]:
+            if re.search(r'(?:^|\s)(?:sha256sum|cat|ls) ', command) and not command.startswith('sudo '):
+                self.fail(f'{command!r} reads a root-only folder without sudo')
+        self.assertIn('sudo cat /path/to/nextcloud-DATE.sql | sudo docker compose -p neko-nextcloud', steps)
+        self.assertIn('sudo sha256sum /mnt/nekoserver-media/backups/nextcloud-database/nextcloud-DATE.sql', steps)
+        self.assertIn('sudo ls -l /media/$USER/*/immich-database/', steps)
+
+
+def new_hdd_text(recovery):
+    """RECOVERY.md's words for a new HDD, in the row "The SSD or the HDD broke"."""
+    return recovery.split('After a new HDD, Nextcloud starts again')[1].split(chr(10))[0]
+
+
+class AfterALostDriveTests(unittest.TestCase):
+    """1.0 round T1-R14 and T1-final-4: after a whole-server restore or a new HDD, RECOVERY.md
+    has the Nextcloud files uploaded again, and a file uploaded again is a new file to
+    Nextcloud, so the link shared to it is gone although the database copy holds the share.
+    And after a new HDD Jellyfin keeps listing the films lost with it (films are not backed
+    up) until a library scan. Both are said where the reader does that step."""
+
+    def test_the_upload_again_says_shared_links_do_not_come_back(self):
+        recovery = doc('RECOVERY.md')
+        step5 = recovery.split("### Nextcloud's database")[1].split(chr(10) + '5. ')[1].split(chr(10))[0]
+        self.assertIn('Links you had shared to files you upload again do not come back', step5)
+        self.assertIn('Links you had shared to those files do not come back with them', new_hdd_text(recovery))
+
+    def test_a_new_hdd_says_how_jellyfin_forgets_the_lost_films(self):
+        new_hdd = new_hdd_text(doc('RECOVERY.md'))
+        self.assertIn('Films and shows are not backed up', new_hdd)
+        self.assertIn('*Dashboard* → *Libraries* → *Scan All Libraries*', new_hdd)
+
+
+class FirstReadTests(unittest.TestCase):
+    """1.0 round T5-02 to T5-05: what a first-time reader of the README is told matches
+    what setup and install.sh do."""
+
+    def readme(self):
+        return (ROOT.parent / 'README.md').read_text()
+
+    def test_the_no_sudo_passage_covers_arch_too(self):
+        # T5-02: Arch can be installed without sudo too; there it is the wheel group.
+        before = self.readme().split('## Install')[1].split('```bash')[0]
+        for words in ('pacman -S sudo', 'usermod -aG wheel', '%wheel ALL=(ALL:ALL) ALL'):
+            self.assertIn(words, before)
+
+    def test_ask_nekos_model_is_among_what_stops_setup_after_the_approval(self):
+        # T5-03: with Ask Neko switched on, its model is asked during the run.
+        self.assertIn('def ask_model(', (ROOT / 'modules' / 'assistant.py').read_text())
+        stops = self.readme().split('After the approval only these stop it')[1].split(chr(10))[0]
+        self.assertIn('Ask Neko', stops)
+
+    def test_the_shared_folders_are_said_to_need_something_to_share(self):
+        # T5-04: with no app, or Nextcloud alone, the shares step shares nothing.
+        self.assertIn('def anything_to_share(', (ROOT / 'modules' / 'samba.py').read_text())
+        for doc in (ROOT.parent / 'README.md', ROOT / 'README.md', ROOT / 'GUIDED-SETUP.md'):
+            said = [
+                line
+                for line in doc.read_text().splitlines()
+                if 'shared folders' in line and ('lways set up' in line or 'set up either way' in line)
+            ]
+            self.assertTrue(said, doc)
+            for line in said:
+                self.assertIn('something to share', line, doc)
+
+    def test_the_pc_is_said_to_be_intel_or_amd(self):
+        # T5-05: install.sh refuses anything but x86_64 (an ARM board, say).
+        self.assertIn('[[ "$machine" != x86_64 ]]', (ROOT / 'install.sh').read_text())
+        need = self.readme().split('## What you need')[1].split(chr(10) + '- ')[1]
+        for words in ('64-bit Intel or AMD', 'x86_64', 'ARM'):
+            self.assertIn(words, need)
+
+
 class OptionsTests(unittest.TestCase):
     """install.sh --help ended "README.md shows when each is needed", and README.md named
     one of the twelve options."""
@@ -249,7 +379,7 @@ class StorageGuideTests(unittest.TestCase):
         """STORAGE.md said it "is never offered as the SSD, HDD or USB drive"; since 0.50.0
         it is, for a PC with one drive (only the USB backup drive must be a drive of its own)."""
         printed = (ROOT / 'tests/golden/drive-questions.txt').read_text()
-        self.assertIn('the disk Linux runs from\n       Can be the app SSD or the media HDD.', printed)
+        self.assertIn('the disk Linux runs from\n       Can be the apps drive or the media and backups drive.', printed)
         text = doc('STORAGE.md')
         self.assertNotIn('never offered as the SSD', text)
         self.assertIn('is never offered as the USB drive', text)
@@ -642,6 +772,22 @@ class ToolHelpTests(unittest.TestCase):
 
         for tool in ('acceptance.py', 'account-setup.py', 'recover.py', 'migrate.py', 'music-setup.py'):
             self.assertIn(' '.join(neko_common.SETTINGS_HELP.split()[:6]), ' '.join(self.help_of(tool).split()))
+
+
+class MirrorThatLostADriveTests(unittest.TestCase):
+    """1.0 round T1-R19: a mirror (mdadm) with a drive missing is started on the drive left
+    about a minute into the start (nekoserver-mirror-start.timer), so the docs say the
+    server starts on it after a restart too, and the rebuild is the mdadm --add steps (1.0.0
+    has no rebuild button)."""
+
+    def test_recovery_says_the_server_starts_on_the_drive_left_and_how_to_rebuild(self):
+        row = doc('RECOVERY.md').split('**A drive of a RAID array failed**')[1].split(chr(10))[0]
+        self.assertIn('starts on it after a restart too', row)
+        self.assertIn('sudo mdadm /dev/md0 --add /dev/sdX', row)
+        self.assertNotIn('button', row)
+
+    def test_storage_names_the_timer_that_starts_the_mirror(self):
+        self.assertIn('nekoserver-mirror-start.timer', doc('STORAGE.md'))
 
 
 if __name__ == '__main__':

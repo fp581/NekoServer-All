@@ -308,7 +308,7 @@ class MoreFoldersTests(unittest.TestCase):
         more = [values for key, values in keys if key == 'existing_more_folder']
         self.assertEqual(more, [{'what': 'films', 'cap': existing_media.FOLDERS_PER_KIND}] * 3)
         words = questions.words('existing_more_folder', what='films', cap=existing_media.FOLDERS_PER_KIND)
-        self.assertEqual(words['title'], 'Is any other folder holding your films?')
+        self.assertEqual(words['title'], 'Do you have films in another folder?')
         self.assertIn(f'up to {existing_media.FOLDERS_PER_KIND} folders', words['hint'])
         self.assertEqual(questions.Q['existing_more_folder']['skip_label'], 'That is all')
 

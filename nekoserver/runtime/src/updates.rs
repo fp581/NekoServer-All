@@ -328,12 +328,12 @@ pub(crate) fn release_version(tag: &str) -> Option<((u64, u64, u64), bool)> {
     let n = |i: usize| caps[i].parse::<u64>().ok();
     Some(((n(1)?, n(2)?, n(3)?), caps.get(4).is_some()))
 }
-/// The release channel (maintenance.nekoserver_channel): "beta" while every release is a
-/// beta, "stable" to be offered stable releases only.
+/// The release channel (maintenance.nekoserver_channel): "stable" (the default since
+/// 1.0.0) offers stable releases only, "beta" stable and beta releases.
 pub(crate) fn channel(cfg: &Value) -> &str {
     match cfg["maintenance"]["nekoserver_channel"].as_str() {
-        Some("stable") => "stable",
-        _ => "beta",
+        Some("beta") => "beta",
+        _ => "stable",
     }
 }
 /// The newest release newer than `current` on `channel`, from GitHub's list: never a
@@ -598,6 +598,38 @@ mod tests {
         let _ = fs::remove_dir_all(data);
     }
     #[test]
+    fn a_server_that_chose_no_channel_is_offered_stable_releases_only() {
+        let release = |tag: &str, beta: bool| json!({"tag_name": tag, "prerelease": beta});
+        let list = json!([
+            release("v1.0.1-beta", true),
+            release("v1.0.1", false),
+            release("v1.0.2-beta", true),
+            release("v1.0.0", false),
+        ]);
+        // A 0.52.3 server whose settings say "beta" (every one: the template said so) is
+        // offered 1.0.0, the stable release.
+        let beta = json!({"maintenance": {"nekoserver_channel": "beta"}});
+        assert_eq!(
+            newest_release(&json!([release("v1.0.0", false)]), channel(&beta), "0.52.3").unwrap()
+                ["tag"],
+            "v1.0.0"
+        );
+        // 1.0.0 with no channel chosen: 1.0.1, never a beta.
+        assert_eq!(
+            newest_release(&list, channel(&json!({"maintenance": {}})), "1.0.0").unwrap()["tag"],
+            "v1.0.1"
+        );
+        // An owner who chose "beta" is offered the newest beta.
+        assert_eq!(
+            newest_release(&list, channel(&beta), "1.0.0").unwrap()["tag"],
+            "v1.0.2-beta"
+        );
+        // The settings that come with NekoServer choose stable.
+        let template: Value = serde_json::from_str(include_str!("../../config.json")).unwrap();
+        assert_eq!(channel(&template), "stable");
+    }
+
+    #[test]
     fn only_a_release_on_your_channel_and_newer_than_this_one_is_offered() {
         let list = json!([
             {"tag_name": "v0.44.0Beta", "draft": true, "prerelease": true},
@@ -665,7 +697,11 @@ mod tests {
             channel(&json!({"maintenance": {"nekoserver_channel": "stable"}})),
             "stable"
         );
-        assert_eq!(channel(&json!({})), "beta");
+        assert_eq!(channel(&json!({})), "stable");
+        assert_eq!(
+            channel(&json!({"maintenance": {"nekoserver_channel": "beta"}})),
+            "beta"
+        );
         // What the dashboard sees, and the only tag it may start an upgrade to.
         let data = scratch("release");
         save_release(

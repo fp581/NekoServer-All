@@ -112,7 +112,7 @@ class InstallerFlowTests(unittest.TestCase):
             mock.patch('builtins.print'),
         ):
             args = self.args()
-            with self.assertRaisesRegex(installer.InstallerError, 'must lie on the app SSD'):
+            with self.assertRaisesRegex(installer.InstallerError, 'must lie on the apps drive'):
                 installer._execute(args, self.root)
             self.assertEqual(list(elsewhere.iterdir()), [])
             self.assertFalse(self.state.exists())
@@ -260,7 +260,9 @@ class InstallerFlowTests(unittest.TestCase):
     def test_a_settings_file_without_its_drives_says_which_is_missing(self):
         config = json.loads(self.config.read_text())
         del config['media_mount']
-        with self.assertRaisesRegex(installer.InstallerError, '"media_mount" .where the media HDD is mounted.'):
+        with self.assertRaisesRegex(
+            installer.InstallerError, '"media_mount" .where the media and backups drive is mounted.'
+        ):
             installer.validate_config(config)
 
     def test_a_media_app_mistyped_by_hand_is_named(self):
@@ -313,6 +315,51 @@ class InstallerFlowTests(unittest.TestCase):
             # A small log is added to, as before.
             installer._execute(self.args(module='storage'), self.root)
         self.assertEqual(log.read_text().count('START storage'), 2)
+
+    def run_setup_unattended(self):
+        """One setup run with --apply and nobody at the keyboard (a dashboard upgrade);
+        what it said, and the settings it saved."""
+        (self.root / 'modules' / 'storage.py').write_text('DEPENDENCIES = []\ndef run(ctx):\n    pass\n')
+        said = []
+        with (
+            mock.patch('config_checks.validate'),
+            mock.patch.object(installer.os.path, 'ismount', return_value=False),
+            mock.patch.object(installer.sys.stdin, 'isatty', return_value=False),
+            mock.patch('builtins.print', side_effect=lambda *a, **k: said.append(' '.join(map(str, a)))),
+        ):
+            installer._execute(self.args(module='storage'), self.root)
+        return '\n'.join(said), json.loads(self.config.read_text())
+
+    def test_a_beta_channel_from_before_1_0_0_moves_to_stable_once(self):
+        # 1.0.0: "stable" is the default. Every settings file from before said "beta" (the
+        # template did), so the upgrade's setup run moves it, without a question, once.
+        self.assertEqual(json.loads((ROOT / 'config.json').read_text())['maintenance']['nekoserver_channel'], 'stable')
+        config = json.loads(self.config.read_text())
+        config.pop(installer.CHANNEL_REVIEWED, None)
+        config['maintenance']['nekoserver_channel'] = 'beta'
+        self.config.write_text(json.dumps(config))
+        said, saved = self.run_setup_unattended()
+        self.assertEqual(saved['maintenance']['nekoserver_channel'], 'stable')
+        self.assertIs(saved[installer.CHANNEL_REVIEWED], True)
+        self.assertIn('offered stable NekoServer releases only from now on', said)
+        self.assertIn('"nekoserver_channel": "beta" under "maintenance" in my-config.json and run setup again', said)
+        # The owner sets "beta" again on 1.0.0: setup again (and the next upgrade's) keeps it.
+        saved['maintenance']['nekoserver_channel'] = 'beta'
+        self.config.write_text(json.dumps(saved))
+        for _ in range(2):
+            said, saved = self.run_setup_unattended()
+            self.assertEqual(saved['maintenance']['nekoserver_channel'], 'beta')
+            self.assertNotIn('offered stable NekoServer releases only', said)
+
+    def test_a_stable_channel_is_left_as_it_is(self):
+        config = json.loads(self.config.read_text())
+        config.pop(installer.CHANNEL_REVIEWED, None)
+        config['maintenance']['nekoserver_channel'] = 'stable'
+        self.config.write_text(json.dumps(config))
+        said, saved = self.run_setup_unattended()
+        self.assertEqual(saved['maintenance']['nekoserver_channel'], 'stable')
+        self.assertNotIn('offered stable NekoServer releases only', said)
+        self.assertIs(saved[installer.CHANNEL_REVIEWED], True)
 
     def test_backup_counts_at_an_earlier_default_are_never_lowered_without_asking(self):
         # v0.30.0 keeps 7 nightly backups and 4 weekly database copies (3 monthly, as
@@ -608,6 +655,14 @@ class CheckpointKeysTests(unittest.TestCase):
         self.assertIs(done, False)  # pending; setup goes on
         self.assertIn('Ctrl+D leaves it pending and setup goes on; Ctrl+C stops setup.', '\n'.join(shown))
         self.assertEqual(self.run_step(KeyboardInterrupt)[0], 'stopped')
+
+    def test_a_step_left_for_later_says_how_to_finish_it_in_plain_words(self):
+        # 1.0-rc T3-3: it said "Step remains pending. Reapply this profile to resume".
+        shown = '\n'.join(self.run_step(EOFError)[1])
+        self.assertIn(
+            'This step is left for later. Run  sudo bash install.sh  again to finish it; your answers are kept.', shown
+        )
+        self.assertNotIn('profile', shown)
 
     def test_the_playback_step_says_ctrl_c_skips_it_as_it_does(self):
         from modules import onboarding

@@ -8,6 +8,7 @@ import native_runtime
 from neko_common import (
     RESUME_TIMEOUT,
     media_services,
+    nextcloud_enabled,
     VERSION,
     atomic_json,
     host_timezone,
@@ -22,7 +23,7 @@ from neko_common import (
 )
 
 DEPENDENCIES = ['media', 'recovery']
-DESCRIPTION = 'Nightly private media application snapshots with automatic restart recovery'
+DESCRIPTION = 'Nightly private snapshots of the media apps and Nextcloud with automatic restart recovery'
 
 
 # The one case an app backup is removed before a new one has succeeded (runtime,
@@ -92,6 +93,8 @@ def guard_config(config):
     compares the installed file against this same function, so the two cannot drift."""
     options = native_runtime.storage_config(config)
     options['media'] = {'services': media_services(config)}
+    # 1.0.0 (C-01): Nextcloud's database, settings and program files each night too.
+    options['nextcloud'] = nextcloud_enabled(config)
     options['app_backup'] = runtime_count(config, 'app_backup', APP_BACKUPS)
     return options
 
@@ -144,14 +147,16 @@ def run(context):
     if os.geteuid() != 0:
         raise RuntimeError('Root required')
     config = context.config
-    if not media_services(config):
-        # None of its apps on this server: this backup is theirs, so its schedule is retired
-        # (the snapshots already on the HDD stay). The restart-after-an-interrupted-
-        # snapshot service stays: with nothing interrupted it does nothing.
+    if not media_services(config) and not nextcloud_enabled(config):
+        # None of its apps on this server (the media apps, and Nextcloud since 1.0.0): its
+        # schedule is retired (the snapshots already on the HDD stay). The restart-after-an-
+        # interrupted-snapshot service stays: with nothing interrupted it does nothing.
         from modules._schedules import retire
 
         retire([SYSTEMD_UNITS / f'nekoserver-app-backup.{suffix}' for suffix in ('timer', 'service')], subprocess.run)
-        context.log('Nightly app backup: off, as none of its apps is set up; snapshots already made are kept')
+        context.log(
+            'Nightly app backup: off, as neither the media apps nor Nextcloud is set up; snapshots already made are kept'
+        )
         return
     # Validate calendar and native payload before touching installed files.
     definitions(config, '/placeholder/runtime', '/placeholder/config')
@@ -171,6 +176,6 @@ def run(context):
     ):
         subprocess.run(command, check=True, capture_output=True, timeout=1200)
     context.log(
-        'Nightly private app snapshots enabled on media HDD; apps stop briefly during each run. '
-        + retention(keep_snapshots(context.config))
+        'Nightly private app snapshots enabled on media HDD (the media apps and Nextcloud); apps stop briefly during '
+        'each run. ' + retention(keep_snapshots(context.config))
     )

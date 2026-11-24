@@ -48,8 +48,9 @@ EARLIER_KEY = (
 # and what to do when it is forgotten (deep check 243: "Wrong password for this backup"
 # alone left the person typing guesses).
 WRONG_PASSWORD = (
-    'Wrong password for this backup; nothing was restored. It is the backup password you chose during setup '
-    '(not your login password, unless you chose that). Forgotten it? Then this list cannot be opened. While '
+    'Wrong password for this backup; nothing was restored. It is the backup password of the server that made '
+    'this backup, chosen in its setup (on a rebuilt server, the old one; not your login password, unless you '
+    'chose that). Forgotten it? Then this list cannot be opened. While '
     'the server works, each app\'s login is still shown by  account-setup.py show  (README.md, "Passwords"), '
     'and  sudo python3 backup_secrets.py --new-password  chooses a new backup password for the backups from '
     'now on'
@@ -127,16 +128,34 @@ def unlocks(password, key_path):
         return False
 
 
+KEPT_KEY = (
+    'Backup password: the one chosen on {day}, when the backup key of this PC was made. The key stays on this PC '
+    '({folder}), also when the SSD or the HDD is new, so the backups made from now on are sealed with that password '
+    'too. Forgotten it? Then  sudo python3 backup_secrets.py --new-password  chooses a new one.'
+)
+
+
+def kept_key(key_dir=KEY_DIR):
+    """Which backup password is in force: the key is kept in /etc, not on the data drives,
+    so after new drives setup goes on with a password chosen long before (T4-alma)."""
+    import datetime
+
+    day = datetime.date.fromtimestamp((key_dir / KEY_NAME).stat().st_mtime).isoformat()
+    return KEPT_KEY.format(day=day, folder=key_dir)
+
+
 def setup(ask=getpass.getpass, out=print, key_dir=KEY_DIR, tries=3, intro=True):
     """Interactively create the key, protected by a backup password typed twice: a typo
     can't become the password without being noticed. (sudo's own check is not used: a
     passwordless sudo rule lets any text through.)"""
     if configured(key_dir):
-        out('Backup password-file key already set up.')
+        out(kept_key(key_dir))
         return
     if intro:
         out('One-time setup: monthly backups store the app password list encrypted.')
-        out('Choose a backup password for it (at least 8 characters; your login password is fine too).')
+        out(
+            'Choose a password to encrypt your saved app logins. Enter it twice (at least 8 characters; your login password is fine too).'
+        )
         out('You are asked for this only now. Nightly and monthly backups run on their own and never ask.')
     out('Write it down somewhere safe: without it the password list in your backups cannot be recovered.')
     import setup_progress
@@ -375,6 +394,127 @@ def restore(snapshot, destination, password, key_dir=KEY_DIR, out=print):
             'Check the free space there, or choose another folder and try again'
         )
     return destination
+
+
+USB_APP_SETTINGS = 'app-settings'  # the weekly copy's folder on the USB drive (runtime usb_app_settings.rs)
+USB_APP_SETTINGS_FORMAT = 'neko-usb-app-settings-v1'
+APP_ARCHIVE = 'settings.tar.enc'
+APP_ARCHIVE_KEY = 'archive-key.cms'
+# How the archive's password makes its key: the same as the weekly copy (usb_app_settings.rs ENC_ARGS).
+APP_ENC_ARGS = ['-aes-256-ctr', '-pbkdf2', '-iter', '100000', '-salt']
+APP_COPY_DAMAGED = (
+    'The copy of the app settings on the USB drive is damaged ({what} does not match its checksum); '
+    'nothing was restored. Use a nightly backup on the HDD, or the next weekly copy'
+)
+
+
+def app_settings_files(copy):
+    """The files of a weekly copy of the app settings on the USB drive, each checked
+    against the checksum the copy recorded (decryption does not notice a changed byte),
+    and whether its key copy is damaged."""
+    copy = absolute(copy, 'Copy')
+    try:
+        manifest = json.loads((copy / 'manifest.json').read_text())
+    except (OSError, ValueError):
+        raise RuntimeError('Not a copy of the app settings: manifest.json missing or unreadable') from None
+    if not isinstance(manifest, dict) or manifest.get('format') != USB_APP_SETTINGS_FORMAT:
+        raise RuntimeError('Not a copy of the app settings')
+    sums = manifest.get('sha256') if isinstance(manifest.get('sha256'), dict) else {}
+    files = {}
+    for key, name, what in (
+        ('archive', APP_ARCHIVE, 'the archive'),
+        ('archive_key', APP_ARCHIVE_KEY, 'its sealed password'),
+        ('secrets_key', KEY_NAME, 'its backup key'),
+        ('secrets_cert', CERT_NAME, 'its backup certificate'),
+    ):
+        path = safe_path(copy / name)
+        expected = sums.get(key)
+        if not path.is_file() or not isinstance(expected, str):
+            raise RuntimeError(APP_COPY_DAMAGED.format(what=what))
+        # A damaged key copy can still be stood in for by this server's own key (opening_key).
+        if key != 'secrets_key' and sha256(path) != expected:
+            raise RuntimeError(APP_COPY_DAMAGED.format(what=what))
+        files[key] = path
+    return files, sha256(files['secrets_key']) != sums['secrets_key']
+
+
+def open_app_settings(copy, into, password, key_dir=KEY_DIR, out=print):
+    """Decrypt a weekly copy of the app settings (USB drive, app-settings/<snapshot>) into
+    `into`, a new private folder: the nightly snapshot it was made of, its manifest and
+    payload, for app-recovery.py to restore and check file by file as one on the HDD."""
+    files, damaged = app_settings_files(copy)
+    into = absolute(into, 'Folder')
+    if into.exists() or not into.parent.is_dir():
+        raise RuntimeError(NEW_FOLDER)
+    key = opening_key(files['secrets_key'], files['secrets_cert'], password, damaged, key_dir, out)
+    secret = openssl(
+        [
+            'cms',
+            '-decrypt',
+            '-binary',
+            '-inform',
+            'DER',
+            '-in',
+            str(files['archive_key']),
+            '-inkey',
+            str(key),
+            '-passin',
+            'fd:{fd}',
+            '-recip',
+            str(files['secrets_cert']),
+        ],
+        b'',
+        password,
+    )
+    into.mkdir(mode=0o700)
+    # The archive's password over a pipe (never argv), decrypted straight into tar: the
+    # settings can be gigabytes (Jellyfin's pictures), never held in memory.
+    read, write = os.pipe()
+    os.write(write, secret + b'\n')
+    os.close(write)
+    try:
+        dec = subprocess.Popen(
+            ['openssl', 'enc', '-d', *APP_ENC_ARGS, '-pass', f'fd:{read}', '-in', str(files['archive'])],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            pass_fds=(read,),
+        )
+        try:
+            # Unpacked inside the new folder (its working directory), so no path is an
+            # argument tar could read as an option.
+            unpacked = subprocess.run(
+                ['tar', '--extract', '--file', '-', '--no-same-owner', '--no-same-permissions'],
+                stdin=dec.stdout,
+                capture_output=True,
+                timeout=6 * 3600,
+                check=False,
+                cwd=into,
+            )
+        finally:
+            dec.stdout.close()
+            decrypted = dec.wait()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        shutil.rmtree(into, ignore_errors=True)
+        raise RuntimeError(f'The app settings could not be unpacked ({exc}); nothing was restored') from None
+    finally:
+        os.close(read)
+    if decrypted or unpacked.returncode:
+        reason = (unpacked.stderr or b'').decode(errors='replace').strip().splitlines()[-1:] or ['it did not decrypt']
+        shutil.rmtree(into, ignore_errors=True)
+        raise RuntimeError(
+            f'The app settings could not be unpacked ({reason[0]}); nothing was restored. '
+            'Check the free space there, or choose another folder and try again'
+        )
+    return into
+
+
+def asked_open_app_settings(copy, into, out=print):
+    """open_app_settings, with the backup password asked as asked_restore asks it (the
+    recovery menu's "App settings, from a nightly backup", for the USB drive's copy)."""
+    try:
+        return open_app_settings(copy, into, getpass.getpass(RESTORE_PROMPT), out=out)
+    except OSError as exc:
+        raise RuntimeError(NOT_WRITTEN.format(reason=snapshot_restore.failure_reason(exc))) from None
 
 
 def main():

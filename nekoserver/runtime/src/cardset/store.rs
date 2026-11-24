@@ -1040,4 +1040,12 @@ impl Catalogue for Store {
             .map(number)
             .map_err(|e| db("count", e))
     }
+    fn kept_files(&self) -> Res<Vec<(String, String)>> {
+        self.rows(
+            "SELECT DISTINCT v.source_id, v.path FROM versions v \
+             JOIN copies c ON c.version_id = v.version_id WHERE c.state = ?1",
+            params![copy_state_str(CopyState::Committed)],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+    }
 }

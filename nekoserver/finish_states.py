@@ -123,7 +123,7 @@ def login(facts, app, is_installed):
         return row(WAITING, 'not_installed_yet')
     state = facts['logins'].get(app)
     if state == 'verified':
-        return row(DONE)
+        return row(DONE, 'saved_login_worked')
     if state == 'needs_setup':
         return row(FAILED, 'saved_login_refused', do='enter_login', app=app)
     if state in ('planned', 'started'):
@@ -339,6 +339,10 @@ def summary(facts):
     return {
         'outcome': outcome(attention, pending),
         'ready': not attention,
+        # The updates and every backup of this server set up (the heading's "scheduled").
+        'scheduled': facts['steps'].get('maintenance') == 'success'
+        and bool(backups)
+        and all(facts['steps'].get(found['step']) == 'success' for found in backups),
         'apps': apps,
         'server': {
             'backup': row(together(backups), None if backups else 'no_backup_set_up'),

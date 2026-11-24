@@ -46,8 +46,10 @@ Both update buttons start a background service (`nekoserver-update-now@<app>.ser
 ## Upgrading NekoServer itself
 
 The daily check also looks for new NekoServer releases on GitHub, on your channel (`maintenance.nekoserver_channel`):
-- `"beta"`, the default while every release is a beta, offers the newest release, stable or beta.
-- `"stable"` offers stable releases only.
+- `"stable"`, the default since 1.0.0, offers stable releases only.
+- `"beta"` offers the newest release, stable or beta.
+
+A server set up before 1.0.0 has `"beta"` in its settings (it was the default then). The upgrade to 1.0.0 moves it to `"stable"` once, without asking, and setup says so in its output and in the upgrade's log. To be offered betas again, set `"nekoserver_channel": "beta"` under `"maintenance"` in `my-config.json` and run setup again; from then on your choice is kept through setup runs and upgrades.
 
 Only a release with newer numbers is offered. The stable release of the numbers you run (`v0.52.3` on a server running `v0.52.3Beta`) is the same NekoServer as far as an upgrade goes: both keep their files in the same folder on the SSD, so one can't be the way back to the other.
 
@@ -155,7 +157,7 @@ Monthly update readiness distinguishes automated checks from the three explicitl
 
 ## Major version updates
 
-Monthly updates install new versions within the major version you have (for example Immich v2.1 to v2.2, Nextcloud 31.0.5 to 31.0.6). A new **major** version (Immich v3, Nextcloud 32) can need extra steps, so it is never installed on its own. When one is out, the dashboard shows a warning such as "Nextcloud 32 is available (you have 31)".
+The weekly app updates install new versions within the major version you have (for example Immich v2.1 to v2.2, Nextcloud 31.0.5 to 31.0.6). A new **major** version (Immich v3, Nextcloud 32) can need extra steps, so it is never installed on its own. When one is out, the dashboard shows a warning such as "Nextcloud 32 is available (you have 31)".
 
 To install it:
 

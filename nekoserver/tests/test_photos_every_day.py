@@ -62,10 +62,12 @@ class ImmichDatabaseBackTests(unittest.TestCase):
         # Immich's own project and files, as photos.py runs them.
         for line in lines[1:]:
             self.assertTrue(
-                line.startswith(('sudo docker compose -p neko-immich -f compose.yaml --env-file .env ', 'sudo sed ')),
+                line.startswith(
+                    ('sudo docker compose -p neko-immich -f $c/compose.yaml --env-file $c/.env ', 'sudo sed ')
+                ),
                 line,
             )
-        self.assertEqual(lines[0], 'cd /srv/nekoserver/compose/immich')
+        self.assertEqual(lines[0], 'c=/srv/nekoserver/compose/immich')
         photos = (ROOT / 'modules/photos.py').read_text()
         self.assertIn("'neko-immich'", photos)
         self.assertIn("compose_dir / 'compose.yaml'", photos)

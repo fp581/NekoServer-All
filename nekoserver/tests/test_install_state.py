@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -70,7 +71,10 @@ class Pc:
 
     def found(self):
         journals = ((install_state.UPGRADE, self.upgrade), (install_state.DRIVE_MOVE, self.move))
-        return install_state.found(self.root, None, self.units, self.early, journals)
+        # This PC's own drive folders, never the real /srv/nekoserver or /dev/disk of the PC
+        # the tests run on (a developer's PC may have NekoServer installed).
+        with mock.patch.object(install_state, 'DATA_MOUNT', str(self.data)):
+            return install_state.found(self.root, None, self.units, self.early, journals, self.top / 'by-uuid')
 
 
 class FoundTests(unittest.TestCase):

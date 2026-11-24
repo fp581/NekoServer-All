@@ -2345,6 +2345,15 @@ function nextRun(timer) {
 function blockedNext(job) {
   return onDemand(job) ? 'You can start it once the drive is back.' : 'Runs again once the drive is back.';
 }
+/* What the weekly USB copy brings back when the server's own drives are both lost (1.0.0:
+ * the app settings too, encrypted like the password list). */
+const USB_COMES_BACK =
+  'With the SSD and the HDD both lost, the USB drive brings back the photos and Nextcloud files it copies, ' +
+  'the list of app passwords and the newest app settings (those two open with the backup password).';
+/* A line under a backup's card saying what it holds, where that is not plain from its name. */
+function backupHolds(job) {
+  return job?.id === 'external' ? USB_COMES_BACK : '';
+}
 function backupCard(job, fresh) {
   const card = el('article', 'card'),
     timer = object(job.timer);
@@ -2353,6 +2362,9 @@ function backupCard(job, fresh) {
     el('p', '', (COPIES_NOTHING.has(job.id) ? 'Last good run: ' : 'Last good copy: ') + ago(job.last_success)),
     el('p', '', job.blocked ? blockedNext(job) : nextRun(timer))
   );
+  if (backupHolds(job)) {
+    card.append(el('p', '', backupHolds(job)));
+  }
   if (job.blocked) {
     card.append(el('p', 'reason', text(job.blocked)));
   }
@@ -4888,7 +4900,7 @@ function nekoserverTab(s) {
       'p',
       'section-note',
       joined([
-        'Channel: ' + text(r.channel, 'beta'),
+        'Channel: ' + text(r.channel, 'stable'),
         numeric(r.checked_at) ? 'checked ' + ago(r.checked_at) : 'not checked yet',
         jobLine('last upgrade', job)
       ])
@@ -5133,7 +5145,8 @@ const GUIDES = {
     steps: [
       'Connect the backup drive you want to use.',
       'On the server, open a terminal window and start the recovery helper below.',
-      'Pick the backup and a new folder. Check the files before replacing anything.'
+      'Pick the backup and a new folder. Check the files before replacing anything.',
+      USB_COMES_BACK
     ],
     recover: true
   },

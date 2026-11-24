@@ -303,5 +303,109 @@ class ImmichReleaseTests(unittest.TestCase):
             )
 
 
+class ImmichFoldersAfterANewDriveTests(unittest.TestCase):
+    """T1-R6: after a dead HDD with the photos on it, Immich's database (on the SSD) still
+    knows its folders, but a photo restore brings back only `upload` and `library`, and
+    Immich never started again ("Failed to read (/data/encoded-video/.immich)")."""
+
+    OTHERS = ('thumbs', 'encoded-video', 'profile', 'backups')
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(subprocess.run, ['rm', '-rf', str(self.root)])
+        self.library = self.root / 'hdd/photos/immich-library'
+        self.db = self.root / 'ssd/appdata/immich/postgres'
+        self.db.mkdir(parents=True)
+        (self.db / 'PG_VERSION').write_text('14')  # this Immich's database
+        self.said = []
+
+    def restored(self, *names):
+        """The folders a photo restore copies back with `cp -a`, each with its marker."""
+        for name in names:
+            (self.library / name).mkdir(parents=True)
+            (self.library / name / '.immich').write_bytes(b'')
+
+    def test_a_new_drive_after_a_photo_restore_gets_immichs_other_folders(self):
+        self.restored('upload', 'library')
+        (self.library / 'upload').chmod(0o750)
+        made = photos.immich_folders_back(self.library, self.db, self.said.append)
+        self.assertEqual(made, list(self.OTHERS))
+        upload = (self.library / 'upload').stat()
+        for name in self.OTHERS:
+            folder, marker = self.library / name, self.library / name / '.immich'
+            with self.subTest(name=name):
+                self.assertTrue(folder.is_dir() and marker.is_file())
+                self.assertEqual(marker.read_bytes(), b'')
+                self.assertEqual(oct(folder.stat().st_mode & 0o7777), oct(0o750))  # as upload
+                # Its owner alone (Immich reads it as root); others get no access (SonarCloud S2612).
+                self.assertEqual(oct(marker.stat().st_mode & 0o7777), oct(0o600))
+                for item in (folder, marker):
+                    self.assertEqual((item.stat().st_uid, item.stat().st_gid), (upload.st_uid, upload.st_gid))
+        self.assertEqual(len(self.said), 1)
+        self.assertIn('thumbs, encoded-video, profile, backups', self.said[0])
+
+    def test_folders_and_markers_that_are_there_are_left_as_they_are(self):
+        self.restored('upload', 'library', 'thumbs', 'encoded-video', 'backups')
+        (self.library / 'thumbs').chmod(0o700)
+        (self.library / 'thumbs/.immich').write_bytes(b'kept')
+        (self.library / 'thumbs/.immich').chmod(0o600)
+        (self.library / 'encoded-video/.immich').unlink()  # a folder without its marker
+        (self.library / 'encoded-video/clip.mp4').write_bytes(b'video')
+        before = {
+            item: (item.stat().st_mode, item.stat().st_mtime_ns)
+            for item in (self.library / 'thumbs', self.library / 'thumbs/.immich', self.library / 'upload/.immich')
+        }
+        made = photos.immich_folders_back(self.library, self.db, self.said.append)
+        self.assertEqual(made, ['encoded-video/.immich', 'profile'])
+        self.assertEqual({item: (item.stat().st_mode, item.stat().st_mtime_ns) for item in before}, before)
+        self.assertEqual((self.library / 'thumbs/.immich').read_bytes(), b'kept')
+        self.assertEqual((self.library / 'encoded-video/clip.mp4').read_bytes(), b'video')
+        # Run again: everything is there, so nothing is made and nothing is said.
+        self.assertEqual(photos.immich_folders_back(self.library, self.db, self.said.append), [])
+        self.assertEqual(len(self.said), 1)
+
+    def test_a_new_immich_or_an_empty_drive_gets_nothing(self):
+        self.restored('upload')
+        empty = self.root / 'new-db'
+        empty.mkdir()
+        # A new Immich (its database empty) makes its own folders.
+        self.assertEqual(photos.immich_folders_back(self.library, empty, self.said.append), [])
+        missing = self.root / 'not-mounted/photos/immich-library'
+        self.assertEqual(photos.immich_folders_back(missing, self.db, self.said.append), [])
+        self.assertFalse(missing.exists())
+        self.assertEqual(sorted(p.name for p in self.library.iterdir()), ['upload'])
+        self.assertEqual(self.said, [])
+
+    def test_a_media_drive_that_is_not_mounted_stays_an_error_and_nothing_is_made(self):
+        from types import SimpleNamespace
+        from unittest import mock
+
+        data, media = self.root / 'ssd', self.root / 'hdd'
+        self.restored('upload', 'library')  # on the mount point's own folder, the drive not mounted
+        config = {
+            'data_mount': str(data),
+            'media_mount': str(media),
+            'locations': {'photos': 'media'},
+            'photos': {'deploy_immich': True},
+        }
+        mounted = lambda key, target: str(target) if Path(target) == data else ('/' if key == 'TARGET' else 'rootfs')
+        with (
+            mock.patch.object(photos.os, 'geteuid', return_value=0),
+            mock.patch.object(photos, 'immich_wanted', return_value=True),
+            mock.patch.object(photos, 'findmnt', mounted),
+            self.assertRaises(RuntimeError) as said,
+        ):
+            photos._run(SimpleNamespace(config=config, apply=True, log=self.said.append))
+        self.assertIn('Expected distinct mounted filesystem', str(said.exception))
+        self.assertEqual(sorted(p.name for p in self.library.iterdir()), ['library', 'upload'])
+
+    def test_setup_makes_them_after_the_drives_are_checked_and_before_immich_starts(self):
+        source = (ROOT / 'modules/photos.py').read_text()
+        run = source[source.index('def _run(ctx):') :]
+        self.assertLess(run.index('checked_mount(media)'), run.index('immich_folders_back(upload, db, ctx.log)'))
+        self.assertLess(run.rindex('verify_storage(cfg)'), run.index('immich_folders_back(upload, db, ctx.log)'))
+        self.assertLess(run.index('immich_folders_back(upload, db, ctx.log)'), run.index("compose_up(base, 'Immich'"))
+
+
 if __name__ == '__main__':
     unittest.main()

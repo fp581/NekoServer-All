@@ -10,15 +10,15 @@ STEP_EXPLANATIONS = {
     'network_storage': 'Connects the drives on your NAS, over iSCSI or NFS, when you switched that on.',
     'storage': 'Asks which drives hold the apps, your media and the backups (one drive is enough), and mounts them.',
     'capacity': 'Makes sure each drive has room for what will go on it.',
-    'recovery': 'Keeps a copy of NekoServer and your settings on the SSD, so a reinstall can find them.',
+    'recovery': 'Keeps a copy of NekoServer and your settings on the apps drive, so a reinstall can find them.',
     'account_credentials': 'Prepares a username and password for every app (random, or ones you choose).',
     'server_os': 'Stops the PC from going to sleep and keeps its logs from growing without end.',
-    'docker': 'Installs Docker, which runs each app in its own container, with its data on the SSD.',
+    'docker': 'Installs Docker, which runs each app in its own container, with its data on the apps drive.',
     'recovery_checkpoint': 'Records how Docker is set up, so the apps can be reattached after a reinstall.',
     'media': 'Installs Jellyfin (movies and shows), Navidrome (music), Seerr, Sonarr, Radarr, Lidarr, Prowlarr and qBittorrent.',
     'photos': 'Installs Immich, your own photo backup and gallery, with an archive copy of every original.',
-    'photo_preservation': 'Schedules a weekly copy of the photo originals and the photo database to the HDD.',
-    'photo_backup': 'Schedules a weekly copy of photos and files to the USB drive (no photo or file is ever deleted from it).',
+    'photo_preservation': 'Schedules a weekly copy of the photo originals and the photo database to the media and backups drive.',
+    'photo_backup': 'Schedules a weekly copy of photos and files to the offline backup drive (no photo or file is ever deleted from it).',
     'nextcloud': 'Installs Nextcloud, your private cloud drive for files.',
     'accounts': 'Creates your account in each app and finishes their first-run setup for you.',
     'hardware_video': "Lets Jellyfin and Immich use the graphics chip, so video plays smoothly.",
@@ -37,7 +37,8 @@ STEP_EXPLANATIONS = {
     'notifications': 'Sends a message to your phone (through ntfy) when something fails.',
     'heartbeat': 'Lets an outside service notice when the server goes offline and tell you.',
     'host_backup': 'Schedules a nightly backup of the system settings NekoServer wrote.',
-    'maintenance': 'Schedules the monthly update: a verified backup, then newer app versions, then a check.',
+    'maintenance': 'Schedules weekly app updates (each app snapshotted first, undone if a check fails) and a monthly '
+    'backup check (backups verified, and a test restore).',
     'backup_cards': 'Schedules a nightly copy of your photos and documents onto your backup cards, when one is plugged in.',
 }
 
@@ -77,7 +78,7 @@ PACKAGES = {
 # was saved; `new_default` what a new server is offered (an extra is an opt-in there).
 PAGE_TITLE = 'What would you like this server to do?'
 PAGE_HINT = (
-    'Backups, the dashboard and private access from your own devices are always set up. '
+    'Backups, the dashboard and access through your private Tailscale network are always set up. '
     'Switching something off later stops it and keeps its data.'
 )
 PARTS = (
@@ -130,7 +131,7 @@ EXTRAS = (
         'on_default': True,
         'step': 'media',
         'title': 'Movies and shows - Jellyfin',
-        'explanation': 'Watch your films and shows on any device, and ask for new ones to be found and added.',
+        'explanation': 'Watch your movies and shows.',
         'small': 'Jellyfin. With finding and downloading: Seerr, Sonarr, Radarr, Prowlarr and qBittorrent.',
         'installs': (),
     },
@@ -143,7 +144,7 @@ EXTRAS = (
         'on_default': True,
         'step': 'music',
         'title': 'Music - Navidrome',
-        'explanation': 'Play your music collection from your phone or browser, and have new music found and added.',
+        'explanation': 'Stream your music collection.',
         'small': 'Navidrome. With finding and downloading: Lidarr, Prowlarr and qBittorrent.',
         'installs': (),
     },
@@ -223,7 +224,7 @@ EXTRAS = (
         'step': 'network_storage',
         'title': 'My media and backup drives are in a NAS (a storage device on my home network)',
         'explanation': 'For a NAS that offers iSCSI disks (a WD My Cloud EX, Synology, QNAP...) or shares folders '
-        'over NFS. The SSD for the apps stays on this PC. Setup asks for the NAS\'s address, sees which of '
+        'over NFS. The apps drive stays on this PC. Setup asks for the NAS\'s address, sees which of '
         'the two it offers, and asks which disks or folders to use; it never formats one, and tries a shared '
         'folder out before using it. '
         'Experimental: tried in a test lab, not yet on many real NAS boxes (SUPPORT.md).',
@@ -316,21 +317,27 @@ def offered(config, extra):
 # ---- the review before anything is installed ("Ready to install NekoServer")
 REVIEW_TITLE = 'Ready to install NekoServer'
 REVIEW_TITLE_AGAIN = 'Review your changes'
+# Under the review's title, and beside Continue on the page before it. On a server that is
+# set up already its apps are there: what holds is that nothing changes before the button.
+REVIEW_INTRO = 'Prerequisite packages are installed. Your selected apps will be set up after you approve. Read what setup will do, then press the button.'
+REVIEW_INTRO_AGAIN = 'Nothing changes until you press the button. Read what setup will do first.'
+CHOOSE_NOTE = 'Prerequisite packages are installed. Your selected apps will be set up after you approve. The next page shows what will be set up.'
+CHOOSE_NOTE_AGAIN = 'Nothing changes until you approve. The next page shows what will change.'
 STORAGE_HEADING = 'Where your apps and files are kept'
 INSTALL = 'Install selected apps'
 APPLY = 'Apply these changes'
 ALWAYS = (
     # The accounts page, before the review, has made or been given the PIN already.
     'The dashboard, with the PIN from the accounts page',
-    'Backups of your apps and settings, and a monthly checkup',
-    'Tailscale: private access from your own devices, not from the internet',
+    'Backups of your apps and settings, weekly app updates and a monthly backup check',
+    'Tailscale: access your server over the internet through your private Tailscale network. The server is not opened to the public internet',
     'Shared folders on your home network',
 )
 # Until each of these has its own page before the review, setup asks about it when it
 # gets there (the pages of 0.50.0 are built one by one; this list shrinks with them).
 # The drives are not among them any more: the storage page comes before the review.
 ASKED_DURING = {
-    'notifications': 'the address of your alerts topic',
+    'notifications': 'your ntfy notification address: the address your phone subscribes to for server alerts',
     'heartbeat': 'the check-in address of your outage service',
     'assistant': 'which AI model to use',
     'phone': 'signing in to Tailscale, and setting up your phone',
@@ -339,7 +346,7 @@ ASKED_DURING = {
 
 SOURCES_ASKED = 'which download sources to add (the recommended ones are ticked), once Prowlarr runs'
 # The monthly-backup step asks for it on a first install (modules/maintenance.py).
-BACKUP_PASSWORD_ASKED = 'a backup password for the backup of your app passwords, typed twice'
+BACKUP_PASSWORD_ASKED = 'choose a password to encrypt your saved app logins. Enter it twice'
 
 
 def apps_to_install(config, now):

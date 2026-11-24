@@ -10,11 +10,14 @@ import getpass
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from neko_common import (
+    checked_run,
+    compose_image_override,
     read_settings,
     LOCATIONS,
     app_ports,
@@ -53,6 +56,7 @@ def in_docker(app):
 PROWLARR_URL = in_docker('prowlarr')
 APPLICATIONS = '/applications'
 DOWNLOAD_CLIENTS = '/downloadclient'
+TEST = '/test'  # an Arr app's or Prowlarr's check of a connection before it is saved
 CLIENTS_STEP = 'download clients'  # the step's name in setup's messages
 
 
@@ -73,6 +77,41 @@ RESPONSE_LIMIT = 64_000_000
 # The qBittorrent download-client field that holds the category, per app (one list,
 # shared with the health audit).
 CATEGORY_FIELDS = qbit_setup.CATEGORY_FIELDS
+
+
+# How much of a refusal's body is read for its reason, and how much of the reason is shown.
+REASON_READ = 65536
+REASON_SHOWN = 300
+
+
+def sent_values(payload):
+    """Every text this request sent (a provider's key or password among them)."""
+    if isinstance(payload, dict):
+        return [value for item in payload.values() for value in sent_values(item)]
+    if isinstance(payload, list):
+        return [value for item in payload for value in sent_values(item)]
+    return [payload] if isinstance(payload, str) and len(payload) >= 4 else []
+
+
+def refused_because(exc, payload, key=''):
+    """Why the app refused a request, in its own words: Prowlarr and the other apps answer
+    a refused one with a list of {propertyName, errorMessage, attemptedValue} ("Unable to
+    access eztvx.to, blocked by CloudFlare Protection."). Only the messages are kept,
+    with any value the request sent (its API key too) cut out. Empty when the body says
+    nothing usable."""
+    try:
+        rows = json.loads(exc.read(REASON_READ) or b'null')
+    except (OSError, ValueError):
+        return ''
+    if isinstance(rows, dict):
+        rows = [rows]
+    if not isinstance(rows, list):
+        return ''
+    said = [str(row['errorMessage']).strip() for row in rows if isinstance(row, dict) and row.get('errorMessage')]
+    text = ' '.join(dict.fromkeys(line for line in said if line))
+    for value in sent_values([payload, key]):
+        text = text.replace(value, '(hidden)')
+    return text[:REASON_SHOWN]
 
 
 def request(app, key, endpoint, method='GET', payload=None, timeout=12):
@@ -98,10 +137,12 @@ def request(app, key, endpoint, method='GET', payload=None, timeout=12):
             except ValueError:
                 raise RuntimeError(ODD_ANSWER.format(app=app, endpoint=endpoint)) from None
     except urllib.error.HTTPError as exc:
-        # Do not print response bodies: providers might echo secrets.
+        # The body is never printed as it is (a provider might echo a secret); only the
+        # app's own words for why it refused, with what this request sent cut out of them.
         code = exc.code
+        reason = refused_because(exc, payload, key)
         exc.close()
-        raise RuntimeError(f'{app} {endpoint}: HTTP {code}') from None
+        raise RuntimeError(f'{app} {endpoint}: HTTP {code}' + (f': {reason}' if reason else '')) from None
     except urllib.error.URLError:
         raise RuntimeError(f'{app} {endpoint}: unavailable on localhost') from None
     except TimeoutError:
@@ -568,7 +609,7 @@ def signs_in(app, pro_key, found, key, apply):
     key it stores). An API key made again in the app (Settings, General) leaves Prowlarr
     with the old one: it is given the current one. False when a person needs to look."""
     try:
-        request('prowlarr', pro_key, APPLICATIONS + '/test', 'POST', found)
+        request('prowlarr', pro_key, APPLICATIONS + TEST, 'POST', found)
         return True
     except RuntimeError:
         pass
@@ -591,12 +632,13 @@ def signs_in(app, pro_key, found, key, apply):
 CLIENT = 'Neko-qBittorrent'  # the name of the download client setup makes in each Arr app
 
 
-def existing_client(app, key, found, expected, login_checked):
+def existing_client(app, key, found, expected, login_checked, refused=None):
     """The download client setup made earlier: its routing (host, port, category) is
     compared; servers mask passwords, so the login is tested through the app instead.
     With a login just checked against qBittorrent (`login_checked`), a client still
     holding an old one (the qBittorrent password changed with account-setup.py, say) is
-    given the new login. Never logs secrets. False when a person needs to look."""
+    given the new login. Never logs secrets. False when a person needs to look; a client
+    qBittorrent still refuses after its new login is saved goes into `refused`."""
     routing = {k: v for k, v in expected.items() if k not in ('username', 'password')}
     if not (found.get('enable') and fields_match(found, routing)):
         print(f'{app}: existing client differs or is disabled; review in UI')
@@ -605,17 +647,21 @@ def existing_client(app, key, found, expected, login_checked):
         print(f'{app}: existing client routing verified; confirm stored credentials in UI')
         return True
     try:
-        request(app, key, DOWNLOAD_CLIENTS + '/test', 'POST', found)
+        request(app, key, DOWNLOAD_CLIENTS + TEST, 'POST', found)
         print(f'{app}: existing client verified; it signs in to qBittorrent')
         return True
     except RuntimeError:
         pass
-    return new_login(app, key, found, expected['username'], expected['password'])
+    return new_login(app, key, found, expected['username'], expected['password'], refused)
 
 
-def new_login(app, key, found, username, password):
-    """Save the current qBittorrent login in the client setup made (the app tests it before
-    it saves). Its other settings stay as they are."""
+def new_login(app, key, found, username, password, refused=None):
+    """Save the current qBittorrent login in the client setup made, then test it. Its other
+    settings stay as they are. The app tests a client before it saves it, and qBittorrent
+    bans the address of an app that tried an old login too often (a server rebuilt with
+    the old Sonarr's settings, T1-R13): that test is refused until the ban ends, so the
+    save is forced (forceSave) and the test comes after it. A test refused for a ban or a
+    login puts the client in `refused`, for clear_ban."""
     entry = copy.deepcopy(found)
     fields = entry.get('fields', [])
     if type(entry.get('id')) is not int or not (
@@ -626,14 +672,127 @@ def new_login(app, key, found, username, password):
         )
         return False
     try:
-        request(app, key, f'{DOWNLOAD_CLIENTS}/{entry["id"]}', 'PUT', entry)
+        request(app, key, f'{DOWNLOAD_CLIENTS}/{entry["id"]}?forceSave=true', 'PUT', entry)
     except RuntimeError as exc:
         print(
-            f'{app}: could not save the new qBittorrent login ({exc}); enter it in {app} (Settings, Download Clients)'
+            f'{app}: could not save the new qBittorrent login ({exc}); run  sudo bash install.sh  again once {app} '
+            'answers: setup saves it then'
         )
         return False
     print(f'{app}: its download client had an old qBittorrent login; the current one is saved in it')
+    try:
+        request(app, key, DOWNLOAD_CLIENTS + TEST, 'POST', entry)
+    except RuntimeError as exc:
+        if refused is not None and any(sign in str(exc).lower() for sign in REFUSED_SIGNS):
+            refused.append((app, key, entry))
+            return True  # decided by clear_ban, once for every app
+        print(
+            f'{app}: {app} cannot reach qBittorrent with it ({exc}); run  sudo bash install.sh  again once qBittorrent runs'
+        )
+        return False
+    print(f'{app}: its download client signs in to qBittorrent with the current login')
     return True
+
+
+# How Sonarr, Radarr and Lidarr say that qBittorrent refused their login ("Authentication
+# failure"), which a ban on their address looks like too.
+REFUSED_SIGNS = ('authentication', 'banned', 'forbidden')
+# What qBittorrent is doing that a restart would cut off: moving finished files, checking
+# them (also its resume data at start), making room for a new download.
+CUT_OFF_BY_A_RESTART = ('moving', 'checkingDL', 'checkingUP', 'checkingResumeData', 'allocating')
+STILL_REFUSED = (
+    '{app}: the current qBittorrent login is saved in it, but qBittorrent still refuses {app} for now: it shut '
+    "{app} out after the old server's login was tried too often. That ends by itself within an hour, and {app} "
+    'then signs in with the current login; or run  sudo bash install.sh  again later (setup checks it again)'
+)
+
+
+def busy_torrents(login, client_factory=None):
+    """How many downloads qBittorrent is moving or checking now, or None when it cannot say
+    (setup signs in from this PC, which qBittorrent has not banned)."""
+    qbit = (client_factory or qbit_setup.Client)()
+    try:
+        qbit.login(*login)
+        listed_now = qbit.call('/torrents/info', json_result=True)
+    except (RuntimeError, ValueError):
+        return None
+    finally:
+        qbit.close()
+    if not isinstance(listed_now, list):
+        return None
+    return sum(1 for t in listed_now if isinstance(t, dict) and t.get('state') in CUT_OFF_BY_A_RESTART)
+
+
+def clear_ban(root, login, refused, client_factory=None):
+    """qBittorrent still refuses these clients after their new login was saved: it banned
+    their address, and keeps its bans in memory only. It is restarted (its container only)
+    when no download is being moved or checked, then each client is tested again. Returns
+    the apps still refused, each said with what works (waiting, or setup again)."""
+    if not refused:
+        return []
+    busy = busy_torrents(login, client_factory)
+    if busy != 0:
+        if busy is None:
+            why = 'it did not say what it is doing'
+        elif busy == 1:
+            why = '1 download is being moved or checked'
+        else:
+            why = f'{busy} downloads are being moved or checked'
+        print(f'qBittorrent was not restarted to let the apps in again: {why}, which a restart would cut off')
+        return still_refused(refused)
+    manifest = Path(root) / 'compose' / 'qbittorrent' / 'compose.yaml'
+    try:
+        checked_run(
+            [
+                'docker',
+                'compose',
+                '-f',
+                str(manifest),
+                '-p',
+                'neko-qbittorrent',
+                *compose_image_override(manifest),
+                'restart',
+            ],
+            300,
+            'qBittorrent (restart)',
+        )
+    except (RuntimeError, OSError) as exc:
+        print(f'qBittorrent was not restarted ({exc})')
+        return still_refused(refused)
+    print('qBittorrent was restarted to end the ban it put on ' + ', '.join(app for app, _, _ in refused))
+    if not answers_again(login, client_factory):
+        print('qBittorrent did not answer after its restart; run  sudo bash install.sh  again once it runs')
+        return [app for app, _, _ in refused]
+    left = []
+    for app, key, entry in refused:
+        try:
+            request(app, key, DOWNLOAD_CLIENTS + TEST, 'POST', entry)
+            print(f'{app}: its download client signs in to qBittorrent with the current login')
+        except RuntimeError:
+            left.append((app, key, entry))
+    return still_refused(left)
+
+
+def answers_again(login, client_factory=None, wait=90):
+    """Waits (up to `wait` seconds) until qBittorrent takes setup's login again after its restart."""
+    deadline = time.monotonic() + wait
+    while True:
+        qbit = (client_factory or qbit_setup.Client)()
+        try:
+            qbit.login(*login)
+            return True
+        except RuntimeError:
+            if time.monotonic() > deadline:
+                return False
+        finally:
+            qbit.close()
+        time.sleep(3)
+
+
+def still_refused(refused):
+    for app, _, _ in refused:
+        print(STILL_REFUSED.format(app=app))
+    return [app for app, _, _ in refused]
 
 
 def pass_on_login(root, apps, client_factory=None):
@@ -648,7 +807,7 @@ def pass_on_login(root, apps, client_factory=None):
         client.login(stored['username'], stored['password'])
     finally:
         client.close()
-    failures = []
+    failures, refused = [], []
     for app in apps:
         try:
             key = app_key(app, root)
@@ -663,11 +822,12 @@ def pass_on_login(root, apps, client_factory=None):
                 'password': stored['password'],
                 CATEGORY_FIELDS[app]: {'sonarr': 'tv', 'radarr': 'movies', 'lidarr': 'music'}[app],
             }
-            if not existing_client(app, key, found, expected, True):
+            if not existing_client(app, key, found, expected, True, refused):
                 failures.append(app)
         except RuntimeError as exc:
             print(f'{app}: skipped ({exc})')
             failures.append(app)
+    failures += clear_ban(root, (stored['username'], stored['password']), refused, client_factory)
     if failures:
         raise RuntimeError('The new qBittorrent login is not in every app yet: ' + ', '.join(failures))
 
@@ -806,7 +966,7 @@ def new_client(app, key, wanted, apply):
     return True
 
 
-def download_client(app, category, root, login, apply, verify_qbit):
+def download_client(app, category, root, login, apply, verify_qbit, refused=None):
     """qBittorrent as `app`'s download client: True when it is, or will be."""
     user, password = login
     # Each app names its qBittorrent category field after its own media.
@@ -822,7 +982,7 @@ def download_client(app, category, root, login, apply, verify_qbit):
         existing = listed(app, key, DOWNLOAD_CLIENTS)
         found = next((x for x in existing if x.get('name') == CLIENT), None)
         if found:
-            return existing_client(app, key, found, wanted, verify_qbit)
+            return existing_client(app, key, found, wanted, verify_qbit, refused)
         return new_client(app, key, wanted, apply)
     except RuntimeError as exc:
         print(f'{app}: skipped ({exc})')
@@ -834,11 +994,13 @@ def configure_download_clients(root, apply, apps=('sonarr', 'radarr', 'lidarr'),
     if verify_qbit:
         categories = tuple({'sonarr': 'tv', 'radarr': 'movies', 'lidarr': 'music'}[app] for app in apps)
         qbit_setup.configure(*login, apply, categories)
+    refused = []
     failures = [
         app
         for app, category in [('sonarr', 'tv'), ('radarr', 'movies'), ('lidarr', 'music')]
-        if app in apps and not download_client(app, category, root, login, apply, verify_qbit)
+        if app in apps and not download_client(app, category, root, login, apply, verify_qbit, refused)
     ]
+    failures += clear_ban(root, login, refused)
     if failures:
         raise RuntimeError('Download-client setup incomplete: ' + ', '.join(failures))
 

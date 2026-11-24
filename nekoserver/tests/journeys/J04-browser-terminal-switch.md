@@ -21,10 +21,10 @@ Cleanup: restore the post-install snapshot
   terminal's answer and moves on; the terminal shows the window's.
 - A question asked again keeps its list of choices
   (`test_a_question_asked_again_keeps_its_list`, tests/test_setup_gui.py:155).
-- A program that asks in the terminal (Tailscale's sign-in, onboarding) is handed off
-  there and the window says so (`test_a_program_asking_in_the_terminal_is_handed_off_there`,
-  tests/test_setup_gui.py:476; `test_onboarding_asks_in_the_terminal_with_the_window_told`,
-  tests/test_setup_gui.py:497).
+- A program setup runs (onboarding, the shared folders' password) asks its questions in the
+  window too, through setup, since 0.50.0
+  (`test_a_program_of_setups_asks_its_questions_in_the_window_too`, tests/test_setup_gui.py;
+  `test_every_question_goes_through_setup_from_its_first_line`, tests/test_setup_gui.py).
 - The backup-times page answers the three questions as one
   (`test_the_setup_window_answers_the_three_as_one_page`, tests/test_backup_times.py:290;
   `test_the_backup_times_are_one_page_of_three_rows`, tests/test_setup_flow.py:211); a field
@@ -47,3 +47,7 @@ window driver exists, this journey is run by hand on the VM with the window open
 `gui-run.sh` way: a delay before each terminal answer so the question is visible).
 
 0.48.1 gate: not tested (unit tests only).
+
+1.0.0 round: partly proved. The setup window from the first page to done, and a second run,
+on NekoArch 35ea7bc (T3-1, T3-2, T3-3, all fixed); the VM runs were made in the terminal. One
+question answered in each was not tried.

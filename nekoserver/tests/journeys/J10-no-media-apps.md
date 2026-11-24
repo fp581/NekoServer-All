@@ -40,14 +40,17 @@ Cleanup: restore the post-install snapshot
   Navidrome runs, and none of their compose folders exists; Nextcloud and the dashboard run
   (`test_media_sets_nothing_up_on_a_new_server`, tests/test_media_apps.py:226;
   `test_music_tv_onboarding_and_hardware_video_have_nothing_to_do`, tests/test_media_apps.py:263).
-- No `nekoserver-app-backup.timer`, `nekoserver-music-backup.timer`,
+- `nekoserver-app-backup.timer` stays, for Nextcloud alone (1.0.0, C-01:
+  `test_the_nightly_backup_stays_for_nextcloud`, tests/test_media_apps.py; `test_no_media`,
+  tests/test_golden_units.py). No `nekoserver-music-backup.timer`,
   `nekoserver-media-health.timer`, `nekoserver-photo-preservation.timer` or
   `nekoserver-immich-db-backup.timer`; the host snapshot, the weekly copy (Nextcloud's
   files alone), the monthly check and the updates are scheduled
   (`test_the_media_schedules_are_retired`, tests/test_media_apps.py:276; the golden files
   under `tests/golden/no-media`, `test_no_media`, tests/test_golden_units.py).
-- The dashboard shows Nextcloud's tile only; its Backups page shows the app and music
-  backups as "Switched off: the media apps are left out", never as overdue
+- The dashboard shows Nextcloud's tile only; its Backups page shows the music backup as
+  switched off, never as overdue, and the app backup as expected each night (it saves
+  Nextcloud)
   (`jobs_of_a_switched_off_app_are_retired_not_overdue`, runtime/src/collect.rs:2983;
   `the_media_apps_left_out_are_not_among_the_apps`, runtime/src/apps.rs:647).
 - The Tailscale and home addresses, the phone guide and the desktop shortcuts name
@@ -85,3 +88,5 @@ Cleanup: restore the post-install snapshot
 
 - Reading the first page's cards for plain words and the right sizes on the gate machine.
 - Opening the dashboard and the phone guide to see that nothing names an app left out.
+
+1.0.0 round: not tested (no stage).

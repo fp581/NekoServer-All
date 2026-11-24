@@ -1,6 +1,8 @@
 # Backups of the apps' settings
 
-Every night NekoServer copies the settings of the media apps to the HDD: Jellyfin (your users, what you watched), Navidrome (playlists, favourites), Seerr, Sonarr, Radarr, Lidarr, Prowlarr and qBittorrent. Each night's copy is a **snapshot**: the settings as they were at that moment, kept with its date. The newest 3 are kept (setup's backups page takes 1 to 7). Your films, shows and music are not in it (they are not backed up), and Immich and Nextcloud have backups of their own ([STORAGE.md](STORAGE.md)).
+Every night NekoServer copies the settings of the media apps to the HDD: Jellyfin (your users, what you watched), Navidrome (playlists, favourites), Seerr, Sonarr, Radarr, Lidarr, Prowlarr and qBittorrent. Each night's copy is a **snapshot**: the settings as they were at that moment, kept with its date. The newest 3 are kept (setup's backups page takes 1 to 7). Your films, shows and music are not in it (they are not backed up), and Immich has backups of its own ([STORAGE.md](STORAGE.md)).
+
+The same nightly run saves **Nextcloud** too, whether or not you have the media apps and whether or not a USB drive is plugged in: its database (users, shares, calendars, contacts), its settings and its program, in `backups/nextcloud-nightly` on the HDD, kept by the same count. The files people keep in Nextcloud are not in it: they stay on their drive, and the weekly USB copy holds a copy of them. Nextcloud is paused while its database is copied (usually well under a minute: uploads and the web page wait until it is back), and its passwords (`.env` and `config.php`) are encrypted for the backup password, as the list of app passwords is. If Nextcloud's part fails, the Backups page says so in plain words and the other apps' backup is kept as usual. After a new SSD, setup brings Nextcloud back from the newest of its backups ([RECOVERY.md](RECOVERY.md)).
 
 You do nothing for it. It runs at the daily backup time (04:15 unless you chose another), and stops the media apps for a short while as it copies, so a film playing at that minute pauses. The dashboard's Backups page shows how the last run went.
 
@@ -18,7 +20,7 @@ When a change went wrong (a setting you regret, a library that got muddled), bri
    sudo docker start neko-jellyfin-jellyfin-1
    ```
 
-   For another app, write its name in place of `jellyfin` everywhere (`sonarr`, `radarr`, `lidarr`, `prowlarr`, `seerr`, `navidrome`, `qbittorrent`). `/srv/nekoserver` is your SSD's folder. `cp -a` keeps each file's owner, which the app needs.
+   For another app, write its name in place of `jellyfin` everywhere (`sonarr`, `radarr`, `lidarr`, `prowlarr`, `seerr`, `navidrome`, `qbittorrent`). Seerr is linked to Jellyfin, Sonarr and Radarr: when you put one of those four back on a rebuilt server, put all four back, from the same night, or Seerr stays linked to the old ones (setup then says "Seerr is linked to another Jellyfin server"). `/srv/nekoserver` is your SSD's folder. `cp -a` keeps each file's owner, which the app needs.
 
    **If `mv` says "Device or resource busy"** (then nothing was copied, and the app started again with its present settings): the app is installed on a drive of its own (a server whose `my-config.json` has `"install"`), and its folder on the SSD only shows that drive's folder. `grep appdata/jellyfin /etc/fstab` prints a line that starts with the app's folder on that drive, for example `/mnt/nekoserver-drives/big/nekoserver/appdata/jellyfin`. With that folder in place of `ONDRIVE`:
 

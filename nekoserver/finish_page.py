@@ -79,13 +79,12 @@ def page(config, summary, pin_set=False):
     names = {app['id']: app['name'] for app in summary.get('apps', [])}
     server = summary.get('server', {})
     return {
-        'heading': wizard.OUTCOMES.get(summary.get('outcome'), wizard.OUTCOMES['pending']),
+        'heading': wizard.finish_heading(summary)[0],
+        'subheading': wizard.finish_heading(summary)[1],
         'outcome': summary.get('outcome', 'pending'),
         'apps': apps,
-        'backups': [
-            state_shown('Backup made', server.get('backup', {})),
-            state_shown('Restore tried', server.get('restore', {})),
-        ],
+        'backups': [state_shown(label, found) for label, found in wizard.backup_states(summary)]
+        + [state_shown('Restore tried', server.get('restore', {}))],
         # The tests that belong to no app's card (the TV, a restore).
         'tests': [test for name, test in tests.items() if name not in in_apps],
         'attention': [item_said(item, names) for item in summary.get('attention', [])],

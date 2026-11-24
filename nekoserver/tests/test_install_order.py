@@ -126,7 +126,7 @@ class DrivePickingTests(unittest.TestCase):
     def test_three_wrong_numbers_stop_with_nothing_chosen(self):
         config = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media'}
         answers = iter(['9', 'sdb1', '0'])  # no such row, a name instead of its number, no such row
-        with self.assertRaisesRegex(RuntimeError, 'No drive was chosen for the app SSD'):
+        with self.assertRaisesRegex(RuntimeError, 'No drive was chosen for the apps drive'):
             storage.resolve_storage_identity(
                 config,
                 self.INVENTORY,
@@ -214,7 +214,7 @@ class DrivePickingTests(unittest.TestCase):
                 out_fn=lambda s: None,
             )
         message = str(caught.exception)
-        self.assertIn('No drive here can be the media HDD', message)
+        self.assertIn('No drive here can be the media and backups drive', message)
         # Every drive by the number and words the list gave it (0.50.0), with its reason.
         self.assertIn('drive 3 (drive, ID ending win-0001): it is formatted NTFS (Windows)', message)
         self.assertIn('drive 4 (drive, ID ending old-0001): it is in use at /mnt/films', message)
@@ -222,7 +222,7 @@ class DrivePickingTests(unittest.TestCase):
         # The apps' drive could hold the backups too (0.50.0), but not at 40 GB.
         self.assertIn('it is too small for both', message)
         self.assertIn(
-            'drive 1 (NVMe SSD): it has too little room: 0 GB free, and the media HDD needs at least 50 GB there',
+            'drive 1 (NVMe SSD): it has too little room: 0 GB free, and the media and backups drive needs at least 50 GB there',
             message,
         )
         self.assertNotIn('nvme0n1p1', message)  # the system disk's boot partition
@@ -1007,7 +1007,9 @@ class ManualSnapshotTests(unittest.TestCase):
             '/media/you/USB',
             '/home/you/Music',
         ):
-            self.assertEqual(neko_common.plain_folder(fine), Path(fine))
+            # Judged by name; the real /srv/nekoserver of a PC with NekoServer is not looked at.
+            with mock.patch.object(Path, 'is_symlink', return_value=False):
+                self.assertEqual(neko_common.plain_folder(fine), Path(fine))
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / 'real').mkdir()
             (Path(d) / 'link').symlink_to(Path(d) / 'real')
@@ -1583,22 +1585,26 @@ class UsbPickerTests(unittest.TestCase):
 
         shown = []
         config = copy.deepcopy(self.CONFIG)
-        answers = iter(['3', '4', 'sdc1'])  # 3: the second partition of the media HDD, refused
+        answers = iter(['3', '4', 'sdc1'])  # 3: the second partition of the media and backups drive, refused
         photo_backup.select_external(config, self.INVENTORY, input_fn=lambda q='': next(answers), out_fn=shown.append)
         self.assertEqual(config['photos']['external_backup_uuid'], 'usb-uuid-0001')
         offered = '\n'.join(shown)
         # In the list with why not (0.50.0: everything connected is shown), and refused when chosen.
         self.assertIn('  3) drive, ID ending second-0001  - not this one: it must be a drive of its own', offered)
         self.assertIn(
-            'Drive 3 (drive, ID ending second-0001) cannot be the USB backup drive: it must be a drive of its own',
+            'Drive 3 (drive, ID ending second-0001) cannot be the offline backup drive: it must be a drive of its own',
             offered,
         )
-        self.assertIn('  2) drive, ID ending uuid-0001  - not this one: it is already the media HDD', offered)
+        self.assertIn(
+            '  2) drive, ID ending uuid-0001  - not this one: it is already the media and backups drive', offered
+        )
         self.assertNotIn('nvme0n1p3', offered)  # spare partition of the system disk: the disk is one row
         # Worded as the SSD and HDD lists are, not as UUIDs and mount points (seen on a Debian VM).
         self.assertIn('  4) 1.0 TB drive', shown)
         # No "enabled" under Nextcloud: it is set up, so its files are what the copy takes.
-        self.assertIn('Now choose the drive for the weekly copy of your Nextcloud files (the USB backup drive).', shown)
+        self.assertIn(
+            'Now choose the drive for the weekly copy of your Nextcloud files (the offline backup drive).', shown
+        )
         self.assertNotIn('UUID=', offered)
 
     def test_a_typo_in_the_usb_picker_is_asked_again(self):
@@ -1689,6 +1695,8 @@ class UsbCopyWithoutImmichTests(unittest.TestCase):
                 photo_backup, 'atomic_write', side_effect=lambda path, text, mode: written.update({path.name: text})
             ),
             mock.patch.object(photo_backup.subprocess, 'run'),
+            # Never the PC's real /etc/systemd/system or /var/lib/systemd/timers.
+            mock.patch.object(photo_backup, 'forget_last_run'),
         ):
             result = photo_backup.run(Ctx())
         return result, written
@@ -1719,6 +1727,7 @@ class UsbCopyWithoutImmichTests(unittest.TestCase):
             mock.patch.object(photo_backup.native_runtime, 'backup_guard', return_value=Path('/guard.json')),
             mock.patch.object(photo_backup, 'atomic_write'),
             mock.patch.object(photo_backup.subprocess, 'run'),
+            mock.patch.object(photo_backup, 'forget_last_run'),  # never the PC's real timers
         ):
             photo_backup.run(Ctx())
             self.assertEqual(saved, [{'transport': 'iscsi', 'wwn': '0x6001'}])
@@ -2191,7 +2200,7 @@ class StoppedStepMessageTests(unittest.TestCase):
         config = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media'}
         table = drive_table.rows(DrivePickingTests.INVENTORY, config)
         # Three answers that are no drive of the list: nothing is chosen, and it says what to do.
-        with self.assertRaisesRegex(RuntimeError, 'No drive was chosen for the app SSD. Run  sudo bash install.sh'):
+        with self.assertRaisesRegex(RuntimeError, 'No drive was chosen for the apps drive. Run  sudo bash install.sh'):
             drive_table.ask(table, 'data_ssd', config, lambda q='': '99', lambda s: None)
 
     def test_tailscale_waiting_says_how_to_sign_in(self):

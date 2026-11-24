@@ -794,7 +794,7 @@ def not_verified(config, app, entry, exc, output, pending):
     `pending`, and said with its reason and what to do."""
     if not isinstance(exc, NotRunning):
         # (An app that never ran refused nothing: marked so, the next run asked
-        # "did not take the saved login. What now?" of each of them.)
+        # "couldn't sign in ... with the saved credentials" of each of them.)
         store.update(config, app, state='needs_setup')
     pending.append(app)
     # The reason, never the password: the checks' own messages name no values.
@@ -802,4 +802,43 @@ def not_verified(config, app, entry, exc, output, pending):
     # as AttributeError: said in words.)
     reason = ODD_ANSWER if isinstance(exc, AttributeError) else str(exc) or type(exc).__name__
     advice = what_to_do(config, app, entry, answered=not isinstance(exc, (NotAnswering, NotRunning)))
+    if app == 'immich' and isinstance(exc, (NotAnswering, NotRunning)) and immich_waits_for_its_photos(config):
+        reason, advice = PHOTOS_FIRST
     output(f'{store.APPS[app][0]}: not verified ({reason}); the saved login is kept. {advice}')
+
+
+# T1-R10: after a new HDD, Immich restarts over and over until its photos are back, so
+# waiting for it never helps.
+PHOTOS_FIRST = (
+    'Immich cannot start yet: its photos are not on this drive (a new or emptied HDD), and it restarts '
+    'over and over until they are back',
+    'Restore the photos first: sudo bash install.sh --recover, "Restore something from a backup", '
+    '"Photos and videos (Immich)", and copy them back as it says. Immich starts once you run  '
+    'sudo bash install.sh  again after that.',
+)
+
+
+def immich_waits_for_its_photos(config):
+    """None of Immich's folders is on the photo drive, and Immich's own log says it stops
+    for a missing folder marker ("Failed to read (/data/encoded-video/.immich): ENOENT"):
+    its database knows photos that are not there. A new Immich, still starting or stopped
+    for another reason, never logs that (it makes its folders itself once it is up)."""
+    from modules import photos
+
+    try:
+        if any((photo_library(config) / name).is_dir() for name in photos.IMMICH_FOLDERS):
+            return False
+        ids = docker(
+            [
+                'ps',
+                '-aq',
+                '--filter',
+                'label=com.docker.compose.project=neko-immich',
+                '--filter',
+                'label=com.docker.compose.service=immich-server',
+            ]
+        ).split()
+        said = docker(['logs', '--tail', '200', ids[0]]) if ids else ''
+    except (KeyError, OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+        return False
+    return any('Failed to read' in line and photos.MARKER in line for line in said.splitlines())

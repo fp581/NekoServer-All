@@ -66,7 +66,7 @@ def options(config):
             raise RuntimeError(
                 'Invalid maintenance.' + key + ': leave it empty, or use the version the dashboard shows'
             )
-    if opts.get('nekoserver_channel', 'beta') not in ('beta', 'stable'):
+    if opts.get('nekoserver_channel', 'stable') not in ('beta', 'stable'):
         raise RuntimeError('Invalid maintenance.nekoserver_channel: use "beta" or "stable"')
     if opts.get('update_day', 'Wed') not in DAYS:
         raise RuntimeError('Invalid maintenance.update_day: use Mon, Tue, Wed, Thu, Fri, Sat or Sun')
@@ -228,22 +228,24 @@ def run(ctx):
     check_units(units, 'maintenance')
     import backup_secrets
 
-    if not backup_secrets.configured():
-        if sys.stdin.isatty():
-            # No key chosen (three mismatches, or Ctrl+D): the monthly update is still
-            # installed; its snapshots keep the password files unencrypted until a key exists.
-            try:
-                backup_secrets.setup(out=ctx.log)
-            except (RuntimeError, EOFError) as exc:
-                ctx.log(
-                    f'Backup key not set up ({exc or "stopped at the prompt"}): run  sudo python3 backup_secrets.py --setup  '
-                    'later; until then monthly snapshots keep the app password files UNENCRYPTED inside data.tar (readable by root only)'
-                )
-        else:
+    if backup_secrets.configured():
+        # Kept from before (also after new drives): which backup password is in force.
+        ctx.log(backup_secrets.kept_key())
+    elif sys.stdin.isatty():
+        # No key chosen (three mismatches, or Ctrl+D): the monthly update is still
+        # installed; its snapshots keep the password files unencrypted until a key exists.
+        try:
+            backup_secrets.setup(out=ctx.log)
+        except (RuntimeError, EOFError) as exc:
             ctx.log(
-                'Backup key not set up: until you run  sudo python3 backup_secrets.py --setup  in a terminal, monthly snapshots keep the app password files '
-                'UNENCRYPTED inside data.tar on the HDD (readable by root only), so a restore still has them'
+                f'Backup key not set up ({exc or "stopped at the prompt"}): run  sudo python3 backup_secrets.py --setup  '
+                'later; until then monthly snapshots keep the app password files UNENCRYPTED inside data.tar (readable by root only)'
             )
+    else:
+        ctx.log(
+            'Backup key not set up: until you run  sudo python3 backup_secrets.py --setup  in a terminal, monthly snapshots keep the app password files '
+            'UNENCRYPTED inside data.tar on the HDD (readable by root only), so a restore still has them'
+        )
     atomic_json(guard, guard_settings(config))
     write_units(units)
     for args in (

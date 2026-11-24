@@ -121,7 +121,11 @@ class WizardFlowTests(unittest.TestCase):
         # A release folder of its own: the folders beside it are this test's too.
         self.root = Path(self.tmp.name) / 'nekoserver-v0.31.0'
         self.root.mkdir()
-        shutil.copy(ROOT / 'config.json', self.root / 'config.json')
+        # The template with this test's own app drive, never the real /srv/nekoserver of
+        # the PC the tests run on (settings made from it name the same folder).
+        template = json.loads((ROOT / 'config.json').read_text())
+        template['data_mount'] = str(self.root / 'ssd')
+        (self.root / 'config.json').write_text(json.dumps(template))
         geteuid = mock.patch('os.geteuid', return_value=0)
         geteuid.start()
         self.addCleanup(geteuid.stop)
@@ -140,11 +144,16 @@ class WizardFlowTests(unittest.TestCase):
                 units=Path(self.tmp.name) / 'no-units',
                 default_state=default_state,
                 journals=(),
+                by_uuid=Path(self.tmp.name) / 'no-drives',
             )
 
         found = mock.patch.object(wizard, 'what_is_here', here)
         found.start()
         self.addCleanup(found.stop)
+        # Settings nobody answered yet are read as none: the app drive is then the default.
+        default = mock.patch.object(install_state, 'DATA_MOUNT', str(self.root / 'ssd'))
+        default.start()
+        self.addCleanup(default.stop)
         # The template names the real /srv/nekoserver: on a PC running NekoServer its setup
         # state there would be read (or refused to a normal user). This test's own folder.
         folder = mock.patch.object(wizard, 'data_folder', return_value=self.root / 'ssd')
@@ -220,6 +229,8 @@ class WizardFlowTests(unittest.TestCase):
     def saved(self, path, uuid):
         settings = json.loads((ROOT / 'config.json').read_text())
         settings['storage']['data_ssd']['uuid'] = uuid
+        # This test's SSD, never the real /srv/nekoserver of the PC the tests run on.
+        settings['data_mount'] = str(self.root / 'ssd')
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(settings))
 
@@ -659,7 +670,7 @@ class CapacityTests(unittest.TestCase):
     def test_usb_counts_free_space_not_drive_size(self):
         # A big but nearly full drive warns; files the drive already has need no new room.
         _, warn = self.assess(500, 4000, usb=10, photos=100)
-        self.assertTrue(any('USB drive has 10 GB free' in w for w in warn))
+        self.assertTrue(any('offline backup drive has 10 GB free' in w for w in warn))
         _, warn = self.assess(500, 4000, usb=30, photos=100, pending=0)
         self.assertEqual(warn, [])
 
@@ -806,9 +817,9 @@ class CapacityTests(unittest.TestCase):
 
     def test_too_little_stops_with_a_clear_reason(self):
         stop, _ = self.assess(10, 4000)
-        self.assertTrue(stop and 'SSD has only 10 GB free' in stop[0])
+        self.assertTrue(stop and 'apps drive has only 10 GB free' in stop[0])
         stop, _ = self.assess(500, 30)
-        self.assertTrue(stop and 'HDD' in stop[0])
+        self.assertTrue(stop and 'media and backups drive' in stop[0])
 
     def test_below_recommended_warns(self):
         stop, warn = self.assess(60, 300)
@@ -817,7 +828,7 @@ class CapacityTests(unittest.TestCase):
 
     def test_usb_must_fit_photos_and_cloud_with_room(self):
         _, warn = self.assess(500, 4000, usb=128, photos=100, cloud=20)
-        self.assertTrue(any('USB drive has 128 GB free' in w for w in warn))
+        self.assertTrue(any('offline backup drive has 128 GB free' in w for w in warn))
         _, warn = self.assess(500, 4000, usb=256, photos=100, cloud=20)
         self.assertEqual(warn, [])
 
@@ -937,6 +948,8 @@ class RecoveryWizardTests(unittest.TestCase):
         # The rebuild command names the library Immich really uses (the 0.46.0 review, H08).
         rebuild = f'sudo cp -a {restored}/upload {restored}/library {self.root}/ssd/photos/immich-library/'
         self.assertIn(rebuild, '\n'.join(out))
+        # Then setup, which makes Immich's other folders again (T1-R6: Immich stayed down).
+        self.assertIn('Then run  sudo bash install.sh  again', '\n'.join(out))
         # Other accounts never get in (the restore itself is given to the person's own).
         self.assertEqual((self.media / 'restored').stat().st_mode & 0o007, 0)
 

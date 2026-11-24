@@ -1110,7 +1110,10 @@ class MoveTests(unittest.TestCase):
             self.assertEqual(self.move(), 2)
             self.assertIn('A NekoServer upgrade or another drive move is at work', self.said[-1])
             self.assertEqual(self.calls, [])
-        # The upgrade holds the same lock, and refuses while a move's record is there.
+        # The upgrade holds the same lock, and refuses while a move's record is there. Its
+        # app drive is this test's (an upgrade tidies installer/upgrades on it), never the
+        # real /srv/nekoserver of the PC the tests run on.
+        self.settings.write_text(json.dumps({**CONFIG, 'data_mount': str(self.dir / 'ssd')}))
         with (
             mock.patch.object(upgrade, 'OPERATION_LOCK', self.dir / 'operation.lock'),
             mock.patch.object(upgrade, 'MIGRATE_JOURNAL', self.journal),

@@ -97,7 +97,7 @@ pub(crate) const JOBS: [(&str, &str, &str, f64); 10] = [
     ),
     (
         "applications",
-        "Media application snapshot",
+        "Nightly app snapshot (media apps and Nextcloud)",
         "nekoserver-app-backup",
         172800.0,
     ),
@@ -1391,7 +1391,7 @@ fn parse_startup(out: &str) -> Vec<Value> {
 /// (deep check 301).
 fn failed_advice(unit: &str) -> &'static str {
     match unit {
-        "nekoserver-gateway-lan.service" => "It gave up after several failed starts and stays stopped until a drive comes back, the NAS check runs or setup runs. Once the drives are connected, start it now: sudo systemctl start nekoserver-gateway-lan.service (if it stops again, sudo journalctl -u nekoserver-gateway-lan.service says why). Until then the apps' home addresses don't answer; the Tailscale addresses keep working.",
+        "nekoserver-gateway-lan.service" => "It gave up after several failed starts and stays stopped until a drive comes back, the NAS check runs or setup runs. Once the drives are connected, start it now: sudo systemctl reset-failed nekoserver-gateway-lan.service && sudo systemctl start nekoserver-gateway-lan.service (the first command clears its give-up: a plain start is refused for up to 30 minutes after it; if it stops again, sudo journalctl -u nekoserver-gateway-lan.service says why). Until then the apps' home addresses don't answer; the Tailscale addresses keep working.",
         _ => "Its last start or run failed. The guide shows how to read its log; setup can start it again.",
     }
 }
@@ -1426,13 +1426,16 @@ fn retired(cfg: &Value, key: &str) -> Option<&'static str> {
         "music" if !common::media_group(cfg, "music") => {
             Some("Switched off: Music (Navidrome) is left out")
         }
-        // The nightly app backup is of the media apps: off when none of them is set up
-        // (their groups off, or a list of apps that is empty).
+        // The nightly app backup is of the media apps and, since 1.0.0, of Nextcloud: off
+        // when none of the media apps is set up (their groups off, or a list of apps that
+        // is empty) and Nextcloud is switched off (on unless "enabled" is false, as
+        // neko_common.nextcloud_enabled reads it).
         "applications"
-            if cfg["media"]["services"].is_array() && common::media_services(cfg).is_empty()
-                || !(common::media_group(cfg, "movies") || common::media_group(cfg, "music")) =>
+            if (cfg["media"]["services"].is_array() && common::media_services(cfg).is_empty()
+                || !(common::media_group(cfg, "movies") || common::media_group(cfg, "music")))
+                && cfg["nextcloud"]["enabled"] == false =>
         {
-            Some("Switched off: the media apps are left out")
+            Some("Switched off: neither the media apps nor Nextcloud is set up")
         }
         "archive" | "database" if !immich => Some("Switched off: Immich is not set up"),
         "external" if !immich && cfg["nextcloud"]["enabled"] != true => {
@@ -1610,7 +1613,7 @@ impl JobSeen {
         };
         // An update undone after the apps did not start well: the backup was made and the
         // apps are back as they were, so only the update is still to come (done in part).
-        let undone = key == "maintenance" && rolled_back(&saved);
+        let undone = undone(key, &saved);
         let status = job_status(&saved, undone);
         // A success saved while the clock was ahead still counts (shown as now): hiding
         // it would read as "never succeeded" after the clock was put back.
@@ -1747,7 +1750,7 @@ fn job_reason(
     if status == "fail" {
         Some(with_full_usb_advice(key, failure_reason(saved)))
     } else if undone {
-        Some(undone_reason(saved))
+        Some(undone_reason(key, saved))
     } else if status == "partial" {
         Some(partial_reason(&saved["missing"]))
     } else if never_succeeded && stale {
@@ -1911,14 +1914,19 @@ fn rolled_back(saved: &Value) -> bool {
             || (saved["stage"] == UPDATED_APPS_STAGE
                 && !text(&saved["reason"]).contains("; then: ")))
 }
+/// An update the monthly run or the weekly app updates (and Update now) put back as it was.
+fn undone(key: &str, saved: &Value) -> bool {
+    ["maintenance", "updates"].contains(&key) && rolled_back(saved)
+}
 /// "The update was undone: …", in plain words, with why in short (the first sentence of
 /// the reason; the advice for engineers after it is left to the guide).
-fn undone_reason(saved: &Value) -> String {
+fn undone_reason(key: &str, saved: &Value) -> String {
     let said = text(&saved["reason"]);
     let why = said.split(". ").next().unwrap_or("").trim_end_matches('.');
     // A failed run that was set to try again says when (the next night, a few nights).
     let again = match saved["retry_at"].as_str() {
         Some(when) if !when.trim().is_empty() => format!("{}.", capitalised(&whole(when, 200))),
+        _ if key == "updates" => "It is tried again next week.".to_string(),
         _ => "It is tried again next month.".to_string(),
     };
     let mut out = format!(
@@ -4425,12 +4433,19 @@ mod os_tests {
         // The media apps left out (0.50.0): their backups are off, the others expected.
         let no_media = json!({"media_apps":{"wanted":false},"photos":{"deploy_immich":true},
             "nextcloud":{"enabled":true}});
-        for key in ["music", "applications", "archive", "database"] {
+        for key in ["music", "archive", "database"] {
             assert!(retired(&no_media, key).is_some(), "{key}");
         }
-        for key in ["external", "host"] {
+        // 1.0.0 (C-01): the nightly app backup goes on for Nextcloud; off with it off too.
+        for key in ["applications", "external", "host"] {
             assert_eq!(retired(&no_media, key), None, "{key}");
         }
+        let mut no_cloud = no_media.clone();
+        no_cloud["nextcloud"]["enabled"] = json!(false);
+        assert_eq!(
+            retired(&no_cloud, "applications"),
+            Some("Switched off: neither the media apps nor Nextcloud is set up")
+        );
         // One group off (0.50.0): only that group's backups are off.
         let apps = json!(["jellyfin", "navidrome"]);
         let no_music = json!({"media_apps":{"music":false},"media":{"services":apps},
@@ -4441,10 +4456,8 @@ mod os_tests {
         }
         let photos_only = json!({"media_apps":{"movies":false,"music":false},
             "media":{"services":apps},"photos":{"deploy_immich":true}});
-        for key in ["music", "applications"] {
-            assert!(retired(&photos_only, key).is_some(), "{key}");
-        }
-        for key in ["archive", "database", "external"] {
+        assert!(retired(&photos_only, "music").is_some());
+        for key in ["applications", "archive", "database", "external"] {
             assert_eq!(retired(&photos_only, key), None, "{key}");
         }
     }
@@ -4795,7 +4808,9 @@ mod os_tests {
             "{said}"
         );
         assert!(
-            said.contains("sudo systemctl start nekoserver-gateway-lan.service"),
+            said.contains(
+                "sudo systemctl reset-failed nekoserver-gateway-lan.service && sudo systemctl start nekoserver-gateway-lan.service"
+            ),
             "{said}"
         );
     }
@@ -5136,18 +5151,28 @@ mod os_tests {
     #[test]
     fn a_usb_copy_without_the_password_list_says_so_on_the_page() {
         let said = crate::backup::NO_PASSWORD_LIST.to_string();
-        let alone = crate::backup::incomplete(None, None, None, Some(said.clone())).unwrap();
+        let alone = crate::backup::incomplete(None, None, None, Some(said.clone()), None).unwrap();
         assert_eq!(partial_reason(&alone), capitalised(&said));
         let with_database = crate::backup::incomplete(
             None,
             Some("no Immich database copy was found".into()),
             None,
             Some(said),
+            None,
         )
         .unwrap();
         let shown = partial_reason(&with_database);
         assert!(shown.starts_with("No Immich database copy"), "{shown}");
         assert!(shown.contains("sudo bash install.sh"), "{shown}");
+    }
+    /// 1.0.0 (T1-R4): app settings that did not fit on the USB drive, or could not be
+    /// protected, make the copy incomplete, and the page says so in plain words.
+    #[test]
+    fn app_settings_left_off_the_usb_drive_are_said_on_the_page() {
+        let said = crate::usb_app_settings::NO_KEY.to_string();
+        let report = crate::backup::incomplete(None, None, None, None, Some(said.clone())).unwrap();
+        assert_eq!(report["reason"], "The USB backup is incomplete");
+        assert_eq!(partial_reason(&report), capitalised(&said));
     }
     /// Deep check plan 276: what a backup left out was cut at exactly 300 characters, in
     /// the middle of a word. The Nextcloud encryption advice (316) read "or keep your own
@@ -5155,7 +5180,7 @@ mod os_tests {
     #[test]
     fn what_a_backup_left_out_is_never_cut_mid_word() {
         let said = crate::backup::CLOUD_ENCRYPTED.to_string();
-        let cloud = crate::backup::incomplete(None, None, Some(said.clone()), None).unwrap();
+        let cloud = crate::backup::incomplete(None, None, Some(said.clone()), None, None).unwrap();
         assert_eq!(partial_reason(&cloud), capitalised(&said));
         let long = format!("USB check: {}", "the drive would not mount ".repeat(20));
         let shown = partial_reason(&json!([long]));
@@ -5890,14 +5915,14 @@ mod user_panel_tests {
         assert!(!rolled_back(
             &json!({"status": "pass", "rolled_back": true})
         ));
-        let said = undone_reason(&saved);
+        let said = undone_reason("maintenance", &saved);
         assert_eq!(said, "The update was undone: your apps are back on their previous version and work as before. It is tried again next month. Why: Jellyfin was not ready after 5 minutes (Container not healthy).");
         assert!(!said.contains("health_wait_seconds"));
         // A run set to try again the next night says so instead of "next month".
         let mut soon = saved.clone();
         soon["retry_at"] =
             json!("the monthly update tries again on 2026-11-03 02:30:00 Europe/Lisbon");
-        assert!(undone_reason(&soon).contains(
+        assert!(undone_reason("maintenance", &soon).contains(
             "work as before. The monthly update tries again on 2026-11-03 02:30:00 Europe/Lisbon. Why:"
         ));
         let mut worse = saved.clone();
@@ -5921,6 +5946,41 @@ mod user_panel_tests {
         assert_eq!(
             shown[0]["title"],
             "Monthly backup and updates: the update was undone, your apps work"
+        );
+    }
+    /// T1-R11: a weekly app update (or Update now) whose app did not start is undone as
+    /// the monthly one is, and the page says so the same way: the apps work, the update
+    /// is tried again next week, the reason the report cut at 300 characters still read.
+    #[test]
+    fn a_rolled_back_weekly_update_says_the_apps_are_back_and_working() {
+        let said = common::sanitize(concat!(
+            "Failed while starting the updated apps: prowlarr 3.1.0.5799-ls170: prowlarr was not ",
+            "ready after 5 minutes (Missing healthy services). If it was still updating its database, ",
+            "raise \"health_wait_seconds\" under \"maintenance\" (up to 1800) and run  sudo bash ",
+            "install.sh  again; the next monthly update then waits longer; undone, prowlarr runs its ",
+            "previous version and the update is tried again next week"
+        ));
+        let saved = json!({"status": "fail", "rolled_back": true, "reason": said});
+        assert!(undone("updates", &saved));
+        assert!(undone("maintenance", &saved));
+        assert!(!undone("applications", &saved), "only an update is undone");
+        assert!(!undone(
+            "updates",
+            &json!({"status": "fail", "reason": said})
+        ));
+        assert_eq!(
+            undone_reason("updates", &saved),
+            "The update was undone: your apps are back on their previous version and work as before. It is tried again next week. Why: Failed while starting the updated apps: prowlarr 3.1.0.5799-ls170: prowlarr was not ready after 5 minutes (Missing healthy services)."
+        );
+        assert_eq!(job_status(&saved, undone("updates", &saved)), "partial");
+        let shown = alerts(
+            &json!({"backups": [{"id": "updates", "name": "Weekly app updates",
+            "status": "partial", "rolled_back": true, "reason": undone_reason("updates", &saved)}]}),
+        );
+        assert_eq!(shown[0]["level"], "warning");
+        assert_eq!(
+            shown[0]["title"],
+            "Weekly app updates: the update was undone, your apps work"
         );
     }
     /// UP-06: a reason the report cut at 300 characters ends at a whole sentence or word,
@@ -6791,7 +6851,7 @@ mod split_helpers {
         );
         assert_eq!(
             job_reason("maintenance", &saved, ("partial", true), true, true),
-            Some(undone_reason(&saved))
+            Some(undone_reason("maintenance", &saved))
         );
         assert_eq!(
             job_reason("external", &saved, ("fail", true), true, true),

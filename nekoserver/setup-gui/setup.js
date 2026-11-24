@@ -202,6 +202,9 @@
   /* The review: what Install will do, as setup's server says it from the settings. */
   function showReview(review) {
     $('review-title').textContent = review.title;
+    // A server set up already is changed, not installed: these say so (explanations.py).
+    if (review.intro) $('review-intro').textContent = review.intro;
+    if (review.note) $('choose-hint').textContent = review.note;
     if (!$('start').disabled) $('start').textContent = review.button;
     startLabel = review.button;
     $('review-sections').replaceChildren(
@@ -1570,7 +1573,8 @@
         )
       );
     }
-    $('finish-page').replaceChildren(...cards, ...more.filter(Boolean));
+    const intro = page.subheading ? el('p', { class: 'muted', text: page.subheading }) : null;
+    $('finish-page').replaceChildren(...[intro].filter(Boolean), ...cards, ...more.filter(Boolean));
   }
 
   function renderFinished(state) {
@@ -1578,7 +1582,9 @@
     // Setup's own verdict (the first checkup included), as the terminal shows it.
     const ready = state.complete === true;
     const title = state.title || (ready ? 'NekoServer is ready' : 'NekoServer is almost ready');
-    $('finish-title').textContent = title;
+    // The finishing page's own heading (finish_page: what was checked) when setup made one,
+    // on every render: the terminal's title is only for a setup without that page.
+    $('finish-title').textContent = state.finish_page ? state.finish_page.heading : title;
     // Stopped before the steps began (a site that could not be reached, say): not "finished".
     $('finish-label').textContent = state.stopped ? 'STOPPED' : 'FINISHED';
     let word = 'Needs you';
@@ -1593,7 +1599,6 @@
     $('finish-page').hidden = !page;
     $('finish-lines').hidden = !!page;
     if (page && !finishBuilt) {
-      $('finish-title').textContent = page.heading;
       buildFinish(page);
       finishBuilt = true;
     }

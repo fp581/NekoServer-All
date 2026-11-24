@@ -49,8 +49,8 @@ STEPS = {
     'recovery_checkpoint': 'Recovery checkpoint',
     'media': 'Movie, TV and music apps',
     'photos': 'Immich (photos)',
-    'photo_preservation': 'Weekly photo backup to the HDD',
-    'photo_backup': 'Weekly backup to the USB drive',
+    'photo_preservation': 'Weekly photo backup to the media and backups drive',
+    'photo_backup': 'Weekly backup to the offline backup drive',
     'nextcloud': 'Nextcloud (files)',
     'accounts': 'App accounts',
     'hardware_video': 'Video using the graphics chip',
@@ -69,7 +69,7 @@ STEPS = {
     'notifications': 'Phone alerts',
     'heartbeat': 'Server heartbeat',
     'host_backup': 'Nightly settings backup',
-    'maintenance': 'Monthly updates',
+    'maintenance': 'Weekly app updates and a monthly backup check',
     'backup_cards': 'Backup cards',
 }
 
@@ -83,7 +83,7 @@ WELCOME = [
     '  3. Install the apps you choose below and create an account for each one.',
     '  4. Connect the apps to each other.',
     '  5. Give each app a private Tailscale address and walk you through it on your phone.',
-    '  6. Schedule backups and monthly updates, then run a first checkup and backup.',
+    '  6. Schedule backups, weekly app updates and a monthly backup check, then run a first checkup and backup.',
     '',
     'Have ready: the drives you want to use, plugged in and already formatted (one drive, or the',
     'disk Linux runs from, with about 70 GB free is enough; a USB drive of 16 GB or more for an',
@@ -407,7 +407,7 @@ def first_page(path, asking):
     # On a server that is set up already (an update, gate run D) its apps are installed:
     # what this page holds is that nothing changes before the approval.
     first = (
-        'Nothing is installed yet.'
+        'Prerequisite packages are installed. Your selected apps will be set up after you approve.'
         if not neko_common.server_exists(read_json(path) or {})
         else ('Nothing changes until you approve.')
     )
@@ -669,9 +669,16 @@ def show_addresses(data, output):
 
 
 NEXT_DONE = [
-    '  Everything is set up. Backups and monthly updates run on their own;',
-    '  the dashboard shows how they are doing.',
+    '  Installation complete. Scheduled backups and updates are enabled: the nightly backups, the weekly',
+    '  app updates and the monthly backup check run on their own; the dashboard shows how they are doing.',
 ]
+# Every step done, but the backups or the updates are not available on this system.
+NEXT_DONE_UNSCHEDULED = [
+    '  Every step is done. The backups or the updates are not available on this system (see',
+    '  "Not available on this system" above).',
+]
+# The steps that schedule them: the updates, and at least one backup.
+SCHEDULES = 'maintenance'
 NEXT_PENDING = [
     '  1. Fix the first item under "What needs you" (its line says how).',
     '  2. Then run  sudo bash install.sh  again: it continues where it stopped and keeps everything done.',
@@ -680,7 +687,8 @@ NEXT_PENDING = [
 # needs you" list to point at (the 0.47.10 round: the screen said to fix its first item).
 NEXT_CHECKUP = [
     '  1. Look at the items under "First checkup and backup" above; the checklist on the dashboard explains each one.',
-    '  2. Backups and monthly updates run on their own. Run  sudo bash install.sh  again any time to repeat the checkup.',
+    '  2. Backups, weekly app updates and the monthly backup check run on their own. Run  sudo bash install.sh  again any '
+    'time to repeat the checkup.',
 ]
 
 
@@ -751,7 +759,7 @@ def sorted_steps(plan, states):
 # and for the server: a backup made, a restore tried. Nothing here sums them into one
 # "all done" (finish_states.py judges; these are the words).
 STATE_WORDS = {'done': 'done', 'failed': 'needs fixing', 'not_tested': 'not tried yet', 'waiting': 'waiting'}
-APP_STATES = (('installed', 'Installed'), ('login', 'Signed in'), ('address', 'Opens'), ('tried', 'Tried by you'))
+APP_STATES = (('installed', 'Installed'), ('login', 'Login verified'), ('address', 'Opens'), ('tried', 'Tried by you'))
 REASONS = {
     'step_did_not_finish': 'its part of setup did not finish',
     'step_waits_for_you': 'waiting for something only you can do',
@@ -759,7 +767,8 @@ REASONS = {
     'container_not_running': 'it is installed but not running',
     'still_starting': 'it is still starting; look again in a minute',
     'docker_did_not_answer': 'NekoServer could not ask the program that runs the apps',
-    'saved_login_refused': 'the app did not take the saved login',
+    'saved_login_refused': "NekoServer couldn't sign in with the saved credentials",
+    'saved_login_worked': 'NekoServer used the saved login successfully',
     'account_step_not_finished': 'its account is not made yet',
     'no_login_kept': 'NekoServer keeps no login for this app',
     'not_installed_yet': 'comes after it is installed',
@@ -786,33 +795,60 @@ TEST_TITLES = {
     'tv_controller': 'The controller works',
     'tv_steam': 'Steam Big Picture opens',
 }
+# The finishing page's heading (finish_heading): `ready` only when nothing failed or waits
+# and the backups and the updates are scheduled (finish_states.summary's "scheduled");
+# ready without them keeps `ready_unscheduled`.
 OUTCOMES = {
-    'ready': 'NekoServer is ready.',
-    'pending': 'Your apps are installed. Some setup is still waiting for you.',
+    'ready': 'Installation complete. Scheduled backups and updates are enabled.',
+    'ready_unscheduled': 'NekoServer is ready.',
+    'pending': 'Setup is incomplete. Review the remaining steps below.',
     'attention': 'Setup needs attention.',
 }
+READY_MORE = 'Review the checks below to see what has been verified and what you can still try.'
+# The backups on the finishing page: one line when every first backup passed, else each one.
+BACKUPS_DONE = 'Initial backups completed'
+
+
+def finish_heading(summary):
+    """(the finishing page's heading, the line under it ('' for none)) for a summary."""
+    outcome = summary.get('outcome')
+    if outcome == 'ready':
+        if summary.get('scheduled'):
+            return OUTCOMES['ready'], READY_MORE
+        return OUTCOMES['ready_unscheduled'], ''
+    return OUTCOMES.get(outcome, OUTCOMES['pending']), ''
+
+
+def backup_states(summary):
+    """The finishing page's backups as [(label, state)]: "Initial backups completed" when
+    every first backup passed; otherwise each backup by its step's name, with its own result."""
+    backups = summary.get('backups') or []
+    if backups and all(found.get('state') == 'done' for found in backups):
+        return [(BACKUPS_DONE, {'state': 'done', 'reason': None})]
+    if backups:
+        return [(title(found['step']), found) for found in backups]
+    return [('Backup made', summary.get('server', {}).get('backup', {}))]
 
 
 def state_said(found):
-    """One state in words, with its reason when it is not done."""
+    """One state in words, with its reason when it has one."""
     word = STATE_WORDS.get(found.get('state'), 'not known')
     reason = REASONS.get(found.get('reason'))
-    return f'{word} ({reason})' if reason and found.get('state') != 'done' else word
+    return f'{word} ({reason})' if reason else word
 
 
 def states_lines(summary):
     """The finishing page's states as lines: each app, the server's backups and
     restores, and the tests a person can still try (which never hold anything up)."""
-    lines = ['', 'How things stand: ' + OUTCOMES.get(summary.get('outcome'), OUTCOMES['pending'])]
+    heading, more = finish_heading(summary)
+    lines = ['', 'How things stand: ' + heading] + ([more] if more else [])
     for app in summary.get('apps', []):
         said = [f'{label}: {state_said(app["states"][key])}' for key, label in APP_STATES if key in app['states']]
         lines.append(f"  {app['name']}. " + '. '.join(said) + '.')
     server = summary.get('server', {})
     if server:
-        lines.append(
-            f"  Backups. Backup made: {state_said(server.get('backup', {}))}. "
-            f"Restore tried: {state_said(server.get('restore', {}))}."
-        )
+        said = [f'{label}: {state_said(found)}' for label, found in backup_states(summary)]
+        lines.append('  Backups. ' + '. '.join(said) + f". Restore tried: {state_said(server.get('restore', {}))}.")
     open_tests = [test for test in summary.get('tests', []) if test.get('state') != 'done']
     if open_tests:
         lines.append('You can try these whenever you like; nothing waits for them:')
@@ -879,8 +915,10 @@ def finishing_screen(config, states, page=None, output=print, checkup=None, ran=
     show_end(config, data, plan, states, page, output)
     output('\nWhat next:')
     steps_done = not (by_status['broken'] or by_status['waiting'] or blocked)
-    if complete:
+    if complete and scheduled(plan, states):
         what_next = NEXT_DONE
+    elif complete:
+        what_next = NEXT_DONE_UNSCHEDULED
     elif steps_done:
         what_next = NEXT_CHECKUP
     else:
@@ -890,6 +928,14 @@ def finishing_screen(config, states, page=None, output=print, checkup=None, ran=
     output('  If something goes wrong later:  sudo bash install.sh --recover')
     output(line + '\n')
     return complete
+
+
+def scheduled(plan, states):
+    """The updates and at least one backup were set up by this run's plan."""
+    import finish_states
+
+    done = {step for step in plan if states.get(step, {}).get('status') == 'success'}
+    return SCHEDULES in done and any(step in done for step, _ in finish_states.BACKUPS)
 
 
 def show_end(config, data, plan, states, page, output):
@@ -998,7 +1044,9 @@ def what_found(found):
             f"An earlier copy of NekoServer ({found.get('settings_from') or 'an earlier release'}) on this PC still "
             'has your settings. Nothing is installed from this copy yet.'
         ]
-    return ['Your answers from an earlier start of setup are saved here. Nothing has been installed yet.']
+    return [
+        'Your answers from an earlier start of setup are saved here. Prerequisite packages are installed. Your selected apps will be set up after you approve.'
+    ]
 
 
 def choice_said(found, choice):

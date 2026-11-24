@@ -85,11 +85,11 @@ class ChangesTests(unittest.TestCase):
         said = []
         with mock.patch.object(drive_table, 'brief', return_value='drive 2 (Samsung SSD 870)'):
             storage.said_last_time(table, 'u1', 'data_ssd', said.append)
-            self.assertEqual(said, ['As chosen before the approval, drive 2 (Samsung SSD 870) is the app SSD.'])
+            self.assertEqual(said, ['As chosen before the approval, drive 2 (Samsung SSD 870) is the apps drive.'])
             # A rerun whose page kept the saved drives: chosen at an earlier run.
             storage.keep_ahead(now, {'settings': {}, 'places': {}})
             storage.said_last_time(table, 'u1', 'data_ssd', said.append)
-        self.assertEqual(said[1], 'Last time you chose drive 2 (Samsung SSD 870) as the app SSD. It is used again.')
+        self.assertEqual(said[1], 'Last time you chose drive 2 (Samsung SSD 870) as the apps drive. It is used again.')
 
 
 class AskedAheadTests(unittest.TestCase):
@@ -168,9 +168,9 @@ class AskedAheadTests(unittest.TestCase):
         self.assertEqual(
             chosen['lines'],
             [
-                'NekoServer and your apps: the drive chosen before',
-                'Backups: the drive chosen before',
-                "Immich's photos and videos: on the drive of the backups. " + storage.SAME_DRIVE_AS_BACKUP,
+                'Apps drive: the drive chosen before',
+                'Media and backups drive: the drive chosen before',
+                "Immich's photos and videos: on the media and backups drive. " + storage.SAME_DRIVE_AS_BACKUP,
                 'Offline backup: none for now',
             ],
         )
@@ -259,13 +259,15 @@ class StepTests(unittest.TestCase):
     def test_a_place_chosen_ahead_is_not_asked_again(self):
         drive_table.PLACES_AHEAD.update(photos='ssd', movies='media')
         self.assertEqual(self.places(settings()), {'photos': 'ssd', 'movies': 'media'})
-        self.assertIn("Immich's photos and videos: on the SSD", self.said)
+        self.assertIn("Immich's photos and videos: on the apps drive", self.said)
 
     def test_files_found_on_the_mounted_drive_stay_where_they_are(self):
         """A drive from an earlier server: the choice made before it was open gives way."""
         drive_table.PLACES_AHEAD.update(photos='ssd')
         self.assertEqual(self.places(settings(), kept=['media'], before=True), {'photos': 'media'})
-        self.assertIn("Immich's photos and videos: kept where they already are, on the media drive", self.said)
+        self.assertIn(
+            "Immich's photos and videos: kept where they already are, on the media and backups drive", self.said
+        )
 
     def test_the_step_opens_no_page_for_what_was_chosen_ahead(self):
         config = settings(

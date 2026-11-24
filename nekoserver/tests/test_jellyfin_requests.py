@@ -199,5 +199,67 @@ class SearchAndRequestTests(unittest.TestCase):
         self.assertIn("'search_and_request_in_jellyfin',", source)
 
 
+class SeerrLinkedToAnotherJellyfinTests(unittest.TestCase):
+    """T1-R7: after a rebuilt server's Jellyfin settings came back from a backup, Jellyfin
+    has the old server's ID and the Seerr setup made has the new one. Setup leaves Seerr's
+    choice as it is, and said only "custom server selection preserved"; now it says what
+    to do."""
+
+    class Seerr:
+        def __init__(self, linked='new-server'):
+            self.headers = {}
+            self.linked = linked
+
+        def call(self, path, method='GET'):
+            return {'/settings/public': {'initialized': True}, '/settings/jellyfin': self.linked}[path]
+
+    def setUp(self):
+        import json
+        import tempfile
+
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__('shutil').rmtree, self.root)
+        (self.root / 'appdata/seerr').mkdir(parents=True)
+        (self.root / 'appdata/seerr/settings.json').write_text(json.dumps({'main': {'apiKey': 'k'}}))
+
+    def said(self, text):
+        self.assertIn('Seerr is linked to another Jellyfin server', text)
+        self.assertIn("put Seerr's, Sonarr's and Radarr's back too, from the same night as Jellyfin's", text)
+        self.assertIn('APP-BACKUPS.md, step 2', text)
+        self.assertNotIn('custom server selection', text)
+
+    def test_connecting_the_apps_says_what_to_do(self):
+        client = self.Seerr({'serverId': 'new-server'})
+        with self.assertRaises(media_libraries.SetupRequired) as raised:
+            media_libraries.seerr(client, self.root, 'old-server', ['1', '2'], apply=False)
+        self.said(str(raised.exception))
+
+    def test_the_readiness_row_says_the_same(self):
+        found = media_readiness.seerr_row(self.Seerr({'serverId': 'new-server'}), self.root, 'old-server', ['1', '2'])
+        self.assertEqual(found['status'], 'needs_setup')
+        self.said(found['reason'])
+        # Without a Jellyfin ID to compare, it is still "not verified".
+        self.assertIn(
+            'not verified',
+            str(media_readiness.seerr_row(self.Seerr({'serverId': 'new-server'}), self.root, '', ['1', '2'])),
+        )
+
+    def test_a_seerr_not_linked_to_any_jellyfin_yet_is_told_to_finish_its_first_run(self):
+        # T5's review: a first-time Seerr has no ID; it was told to put settings back.
+        for linked in ({'serverId': ''}, {}, {'serverId': None}, None, []):
+            with self.subTest(linked=linked):
+                client = self.Seerr(linked)
+                with self.assertRaises(media_libraries.SetupRequired) as raised:
+                    media_libraries.seerr(client, self.root, 'this-server', ['1', '2'], apply=False)
+                self.assertIn('not linked to a Jellyfin server yet', str(raised.exception))
+                self.assertNotIn('another Jellyfin', str(raised.exception))
+                row = media_readiness.seerr_row(self.Seerr(linked), self.root, 'this-server', ['1', '2'])
+                self.assertEqual(row['reason'], 'Seerr/Jellyfin server identity is not verified')
+
+    def test_the_page_says_which_apps_go_back_together(self):
+        page = (ROOT / 'APP-BACKUPS.md').read_text()
+        self.assertIn('put all four back, from the same night', page)
+
+
 if __name__ == '__main__':
     unittest.main()

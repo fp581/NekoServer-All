@@ -9,6 +9,9 @@ import re
 import secrets
 import subprocess
 import time
+from types import SimpleNamespace
+
+import nextcloud_restore
 
 from neko_common import (
     LOCATIONS,
@@ -244,13 +247,15 @@ def account_names(accounts):
     return None
 
 
-def listed_accounts(base, run=subprocess.run):
-    """The account names Nextcloud lists (occ user:list). A command that fails, does not
+def listed_accounts(base, run=subprocess.run, signed_in=False):
+    """The account names Nextcloud lists (occ user:list); with `signed_in`, only those that
+    have signed in at least once (see has_signed_in). A command that fails, does not
     answer or answers with something other than a list of accounts is an error, never an
     empty list: an empty list would make no folder and still say "uploads work again"."""
+    info = ['--info'] if signed_in else []
     try:
         listed = run(
-            base + ['exec', '-T', '-u', 'www-data', 'nextcloud', 'php', 'occ', 'user:list', '--output=json'],
+            base + ['exec', '-T', '-u', 'www-data', 'nextcloud', 'php', 'occ', 'user:list', *info, '--output=json'],
             capture_output=True,
             text=True,
             timeout=120,
@@ -260,7 +265,8 @@ def listed_accounts(base, run=subprocess.run):
         raise RuntimeError(UNLISTED.format(why='it did not answer within 2 minutes')) from None
     if listed.returncode != 0:
         raise RuntimeError(UNLISTED.format(why=f'occ user:list ended with error {listed.returncode}'))
-    names = account_names(neko_common.occ_json(listed.stdout))
+    answer = neko_common.occ_json(listed.stdout)
+    names = account_names(answer)
     if names is None:
         raise RuntimeError(UNLISTED.format(why='its answer was not a list of accounts'))
     # Every account gets its folder: one whose name Nextcloud itself would not accept is
@@ -272,7 +278,17 @@ def listed_accounts(base, run=subprocess.run):
                 why='it lists accounts whose names are not valid account names: ' + ', '.join(map(repr, odd))
             )
         )
+    if signed_in:
+        details = answer if isinstance(answer, dict) else dict(zip(names, answer))
+        return [name for name in names if has_signed_in(details[name])]
     return names
+
+
+def has_signed_in(details):
+    """Whether occ user:list --info says this account has signed in: its last_seen is a
+    date ("never" before the first sign-in; 1970-01-01 in older Nextclouds)."""
+    seen = details.get('last_seen') if isinstance(details, dict) else None
+    return isinstance(seen, str) and seen not in ('', 'never') and not seen.startswith('1970-01-01')
 
 
 def scan_errors(text):
@@ -298,8 +314,45 @@ def account_folders_given_back(base, files, log, run=subprocess.run):
     the folder there and its scan's Errors at 0. The number of accounts done; an error
     (naming the accounts left) otherwise, so the recovery note stays for the next run."""
     named = listed_accounts(base, run)
+    folders_made(base, files, named, run)
+    log(
+        f'Nextcloud: the folders of its {len(named)} account(s) were made on the new drive and its file list '
+        'refreshed, so uploads work again'
+    )
+    return len(named)
+
+
+def account_folders_missing(base, files, log, run=subprocess.run):
+    """The same for each account Nextcloud's database lists as signed in before whose
+    `files` folder is not on the drive at all: its database copy put back on a server
+    whose HDD is new (RECOVERY.md, "Nextcloud's database"), where the files folder was
+    never empty, so nothing was given back, and every upload of a restored account was
+    refused (1.0 round T1-R3). A folder that is there is never touched. An account that
+    never signed in is left alone: Nextcloud makes its folder, with its welcome files, at
+    the first sign-in. This runs on every setup run (an unattended upgrade too), so a
+    failure is said and setup goes on, never stopped or rolled back for it. The number
+    of folders made."""
+    try:
+        signed_in = listed_accounts(base, run, signed_in=True)
+        missing = [name for name in signed_in if not os.path.lexists(files / name / 'files')]
+        if missing:
+            folders_made(base, files, missing, run)
+    except RuntimeError as error:
+        log(f'Nextcloud: could not check that every account has its folder on the drive. {error}')
+        return 0
+    if missing:
+        log(
+            f'Nextcloud: {len(missing)} account(s) its database lists had no folder on the drive (a database '
+            'copy put back?): made and their file lists refreshed, so their uploads work'
+        )
+    return len(missing)
+
+
+def folders_made(base, files, names, run=subprocess.run):
+    """Each account's `files` folder made (Nextcloud's own, 755) and its file list
+    refreshed; an error naming the accounts left when one is not done."""
     left = []
-    for name in named:
+    for name in names:
         folder = safe_path(files / name / 'files')
         ensure_directory(folder, 0o755, WWW_DATA, WWW_DATA)
         if not folder.is_dir() or folder.is_symlink():
@@ -314,11 +367,16 @@ def account_folders_given_back(base, files, log, run=subprocess.run):
             + '; '.join(left)
             + '. Run  sudo bash install.sh  again: it tries them again'
         )
-    log(
-        f'Nextcloud: the folders of its {len(named)} account(s) were made on the new drive and its file list '
-        'refreshed, so uploads work again'
-    )
-    return len(named)
+
+
+def account_folders(base, config, folder, fresh, given_back, log):
+    """The accounts' folders after Nextcloud is up: all of them made again when the files
+    folder was given back; else, on a Nextcloud set up before, those its database lists
+    and the drive lacks."""
+    if given_back:
+        finish_files_folder(base, config, folder, log)
+    elif not fresh:
+        account_folders_missing(base, safe_path(cloud_files(config)), log)
 
 
 def scanned(base, name, run=subprocess.run):
@@ -455,10 +513,14 @@ def command(args):
 # the passwords only as options, so for the few seconds this install runs they are in
 # its process's arguments (inside the container, also seen by `ps` on this PC), as with
 # the image's own first start. It runs only when that first start gave up.
+# Each value is joined to its option (--admin-pass=…): occ reads a separate value that
+# starts with "-" as an option of its own, so a password "-…" (1 made-up one in 64, or
+# one typed) left Nextcloud uninstalled on every setup run (T1-R12). The image's own
+# first start passes them apart and fails on such a password; this install then runs.
 INSTALL = (
-    'php occ maintenance:install -n --admin-user "$NEXTCLOUD_ADMIN_USER" --admin-pass "$NEXTCLOUD_ADMIN_PASSWORD" '
-    '--database pgsql --database-name "$POSTGRES_DB" --database-user "$POSTGRES_USER" '
-    '--database-pass "$POSTGRES_PASSWORD" --database-host "$POSTGRES_HOST" && i=0 && '
+    'php occ maintenance:install -n --admin-user="$NEXTCLOUD_ADMIN_USER" --admin-pass="$NEXTCLOUD_ADMIN_PASSWORD" '
+    '--database=pgsql --database-name="$POSTGRES_DB" --database-user="$POSTGRES_USER" '
+    '--database-pass="$POSTGRES_PASSWORD" --database-host="$POSTGRES_HOST" && i=0 && '
     'for domain in $NEXTCLOUD_TRUSTED_DOMAINS; do '
     'php occ config:system:set trusted_domains "$i" --value="$domain" || exit 1; i=$((i+1)); done'
 )
@@ -596,7 +658,8 @@ EARLIER_DATA = (
     'Nextcloud is not set up yet, but {folder} already holds files (from another or an earlier Nextcloud, '
     'say). Setup never writes over them. To start a new, empty Nextcloud, move that folder away (sudo mv '
     '{folder} {folder}.before), run setup again, and copy your files into Nextcloud afterwards. To bring '
-    'back an earlier NekoServer Nextcloud instead, restore it from its backup (RECOVERY.md)'
+    'back this server\'s own Nextcloud after a new SSD instead, run  sudo bash install.sh  yourself: setup '
+    'offers it when this server\'s backup is on the HDD (RECOVERY.md, "The SSD or the HDD broke")'
 )
 
 
@@ -612,10 +675,11 @@ def start_cut_off_setup_again(ctx, data, partial):
     ctx.log('Nextcloud: finishing a setup that was interrupted')
 
 
-def first_install(ctx, opts, chosen, image, paths):
+def first_install(ctx, opts, chosen, image, paths, found=None):
     """A new Nextcloud's folders and its three setting files, compose.yaml last; never
     over data that is there already. `chosen`: the administrator's saved login, or None;
-    `paths`: (their folder, compose.yaml, .env, managed.json)."""
+    `paths`: (their folder, compose.yaml, .env, managed.json); `found`: what setup found of
+    a backup for the files folder (nextcloud_restore.offered), said with the refusal."""
     config = ctx.config
     data = Path(config['data_mount'])
     folder, manifest, env, managed = paths
@@ -625,7 +689,8 @@ def first_install(ctx, opts, chosen, image, paths):
     for existing in (data / HTML, data / POSTGRES, cloud_files(config)):
         safe_path(existing)
         if existing.exists() and any(existing.iterdir()):
-            raise RuntimeError(EARLIER_DATA.format(folder=existing))
+            said = f'. {found}' if found and existing == cloud_files(config) else ''
+            raise RuntimeError(EARLIER_DATA.format(folder=existing) + said)
     image = resolve_image(image)
     payload = json.dumps(model(config, image), indent=2) + '\n'
     for target, mode in (
@@ -695,6 +760,46 @@ def brought_up_to_date(ctx, owned, image, files):
         ctx.log('Nextcloud: its container definition was brought up to date by this release (settings unchanged)')
 
 
+def compose_base(manifest, env):
+    """Docker Compose for Nextcloud's project, with its settings files."""
+    base = [
+        'docker',
+        '--host',
+        'unix:///var/run/docker.sock',
+        'compose',
+        '-p',
+        'neko-nextcloud',
+        '-f',
+        str(manifest),
+        '--env-file',
+        str(env),
+    ]
+    return base + compose_image_override(manifest)
+
+
+def restore_pieces(ctx, opts):
+    """What bringing Nextcloud back from its backup needs of this step: its Compose
+    command, its status, and the check of the backup's settings against my-config.json.
+    The administrator's name setup made up (or "admin") gives way to the backed-up one, as
+    adopt_admin does; any other difference refuses the restore before anything changed."""
+    config = ctx.config
+
+    def settings_problem(owned):
+        installed = settings_of(owned)
+        wanted = settings(config, owned.get('image'))
+        named, admin = opts.get('admin_user', 'admin'), installed.get('admin_user')
+        if admin and named != admin and (named == 'admin' or GENERATED_NAME.fullmatch(named)):
+            wanted['admin_user'] = admin
+        return settings_changed(installed, wanted), wanted['admin_user']
+
+    def adopt(admin):
+        if opts.get('admin_user', 'admin') != admin:
+            opts['admin_user'] = admin
+            ctx.persist_config()
+
+    return SimpleNamespace(compose_base=compose_base, status=status, settings_problem=settings_problem, adopt=adopt)
+
+
 def run(ctx):
     opts = options(ctx.config)
     if not opts.get('enabled', True):
@@ -720,7 +825,12 @@ def run(ctx):
             raise RuntimeError('Complete the account_credentials prompts before Nextcloud setup')
         fresh = not manifest.exists()
         if fresh:
-            first_install(ctx, opts, chosen, image, (folder, manifest, env, managed))
+            # Only the SSD replaced: setup offers to bring this server's own Nextcloud back
+            # from its backup on the HDD (nextcloud_restore), else it installs a new one.
+            restored, found = nextcloud_restore.offered(ctx, restore_pieces(ctx, opts))
+            fresh = not restored
+            if fresh:
+                first_install(ctx, opts, chosen, image, (folder, manifest, env, managed), found)
         # An install already made whose files folder is gone (a new HDD): given back, and
         # its accounts' folders made again once Nextcloud answers; also when an earlier
         # setup gave it back and stopped before that (its note on the SSD).
@@ -731,24 +841,11 @@ def run(ctx):
         adopt_admin(opts, owned, chosen, ctx.persist_config, ctx.log)
         brought_up_to_date(ctx, owned, image, (manifest, managed))
         verify_storage(config)
-        base = [
-            'docker',
-            '--host',
-            'unix:///var/run/docker.sock',
-            'compose',
-            '-p',
-            'neko-nextcloud',
-            '-f',
-            str(manifest),
-            '--env-file',
-            str(env),
-        ]
-        base += compose_image_override(manifest)
+        base = compose_base(manifest, env)
         command(base + ['config', '-q'])
         compose_up(base, 'Nextcloud', ctx.log, 1800)
         finish_install(base, ctx.log)
-        if given_back:
-            finish_files_folder(base, config, folder, ctx.log)
+        account_folders(base, config, folder, fresh, given_back, ctx.log)
         if opts.get('image', 'auto') == 'auto':
             config['nextcloud']['image'] = image
             ctx.persist_config()

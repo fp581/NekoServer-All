@@ -56,9 +56,21 @@ impl Place {
 
 /// (files on the cards, files waiting for one): a file is on the cards when its newest
 /// version there has its size and dates, with a healthy copy. Nothing is read but the
-/// catalogue: the scan already has each file's size and dates.
+/// catalogue: the scan already has each file's size and dates. A file no longer on the
+/// server (deleted, or its drive lost) is on the cards too while a card holds it: after
+/// a dead HDD, the dashboard said "0 files on the cards" over cards that held them all.
 pub fn count(cat: &dyn Catalogue, cands: &[Candidate]) -> Result<(u64, u64)> {
-    let (mut on, mut waiting) = (0, 0);
+    let here: std::collections::HashSet<(&str, &str)> = cands
+        .iter()
+        .map(|c| (c.source.source_id.as_str(), c.path.as_str()))
+        .collect();
+    let gone = cat
+        .kept_files()
+        .map_err(super::card_error)?
+        .iter()
+        .filter(|(source, path)| !here.contains(&(source.as_str(), path.as_str())))
+        .count() as u64;
+    let (mut on, mut waiting) = (gone, 0);
     for c in cands {
         let version = cat
             .newest_version(&c.source.source_id, &c.path)

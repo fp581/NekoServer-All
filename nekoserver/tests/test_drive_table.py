@@ -177,11 +177,11 @@ class TableTests(DriveListCase):
         self.assertEqual(why[1], '')
         self.assertTrue(why[4].startswith('it is formatted exFAT, which Linux apps can'), why[4])
         self.assertEqual(
-            why[5], 'it is too small: the app SSD needs a drive of at least 22 GB (20 GB free once formatted)'
+            why[5], 'it is too small: the apps drive needs a drive of at least 22 GB (20 GB free once formatted)'
         )
         self.assertTrue(why[6].startswith('it has no filesystem yet. To use it, format it as ext4 yourself'), why[6])
         self.assertIn('sudo mkfs.ext4 /dev/sde  (this erases what is on it; setup never formats a drive)', why[6])
-        self.assertTrue(why[7].startswith('it is on the NAS, and the app SSD must be connected'))
+        self.assertTrue(why[7].startswith('it is on the NAS, and the apps drive must be connected'))
         self.assertIn('copy its files elsewhere first', why[9])
         # The drive just chosen for the apps may hold the media and backups too (0.50.0: one
         # drive works); it is never the offline backup as well.
@@ -189,7 +189,7 @@ class TableTests(DriveListCase):
         self.assertEqual(drive_table.verdict(table[1], 'media_hdd', config), '')
         self.assertTrue(drive_table.verdict(table[1], 'usb', config))
         self.assertEqual(drive_table.verdict(table[1], 'data_ssd', config), '')
-        self.assertEqual(drive_table.can_be(table[1], config), 'Chosen as the app SSD.')
+        self.assertEqual(drive_table.can_be(table[1], config), 'Chosen as the apps drive.')
 
     def test_a_drive_in_use_elsewhere_and_two_roles_on_one_disk_are_refused(self):
         inventory = copy.deepcopy(INVENTORY)
@@ -206,7 +206,8 @@ class TableTests(DriveListCase):
         )
         named['sda1']['mountpoint'] = None
         self.assertEqual(
-            drive_table.verdict(named['sda1'], 'data_ssd', config), 'it is on the same disk as the media HDD'
+            drive_table.verdict(named['sda1'], 'data_ssd', config),
+            'it is on the same disk as the media and backups drive',
         )
 
     def test_two_drives_of_one_model_and_size_are_told_apart(self):
@@ -235,8 +236,8 @@ class TableTests(DriveListCase):
         self.assertEqual((row['number'], row['name'], row['type']), (10, export, 'network folder (NFS)'))
         self.assertEqual(drive_table.brief(row), 'drive 10 (a folder the NAS shares (/volume1/media))')
         self.assertEqual(drive_table.details(row), 'Details: the NAS shares it at nas.lan:/volume1/media')
-        self.assertEqual(drive_table.can_be(row, config), 'Chosen as the media HDD.')
-        self.assertEqual(drive_table.verdict(row, 'usb', config), 'it is already the media HDD')
+        self.assertEqual(drive_table.can_be(row, config), 'Chosen as the media and backups drive.')
+        self.assertEqual(drive_table.verdict(row, 'usb', config), 'it is already the media and backups drive')
 
     def test_what_is_no_drive_is_left_out_and_a_disk_of_reserved_partitions_is_never_one_to_format(self):
         inventory = {
@@ -305,7 +306,9 @@ class QuestionTests(DriveListCase):
 
     def test_the_whole_conversation_is_the_golden_text(self):
         talk = Conversation(['5', '2', '3', '9', '4', '1', '1'])
-        talk.heading('A first run: the list, then the app SSD, the media HDD and the USB backup drive')
+        talk.heading(
+            'A first run: the list, then the apps drive, the media and backups drive and the offline backup drive'
+        )
         config = self.first_run(talk)
         photo_backup.select_external(config, INVENTORY, talk.ask, talk.out)
         self.assertEqual(config['storage']['data_ssd'], {'uuid': 'ssd-0001', 'fstype': 'ext4'})
@@ -342,13 +345,13 @@ class QuestionTests(DriveListCase):
         config = self.first_run(talk)
         said = [line for line in talk.lines if 'drive 2' in line.lower() or 'drive 5' in line.lower()]
         self.assertIn(
-            'Drive 5 (Cruzer Blade, 15 GB USB drive, named "stick") cannot be the app SSD: it is too small: '
-            'the app SSD needs a drive of at least 22 GB (20 GB free once formatted). Choose another one from the list.',
+            'Drive 5 (Cruzer Blade, 15 GB USB drive, named "stick") cannot be the apps drive: it is too small: '
+            'the apps drive needs a drive of at least 22 GB (20 GB free once formatted). Choose another one from the list.',
             said,
         )
         # The choice is said back in words; no name is typed (choosing changes nothing on a drive).
         self.assertIn(
-            'Drive 2 (Samsung SSD 870, 466 GB SSD, named "apps") is the app SSD. '
+            'Drive 2 (Samsung SSD 870, 466 GB SSD, named "apps") is the apps drive. '
             'Nothing on it is changed by choosing it.',
             said,
         )
@@ -359,13 +362,13 @@ class QuestionTests(DriveListCase):
         self.assertEqual(
             rerun.lines,
             [
-                'Last time you chose drive 2 (Samsung SSD 870, 466 GB SSD, named "apps") as the app SSD. '
+                'Last time you chose drive 2 (Samsung SSD 870, 466 GB SSD, named "apps") as the apps drive. '
                 'It is used again.',
-                'Last time you chose drive 3 (WDC WD20EZRZ, 1.8 TB HDD, named "media") as the media HDD. '
+                'Last time you chose drive 3 (WDC WD20EZRZ, 1.8 TB HDD, named "media") as the media and backups drive. '
                 'It is used again.',
             ],
         )
-        # A later error names it the same way (a disk on the NAS saved as the app SSD).
+        # A later error names it the same way (a disk on the NAS saved as the apps drive).
         nas = {**FOLDERS, 'storage': {'data_ssd': {'uuid': 'nas-0001', 'fstype': 'ext4'}}}
         with self.assertRaisesRegex(RuntimeError, r'^Drive 7 \(Synology LUN, 3\.6 TB network disk \(iSCSI\)'):
             storage.resolve_storage_identity(nas, INVENTORY, True, True, rerun.ask, rerun.out)
@@ -400,8 +403,8 @@ class QuestionTests(DriveListCase):
         self.assertEqual(config['storage']['data_ssd']['uuid'], 'ssd-0001')
         said = '\n'.join(talk.lines)
         self.assertIn('named "apps", about 1 % full  (recommended)', said)
-        self.assertIn('(the app SSD) (Enter for 2, the recommended one): []', said)
-        self.assertIn('(the media HDD) (Enter for 3, the recommended one): []', said)
+        self.assertIn('(the apps drive) (Enter for 2, the recommended one): []', said)
+        self.assertIn('(the media and backups drive) (Enter for 3, the recommended one): []', said)
         best = drive_table.recommended(self.table(), dict(FOLDERS))
         self.assertEqual({key: row['number'] for key, row in best.items()}, {'data_ssd': 2, 'media_hdd': 3, 'usb': 4})
         # Where no drive can have the role there is nothing to recommend, and Enter stops.
@@ -409,13 +412,15 @@ class QuestionTests(DriveListCase):
         table = self.table(inventory=bare)
         self.assertIsNone(drive_table.recommended(table, dict(FOLDERS))['data_ssd'])
         folders, enter = dict(FOLDERS), Conversation(['']).ask
-        with self.assertRaisesRegex(RuntimeError, 'No drive was chosen for the app SSD. Run  sudo bash install.sh'):
+        with self.assertRaisesRegex(RuntimeError, 'No drive was chosen for the apps drive. Run  sudo bash install.sh'):
             drive_table.ask(table, 'data_ssd', folders, enter, lambda line: None)
         config = {**FOLDERS, 'storage': {'data_ssd': {'uuid': 'ssd-0001'}, 'media_hdd': {'uuid': 'hdd-0001'}}}
         # The offline backup is optional: Enter skips it, whatever is recommended.
         talk = Conversation([''])
         self.assertIsNone(photo_backup.select_external(config, INVENTORY, talk.ask, talk.out))
-        self.assertTrue(talk.lines[-1].endswith('(the USB backup drive) (Enter to skip for now): []'), talk.lines[-1])
+        self.assertTrue(
+            talk.lines[-1].endswith('(the offline backup drive) (Enter to skip for now): []'), talk.lines[-1]
+        )
 
 
 class WindowFormTests(DriveListCase):
@@ -428,7 +433,7 @@ class WindowFormTests(DriveListCase):
         storage.resolve_storage_identity(config, INVENTORY, True, True, talk.ask, talk.out)
         choose = talk.pages[0]
         self.assertEqual((choose['form'], choose['asking'], choose['skippable']), ('drives', 'choice', False))
-        self.assertEqual(choose['what'], 'Choose the drive for your apps, photos and music (the app SSD).')
+        self.assertEqual(choose['what'], 'Choose the drive for your apps, photos and music (the apps drive).')
         self.assertTrue(choose['needs'].startswith('It needs at least 20 GB free'))
         self.assertEqual(choose['names'], drive_table.NAMES_CHANGE)
         self.assertEqual(len(choose['rows']), 9)
@@ -451,7 +456,7 @@ class WindowFormTests(DriveListCase):
         self.assertNotIn('confirm', choose)
         # The media HDD's page: the drive just chosen says its role, and may hold both.
         second = talk.pages[1]['rows'][1]
-        self.assertEqual((second['role'], second['why']), ('Chosen as the app SSD', ''))
+        self.assertEqual((second['role'], second['why']), ('Chosen as the apps drive', ''))
 
     def test_the_usb_drive_page_can_be_skipped(self):
         talk = Conversation([''])
@@ -507,15 +512,15 @@ class StoragePageTests(DriveListCase):
             self.assertEqual(
                 [(role['key'], role['title'], role['optional']) for role in page['roles']],
                 [
-                    ('data_ssd', 'NekoServer and your apps', False),
-                    ('media_hdd', 'Backups', False),
-                    ('usb', 'Offline backup on a removable drive (optional)', True),
+                    ('data_ssd', 'Apps drive', False),
+                    ('media_hdd', 'Media and backups drive', False),
+                    ('usb', 'Offline backup drive (optional)', True),
                 ],
             )
             # Each role's drives with why one cannot be it: the capacity is said in numbers.
             ssd = page['roles'][0]
             self.assertTrue(ssd['needs'].startswith('It needs at least 20 GB free, so a drive of 22 GB or more'))
-            self.assertIn('it is too small: the app SSD needs a drive of at least 22 GB', ssd['rows'][4]['why'])
+            self.assertIn('it is too small: the apps drive needs a drive of at least 22 GB', ssd['rows'][4]['why'])
             self.assertEqual(ssd['rows'][1]['why'], '')
             self.assertEqual([place['key'] for place in page['places']], ['photos', 'movies', 'music', 'cloud'])
             # Backups are a line of their own; files kept beside their backup are told so.
@@ -525,14 +530,12 @@ class StoragePageTests(DriveListCase):
             self.assertEqual(
                 page['places'][0]['options'][:2],
                 [
-                    ['media', 'Recommended: same drive as the backups'],
-                    ['ssd', 'Same drive as NekoServer and your apps'],
+                    ['media', 'Recommended: media and backups drive'],
+                    ['ssd', 'Apps drive'],
                 ],
             )
             self.assertEqual(page['places'][0]['recommended'], 'media')
-            self.assertEqual(
-                storage.place_options('ssd', [])[0], ['ssd', 'Recommended: same drive as NekoServer and your apps']
-            )
+            self.assertEqual(storage.place_options('ssd', [])[0], ['ssd', 'Recommended: apps drive'])
             # The photos always have a copy there; the music only where its backup is switched on.
             music_backup = ctx.config.get('music', {}).get('backup_enabled') is True
             self.assertEqual(
@@ -561,7 +564,7 @@ class StoragePageTests(DriveListCase):
                 storage.asked_location(ctx, "Immich's photos", 'ssd', room, False, never, key='photos'), 'media'
             )
             # The page offers drives 2 and 3 as "a drive of their own" too (the roles are
-            # chosen on the same page). Picked in the window once they became the app SSD
+            # chosen on the same page). Picked in the window once they became the apps drive
             # and the backups' drive, they were refused with the terminal's "Type a number
             # from 1 to 3" (seen in the Ubuntu lab): they are those two drives.
             setup_progress._page['answers'].update({'photos': 'drive:3', 'movies': 'drive:2', 'music': 'drive:8'})
@@ -574,7 +577,7 @@ class StoragePageTests(DriveListCase):
             self.assertEqual(ctx.config['photos']['external_backup_uuid'], 'USB0-0001')
         self.assertIsNone(setup_progress.page_shown())
         self.assertIn(
-            'Drive 2 (Samsung SSD 870, 466 GB SSD, named "apps") is the app SSD. '
+            'Drive 2 (Samsung SSD 870, 466 GB SSD, named "apps") is the apps drive. '
             'Nothing on it is changed by choosing it.',
             said,
         )

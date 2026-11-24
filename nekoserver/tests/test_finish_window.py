@@ -63,7 +63,7 @@ class PageTests(unittest.TestCase):
             self.page = finish_page.page(CONFIG, SUMMARY, pin_set=True)
 
     def test_the_heading_says_the_real_outcome(self):
-        self.assertEqual(self.page['heading'], 'Your apps are installed. Some setup is still waiting for you.')
+        self.assertEqual(self.page['heading'], 'Setup is incomplete. Review the remaining steps below.')
         ready = {**SUMMARY, 'outcome': 'ready', 'pending': []}
         with mock.patch.object(wizard, 'dashboard_port', return_value=8787):
             self.assertEqual(finish_page.page(CONFIG, ready)['heading'], 'NekoServer is ready.')
@@ -74,21 +74,23 @@ class PageTests(unittest.TestCase):
         self.assertEqual(jellyfin['url'], 'https://neko.example.ts.net:8442')
         self.assertEqual(
             [(s['label'], s['state'], s['words']) for s in jellyfin['states']],
-            [('Installed', 'done', 'done'), ('Signed in', 'done', 'done'), ('Opens', 'done', 'done')],
+            [('Installed', 'done', 'done'), ('Login verified', 'done', 'done'), ('Opens', 'done', 'done')],
         )
         self.assertEqual(jellyfin['login'], 'jellyfin')  # what Show login fetches
         self.assertEqual(jellyfin['test']['title'], 'Play a video in Jellyfin')
         self.assertEqual(jellyfin['test']['words'], 'not tried yet (nobody has tried this yet)')
         # An app without a saved login or a test has no such button; its address at home is shown.
         self.assertEqual((prowlarr['url'], prowlarr['login'], prowlarr['test']), ('http://127.0.0.1:9696', '', None))
-        self.assertEqual(prowlarr['states'][1]['words'], 'needs fixing (the app did not take the saved login)')
+        self.assertEqual(
+            prowlarr['states'][1]['words'], "needs fixing (NekoServer couldn't sign in with the saved credentials)"
+        )
 
     def test_what_waits_is_named_and_the_rest_is_in_plain_words(self):
         self.assertEqual(
             self.page['waiting'],
             [
                 wizard.title('gateway_tailnet') + ': waiting (waiting for something only you can do)',
-                'Prowlarr: needs fixing (the app did not take the saved login)',
+                "Prowlarr: needs fixing (NekoServer couldn't sign in with the saved credentials)",
             ],
         )
         self.assertEqual([test['id'] for test in self.page['tests']], ['tv_picture'])  # no app's card has it

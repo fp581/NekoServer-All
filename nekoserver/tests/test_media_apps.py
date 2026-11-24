@@ -190,7 +190,7 @@ class QuestionTests(unittest.TestCase):
     def test_the_drives_are_described_by_what_goes_on_them(self):
         self.assertIn('movies', storage.drive_label(settings(), 'media_hdd', storage.DRIVES[1][1]))
         hdd = storage.drive_label(settings(False), 'media_hdd', storage.DRIVES[1][1])
-        self.assertEqual(hdd, 'the HDD (your Nextcloud files and the backups)')
+        self.assertEqual(hdd, 'the media and backups drive (your Nextcloud files and the backups)')
         self.assertNotIn('photos', storage.drive_label(settings(False), 'data_ssd', storage.DRIVES[0][1]))
 
     def test_only_nextclouds_place_is_asked_without_the_media_apps(self):
@@ -348,15 +348,41 @@ class StepTests(unittest.TestCase):
                 self.assertIn(words, ctx.logs)
 
     def test_the_media_schedules_are_retired(self):
-        # The hourly app check, the music backup and the nightly app backup.
-        for step, unit in (
-            (media_monitor, 'nekoserver-media-health.timer'),
-            (music_backup, 'nekoserver-music-backup.timer'),
-            (app_backup, 'nekoserver-app-backup.timer'),
+        # The hourly app check, the music backup, and the nightly app backup with Nextcloud
+        # switched off too.
+        no_cloud = settings(False)
+        no_cloud['nextcloud']['enabled'] = False
+        for step, unit, config in (
+            (media_monitor, 'nekoserver-media-health.timer', settings(False)),
+            (music_backup, 'nekoserver-music-backup.timer', settings(False)),
+            (app_backup, 'nekoserver-app-backup.timer', no_cloud),
         ):
             with self.subTest(step=step.__name__), mock.patch('modules._schedules.retire') as retire:
-                step.run(context(settings(False)))
+                step.run(context(config))
                 self.assertIn(unit, [Path(p).name for p in retire.call_args.args[0]])
+
+    def test_the_nightly_backup_stays_for_nextcloud(self):
+        """1.0.0 (C-01): Nextcloud is saved to the HDD each night, so the nightly job stays
+        on without the media apps, and is told to back it up."""
+        config = settings(False)
+
+        class Installing(Exception):
+            pass
+
+        ctx = context(config)
+        with (
+            mock.patch('modules._schedules.retire') as retire,
+            mock.patch.object(app_backup, 'verify_storage', side_effect=Installing),
+        ):
+            with self.assertRaises(Installing):
+                app_backup.run(ctx)
+        retire.assert_not_called()
+        with mock.patch.object(app_backup.native_runtime, 'storage_config', return_value={}):
+            options = app_backup.guard_config(config)
+            self.assertEqual(options['media'], {'services': []})
+            self.assertIs(options['nextcloud'], True)
+            config['nextcloud']['enabled'] = False
+            self.assertIs(app_backup.guard_config(config)['nextcloud'], False)
 
     def test_no_logins_are_made_for_the_apps_left_out(self):
         plan = ['media', 'photos', 'nextcloud']
@@ -443,7 +469,7 @@ class StepTests(unittest.TestCase):
 
     def test_the_recovery_menu_offers_the_media_restores_only_with_a_backup_of_theirs(self):
         with tempfile.TemporaryDirectory() as hdd:
-            config = settings(False)
+            config = settings(False, folder=str(Path(hdd) / 'no-ssd'))  # not the real /srv/nekoserver
             config['media_mount'] = hdd
             keys = [key for key, _ in recovery_wizard.menu(config)]
             self.assertNotIn('photos', keys)
@@ -454,7 +480,12 @@ class StepTests(unittest.TestCase):
         # Everything but the music backup's line, which is there only with such a backup,
         # and the backup cards' line, there only with backup cards.
         everything = [item for item in recovery_wizard.MENU if item[0] not in ('music', 'cards')]
-        self.assertEqual(recovery_wizard.menu(settings()), everything)
+        # Drives that are not there, never the real ones of the PC the tests run on (with
+        # NekoServer installed, its /srv/nekoserver/cards adds the cards' line).
+        with tempfile.TemporaryDirectory() as folder:
+            config = settings(folder=str(Path(folder) / 'ssd'))
+            config['media_mount'] = str(Path(folder) / 'hdd')
+            self.assertEqual(recovery_wizard.menu(config), everything)
 
 
 class RuntimeHandOffTests(unittest.TestCase):

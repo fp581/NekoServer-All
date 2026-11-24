@@ -2868,7 +2868,7 @@ fn wants_cloud_database(cloud_selected: bool, data: &Path) -> bool {
     cloud_selected && data.join("compose/nextcloud/compose.yaml").is_file()
 }
 /// The Nextcloud version installed, from its own version.php ("31.0.5"), if readable.
-fn nextcloud_version(data: &Path) -> Option<String> {
+pub(crate) fn nextcloud_version(data: &Path) -> Option<String> {
     let text = common::bytes(&data.join("appdata/nextcloud/html/version.php"), 64000).ok()?;
     let found = regex::Regex::new(r"\$OC_VersionString\s*=\s*'([0-9]+\.[0-9]+\.[0-9]+)'")
         .unwrap()
@@ -3933,7 +3933,7 @@ pub fn make_room(root: &Path, needed: u128, short: &dyn Fn(u128) -> String) -> R
 }
 /// The room removing `folder` gives back: what its files take on the drive. A part that
 /// can't be read counts as nothing, so the room is never overestimated.
-fn tree_bytes(folder: &Path) -> u128 {
+pub(crate) fn tree_bytes(folder: &Path) -> u128 {
     let Ok(entries) = fs::read_dir(folder) else {
         return 0;
     };
@@ -4511,7 +4511,7 @@ fn dump_failed(app: &str, why: &str) -> String {
 }
 /// A logical copy (pg_dump) of `app`'s database, from the `database` service of its
 /// Compose project neko-<app>, as `<dest>/<app>-<UTC stamp>.sql`.
-fn database_of(
+pub(crate) fn database_of(
     app: &str,
     compose: &Path,
     env: &Path,
@@ -4815,7 +4815,7 @@ pub(crate) struct Paused {
     holds: &'static str,
 }
 impl Paused {
-    fn journal(&self) -> &'static str {
+    pub(crate) fn journal(&self) -> &'static str {
         common::journal(self.job)
     }
     fn resume(&self) -> &'static str {
@@ -4943,7 +4943,11 @@ pub(crate) fn resume_immich(ctl: &dyn Containers, journal: &Path) -> Result<()> 
 }
 /// Stop the app's running writers, each written down in `journal` first. Returns the
 /// containers stopped (none when the app was not running: it is not started later either).
-fn pause_app(app: &Paused, ctl: &dyn Containers, journal: &Path) -> Result<Vec<(String, String)>> {
+pub(crate) fn pause_app(
+    app: &Paused,
+    ctl: &dyn Containers,
+    journal: &Path,
+) -> Result<Vec<(String, String)>> {
     let writers = ctl.running_writers()?;
     if writers.is_empty() {
         return Ok(writers);
@@ -4977,7 +4981,7 @@ fn pause_app(app: &Paused, ctl: &dyn Containers, journal: &Path) -> Result<Vec<(
 }
 /// Start what `journal` names again, then remove it. Nothing to do without one. A
 /// container that would not start keeps the journal (the next try starts it).
-fn resume_app(app: &Paused, ctl: &dyn Containers, journal: &Path) -> Result<()> {
+pub(crate) fn resume_app(app: &Paused, ctl: &dyn Containers, journal: &Path) -> Result<()> {
     if !journal.exists() {
         return Ok(());
     }
@@ -5009,7 +5013,7 @@ fn resume_app(app: &Paused, ctl: &dyn Containers, journal: &Path) -> Result<()> 
     }
     if let Some(at) = saved["stopped_at"].as_f64() {
         println!(
-            "{}: started again; it was paused for {} for its weekly backup",
+            "{}: started again; it was paused for {} for its backup",
             app.name,
             common::plural((common::now() - at).max(0.0).round(), "second", "seconds")
         );
@@ -5017,7 +5021,7 @@ fn resume_app(app: &Paused, ctl: &dyn Containers, journal: &Path) -> Result<()> 
     finish_journal(journal)
 }
 /// What the pause says it stopped.
-fn say_paused(app: &Paused, stopped: &[(String, String)]) {
+pub(crate) fn say_paused(app: &Paused, stopped: &[(String, String)]) {
     if stopped.is_empty() {
         println!(
             "{}: not running, so nothing was paused (and it is not started)",
@@ -5124,6 +5128,15 @@ pub fn cloud_resume(a: &Args) -> Result<()> {
 /// Starts `app` again as its journal says, with the real Docker.
 fn resume_in_docker(app: &'static Paused) -> Result<()> {
     resume_app(app, &AppDocker(app), Path::new(app.journal()))
+}
+/// Nextcloud started again from its journal, by a caller that already holds the jobs'
+/// lock (the nightly app backup's resume). Nothing to do without a journal.
+pub(crate) fn resume_cloud_held(cfg: &Value) -> Result<()> {
+    if !Path::new(NEXTCLOUD.journal()).exists() {
+        return Ok(());
+    }
+    live_files_drive_present(&NEXTCLOUD, cfg)?;
+    resume_in_docker(&NEXTCLOUD)
 }
 fn resume_paused(app: &'static Paused, a: &Args) -> Result<()> {
     if !Path::new(app.journal()).exists() {
@@ -5281,7 +5294,7 @@ fn joined(problems: impl Iterator<Item = String>) -> Option<String> {
 /// database copy, a source that could not be copied, the password list. The dashboard
 /// shows each one (collect::partial_reason); it once missed the password list's and said
 /// only "Incomplete; see the job's report".
-pub(crate) const INCOMPLETE_PARTS: [&str; 3] = ["database", "source", "passwords"];
+pub(crate) const INCOMPLETE_PARTS: [&str; 4] = ["database", "source", "passwords", "app_settings"];
 /// The files part of an incomplete report when no file was left out.
 fn none_left_out() -> Value {
     json!({"in_use":0,"unsupported_names":0,"files":[]})
@@ -5315,14 +5328,21 @@ pub(crate) fn incomplete(
     database: Option<String>,
     source: Option<String>,
     passwords: Option<String>,
+    app_settings: Option<String>,
 ) -> Option<Value> {
-    if files.is_none() && database.is_none() && source.is_none() && passwords.is_none() {
+    if files.is_none()
+        && database.is_none()
+        && source.is_none()
+        && passwords.is_none()
+        && app_settings.is_none()
+    {
         return None;
     }
     let mut out = files.unwrap_or_else(none_left_out);
-    for (key, problem) in INCOMPLETE_PARTS
-        .into_iter()
-        .zip([database, source, passwords])
+    for (key, problem) in
+        INCOMPLETE_PARTS
+            .into_iter()
+            .zip([database, source, passwords, app_settings])
     {
         if let Some(problem) = problem {
             out[key] = json!(problem);
@@ -5891,6 +5911,23 @@ fn copy_onto_usb(run: &UsbRun) -> Result<Option<Value>> {
         ],
         dest,
     )?;
+    run.still()?;
+    // The apps' own settings last: the photos and the other backups come first when the
+    // drive is short of room. A copy that fails makes the backup incomplete, it does not
+    // stop the checks below.
+    common::stage("copying the app settings to the USB drive");
+    let app_settings_problem = match crate::usb_app_settings::copy_newest(
+        &run.media,
+        dest,
+        Path::new(crate::maintenance::SECRETS_KEY_DIR),
+        &run.data.join("backups/maintenance-work"),
+    ) {
+        Ok(problem) => problem,
+        Err(e) => Some(format!(
+            "the app settings were not copied to the USB drive ({e})"
+        )),
+    };
+    run.still()?;
     validate_external(dest, &run.uuid)?;
     let cloud_copy = cloud.copy;
     if let Some(photos) = &photos {
@@ -5948,6 +5985,7 @@ fn copy_onto_usb(run: &UsbRun) -> Result<Option<Value>> {
         database_problem,
         source_problem,
         passwords_problem,
+        app_settings_problem,
     ))
 }
 /// What the Nextcloud part of the USB copy did: its files' copy, and what makes the
@@ -6551,8 +6589,8 @@ mod tests {
     }
     #[test]
     fn a_missing_nextcloud_folder_makes_the_backup_incomplete() {
-        assert!(incomplete(None, None, None, None).is_none());
-        let partial = incomplete(None, None, Some(CLOUD_MISSING.into()), None).unwrap();
+        assert!(incomplete(None, None, None, None, None).is_none());
+        let partial = incomplete(None, None, Some(CLOUD_MISSING.into()), None, None).unwrap();
         assert_eq!(partial["source"], CLOUD_MISSING);
         assert_eq!(partial["reason"], "The USB backup is incomplete");
     }
@@ -7065,9 +7103,9 @@ mod tests {
             problem.contains("no record of its Immich version"),
             "{problem}"
         );
-        let report = incomplete(None, Some(problem), None, None).unwrap();
+        let report = incomplete(None, Some(problem), None, None, None).unwrap();
         assert!(report["database"].as_str().unwrap().contains("no record"));
-        assert_eq!(incomplete(None, None, None, None), None);
+        assert_eq!(incomplete(None, None, None, None, None), None);
         let _ = fs::remove_dir_all(root);
     }
     #[test]
@@ -7240,10 +7278,18 @@ mod tests {
                 let body = &source[source.find(entry).unwrap()..];
                 let body = &body[..body.find("\n}\n").unwrap()];
                 let checked = body.find("backup::coordinate(").expect(file);
-                let resumed = body.find("resume()?").expect(file);
+                let resumed = body.find("resume()").expect(file);
                 assert!(checked < resumed, "{file} {entry}");
             }
         }
+        // Nextcloud, paused by the nightly backup (1.0.0, C-01), is started again under the
+        // same lock, and an app the resume could not start still fails the resume.
+        let source = include_str!("app_snapshot.rs");
+        let body = &source[source.find("pub fn resume_command(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let checked = body.find("backup::coordinate(").unwrap();
+        assert!(checked < body.find("backup::resume_cloud_held(").unwrap());
+        assert!(body.contains("common::first_error(apps, cloud)?;"));
     }
     #[test]
     fn a_clock_jump_never_deletes_the_copy_just_made_or_hides_a_stale_one() {
@@ -8814,7 +8860,7 @@ mod tests {
         fs::create_dir_all(cloud.join("files_encryption/OC_DEFAULT_MODULE")).unwrap();
         assert!(cloud_encrypted(&cloud));
         // The job's report says so, in the words the dashboard shows.
-        let report = incomplete(None, None, Some(CLOUD_ENCRYPTED.to_string()), None).unwrap();
+        let report = incomplete(None, None, Some(CLOUD_ENCRYPTED.to_string()), None, None).unwrap();
         assert_eq!(report["reason"], "The USB backup is incomplete");
         assert!(report["source"]
             .as_str()

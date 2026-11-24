@@ -372,6 +372,15 @@ class DashboardPageTests(unittest.TestCase):
         # The same state, the same label and the same next step: only the voice differs.
         self.assertEqual((cat[0], cat[3], cat[4]), (plain[0], plain[3], plain[4]))
 
+    def test_the_usb_copy_says_the_app_settings_come_back_too(self):
+        """1.0.0 (T1-R4): the weekly USB copy carries the newest app settings; its card on
+        the Backups page says what the USB drive brings back after losing both drives."""
+        usb, nightly = page(('backupHolds', {'id': 'external'}), ('backupHolds', {'id': 'applications'}))
+        self.assertIn('the newest app settings', usb)
+        self.assertIn('the list of app passwords', usb)
+        self.assertIn('open with the backup password', usb)
+        self.assertEqual(nightly, '')
+
     def test_once_backups_have_run_the_one_still_to_run_is_no_first_run(self):
         """Seen on the phone after an upgrade: five backups had passed and only the monthly
         check was still to come, yet the Backups tile said "First run Tue, Dec 1"."""
@@ -867,6 +876,18 @@ class CatCompanionTests(unittest.TestCase):
         self.assertEqual([before, started, newer, said], [False, True, False, True])
         source = (ROOT / 'dashboard/app.js').read_text()
         self.assertIn('if (upgradeAtWork(r, s, state.upgradeAsked))', source)
+
+    def test_the_nekoserver_tab_shows_the_channel_and_stable_when_none_is_read(self):
+        # 1.0.0: "stable" is the default channel; a reading with none says so, not "beta".
+        def reading(release):
+            return status(nekoserver_release=release, backups=[])
+
+        beta, unread = page(
+            ('nekoserverWords', reading({'channel': 'beta', 'checked_at': None})),
+            ('nekoserverWords', reading({})),
+        )
+        self.assertIn('Channel: beta', beta)
+        self.assertIn('Channel: stable', unread)
 
     def test_each_cat_has_its_animation_and_the_page_serves_every_one(self):
         files = page(

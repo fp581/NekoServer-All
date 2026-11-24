@@ -22,13 +22,13 @@ Setup's first page asks one thing: *What would you like this server to do?* Each
 | 🐈 **Ask Neko** | A local AI assistant in the dashboard (off unless you switch it on) |
 | 💾 **Backup cards** | A copy of your photos and Nextcloud files on SD cards or USB sticks you keep somewhere else, filled a little more each night one is plugged in; each card can be read on any Linux computer with nothing installed (off unless you switch it on) |
 
-Always set up, whatever you choose: the **dashboard** (with a PIN, in two themes: Moonlit Neko with its cat, or a quiet Professional one, each light or dark), **backups** with a monthly checkup, **private access from your own devices** through Tailscale, and **shared folders** on your home network.
+Always set up, whatever you choose: the **dashboard** (with a PIN, in two themes: Moonlit Neko with its cat, or a quiet Professional one, each light or dark), **backups**, weekly app updates and a monthly backup check, **private access from your own devices** through Tailscale, and **shared folders** on your home network when there is something to share (photos, films and shows, or music).
 
 Any combination works, including none of the apps. Switching something off later stops it and keeps its data.
 
 ## What you need
 
-- A 64-bit PC with **Arch Linux, Nyarch, Debian 12+, Ubuntu 24.04+, Fedora 42+, RHEL 10+ or openSUSE Leap 16+ / Tumbleweed** (also Rocky Linux, AlmaLinux, CentOS Stream 10+, and systems built on Arch, Debian or Ubuntu, such as Linux Mint). Fedora, RHEL and openSUSE support is new and was tried only in a test setup without SELinux. NekoServer has not been proven on many real installs yet, so try it on a spare PC or a virtual machine first.
+- A 64-bit Intel or AMD PC (x86_64; a Raspberry Pi or another ARM board will not do) with **Arch Linux, Nyarch, Debian 12+, Ubuntu 24.04+, Fedora 42+, RHEL 10+ or openSUSE Leap 16+ / Tumbleweed** (also Rocky Linux, AlmaLinux, CentOS Stream 10+, and systems built on Arch, Debian or Ubuntu, such as Linux Mint). Fedora, RHEL and openSUSE support is new and was tried only in a test setup without SELinux. NekoServer has not been proven on many real installs yet, so try it on a spare PC or a virtual machine first.
 - **Somewhere to keep things. One drive is enough.** Setup shows every drive connected to the PC and you choose, line by line, where the apps, your media and the backups go:
   - One drive can hold everything: a drive of its own, or the disk Linux runs from (about 70 GB free). Setup says what that means before you choose it: if that one drive fails, your files and their backups are lost together.
   - With more drives, put the apps on the fastest and the media and backups on the biggest. Immich's photos, the films and shows, the music and Nextcloud's files can each be kept on a drive of their own. The apps themselves are installed together, on one drive.
@@ -40,7 +40,11 @@ How much room each line needs is shown on the storage page, for your own choices
 
 ## Install
 
-In a terminal (Ctrl+Alt+T on most desktops):
+Open a terminal (Ctrl+Alt+T on most desktops).
+
+**Does `sudo` say `command not found`, or that you are `not in the sudoers file`?** Debian does this when a root password was set during its installation. Become root with `su -` (it asks for that root password), then run `apt install sudo` and `usermod -aG sudo yourname` (your own login name), type `exit`, log out, log in again, and go on below. On Arch, also as root: `pacman -S sudo`, `usermod -aG wheel yourname` and `echo '%wheel ALL=(ALL:ALL) ALL' > /etc/sudoers.d/wheel`, then `exit`, log out and log in again. On another Linux, install sudo with its package manager and let your account use it.
+
+Then run:
 
 ```bash
 git clone https://github.com/fp581/NekoServer-All.git
@@ -52,7 +56,7 @@ sudo bash install.sh
 
 On a PC with a desktop a **setup window** opens in your browser beside the terminal. Both show the same pages; answer in whichever you like. The walk through every page is in **[nekoserver/GUIDED-SETUP.md](nekoserver/GUIDED-SETUP.md)**.
 
-To install one exact release instead of the newest, name its tag when you clone, for example `git clone --branch v0.52.3-beta https://github.com/fp581/NekoServer-All.git`.
+To install one exact release instead of the newest, name its tag when you clone, for example `git clone --branch v1.0.0 https://github.com/fp581/NekoServer-All.git`.
 
 ## What setup looks like
 
@@ -77,7 +81,7 @@ Without a desktop, the same pages are asked in the terminal:
 5. **Your app accounts**: strong passwords made for you (Enter takes this), or your own logins, on one page, with the dashboard PIN and the shared folders' password. **Show login** shows any of them later, in the window and in the terminal.
 6. **Review and install**: one page lists everything that will happen, and one button starts it.
 
-Then setup works on its own. After the approval only these stop it: signing in to Tailscale, a drive that is short of room, choosing the download sources once Prowlarr runs (the recommended ones are ticked, so Continue alone takes them; Torrentio is in the list too, not ticked, and finds only what Sonarr and Radarr search for), the phone page, and, on a first install, choosing a backup password (typed twice) for the backup of your app passwords. The alerts and outage addresses, if you switched those on, are asked when setup reaches them. If a step does not finish it says why, what usually fixes it, and offers **Retry this step**.
+Then setup works on its own. After the approval only these stop it: signing in to Tailscale, a drive that is short of room, choosing the download sources once Prowlarr runs (the recommended ones are ticked, so Continue alone takes them; Torrentio is in the list too, not ticked, and finds only what Sonarr and Radarr search for), the phone page, Ask Neko's model if you switched it on, and, on a first install, choosing a password to encrypt your saved app logins (entered twice). The alerts and outage addresses, if you switched those on, are asked when setup reaches them. If a step does not finish it says why, what usually fixes it, and offers **Retry this step**.
 
 Afterwards one page helps you **connect your phone**, and the last page says what is ready, what a program checked, what you tried yourself and what is still waiting for you.
 
@@ -143,7 +147,7 @@ An optional AI assistant on the dashboard. It explains what the dashboard shows 
 
 Each release on GitHub is one of two kinds, and its tag says which:
 
-- **Stable**, tagged `vX.Y.Z` (for example `v1.0.0`). Not yet: every NekoServer release so far is a beta.
+- **Stable**, tagged `vX.Y.Z` (for example `v1.0.0`, the first stable release).
 - **Beta**, tagged `vX.Y.Z-beta` (for example `v0.52.3-beta`; `vX.Y.ZBeta` counts as a beta too). It is marked **Pre-release** on GitHub, so GitHub's "Latest" release is never a beta.
 
 A check on GitHub (the "Release channel" job) marks each new release as its tag says, and fails on a tag that is neither. `git pull` follows the `main` branch, whatever the tags say.

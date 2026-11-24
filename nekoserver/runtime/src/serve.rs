@@ -217,6 +217,59 @@ fn reply_error(stream: &mut TcpStream, code: &str, head: bool) {
     let (status, body) = error_body(code);
     reply(stream, status, &body, "application/json", head);
 }
+/// At most this much of a refused request is read and dropped after the answer, for at
+/// most this long, by at most DRAINERS threads at once.
+const UNREAD_BYTES: usize = 256 * 1024;
+const UNREAD_TIME: Duration = Duration::from_secs(2);
+const DRAINERS: usize = 8;
+static DRAINING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// A refusal answered before the request was read whole (a body over MAX_BODY: a long
+/// log pasted into Ask Neko). Closed with part of the request unread, the connection was
+/// reset, and the reset threw away the part of the answer not sent yet: the page said
+/// "Can't reach the server" instead of the refusal. So the answer is ended first (all of it
+/// is sent, then the end), and what the client still sends is read and dropped before the
+/// connection is closed. That is done off the workers, by a thread of its own (at most
+/// DRAINERS of them; with all busy it is closed at once, as before): a client that sends a
+/// head and then nothing must never keep a worker (deep check 238).
+fn refuse_unread(stream: &mut TcpStream, code: &str, head: bool) {
+    use std::sync::atomic::Ordering;
+    reply_error(stream, code, head);
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    if DRAINING.fetch_add(1, Ordering::SeqCst) >= DRAINERS {
+        DRAINING.fetch_sub(1, Ordering::SeqCst);
+        return;
+    }
+    let started = stream.try_clone().ok().and_then(|copy| {
+        thread::Builder::new()
+            .spawn(move || {
+                drain(copy);
+                DRAINING.fetch_sub(1, Ordering::SeqCst);
+            })
+            .ok()
+    });
+    if started.is_none() {
+        DRAINING.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+/// What the client still sends, read and dropped within UNREAD_BYTES and UNREAD_TIME.
+fn drain(mut stream: TcpStream) {
+    let until = Instant::now() + UNREAD_TIME;
+    let mut left = UNREAD_BYTES;
+    let mut chunk = [0u8; 4096];
+    while left > 0 {
+        let Some(wait) = until
+            .checked_duration_since(Instant::now())
+            .filter(|w| !w.is_zero())
+        else {
+            break;
+        };
+        let _ = stream.set_read_timeout(Some(wait));
+        match stream.read(&mut chunk[..left.min(4096)]) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => left -= n,
+        }
+    }
+}
 /// The dashboard's private Tailscale address (Tailscale Serve, never Funnel), as
 /// `https://<public>:PUBLIC_PORT`. Tailscale proxies it to this loopback server.
 pub const PUBLIC_PORT: u16 = 8448;
@@ -688,11 +741,11 @@ fn handle(mut stream: TcpStream, server: &Server, accepted: Instant, first: Vec<
         return;
     }
     let Some(length) = body_length(&cl, post) else {
-        reply_error(&mut stream, "E42", head);
+        refuse_unread(&mut stream, "E42", head);
         return;
     };
     if !values("transfer-encoding").is_empty() {
-        reply_error(&mut stream, "E42", head);
+        refuse_unread(&mut stream, "E42", head);
         return;
     }
     let path = req.path.unwrap_or("").split('?').next().unwrap_or("");
@@ -1381,6 +1434,54 @@ mod tests {
     /// they were closed, kept every worker and the queue full, and the page got no answer.
     /// With the gatherer they cost a worker nothing: a request is answered meanwhile.
     #[test]
+    fn refused_heads_whose_body_never_comes_keep_no_worker() {
+        // T5's review of INT-flake-1b: 64 heads that name a body too big and then send
+        // nothing. What is left of them is read off the workers, so the page is answered.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let root = std::env::temp_dir().join(format!("neko-unread-{}", std::process::id()));
+        let server = Arc::new(Server {
+            assets: root.join("assets"),
+            status: root.join("status.json"),
+            control: root.join("control.sock"),
+            port,
+            public: None,
+            live: Mutex::new(Live::default()),
+            tables: vec![],
+        });
+        thread::spawn(move || serve_on(listener, server));
+        let head =
+            format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 100000\r\n\r\n");
+        let mut held = vec![];
+        for _ in 0..64 {
+            let mut each = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            each.write_all(head.as_bytes()).unwrap();
+            held.push(each);
+        }
+        thread::sleep(Duration::from_millis(200));
+        let started = Instant::now();
+        let mut asked = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let _ = asked.set_read_timeout(Some(Duration::from_secs(10)));
+        asked
+            .write_all(
+                format!("GET /api/none HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").as_bytes(),
+            )
+            .unwrap();
+        let mut answer = String::new();
+        let _ = asked.read_to_string(&mut answer);
+        assert!(answer.starts_with("HTTP/1.1 404"), "answered: {answer:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        // Each held one got its refusal.
+        let mut first = String::new();
+        let _ = held[0].set_read_timeout(Some(Duration::from_secs(5)));
+        let _ = held[0].read_to_string(&mut first);
+        assert!(first.contains("\"E42\""), "{first:?}");
+    }
+    #[test]
     fn slow_connections_do_not_keep_a_request_waiting() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1807,6 +1908,68 @@ Sec-Fetch-Dest: document
             "GET /api/control HTTP/1.1\r\nHost: {local}\r\n\r\n"
         ));
         assert_eq!(seen(&status)["op"], "status");
+        let _ = fs::remove_dir_all(&root);
+    }
+    /// A request over MAX_BODY sent the way a browser sends it, head and body together (a
+    /// long log pasted into Ask Neko): the refusal (400, E42) reaches the client. The server
+    /// used to close with the body unread, and that close reset the connection: the page
+    /// said "Can't reach the server" instead.
+    #[test]
+    fn an_oversized_body_sent_whole_still_gets_its_refusal() {
+        let root = std::env::temp_dir().join(format!("neko-oversized-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let port = test_server(root.clone(), &root, root.join("control.sock"), None);
+        let local = format!("127.0.0.1:{port}");
+        // Over MAX_BODY by a byte and by far, and a body sent in chunks (refused too).
+        let x = |n: usize| "x".repeat(n);
+        for (what, length, body) in [
+            (
+                "one byte over",
+                format!("Content-Length: {}", MAX_BODY + 1),
+                x(MAX_BODY + 1),
+            ),
+            (
+                "64 KiB",
+                format!("Content-Length: {}", 64 * 1024),
+                x(64 * 1024),
+            ),
+            (
+                "chunked",
+                "Transfer-Encoding: chunked".to_string(),
+                format!("10000\r\n{}\r\n0\r\n\r\n", x(0x10000)),
+            ),
+        ] {
+            let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            // The client acknowledges what it gets a little later, as one over Wi-Fi or
+            // Tailscale does: the answer's body then waits in the server to be sent (its
+            // head is not acknowledged yet), and a reset at the close threw it away.
+            let off: libc::c_int = 0;
+            // SAFETY: a live socket, and an int option of the size given.
+            unsafe {
+                libc::setsockopt(
+                    s.as_raw_fd(),
+                    libc::IPPROTO_TCP,
+                    libc::TCP_QUICKACK,
+                    (&off as *const libc::c_int).cast(),
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                );
+            }
+            let _ = write!(
+                s,
+                "POST /api/control/ask HTTP/1.1\r\nHost: {local}\r\nOrigin: http://{local}\r\nSec-Fetch-Site: same-origin\r\nContent-Type: application/json\r\n{length}\r\n\r\n{body}"
+            );
+            // The client reads only after the server has answered and closed.
+            thread::sleep(Duration::from_millis(300));
+            let mut out = Vec::new();
+            let read = s.read_to_end(&mut out);
+            let out = String::from_utf8_lossy(&out);
+            assert!(
+                out.starts_with("HTTP/1.1 400") && out.contains("\"E42\""),
+                "{what}: {read:?}, got {out:?}"
+            );
+        }
         let _ = fs::remove_dir_all(&root);
     }
     #[test]

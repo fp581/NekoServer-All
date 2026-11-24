@@ -606,7 +606,7 @@ class DriveStepTests(unittest.TestCase):
 
     def test_the_apps_ssd_is_never_a_nas_disk(self):
         nas_disk = {'name': 'sdc', 'network': True}
-        with self.assertRaisesRegex(RuntimeError, 'SSD for the apps must be connected to this PC'):
+        with self.assertRaisesRegex(RuntimeError, 'apps drive must be connected to this PC'):
             storage.local_ssd('data_ssd', nas_disk)
         self.assertIs(storage.local_ssd('media_hdd', nas_disk), nas_disk)
 
@@ -623,21 +623,21 @@ class DriveStepTests(unittest.TestCase):
 
         self.assertEqual((can_be('data_ssd'), can_be('media_hdd')), (['ssd-1'], ['ssd-1', 'nas-1']))
         nas = next(row for row in table if row['uuid'] == 'nas-1')
-        self.assertIn('the app SSD must be connected to this PC', drive_table.verdict(nas, 'data_ssd', config))
+        self.assertIn('the apps drive must be connected to this PC', drive_table.verdict(nas, 'data_ssd', config))
         # With the only local drive taken, nothing is left for the SSD: said, not asked.
         taken = {**config, 'storage': {'media_hdd': {'uuid': 'ssd-1'}}}
-        with self.assertRaisesRegex(RuntimeError, 'it is on the NAS, and the app SSD must be'):
+        with self.assertRaisesRegex(RuntimeError, 'it is on the NAS, and the apps drive must be'):
             storage.choose_new(taken, table, 'data_ssd', None, None)
 
     def test_a_saved_nas_disk_must_be_the_same_one(self):
         record = {'uuid': 'nas-1', 'network': {'transport': 'iscsi', 'wwn': '0xaaa'}}
         with self.assertRaisesRegex(RuntimeError, 'another NAS disk than before'):
-            storage.same_nas_disk(record, {'network': True, 'wwn': '0xbbb'}, 'the media HDD')
-        storage.same_nas_disk(record, {'network': True, 'wwn': '0xaaa'}, 'the media HDD')
+            storage.same_nas_disk(record, {'network': True, 'wwn': '0xbbb'}, 'the media and backups drive')
+        storage.same_nas_disk(record, {'network': True, 'wwn': '0xaaa'}, 'the media and backups drive')
         old = {'uuid': 'nas-1'}  # chosen before 0.46.0
-        storage.same_nas_disk(old, {'network': True, 'wwn': '0xaaa'}, 'the media HDD')
+        storage.same_nas_disk(old, {'network': True, 'wwn': '0xaaa'}, 'the media and backups drive')
         self.assertEqual(old['network'], {'transport': 'iscsi', 'wwn': '0xaaa'})
-        storage.same_nas_disk(old, {'network': False}, 'the media HDD')
+        storage.same_nas_disk(old, {'network': False}, 'the media and backups drive')
         self.assertNotIn('network', old)
 
     def test_the_nas_check_is_never_killed_by_a_limit_of_its_own(self):
@@ -653,8 +653,10 @@ class DriveStepTests(unittest.TestCase):
         from modules import photo_backup
 
         for record in ({'uuid': 'nas-1', 'network': {'transport': 'iscsi', 'wwn': '0xaaa'}}, {'uuid': 'nas-1'}):
-            with self.assertRaisesRegex(RuntimeError, 'The media HDD is on a NAS disk that Linux shows no WWN for'):
-                storage.same_nas_disk(record, {'network': True, 'wwn': ''}, 'the media HDD')
+            with self.assertRaisesRegex(
+                RuntimeError, 'The media and backups drive is on a NAS disk that Linux shows no WWN for'
+            ):
+                storage.same_nas_disk(record, {'network': True, 'wwn': ''}, 'the media and backups drive')
         for photos in ({'external_backup_network': {'wwn': '0x6001'}}, {}):
             with self.assertRaisesRegex(RuntimeError, 'shows no WWN for'):
                 photo_backup.same_nas_disk(photos, '')
@@ -984,6 +986,18 @@ class ReadOnlyCheckTests(unittest.TestCase):
             self.check(['y'])
         self.assertEqual([c[0] for c in self.calls], ['findmnt'])  # nothing stopped or unmounted
 
+    def test_a_drive_with_no_identity_in_the_settings_says_what_to_do(self):
+        """1.0 round T5-07: a settings file whose drive record lost its UUID stopped the
+        check with "has no drive identity in the settings" and no next step."""
+        found = ('/dev/sdb1', 'ext4', 'abcd-1234-ef')
+        with self.assertRaises(RuntimeError) as said:
+            self.wizard.named_drive('the media drive', '/mnt/nekoserver-media', {'fstype': 'ext4'}, found)
+        text = str(said.exception)
+        self.assertIn('the media drive has no drive identity in the settings', text)
+        self.assertIn('Nothing was changed', text)
+        self.assertIn('lsblk -f', text)
+        self.assertIn('"uuid"', text)
+
     def test_nothing_is_done_without_a_yes_or_when_every_drive_writes(self):
         self.check(['n'])
         self.assertEqual(self.order(), ['findmnt'])  # the drive was looked at, nothing more
@@ -1013,6 +1027,8 @@ class ReadOnlyCheckTests(unittest.TestCase):
     def test_a_job_at_work_or_an_unfinished_update_blocks_the_repair(self):
         listed = 'nekoserver-photo-backup.service loaded activating start\nnekoserver-nas-watch.service loaded activating x\n'
         run = lambda argv, **k: mock.Mock(returncode=0, stdout=listed)  # noqa: E731
+        # An SSD that is not there, never the real /srv/nekoserver of the PC the tests run on.
+        self.config = {**self.config, 'data_mount': '/nonexistent/srv'}
         with mock.patch('upgrade.nothing_at_work', return_value=None):
             self.assertEqual(self.wizard.repair_blocked(self.config, run), 'nekoserver-photo-backup.service is at work')
             quiet = lambda argv, **k: mock.Mock(
@@ -1178,7 +1194,7 @@ class LocationTests(unittest.TestCase):
             self.config['locations'], {'photos': 'media', 'movies': 'media', 'music': 'ssd', 'cloud': 'media'}
         )
         said = '\n'.join(ctx.lines)
-        self.assertIn('the media drive: 1800 GB free, the most room  (recommended)', said)
+        self.assertIn('the media and backups drive: 1800 GB free, the most room  (recommended)', said)
         self.assertIn('The backups follow wherever you choose', said)
         # The audit of 0.46.1: photos on the media drive have their archive copy there too.
         self.assertIn('so is their weekly archive copy', said)
@@ -1195,7 +1211,7 @@ class LocationTests(unittest.TestCase):
         with mock.patch.object(storage, 'free_gb', lambda f: 26 if f.endswith('srv') else 24):
             storage.choose_locations(ctx, lambda prompt='': '', True)
         said = '\n'.join(ctx.lines)
-        self.assertIn('the media drive: 24 GB free  (recommended)', said)
+        self.assertIn('the media and backups drive: 24 GB free  (recommended)', said)
         self.assertNotIn('the most room', said)
 
     def test_a_server_set_up_before_keeps_its_layout_when_no_one_is_asked(self):
@@ -1226,7 +1242,7 @@ class LocationTests(unittest.TestCase):
         config = {**self.config, 'photos': {'external_backup_uuid': 'usb-1111'}}
         table = drive_table.rows(inventory, config)
         self.assertEqual([row['uuid'] for row in drive_table.usable(table, 'media_hdd', config)], ['hdd-1111'])
-        self.assertEqual(drive_table.verdict(table[1], 'media_hdd', config), 'it is already the USB backup drive')
+        self.assertEqual(drive_table.verdict(table[1], 'media_hdd', config), 'it is already the offline backup drive')
 
     def test_files_already_on_a_drive_stay_there_and_a_wrong_setting_stops_setup(self):
         library = self.root / 'srv/photos/immich-library'
@@ -1242,14 +1258,14 @@ class LocationTests(unittest.TestCase):
         """The 0.46.0 review: with photos on both drives the SSD won without a word."""
         for drive in ('srv', 'mnt'):
             (self.root / drive / 'photos/immich-library/upload').mkdir(parents=True)
-        with self.assertRaisesRegex(RuntimeError, 'files on both the SSD and the media drive'):
+        with self.assertRaisesRegex(RuntimeError, 'files on both the apps drive and the media and backups drive'):
             self.ask(['', ''])
         self.assertNotIn('photos', self.config.get('locations', {}))
         # Once the settings say which one, it is used, and the other is named as left alone.
         self.config['locations'] = {'photos': 'media'}
         ctx = self.ask(['', '', ''])
         self.assertEqual(self.config['locations']['photos'], 'media')
-        self.assertIn('The SSD holds another folder of them too', '\n'.join(ctx.lines))
+        self.assertIn('The apps drive holds another folder of them too', '\n'.join(ctx.lines))
 
     def test_every_path_follows_the_choice(self):
         import neko_common

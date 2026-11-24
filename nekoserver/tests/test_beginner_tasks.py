@@ -116,11 +116,14 @@ class LoginsAfterARestoreTests(unittest.TestCase):
         self.assertIn('Sign in with the Immich login you had before', step)
         self.assertIn('The list of app passwords', step)
         self.assertIn('choose **c** at Immich', step)
+        self.assertIn("couldn't sign in to Immich with the saved credentials", step)
 
     def test_nextcloud_s_database_restore_says_setup_asks_for_the_old_login(self):
         part = doc('RECOVERY.md').split("### Nextcloud's database")[1].split('\n### ')[0]
-        step = part[part.index('4. Start Nextcloud') :]
-        self.assertIn('did not take its saved login', step)
+        step = part[part.index('5. Start Nextcloud') :]
+        # The words of setup's own question (questions.py login_retry, 1.0.0 wording).
+        self.assertIn("couldn't sign in to {app} with the saved credentials", doc('questions.py'))
+        self.assertIn("couldn't sign in to Nextcloud with the saved credentials", step)
         self.assertIn('choose **c** at Nextcloud', step)
 
     def test_an_app_s_settings_put_back_say_its_passwords_are_that_night_s(self):

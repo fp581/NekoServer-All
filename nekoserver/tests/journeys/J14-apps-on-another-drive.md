@@ -72,3 +72,5 @@ Cleanup: restore the snapshot
 
 - E3 and E4 on the gate machine: they are the two that no unit test can show.
 - Reading the dashboard's card for the drive.
+
+1.0.0 round: not tested (no stage).

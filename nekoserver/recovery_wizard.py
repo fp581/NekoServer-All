@@ -1373,6 +1373,12 @@ def review(rows, prompt, output):
 
 # The review's last lines for a restore that stops no app.
 APPS_KEEP_RUNNING = ('Apps', 'none is stopped. They keep running while this is restored.')
+# A USB copy opens with the password of the server that made it: on a rebuilt server that is
+# the old one, not the one its new setup chose (T1-R8).
+USB_COPY_PASSWORD = (
+    'it asks for the backup password of the server that made this backup (chosen in its setup; '
+    'on a rebuilt server, the old password, not a new one chosen since)'
+)
 
 
 def files_approved(config, what, source, chosen, target, untouched, prompt, output):
@@ -1611,17 +1617,56 @@ PART_WAY = (
 )
 
 
+INCOMPLETE = '-INCOMPLETE.txt'
+
+
+def incomplete_mark(target):
+    """The file beside a restore's folder that says it is not finished. Beside it, not in
+    it: the restore tools make their folder themselves and refuse one that exists."""
+    return Path(target).with_name(Path(target).name + INCOMPLETE)
+
+
 @contextlib.contextmanager
 def part_way(target, output):
     """Around a restore's writing: stopped there (Ctrl+C, a closed terminal), the folder it
     was writing is named as incomplete. The menu said only "what was already restored
-    stays as it is", and a folder with some of the files read as a finished restore."""
+    stays as it is", and a folder with some of the files read as a finished restore.
+    Killed or cut off by a power cut, nothing can be said then: the mark written first
+    stays, and the next menu run names the folder (T1-R15)."""
+    mark = incomplete_mark(target)
+    try:
+        mark.write_text(PART_WAY.format(target=target).strip() + '\n')
+    except OSError:
+        pass  # no mark, as before: the restore itself is not stopped for it
+    finished = False
     try:
         yield
+        finished = True
     except KeyboardInterrupt:
         if os.path.lexists(target):
             output(PART_WAY.format(target=target))
         raise
+    finally:
+        # Only a restore that ran to its end loses the mark; one stopped by anything
+        # (Ctrl+C, an error, the menu closed) is not finished, and keeps it.
+        if finished:
+            mark.unlink(missing_ok=True)
+
+
+def name_incomplete(config, output):
+    """When the menu starts: every folder under restored/ that a restore left marked as
+    incomplete (killed, a power cut) is named, with the words Ctrl+C says. Nothing is
+    deleted but a mark whose folder is gone already."""
+    try:
+        marks = sorted(restore_home(config).glob('*' + INCOMPLETE))
+    except OSError:
+        return
+    for mark in marks:
+        folder = mark.with_name(mark.name[: -len(INCOMPLETE)])
+        if os.path.lexists(folder):
+            output(PART_WAY.format(target=folder))
+        else:
+            mark.unlink(missing_ok=True)
 
 
 @contextlib.contextmanager
@@ -1695,6 +1740,8 @@ def restore_photos(config, prompt, output):
         'USB drive")? Then put both folders into the library Immich uses instead:',
         f'  sudo cp -a {shlex.quote(str(target / "upload"))} {shlex.quote(str(target / "library"))} '
         f'{shlex.quote(str(photo_library(config)))}/',
+        "Then run  sudo bash install.sh  again: it makes Immich's other folders (thumbnails,",
+        'converted videos) on that drive, which Immich needs to start.',
     )
 
 
@@ -2156,8 +2203,9 @@ def restore_password_list(config, runs, prompt, output):
         ('Into', f'{target} (a new folder that only the administrator, root, can open)'),
         (
             'Password',
-            'it asks for the backup password chosen during setup (for backups made before 0.28.5: the sudo '
-            'password you had then)'
+            'it asks for the backup password of the server that made this list (chosen in its setup; on a rebuilt '
+            'server, the old password, not a new one chosen since; for lists made before 0.28.5: the sudo password '
+            'you had then)'
             if sealed
             else 'none is asked: this list was saved without a backup key',
         ),
@@ -2205,24 +2253,79 @@ def password_list_done(target):
     return lines
 
 
+USB_APP_SETTINGS = 'app-settings'  # the weekly copy's folder on the USB drive for the newest app settings
+FROM_USB = ' (copy on the USB drive, opened with the backup password)'
+
+
+def usb_app_settings(usb):
+    """(path, label) of the app settings the weekly copy keeps on the USB drive (the
+    newest nightly backup, sealed for the backup key), newest first."""
+    if not usb:
+        return []
+    return [(p, d + FROM_USB) for p, d in snapshots(Path(usb) / USB_APP_SETTINGS)]
+
+
 def restore_nightly(config, kind, prompt, output):
+    """A night's backup of the app settings (or of Steam and Samba), into a new folder.
+    The app settings are on the USB drive too (1.0.0): with the HDD lost, the weekly
+    copy's is listed with the HDD's, newest first."""
+    if kind != 'apps':
+        return restore_night(config, kind, prompt, output, None)
+    with usb_if_free(config, output) as usb:
+        return restore_night(config, kind, prompt, output, usb)
+
+
+def nights_shown(config, kind, folder, on_usb):
+    """(path, label) of the nights to choose from, newest first: the HDD's and, for the
+    app settings, the USB drive's copies; of the same night, the HDD's comes first (it
+    needs no password). A night Steam was open has no Steam files: said in the list,
+    not found out later."""
+    runs = sorted(
+        snapshots(Path(config['media_mount']) / folder) + on_usb,
+        key=lambda r: int(SNAPSHOT.match(r[0].name)[1]),
+        reverse=True,
+    )
+    return [
+        (p, d + (' (no Steam files: Steam was open)' if kind == 'host' and steam_left_out(p) else '')) for p, d in runs
+    ]
+
+
+def night_restored(kind, run, target):
+    """What a finished nightly restore says: where it is and how a file is put back."""
+    lines = [f'\nDone: restored into {target} (checksums verified), with each file\'s owner and permissions.']
+    if kind == 'host' and steam_left_out(run):
+        lines.append('This night has no Steam files (Steam was open then): choose another night for those.')
+    if kind == 'host':
+        lines += [
+            'Its folders are named source0, source1 and so on, one for each folder that was backed up;',
+            f'{target / "restore-report.json"} says which original folder each one is.',
+        ]
+    return lines + [
+        'To use a file from it, stop the app first, copy the file back keeping its owner',
+        '(sudo cp -a <file> <where it belongs>), then start the app.',
+        'See APP-BACKUPS.md or HOST-BACKUPS.md for the exact steps.',
+    ]
+
+
+def restore_night(config, kind, prompt, output, usb):
     folder, script, label = (
         ('backups/media-applications', 'app-recovery.py', 'app settings')
         if kind == 'apps'
         else ('backups/host-user', 'host-recovery.py', 'Steam and Samba settings')
     )
-    runs = snapshots(Path(config['media_mount']) / folder)
-    if not runs:
-        output(f'No nightly backup of {label} found on the HDD yet.')
+    on_usb = usb_app_settings(usb) if kind == 'apps' else []
+    shown = nights_shown(config, kind, folder, on_usb)
+    if not shown:
+        output(
+            f'No nightly backup of {label} found on the HDD yet'
+            + (', nor on the USB drive (or it is not plugged in).' if kind == 'apps' else '.')
+        )
         return
-    # A night Steam was open has no Steam files: said in the list, not found out later.
-    shown = [
-        (p, d + (' (no Steam files: Steam was open)' if kind == 'host' and steam_left_out(p) else '')) for p, d in runs
-    ]
     run = choose(f'Which night\'s backup of the {label}? The newest is first.', shown, prompt, output)
     if run is None:
         return
-    target = restore_target(config, f'{kind}-{stamp()}', prompt, output)
+    sealed = run in dict(on_usb)
+    target = restore_target(config, f'{kind}-{stamp()}', prompt, output, usb)
     if target is None:
         output(NOTHING_CHANGED)
         return
@@ -2230,6 +2333,7 @@ def restore_nightly(config, kind, prompt, output):
         ('Restore', dict(MENU)[kind]),
         ('From', f'{run} (the night of {dict(shown)[run]})'),
         ('Into', f'{target} (a new folder)'),
+        *((('Password', USB_COPY_PASSWORD),) if sealed else ()),
         (
             'Overwritten',
             'nothing. The settings the apps use now stay as they are. To use a restored file you copy it back '
@@ -2243,28 +2347,27 @@ def restore_nightly(config, kind, prompt, output):
     make_home(config, target)
     # With their owners and permissions, so a file copied back works for its app.
     with part_way(target, output):
-        done = tool(script, 'restore', '--snapshot', str(run), '--destination', str(target), '--preserve-owners')
+        if sealed:
+            done = restore_sealed_night(run, target, script, output)
+        else:
+            done = tool(script, 'restore', '--snapshot', str(run), '--destination', str(target), '--preserve-owners')
     if done:
-        say(
-            output,
-            f'\nDone: restored into {target} (checksums verified), with each file\'s owner and permissions.',
-            *(
-                ('This night has no Steam files (Steam was open then): choose another night for those.',)
-                if kind == 'host' and steam_left_out(run)
-                else ()
-            ),
-            *(
-                (
-                    'Its folders are named source0, source1 and so on, one for each folder that was backed up;',
-                    f'{target / "restore-report.json"} says which original folder each one is.',
-                )
-                if kind == 'host'
-                else ()
-            ),
-            'To use a file from it, stop the app first, copy the file back keeping its owner',
-            '(sudo cp -a <file> <where it belongs>), then start the app.',
-            'See APP-BACKUPS.md or HOST-BACKUPS.md for the exact steps.',
-        )
+        say(output, *night_restored(kind, run, target))
+
+
+def restore_sealed_night(copy, target, script, output):
+    """The USB drive's copy of a night's app settings: opened with the backup password
+    into a private folder beside `target`, then restored from there by the same tool and
+    checks as a night on the HDD (every file against the night's own manifest). The
+    opened copy is removed afterwards, whatever happened."""
+    import backup_secrets
+
+    opened = unused(Path(target).parent / f'.{Path(target).name}-opening')
+    try:
+        backup_secrets.asked_open_app_settings(copy, opened, out=output)
+        return tool(script, 'restore', '--snapshot', str(opened), '--destination', str(target), '--preserve-owners')
+    finally:
+        shutil.rmtree(opened, ignore_errors=True)
 
 
 MUSIC_BACKUP = 'backups/music'  # the nightly music backup on the HDD (runtime music_backup.rs)
@@ -3266,7 +3369,11 @@ def named_drive(name, folder, record, found):
     one mounted there (`found`: mounted_drive's answer). Raises when it is not."""
     uuid, fstype = record.get('uuid', ''), record.get('fstype', '')
     if not re.fullmatch(r'[A-Za-z0-9-]{8,80}', uuid or ''):
-        raise RuntimeError(f'{name} has no drive identity in the settings')
+        raise RuntimeError(
+            f'{name} has no drive identity in the settings ("uuid" under "storage" in my-config.json), so it '
+            'cannot be checked. Nothing was changed. lsblk -f shows the UUID of the drive: put it back there, then '
+            'choose this again.'
+        )
     if found[2] != uuid:
         # The review of 0.46.1: with another drive mounted there (or settings out of date),
         # one filesystem was unmounted and another, the saved UUID's, checked.
@@ -3756,7 +3863,7 @@ DRIVE_ACTIONS = {
 # The restores whose backups the HDD keeps, and those of them the USB drive may hold too.
 # Without the HDD, "no backup found" would read as "no backup was ever made".
 KEPT_ON_HDD = {'photos', 'passwords', 'apps', 'host', 'music', 'monthly'}
-ALSO_ON_USB = {'photos', 'passwords'}
+ALSO_ON_USB = {'photos', 'passwords', 'apps'}
 HDD_AWAY = (
     'The HDD is not mounted at {mount} (or another drive is there), so the backups NekoServer keeps '
     'on it cannot be seen. Connect it (or restart the PC), then choose this again.'
@@ -3855,6 +3962,7 @@ def menu_loop(config, prompt, output):
         'Choosing something here changes nothing yet: you are always shown exactly what will happen first,',
         'and asked. Pressing Enter alone never approves anything.',
     )
+    name_incomplete(config, output)
     sections = {'restore': restore_section, 'drive': drive_section}
     # Something may have changed only once a question was answered yes: after only
     # looking around, "what was already restored or repaired stays" named work never
