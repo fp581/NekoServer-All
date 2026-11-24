@@ -197,6 +197,17 @@ class Md(unittest.TestCase):
         self.assertIn('add new device failed', result['advice'])
         self.assertEqual(stand.cleared, 1)
 
+    def test_a_new_drive_without_a_stable_name_is_not_added(self):
+        """Resume could not find it again, so it would undo a good add: stop before the add."""
+        (self.dev / 'disk' / 'by-id' / 'ata-NEW_S9-part1').unlink()
+        stand = Stand(md_sys(self.root / 'sys'), self.dev)
+        result = mirror_add.run_job(REQUEST, stand.ctx)
+        self.assertEqual(result['state'], 'failed')
+        self.assertIn('nothing was changed in it', result['message'])
+        self.assertFalse(any(a.startswith('mdadm /dev/md0 --add') for a in stand.asked))
+        self.assertEqual(stand.phases, [('erase', False)])
+        self.assertEqual(stand.cleared, 1)
+
     def test_offers_use_the_one_refusal_function_with_the_mirrors_size(self):
         array = mirror_add.md_array(md_sys(self.root / 'sys'), 'md0')
         asked = []
@@ -317,6 +328,10 @@ class Btrfs(unittest.TestCase):
         self.assertEqual(result['state'], 'failed')
         self.assertIn('restart the server', result['message'])
         self.assertEqual(stand.cleared, 0)
+        # If it never comes back, the person is told how to look themselves.
+        self.assertIn('btrfs replace status /mnt/nekoserver-media', result['advice'])
+        self.assertIn('RECOVERY.md', result['advice'])
+        self.assertIn('timed out', result['advice'])
 
     def test_a_pool_that_is_not_open_is_refused_before_anything(self):
         stand = Stand('/nonexistent', self.dev, answers=self.answers(findmnt=(1, '')))
