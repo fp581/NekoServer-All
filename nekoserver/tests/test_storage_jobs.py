@@ -78,7 +78,7 @@ class Jobs(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
 
-    def stop_writers(self, out=print, note=None):
+    def stop_writers(self, out=print, note=None, own=()):
         note(['nekoserver-immich.service'])
         return ['nekoserver-immich.service']
 

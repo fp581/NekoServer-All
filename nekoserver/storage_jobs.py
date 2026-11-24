@@ -810,6 +810,28 @@ RUN_FOLDER = Path(FACTS.get('folder', '/run/nekoserver-control/storage'))
 NEW_COPY = 'nekoserver-new-{kind}-{id}'
 OLD_NAME = 'nekoserver-old-{kind}-{id}'
 DELETING = 'nekoserver-deleting-{kind}-{id}'
+# The units a Drives job runs in (the job, the boot's resume, the finish after Docker):
+# one job at a time, under the operation lock, so the one at work is this job.
+FINISH_UNIT = 'nekoserver-storage-finish'
+OWN_UNITS = (
+    FACTS.get('unit', 'nekoserver-storage.service'),
+    FACTS.get('resume', 'nekoserver-storage-resume.service'),
+    FINISH_UNIT + '.service',
+)
+
+
+# The page's own units, which only read: the Drives page keeps showing the job while the
+# apps are stopped for the last copy. The control service is stopped with the rest: its
+# app buttons (restart, update) would start an app in the middle of the move.
+PAGE_UNITS = ('nekoserver-dashboard.service', 'nekoserver-dashboard-collect.service')
+
+
+def left_alone():
+    """The units a move of one kind leaves running: its own and the page's. A whole-drive
+    move stops them all (the drive itself goes away)."""
+    return (*OWN_UNITS, *PAGE_UNITS)
+
+
 JOBS = ('look', 'use', 'release', 'move', 'back', 'delete_old', 'mirror_add')
 
 
@@ -1124,7 +1146,9 @@ def switch_data(job, kind, here, to, sources, staged, size):
         copy_all(job, sources, staged, size, final=False)
         job.journal('stop', False)
         job.progress('stop')
-        stopped = migrate.stop_writers(out=job.out, note=lambda units: job.journal('stop', False, stopped=units))
+        stopped = migrate.stop_writers(
+            out=job.out, note=lambda units: job.journal('stop', False, stopped=units), own=left_alone()
+        )
         copy_all(job, sources, staged, size, final=True)
         job.journal('compare', False)
         job.progress('compare')
@@ -1458,7 +1482,7 @@ def resume(config, settings_files, state=None, folder=None, out=print):
             [
                 'systemd-run',
                 '--no-block',
-                '--unit=nekoserver-storage-finish',
+                f'--unit={FINISH_UNIT}',
                 '--property=After=docker.service',
                 '--property=TimeoutStartSec=infinity',
                 sys_executable(),
@@ -1569,7 +1593,9 @@ def finish(config, settings_files, state=None, folder=None, out=print):
             setup_again(job)
         else:
             here = saved['undo']['here']
-            stopped = migrate.stop_writers(out=out, note=lambda units: job.journal('start', True, stopped=units))
+            stopped = migrate.stop_writers(
+                out=out, note=lambda units: job.journal('start', True, stopped=units), own=left_alone()
+            )
             for old, new in zip(paths(config, kind, here), paths(config, kind, saved['undo']['to'])):
                 if old.exists() and not os.path.ismount(old) and new.exists():
                     migrate.copy(old, new, final=True, out=out)
