@@ -203,8 +203,7 @@ def drive_findings(name, facts, record, optional):
             return [], [
                 finding(
                     'drive',
-                    problem + ' It is the removable backup drive, so setup goes on without it, and the copy to '
-                    'it waits.',
+                    problem + ' It is the offline backup drive, so setup goes on without it, and the copy to it waits.',
                     'Plug it in before the first weekly copy. Until then your photos and files have no copy '
                     'outside this PC.',
                 )

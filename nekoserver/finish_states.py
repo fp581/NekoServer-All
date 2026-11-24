@@ -123,7 +123,7 @@ def login(facts, app, is_installed):
         return row(WAITING, 'not_installed_yet')
     state = facts['logins'].get(app)
     if state == 'verified':
-        return row(DONE)
+        return row(DONE, 'saved_login_worked')
     if state == 'needs_setup':
         return row(FAILED, 'saved_login_refused', do='enter_login', app=app)
     if state in ('planned', 'started'):

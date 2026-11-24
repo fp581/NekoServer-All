@@ -112,7 +112,7 @@ class InstallerFlowTests(unittest.TestCase):
             mock.patch('builtins.print'),
         ):
             args = self.args()
-            with self.assertRaisesRegex(installer.InstallerError, 'must lie on the app SSD'):
+            with self.assertRaisesRegex(installer.InstallerError, 'must lie on the apps drive'):
                 installer._execute(args, self.root)
             self.assertEqual(list(elsewhere.iterdir()), [])
             self.assertFalse(self.state.exists())
@@ -260,7 +260,9 @@ class InstallerFlowTests(unittest.TestCase):
     def test_a_settings_file_without_its_drives_says_which_is_missing(self):
         config = json.loads(self.config.read_text())
         del config['media_mount']
-        with self.assertRaisesRegex(installer.InstallerError, '"media_mount" .where the media HDD is mounted.'):
+        with self.assertRaisesRegex(
+            installer.InstallerError, '"media_mount" .where the media and backups drive is mounted.'
+        ):
             installer.validate_config(config)
 
     def test_a_media_app_mistyped_by_hand_is_named(self):

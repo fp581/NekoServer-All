@@ -174,5 +174,5 @@ class OneDriveWordsTests(unittest.TestCase):
         self.assertNotIn('only copy on another drive', none)
         self.assertIn('run  sudo bash install.sh  again', none)
         usb = storage.photos_on_media(self.one(external_backup_uuid='usb-1'))
-        self.assertIn('Your only copy on another drive is the weekly USB backup.', usb)
+        self.assertIn('Your only copy on another drive is the weekly offline backup.', usb)
         self.assertEqual(storage.photos_on_media({'photos': {}}), storage.PHOTOS_ON_MEDIA)

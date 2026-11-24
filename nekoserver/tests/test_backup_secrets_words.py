@@ -24,7 +24,7 @@ import test_backup_secrets  # noqa: E402
 PASSWORD = 'correct horse'
 INTRO = [
     'One-time setup: monthly backups store the app password list encrypted.',
-    'Choose a backup password for it (at least 8 characters; your login password is fine too).',
+    'Choose a password to encrypt your saved app logins. Enter it twice (at least 8 characters; your login password is fine too).',
     'You are asked for this only now. Nightly and monthly backups run on their own and never ask.',
 ]
 WRITE_IT_DOWN = 'Write it down somewhere safe: without it the password list in your backups cannot be recovered.'

@@ -743,9 +743,9 @@ class SetupWindowTests(unittest.TestCase):
         },
         {
             'number': 3, 'name': 'sdb1', 'what': 'WDC WD20EZRZ, 1.8 TB HDD, named "media"',
-            'state': 'chosen as the media HDD', 'details': 'Details: sdb1 on sdb; ext4, UUID hdd-0001; not open',
-            'role': 'Chosen as the media HDD',
-            'why': 'it is already the media HDD',
+            'state': 'chosen as the media and backups drive', 'details': 'Details: sdb1 on sdb; ext4, UUID hdd-0001; not open',
+            'role': 'Chosen as the media and backups drive',
+            'why': 'it is already the media and backups drive',
         },
     ]  # fmt: skip
 
@@ -754,11 +754,13 @@ class SetupWindowTests(unittest.TestCase):
         names = 'The short names (sdb1) are Linux\'s own and can change at the next start.'
         page = {
             'form': 'drives', 'fields': {'choice': ''}, 'asking': 'choice', 'rows': self.DRIVES, 'skippable': False,
-            'what': 'Choose the drive for your apps, photos and music (the app SSD).',
+            'what': 'Choose the drive for your apps, photos and music (the apps drive).',
             'needs': 'It needs at least 20 GB free, so a drive of 22 GB or more (100 GB or more is recommended).',
             'names': names,
         }  # fmt: skip
-        question = 'Number of the drive for your apps, photos and music (the app SSD) (Enter alone stops setup here): '
+        question = (
+            'Number of the drive for your apps, photos and music (the apps drive) (Enter alone stops setup here): '
+        )
         seen = self.page([self.asked(question, page)])
         self.assertEqual(seen['prompt'], page['what'])
         self.assertEqual(
@@ -781,7 +783,7 @@ class SetupWindowTests(unittest.TestCase):
                 },
                 {
                     'name': '3 · WDC WD20EZRZ, 1.8 TB HDD, named "media"',
-                    'facts': ['Not this one: it is already the media HDD'],
+                    'facts': ['Not this one: it is already the media and backups drive'],
                     'details': 'sdb1 on sdb; ext4, UUID hdd-0001; not open', 'off': True, 'radioHidden': False,
                 },
             ],
@@ -853,7 +855,7 @@ class SetupWindowTests(unittest.TestCase):
             'fields': {'data_ssd': '', 'media_hdd': '', 'usb': '', 'photos': ''},
             'title': 'Where should NekoServer store your apps and files?', 'hint': 'Choose a drive for each line.',
             'roles': [
-                {'key': 'data_ssd', 'title': 'NekoServer and your apps', 'holds': 'your apps', 'needs': 'It needs 20 GB.',
+                {'key': 'data_ssd', 'title': 'Apps drive', 'holds': 'your apps', 'needs': 'It needs 20 GB.',
                  'optional': False, 'rows': self.DRIVES},
                 {'key': 'media_hdd', 'title': 'Backups', 'holds': 'every backup', 'needs': '',
                  'optional': False, 'rows': [{**self.DRIVES[0]}, {**self.DRIVES[1]}, {**self.DRIVES[2], 'why': ''}]},
@@ -864,7 +866,7 @@ class SetupWindowTests(unittest.TestCase):
                         'beside_backup': 'Their backup is then on the same drive.'}],
             'names': 'The short names are Linux\'s own.', 'network': 'SMB is not supported yet.',
         }  # fmt: skip
-        question = 'Number of the drive for your apps (the app SSD) (Enter alone stops setup here): '
+        question = 'Number of the drive for your apps (the apps drive) (Enter alone stops setup here): '
         seen = self.page([self.asked(question, page)])
         self.assertEqual((seen['prompt'], seen['send']), (page['title'], 'Use these drives'))
         self.assertTrue(seen['skipHidden'])
@@ -877,7 +879,7 @@ class SetupWindowTests(unittest.TestCase):
                 ['1', '1 · WD SN770, 477 GB NVMe SSD (not this one: it is the disk Linux runs from, which '
                  'NekoServer never uses for your files)', True],
                 ['2', '2 · Samsung SSD 870, 466 GB SSD, named "apps"', False],
-                ['3', '3 · WDC WD20EZRZ, 1.8 TB HDD, named "media" (not this one: it is already the media HDD)', True],
+                ['3', '3 · WDC WD20EZRZ, 1.8 TB HDD, named "media" (not this one: it is already the media and backups drive)', True],
             ],
         )  # fmt: skip
         # The drive chosen: how it stands under its line, its filesystem and ID behind Details.
@@ -894,7 +896,7 @@ class SetupWindowTests(unittest.TestCase):
         self.assertEqual(seen['storage'][3]['note'], 'Their backup is then on the same drive.')
         # A group's row of the table, where there is a drive for it: the list of where its
         # apps are installed beside the list of where its files are, both sent with the page.
-        install = {'key': 'install_photos', 'options': [['', 'Same drive as NekoServer and your apps'],
+        install = {'key': 'install_photos', 'options': [['', 'Apps drive'],
                                                         ['drive:3', 'On a drive of its own: 3']]}  # fmt: skip
         table = {**page, 'fields': {**page['fields'], 'install_photos': 'drive:3'},
                  'places': [{**page['places'][0], 'group': 'Immich', 'install': install}]}  # fmt: skip
@@ -914,7 +916,7 @@ class SetupWindowTests(unittest.TestCase):
         )
         # Nothing chosen for a line that needs a drive: said, not sent.
         seen = self.page([self.asked(question, page, leave=True)])
-        self.assertEqual((seen['posts'], seen['note']), ([], 'Choose a drive for “NekoServer and your apps” first.'))
+        self.assertEqual((seen['posts'], seen['note']), ([], 'Choose a drive for “Apps drive” first.'))
         # The apps and the backups on one drive: sent (setup says what that means).
         both = {'ask-page-data_ssd': '2', 'ask-page-media_hdd': '2'}
         seen = self.page([self.asked(question, page, fill=both)])
@@ -1368,9 +1370,9 @@ class DriveLayoutTests(unittest.TestCase):
         [row] = drive_table.rows(inventory, config)
         self.assertEqual(
             drive_table.verdict(row, 'media_hdd', config),
-            'it is too small: the media HDD needs a drive of at least 54 GB (50 GB free once formatted)',
+            'it is too small: the media and backups drive needs a drive of at least 54 GB (50 GB free once formatted)',
         )
-        with self.assertRaisesRegex(RuntimeError, 'No drive here can be the media HDD'):
+        with self.assertRaisesRegex(RuntimeError, 'No drive here can be the media and backups drive'):
             storage.choose_new(config, [row], 'media_hdd', lambda q: '', lambda s: None)
 
     def test_a_mounted_pool_counts_what_the_pool_itself_reports(self):

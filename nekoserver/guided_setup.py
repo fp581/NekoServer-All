@@ -746,7 +746,7 @@ def optional_kept(ctx, asked, prompt=None, output=None):
 MEDIA_QUESTION = 'Which media apps to install?'
 MEDIA_EXPLAINED = (
     'The media apps come in groups, and each can be left out: answer yes or no for each one.',
-    'All three together take about 6 GB on the SSD (downloaded once) and about 2 GB of memory when idle.',
+    'All three together take about 6 GB on the apps drive (downloaded once) and about 2 GB of memory when idle.',
     'Nextcloud, the dashboard, the backups, Tailscale, the shared folders, the alerts and the AI assistant',
     'are set up either way. Answering no later never deletes anything: the apps of that group are stopped,',
     'their settings, data and media are kept, and yes brings them back.',

@@ -794,7 +794,7 @@ def not_verified(config, app, entry, exc, output, pending):
     `pending`, and said with its reason and what to do."""
     if not isinstance(exc, NotRunning):
         # (An app that never ran refused nothing: marked so, the next run asked
-        # "did not take the saved login. What now?" of each of them.)
+        # "couldn't sign in ... with the saved credentials" of each of them.)
         store.update(config, app, state='needs_setup')
     pending.append(app)
     # The reason, never the password: the checks' own messages name no values.

@@ -133,7 +133,7 @@ class CheckTests(unittest.TestCase):
         config['photos']['external_backup_uuid'] = USB_ID
         found = self.check(config)
         self.assertEqual(found['blocking'], [])
-        self.assertIn('It is the removable backup drive, so setup goes on without it', found['warnings'][0]['problem'])
+        self.assertIn('It is the offline backup drive, so setup goes on without it', found['warnings'][0]['problem'])
         self.assertIn('have no copy outside this PC', found['warnings'][0]['do'])
         # Plugged in: nothing to say, and no room is asked of it here.
         plugged = {USB_ID: {'fstype': 'ext4', 'size': 64 * GB, 'free': 1 * GB, 'mount': None}}

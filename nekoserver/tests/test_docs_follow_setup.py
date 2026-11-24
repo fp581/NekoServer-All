@@ -355,7 +355,7 @@ class StorageGuideTests(unittest.TestCase):
         """STORAGE.md said it "is never offered as the SSD, HDD or USB drive"; since 0.50.0
         it is, for a PC with one drive (only the USB backup drive must be a drive of its own)."""
         printed = (ROOT / 'tests/golden/drive-questions.txt').read_text()
-        self.assertIn('the disk Linux runs from\n       Can be the app SSD or the media HDD.', printed)
+        self.assertIn('the disk Linux runs from\n       Can be the apps drive or the media and backups drive.', printed)
         text = doc('STORAGE.md')
         self.assertNotIn('never offered as the SSD', text)
         self.assertIn('is never offered as the USB drive', text)

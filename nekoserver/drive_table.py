@@ -23,9 +23,9 @@ from neko_common import extra_drives, printable, typed
 # The roles a drive can have, by what setup calls them; what goes on each is
 # neko_common.drive_holds, for the apps this server has.
 ROLES = {
-    'data_ssd': ('the app SSD',),
-    'media_hdd': ('the media HDD',),
-    'usb': ('the USB backup drive',),
+    'data_ssd': ('the apps drive',),
+    'media_hdd': ('the media and backups drive',),
+    'usb': ('the offline backup drive',),
 }
 NAMES_CHANGE = (
     'The details give each drive Linux\'s own name for it (sdb1, nvme0n1p2), which can change at the next start. '
@@ -54,7 +54,7 @@ STARTED_EMPTY = {}
 
 
 def role(key):
-    """'the app SSD', 'the media HDD' or 'the USB backup drive'."""
+    """'the apps drive', 'the media and backups drive' or 'the offline backup drive'."""
     return ROLES[key][0]
 
 
@@ -605,7 +605,7 @@ def drive_verdict(row, key, config):
         return busy
     if key == 'data_ssd' and device.get('network'):
         return (
-            'it is on the NAS, and the app SSD must be connected to this PC (by USB 3, or '
+            'it is on the NAS, and the apps drive must be connected to this PC (by USB 3, or '
             'inside it): it holds the databases and is what makes the apps fast'
         )
     other = (config.get('storage', {}).get('media_hdd' if key == 'data_ssd' else 'data_ssd') or {}).get('uuid')
@@ -637,8 +637,8 @@ def backup_verdict(row, config):
     if busy:
         return busy
     return (
-        'it must be a drive of its own: this one is on the same disk as the system, the app SSD or the media '
-        'HDD, and one disk failing would then lose both copies'
+        'it must be a drive of its own: this one is on the same disk as the system, the apps drive or '
+        'the media and backups drive, and one disk failing would then lose both copies'
     )
 
 

@@ -242,7 +242,9 @@ class TerminalTests(Base):
         started, asked, said, saved = self.run_page('', 'yes')
         self.assertTrue(started)
         self.assertEqual(len(asked), 2)  # Enter to go on from the first page, then the one approval
-        self.assertIn('Nothing is installed yet.', asked[0])
+        self.assertIn(
+            'Prerequisite packages are installed. Your selected apps will be set up after you approve.', asked[0]
+        )
         self.assertIn('Install selected apps? Type yes to go on, back to change your choices, or no to stop', asked[1])
         self.assertIn('=== What would you like this server to do? ===', said)
         self.assertIn(' [x]  2. Movies and shows - Jellyfin', said)
@@ -325,7 +327,7 @@ class TerminalTests(Base):
         chosen = {
             'settings': {'storage': ({'data_ssd': {'uuid': 'u1', 'fstype': 'ext4'}}, [])},
             'places': {},
-            'lines': ['NekoServer and your apps: drive 2 (sdb1: 466 GB SSD)'],
+            'lines': ['Apps drive: drive 2 (sdb1: 466 GB SSD)'],
         }
         order = []
 
@@ -346,7 +348,7 @@ class TerminalTests(Base):
         started, said, saved = run('', 'no')
         self.assertEqual(order, ['page', 'drives', 'approval'])
         self.assertIn('Where your apps and files are kept:', said)
-        self.assertIn('  - NekoServer and your apps: drive 2 (sdb1: 466 GB SSD)', said)
+        self.assertIn('  - Apps drive: drive 2 (sdb1: 466 GB SSD)', said)
         self.assertFalse(started)
         self.assertEqual(saved, settings())  # no: nothing of it was saved
         started, said, saved = run('', 'yes')

@@ -554,7 +554,7 @@ class DrivesStepTests(unittest.TestCase):
 
     def test_the_apps_ssd_is_never_a_shared_folder(self):
         record = media_record()
-        with self.assertRaisesRegex(RuntimeError, 'The SSD for the apps cannot be a folder shared over NFS'):
+        with self.assertRaisesRegex(RuntimeError, 'The apps drive cannot be a folder shared over NFS'):
             storage.shared_folder(record, 'data_ssd')
         config = self.config()
         config['storage']['data_ssd'] = media_record()
