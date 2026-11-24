@@ -268,6 +268,8 @@ class FakeArr:
             return self.data[(app, endpoint)]
         if endpoint == '/downloadclient/test' and not self.test_ok:
             raise RuntimeError(f'{app} {endpoint}: HTTP 400')
+        if method == 'PUT' and endpoint.startswith('/downloadclient/'):
+            self.test_ok = True  # the client holds the current login now
         return {}
 
     def sent(self, method):
@@ -449,7 +451,7 @@ class QbittorrentLoginPassedOnTests(unittest.TestCase):
             FakeArr({('sonarr', '/downloadclient'): [neko_client('tvCategory', 'tv')]}, test_ok=False)
         )
         puts = [payload for app, endpoint, method, payload in fake.calls if method == 'PUT']
-        self.assertEqual(fake.sent('PUT'), [('sonarr', '/downloadclient/3')])
+        self.assertEqual(fake.sent('PUT'), [('sonarr', '/downloadclient/3?forceSave=true')])
         fields = {f['name']: f['value'] for f in puts[0]['fields']}
         self.assertEqual((fields['username'], fields['password'], fields['tvCategory']), ('admin2', 'new-secret', 'tv'))
 
@@ -475,7 +477,7 @@ class QbittorrentLoginPassedOnTests(unittest.TestCase):
             mock.patch('builtins.print'),
         ):
             self.connect.configure_download_clients('/srv', True, ('sonarr',))
-        self.assertEqual(fake.sent('PUT'), [('sonarr', '/downloadclient/3')])
+        self.assertEqual(fake.sent('PUT'), [('sonarr', '/downloadclient/3?forceSave=true')])
 
     def test_account_setup_passes_a_changed_login_on(self):
         setup = load('account_setup_cli', 'account-setup.py')
