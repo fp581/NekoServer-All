@@ -73,7 +73,7 @@ DEFAULT_DATA = {
     BACKUP: MEDIA,
 }
 # The rows whose data place a server before 0.50.0 chose itself ("locations").
-OLD_LOCATIONS = {'photos': 'photos', 'movies': 'movies', 'music': 'music', CLOUD: 'cloud'}
+OLD_LOCATIONS = {'photos': 'photos', 'movies': 'movies', 'music': 'music', CLOUD: 'cloud', BACKUP: 'backups'}
 
 
 def apps_of(row):
