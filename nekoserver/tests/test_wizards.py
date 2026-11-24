@@ -670,7 +670,7 @@ class CapacityTests(unittest.TestCase):
     def test_usb_counts_free_space_not_drive_size(self):
         # A big but nearly full drive warns; files the drive already has need no new room.
         _, warn = self.assess(500, 4000, usb=10, photos=100)
-        self.assertTrue(any('USB drive has 10 GB free' in w for w in warn))
+        self.assertTrue(any('offline backup drive has 10 GB free' in w for w in warn))
         _, warn = self.assess(500, 4000, usb=30, photos=100, pending=0)
         self.assertEqual(warn, [])
 
@@ -817,9 +817,9 @@ class CapacityTests(unittest.TestCase):
 
     def test_too_little_stops_with_a_clear_reason(self):
         stop, _ = self.assess(10, 4000)
-        self.assertTrue(stop and 'SSD has only 10 GB free' in stop[0])
+        self.assertTrue(stop and 'apps drive has only 10 GB free' in stop[0])
         stop, _ = self.assess(500, 30)
-        self.assertTrue(stop and 'HDD' in stop[0])
+        self.assertTrue(stop and 'media and backups drive' in stop[0])
 
     def test_below_recommended_warns(self):
         stop, warn = self.assess(60, 300)
@@ -828,7 +828,7 @@ class CapacityTests(unittest.TestCase):
 
     def test_usb_must_fit_photos_and_cloud_with_room(self):
         _, warn = self.assess(500, 4000, usb=128, photos=100, cloud=20)
-        self.assertTrue(any('USB drive has 128 GB free' in w for w in warn))
+        self.assertTrue(any('offline backup drive has 128 GB free' in w for w in warn))
         _, warn = self.assess(500, 4000, usb=256, photos=100, cloud=20)
         self.assertEqual(warn, [])
 

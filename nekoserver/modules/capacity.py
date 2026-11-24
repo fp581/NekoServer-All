@@ -306,8 +306,8 @@ def assess(
 
     # What each drive holds on this server only (gate run C).
     checks = (
-        ('SSD', data, SSD, drive_holds(config, 'data_ssd')),
-        ('HDD', media, HDD, drive_holds(config, 'media_hdd')),
+        ('apps drive', data, SSD, drive_holds(config, 'data_ssd')),
+        ('media and backups drive', media, HDD, drive_holds(config, 'media_hdd')),
     )
     if same_filesystem(data, media):
         # Both kept on one filesystem (the disk Linux runs from, 0.50.0): its room is
@@ -333,8 +333,8 @@ def assess(
         # warned about as too small.
         elif space < recommended * SOLD_AS_FREE:
             warn.append(
-                f'The {name} has {gib(space)} free. A drive of {recommended} GB or more is recommended '
-                f'for {purpose}; it will fill up sooner.'
+                f'The {name} has {gib(space)} free. That meets the minimum of {minimum} GB free, but a drive of '
+                f'{recommended} GB or more is recommended for {purpose}; it will fill up sooner.'
             )
     stop += installed_elsewhere(config, free)
     # The archive also keeps photos deleted from Immich and earlier versions.
@@ -353,7 +353,7 @@ def assess(
         needed = max(USB_MIN * GIB, pending + int((photos + cloud) * 0.2))
         if free_now < needed:
             warn.append(
-                f'The USB drive has {gib(free_now)} free. The next weekly copy still has to add '
+                f'The offline backup drive has {gib(free_now)} free. The next weekly copy still has to add '
                 f'{gib(pending)} ({usb_pending_words(config)}); '
                 f'{gib(needed)} or more free is recommended so it fits and has room to grow. '
                 'Free up space on it or use a bigger one.'
@@ -439,7 +439,8 @@ def run(ctx, prompt=input, output=print):
     output('\n=== Drive space ===')
     for number, line in enumerate(warn, 1):
         output(f'{number}. {line}')
-    if questions.yes_no('drive_space', prompt, output):
+    which = 'this drive' if len(warn) == 1 else 'these drives'
+    if questions.yes_no('drive_space', prompt, output, which=which):
         return
     return {
         'status': 'needs_setup',

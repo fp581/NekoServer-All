@@ -669,9 +669,16 @@ def show_addresses(data, output):
 
 
 NEXT_DONE = [
-    '  Everything is set up. Backups, weekly app updates and the monthly backup check run on their own;',
-    '  the dashboard shows how they are doing.',
+    '  Installation complete. Scheduled backups and updates are enabled: the nightly backups, the weekly',
+    '  app updates and the monthly backup check run on their own; the dashboard shows how they are doing.',
 ]
+# Every step done, but the backups or the updates are not available on this system.
+NEXT_DONE_UNSCHEDULED = [
+    '  Every step is done. The backups or the updates are not available on this system (see',
+    '  "Not available on this system" above).',
+]
+# The steps that schedule them: the updates, and at least one backup.
+SCHEDULES = 'maintenance'
 NEXT_PENDING = [
     '  1. Fix the first item under "What needs you" (its line says how).',
     '  2. Then run  sudo bash install.sh  again: it continues where it stopped and keeps everything done.',
@@ -788,11 +795,39 @@ TEST_TITLES = {
     'tv_controller': 'The controller works',
     'tv_steam': 'Steam Big Picture opens',
 }
+# The finishing page's heading (finish_heading): `ready` only when nothing failed or waits
+# and the backups and the updates are scheduled (finish_states.summary's "scheduled");
+# ready without them keeps `ready_unscheduled`.
 OUTCOMES = {
-    'ready': 'NekoServer is ready.',
-    'pending': 'Your apps are installed. Some setup is still waiting for you.',
+    'ready': 'Installation complete. Scheduled backups and updates are enabled.',
+    'ready_unscheduled': 'NekoServer is ready.',
+    'pending': 'Setup is incomplete. Review the remaining steps below.',
     'attention': 'Setup needs attention.',
 }
+READY_MORE = 'Review the checks below to see what has been verified and what you can still try.'
+# The backups on the finishing page: one line when every first backup passed, else each one.
+BACKUPS_DONE = 'Initial backups completed'
+
+
+def finish_heading(summary):
+    """(the finishing page's heading, the line under it ('' for none)) for a summary."""
+    outcome = summary.get('outcome')
+    if outcome == 'ready':
+        if summary.get('scheduled'):
+            return OUTCOMES['ready'], READY_MORE
+        return OUTCOMES['ready_unscheduled'], ''
+    return OUTCOMES.get(outcome, OUTCOMES['pending']), ''
+
+
+def backup_states(summary):
+    """The finishing page's backups as [(label, state)]: "Initial backups completed" when
+    every first backup passed; otherwise each backup by its step's name, with its own result."""
+    backups = summary.get('backups') or []
+    if backups and all(found.get('state') == 'done' for found in backups):
+        return [(BACKUPS_DONE, {'state': 'done', 'reason': None})]
+    if backups:
+        return [(title(found['step']), found) for found in backups]
+    return [('Backup made', summary.get('server', {}).get('backup', {}))]
 
 
 def state_said(found):
@@ -805,16 +840,15 @@ def state_said(found):
 def states_lines(summary):
     """The finishing page's states as lines: each app, the server's backups and
     restores, and the tests a person can still try (which never hold anything up)."""
-    lines = ['', 'How things stand: ' + OUTCOMES.get(summary.get('outcome'), OUTCOMES['pending'])]
+    heading, more = finish_heading(summary)
+    lines = ['', 'How things stand: ' + heading] + ([more] if more else [])
     for app in summary.get('apps', []):
         said = [f'{label}: {state_said(app["states"][key])}' for key, label in APP_STATES if key in app['states']]
         lines.append(f"  {app['name']}. " + '. '.join(said) + '.')
     server = summary.get('server', {})
     if server:
-        lines.append(
-            f"  Backups. Backup made: {state_said(server.get('backup', {}))}. "
-            f"Restore tried: {state_said(server.get('restore', {}))}."
-        )
+        said = [f'{label}: {state_said(found)}' for label, found in backup_states(summary)]
+        lines.append('  Backups. ' + '. '.join(said) + f". Restore tried: {state_said(server.get('restore', {}))}.")
     open_tests = [test for test in summary.get('tests', []) if test.get('state') != 'done']
     if open_tests:
         lines.append('You can try these whenever you like; nothing waits for them:')
@@ -881,8 +915,10 @@ def finishing_screen(config, states, page=None, output=print, checkup=None, ran=
     show_end(config, data, plan, states, page, output)
     output('\nWhat next:')
     steps_done = not (by_status['broken'] or by_status['waiting'] or blocked)
-    if complete:
+    if complete and scheduled(plan, states):
         what_next = NEXT_DONE
+    elif complete:
+        what_next = NEXT_DONE_UNSCHEDULED
     elif steps_done:
         what_next = NEXT_CHECKUP
     else:
@@ -892,6 +928,14 @@ def finishing_screen(config, states, page=None, output=print, checkup=None, ran=
     output('  If something goes wrong later:  sudo bash install.sh --recover')
     output(line + '\n')
     return complete
+
+
+def scheduled(plan, states):
+    """The updates and at least one backup were set up by this run's plan."""
+    import finish_states
+
+    done = {step for step in plan if states.get(step, {}).get('status') == 'success'}
+    return SCHEDULES in done and any(step in done for step, _ in finish_states.BACKUPS)
 
 
 def show_end(config, data, plan, states, page, output):

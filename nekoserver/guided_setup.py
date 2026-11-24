@@ -244,11 +244,14 @@ KEYS = 'Ctrl+D leaves it pending and setup goes on; Ctrl+C stops setup.'
 SKIPPABLE = 'Ctrl+C or Ctrl+D skips it and setup goes on.'  # a step that catches Ctrl+C itself (playback)
 
 
-def show_step(output, title, instructions, keys=KEYS):
+def show_step(output, title, instructions, keys=KEYS, no='No'):
+    """The step's instructions. `no`: the label of the setup window's button for no (the
+    step's own question names it), said beside the terminal's No when it differs."""
     output('\n=== ' + title + ' ===')
     for number, instruction in enumerate(instructions, 1):
         output(str(number) + '. ' + instruction)
-    output('Return to the terminal afterward. No reopens this step; ' + keys)
+    window = '' if no == 'No' else f' (in the setup window: {no})'
+    output(f'Return to the terminal afterward. Answer No{window} to reopen the instructions and try again; ' + keys)
 
 
 def prepared_targets(targets, prepare, output):
@@ -434,7 +437,7 @@ def checkpoint(
     output = output or print
     try:
         while True:
-            show_step(output, title, instructions, keys)
+            show_step(output, title, instructions, keys, no_label(ask))
             open_targets(ctx, prepared_targets(targets, prepare, output), output)
             show_logins(ctx.config, logins, prompt, output)
             if ask:
@@ -460,6 +463,16 @@ def checkpoint(
 
 # The page a step's own yes/no is asked on (the window: a question that can be left).
 CONFIRM_STEP = 'confirm_step'
+
+
+def no_label(ask):
+    """The label of the window's no button for a step's question: its own (questions.py),
+    or the plain No of a question without one."""
+    if not ask:
+        return 'No'
+    import questions
+
+    return questions.words(ask)['no'] or 'No'
 
 
 def part(ctx, title, steps, question, done=(), intro=(), targets=(), prompt=None, output=None, status=()):

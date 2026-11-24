@@ -62,7 +62,7 @@ class PageTests(Base):
         movies = by_id('media_movies')
         self.assertEqual(
             movies['explanation'],
-            'Watch your films and shows on any device, and ask for new ones to be found and added.',
+            'Watch your movies and shows.',
         )
         self.assertEqual(
             movies['small'], 'Jellyfin. With finding and downloading: Seerr, Sonarr, Radarr, Prowlarr and qBittorrent.'

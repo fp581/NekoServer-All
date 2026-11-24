@@ -20,8 +20,9 @@ Finishing screen (`finishing_screen`, wizard.py:430; `headline`, wizard.py:337):
 - `NekoServer is ready!` on the first ruled line, then `Done: 34 of 34 steps.` (the count
   is the installer's plan for the VM with a desktop and the SSD, the HDD and the USB drive,
   in 1.0.0; 33 of 34 while the phone step waits).
-- The `NEXT_DONE` lines (wizard.py:385): `Everything is set up. Backups and monthly
-  updates run on their own;` and `the dashboard shows how they are doing.`
+- The `NEXT_DONE` lines (wizard.py): `Installation complete. Scheduled backups and updates
+  are enabled: the nightly backups, the weekly` and `app updates and the monthly backup check run
+  on their own; the dashboard shows how they are doing.`
 - `Dashboard:          http://127.0.0.1:8787  (on this PC)` and `Dashboard PIN:      set`
   (`show_dashboard`, wizard.py:351; the port is `dashboard.port` in config.json).
 - `Your apps:` with the home address and the Tailscale links (`show_addresses`, wizard.py:371).
