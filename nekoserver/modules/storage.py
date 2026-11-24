@@ -678,8 +678,17 @@ def bind_line(folder, mountpoint):
     if any(c.isspace() for c in mountpoint):
         raise RuntimeError('Mountpoint cannot contain whitespace')
     if on_one_drive(folder):
-        return f'{folder} {mountpoint} none bind,x-systemd.requires-mounts-for={ONE_DRIVE} 0 0'
+        # nofail: a drive that is late or missing (a mirror that lost a disk, 1.0 round
+        # T1-R19) never stops the PC from starting; the apps wait for these mounts.
+        return f'{folder} {mountpoint} none bind,nofail,x-systemd.requires-mounts-for={ONE_DRIVE} 0 0'
     return f'{folder} {mountpoint} none bind 0 0'
+
+
+# The options of the shared drive's folders, as setup writes them now and wrote before.
+ONE_DRIVE_BINDS = (
+    f'bind,nofail,x-systemd.requires-mounts-for={ONE_DRIVE}',
+    f'bind,x-systemd.requires-mounts-for={ONE_DRIVE}',
+)
 
 
 def own_bind_line(found):
@@ -687,7 +696,7 @@ def own_bind_line(found):
         return False
     if found[0] in SYSTEM_FOLDERS.values():
         return found[3] == 'bind'
-    return on_one_drive(found[0]) and found[3] == f'bind,x-systemd.requires-mounts-for={ONE_DRIVE}'
+    return on_one_drive(found[0]) and found[3] in ONE_DRIVE_BINDS
 
 
 def bind_line_index(lines, mountpoint, entry, connected=None, notes=None):
