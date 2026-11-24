@@ -121,11 +121,15 @@ def swap_devices(swaps=Path('/proc/swaps')):
 
 def card_uuids(config):
     """The filesystems of the backup cards the catalogue enrolled (0.52's set), read only."""
-    data = config.get('data_mount')
-    if not data:
+    from neko_common import mount_path
+
+    try:
+        data = os.path.realpath(mount_path(config.get('data_mount') or ''))
+    except (RuntimeError, TypeError):
         return set()
-    catalogue = Path(data) / SHARED['cards']['folder'] / SHARED['cards']['catalogue']
-    if not catalogue.is_file():
+    # The catalogue only as a file of the apps drive's own folder (no link out of it).
+    catalogue = os.path.realpath(os.path.join(data, SHARED['cards']['folder'], SHARED['cards']['catalogue']))
+    if not catalogue.startswith(data + os.sep) or not os.path.isfile(catalogue):
         return set()
     try:
         with sqlite3.connect(f'file:{catalogue}?mode=ro', uri=True) as db:
@@ -693,7 +697,8 @@ def on_it(disk):
     if not disk['partitions'] and not shown:
         return 'Nothing: the disk is blank.'
     count = disk['partitions']
-    head = f'{count} partition{"" if count == 1 else "s"}: ' if count else ''
+    plural = '' if count == 1 else 's'
+    head = f'{count} partition{plural}: ' if count else ''
     return head + (', '.join(shown) or 'no filesystem NekoServer can read')
 
 
@@ -726,7 +731,7 @@ def disk_entry(config, disk, minimum, copies):
         'size_bytes': disk['size_bytes'],
         'model': disk['model'],
         'dev': disk['dev'],
-        'offer': None if why else ('take_over' if fs else 'erase'),
+        'offer': offer_of(why, fs),
         'refused': why,
         'confirm_words': confirm_words(disk) if disk['serial'] else None,
         'on_it': on_it(disk),
@@ -752,6 +757,14 @@ def degraded_arrays(sys_block=SYS_BLOCK):
         if degraded and action == 'idle':
             found[f'md-{md.parent.name}'] = size
     return found
+
+
+def offer_of(why, fs):
+    """What the page offers for a disk: nothing when it is refused, else take it over as it
+    is (one filesystem NekoServer can use) or erase it."""
+    if why:
+        return None
+    return 'take_over' if fs else 'erase'
 
 
 def look(config, world=None, measure=du, arrays=None):
@@ -814,7 +827,7 @@ class Job:
     def __init__(self, request, config, settings_files, state=None, folder=None, out=print):
         self.request, self.config, self.settings_files = request, config, list(settings_files)
         self.state, self.folder, self.out = Path(state or STATE), Path(folder or RUN_FOLDER), out
-        self.id, self.job = request['id'], request['job']
+        self.id, self.action = request['id'], request['job']
         self.started = time.time()
 
     def words(self, step):
@@ -828,7 +841,7 @@ class Job:
         shown = {'bytes_done': 0, 'bytes_total': 0, 'files_done': 0, 'files_total': 0, 'percent': None, **counts}
         atomic_json(
             self.folder / PROGRESS,
-            {'format': FORMAT, 'id': self.id, 'job': self.job, 'step': step, 'step_words': self.words(step)}
+            {'format': FORMAT, 'id': self.id, 'job': self.action, 'step': step, 'step_words': self.words(step)}
             | shown
             | {'at': time.time()},
         )
@@ -840,7 +853,7 @@ class Job:
             JOURNAL,
             {
                 'id': self.id,
-                'job': self.job,
+                'job': self.action,
                 'phase': phase,
                 'committed': committed,
                 'boot': this_boot(),
@@ -859,7 +872,7 @@ class Job:
             RESULT,
             {
                 'id': self.id,
-                'job': self.job,
+                'job': self.action,
                 **{k: self.request.get(k) for k in ('kind', 'drive', 'to')},
                 'state': state,
                 'message': message,
@@ -927,7 +940,7 @@ def chosen_disk(job, minimum):
     """The disk the request names, as it is now, or Stop: the same by-id, serial and size
     the page showed, and no refusal."""
     asked = job.request['disk']
-    rows = [d for d in describe(dict(world_now(job.config), named=settings_uuids(job.config)))]
+    rows = describe(dict(world_now(job.config), named=settings_uuids(job.config)))
     found = [d for d in rows if d['by_id'] == asked['by_id']]
     if len(found) != 1 or found[0]['serial'] != asked['serial'] or found[0]['size_bytes'] != asked['size_bytes']:
         raise Stop('That disk is not plugged in the way the page showed it. Nothing was changed.', 'Look again.')
@@ -989,13 +1002,13 @@ def release(job):
     if problem:
         raise Stop(problem + ' Nothing was changed.')
     job.commit('release', [['storage', name, None]], drive=name)
-    drop_fstab_line(EXTRA_MOUNT_ROOT() / name)
-    if os.path.ismount(EXTRA_MOUNT_ROOT() / name):
-        run(['umount', str(EXTRA_MOUNT_ROOT() / name)])
+    drop_fstab_line(extra_mount_root() / name)
+    if os.path.ismount(extra_mount_root() / name):
+        run(['umount', str(extra_mount_root() / name)])
     return f'{place_words(name)} is no longer used. You can unplug it.'
 
 
-def EXTRA_MOUNT_ROOT():  # noqa: N802  (read when used: tests point it elsewhere)
+def extra_mount_root():  # read when used: tests point it elsewhere
     from neko_common import EXTRA_MOUNTS
 
     return Path(EXTRA_MOUNTS)
@@ -1243,9 +1256,9 @@ def undo_move(job):
                 os.rename(target, copy_)
     if kind == 'backups' and here not in (None, 'media') and switching:
         rebind_backups(job.config, job.out)
-    if job.job == 'move' and staging.name.startswith('nekoserver-new-') and staging.is_dir():
+    if job.action == 'move' and staging.name.startswith('nekoserver-new-') and staging.is_dir():
         shutil.rmtree(staging)
-    if job.job == 'back':
+    if job.action == 'back':
         restore_back_copy(job, journal)
 
 
@@ -1330,6 +1343,18 @@ def mirror_job(job):
 # ---- running a request, and the boot's resume ------------------------------------------------
 
 
+REQUEST = RUN_FOLDER / FACTS.get('request', 'request.json')
+
+
+def request_path(value):
+    """The request the unit names: only the control service's own request file, which it
+    writes after checking each field (storage.rs), never another file."""
+    wanted = os.path.realpath(REQUEST)
+    if os.path.realpath(str(value)) != wanted:
+        raise SystemExit(f'The request must be {wanted}')
+    return wanted
+
+
 def read_request(path):
     from neko_common import read_journal
 
@@ -1344,7 +1369,7 @@ def run_request(request, config, settings_files, state=None, folder=None, out=pr
     from neko_common import OPERATION_LOCK, hold_operation
 
     job = Job(request, config, settings_files, state, folder, out)
-    if job.job == 'look':
+    if job.action == 'look':
         job.progress('look')
         write_state(LOOK, look(config), job.state)
         (job.folder / PROGRESS).unlink(missing_ok=True)
@@ -1360,15 +1385,25 @@ def run_request(request, config, settings_files, state=None, folder=None, out=pr
         return worked(job)
 
 
+def stopped_state(saved):
+    """A job that ended with Stop: done after its commit point; failed before it changed
+    anything (no journal yet, or still copying); undone when it put things back."""
+    if saved.get('committed'):
+        return 'done'
+    if saved.get('phase') in (None, 'copy'):
+        return 'failed'
+    return 'undone'
+
+
 def worked(job):
     job.result('working', '')
     try:
-        if job.job == 'mirror_add':
+        if job.action == 'mirror_add':
             return mirror_result(job, mirror_job(job))
-        message = WORK[job.job](job)
+        message = WORK[job.action](job)
     except Stop as stop:
         saved = read_state(JOURNAL, job.state) or {}
-        state = 'done' if saved.get('committed') else 'failed' if saved.get('phase') in (None, 'copy') else 'undone'
+        state = stopped_state(saved)
         job.result(state, str(stop), stop.advice)
         job.done()
         return 0 if state == 'done' else 1
@@ -1409,16 +1444,16 @@ def resume(config, settings_files, state=None, folder=None, out=print):
     if missing:
         job.result('failed', f'The job is finished when {place_words(missing)} is back.', 'Plug it in and restart.')
         return 1
-    if job.job == 'mirror_add' and not saved.get('committed'):
+    if job.action == 'mirror_add' and not saved.get('committed'):
         import mirror_add
 
         return mirror_result(job, mirror_add.resume(saved, mirror_context(job)), power_cut=True)
     if not saved.get('committed') and not undo_cut_off(job, saved):
-        job.result('undone', UNDONE_WORDS.get(job.job, UNDONE_WORDS['move']), power_cut=True)
+        job.result('undone', UNDONE_WORDS.get(job.action, UNDONE_WORDS['move']), power_cut=True)
         job.done()
         return 0
     job.reapply(read_state(JOURNAL, job.state) or saved)
-    if job.job in ('move', 'back', 'use', 'mirror_add'):
+    if job.action in ('move', 'back', 'use', 'mirror_add'):
         run(
             [
                 'systemd-run',
@@ -1485,9 +1520,9 @@ def missing_drive(config, saved):
 
 
 def undo_cut_off(job, saved):
-    if job.job in ('move', 'back'):
+    if job.action in ('move', 'back'):
         undo_move(job)
-    elif job.job == 'use':
+    elif job.action == 'use':
         return added_after_all(job, saved)
     return False
 
@@ -1503,15 +1538,15 @@ def finish_cut_off(job, saved):
     """After the commit point: the rest of the job, which never changes its outcome."""
     import shutil
 
-    if job.job == 'delete_old':
+    if job.action == 'delete_old':
         gone = Path(saved['undo'].get('deleting', ''))
         if gone.name.startswith('nekoserver-deleting-') and gone.exists():
             shutil.rmtree(gone)
         original = gone.with_name(gone.name.replace('nekoserver-deleting-', 'nekoserver-old-', 1))
         if original.name.startswith('nekoserver-old-') and original.exists():
             shutil.rmtree(original)
-    elif job.job == 'release':
-        drop_fstab_line(EXTRA_MOUNT_ROOT() / saved['undo']['drive'])
+    elif job.action == 'release':
+        drop_fstab_line(extra_mount_root() / saved['undo']['drive'])
     job.result('resumed', 'The power went off during the job; it was finished at the start.', power_cut=True)
     job.done()
 
@@ -1528,9 +1563,9 @@ def finish(config, settings_files, state=None, folder=None, out=print):
     job.reapply(saved)
     kind = job.request.get('kind')
     try:
-        if job.job == 'mirror_add':
+        if job.action == 'mirror_add':
             return finish_mirror(job, saved)
-        if job.job == 'use':
+        if job.action == 'use':
             setup_again(job)
         else:
             here = saved['undo']['here']
@@ -1569,11 +1604,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description='The Drives page\'s root jobs (storage from the dashboard).')
     parser.add_argument('action', choices=('run', 'resume', 'finish'))
     parser.add_argument('--config', action='append', required=True)
-    parser.add_argument('--request')
+    parser.add_argument('--request', default=str(REQUEST))
     given = parser.parse_args(argv)
     config = read_settings(given.config[0])
     if given.action == 'run':
-        return run_request(read_request(given.request), config, given.config)
+        return run_request(read_request(request_path(given.request)), config, given.config)
     return (resume if given.action == 'resume' else finish)(config, given.config)
 
 

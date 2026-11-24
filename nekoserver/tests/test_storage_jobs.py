@@ -7,7 +7,9 @@ before it is undone at the next start, one after it is finished. The copies, the
 setup are migrate.py's, faked here; the folders are real (a temporary folder per drive)."""
 
 import json
+import os
 import shutil
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -49,17 +51,17 @@ class Jobs(unittest.TestCase):
             mock.patch('neko_common.OPERATION_LOCK', self.root / 'operation.lock'),
             mock.patch.object(storage_jobs, 'FACTS', {'min_bytes': 16 * GB}),
             mock.patch.object(storage_jobs, 'same_drive', lambda a, b: Path(a) == Path(b)),
-            mock.patch.object(storage_jobs, 'free_bytes', lambda folder: 100 * GB),
-            mock.patch.object(storage_jobs, 'du', lambda paths: 0),
+            mock.patch.object(storage_jobs, 'free_bytes', return_value=100 * GB),
+            mock.patch.object(storage_jobs, 'du', return_value=0),
             mock.patch.object(storage_jobs, 'steps_working', lambda config: []),
             mock.patch.object(
                 storage_jobs, 'setup_again', lambda job: self.setups.append(json.loads(json.dumps(job.config)))
             ),
             mock.patch.object(migrate, 'copy', copy),
-            mock.patch.object(migrate, 'differences', lambda a, b: self.differ),
+            mock.patch.object(migrate, 'differences', return_value=self.differ),
             mock.patch.object(migrate, 'stop_writers', self.stop_writers),
             mock.patch.object(migrate, 'start_again', lambda stopped, out=print: self.started.append(stopped)),
-            mock.patch.object(migrate, 'server_check', lambda config, before: None),
+            mock.patch.object(migrate, 'server_check', return_value=None),
             # The look written after a job reads the computer's disks: never in these tests.
             mock.patch.object(storage_jobs, 'look', lambda config: {'disks': []}),
         ):
@@ -88,10 +90,10 @@ class Jobs(unittest.TestCase):
             out=lambda *_: None,
         )
 
-    def result(self):
+    def last_result(self):
         return storage_jobs.read_state('result.json', self.root / 'state')
 
-    def journal(self):
+    def saved_journal(self):
         return storage_jobs.read_state('journal.json', self.root / 'state')
 
     def saved(self, index=-1):
@@ -112,25 +114,26 @@ class MoveTests(Jobs):
         self.assertEqual(self.setups[0]['locations'], {'photos': 'media'})
         self.assertEqual(self.started, [['nekoserver-immich.service']])
         self.assertEqual(
-            (self.result()['state'], self.result()['kind'], self.result()['to']), ('done', 'photos', 'media')
+            (self.last_result()['state'], self.last_result()['kind'], self.last_result()['to']),
+            ('done', 'photos', 'media'),
         )
-        self.assertIsNone(self.journal())
+        self.assertIsNone(self.saved_journal())
 
     def test_a_copy_that_differs_changes_nothing_and_starts_the_apps_again(self):
         self.files(self.root / 'ssd/photos/immich-library', **{'x.jpg': 'one'})
-        self.differ = ['x.jpg']
+        self.differ.extend(['x.jpg'])
         self.assertEqual(self.run_job('move', kind='photos', to='media'), 1)
         self.assertEqual((self.root / 'ssd/photos/immich-library/x.jpg').read_text(), 'one')
         self.assertEqual(list((self.root / 'media').iterdir()), [])
         self.assertFalse(self.settings[0].exists())
         self.assertEqual(self.started, [['nekoserver-immich.service']])
-        self.assertEqual(self.result()['state'], 'undone')
-        self.assertIn('not the same as the original', self.result()['message'])
+        self.assertEqual(self.last_result()['state'], 'undone')
+        self.assertIn('not the same as the original', self.last_result()['message'])
 
     def test_a_place_that_is_not_allowed_is_refused_before_anything(self):
         self.assertEqual(self.run_job('move', kind='backups', to='ssd'), 1)
-        self.assertEqual((self.result()['state'], self.started), ('failed', []))
-        self.assertIn('must be on another drive', self.result()['message'])
+        self.assertEqual((self.last_result()['state'], self.started), ('failed', []))
+        self.assertIn('must be on another drive', self.last_result()['message'])
 
     def test_another_job_at_work_is_said(self):
         import fcntl
@@ -138,7 +141,7 @@ class MoveTests(Jobs):
         with open(self.root / 'operation.lock', 'a') as held:
             fcntl.flock(held, fcntl.LOCK_EX)
             self.assertEqual(self.run_job('move', kind='photos', to='media'), 1)
-        self.assertEqual(self.result()['state'], 'failed')
+        self.assertEqual(self.last_result()['state'], 'failed')
 
     def test_backups_moved_to_an_extra_drive_leave_their_old_place_before_setup(self):
         self.files(self.root / 'media', **{'backups/host.tar': 'h', 'photos/archive/2020.zip': 'z'})
@@ -168,7 +171,7 @@ class BackAndDeleteTests(Jobs):
 
     def test_a_way_back_that_differs_leaves_the_old_copy_as_it_was(self):
         self.moved()
-        self.differ = ['new.jpg']
+        self.differ.extend(['new.jpg'])
         self.assertEqual(self.run_job('back', kind='photos', copy=ID), 1)
         self.assertTrue((self.root / f'ssd/nekoserver-old-photos-{ID}/photos/immich-library/x.jpg').exists())
         self.assertTrue((self.root / 'media/photos/immich-library/new.jpg').exists())
@@ -208,8 +211,8 @@ class PowerCutTests(Jobs):
         self.assertEqual(self.resume(), 0)
         self.assertFalse(staging.exists())
         self.assertEqual((self.root / 'ssd/photos/immich-library/x.jpg').read_text(), 'one')
-        self.assertEqual((self.result()['state'], self.result()['power_cut']), ('undone', True))
-        self.assertIsNone(self.journal())
+        self.assertEqual((self.last_result()['state'], self.last_result()['power_cut']), ('undone', True))
+        self.assertIsNone(self.saved_journal())
 
     def test_a_cut_during_the_switch_puts_the_new_copy_out_of_the_way_again(self):
         self.files(self.root / 'ssd/photos/immich-library', **{'x.jpg': 'one'})
@@ -217,7 +220,7 @@ class PowerCutTests(Jobs):
         self.files(self.root / 'media/photos/immich-library', **{'x.jpg': 'one'})
         self.assertEqual(self.resume(), 0)
         self.assertFalse((self.root / 'media/photos/immich-library').exists())
-        self.assertEqual(self.result()['state'], 'undone')
+        self.assertEqual(self.last_result()['state'], 'undone')
 
     def test_a_cut_after_the_settings_were_written_is_finished_after_docker(self):
         self.cut('start', True)
@@ -229,7 +232,7 @@ class PowerCutTests(Jobs):
             ['systemd-run', '--no-block', '--unit=nekoserver-storage-finish', '--property=After=docker.service'],
         )
         self.assertEqual(argv[-3:], ['finish', f'--config={self.settings[0]}', f'--config={self.settings[1]}'])
-        self.assertTrue(self.journal()['committed'])
+        self.assertTrue(self.saved_journal()['committed'])
 
     def test_the_finish_copies_again_what_was_written_meanwhile_and_retires_the_old_folders(self):
         self.files(self.root / 'ssd/photos/immich-library', **{'x.jpg': 'one', 'late.jpg': 'meanwhile'})
@@ -243,8 +246,8 @@ class PowerCutTests(Jobs):
         self.assertTrue((self.root / 'media/photos/immich-library/x.jpg').exists())
         self.assertEqual((self.root / 'media/photos/immich-library/late.jpg').read_text(), 'meanwhile')
         self.assertTrue((self.root / f'ssd/nekoserver-old-photos-{ID}/photos/immich-library/x.jpg').exists())
-        self.assertEqual(self.result()['state'], 'resumed')
-        self.assertIsNone(self.journal())
+        self.assertEqual(self.last_result()['state'], 'resumed')
+        self.assertIsNone(self.saved_journal())
 
     def test_a_drive_the_job_needs_that_is_missing_keeps_the_journal(self):
         self.config['storage']['d3']['uuid'] = 'd3-uuid'
@@ -258,15 +261,15 @@ class PowerCutTests(Jobs):
         job.journal('copy', False, staging='x', here='ssd', to='d3')
         (self.root / 'drives/d3').rmdir()
         self.assertEqual(self.resume(), 1)
-        self.assertIn('is finished when Extra drive d3 is back', self.result()['message'])
-        self.assertIsNotNone(self.journal())
+        self.assertIn('is finished when Extra drive d3 is back', self.last_result()['message'])
+        self.assertIsNotNone(self.saved_journal())
 
 
 class DriveTests(Jobs):
     def setUp(self):
         super().setUp()
         self.disk = disk('sdc', serial='S-AAAA', children=[part('sdc1', fstype='ext4', uuid='u-new', size=TB4)])
-        patch = mock.patch.object(storage_jobs, 'world_now', lambda config: world(self.disk))
+        patch = mock.patch.object(storage_jobs, 'world_now', return_value=world(self.disk))
         patch.start()
         self.addCleanup(patch.stop)
 
@@ -283,13 +286,13 @@ class DriveTests(Jobs):
         with mock.patch.object(storage_jobs, 'erase') as erase:
             self.assertEqual(self.run_job('use', how='erase', disk=self.asked(), confirm='4 TB AAAB'), 1)
         erase.assert_not_called()
-        self.assertIn('Type exactly: 4 TB AAAA', self.result()['advice'])
+        self.assertIn('Type exactly: 4 TB AAAA', self.last_result()['advice'])
         self.assertFalse(self.settings[0].exists())
 
     def test_another_disk_than_the_page_showed_is_refused(self):
         asked = dict(self.asked(), serial='S-OTHER')
         self.assertEqual(self.run_job('use', how='take_over', disk=asked), 1)
-        self.assertIn('not plugged in the way the page showed it', self.result()['message'])
+        self.assertIn('not plugged in the way the page showed it', self.last_result()['message'])
 
     def test_an_erase_cut_after_the_format_adds_the_drive_only_with_the_ids_it_was_given(self):
         for there, state in ((False, 'undone'), (True, 'resumed')):
@@ -302,16 +305,16 @@ class DriveTests(Jobs):
             )
             job.journal('format', False, drive='d4', erased={'phase': 'format', 'uuid': 'u-made', 'partuuid': 'p'})
             with (
-                mock.patch.object(storage_jobs, 'uuid_there', lambda uuid: there),
+                mock.patch.object(storage_jobs, 'uuid_there', return_value=there),
                 mock.patch.object(storage_jobs, 'run', mock.Mock()),
             ):
                 storage_jobs.resume(self.config, self.settings, self.root / 'state', self.root / 'run')
             if there:
-                self.assertTrue(self.journal()['committed'])
+                self.assertTrue(self.saved_journal()['committed'])
                 self.assertEqual(self.saved()['storage']['d4']['uuid'], 'u-made')
             else:
-                self.assertEqual(self.result()['state'], state)
-                self.assertIsNone(self.journal())
+                self.assertEqual(self.last_result()['state'], state)
+                self.assertIsNone(self.saved_journal())
 
     def test_an_extra_drive_with_nothing_on_it_is_given_up(self):
         fstab = self.root / 'fstab'
@@ -329,12 +332,12 @@ class DriveTests(Jobs):
     def test_a_drive_with_data_on_it_is_never_given_up(self):
         self.config['locations']['music'] = 'd3'
         self.assertEqual(self.run_job('release', drive='d3'), 1)
-        self.assertIn('Move them first', self.result()['message'])
+        self.assertIn('Move them first', self.last_result()['message'])
 
     def test_a_drive_with_a_media_folder_of_the_person_on_it_is_never_given_up(self):
         self.config['placement'] = {'movies': {'extra': [{'path': str(self.root / 'drives/d3/My films')}]}}
         self.assertEqual(self.run_job('release', drive='d3'), 1)
-        self.assertIn('Media folders page', self.result()['message'])
+        self.assertIn('Media folders page', self.last_result()['message'])
         self.assertIn('d3', self.config['storage'])
 
     def test_an_added_drive_cut_before_its_settings_were_written_is_added_at_the_finish(self):
@@ -352,7 +355,7 @@ class DriveTests(Jobs):
         self.assertEqual(self.saved(0)['storage']['d4'], entry)
         self.assertEqual(storage_jobs.finish(self.config, self.settings, self.root / 'state', self.root / 'run'), 0)
         self.assertEqual(self.setups[0]['storage']['d4'], entry)
-        self.assertEqual(self.result()['state'], 'resumed')
+        self.assertEqual(self.last_result()['state'], 'resumed')
 
     def test_a_device_of_a_mounted_pool_of_several_is_never_offered(self):
         first = disk('sdc', serial='S-AAAA', children=[part('sdc1', fstype='btrfs', uuid='pool', mountpoints=['/x'])])
@@ -382,7 +385,7 @@ class MirrorTests(Jobs):
         )
         for patch in (
             mock.patch.dict(sys.modules, mirror_add=fake),
-            mock.patch.object(storage_jobs, 'world_now', lambda config: world(self.disk)),
+            mock.patch.object(storage_jobs, 'world_now', return_value=world(self.disk)),
         ):
             patch.start()
             self.addCleanup(patch.stop)
@@ -394,8 +397,8 @@ class MirrorTests(Jobs):
     def test_the_mirror_job_gets_the_one_erase_after_the_words_of_the_disk(self):
         self.assertEqual(self.run_job('mirror_add', array='md-md0', disk=self.asked(), confirm='4 tb aaaa'), 0)
         self.assertIs(self.handed[0]['refused'], storage_jobs.Refused)
-        self.assertEqual(self.result()['state'], 'done')
-        self.assertIsNone(self.journal())
+        self.assertEqual(self.last_result()['state'], 'done')
+        self.assertIsNone(self.saved_journal())
 
     def test_other_words_erase_nothing(self):
         self.assertEqual(self.run_job('mirror_add', array='md-md0', disk=self.asked(), confirm='4 TB'), 1)
@@ -445,6 +448,41 @@ class OutOfTheWayTests(unittest.TestCase):
             with mock.patch.object(storage_jobs, 'STATE', Path(tmp)):
                 why = migrate.nothing_at_work(lock=Path(tmp) / 'setup.lock')
         self.assertEqual(why, 'A change on the Drives page is not finished yet (restart the computer)')
+
+
+class WhatTheToolReadsTests(unittest.TestCase):
+    """The unit's arguments and the settings name the files the root tool reads: only the
+    control service's own request file, and the cards' catalogue inside the apps drive."""
+
+    def test_only_the_control_services_request_file_is_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            own = Path(tmp) / 'request.json'
+            with mock.patch.object(storage_jobs, 'REQUEST', own):
+                self.assertEqual(storage_jobs.request_path(str(own)), os.path.realpath(own))
+                for other in ('/etc/shadow', f'{tmp}/../request.json', f'{tmp}/other.json'):
+                    with self.assertRaises(SystemExit):
+                        storage_jobs.request_path(other)
+                (Path(tmp) / 'link.json').symlink_to('/etc/hostname')
+                with self.assertRaises(SystemExit):
+                    storage_jobs.request_path(f'{tmp}/link.json')
+
+    def test_the_cards_catalogue_is_read_only_inside_the_apps_drive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / 'ssd'
+            folder = data / storage_jobs.SHARED['cards']['folder']
+            folder.mkdir(parents=True)
+            outside = Path(tmp) / 'elsewhere.sqlite'
+            with sqlite3.connect(outside) as db:
+                db.execute('CREATE TABLE volumes (filesystem_uuid TEXT)')
+                db.execute("INSERT INTO volumes VALUES ('u-card')")
+            catalogue = folder / storage_jobs.SHARED['cards']['catalogue']
+            catalogue.symlink_to(outside)
+            self.assertEqual(storage_jobs.card_uuids({'data_mount': str(data)}), set())
+            catalogue.unlink()
+            shutil.copy(outside, catalogue)
+            self.assertEqual(storage_jobs.card_uuids({'data_mount': str(data)}), {'u-card'})
+            for unsafe in ('', 'relative/ssd', f'{data}/../ssd', '/'):
+                self.assertEqual(storage_jobs.card_uuids({'data_mount': unsafe}), set())
 
 
 class UnitTests(unittest.TestCase):
