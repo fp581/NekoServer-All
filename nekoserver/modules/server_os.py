@@ -29,6 +29,9 @@ HDD_GUARD = Path('/etc/nekoserver-os/storage.json')  # the HDD policy's settings
 # Checks the drives on a network storage box every minute (runtime nas_watch.rs).
 NAS_WATCH = SHARED['nas_watch']['service']
 NAS_WATCH_TIMER = SHARED['nas_watch']['timer']
+# Starts a software RAID array left waiting for a missing disk (1.0 round T1-R19).
+MIRROR_START = 'nekoserver-mirror-start.service'
+MIRROR_START_TIMER = 'nekoserver-mirror-start.timer'
 
 
 DEPENDENCIES = ['storage', 'recovery']
@@ -354,17 +357,51 @@ def on_a_nas(config):
     )
 
 
+def mirror_units(mdadm):
+    """A mirror (mdadm) that lost a disk is put together at boot from the disk left and
+    then left waiting ("inactive"): Debian's and Ubuntu's initramfs start a waiting array
+    only while they wait for the disk Linux runs from, and mdadm's own last resort (start
+    it after 30 s) is never asked for, as there is no systemd in the initramfs to ask and
+    afterwards the disk is already taken. Its mount then failed after 90 s. One minute
+    into the boot, mdadm starts each array it put together part-way, as its last resort
+    would have; with nothing waiting it changes nothing."""
+    return {
+        MIRROR_START: '[Unit]\nDescription=NekoServer start a mirror that lost a disk on the disk left\n'
+        'DefaultDependencies=no\n[Service]\nType=oneshot\n'
+        f'ExecStart=-{mdadm} --incremental --run --scan\n',
+        MIRROR_START_TIMER: '[Unit]\nDescription=NekoServer wait for the disks of a mirror before starting it '
+        'without one\nDefaultDependencies=no\n[Timer]\nOnBootSec=60\nAccuracySec=1s\n'
+        '[Install]\nWantedBy=sysinit.target\n',
+    }
+
+
+def own_unit(path):
+    return path.is_file() and path.read_text().startswith('[Unit]\nDescription=NekoServer ')
+
+
 def install_drive_return(config, project, run=subprocess.run):
     binary = native_runtime.deploy(project, config, Path('/usr/local/lib/nekoserver-os') / ('v' + VERSION))
-    check_units([DRIVE_UNIT, NAS_WATCH, NAS_WATCH_TIMER], 'Drive return')
+    check_units([DRIVE_UNIT, NAS_WATCH, NAS_WATCH_TIMER, MIRROR_START, MIRROR_START_TIMER], 'Drive return')
     atomic_json(safe_path(DRIVE_SETTINGS), native_runtime.storage_config(config))
     units = {DRIVE_UNIT: drive_unit(binary, drive_devices(config, run))}
     if on_a_nas(config):
         units.update(nas_watch_units(binary))
+    mdadm = shutil.which('mdadm')
+    if mdadm:
+        units.update(mirror_units(mdadm))
     write_units(units)
     run(['systemctl', 'daemon-reload'], check=True, capture_output=True, timeout=30)
     # Re-enabled each run: the drives' IDs (and so the devices it waits for) may change.
     run(['systemctl', 'reenable', DRIVE_UNIT], check=True, capture_output=True, timeout=30)
+    # Written on every run, so a server set up before gets it too (1.0 round T1-R19).
+    if mdadm:
+        run(['systemctl', 'reenable', MIRROR_START_TIMER], check=True, capture_output=True, timeout=30)
+    else:
+        run(['systemctl', 'disable', MIRROR_START_TIMER], check=False, capture_output=True, timeout=30)
+        for name in (MIRROR_START, MIRROR_START_TIMER):
+            unit = Path('/etc/systemd/system') / name
+            if own_unit(unit):
+                unit.unlink()
     if on_a_nas(config):
         run(['systemctl', 'enable', '--now', NAS_WATCH_TIMER], check=True, capture_output=True, timeout=30)
     else:
