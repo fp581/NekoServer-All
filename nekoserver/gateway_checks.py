@@ -36,7 +36,7 @@ def tailnet_row(config, row):
             and saved.get('host') == node
             and saved.get('status') == 'configured'
             and saved.get('owned') == expected
-            and g.only(g.serve_state(), set(expected['TCP'])) == expected
+            and g.here(g.serve_state(), set(expected['TCP']), node) == expected
         )
         # Matching routes are not enough: without Tailscale's certificate every
         # address hangs at the TLS handshake (one try here, no wait).
