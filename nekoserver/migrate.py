@@ -387,6 +387,8 @@ def nekoserver_units(states='active'):
 
 
 AT_WORK = 'activating,deactivating,reloading'
+# Running, or at work: what is still there after a stop.
+UP_OR_AT_WORK = 'active,' + AT_WORK
 TIMER = '.timer'
 # How long a job at work is waited for once the timers are stopped: the dashboard's
 # collector, the phone alerts and the heartbeat run every minute for a few seconds (the
@@ -452,22 +454,20 @@ def stop_writers(journal=JOURNAL, out=print, sleep=time.sleep, note=None, own=()
         run(['systemctl', 'stop', unit], 600, check=False)
     # A timer still active would start a backup during the quiet copy and the switch
     # (the review of 0.47.9: a stop that failed was passed over).
-    ticking = [u for u in nekoserver_units('active,' + AT_WORK) if u.endswith(TIMER)]
+    ticking = [u for u in nekoserver_units(UP_OR_AT_WORK) if u.endswith(TIMER)]
     if ticking:
         raise RuntimeError('These did not stop: ' + ', '.join(ticking))
     busy = jobs_at_work(out, sleep, own=own)
     if busy:
         raise RuntimeError(', '.join(busy) + ' is at work (a backup or another job); try again once it has finished')
     # What is left at work is QUIET (the check above): stopped too, and started again after.
-    running = [u for u in nekoserver_units('active,' + AT_WORK) if not u.endswith(TIMER) and u not in own]
+    running = [u for u in nekoserver_units(UP_OR_AT_WORK) if not u.endswith(TIMER) and u not in own]
     rest = list(dict.fromkeys(active(WRITERS) + running))
     stopped = timers + rest
     note(stopped)
     for unit in rest:
         run(['systemctl', 'stop', unit], 600, check=False)
-    still = active(WRITERS) + [
-        u for u in nekoserver_units('active,' + AT_WORK) if not u.endswith(TIMER) and u not in own
-    ]
+    still = active(WRITERS) + [u for u in nekoserver_units(UP_OR_AT_WORK) if not u.endswith(TIMER) and u not in own]
     if still:
         raise RuntimeError('These did not stop: ' + ', '.join(still))
     return stopped
