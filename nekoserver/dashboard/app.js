@@ -245,6 +245,7 @@ const ROUTES = {
   health: 'Server health',
   updates: 'Updates',
   media: 'Media folders',
+  drives: 'Drives',
   cards: 'Backup cards',
   attention: 'Needs attention',
   help: 'Help'
@@ -254,7 +255,7 @@ const LIVE_ROUTES = new Set(['home', 'hardware', 'sensors']);
 /* Pages whose buttons change something: they read whether this device may (the PIN).
  * Ask Neko is one: asking and approving a fix need the PIN; Updates too (an update, an
  * upgrade). */
-const CONTROL_ROUTES = new Set(['cooling', 'apps', 'processes', 'home', 'ask', 'media', 'cards', 'updates']);
+const CONTROL_ROUTES = new Set(['cooling', 'apps', 'processes', 'home', 'ask', 'media', 'drives', 'cards', 'updates']);
 /* Short, stable error codes. E10-E42 come from the server; E01, E02 and E12 are
  * noticed by this page. DASHBOARD.md lists the same table. */
 const ERRORS = {
@@ -1035,7 +1036,7 @@ function problem() {
 }
 /* Pages whose work is done by the control service: while it can't be reached (E21), they
  * say so at the top, not only after a button is pressed or a PIN typed. */
-const NEEDS_CONTROL = new Set(['cooling', 'media', 'cards', 'updates', 'ask']);
+const NEEDS_CONTROL = new Set(['cooling', 'media', 'drives', 'cards', 'updates', 'ask']);
 function renderProblem(code, s) {
   $('problem').hidden = !code;
   if (!code) {
@@ -6288,6 +6289,656 @@ async function mediaBrowse(path) {
   (box.querySelector('#media-use') || box.querySelector('button'))?.focus();
 }
 
+/* ---------- drives ---------- */
+/* The Drives page (DASHBOARD.md, "Drives"): every disk and what it is, where each kind of
+ * data is kept, and the changes to them: use a disk, stop using one, move a kind of data,
+ * its old copy (move back, delete) and a mirror's replacement drive. The page only asks:
+ * the control service checks each request and the server's own tool does it as root, with
+ * a journal, so a power cut is finished or undone at the next start. Every change needs
+ * the PIN; erasing a disk and deleting an old copy ask for it again, with the words the
+ * server gives typed to confirm (1.0.1-contract.md). */
+const DRIVES = {
+  answer: null, // storage-state's last answer: {looked_at, look, storage_job}
+  asked: 0, // when storage-state was last asked (ms), 0: not since the page was opened
+  looking: 0, // when a look was asked for (ms), 0: none at work
+  lookedBefore: null, // look.json's time before that look
+  lookTried: false, // the first look was asked for since the page was opened
+  refused: null, // the server's refusal of the last look, or null
+  timer: 0
+};
+const DRIVES_POLL = 2000; // how often the page looks while a change is at work
+const DRIVES_AGAIN = 60000; // and otherwise, while the page is open
+const DRIVES_PIN = 'Your drives are changed as the server’s administrator, so it needs your PIN on every device.';
+// Photos and Nextcloud files have one place each (the plan's part C): moved, never split.
+const ONE_PLACE = {
+  photos: 'Photos stay in one place. Use Move to… to put them on a bigger drive.',
+  cloud: 'Nextcloud files stay in one place. Use Move to… to put them on a bigger drive.'
+};
+/* The words a person types to confirm, compared as the server compares them: case and
+ * runs of spaces do not count. */
+function confirmMatches(typed, wanted) {
+  const flat = v =>
+    String(v ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ');
+  return !!flat(wanted) && flat(typed) === flat(wanted);
+}
+function driveLook() {
+  return object(object(DRIVES.answer).look);
+}
+/* The running job and the last one's end: storage-state's answer, else /api/status's. */
+function storageJob() {
+  return object(object(DRIVES.answer).storage_job || state.status?.storage_job);
+}
+function jobWorking() {
+  const job = storageJob();
+  return job.working === true || job.unfinished === true;
+}
+/* What the last job's end says, as the page shows it: [badge state, title, words] or null. */
+function driveOutcome(job) {
+  const j = object(job),
+    r = object(j.result);
+  if (j.working) {
+    return ['starting', 'Working on it…', text(j.step_words)];
+  }
+  if (j.unfinished) {
+    return [
+      'warning',
+      'Finished at the next start',
+      text(r.message, 'A change was cut off. It is finished or put back when the server starts again.')
+    ];
+  }
+  const cut = r.power_cut === true ? ' The power went off during it.' : '';
+  return firstOf(
+    [
+      [!j.result, null],
+      [r.state === 'done', ['pass', 'Done', text(r.message)]],
+      [r.state === 'resumed', ['pass', 'Finished after a restart', text(r.message) + cut]],
+      [r.state === 'undone', ['warning', 'Put back as it was', text(r.message) + cut]],
+      [r.state === 'failed', ['fail', 'Not done', text(r.message)]],
+      // A run that ended without saying how: never "working" for ever.
+      [r.state === 'working', ['fail', 'Not done', 'It stopped before it had finished. Nothing else was changed.']]
+    ],
+    null
+  );
+}
+async function drivesState() {
+  DRIVES.asked = Date.now();
+  const answer = await postControl('storage-state');
+  clearTimeout(DRIVES.timer);
+  if (answer.ok) {
+    DRIVES.answer = answer;
+    DRIVES.refused = null;
+    const working = object(answer.storage_job).working === true;
+    // A look ends when look.json is newer than before it was asked (or after a minute).
+    if (
+      DRIVES.looking &&
+      !working &&
+      (answer.looked_at !== DRIVES.lookedBefore || Date.now() - DRIVES.looking > 60000)
+    ) {
+      DRIVES.looking = 0;
+    }
+    if (answer.looked_at === null && !DRIVES.looking && !DRIVES.lookTried && !working) {
+      void drivesLookNow(); // never looked at: the page asks for the first look itself
+    }
+  } else if (answer.error === 'E43') {
+    DRIVES.answer = null;
+  } else if (!DRIVES.answer) {
+    DRIVES.refused = answer; // said on the page, never "Asking the server…" for ever
+  }
+  if (DRIVES.looking || jobWorking()) {
+    DRIVES.timer = setTimeout(() => void drivesState(), DRIVES_POLL);
+  }
+  if (state.route === 'drives') {
+    withFocus(renderDrives);
+  }
+  return answer;
+}
+async function drivesLookNow() {
+  DRIVES.lookTried = true;
+  DRIVES.lookedBefore = DRIVES.answer ? DRIVES.answer.looked_at : null;
+  DRIVES.looking = Date.now();
+  const answer = await postControl('storage-look');
+  DRIVES.refused = answer.ok || answer.error === 'E47' ? null : answer; // busy: the page follows the job at work
+  if (!answer.ok) {
+    DRIVES.looking = 0;
+  }
+  await drivesState();
+}
+/* A change sent: refused at once with its words, else followed until it ends. */
+async function drivesChange(op, body, starting) {
+  const answer = await postControl(op, body);
+  if (answer.ok) {
+    toast(starting);
+  } else if (answer.error === 'E43' && state.control?.access?.pin_set) {
+    unlockDialog(() => void drivesChange(op, body, starting), 'DRIVES', DRIVES_PIN);
+    return answer;
+  } else {
+    toast(controlMessage(answer));
+  }
+  await drivesState();
+  return answer;
+}
+function drivesUnlock() {
+  if (state.control?.access?.pin_set === false) {
+    toast('Drives need a PIN. Run setup again in a terminal on the server to choose one.');
+    return;
+  }
+  unlockDialog(() => void drivesState(), 'DRIVES', DRIVES_PIN);
+}
+const TRANSPORTS = { nvme: 'NVMe', sata: 'SATA', usb: 'USB', scsi: 'SCSI', iscsi: 'iSCSI' };
+/* "WD Red · 4 TB · SATA HDD": what a disk is, in a line. */
+function diskLine(d) {
+  const how = firstOf(
+    [
+      [d.rotational === true, 'HDD'],
+      [d.rotational === false, 'SSD']
+    ],
+    ''
+  );
+  const transport = text(TRANSPORTS[d.transport], text(d.transport).toUpperCase());
+  return joined([text(d.model, 'Disk'), bytes(d.size_bytes), joined([transport, how]).replace(' · ', ' ')]);
+}
+/* The erase confirm, the same for a new drive (A) and a mirror's replacement (D): exactly
+ * the model, serial, size, what is on it and its filesystem; the person types the words
+ * the server gives, and the PIN again. `send(confirm, pin)` answers the server's answer. */
+function eraseDialog(row, title, action, send) {
+  const facts = el('dl', 'drive-facts');
+  const fs = object(row.fs);
+  const fsWords = row.fs
+    ? joined([
+        text(fs.type),
+        fs.label ? '“' + fs.label + '”' : '',
+        numeric(fs.used_bytes) ? bytes(fs.used_bytes) + ' used' : ''
+      ])
+    : 'None that this server can read';
+  for (const [term, value] of [
+    ['Model', text(row.model, 'Not known')],
+    ['Serial', text(row.serial, 'Not known')],
+    ['Size', bytes(row.size_bytes)],
+    ['On it', text(row.on_it, 'Nothing')],
+    ['Filesystem', fsWords]
+  ]) {
+    facts.append(el('dt', '', term), el('dd', '', value));
+  }
+  typedDialog(
+    'ERASE A DRIVE',
+    title,
+    [
+      el('p', '', 'Everything on this disk is erased, and it cannot be undone. Check that this is the disk you mean:'),
+      facts
+    ],
+    text(row.confirm_words),
+    action,
+    send
+  );
+}
+/* A dialog that needs words typed and the PIN again before its button works. */
+function typedDialog(eyebrow, title, intro, wanted, action, send) {
+  const form = el('form', 'unlock drive-confirm');
+  const typed = el('input'),
+    pin = el('input');
+  Object.assign(typed, { type: 'text', id: 'drive-confirm', autocomplete: 'off', spellcheck: false });
+  Object.assign(pin, { type: 'password', id: 'drive-pin', inputMode: 'numeric', autocomplete: 'off', maxLength: 8 });
+  pin.pattern = '[0-9]{4,8}';
+  const typedField = el('label', 'field', 'Type ' + wanted + ' to confirm'),
+    pinField = el('label', 'field', 'Your PIN');
+  typedField.append(typed);
+  pinField.append(pin);
+  const go = el('button', 'button danger', action);
+  go.type = 'submit';
+  go.disabled = true;
+  const fit = () => {
+    go.disabled = !confirmMatches(typed.value, wanted) || !/^\d{4,8}$/.test(pin.value);
+  };
+  typed.addEventListener('input', fit);
+  pin.addEventListener('input', fit);
+  const said = el('p', 'dialog-error');
+  said.setAttribute('role', 'alert');
+  said.hidden = true;
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    go.disabled = true;
+    said.hidden = true;
+    const answer = await send(typed.value.trim(), pin.value);
+    if (answer.ok) {
+      $('dialog').close();
+      return;
+    }
+    said.textContent = ['E44', 'E45'].includes(answer.error) ? pinRefusal(answer) : controlMessage(answer);
+    said.hidden = false;
+    fit();
+  });
+  const cancel = button('Cancel', () => $('dialog').close(), 'button secondary');
+  const actions = el('div', 'dialog-actions');
+  actions.append(go, cancel);
+  form.append(typedField, pinField, actions);
+  openDialog(eyebrow, title, [...intro, form, said]);
+  requestAnimationFrame(() => typed.focus());
+}
+/* Sent from a dialog: its own refusal is said inside it, so only an accepted one is followed. */
+async function drivesSent(op, body, starting) {
+  const answer = await postControl(op, body);
+  if (answer.ok) {
+    toast(starting);
+    await drivesState();
+  }
+  return answer;
+}
+function useDisk(row) {
+  const body = { disk: row.by_id, serial: row.serial, size_bytes: row.size_bytes };
+  if (row.offer === 'take_over') {
+    confirmDialog(
+      'DRIVES',
+      'Use ' + text(row.model, 'this disk') + '?',
+      'It becomes an Extra drive, connected at every start. Nothing on it is erased: its files stay as they are.',
+      'Use this drive',
+      () => void drivesChange('drive-use', { ...body, how: 'take_over' }, 'Connecting the drive…')
+    );
+    return;
+  }
+  eraseDialog(row, 'Erase ' + text(row.model, 'this disk') + '?', 'Erase and prepare', (confirm, pin) =>
+    drivesSent('drive-use', { ...body, how: 'erase', confirm, pin }, 'Erasing and preparing the drive…')
+  );
+}
+function releaseDisk(d) {
+  confirmDialog(
+    'DRIVES',
+    'Stop using ' + text(d.drive_words, 'this drive') + '?',
+    'It is disconnected and no longer connected at every start. Nothing on it is erased.',
+    'Stop using it',
+    () => void drivesChange('drive-release', { drive: d.drive }, 'Disconnecting the drive…')
+  );
+}
+/* What can be done with a disk, from the root tool's last look (never worked out here). */
+function diskActions(d, row, busy) {
+  const nodes = [],
+    actions = el('div', 'update-actions');
+  if (!row) {
+    nodes.push(hint('Connected since the last look. Press Look again to see what it can be used for.'));
+    return nodes;
+  }
+  if (row.offer === 'take_over' || row.offer === 'erase') {
+    const go = button(
+      row.offer === 'erase' ? 'Erase and prepare' : 'Use this drive',
+      () => useDisk(row),
+      row.offer === 'erase' ? 'button small danger' : 'button small'
+    );
+    go.setAttribute('aria-label', go.textContent + ': ' + diskLine(d));
+    go.disabled = busy;
+    actions.append(go);
+    if (row.offer === 'erase') {
+      nodes.push(hint('NekoServer cannot use it as it is (' + text(row.on_it, 'nothing readable on it') + ').'));
+    }
+  } else if (row.refused && d.role === 'none') {
+    nodes.push(hint(text(object(row.refused).words, 'It cannot be used now.')));
+  }
+  if (d.role === 'extra' && row.can_release) {
+    const stop = button('Stop using this drive', () => releaseDisk(d));
+    stop.disabled = busy;
+    actions.append(stop);
+  } else if (d.role === 'extra' && row.why_not) {
+    nodes.push(hint(text(row.why_not)));
+  }
+  if (actions.children.length) {
+    nodes.push(actions);
+  }
+  return nodes;
+}
+function driveDiskCard(d, look, busy, signed) {
+  const card = el('article', 'card drive-disk'),
+    free = text(d.role, 'none') === 'none';
+  // A disk in use is named by what it is to NekoServer; one not in use by its model.
+  card.append(
+    cardHeading(
+      free ? text(d.model, 'Disk') : text(d.drive_words, text(d.role_words, 'Disk')),
+      badge(free ? 'unknown' : 'pass', free ? 'Not in use' : 'In use')
+    )
+  );
+  card.append(el('p', '', diskLine(d)));
+  if (d.serial) {
+    card.append(el('p', 'drive-serial', 'Serial ' + d.serial));
+  }
+  if (numeric(d.used_bytes) && numeric(d.free_bytes) && d.used_bytes + d.free_bytes > 0) {
+    const total = d.used_bytes + d.free_bytes;
+    card.append(meter((d.used_bytes / total) * 100), el('p', '', bytes(d.free_bytes) + ' free of ' + bytes(total)));
+  }
+  const array = list(state.status?.arrays).find(a => a.id === d.array);
+  if (array) {
+    card.append(el('p', '', 'Part of ' + arrayShown(array)));
+  }
+  if (signed && look) {
+    card.append(
+      ...diskActions(
+        d,
+        list(look.disks).find(r => r.by_id === d.by_id),
+        busy
+      )
+    );
+  }
+  return card;
+}
+function moveDialog(k, busy) {
+  const targets = list(k.targets);
+  const nodes = [
+    el(
+      'p',
+      '',
+      'Your ' +
+        text(k.words, 'data').toLowerCase() +
+        ' are copied while the apps keep running; the apps that use them stop only for the last copy. The copy on the ' +
+        text(k.place_words, 'drive') +
+        ' stays there until you delete it.'
+    )
+  ];
+  const choices = el('div', 'row-list');
+  for (const t of targets) {
+    const row = el('div', 'row');
+    const info = el('div');
+    info.append(el('h3', '', text(t.words, t.to)));
+    if (!t.ok) {
+      info.append(el('p', 'reason', text(t.why_not, 'It cannot take them.')));
+    }
+    row.append(info);
+    if (t.ok) {
+      const go = button(
+        'Move here',
+        () => {
+          $('dialog').close();
+          void drivesChange(
+            'data-move',
+            { kind: k.kind, to: t.to },
+            'Moving your ' + text(k.words).toLowerCase() + '…'
+          );
+        },
+        'button small'
+      );
+      go.setAttribute('aria-label', 'Move to ' + text(t.words, t.to));
+      go.disabled = busy;
+      row.append(go);
+    }
+    choices.append(row);
+  }
+  if (!targets.length) {
+    nodes.push(hint('No other drive is connected. Add one above first.'));
+  }
+  openDialog('MOVE ' + text(k.words, 'data').toUpperCase(), 'Move to…', [...nodes, choices]);
+}
+function moveBack(k, copy) {
+  confirmDialog(
+    'DRIVES',
+    'Move your ' + text(k.words).toLowerCase() + ' back to the ' + text(copy.place_words, 'drive') + '?',
+    'The old copy is used again, with what changed since copied over first. The copy where they are now stays there until you delete it.',
+    'Move back',
+    () =>
+      void drivesChange(
+        'data-move-back',
+        { kind: k.kind, copy: copy.copy },
+        'Moving your ' + text(k.words).toLowerCase() + ' back…'
+      )
+  );
+}
+function deleteOld(k, copy) {
+  typedDialog(
+    'DELETE THE OLD COPY',
+    'Delete the old copy of your ' + text(k.words).toLowerCase() + '?',
+    [
+      el(
+        'p',
+        '',
+        'The old copy on the ' +
+          text(copy.place_words, 'drive') +
+          ' (' +
+          bytes(copy.bytes) +
+          ') is deleted, and it cannot be undone. Your ' +
+          text(k.words).toLowerCase() +
+          ' on the ' +
+          text(k.place_words, 'drive') +
+          ' are not touched.'
+      )
+    ],
+    text(copy.delete_words),
+    'Delete the old copy',
+    (confirm, pin) =>
+      drivesSent('data-delete-old', { kind: k.kind, copy: copy.copy, confirm, pin }, 'Deleting the old copy…')
+  );
+}
+function oldCopyRow(k, busy, signed) {
+  const copy = object(k.old_copy),
+    row = el('div', 'drive-old');
+  row.append(
+    el(
+      'p',
+      '',
+      'Old copy on the ' + text(copy.place_words, 'drive') + ': ' + bytes(copy.bytes) + ', from ' + ago(copy.at) + '.'
+    )
+  );
+  if (signed) {
+    const actions = el('div', 'update-actions');
+    const back = button('Move back', () => moveBack(k, copy)),
+      gone = button('Delete the old copy', () => deleteOld(k, copy), 'button small danger');
+    back.disabled = gone.disabled = busy;
+    actions.append(back, gone);
+    row.append(actions);
+  }
+  return row;
+}
+function kindCard(k, busy, signed, outcome) {
+  const card = el('article', 'card drive-kind');
+  card.append(cardHeading(text(k.words, k.kind), badge('pass', text(k.place_words, 'Not known'))));
+  card.append(
+    el(
+      'p',
+      '',
+      numeric(k.bytes) ? bytes(k.bytes) + ', measured ' + ago(k.measured_at) : 'Size: measured at the next look'
+    )
+  );
+  if (ONE_PLACE[k.kind]) {
+    card.append(hint(ONE_PLACE[k.kind]));
+  }
+  if (outcome) {
+    card.append(el('p', outcome[0] === 'fail' ? 'reason' : 'drive-last', 'Last change: ' + outcome[1]));
+  }
+  if (k.old_copy) {
+    card.append(oldCopyRow(k, busy, signed));
+  }
+  if (signed) {
+    const move = button('Move to…', () => moveDialog(k, busy), 'button small');
+    move.setAttribute('aria-label', 'Move ' + text(k.words, k.kind).toLowerCase() + ' to another drive');
+    move.disabled = busy || !list(k.targets).some(t => t.ok);
+    const actions = el('div', 'update-actions');
+    actions.append(move);
+    card.append(actions);
+    if (move.disabled && !busy) {
+      card.append(
+        hint(list(k.targets).length ? 'No other drive has room for them now.' : 'No other drive to move them to.')
+      );
+    }
+  }
+  return card;
+}
+/* A mirror that lost a drive: the disks the root tool would take as its replacement. */
+function mirrorCard(a, look, busy) {
+  const card = el('article', 'card drive-mirror'),
+    [kind, label] = ARRAY_BADGES[a.status] || ARRAY_BADGES.unknown;
+  card.append(cardHeading(arrayShown(a), badge(kind, label)));
+  if (a.status === 'rebuilding') {
+    card.append(
+      numeric(a.progress) ? meter(a.progress) : el('span'),
+      hint(
+        'Rebuilding' +
+          (numeric(a.progress) ? ': ' + a.progress + ' % done' : '') +
+          '. Keep the server on and every drive connected until it finishes.'
+      )
+    );
+    return card;
+  }
+  card.append(el('h4', '', 'Add the replacement drive'));
+  const offers = list(object(look.mirror_offers)[a.id]);
+  const usable = offers.filter(o => o.ok);
+  for (const o of offers) {
+    // What the disk is (/api/status) with what the root tool read of it (look.json).
+    const row = {
+      ...list(state.status?.disks).find(d => d.by_id === o.by_id),
+      ...list(look.disks).find(r => r.by_id === o.by_id),
+      by_id: o.by_id
+    };
+    const line = el('div', 'row');
+    const info = el('div');
+    info.append(el('h3', '', diskLine(row)));
+    if (!o.ok) {
+      info.append(el('p', 'reason', text(o.words, 'It cannot be used for this mirror.')));
+    }
+    line.append(info);
+    if (o.ok) {
+      const go = button(
+        'Use this one',
+        () =>
+          eraseDialog(
+            row,
+            'Erase ' + text(row.model, 'this disk') + ' for the mirror?',
+            'Erase and add',
+            (confirm, pin) =>
+              drivesSent(
+                'mirror-add',
+                { array: a.id, disk: row.by_id, serial: row.serial, size_bytes: row.size_bytes, confirm, pin },
+                'Adding the drive to the mirror…'
+              )
+          ),
+        'button small danger'
+      );
+      go.setAttribute('aria-label', 'Use ' + diskLine(row) + ' as the replacement');
+      go.disabled = busy;
+      line.append(go);
+    }
+    card.append(line);
+  }
+  if (!usable.length) {
+    card.append(hint('Connect a drive at least as big as the one that was lost, then press Look again.'));
+  }
+  return card;
+}
+function drivesOutcomeBox(job) {
+  const said = driveOutcome(job);
+  if (!said) {
+    return [];
+  }
+  const [level, title, message] = said,
+    r = object(object(job).result),
+    box = el('div', 'callout media-outcome');
+  box.setAttribute('role', 'status');
+  box.append(cardHeading(job.working ? title : 'Last change', badge(level, job.working ? 'Working' : title)));
+  if (message) {
+    box.append(longText('', message));
+  }
+  if (job.working) {
+    box.append(...drivesProgress(object(job.progress)));
+    box.append(hint('You can close this page: the change goes on, and the page shows how it ends.'));
+  } else if (r.advice && level !== 'pass') {
+    box.append(el('h4', '', 'What to do'), longText('', text(r.advice)));
+  }
+  if (!job.working && numeric(r.finished_at) && r.finished_at > 0) {
+    box.append(hint('Ended ' + ago(r.finished_at) + '.'));
+  }
+  return [box];
+}
+function drivesProgress(p) {
+  if (numeric(p.bytes_total) && p.bytes_total > 0 && numeric(p.bytes_done)) {
+    const bar = el('progress', 'media-progress');
+    bar.max = p.bytes_total;
+    bar.value = Math.min(p.bytes_done, p.bytes_total);
+    bar.setAttribute('aria-label', 'Done so far');
+    const files =
+      numeric(p.files_total) && p.files_total > 0 ? p.files_done + ' of ' + plural(p.files_total, 'file') + ', ' : '';
+    return [bar, el('p', 'media-progress-said', files + bytes(p.bytes_done) + ' of ' + bytes(p.bytes_total))];
+  }
+  if (numeric(p.percent)) {
+    return [meter(p.percent), el('p', 'media-progress-said', Math.round(p.percent) + ' % done')];
+  }
+  return [];
+}
+function drivesLocked() {
+  if (state.controlError) {
+    return [hint(codeLine(state.controlError))];
+  }
+  const pin = state.control?.access?.pin_set;
+  return [
+    hint(
+      pin === false
+        ? 'Drives need a PIN. Run setup again in a terminal on the server to choose one.'
+        : 'Your drives are shown here. Changing them needs your PIN, on every device (the server too).'
+    ),
+    pin === false ? el('span') : button('Unlock drives', drivesUnlock, 'button small')
+  ];
+}
+function drivesSection(title, nodes) {
+  const section = el('section', 'drive-section');
+  section.append(el('h3', 'drive-section-title', title), ...nodes);
+  return section;
+}
+/* Signed in: storage-state asked for when the page opens and every minute it stays open;
+ * signed out: nothing of the last answer is kept. */
+function drivesFollow(signed) {
+  if (!signed) {
+    DRIVES.answer = null;
+    DRIVES.asked = 0;
+    DRIVES.lookTried = false;
+    DRIVES.refused = null;
+  } else if (!DRIVES.asked || Date.now() - DRIVES.asked > DRIVES_AGAIN) {
+    void drivesState();
+  }
+}
+/* What is at the top of the page: the job, or why the disks are not shown yet. */
+function drivesTop(signed, look, job) {
+  if (!signed) {
+    return drivesLocked();
+  }
+  const nodes = drivesOutcomeBox(job);
+  if (DRIVES.refused) {
+    nodes.push(longText('reason', 'Your disks could not be looked at now. ' + controlMessage(DRIVES.refused)));
+  } else if (!look || DRIVES.looking) {
+    nodes.push(hint(DRIVES.answer ? 'Looking at your disks…' : 'Asking the server…'));
+  }
+  return nodes;
+}
+function drivesGrid(rows, draw, title, none) {
+  const grid = el('div', 'card-grid auto');
+  grid.append(...rows.map(draw));
+  return drivesSection(title, rows.length ? [grid] : [empty(none)]);
+}
+function renderDrives() {
+  const s = state.status || {},
+    signed = signedIn() && !state.controlError;
+  drivesFollow(signed);
+  const look = signed && DRIVES.answer?.look ? driveLook() : null;
+  const job = storageJob(),
+    busy = jobWorking();
+  const nodes = drivesTop(signed, look, job);
+  const mirrors = list(s.arrays).filter(a => ['degraded', 'rebuilding'].includes(a.status));
+  if (signed && mirrors.length) {
+    nodes.push(drivesGrid(mirrors, a => mirrorCard(a, look || {}, busy), 'A mirror lost a drive', ''));
+  }
+  nodes.push(drivesGrid(list(s.disks), d => driveDiskCard(d, look, busy, signed), 'Disks', 'No disks reported yet.'));
+  // The last job's end is said on its kind's card too.
+  const outcome = job.working ? null : driveOutcome(job),
+    lastKind = text(object(job.result).kind);
+  nodes.push(
+    drivesGrid(
+      list(s.data_kinds),
+      k => kindCard(k, busy, signed, k.kind === lastKind ? outcome : null),
+      'Where your data is',
+      'Nothing reported yet.'
+    )
+  );
+  if (signed) {
+    const again = button('Look again', () => void drivesLookNow(), 'button small secondary');
+    again.disabled = busy || !!DRIVES.looking;
+    nodes.push(again);
+  }
+  put('drives-page', nodes);
+}
+
 /* ---------- routing & rendering ---------- */
 function markActive() {
   for (const a of document.querySelectorAll('[data-route]')) {
@@ -6345,6 +6996,7 @@ const PAGES = {
   health: renderHealth,
   updates: renderUpdates,
   media: renderMedia,
+  drives: renderDrives,
   cards: renderCards,
   help: renderHelp
 };
