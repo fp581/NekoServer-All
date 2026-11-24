@@ -193,6 +193,33 @@ class BannedDownloadClientTests(unittest.TestCase):
         self.assertIn('ends by itself within an hour', said)
         self.assertNotIn('Settings, Download Clients', said)
 
+    def test_a_qbittorrent_that_does_not_come_back_is_said_as_such_not_as_a_ban(self):
+        rig = Rig()
+        made = []
+
+        def qbittorrent():
+            fake = Rig.qbittorrent(rig)
+            if made:  # the restart was made: it never takes a login again
+                fake.login.side_effect = RuntimeError('qBittorrent did not answer')
+            return fake
+
+        restarted = rig.run
+
+        def restart(argv, timeout, what=None):
+            made.append(argv)
+            return restarted(argv, timeout, what)
+
+        rig.qbittorrent = qbittorrent
+        rig.run = restart
+        clock = iter(range(0, 1000, 30))
+        with mock.patch('time.monotonic', side_effect=lambda: next(clock)):
+            said, error = self.connected(rig)
+        self.assertEqual(len(made), 1)
+        self.assertIn('sonarr, radarr', error)
+        self.assertIn('qBittorrent did not answer after its restart', said)
+        self.assertIn('sudo bash install.sh  again once it runs', said)
+        self.assertNotIn('ends by itself within an hour', said)
+
 
 if __name__ == '__main__':
     unittest.main()

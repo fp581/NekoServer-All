@@ -758,7 +758,9 @@ def clear_ban(root, login, refused, client_factory=None):
         print(f'qBittorrent was not restarted ({exc})')
         return still_refused(refused)
     print('qBittorrent was restarted to end the ban it put on ' + ', '.join(app for app, _, _ in refused))
-    answers_again(login, client_factory)
+    if not answers_again(login, client_factory):
+        print('qBittorrent did not answer after its restart; run  sudo bash install.sh  again once it runs')
+        return [app for app, _, _ in refused]
     left = []
     for app, key, entry in refused:
         try:
