@@ -80,6 +80,30 @@ class DrivesPageTests(unittest.TestCase):
             ['WDC WD40EFRX · 4.0 TB · SATA HDD', 'Samsung 990 · 1.0 TB · NVMe SSD', 'Disk · 16.0 GB · USB', 'Disk · —'],
         )
 
+    def test_a_move_says_all_apps_pause_for_its_last_step_and_how_long_that_took_last_time(self):
+        said = page(
+            ('moveWords', ['photos', None]),
+            ('moveWords', ['photos', {'state': 'done', 'paused_seconds': None}]),
+            ('moveWords', ['films', {'state': 'done', 'paused_seconds': 42}]),
+            ('moveWords', ['films', {'state': 'undone', 'paused_seconds': 1}]),
+            ('moveWords', ['films', {'state': 'done', 'paused_seconds': -3}]),
+            ('moveWords', ['films', {'state': 'done', 'paused_seconds': '9'}]),
+        )
+        plain = (
+            'are copied while the apps keep running. For the last step all apps pause and start again by themselves.'
+        )
+        self.assertEqual(
+            said,
+            [
+                f'Your photos {plain}',
+                f'Your photos {plain}',
+                f'Your films {plain} Last time that took 42 seconds.',
+                f'Your films {plain} Last time that took 1 second.',
+                f'Your films {plain}',
+                f'Your films {plain}',
+            ],
+        )
+
     def test_the_page_is_in_the_menu_and_needs_the_control_service(self):
         html = (ROOT / 'dashboard/index.html').read_text(encoding='utf-8')
         nav = re.findall(r'data-route="([a-z]+)"', html)
