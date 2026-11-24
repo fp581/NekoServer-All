@@ -56,7 +56,10 @@ const CALLS = new Set([
   'driveOffer',
   'cardsTaskLine',
   'monitorBadge',
-  'backupHolds'
+  'backupHolds',
+  'driveOutcome',
+  'diskLine',
+  'confirmMatches'
 ]);
 /* Calls answered from another function's result, with more of it; the ask* and media*
    ones run a piece of the page on a page that keeps what is put on it (ASK_PAGE below). */
@@ -191,6 +194,7 @@ const SPECIAL = {
     app.collectIssues(app.validStatus(argument)).map(i => ({ ...summary(i), detail: i.detail, guide: i.guide })),
   backupSummary: argument => app.backupSummary(app.validStatus(argument)),
   jobLine: ([label, job]) => app.jobLine(label, job),
+  confirmMatches: ([typed, wanted]) => app.confirmMatches(typed, wanted),
   upgradeAtWork: ([release, s, asked]) => app.upgradeAtWork(release, s, asked),
   gettingStarted: argument => app.gettingStarted(app.validStatus(argument)),
   companionWords: ([mood, s, issues]) => app.companionWords(mood, app.validStatus(s), issues),

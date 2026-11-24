@@ -241,7 +241,7 @@ class DashboardInBrowserTests(unittest.TestCase):
         # T3 loop, dashboard API and page: no control service here (E21). Only Fans &
         # lights said so; Media folders offered "Unlock media folders", asked for the PIN
         # and said E21 only after it was typed, and Updates and Ask Neko said nothing.
-        routes = ['cooling', 'media', 'updates', 'ask', 'home', 'apps']
+        routes = ['cooling', 'media', 'drives', 'updates', 'ask', 'home', 'apps']
         answers = self.browse(*[('pageText', {'route': r, 'id': 'problem'}) for r in routes])
         for route, said in zip(routes, answers):
             with self.subTest(route=route):
@@ -258,7 +258,7 @@ class DashboardInBrowserTests(unittest.TestCase):
         # badges ("Won't start after a restart", "Not checked yet") stuck out of their
         # cards, and the page scrolled sideways (Server health 281 px, Backups 246 px).
         routes = ['home', 'apps', 'backups', 'hardware', 'sensors', 'cooling', 'processes', 'health', 'updates']
-        routes += ['media', 'attention', 'help']
+        routes += ['media', 'drives', 'attention', 'help']
         for width in (390, 320, 195):
             answers = self.browse(*[('pageWidth', {'route': r, 'width': width}) for r in routes])
             for route, (scroll, window, overlap) in zip(routes, answers):
@@ -375,7 +375,7 @@ class OlderBrowserTests(unittest.TestCase):
 
     def test_no_page_needs_a_built_in_newer_than_the_page_does(self):
         routes = ['home', 'ask', 'apps', 'backups', 'hardware', 'sensors', 'cooling', 'processes', 'health']
-        routes += ['updates', 'media', 'cards', 'attention', 'help']
+        routes += ['updates', 'media', 'drives', 'cards', 'attention', 'help']
         (errors,) = self.browse(('pageErrors', {'routes': routes, 'missing': NEWER_BUILTINS}))
         self.assertEqual(errors, {route: [] for route in routes})
 
