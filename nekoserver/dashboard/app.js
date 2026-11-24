@@ -273,7 +273,7 @@ const ERRORS = {
   E42: ['Request not supported', 'Reload the page.'],
   E43: [
     'Enter your PIN to change this',
-    'Fans and lights need it on other devices; apps, updates, Ask Neko, media and cards on all of them.'
+    'Fans and lights need it on other devices; apps, updates, Ask Neko, media, drives and cards on all of them.'
   ],
   E44: [
     'Wrong PIN',

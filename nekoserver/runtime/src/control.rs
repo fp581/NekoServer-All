@@ -15,7 +15,7 @@ use crate::{
     apps, assist,
     common::{self, Error, Result},
     fans::{self, Controller, Setting},
-    media_folders, openrgb, Args,
+    media_folders, openrgb, storage, Args,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -63,7 +63,7 @@ fn coded(code: &str) -> Value {
 }
 
 /* ---------- PIN ---------- */
-fn random_hex(bytes: usize) -> Result<String> {
+pub(crate) fn random_hex(bytes: usize) -> Result<String> {
     let mut buf = vec![0u8; bytes];
     fs::File::open("/dev/urandom")?.read_exact(&mut buf)?;
     use std::fmt::Write as _;
@@ -318,20 +318,34 @@ impl Gate {
         self.strikes.entry(key).or_default()
     }
     pub fn unlock(&mut self, pin: &str, request: &Value) -> Value {
+        if let Some(refused) = self.check_pin(pin, request) {
+            return refused;
+        }
+        let token = random_hex(24).unwrap_or_default();
+        if token.is_empty() {
+            return coded("E21");
+        }
+        self.tokens.retain(|_, t| t.elapsed() < TOKEN_LIFETIME);
+        self.tokens.insert(token.clone(), Instant::now());
+        json!({"ok": true, "token": token})
+    }
+    /// The PIN typed again (unlock, and the Drives page's erase and delete): None when it
+    /// is right, else the refusal. Wrong ones count against the same lockouts as unlock.
+    pub fn check_pin(&mut self, pin: &str, request: &Value) -> Option<Value> {
         let source = source_of(request);
         let local = is_local(&source);
         let shares = !local && !source.starts_with(PROGRAM);
         if let Some(wait) = self.strikes_for(&source).wait() {
-            return locked_out(wait);
+            return Some(locked_out(wait));
         }
         if shares && self.shared.used_up() {
-            return refuse_waiting("E45", SHARED_USED_UP, self.shared.wait());
+            return Some(refuse_waiting("E45", SHARED_USED_UP, self.shared.wait()));
         }
         let Some(record) = &self.pin else {
-            return refuse(
+            return Some(refuse(
                 "E43",
                 "No PIN is set: run setup on the server to choose one",
-            );
+            ));
         };
         if !valid_pin(pin) || !pin_matches(record, pin) {
             let strikes = self.strikes_for(&source);
@@ -341,25 +355,19 @@ impl Gate {
                 self.shared.left -= 1.0;
                 // The tries all devices share can run out first.
                 if wait.is_none() && self.shared.left < 1.0 {
-                    return refuse_waiting(
+                    return Some(refuse_waiting(
                         "E44",
                         &format!("Wrong PIN. {SHARED_USED_UP}"),
                         self.shared.wait(),
-                    );
+                    ));
                 }
                 left = left.min(self.shared.left as usize);
             }
-            return wrong_pin(left, wait);
+            return Some(wrong_pin(left, wait));
         }
         // The right PIN starts this device over; the shared allowance only refills with time.
         self.strikes.remove(&source);
-        let token = random_hex(24).unwrap_or_default();
-        if token.is_empty() {
-            return coded("E21");
-        }
-        self.tokens.retain(|_, t| t.elapsed() < TOKEN_LIFETIME);
-        self.tokens.insert(token.clone(), Instant::now());
-        json!({"ok": true, "token": token})
+        None
     }
     pub fn allowed(&mut self, request: &Value) -> bool {
         request["local"] == true || self.signed_in(request)
@@ -752,12 +760,15 @@ pub struct Service {
     host: Arc<apps::Host>,
     /// The dashboard's Media folders page (media_folders.rs): one change at a time.
     media: media_folders::Folders,
+    /// The Drives page (storage.rs, 1.0.1): one job at a time.
+    storage: storage::Storage,
 }
 /// What setup switched on besides lighting.
 pub struct Options {
     pub fans: bool,
     pub config: Option<PathBuf>,
     pub media: media_folders::Folders,
+    pub storage: storage::Storage,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -765,6 +776,7 @@ impl Default for Options {
             fans: true,
             config: None,
             media: media_folders::Folders::default(),
+            storage: storage::Storage::default(),
         }
     }
 }
@@ -792,6 +804,7 @@ impl Service {
             actions: Arc::default(),
             host: Arc::default(),
             media: options.media,
+            storage: options.storage,
         })
     }
     fn lights_status(&self) -> Value {
@@ -873,6 +886,11 @@ pub fn answer(service: &Arc<Service>, request: &Value) -> Value {
         }
         if !gate.signed_in(request) {
             return coded("E43");
+        }
+        if storage::needs_pin(op, request) {
+            if let Some(refused) = gate.check_pin(request["pin"].as_str().unwrap_or(""), request) {
+                return refused;
+            }
         }
         drop(gate);
         return app_control(service, op, request);
@@ -977,6 +995,18 @@ fn app_control(service: &Arc<Service>, op: &str, request: &Value) -> Value {
             None => refuse("E42", "App controls are switched off on this server"),
             Some(config) => media_request(service, config, op, request),
         },
+        // The Drives page (storage.rs, 1.0.1): its jobs run as root in a service of their own.
+        "app_storage_state"
+        | "app_storage_look"
+        | "app_drive_use"
+        | "app_drive_release"
+        | "app_data_move"
+        | "app_data_move_back"
+        | "app_data_delete_old"
+        | "app_mirror_add" => match &service.config {
+            None => refuse("E42", "App controls are switched off on this server"),
+            Some(config) => storage_request(service, config, op, request),
+        },
         "desktop_close" | "desktop_force" => match process() {
             Some((pid, start)) => apps::Close {
                 host: service.host.clone(),
@@ -1004,6 +1034,20 @@ fn media_request(service: &Arc<Service>, config: &Path, op: &str, request: &Valu
         }
     }
     media_folders::answer(&service.media, op, request, &cfg)
+        .unwrap_or_else(|| refuse("E42", "Request not supported"))
+}
+/// A request of the Drives page (the PIN is already checked). A job needs the app SSD:
+/// the code that runs it, and the settings, are kept there.
+fn storage_request(service: &Arc<Service>, config: &Path, op: &str, request: &Value) -> Value {
+    if op != "app_storage_state" {
+        let cfg = common::json(config, 64000);
+        let connected = common::mount_path(cfg["data_mount"].as_str().unwrap_or(""))
+            .and_then(|data| crate::backup::guard_data(config, &data));
+        if connected.is_err() {
+            return refuse("E47", "The app SSD is not connected, so your drives can't be changed now. Nothing was changed. Connect it (or restart the server), then try again.");
+        }
+    }
+    storage::answer(&service.storage, op, request)
         .unwrap_or_else(|| refuse("E42", "Request not supported"))
 }
 /// Ask Neko's three requests (the PIN is already checked). The app SSD must be the one
@@ -1669,6 +1713,7 @@ pub fn run(a: &Args) -> Result<()> {
             .then(|| a.path("config"))
             .transpose()?,
         media: media_folders::Folders::default(),
+        storage: storage::Storage::default(),
     };
     // An app restart cut off part-way (the service stopped by force, or the computer
     // restarted): its parts run again once no backup or update needs the apps stopped.
@@ -2050,6 +2095,85 @@ mod tests {
         );
     }
 
+    /// 1.0.1 contract §3: the Drives page needs the PIN like every app control, and the
+    /// PIN typed again to erase a drive or delete an old copy (wrong ones count as unlock's).
+    #[test]
+    fn the_drives_page_needs_the_pin_and_again_to_erase() {
+        let board = fans::tests::Board::new("drives-page");
+        let config = board.0.join("config");
+        let run_dir = board.0.join("run");
+        fs::create_dir_all(&config).unwrap();
+        fs::create_dir_all(&run_dir).unwrap();
+        let settings = board.0.join("dashboard.json");
+        fs::write(&settings, r#"{"data_mount": "/srv/nekoserver-not-here"}"#).unwrap();
+        let started = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen = started.clone();
+        let run: media_folders::Runner = Arc::new(move |args: &[&str]| {
+            seen.lock().unwrap().push(args.join(" "));
+            (3, "inactive".into())
+        });
+        let controller = Controller::new(fans::discover(&board.hwmon()), BTreeMap::new());
+        let s = Service::with(
+            Fans::new(controller, config.clone(), run_dir),
+            Lighting::new(json!({}), 1, config),
+            Gate::new(Some(pin_record("2468", "salt"))),
+            false,
+            Options {
+                fans: false,
+                config: Some(settings),
+                media: media_folders::Folders::default(),
+                storage: storage::Storage::new(
+                    board.0.join("storage"),
+                    board.0.join("storage-state"),
+                    run,
+                ),
+            },
+        );
+        let erase = json!({"op": "app_drive_use", "local": true, "disk": "ata-X_1", "serial": "1",
+            "size_bytes": 9, "how": "erase", "confirm": "9 B 1"});
+        assert_eq!(
+            answer(&s, &erase)["error"],
+            "E43",
+            "unlocked first, on the server too"
+        );
+        let token = answer(&s, &json!({"op": "unlock", "pin": "2468"}))["token"].clone();
+        let mut erase = erase.clone();
+        erase["token"] = token.clone();
+        // No PIN typed again, or a wrong one: refused before anything is checked further.
+        let none = answer(&s, &erase);
+        assert_eq!(none["error"], "E44", "{none}");
+        erase["pin"] = json!("1111");
+        let wrong = answer(&s, &erase);
+        assert_eq!(wrong["error"], "E44");
+        assert!(wrong["message"]
+            .as_str()
+            .unwrap()
+            .contains("left on this device"));
+        // The right one passes the gate; the app SSD is not here, so nothing starts.
+        erase["pin"] = json!("2468");
+        let past = answer(&s, &erase);
+        assert_eq!(past["error"], "E47", "{past}");
+        assert!(past["message"]
+            .as_str()
+            .unwrap()
+            .contains("app SSD is not connected"));
+        let mut delete = json!({"op": "app_data_delete_old", "token": token, "kind": "music",
+            "copy": "0123456789abcdef", "confirm": "delete music"});
+        assert_eq!(answer(&s, &delete)["error"], "E44");
+        delete["pin"] = json!("2468");
+        assert_eq!(answer(&s, &delete)["error"], "E47");
+        // Taking a drive over as it is, or a move: the unlock is enough.
+        let take = json!({"op": "app_drive_use", "token": token, "disk": "ata-X_1", "serial": "1",
+            "size_bytes": 9, "how": "take_over"});
+        assert_eq!(answer(&s, &take)["error"], "E47");
+        assert!(started.lock().unwrap().iter().all(|a| !a.contains("start")));
+        // Its state needs no SSD: no look yet, nothing at work.
+        let state = answer(&s, &json!({"op": "app_storage_state", "token": token}));
+        assert_eq!(state["ok"], true, "{state}");
+        assert_eq!(state["looked_at"], Value::Null);
+        assert_eq!(state["storage_job"]["working"], false);
+    }
+
     #[test]
     fn media_folders_need_the_pin_the_settings_and_the_app_ssd() {
         let board = fans::tests::Board::new("media-folders");
@@ -2076,6 +2200,11 @@ mod tests {
                 fans: false,
                 config: Some(settings),
                 media: media_folders::Folders::new(board.0.join("media-folders"), run),
+                storage: storage::Storage::new(
+                    board.0.join("storage"),
+                    board.0.join("storage-state"),
+                    Arc::new(|_: &[&str]| (3, String::new())),
+                ),
             },
         );
         let change = json!({"op": "app_media_change", "change": "look", "local": true});

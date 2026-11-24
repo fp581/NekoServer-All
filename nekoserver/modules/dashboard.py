@@ -494,7 +494,7 @@ def choose_pin(binary, log, ask=getpass.getpass):
         return False
     print(
         '\nChoose a PIN (6 to 8 digits) for the dashboard: it lets you change fans and lights from your phone or tablet,\n'
-        'and change apps: restart or close them, updates, Ask Neko, media folders and backup cards (on every device, the server too).\n'
+        'and change apps: restart or close them, updates, Ask Neko, media folders, drives and backup cards (on every device, the server too).\n'
         'Press Enter to skip: fans and lights then change on the server itself only, and none of those app changes can be made from the dashboard.'
     )
     # In the setup window the PIN and its second entry are one page (hidden, checked to
