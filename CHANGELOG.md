@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.0.1 — (in progress)
+
+Storage from the dashboard: add a drive, move data to it, extra folders per app on more drives, and a button to rebuild a mirror.
+
 ## v1.0.0 — 2026-11-24
 
 The first stable release, built on 0.52.3.
