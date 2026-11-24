@@ -56,6 +56,7 @@ def in_docker(app):
 PROWLARR_URL = in_docker('prowlarr')
 APPLICATIONS = '/applications'
 DOWNLOAD_CLIENTS = '/downloadclient'
+TEST = '/test'  # an Arr app's or Prowlarr's check of a connection before it is saved
 CLIENTS_STEP = 'download clients'  # the step's name in setup's messages
 
 
@@ -608,7 +609,7 @@ def signs_in(app, pro_key, found, key, apply):
     key it stores). An API key made again in the app (Settings, General) leaves Prowlarr
     with the old one: it is given the current one. False when a person needs to look."""
     try:
-        request('prowlarr', pro_key, APPLICATIONS + '/test', 'POST', found)
+        request('prowlarr', pro_key, APPLICATIONS + TEST, 'POST', found)
         return True
     except RuntimeError:
         pass
@@ -646,7 +647,7 @@ def existing_client(app, key, found, expected, login_checked, refused=None):
         print(f'{app}: existing client routing verified; confirm stored credentials in UI')
         return True
     try:
-        request(app, key, DOWNLOAD_CLIENTS + '/test', 'POST', found)
+        request(app, key, DOWNLOAD_CLIENTS + TEST, 'POST', found)
         print(f'{app}: existing client verified; it signs in to qBittorrent')
         return True
     except RuntimeError:
@@ -680,7 +681,7 @@ def new_login(app, key, found, username, password, refused=None):
         return False
     print(f'{app}: its download client had an old qBittorrent login; the current one is saved in it')
     try:
-        request(app, key, DOWNLOAD_CLIENTS + '/test', 'POST', entry)
+        request(app, key, DOWNLOAD_CLIENTS + TEST, 'POST', entry)
     except RuntimeError as exc:
         if refused is not None and any(sign in str(exc).lower() for sign in REFUSED_SIGNS):
             refused.append((app, key, entry))
@@ -731,11 +732,12 @@ def clear_ban(root, login, refused, client_factory=None):
         return []
     busy = busy_torrents(login, client_factory)
     if busy != 0:
-        why = (
-            'it did not say what it is doing'
-            if busy is None
-            else f'{busy} download{" is" if busy == 1 else "s are"} being moved or checked'
-        )
+        if busy is None:
+            why = 'it did not say what it is doing'
+        elif busy == 1:
+            why = '1 download is being moved or checked'
+        else:
+            why = f'{busy} downloads are being moved or checked'
         print(f'qBittorrent was not restarted to let the apps in again: {why}, which a restart would cut off')
         return still_refused(refused)
     manifest = Path(root) / 'compose' / 'qbittorrent' / 'compose.yaml'
@@ -764,7 +766,7 @@ def clear_ban(root, login, refused, client_factory=None):
     left = []
     for app, key, entry in refused:
         try:
-            request(app, key, DOWNLOAD_CLIENTS + '/test', 'POST', entry)
+            request(app, key, DOWNLOAD_CLIENTS + TEST, 'POST', entry)
             print(f'{app}: its download client signs in to qBittorrent with the current login')
         except RuntimeError:
             left.append((app, key, entry))
