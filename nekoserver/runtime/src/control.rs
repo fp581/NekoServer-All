@@ -960,6 +960,17 @@ fn apps_held(op: &str, operation_lock: &Path) -> Option<Value> {
     })
 }
 
+/// The same for Ask Neko's approved repairs that change an app, as the control each one
+/// stands for (a backup run has its own check, assist::job_blocked; an update check looks).
+fn repair_held(kind: &str, operation_lock: &Path) -> Option<Value> {
+    let op = match kind {
+        "restart_app" => "app_restart",
+        "update_app" => "app_update_run",
+        _ => return None,
+    };
+    apps_held(op, operation_lock)
+}
+
 /// Restart a server app, or close a desktop app (the PIN is already checked).
 fn app_control(service: &Arc<Service>, op: &str, request: &Value) -> Value {
     if let Some(refused) = apps_held(op, Path::new(*common::OPERATION_LOCK)) {
@@ -1174,6 +1185,9 @@ fn run_repair(
 ) -> Value {
     let id = checked.id.as_str();
     let (kind, name) = id.split_once(':').unwrap_or((id, ""));
+    if let Some(refused) = repair_held(kind, Path::new(*common::OPERATION_LOCK)) {
+        return refused;
+    }
     eprintln!("Ask Neko: running the approved repair {id}");
     match kind {
         "restart_app" => apps::Restart {
@@ -2144,7 +2158,23 @@ mod tests {
         ] {
             assert!(apps_held(op, &lock).is_none(), "{op}");
         }
+        // Ask Neko: an approved restart or update is refused too; asking and checking a
+        // repair only look, and a backup run has job_blocked of its own.
+        for kind in ["restart_app", "update_app"] {
+            assert_eq!(
+                repair_held(kind, &lock).expect(kind)["error"],
+                "E47",
+                "{kind}"
+            );
+        }
+        for kind in ["update_check", "run_job"] {
+            assert!(repair_held(kind, &lock).is_none(), "{kind}");
+        }
+        for op in ["app_ask", "app_assist_check"] {
+            assert!(apps_held(op, &lock).is_none(), "{op}");
+        }
         drop(holder);
+        assert!(repair_held("restart_app", &lock).is_none());
         assert!(
             apps_held("app_restart", &lock).is_none(),
             "let go: allowed again"
