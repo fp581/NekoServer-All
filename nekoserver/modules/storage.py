@@ -976,7 +976,10 @@ def extra_specs(config):
     from neko_common import EXTRA_MOUNTS, drives_in_use, extra_drives
 
     specs = []
-    for name in drives_in_use(config):
+    # An extra drive added from the dashboard's Drives page (1.0.1, "added": true) is mounted
+    # before anything is put on it; any other drive only once something is placed on it.
+    added = {name for name, record in extra_drives(config).items() if record.get('added') is True}
+    for name in sorted(set(drives_in_use(config)) | added):
         record = extra_drives(config)[name]
         uuid, fstype = str(record.get('uuid', '')).strip(), str(record.get('fstype', '')).strip()
         if not re.fullmatch(r'[A-Za-z0-9-]{8,80}', uuid):
@@ -1425,7 +1428,27 @@ def installed_binds(config):
     for app, drive in sorted(placement.apps_elsewhere(config).items()):
         mounted = Path(drive_folder(config, drive))
         binds.append((app, mounted / 'nekoserver' / 'appdata' / app, data / 'appdata' / app, mounted))
-    return binds
+    return binds + backup_binds(config)
+
+
+def backup_binds(config):
+    """The backups moved to an extra drive from the dashboard (1.0.1, "locations":
+    {"backups": "d3"}): each of their folders there is mounted at its usual place on the
+    media drive, so every backup job keeps its paths."""
+    import placement
+    from neko_common import drive_folder, extra_drives
+
+    drive = (config.get('locations') or {}).get('backups')
+    if drive not in extra_drives(config):
+        return []
+    mounted, media = Path(drive_folder(config, drive)), mount_path(config['media_mount'])
+    return [('backups', mounted / rel, media / rel, mounted) for rel in placement.DATA_FOLDERS[placement.BACKUP]]
+
+
+def bind_parent(config, target):
+    """The drive a bind's usual place is on: the media drive for the backups, else the apps'."""
+    media = mount_path(config['media_mount'])
+    return media if media in Path(target).parents else mount_path(config['data_mount'])
 
 
 def installed_line(source, target, drive, data):
@@ -1669,13 +1692,19 @@ def mount_installed(context, fstab=FSTAB):
     binds = installed_binds(config)
     data = mount_path(config['data_mount'])
     for app, _source, target, drive in binds:
+        if app == 'backups' and not on_its_drive(target, drive) and has_files(target):
+            raise RuntimeError(
+                f'Your backups are still in {target}, and the settings put them on {drive}. Moving them is a job of '
+                'the dashboard (Drives page), which copies them first; take "backups" out of "locations" in '
+                'my-config.json and run setup again. Nothing was changed.'
+            )
         if not on_its_drive(target, drive) and has_files(target):
             raise RuntimeError(
                 f'{app} already keeps its settings on the drive of the apps ({target}), and the settings place it '
                 'on another drive. Moving an app that is set up is a job of its own, with the app stopped; take its '
                 'group out of "install" in my-config.json and run setup again. Nothing was changed.'
             )
-    lines = [installed_line(source, target, drive, data) for _, source, target, drive in binds]
+    lines = [installed_line(source, target, drive, bind_parent(config, target)) for _, source, target, drive in binds]
     fstab = safe_path(fstab)
     text = fstab.read_text() if fstab.exists() else ''
     given_up(text, binds, context.log)
@@ -1692,7 +1721,11 @@ def mount_installed(context, fstab=FSTAB):
         call(['mount', str(target)])
         if not on_its_drive(target, drive):
             raise RuntimeError(f'{target} is not the folder of {app} on its drive after mounting it')
-        context.log(f'{app}: its settings are kept on the drive at {drive} ({source})')
+        context.log(
+            f'Backups: {target} is kept on the drive at {drive} ({source})'
+            if app == 'backups'
+            else f'{app}: its settings are kept on the drive at {drive} ({source})'
+        )
 
 
 def existing_media_asked(context):

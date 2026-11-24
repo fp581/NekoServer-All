@@ -70,9 +70,13 @@ def check_locations(config):
     for key, value in places.items() if isinstance(places, dict) else ():
         if key in LOCATIONS and value not in drives and isinstance(storage.get(value), dict):
             raise RuntimeError(f'locations.{key}: ' + not_a_drive(config, value))
-    if not isinstance(places, dict) or any(k not in LOCATIONS or v not in drives for k, v in places.items()):
+    # "backups" (1.0.1): moved to the media drive or an extra drive from the dashboard.
+    if not isinstance(places, dict) or any(
+        k not in (*LOCATIONS, 'backups') or v not in drives or (k, v) == ('backups', 'ssd') for k, v in places.items()
+    ):
         raise RuntimeError(
-            'locations must name photos, music, cloud or movies, each "ssd", "media" or a drive under "storage"'
+            'locations must name photos, music, cloud, movies or backups, each "ssd", "media" or a drive under '
+            '"storage" (the backups never "ssd")'
         )
 
 
