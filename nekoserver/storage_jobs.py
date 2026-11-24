@@ -1075,7 +1075,14 @@ def setup_again(job):
     import migrate
 
     log = job.state / f'setup-{job.id}.log'
-    migrate.setup_again(job.config, job.settings_files[-1], log, out=job.out)
+    # The job's unit keeps its own files private (UMask=0077); setup makes folders others
+    # use (the drives' mount folders, the apps' folders), so it runs with the umask it has
+    # when started by hand (sudo: 022), not this one.
+    before = os.umask(0o022)
+    try:
+        migrate.setup_again(job.config, job.settings_files[-1], log, out=job.out)
+    finally:
+        os.umask(before)
 
 
 # ---- B: move one kind of data -----------------------------------------------------------------
@@ -1097,6 +1104,30 @@ def gone_or_empty(folder):
         raise Stop(f'{folder} is in the way: it is not empty. Nothing was changed.')
     run(['chattr', '-i', str(folder)]) if shutil_which('chattr') else None
     folder.rmdir()
+
+
+def parents_like(target, here_root, to_root):
+    """The folders above a kind's folder at its new place that are not there yet, made
+    with the mode and owner of the same folders at the old place (0755, root's, where
+    there is none): the job's unit makes its files private (UMask=0077), and a 0700
+    library/ kept Sonarr and Radarr, which do not run as root, out of their folders."""
+    import stat
+
+    missing = []
+    folder = Path(target).parent
+    while folder != to_root and to_root in folder.parents and not folder.exists():
+        missing.append(folder)
+        folder = folder.parent
+    for folder in reversed(missing):
+        folder.mkdir()
+        like = here_root / folder.relative_to(to_root)
+        if like.is_dir():
+            seen = like.stat()
+            os.chmod(folder, stat.S_IMODE(seen.st_mode))
+            if seen.st_uid != folder.stat().st_uid or seen.st_gid != folder.stat().st_gid:
+                os.chown(folder, seen.st_uid, seen.st_gid)
+        else:
+            os.chmod(folder, 0o755)
 
 
 def shutil_which(name):
@@ -1192,7 +1223,7 @@ def put_in_place(job, kind, here, to, staged):
         gone_or_empty(target)
     for copy_, target in zip(staged, paths(job.config, kind, to)):
         if copy_.exists():
-            target.parent.mkdir(parents=True, exist_ok=True)
+            parents_like(target, root_of(job.config, here), root_of(job.config, to))
             os.rename(copy_, target)
     was = (job.config.get('locations') or {}).get(kind)
     job.commit('switch', [['locations', kind, None if kind == 'backups' and to == 'media' else to]], was=was)

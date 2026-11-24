@@ -35,6 +35,8 @@ from modules import dashboard, nextcloud, photos, storage  # noqa: E402
 from tests.test_storage_jobs import ID, Jobs, last_result, saved_journal  # noqa: E402
 
 REFUSED = 'FAILED photos: Existing Immich paths differ'
+# The real one: the jobs' fixture replaces it with a fake for every test.
+REAL_SETUP_AGAIN = storage_jobs.setup_again
 
 
 def setup_log(*lines, finished=True):
@@ -450,6 +452,56 @@ class DashboardPortTests(unittest.TestCase):
             accepted.close()  # the server's side closes first: it waits in TIME_WAIT
             client.close()
         self.assertTrue(dashboard.port_free(port))
+
+
+class FolderModeTests(Jobs):
+    """The storage unit's UMask=0077 (T4's real move on Tumbleweed: films moved to an Extra
+    drive, Sonarr's and Radarr's root folders inaccessible behind a 0700 library/)."""
+
+    def test_the_new_parent_folders_take_the_old_ones_mode_not_the_units_umask(self):
+        self.files(self.root / 'media/library/movies', **{'film.mkv': 'x'})
+        os.chmod(self.root / 'media/library', 0o755)
+        before = os.umask(0o077)
+        try:
+            with mock.patch.object(storage_jobs, 'setup_again', Refusing(self, None)):
+                self.assertEqual(self.run_job('move', kind='movies', to='d3'), 0)
+        finally:
+            os.umask(before)
+        self.assertEqual((self.root / 'drives/d3/library/movies/film.mkv').read_text(), 'x')
+        self.assertEqual((self.root / 'drives/d3/library').stat().st_mode & 0o777, 0o755)
+
+    def test_a_parent_folder_with_none_at_the_old_place_is_made_0755(self):
+        here, to = self.root / 'media', self.root / 'drives/d3'
+        to.mkdir(parents=True, exist_ok=True)
+        before = os.umask(0o077)
+        try:
+            storage_jobs.parents_like(to / 'photos/archive/x', here, to)
+        finally:
+            os.umask(before)
+        for folder in (to / 'photos', to / 'photos/archive'):
+            self.assertEqual(folder.stat().st_mode & 0o777, 0o755)
+        self.assertFalse((to / 'photos/archive/x').exists())
+
+    def test_setup_run_again_by_a_job_runs_with_the_umask_setup_has_by_hand(self):
+        import migrate
+
+        seen = []
+
+        def setup(*args, **kwargs):
+            seen.append(os.umask(0o022))
+
+        job = SimpleNamespace(
+            state=self.root / 'state', id=ID, config=self.config, settings_files=self.settings, out=print
+        )
+        before = os.umask(0o077)
+        try:
+            with mock.patch.object(migrate, 'setup_again', setup):
+                REAL_SETUP_AGAIN(job)
+            after = os.umask(before)
+        finally:
+            os.umask(before)
+        self.assertEqual(seen, [0o022])
+        self.assertEqual(after, 0o077)
 
 
 if __name__ == '__main__':
