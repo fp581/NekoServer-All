@@ -3026,6 +3026,63 @@ class NextcloudFirstInstallTests(unittest.TestCase):
         self.assertIn('trusted_domains', argv[-1])
         self.assertIn('finishing it now', logged[0])
 
+    def test_a_password_starting_with_a_dash_reaches_occ_as_the_options_own_value(self):
+        # T1-R12: a made-up (or typed) password "-…" after a separate --admin-pass was read
+        # by occ as an option ("--admin-pass option requires a value"), so Nextcloud never
+        # installed, on every setup run. Here the install line runs in a real sh, with a
+        # php that writes down its arguments, on a server already in that state (the
+        # image gave up, then started Apache: "resuming normal operations").
+        import shutil
+
+        from modules import nextcloud
+
+        if not shutil.which('sh'):
+            self.skipTest('needs sh')
+        values = {
+            'NEXTCLOUD_ADMIN_USER': '-admin',
+            'NEXTCLOUD_ADMIN_PASSWORD': '-pw_1',
+            'POSTGRES_DB': '-db',
+            'POSTGRES_USER': '-dbuser',
+            'POSTGRES_PASSWORD': '--dbpw',
+            'POSTGRES_HOST': '-host',
+            'NEXTCLOUD_TRUSTED_DOMAINS': 'localhost -name',
+        }
+        run, _, state = self.fake(False, 'AH00094: Command line: apache2 -D FOREGROUND\nresuming normal operations\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            php, said = Path(tmp) / 'php', Path(tmp) / 'said'
+            php.write_text(
+                '#!/bin/sh\nfor a in "$@"; do printf "%s\\n" "$a"; done >> "$SAID"\nprintf "end\\n" >> "$SAID"\n'
+            )
+            php.chmod(0o755)
+            env = {'PATH': tmp + os.pathsep + os.environ.get('PATH', ''), 'SAID': str(said), **values}
+
+            def install(argv, *args):
+                subprocess.run(['sh', '-c', argv[-1]], env=env, check=True, timeout=30)
+                state.update(installed=True)
+
+            with mock.patch.object(nextcloud, 'checked_run', side_effect=install):
+                self.assertTrue(nextcloud.finish_install(self.BASE, lambda m: None, run=run, sleep=lambda s: None))
+            calls = [c.split('\n')[:-1] for c in said.read_text().split('end\n')[:-1]]
+        setup = calls[0]
+        self.assertEqual(setup[:2], ['occ', 'maintenance:install'])
+        for option, name in [
+            ('--admin-user', 'NEXTCLOUD_ADMIN_USER'),
+            ('--admin-pass', 'NEXTCLOUD_ADMIN_PASSWORD'),
+            ('--database-name', 'POSTGRES_DB'),
+            ('--database-user', 'POSTGRES_USER'),
+            ('--database-pass', 'POSTGRES_PASSWORD'),
+            ('--database-host', 'POSTGRES_HOST'),
+        ]:
+            self.assertIn(option + '=' + values[name], setup)  # one argument: never read as an option
+            self.assertNotIn(option, setup)
+        self.assertEqual(
+            calls[1:],
+            [
+                ['occ', 'config:system:set', 'trusted_domains', '0', '--value=localhost'],
+                ['occ', 'config:system:set', 'trusted_domains', '1', '--value=-name'],
+            ],
+        )
+
     def test_an_install_still_running_is_waited_for_then_named(self):
         from modules import nextcloud
 

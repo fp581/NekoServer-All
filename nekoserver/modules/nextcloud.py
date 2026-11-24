@@ -513,10 +513,14 @@ def command(args):
 # the passwords only as options, so for the few seconds this install runs they are in
 # its process's arguments (inside the container, also seen by `ps` on this PC), as with
 # the image's own first start. It runs only when that first start gave up.
+# Each value is joined to its option (--admin-pass=…): occ reads a separate value that
+# starts with "-" as an option of its own, so a password "-…" (1 made-up one in 64, or
+# one typed) left Nextcloud uninstalled on every setup run (T1-R12). The image's own
+# first start passes them apart and fails on such a password; this install then runs.
 INSTALL = (
-    'php occ maintenance:install -n --admin-user "$NEXTCLOUD_ADMIN_USER" --admin-pass "$NEXTCLOUD_ADMIN_PASSWORD" '
-    '--database pgsql --database-name "$POSTGRES_DB" --database-user "$POSTGRES_USER" '
-    '--database-pass "$POSTGRES_PASSWORD" --database-host "$POSTGRES_HOST" && i=0 && '
+    'php occ maintenance:install -n --admin-user="$NEXTCLOUD_ADMIN_USER" --admin-pass="$NEXTCLOUD_ADMIN_PASSWORD" '
+    '--database=pgsql --database-name="$POSTGRES_DB" --database-user="$POSTGRES_USER" '
+    '--database-pass="$POSTGRES_PASSWORD" --database-host="$POSTGRES_HOST" && i=0 && '
     'for domain in $NEXTCLOUD_TRUSTED_DOMAINS; do '
     'php occ config:system:set trusted_domains "$i" --value="$domain" || exit 1; i=$((i+1)); done'
 )
