@@ -39,10 +39,11 @@ class BackupsPlaceTests(unittest.TestCase):
     def test_the_backups_may_be_on_the_media_drive_or_an_extra_drive_never_the_apps_drive(self):
         config_checks.check_locations(settings(backups='d3'))
         config_checks.check_locations(settings(backups='media'))
+        on_the_apps_drive, on_no_drive = settings(backups='ssd'), settings(backups='d9')
         with self.assertRaisesRegex(RuntimeError, 'backups never "ssd"'):
-            config_checks.check_locations(settings(backups='ssd'))
+            config_checks.check_locations(on_the_apps_drive)
         with self.assertRaises(RuntimeError):
-            config_checks.check_locations(settings(backups='d9'))
+            config_checks.check_locations(on_no_drive)
 
     def test_the_placement_table_follows_the_backups(self):
         self.assertEqual(placement.derived(settings(backups='d3'))[placement.BACKUP][placement.DATA], 'd3')

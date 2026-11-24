@@ -254,6 +254,11 @@ def socket_proxyd(places=None):
 UPDATES_FOLDER = 'backups/updates'
 
 
+# Every unit that starts with the computer, and the settings flag the units pass.
+INSTALL_MULTI_USER = '[Install]\nWantedBy=multi-user.target\n'
+CONFIG_FLAG = ' --config '
+
+
 def control_units(code, lighting, fans=True, data=None, proxyd=None, settings=None, cards=False):
     """The root control service (fans, lights, and restarting or closing apps from the
     dashboard) and, with lighting, OpenRGB's server and the link to it. The control
@@ -283,7 +288,7 @@ def control_units(code, lighting, fans=True, data=None, proxyd=None, settings=No
         f'ExecStart={binary} control'
         + ('' if lighting else ' --no-lights')
         + ('' if fans else ' --no-fans')
-        + ' --config '
+        + CONFIG_FLAG
         + str(COLLECTOR_SETTINGS)
         + '\n'
         # Whenever it stops (a crash too), every fan goes back to the motherboard.
@@ -306,7 +311,7 @@ def control_units(code, lighting, fans=True, data=None, proxyd=None, settings=No
         # CAP_KILL: closing an app someone opened on the desktop (their own user's process).
         # The computer's own loopback only: the apps answer there; nothing else is reached.
         'CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_KILL\nRestrictAddressFamilies=AF_UNIX AF_INET\nIPAddressDeny=any\nIPAddressAllow=localhost\n'
-        '[Install]\nWantedBy=multi-user.target\n'
+        + INSTALL_MULTI_USER
     }
     if lighting:
         found.update(lighting_units(proxyd or socket_proxyd() or PROXYD_PLACES[0]))
@@ -364,7 +369,7 @@ def storage_units(data, settings=None):
     settings = settings if isinstance(settings, (str, Path)) else None
     plain = settings and not any(c in str(settings) for c in '"\\') and str(settings).isprintable()
     configs = f'--config {bundle}/config.json' + (
-        ' --config ' + unit_word(settings) if plain and Path(settings) != bundle / 'config.json' else ''
+        CONFIG_FLAG + unit_word(settings) if plain and Path(settings) != bundle / 'config.json' else ''
     )
     run = f'ExecStart=/usr/bin/python3 -Es {bundle}/storage_jobs.py'
     return {
@@ -379,7 +384,7 @@ def storage_units(data, settings=None):
         + str(Path(facts['state']) / facts['journal'])
         + '\n[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=30min\n'
         + f'{run} resume {configs}\n'
-        + '[Install]\nWantedBy=multi-user.target\n',
+        + INSTALL_MULTI_USER,
     }
 
 
@@ -404,9 +409,7 @@ def lighting_units(proxyd):
             + '\nStartLimitIntervalSec=0\n[Service]\nType=simple\n'
             f'ExecStart={OPENRGB_BINARY} --server --server-port 6742\n'
             'Environment=QT_QPA_PLATFORM=offscreen HOME=/var/lib/nekoserver-openrgb XDG_CONFIG_HOME=/var/lib/nekoserver-openrgb\nStateDirectory=nekoserver-openrgb\n'
-            'Restart=on-failure\nRestartSec=10\nNoNewPrivileges=yes\nProtectHome=yes\n'
-            + private
-            + '[Install]\nWantedBy=multi-user.target\n'
+            'Restart=on-failure\nRestartSec=10\nNoNewPrivileges=yes\nProtectHome=yes\n' + private + INSTALL_MULTI_USER
         ),
         PROXY_SOCKET: (
             '[Unit]\nDescription=NekoServer lighting link (the socket only the control service may use)\n[Socket]\n'
@@ -441,7 +444,7 @@ def units(data, code, config, port, interval, public=None, control=False):
     return {
         'nekoserver-dashboard-collect.service': '[Unit]\nDescription=NekoServer dashboard collection\n[Service]\nType=oneshot\nRuntimeDirectory=nekoserver-dashboard\nRuntimeDirectoryMode=0755\nRuntimeDirectoryPreserve=yes\nExecStart='
         + collect
-        + ' --config '
+        + CONFIG_FLAG
         + str(config)
         + ' --output /run/nekoserver-dashboard/status.json --state '
         + str(data / 'dashboard-state')
@@ -478,7 +481,7 @@ def units(data, code, config, port, interval, public=None, control=False):
         + '\n'
         # Only the control service's socket: changes are passed on, never made here.
         + ('SupplementaryGroups=' + CONTROL_GROUP + '\n' if control else '')
-        + '[Install]\nWantedBy=multi-user.target\n',
+        + INSTALL_MULTI_USER,
     }
 
 
