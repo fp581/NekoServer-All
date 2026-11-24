@@ -20,7 +20,9 @@ import gateway_checks  # noqa: E402
 import gateway_tools as g  # noqa: E402
 import test_tailnet_ownership as own  # noqa: E402
 
-NO_HANDLER = 'error: failed to remove web serve: handler does not exist\n\ntry `tailscale serve --help` for usage info\n'
+NO_HANDLER = (
+    'error: failed to remove web serve: handler does not exist\n\ntry `tailscale serve --help` for usage info\n'
+)
 
 
 class Tailscale_1_104:
