@@ -46,7 +46,15 @@ MODEL = {
 }
 
 
-CONFIG = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media'}
+# A server's settings as setup keeps them: the drives are named under "storage".
+CONFIG = {
+    'data_mount': '/srv/nekoserver',
+    'media_mount': '/mnt/nekoserver-media',
+    'storage': {
+        'data_ssd': {'uuid': '11111111-2222-3333-4444-555555555555', 'fstype': 'ext4'},
+        'media_hdd': {'uuid': '66666666-7777-8888-9999-000000000000', 'fstype': 'ext4'},
+    },
+}
 BINARY = ROOT / 'runtime/bin/nekoserver-runtime'
 
 
@@ -124,6 +132,19 @@ class ImmichComposeTests(unittest.TestCase):
         bound = {**volume(**OURS), 'Options': {'type': 'none', 'o': 'bind', 'device': '/root'}}
         self.refused(lambda m: None, [bound])
         self.refused(lambda m: m['volumes']['model-cache'].update(name='someone-elses-files'))
+
+    def test_photos_moved_to_an_extra_drive_pass(self):
+        """T1-11: photos moved to an Extra drive from the Drives page; the runtime refused
+        their folder as on no drive the settings name."""
+        upload = Path('/mnt/nekoserver-drives/d3/photos/immich-library')
+        config = copy.deepcopy(CONFIG)
+        config['storage']['d3'] = {'uuid': 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'fstype': 'ext4', 'added': True}
+        config['locations'] = {'photos': 'd3'}
+        model = copy.deepcopy(MODEL)
+        for volume_ in model['services']['immich-server']['volumes']:
+            if volume_.get('source') == str(UPLOAD):
+                volume_['source'] = str(upload)
+        photos.checked_model(model, upload, DB, config, ask=lambda *a: runtime(*a))
 
     def test_immichs_own_file_and_the_graphics_chip_pass(self):
         self.check(lambda m: None)
