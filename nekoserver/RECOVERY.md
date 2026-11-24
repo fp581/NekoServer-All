@@ -250,7 +250,14 @@ A snapshot made without a backup key holds the list unencrypted in `data.tar` in
 
 Use this when both the SSD and the HDD are lost, or the SSD alone (Immich's database is on it): the HDD then has the same database copies (with their notes) in `/mnt/nekoserver-media/backups/immich-database/`, so take them from there. Photos kept on the media drive (`"photos": "media"` under `"locations"`) are still in place: skip step 2. Photos kept on the SSD come back from the HDD's archive: choose **The HDD** in step 2. The USB drive holds the photos and videos (`upload/` and `library/`), the newest weekly Immich database copies (`immich-database/immich-<date>.sql`, the newest 4 are kept), each with a `.sql.json` note of the Immich version that made it, when, and its checksum, and `immich-database/IMMICH-VERSION.txt`, which names the version of the newest copy. If the newest copy is missing, more than 8 days old or has no note, the weekly USB backup is reported as incomplete on the dashboard. Together they bring back albums, faces, people, users and settings as well as the pictures.
 
-1. Set up NekoServer on the new drives as usual, but before the Immich step set `"immich_version"` under `"photos"` in `my-config.json` to the version in the `.sql.json` note of the copy you will restore (`IMMICH-VERSION.txt` names it for the newest copy). A database copy must be restored into the same Immich version.
+1. Set up NekoServer on the new drives as usual, but before the Immich step set `"immich_version"` under `"photos"` in `my-config.json` to the version in the `.sql.json` note of the copy you will restore (`IMMICH-VERSION.txt` names it for the newest copy). A database copy must be restored into the same Immich version. The copies' folders can be opened only with `sudo` (not in the file manager), so list them and read the note in the terminal. On the USB drive, plugged in (on a PC with a desktop it opens under `/media/` and your user name):
+
+   ```bash
+   sudo ls -l /media/$USER/*/immich-database/
+   sudo cat /media/$USER/*/immich-database/IMMICH-VERSION.txt
+   ```
+
+   On the HDD the folder is `/mnt/nekoserver-media/backups/immich-database/` (`sudo ls -l /mnt/nekoserver-media/backups/immich-database/`). On a PC without a desktop the USB drive is not opened for you: `lsblk -f` shows it (by its size and label), then `sudo mkdir -p /mnt/usb` and `sudo mount -o ro /dev/sdX1 /mnt/usb` with its name (read-only: it may be the only copy left, and every step here only reads it), and the folder is `/mnt/usb/immich-database/`.
 2. Get the photos back with the recovery menu, not by copying the USB drive's folders as they are: the drive keeps every version of a changed file (the plain name is the first one) and NekoServer's own notes beside them. Run `sudo bash install.sh --recover`, choose **1. Restore something from a backup**, **Photos and videos (Immich)**, then **The USB drive**. At "Which files?" choose **As of the last backup**; on a backup made before 0.39.6 (no such question) choose **Only the newest version of each file** at "Which versions of each file?". Use the folder it suggests and answer **yes** under "Review this restore". It restores the current version of each file, checked against the backup's checksums, into a new folder on the HDD (`/mnt/nekoserver-media/restored/photos-<date-time>/` with the default folders; the menu names it). Then put its two folders into the folder Immich keeps its library in, keeping their names. That folder depends on where setup put the photos (`"photos"` under `"locations"` in `my-config.json`): `/srv/nekoserver/photos/immich-library/` on the SSD (`"ssd"`, the default), or `/mnt/nekoserver-media/photos/immich-library/` on the media drive (`"media"`). You don't have to work it out: the menu ends with the exact command for your server, like this one for photos on the SSD:
 
 ```bash
@@ -258,17 +265,17 @@ sudo cp -a /mnt/nekoserver-media/restored/photos-DATE-TIME/upload /mnt/nekoserve
 ```
 
    Use the folder the menu named. If setup put the photos on the media drive, copy them to `/mnt/nekoserver-media/photos/immich-library/` instead (`"photos": "media"` under `"locations"` in `my-config.json`). Then run `sudo bash install.sh` again: it makes Immich's other folders (thumbnails, converted videos, profile pictures, its own backups) on the drive, which Immich needs to start; Immich makes the thumbnails again by itself. When everything works (step 4), you can delete the restore folder.
-3. Put the newest database copy back. Immich's own guide (docs.immich.app/administration/backup-and-restore) is written for Immich's own copies, which are compressed and hold every database: followed as it is, its `gunzip` refuses NekoServer's copy, and its `psql --dbname=postgres` puts the tables in the wrong database, so Immich stays empty. NekoServer's copy is plain SQL of the `immich` database (`pg_dump -d immich`). Use these commands instead, with your copy's name in place of `immich-DATE.sql` (on the HDD in `/mnt/nekoserver-media/backups/immich-database/`; on the USB drive in its `immich-database` folder: plug it in and open it in the file manager to see where it is):
+3. Put the newest database copy back. Immich's own guide (docs.immich.app/administration/backup-and-restore) is written for Immich's own copies, which are compressed and hold every database: followed as it is, its `gunzip` refuses NekoServer's copy, and its `psql --dbname=postgres` puts the tables in the wrong database, so Immich stays empty. NekoServer's copy is plain SQL of the `immich` database (`pg_dump -d immich`). Use these commands instead, with your copy's name in place of `immich-DATE.sql` and its folder in place of `/mnt/nekoserver-media/backups/immich-database/` if it is on the USB drive (the folder step 1 listed). The compose folder, like the copies' folders, opens only for root, so the commands name it in full instead of going into it:
 
    ```bash
-   cd /srv/nekoserver/compose/immich
-   sudo docker compose -p neko-immich -f compose.yaml --env-file .env stop immich-server immich-machine-learning
-   sudo docker compose -p neko-immich -f compose.yaml --env-file .env exec -T database psql -U postgres -d postgres -c 'DROP DATABASE immich WITH (FORCE)' -c 'CREATE DATABASE immich'
-   sudo sed "s/^SELECT pg_catalog.set_config('search_path', '', false);\$/SELECT pg_catalog.set_config('search_path', 'public, pg_catalog', true);/" /mnt/nekoserver-media/backups/immich-database/immich-DATE.sql | sudo docker compose -p neko-immich -f compose.yaml --env-file .env exec -T database psql -U postgres -d immich --single-transaction -v ON_ERROR_STOP=1
-   sudo docker compose -p neko-immich -f compose.yaml --env-file .env start immich-server immich-machine-learning
+   c=/srv/nekoserver/compose/immich
+   sudo docker compose -p neko-immich -f $c/compose.yaml --env-file $c/.env stop immich-server immich-machine-learning
+   sudo docker compose -p neko-immich -f $c/compose.yaml --env-file $c/.env exec -T database psql -U postgres -d postgres -c 'DROP DATABASE immich WITH (FORCE)' -c 'CREATE DATABASE immich'
+   sudo sed "s/^SELECT pg_catalog.set_config('search_path', '', false);\$/SELECT pg_catalog.set_config('search_path', 'public, pg_catalog', true);/" /mnt/nekoserver-media/backups/immich-database/immich-DATE.sql | sudo docker compose -p neko-immich -f $c/compose.yaml --env-file $c/.env exec -T database psql -U postgres -d immich --single-transaction -v ON_ERROR_STOP=1
+   sudo docker compose -p neko-immich -f $c/compose.yaml --env-file $c/.env start immich-server immich-machine-learning
    ```
 
-   The second line empties the new, empty database setup made (its only account is the one setup created, which the copy brings back). The third changes one line of the copy as Immich's guide does (it lets Immich's search functions be found), and stops at the first error with nothing half-restored. If it says `ERROR`, the copy and the Immich version differ: check step 1.
+   The first line names the compose folder for the others (type them in the same terminal). The third line empties the new, empty database setup made (its only account is the one setup created, which the copy brings back). The fourth changes one line of the copy as Immich's guide does (it lets Immich's search functions be found), and stops at the first error with nothing half-restored. If it says `ERROR`, the copy and the Immich version differ: check step 1.
 4. Start Immich and check that albums, faces and a few photos open before using it again. **Sign in with the Immich login you had before**, which the copy brought back (everyone in the family signs in with their own login from before, too). The one `account-setup.py show` gives was made for the new, empty Immich and no longer works; the list of app passwords has the old one (recovery menu → **1. Restore something from a backup** → **The list of app passwords**). Then tell setup: the next `sudo bash install.sh` says Immich did not take its saved login; run it once more, choose **c** at Immich, and it takes the login from the list you restored (or type it).
 
 ### Nextcloud's database
@@ -277,7 +284,15 @@ Since 0.39.6 the weekly USB backup first makes a copy of Nextcloud's database (u
 
 After a new SSD, setup does this for you when the HDD still holds Nextcloud's files and its backup: see **The SSD or the HDD broke** above. To put a database copy back by hand (onto a Nextcloud set up anew, say), on a server where Nextcloud is set up again with the same major version (the first number in the note's version):
 
-1. Check the copy first: `sha256sum nextcloud-DATE.sql` must print the `sha256` in its `.sql.json` note.
+1. Find the copy and check it first. Its folder opens only with `sudo` (not in the file manager): on the HDD it is `/mnt/nekoserver-media/backups/nextcloud-database/`; on the USB drive, plugged in, `nextcloud-database` under `/media/` and your user name on a PC with a desktop (without one, open the drive as in **Rebuild Immich from the USB drive**, step 1). List the copies, then compare the checksum with the `sha256` in the copy's `.sql.json` note; the two must be the same:
+
+```bash
+sudo ls -l /mnt/nekoserver-media/backups/nextcloud-database/
+sudo sha256sum /mnt/nekoserver-media/backups/nextcloud-database/nextcloud-DATE.sql
+sudo cat /mnt/nekoserver-media/backups/nextcloud-database/nextcloud-DATE.sql.json
+```
+
+   For the USB drive's copy use `/media/$USER/*/nextcloud-database/` in place of the HDD folder.
 2. Find the name of the database account Nextcloud signs in with. Nextcloud made it for itself when it was set up, and its own settings file (`config.php`) names it. The copy must be loaded as this account, or Nextcloud cannot read its own tables afterwards:
 
 ```bash
@@ -285,21 +300,21 @@ sudo docker exec neko-nextcloud-nextcloud-1 php -r 'include "/var/www/html/confi
 ```
 
 It prints one name, such as `oc_admin`. In step 4, type that name where it says `DBUSER` (twice).
-3. Stop Nextcloud but keep its database running:
+3. Stop Nextcloud but keep its database running. The compose folder opens only for root, so the commands name it in full (the first line), in this step and the next, typed in the same terminal:
 
 ```bash
-cd /srv/nekoserver/compose/nextcloud
-sudo docker compose -p neko-nextcloud -f compose.yaml --env-file .env stop nextcloud cron
+c=/srv/nekoserver/compose/nextcloud
+sudo docker compose -p neko-nextcloud -f $c/compose.yaml --env-file $c/.env stop nextcloud cron
 ```
 
-4. Empty the database and load the copy into it, with the name from step 2 in place of `DBUSER` and your copy in place of `/path/to/nextcloud-DATE.sql`:
+4. Empty the database and load the copy into it, with the name from step 2 in place of `DBUSER` and your copy (from step 1, with its folder) in place of `/path/to/nextcloud-DATE.sql`:
 
 ```bash
-sudo docker compose -p neko-nextcloud -f compose.yaml --env-file .env exec -T database sh -c 'dropdb -U nextcloud nextcloud && createdb -U nextcloud -O DBUSER nextcloud'
-sudo docker compose -p neko-nextcloud -f compose.yaml --env-file .env exec -T database psql -U DBUSER -d nextcloud --single-transaction -v ON_ERROR_STOP=1 < /path/to/nextcloud-DATE.sql
+sudo docker compose -p neko-nextcloud -f $c/compose.yaml --env-file $c/.env exec -T database sh -c 'dropdb -U nextcloud nextcloud && createdb -U nextcloud -O DBUSER nextcloud'
+sudo cat /path/to/nextcloud-DATE.sql | sudo docker compose -p neko-nextcloud -f $c/compose.yaml --env-file $c/.env exec -T database psql -U DBUSER -d nextcloud --single-transaction -v ON_ERROR_STOP=1
 ```
 
-   The first line makes a new, empty database that belongs to Nextcloud's account. The second loads the copy as that account, and stops at the first error with nothing half-loaded. If it says `ERROR`, the copy and this Nextcloud do not match: check step 1 and the version in the note.
+   The first line makes a new, empty database that belongs to Nextcloud's account. The second reads the copy as root (`sudo cat`: its folder is root's) and loads it as that account, and stops at the first error with nothing half-loaded. If it says `ERROR`, the copy and this Nextcloud do not match: check step 1 and the version in the note.
 5. Start Nextcloud again with `sudo bash install.sh`. The copy brought back the accounts you had before, with their passwords, so it says Nextcloud did not take its saved login (the one made for the new, empty Nextcloud): run it once more and choose **c** at Nextcloud, and it takes the administrator's login from the list of app passwords you restored (or type it). Then put your files back (above, **Nextcloud files**) and let Nextcloud find them: `sudo docker exec -u www-data neko-nextcloud-nextcloud-1 php occ files:scan --all`.
 
 Nextcloud's own guide (docs.nextcloud.com, "Restoring backup") has the details. Some settings Nextcloud keeps encrypted with its own secret (passwords for external storage, for example) need the old `config.php`. It is in each monthly snapshot (**The list of app passwords** in the recovery menu). This restore was not tried on a real server by NekoServer's tests: try it once before you rely on it.
