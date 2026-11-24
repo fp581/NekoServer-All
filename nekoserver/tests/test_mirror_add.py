@@ -391,6 +391,16 @@ class Btrfs(unittest.TestCase):
         self.assertEqual(stand.slept, mirror_add.NEVER_LOOKS, 'waited, within a limit')
         self.assertEqual(stand.cleared, 1, 'nothing is copying: no journal holds the page')
 
+    def test_a_pool_whole_again_without_a_replace_record_is_finished(self):
+        """Cut after the replace ended: the next mount keeps no record ("Never started"),
+        but the pool holds the new drive and misses none, so it is balanced and done."""
+        stand = Stand('/nonexistent', self.dev, answers=self.answers(**shows(HEALED)))
+        cut = {'phase': 'rebuild', 'request': POOL, 'undo': {'array': f'btrfs-{UUID}', 'member': 'ata-NEW_S9'}}
+        result = mirror_add.finish(cut, stand.ctx)
+        self.assertEqual(result['state'], 'done', result)
+        self.assertNotIn('erased', result['message'])
+        self.assertTrue(any(a.startswith('btrfs balance start') for a in stand.asked))
+
     def test_finished_is_done_only_when_the_pool_misses_no_drive(self):
         # The new drive not in the pool, or in it while a device is still missing.
         both = SHOW + '\tdevid    3 size 17179869184 used 0 path /dev/sdc\n'

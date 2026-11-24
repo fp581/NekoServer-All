@@ -390,13 +390,16 @@ def finish_btrfs(array, member, ctx):
             ),
         }
     ctx.clear()
-    if how == 'never':
+    # A pool whole again counts, whatever the replace record says: a cut after the replace
+    # ended leaves no record at the next mount ("Never started").
+    whole = healed(array, member, ctx)
+    if how == 'never' and not whole:
         return {
             'state': 'failed',
             'message': 'Btrfs did not start copying onto the new drive, so nothing was changed in the pool. The new drive was erased; see RECOVERY.md, "A drive of a Btrfs pool failed".',
             'advice': 'Btrfs said: ' + last_words(said),
         }
-    if not healed(array, member, ctx):
+    if not whole:
         return {
             'state': 'failed',
             'message': 'Btrfs says the copy ended, but the pool still misses a drive, so your data is not on two drives yet. See RECOVERY.md, "A drive of a Btrfs pool failed".',
