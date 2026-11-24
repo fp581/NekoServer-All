@@ -805,6 +805,9 @@ mod tests {
             "nekoserver-old-photos-0123456789abcdef",
             "nekoserver-new-movies-0123456789abcdef",
             "nekoserver-deleting-music-0123456789abcdef",
+            // A name the page could not show or send back as it is: each is left out.
+            "back\\slash",
+            "new\nline",
         ] {
             fs::create_dir_all(top.join(name)).unwrap();
         }

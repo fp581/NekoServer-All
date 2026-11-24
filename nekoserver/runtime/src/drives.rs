@@ -344,4 +344,91 @@ mod tests {
         assert!(!ids.contains_key("sdb"), "an LVM name is not the disk's");
         let _ = fs::remove_dir_all(&dir);
     }
+
+    /// The rank decides, not the alphabet: a world-wide number before an other bus's
+    /// name, and an NVMe's model and serial before its EUI, whichever is read first.
+    #[test]
+    fn the_rank_decides_before_the_alphabet() {
+        let dir = std::env::temp_dir().join(format!("neko-by-id-rank-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        for (name, to) in [
+            ("ieee1394-0x0001", "../../sdc"),
+            ("wwn-0x5000c500a1", "../../sdc"),
+            ("mmc-SD32G_0x1", "../../sdd"),
+            ("wwn-0x5000c500a2", "../../sdd"),
+            ("nvme-eui.0025385", "../../nvme1n1"),
+            ("nvme-foo_980_S3", "../../nvme1n1"),
+            ("usb-Kingston_S4", "../../sde"),
+            ("ata-Kingston_S4", "../../sde"),
+            ("wwn-0x5000c500a3", "../../sde"),
+            ("virtio-vd1", "../../vda"),
+        ] {
+            std::os::unix::fs::symlink(to, dir.join(name)).unwrap();
+        }
+        let ids = by_id(&dir);
+        assert_eq!(ids["sdc"], "wwn-0x5000c500a1");
+        assert_eq!(ids["sdd"], "wwn-0x5000c500a2");
+        assert_eq!(ids["nvme1n1"], "nvme-foo_980_S3");
+        assert_eq!(
+            ids["sde"], "ata-Kingston_S4",
+            "two of one rank: the first by name"
+        );
+        assert_eq!(
+            ids["vda"], "virtio-vd1",
+            "a name of the last rank is still a name"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The names of the drives, the role drives by either key, and none for a key that
+    /// is no drive's.
+    #[test]
+    fn each_drive_has_its_words() {
+        assert_eq!(drive_words("ssd").as_deref(), Some("Apps drive"));
+        assert_eq!(drive_words("data_ssd").as_deref(), Some("Apps drive"));
+        assert_eq!(
+            drive_words("media").as_deref(),
+            Some("Media and backups drive")
+        );
+        assert_eq!(
+            drive_words("media_hdd").as_deref(),
+            Some("Media and backups drive")
+        );
+        assert_eq!(drive_words("d42").as_deref(), Some("Extra drive d42"));
+        for key in ["d2", "d03", "d100", "photos", ""] {
+            assert_eq!(drive_words(key), None, "{key}");
+        }
+    }
+
+    /// A spinning disk or not, however lsblk says it; the filesystem shown is the
+    /// mounted one, not the first one found.
+    #[test]
+    fn rotational_and_the_filesystem_shown() {
+        let mut ssd = disk(
+            "sdg",
+            vec![
+                part("sdg1", "ext4", "old", None),
+                part("sdg2", "xfs", "now", Some("/mnt/x")),
+            ],
+        );
+        let shown = |d: &Value| from_lsblk(&json!({"blockdevices": [d]}), &BTreeMap::new(), &cfg());
+        assert_eq!(shown(&ssd)[0]["fstype"], "xfs");
+        assert_eq!(shown(&ssd)[0]["rotational"], true);
+        for (rota, spins) in [
+            (json!("0"), false),
+            (json!(false), false),
+            (json!(true), true),
+            (json!(null), false),
+        ] {
+            ssd["rota"] = rota.clone();
+            assert_eq!(shown(&ssd)[0]["rotational"], spins, "{rota}");
+        }
+        // Nothing mounted: the first filesystem found.
+        let unmounted = disk(
+            "sdh",
+            vec![part("sdh1", "", "", None), part("sdh2", "ntfs", "n", None)],
+        );
+        assert_eq!(shown(&unmounted)[0]["fstype"], "ntfs");
+    }
 }
