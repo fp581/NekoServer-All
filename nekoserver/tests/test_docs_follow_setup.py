@@ -143,6 +143,41 @@ class NextcloudDatabaseRestoreTests(unittest.TestCase):
         self.assertNotIn('psql -U nextcloud', steps)
 
 
+def root_only_steps(text):
+    """The commands of RECOVERY.md's two by-hand database restores."""
+    immich = text.split('### Rebuild Immich from the USB drive')[1].split(chr(10) + '### ')[0]
+    nextcloud = text.split("### Nextcloud's database")[1].split(chr(10) + '### ')[0]
+    return immich + nextcloud
+
+
+class RootOnlyFolderTests(unittest.TestCase):
+    """1.0 round T1-R1: the by-hand Immich and Nextcloud database restores, followed word for
+    word as the normal user with sudo, stopped at their first command: `cd
+    /srv/nekoserver/compose/immich` said "Permission denied", as did `sha256sum` in the USB
+    drive's nextcloud-database folder and the `< copy` that loads it, and "open it in the file
+    manager" cannot open a folder only root may. Setup makes these folders root's alone, so
+    every step reaches them through sudo."""
+
+    def test_the_folders_the_steps_use_are_roots_alone(self):
+        self.assertIn('ensure_directory(compose_dir, 0o700)', (ROOT / 'modules' / 'photos.py').read_text())
+        backup = (ROOT / 'runtime' / 'src' / 'backup.rs').read_text()
+        self.assertIn('let folder = usb.join(kind.folder);\n    common::directory(&folder, 0o700)?;', backup)
+
+    def test_every_step_reaches_a_root_only_folder_through_sudo(self):
+        steps = root_only_steps(doc('RECOVERY.md'))
+        self.assertNotIn('file manager to see', steps)
+        self.assertNotRegex(steps, r'(?m)^\s*cd /srv/')
+        self.assertNotRegex(steps, r'< /')
+        blocks = '\n'.join(re.findall(r'```bash\n(.*?)```', steps, re.S))
+        inline = re.findall(r'`([^`\n]+)`', re.sub(r'```bash\n.*?```', '', steps, flags=re.S))
+        for command in inline + [line.strip() for line in blocks.splitlines()]:
+            if re.search(r'(?:^|\s)(?:sha256sum|cat|ls) ', command) and not command.startswith('sudo '):
+                self.fail(f'{command!r} reads a root-only folder without sudo')
+        self.assertIn('sudo cat /path/to/nextcloud-DATE.sql | sudo docker compose -p neko-nextcloud', steps)
+        self.assertIn('sudo sha256sum /mnt/nekoserver-media/backups/nextcloud-database/nextcloud-DATE.sql', steps)
+        self.assertIn('sudo ls -l /media/$USER/*/immich-database/', steps)
+
+
 class FirstReadTests(unittest.TestCase):
     """1.0 round T5-02 to T5-05: what a first-time reader of the README is told matches
     what setup and install.sh do."""
