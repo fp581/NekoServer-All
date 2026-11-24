@@ -402,6 +402,35 @@ class MirrorTests(Jobs):
         self.assertEqual(self.handed, [])
 
 
+class OutOfTheWayTests(unittest.TestCase):
+    """Old copies, new copies at work and copies being deleted sit at a drive's top, where
+    no backup, snapshot, app or size check looks (plans/1.0.1-findings.md lists each one);
+    only a whole-drive move copies a drive's top, and it waits for a Drives job."""
+
+    # What the nightly and monthly snapshots, the backups and the apps read on a drive.
+    READ = ('appdata', 'compose', 'installer', 'secrets', 'gateway', 'cards', 'nekoserver')
+
+    def test_every_kind_of_copy_is_outside_every_folder_something_reads(self):
+        from neko_common import LOCATIONS
+
+        root = Path('/srv/nekoserver')
+        read = [root / rel for rel in self.READ]
+        read += [root / rel for _, rels in LOCATIONS.values() for rel in rels]
+        read += [root / rel for rel in storage_jobs.kind_folders('backups')]
+        for kind in storage_jobs.KINDS:
+            for name in (storage_jobs.OLD_NAME, storage_jobs.NEW_COPY, storage_jobs.DELETING):
+                copy = root / name.format(kind=kind, id=ID) / storage_jobs.kind_folders(kind)[0]
+                self.assertEqual(copy.relative_to(root).parts[0][:11], 'nekoserver-')
+                self.assertFalse([r for r in read if r == copy or r in copy.parents], copy)
+
+    def test_a_whole_drive_move_waits_for_a_drives_job_that_is_not_finished(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / 'journal.json').write_text('{}')
+            with mock.patch.object(storage_jobs, 'STATE', Path(tmp)):
+                why = migrate.nothing_at_work(lock=Path(tmp) / 'setup.lock')
+        self.assertEqual(why, 'A change on the Drives page is not finished yet (restart the computer)')
+
+
 class UnitTests(unittest.TestCase):
     FACTS = {
         'unit': 'nekoserver-storage.service',

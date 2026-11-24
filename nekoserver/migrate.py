@@ -239,11 +239,19 @@ def why_not(row, need):
 def nothing_at_work(lock=SETUP_LOCK, recovery=None):
     """Why a move (either way) cannot start now, or None: setup running, an unfinished app
     update, monthly check, upgrade or move, or a backup or app update at work (the
-    backups' shared lock, `recovery`)."""
+    backups' shared lock, `recovery`). A change from the Drives page that is not finished
+    has copies at work at a drive's top (nekoserver-new-...): the whole drive is never
+    copied with them."""
+    import storage_jobs
+
     for path, what in (
         (MAINTENANCE_JOURNAL, 'An app update or the monthly check is not finished yet'),
         (UPGRADE_JOURNAL, 'A NekoServer upgrade is at work'),
         (JOURNAL, 'A move to another drive is not finished yet (sudo python3 migrate.py resume)'),
+        (
+            storage_jobs.STATE / storage_jobs.JOURNAL,
+            'A change on the Drives page is not finished yet (restart the computer)',
+        ),
     ):
         if Path(path).exists():
             return what
