@@ -102,7 +102,7 @@ Q = {
         'title': 'Is the drive that {apps} are installed on lost?',
         'hint': (
             'It is not connected. If it is only unplugged, connect it and run setup again. If it is lost, '
-            'these apps are set up again on NekoServer\'s own drive with empty settings, and the recovery menu '
+            'these apps are set up again on the apps drive with empty settings, and the recovery menu '
             '(sudo bash install.sh --recover) can bring their settings back from a backup.'
         ),
         'kind': 'yesno',
@@ -116,7 +116,7 @@ Q = {
         'title': 'What is the address of your NAS?',
         'hint': 'It is what you open in a browser to reach it, such as 192.168.1.20.',
         'kind': 'text',
-        'send': 'Look there',
+        'send': 'Find my NAS',
     },
     'nas_kind': {
         'screen': NAS,
@@ -193,7 +193,7 @@ Q = {
     },
     'login_retry': {
         'screen': LOGINS,
-        'title': '{app} did not take the saved login. What now?',
+        'title': "NekoServer couldn't sign in to {app} with the saved credentials. What now?",
         'hint': 'If you changed the password in {app} yourself, tell NekoServer the new one.',
         'kind': 'choice',
         'choices': [('', 'Try the saved login again'), ('c', 'I changed it: here is the new one')],
@@ -342,7 +342,7 @@ Q = {
     },
     'existing_more_folder': {
         'screen': YOUR_MEDIA,
-        'title': 'Is any other folder holding your {what}?',
+        'title': 'Do you have {what} in another folder?',
         'hint': 'Your {what} can be in up to {cap} folders, each one used where it is. Nothing in them is changed.',
         'kind': 'text',
         'send': USE_FOLDER,

@@ -58,13 +58,13 @@ class FinishPageTests(unittest.TestCase):
         lines = wizard.states_lines(SUMMARY)
         self.assertIn('How things stand: Your apps are installed. Some setup is still waiting for you.', lines)
         self.assertIn(
-            '  Jellyfin. Installed: done. Signed in: done. Opens: done. Tried by you: not tried yet (your library is '
+            '  Jellyfin. Installed: done. Login verified: done. Opens: done. Tried by you: not tried yet (your library is '
             'empty: add a video or a song you own, or leave this test for later).',
             lines,
         )
         # An app without a test has no "tried" at all; a failed and a waiting state say why.
         self.assertIn(
-            '  Sonarr. Installed: done. Signed in: needs fixing (the app did not take the saved login). Opens: '
+            "  Sonarr. Installed: done. Login verified: needs fixing (NekoServer couldn't sign in with the saved credentials). Opens: "
             'waiting (it is still starting; look again in a minute).',
             lines,
         )

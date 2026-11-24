@@ -22,7 +22,7 @@ Setup's first page asks one thing: *What would you like this server to do?* Each
 | 🐈 **Ask Neko** | A local AI assistant in the dashboard (off unless you switch it on) |
 | 💾 **Backup cards** | A copy of your photos and Nextcloud files on SD cards or USB sticks you keep somewhere else, filled a little more each night one is plugged in; each card can be read on any Linux computer with nothing installed (off unless you switch it on) |
 
-Always set up, whatever you choose: the **dashboard** (with a PIN, in two themes: Moonlit Neko with its cat, or a quiet Professional one, each light or dark), **backups** with a monthly checkup, **private access from your own devices** through Tailscale, and **shared folders** on your home network when there is something to share (photos, films and shows, or music).
+Always set up, whatever you choose: the **dashboard** (with a PIN, in two themes: Moonlit Neko with its cat, or a quiet Professional one, each light or dark), **backups**, weekly app updates and a monthly backup check, **private access from your own devices** through Tailscale, and **shared folders** on your home network when there is something to share (photos, films and shows, or music).
 
 Any combination works, including none of the apps. Switching something off later stops it and keeps its data.
 
@@ -81,7 +81,7 @@ Without a desktop, the same pages are asked in the terminal:
 5. **Your app accounts**: strong passwords made for you (Enter takes this), or your own logins, on one page, with the dashboard PIN and the shared folders' password. **Show login** shows any of them later, in the window and in the terminal.
 6. **Review and install**: one page lists everything that will happen, and one button starts it.
 
-Then setup works on its own. After the approval only these stop it: signing in to Tailscale, a drive that is short of room, choosing the download sources once Prowlarr runs (the recommended ones are ticked, so Continue alone takes them; Torrentio is in the list too, not ticked, and finds only what Sonarr and Radarr search for), the phone page, Ask Neko's model if you switched it on, and, on a first install, choosing a backup password (typed twice) for the backup of your app passwords. The alerts and outage addresses, if you switched those on, are asked when setup reaches them. If a step does not finish it says why, what usually fixes it, and offers **Retry this step**.
+Then setup works on its own. After the approval only these stop it: signing in to Tailscale, a drive that is short of room, choosing the download sources once Prowlarr runs (the recommended ones are ticked, so Continue alone takes them; Torrentio is in the list too, not ticked, and finds only what Sonarr and Radarr search for), the phone page, Ask Neko's model if you switched it on, and, on a first install, choosing a password to encrypt your saved app logins (entered twice). The alerts and outage addresses, if you switched those on, are asked when setup reaches them. If a step does not finish it says why, what usually fixes it, and offers **Retry this step**.
 
 Afterwards one page helps you **connect your phone**, and the last page says what is ready, what a program checked, what you tried yourself and what is still waiting for you.
 

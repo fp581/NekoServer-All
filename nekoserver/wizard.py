@@ -49,8 +49,8 @@ STEPS = {
     'recovery_checkpoint': 'Recovery checkpoint',
     'media': 'Movie, TV and music apps',
     'photos': 'Immich (photos)',
-    'photo_preservation': 'Weekly photo backup to the HDD',
-    'photo_backup': 'Weekly backup to the USB drive',
+    'photo_preservation': 'Weekly photo backup to the media and backups drive',
+    'photo_backup': 'Weekly backup to the offline backup drive',
     'nextcloud': 'Nextcloud (files)',
     'accounts': 'App accounts',
     'hardware_video': 'Video using the graphics chip',
@@ -69,7 +69,7 @@ STEPS = {
     'notifications': 'Phone alerts',
     'heartbeat': 'Server heartbeat',
     'host_backup': 'Nightly settings backup',
-    'maintenance': 'Monthly updates',
+    'maintenance': 'Weekly app updates and a monthly backup check',
     'backup_cards': 'Backup cards',
 }
 
@@ -83,7 +83,7 @@ WELCOME = [
     '  3. Install the apps you choose below and create an account for each one.',
     '  4. Connect the apps to each other.',
     '  5. Give each app a private Tailscale address and walk you through it on your phone.',
-    '  6. Schedule backups and monthly updates, then run a first checkup and backup.',
+    '  6. Schedule backups, weekly app updates and a monthly backup check, then run a first checkup and backup.',
     '',
     'Have ready: the drives you want to use, plugged in and already formatted (one drive, or the',
     'disk Linux runs from, with about 70 GB free is enough; a USB drive of 16 GB or more for an',
@@ -407,7 +407,7 @@ def first_page(path, asking):
     # On a server that is set up already (an update, gate run D) its apps are installed:
     # what this page holds is that nothing changes before the approval.
     first = (
-        'Nothing is installed yet.'
+        'Prerequisite packages are installed. Your selected apps will be set up after you approve.'
         if not neko_common.server_exists(read_json(path) or {})
         else ('Nothing changes until you approve.')
     )
@@ -669,7 +669,7 @@ def show_addresses(data, output):
 
 
 NEXT_DONE = [
-    '  Everything is set up. Backups and monthly updates run on their own;',
+    '  Everything is set up. Backups, weekly app updates and the monthly backup check run on their own;',
     '  the dashboard shows how they are doing.',
 ]
 NEXT_PENDING = [
@@ -680,7 +680,8 @@ NEXT_PENDING = [
 # needs you" list to point at (the 0.47.10 round: the screen said to fix its first item).
 NEXT_CHECKUP = [
     '  1. Look at the items under "First checkup and backup" above; the checklist on the dashboard explains each one.',
-    '  2. Backups and monthly updates run on their own. Run  sudo bash install.sh  again any time to repeat the checkup.',
+    '  2. Backups, weekly app updates and the monthly backup check run on their own. Run  sudo bash install.sh  again any '
+    'time to repeat the checkup.',
 ]
 
 
@@ -751,7 +752,7 @@ def sorted_steps(plan, states):
 # and for the server: a backup made, a restore tried. Nothing here sums them into one
 # "all done" (finish_states.py judges; these are the words).
 STATE_WORDS = {'done': 'done', 'failed': 'needs fixing', 'not_tested': 'not tried yet', 'waiting': 'waiting'}
-APP_STATES = (('installed', 'Installed'), ('login', 'Signed in'), ('address', 'Opens'), ('tried', 'Tried by you'))
+APP_STATES = (('installed', 'Installed'), ('login', 'Login verified'), ('address', 'Opens'), ('tried', 'Tried by you'))
 REASONS = {
     'step_did_not_finish': 'its part of setup did not finish',
     'step_waits_for_you': 'waiting for something only you can do',
@@ -759,7 +760,8 @@ REASONS = {
     'container_not_running': 'it is installed but not running',
     'still_starting': 'it is still starting; look again in a minute',
     'docker_did_not_answer': 'NekoServer could not ask the program that runs the apps',
-    'saved_login_refused': 'the app did not take the saved login',
+    'saved_login_refused': "NekoServer couldn't sign in with the saved credentials",
+    'saved_login_worked': 'NekoServer used the saved login successfully',
     'account_step_not_finished': 'its account is not made yet',
     'no_login_kept': 'NekoServer keeps no login for this app',
     'not_installed_yet': 'comes after it is installed',
@@ -794,10 +796,10 @@ OUTCOMES = {
 
 
 def state_said(found):
-    """One state in words, with its reason when it is not done."""
+    """One state in words, with its reason when it has one."""
     word = STATE_WORDS.get(found.get('state'), 'not known')
     reason = REASONS.get(found.get('reason'))
-    return f'{word} ({reason})' if reason and found.get('state') != 'done' else word
+    return f'{word} ({reason})' if reason else word
 
 
 def states_lines(summary):
@@ -998,7 +1000,9 @@ def what_found(found):
             f"An earlier copy of NekoServer ({found.get('settings_from') or 'an earlier release'}) on this PC still "
             'has your settings. Nothing is installed from this copy yet.'
         ]
-    return ['Your answers from an earlier start of setup are saved here. Nothing has been installed yet.']
+    return [
+        'Your answers from an earlier start of setup are saved here. Prerequisite packages are installed. Your selected apps will be set up after you approve.'
+    ]
 
 
 def choice_said(found, choice):

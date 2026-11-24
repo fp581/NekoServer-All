@@ -249,9 +249,9 @@ def atomic_json_write(path, data):
 
 # Settings every installation needs, with what they are for (shown when one is missing).
 REQUIRED = {
-    'data_mount': 'where the app SSD is mounted',
-    'media_mount': 'where the media HDD is mounted',
-    'external_backup_mount': 'where the USB backup drive is mounted',
+    'data_mount': 'where the apps drive is mounted',
+    'media_mount': 'where the media and backups drive is mounted',
+    'external_backup_mount': 'where the offline backup drive is mounted',
 }
 
 
@@ -434,7 +434,7 @@ def drives_apart(config):
     # Older settings files carry docker.persistent_root; it can only be the app SSD.
     if config.get('docker', {}).get('persistent_root', str(data)) != str(data):
         raise InstallerError(
-            '"persistent_root" under "docker" must be the same as "data_mount" (or delete that line: Docker always uses the app SSD)'
+            '"persistent_root" under "docker" must be the same as "data_mount" (or delete that line: Docker always uses the apps drive)'
         )
     return media
 
@@ -569,7 +569,7 @@ def state_folders(args, config):
     # The SSD's path comes from the settings file: the folder is used only once it
     # is proved to lie on the SSD with every link followed.
     if not os.path.realpath(state_dir).startswith(os.path.realpath(config['data_mount']) + os.sep):
-        raise InstallerError(f'The setup state folder must lie on the app SSD: {state_dir}')
+        raise InstallerError(f'The setup state folder must lie on the apps drive: {state_dir}')
     return given, state_dir, True
 
 
@@ -579,7 +579,9 @@ def previous_states(state_path, args):
     if not isinstance(previous, dict) or any(not isinstance(value, dict) for value in previous.values()):
         raise InstallerError('Installer state must map module names to state objects')
     if args.retry_failed and not previous:
-        raise InstallerError('No prior installer state; mount the data SSD with the foundation profile before retrying')
+        raise InstallerError(
+            'No prior installer state; mount the apps drive with the foundation profile before retrying'
+        )
     return previous
 
 
@@ -626,7 +628,7 @@ def make_state_folder(on_the_ssd, state_dir, given, config):
     # way above, so on a real server this is the same path as state_dir.
     checked = os.path.realpath(state_dir)
     if not checked.startswith(os.path.realpath(config['data_mount']) + os.sep):
-        raise InstallerError(f'The setup state folder must lie on the app SSD: {state_dir}')
+        raise InstallerError(f'The setup state folder must lie on the apps drive: {state_dir}')
     ensure_directory(Path(checked), 0o700)
 
 
@@ -718,7 +720,7 @@ def state_to_the_ssd(config, states, plan, name, log, state_path):
     # the SSD (ensure_directory refuses links on the way, so it is the same path).
     checked = os.path.realpath(persistent)
     if not checked.startswith(os.path.realpath(config['data_mount']) + os.sep):
-        raise InstallerError(f'The setup state folder must lie on the app SSD: {persistent}')
+        raise InstallerError(f'The setup state folder must lie on the apps drive: {persistent}')
     ensure_directory(Path(checked), 0o700)
     next_state = persistent / 'state.json'
     previous_persistent = read_json(next_state) if next_state.exists() else {}
@@ -901,7 +903,7 @@ def note_unfinished(config, states, log):
     # folder is proved to lie on the SSD with every link followed.
     reports = os.path.realpath(os.path.join(data, 'reports'))
     if not reports.startswith(data + os.sep):
-        raise InstallerError(f'The reports folder must lie on the app SSD: {reports}')
+        raise InstallerError(f'The reports folder must lie on the apps drive: {reports}')
     steps = [
         {
             'id': name,

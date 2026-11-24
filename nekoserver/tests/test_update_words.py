@@ -66,7 +66,7 @@ class SourcesSaidTests(unittest.TestCase):
 
     def test_a_first_install_says_the_backup_password_is_asked(self):
         """The 0.52.2 docs round (T4b-08): the monthly-backup step stops for it after the approval."""
-        line = 'A backup password for the backup of your app passwords, typed twice'
+        line = 'Choose a password to encrypt your saved app logins. Enter it twice'
         self.assertIn(line, sections(False)['Setup stops to ask you'])
         self.assertNotIn(line, sections(True)['Setup stops to ask you'])
 
@@ -101,6 +101,10 @@ class SecondRunWindowWordsTests(unittest.TestCase):
     def test_a_first_install_keeps_its_words(self):
         first = self.review(False)
         self.assertEqual(
-            first['intro'], 'Nothing has been installed yet. Read what setup will do, then press the button.'
+            first['intro'],
+            'Prerequisite packages are installed. Your selected apps will be set up after you approve. Read what setup will do, then press the button.',
         )
-        self.assertEqual(first['note'], 'Nothing is installed yet. The next page shows what will be.')
+        self.assertEqual(
+            first['note'],
+            'Prerequisite packages are installed. Your selected apps will be set up after you approve. The next page shows what will be set up.',
+        )

@@ -164,7 +164,7 @@ class CheckTests(unittest.TestCase):
         self.assertIn('only until the next restart', str(refused))
 
     def test_films_on_the_drive_chosen_as_the_media_hdd_are_not_sent_to_fstab(self):
-        # The HDD just chosen as the media HDD, opened by the desktop (udisks) at
+        # The HDD just chosen as the media and backups drive, opened by the desktop (udisks) at
         # /media/<account>/media with the films on it: not in /etc/fstab. The advice to
         # make that mount permanent led to a line for the drive, which then stopped the
         # storage step ("/etc/fstab already has a line for this drive"): a circle.
@@ -172,11 +172,11 @@ class CheckTests(unittest.TestCase):
         films = desktop / 'Movies'
         (films / 'Alien (1979)').mkdir(parents=True)
         self.pc.mounts[str(desktop)] = ('/dev/sdb1', 'ext4')
-        self.pc.uuids[str(desktop)] = 'hdd-uuid'  # the media HDD's, as the storage page saved it
+        self.pc.uuids[str(desktop)] = 'hdd-uuid'  # the media and backups drive's, as the storage page saved it
         refused = self.refusal(folder=films)
         self.assertEqual(refused.code, 'nekoserver_drive')
         said = str(refused)
-        self.assertIn('the drive you chose as the media HDD', said)
+        self.assertIn('the drive you chose as the media and backups drive', said)
         self.assertNotIn('Mount at system startup', said)
         self.assertIn('Press Enter here for now', said)
         media = self.pc.media

@@ -153,7 +153,9 @@ def setup(ask=getpass.getpass, out=print, key_dir=KEY_DIR, tries=3, intro=True):
         return
     if intro:
         out('One-time setup: monthly backups store the app password list encrypted.')
-        out('Choose a backup password for it (at least 8 characters; your login password is fine too).')
+        out(
+            'Choose a password to encrypt your saved app logins. Enter it twice (at least 8 characters; your login password is fine too).'
+        )
         out('You are asked for this only now. Nightly and monthly backups run on their own and never ask.')
     out('Write it down somewhere safe: without it the password list in your backups cannot be recovered.')
     import setup_progress

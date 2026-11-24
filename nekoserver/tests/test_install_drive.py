@@ -243,7 +243,7 @@ class PageTests(unittest.TestCase):
     def test_enter_keeps_the_apps_drive_and_a_number_or_the_windows_answer_takes_another(self):
         self.assertEqual(self.ask('', ''), {})
         self.assertIn('Where should Immich be installed (the settings and the database)?', self.said)
-        self.assertIn('  1) the same drive as NekoServer and your apps  (recommended)', self.said)
+        self.assertIn('  1) the apps drive  (recommended)', self.said)
         self.assertIn('  2) a drive of its own: drive 4 (sdd1: 238 GB SSD, Fast)', self.said)
         self.assertEqual(self.ask('2', '1'), {'photos': ROW})
         self.assertEqual(self.ask('', 'drive:4'), {'cloud': ROW})
@@ -273,9 +273,7 @@ class PageTests(unittest.TestCase):
         placed.assert_called_once_with(self.context.config, ROW)
         self.assertEqual(self.context.config['install'], {'photos': 'd3'})
         self.assertIn('Immich: installed on drive 4 (sdd1: 238 GB SSD, Fast), a drive of its own', self.said)
-        self.assertIn(
-            'Nextcloud: kept on the drive of NekoServer and your apps, where its settings already are', self.said
-        )
+        self.assertIn('Nextcloud: kept on the apps drive, where its settings already are', self.said)
         self.assertEqual(self.drive_table.INSTALL_AHEAD, {})
 
     def test_the_review_names_the_drive(self):

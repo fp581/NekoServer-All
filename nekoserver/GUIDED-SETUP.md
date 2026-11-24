@@ -61,7 +61,7 @@ The three media groups are on setup's first page, and each can be left out:
 - **Movies and shows**: **Jellyfin** to watch your films and shows, with video on the graphics chip. With **Also find and download new ones** on (it is, unless you switch it off): **Seerr** to ask for new ones, and **Sonarr, Radarr and Prowlarr** with **qBittorrent**, which find and download them.
 - **Music**: **Navidrome**, your music player, with the music backup. With **Also find and download new ones** on: **Lidarr**, with Prowlarr and qBittorrent, finds and downloads music; it does not need Movies and shows.
 
-All three together take about 6 GB on the SSD and about 2 GB of memory when idle. Any combination works: all of them, photos alone, music alone, or none for a smaller server. The dashboard, the backups and Tailscale are set up either way, and the shared folders when there is something to share (photos, films and shows, or music). A group you leave out is not asked about again: no place for its files, no sign-in, no test.
+All three together take about 6 GB on the apps drive and about 2 GB of memory when idle. Any combination works: all of them, photos alone, music alone, or none for a smaller server. The dashboard, the backups and Tailscale are set up either way, and the shared folders when there is something to share (photos, films and shows, or music). A group you leave out is not asked about again: no place for its files, no sign-in, no test.
 
 You can change your mind. Run `sudo bash install.sh` again and switch the line on the first page the other way. **Yes later** installs its apps as on any server. **No later never deletes anything**: the apps of that group are stopped, and their settings, your photos, music and films and every backup stay where they are, so yes brings them back as they were.
 
@@ -72,24 +72,24 @@ The drives are chosen after the first page and before the one approval; they are
 ```text
 Everything connected to this PC:
   1) WD SN770, 477 GB NVMe SSD - the disk Linux runs from
-       Can be the app SSD or the media HDD.
+       Can be the apps drive or the media and backups drive.
        Details: nvme0n1
   2) Samsung SSD 870, 466 GB SSD, named "apps" - ready to use
-       Can be the app SSD, the media HDD or the USB backup drive.
+       Can be the apps drive, the media and backups drive or the offline backup drive.
        Details: sda1 on sda; ext4, UUID ssd-0001; not open; about 1 % full
   3) WDC WD20EZRZ, 1.8 TB HDD, named "media" - has files: kept as they are
-       Can be the app SSD, the media HDD or the USB backup drive.
+       Can be the apps drive, the media and backups drive or the offline backup drive.
        Details: sdb1 on sdb; ext4, UUID hdd-0001; open at /run/media/neko/media; about 40 % full, holds files
   6) ST1000DM010, 932 GB HDD - can't be used: it has no filesystem yet
 ```
 
 The names in the details (`sda1`, `sdb1`) are Linux's own and can change at the next start. NekoServer remembers a drive by its ID (the UUID in the details), which you never have to type. Setup never formats a drive; for a new drive the list gives the command to run yourself.
 
-1. Each question names the role and what goes on that drive, for example `Number of the drive for your apps, photos and music (the app SSD)`. Type the drive's **number** from the list and press Enter. A drive that cannot have that role is in the list with the reason ("not this one: it is too small ..."); choosing it anyway says why and asks again.
-2. Each line comes with a recommended drive, marked in the list: press Enter to take it. Nothing is typed back: choosing a drive formats nothing and changes nothing on it, and setup says the choice back in words (`Drive 2 (Samsung SSD 870, 466 GB SSD, named "apps") is the app SSD. Nothing on it is changed by choosing it.`).
-3. The same follows for the media HDD, which is the drive every backup goes to (the window's line **Backups**). The disk Linux runs from can be chosen for either (a PC with one drive): setup then keeps that part in a folder of it and says what that means (if that disk fails, both go together; a full disk stops Linux too).
+1. Each question names the role and what goes on that drive, for example `Number of the drive for your apps, photos and music (the apps drive)`. Type the drive's **number** from the list and press Enter. A drive that cannot have that role is in the list with the reason ("not this one: it is too small ..."); choosing it anyway says why and asks again.
+2. Each line comes with a recommended drive, marked in the list: press Enter to take it. Nothing is typed back: choosing a drive formats nothing and changes nothing on it, and setup says the choice back in words (`Drive 2 (Samsung SSD 870, 466 GB SSD, named "apps") is the apps drive. Nothing on it is changed by choosing it.`).
+3. The same follows for the media and backups drive, which every backup goes to (the window's line **Media and backups drive**). The disk Linux runs from can be chosen for either (a PC with one drive): setup then keeps that part in a folder of it and says what that means (if that disk fails, both go together; a full disk stops Linux too).
 4. Then where Immich's photos, the films and shows, the music and Nextcloud's files are kept: the drive of the apps, the backups' drive, or another connected drive of their own, so the backups can be alone on a drive. Enter takes the recommended place. Photos (and music, where its backup is switched on) kept on the backups' drive are told that their backup copy is then on the same drive: it protects against a mistake, not against losing that drive.
-5. The apps themselves (their settings and databases) are installed together, on the drive of NekoServer and your apps. A drive of their own for one group's apps is not offered yet.
+5. The apps themselves (their settings and databases) are installed together, on the apps drive. A drive of their own for one group's apps is not offered yet.
 6. Then the removable drive for the offline backup. It is optional: Enter (in the window, **None for now**) leaves it out, saved as your choice, and nothing asks about it again.
 7. Then whether you already have films, shows or music: the folder of each (and any other folder of the same kind, up to 8, until you answer **That is all**), whether it is used where it is or copied into the library, and whether new ones are saved there too.
 8. **In the setup window** all of this is one page, **Where should NekoServer store your apps and files?**, with a list to choose from on every line and the recommended drive already chosen. A drive that cannot have a role is in the list with the reason and cannot be chosen. Press **Use these drives**.
@@ -198,7 +198,7 @@ Only the ones you switched on on the first page; nothing else depends on them. F
 
 ### 14. The backup password
 
-Monthly backups keep the list of app passwords locked with a **backup password**. Choose one (8 characters or more; your login password is fine too) and type it twice. **Write it down somewhere safe**: getting the password list back from a backup needs it. You are asked only this once.
+Monthly backups keep the list of app passwords locked with a **backup password**. Setup asks: "Choose a password to encrypt your saved app logins. Enter it twice." (8 characters or more; your login password is fine too). **Write it down somewhere safe**: getting the password list back from a backup needs it. You are asked only this once.
 
 **Forgot it?** The password lists already in your backups cannot be opened without it; nobody can open them for you. While the server still works, nothing is lost: every app's login is still shown by `account-setup.py show` ([Seeing an app's password](#seeing-an-apps-password)). Choose a new backup password for the backups from now on, in a terminal in the NekoServer folder:
 
