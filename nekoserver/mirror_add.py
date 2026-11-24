@@ -219,6 +219,14 @@ def run_job(request, ctx):
         return {'state': 'failed', 'message': str(e), 'advice': None}
     # The new member by its stable name: kernel names change across a restart.
     member = member_name(disk['by_id'], target, ctx.dev)
+    if member is None:
+        # Without its stable name, a restart could not tell whether the add happened.
+        ctx.clear()
+        return {
+            'state': 'failed',
+            'message': 'The new drive was erased, but the server could not find it again by its name, so nothing was changed in it. Restart the server, then try again.',
+            'advice': None,
+        }
     ctx.journal('add', committed=False, undo={'disk': disk, 'member': member})
     ctx.progress('add')
     return add(array, target, member, ctx)
@@ -243,7 +251,9 @@ def member_name(by_id, target, dev):
     if name == disk:
         return by_id
     found = re.fullmatch(re.escape(disk) + r'p?(\d+)', name)
-    return f'{by_id}-part{found[1]}' if found else None
+    part = f'{by_id}-part{found[1]}' if found else None
+    # Only a name resume can follow back to this very partition.
+    return part if part and resolve(dev, part) == name else None
 
 
 def add(array, target, member, ctx):
@@ -289,7 +299,13 @@ def finish_btrfs(array, ctx):
             return {
                 'state': 'failed',
                 'message': 'The copy onto the new drive could not be followed. Btrfs goes on with it by itself; restart the server, and the dashboard then finishes it.',
-                'advice': (said.strip().splitlines() or [''])[-1][:300] or None,
+                # The journal holds every other Drives job until this finishes: if it never
+                # does, the person can look for themselves.
+                'advice': (
+                    f'If this comes back after a restart, run `sudo btrfs replace status {array["mount"]}` '
+                    '(RECOVERY.md, "A drive of a Btrfs pool failed"). Btrfs said: '
+                    + ((said.strip().splitlines() or [''])[-1][:300] or 'nothing')
+                ),
             }
         ctx.sleep(10)
     ctx.progress('rebuild', percent=100.0)
