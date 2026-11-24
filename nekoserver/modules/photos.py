@@ -73,6 +73,7 @@ def has_files(folder):
 # (docs.immich.app/administration/system-integrity).
 IMMICH_FOLDERS = ('upload', 'library', 'thumbs', 'encoded-video', 'profile', 'backups')
 MARKER = '.immich'
+UPLOAD_KEY = 'UPLOAD_LOCATION='  # Immich's .env line naming its photos' folder
 # Immich reads its markers as root (its server runs as root in its container: setup's Compose
 # check, maintenance.rs immich_binds_ok, refuses a `user`), so the owner alone may read the
 # empty file; others get nothing.
@@ -130,7 +131,7 @@ def checked_env(env, upload, db):
     if env.stat().st_uid != ROOT_UID or env.stat().st_mode & 0o077:
         raise RuntimeError('Existing Immich environment must be root-owned and private; file preserved')
     content = env.read_text()
-    required = ('UPLOAD_LOCATION=' + str(upload), 'DB_DATA_LOCATION=' + str(db))
+    required = (UPLOAD_KEY + str(upload), 'DB_DATA_LOCATION=' + str(db))
     if any(r not in content.splitlines() for r in required):
         raise RuntimeError(
             'Existing Immich paths differ: Immich on this server keeps its photos or its database in other folders than '
@@ -154,10 +155,10 @@ def follow_drives_move(env, upload, cfg, log):
     if env.stat().st_uid != ROOT_UID or env.stat().st_mode & 0o077:
         return False
     lines = env.read_text().splitlines()
-    old = 'UPLOAD_LOCATION=' + str(moved[0] / Path(upload).relative_to(moved[1]))
+    old = UPLOAD_KEY + str(moved[0] / Path(upload).relative_to(moved[1]))
     if old not in lines:
         return False
-    new = ['UPLOAD_LOCATION=' + str(upload) if line == old else line for line in lines]
+    new = [UPLOAD_KEY + str(upload) if line == old else line for line in lines]
     atomic_write(env, '\n'.join(new) + '\n', 0o600)
     log(f'Immich: its photos are in {upload} now (moved from the Drives page); its settings say so')
     return True
@@ -231,9 +232,10 @@ def checked_model(model, upload, db, config, ask=None):
     refused = 'The downloaded Immich Compose file asks for more than NekoServer gives Immich ({}); nothing was started'
     with tempfile.TemporaryDirectory(prefix='neko-compose-') as work:
         settings, models = Path(work) / 'settings.json', Path(work) / 'model.json'
-        # With the folders setup decided (`paths`), which the runtime reads.
-        found = {k: config.get(k) for k in ('data_mount', 'media_mount', 'locations')}
-        settings.write_text(json.dumps({**found, 'paths': native_runtime.saved_paths(config)}))
+        # The drives as the runtime's jobs read them, with the folders setup decided
+        # (`paths`): a folder on an Extra drive is only allowed with that drive named in
+        # "storage" (T1-11: paths.library of films moved to an Extra drive was refused).
+        settings.write_text(json.dumps(native_runtime.storage_config(config)))
         models.write_text(json.dumps(model))
         args = ['check-compose', '--config', str(settings), '--app', 'immich', '--model', str(models)]
         code, said = (ask or native_runtime.ask_runtime)(Path(__file__).resolve().parents[1], config, args)
@@ -367,7 +369,7 @@ def write_immich_files(cfg, ver, files, folders):
 def new_env(upload, db, ver, timezone):
     """Immich's .env for a new install: its folders, its release, a new database password."""
     return (
-        'UPLOAD_LOCATION='
+        UPLOAD_KEY
         + str(upload)
         + '\nDB_DATA_LOCATION='
         + str(db)

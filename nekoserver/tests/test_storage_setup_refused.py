@@ -19,6 +19,7 @@ that neither the start of the computer nor a new job could clear. Now:
 
 import json
 import os
+import re
 import socket
 import sys
 import tempfile
@@ -36,8 +37,16 @@ from tests.test_storage_jobs import ID, Jobs, last_result, saved_journal  # noqa
 REFUSED = 'FAILED photos: Existing Immich paths differ'
 
 
+def setup_log(*lines, finished=True):
+    """A setup run's log as installer.py writes it: its step lines, then the last line."""
+    said = [f'[2026-11-24 22:00:0{n % 10}] {line}' for n, line in enumerate(lines)]
+    return '\n'.join([*said, *(['[2026-11-24 22:01:00] Finished: 30 of 32 steps done'] if finished else [])]) + '\n'
+
+
 class Refusing:
-    """Setup run again: refuses (raises) or works, in turn; what the apps write meanwhile."""
+    """Setup run again: refuses (raises) or works, in turn, with its log (setup-<id>.log);
+    what the apps write meanwhile. An answer is None (works), the error (its log: that
+    step FAILED), or (the error, the log)."""
 
     def __init__(self, test, *answers, writes=None):
         self.test, self.answers, self.writes = test, list(answers), writes or {}
@@ -49,8 +58,12 @@ class Refusing:
             (self.test.root / path).write_text(text)
         self.writes = {}
         answer = self.answers.pop(0)
-        if answer:
-            raise RuntimeError(answer)
+        error, log = answer if isinstance(answer, tuple) else (answer, None)
+        if log is None:
+            log = setup_log(*(f'FAILED {step}: no' for step in re.findall(r'FAILED ([a-z_]+)', error or '')))
+        (job.state / f'setup-{job.id}.log').write_text(log)
+        if error:
+            raise RuntimeError(error)
 
 
 class UnswitchTests(Jobs):
@@ -95,7 +108,10 @@ class UnswitchTests(Jobs):
 
     def test_backups_retired_before_setup_come_back_when_it_refuses(self):
         self.files(self.root / 'media', **{'backups/host.tar': 'h', 'photos/archive/2020.zip': 'z'})
-        with self.refusing('FAILED backups', None), mock.patch.object(storage_jobs, 'unbind_backups') as unbind:
+        with (
+            self.refusing('FAILED storage: the backups folder is not mounted', None),
+            mock.patch.object(storage_jobs, 'unbind_backups') as unbind,
+        ):
             self.assertEqual(self.run_job('move', kind='backups', to='d3'), 1)
         self.assertEqual((self.root / 'media/backups/host.tar').read_text(), 'h')
         self.assertEqual((self.root / 'media/photos/archive/2020.zip').read_text(), 'z')
@@ -133,13 +149,111 @@ class UnswitchTests(Jobs):
         )
         with mock.patch.object(storage_jobs, 'run', mock.Mock()):
             self.assertEqual(storage_jobs.resume(self.config, self.settings, self.root / 'state', self.root / 'run'), 0)
+        # Before Docker (resume): the files are back at the old place and the settings too.
         self.assertEqual(self.saved()['locations'], {})
-        self.assertEqual(storage_jobs.finish(self.config, self.settings, self.root / 'state', self.root / 'run'), 1)
         self.assertEqual((self.root / 'ssd/photos/immich-library/late.jpg').read_text(), 'meanwhile')
         self.assertFalse((self.root / 'media/photos/immich-library').exists())
+        self.assertTrue(saved_journal(self.root)['undo']['files_back'])
+        # Docker starts the apps, on the old place: what they write there is kept by the finish.
+        self.files(self.root / 'ssd/photos/immich-library', **{'after-boot.jpg': 'taken after the start'})
+        self.assertEqual(storage_jobs.finish(self.config, self.settings, self.root / 'state', self.root / 'run'), 1)
+        self.assertEqual((self.root / 'ssd/photos/immich-library/after-boot.jpg').read_text(), 'taken after the start')
+        self.assertEqual((self.root / 'ssd/photos/immich-library/late.jpg').read_text(), 'meanwhile')
         self.assertEqual(self.setups[-1]['locations'], {})
         self.assertEqual(last_result(self.root)['state'], 'failed')
         self.assertIsNone(saved_journal(self.root))
+
+    GATEWAY = 'setup ended with a failed step (FAILED gateway_lan: no address)'
+
+    def test_a_failure_of_a_step_that_does_not_use_the_place_finishes_the_move(self):
+        self.files(self.root / 'ssd/photos/immich-library', **{'x.jpg': 'one'})
+        log = setup_log(
+            'PASS storage',
+            'PASS docker',
+            'PASS photos',
+            'UNAVAILABLE photo_backup: no USB drive',
+            'FAILED gateway_lan: no',
+        )
+        with self.refusing((self.GATEWAY, log)):
+            self.assertEqual(self.run_job('move', kind='photos', to='d3'), 0)
+        self.assertEqual((self.root / 'drives/d3/photos/immich-library/x.jpg').read_text(), 'one')
+        self.assertTrue((self.root / f'ssd/nekoserver-old-photos-{ID}/photos/immich-library/x.jpg').exists())
+        self.assertEqual(self.saved()['locations'], {'photos': 'd3'})
+        result = last_result(self.root)
+        self.assertEqual(result['state'], 'done')
+        self.assertIn('gateway_lan: no address', result['message'])
+        self.assertIn('Run setup again', result['advice'])
+        self.assertIsNone(saved_journal(self.root))
+        self.assertEqual(self.started, [['nekoserver-immich.service']])
+
+    def test_the_result_says_how_long_the_apps_were_paused(self):
+        self.files(self.root / 'ssd/photos/immich-library', **{'x.jpg': 'one'})
+        self.assertEqual(self.run_job('move', kind='photos', to='media'), 0)
+        self.assertIsInstance(last_result(self.root)['paused_seconds'], int)
+
+    def test_the_finish_after_docker_holds_the_operation_lock(self):
+        import fcntl
+
+        job = storage_jobs.Job(
+            self.request('move', kind='photos', to='media'), self.config, self.settings, self.root / 'state'
+        )
+        job.journal('start', True, staging='x', here='ssd', to='media', change=[['locations', 'photos', 'media']])
+        with open(self.root / 'operation.lock', 'a') as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            waited = []
+            finished = storage_jobs.finish(
+                self.config, self.settings, self.root / 'state', self.root / 'run', sleep=waited.append
+            )
+            self.assertEqual(finished, 1)
+        self.assertEqual(sum(waited), 10 * storage_jobs.FINISH_LOCK_TRIES)
+        self.assertEqual(self.setups, [])
+        self.assertIsNotNone(saved_journal(self.root))
+        self.assertIn('next start', last_result(self.root)['advice'])
+
+    def test_a_kind_step_the_run_held_up_or_never_reached_undoes_the_move(self):
+        self.files(self.root / 'ssd/photos/immich-library', **{'x.jpg': 'one'})
+        for log in (
+            setup_log('PASS storage', 'FAILED docker: an image did not download', 'BLOCKED photos: waits on docker'),
+            setup_log('PASS storage', 'FAILED gateway_lan: no', 'START photos', finished=False),
+        ):
+            with self.subTest(log=log), self.refusing((self.GATEWAY, log), None):
+                self.assertEqual(self.run_job('move', kind='photos', to='d3'), 1)
+                self.assertEqual(self.saved()['locations'], {})
+                self.assertEqual((self.root / 'ssd/photos/immich-library/x.jpg').read_text(), 'one')
+                self.assertEqual(last_result(self.root)['state'], 'failed')
+
+    def test_which_runs_refuse_the_place(self):
+        job = SimpleNamespace(state=self.root / 'state', id=ID)
+
+        def refused(kind, *lines, finished=True):
+            (self.root / f'state/setup-{ID}.log').write_text(setup_log(*lines, finished=finished))
+            return storage_jobs.refused_place(job, kind)
+
+        self.assertTrue(refused('photos', 'PASS storage', 'FAILED photos: Existing Immich paths differ'))
+        self.assertTrue(refused('movies', 'FAILED gateway_lan: x', 'FAILED media: y'))
+        self.assertTrue(refused('cloud', 'FAILED storage: the drive is not mounted'))
+        self.assertTrue(refused('music', 'PASS storage', 'PASS media', finished=False))
+        self.assertFalse(refused('photos', 'PASS photos', 'NEEDS SETUP photo_backup: plug in the USB drive'))
+        self.assertFalse(refused('backups', 'PASS app_backup', 'NEEDS SETUP backup_cards: no card in'))
+        # A step that points an app at its folders may wait for the person before it wrote them.
+        for kind, step in (
+            ('photos', 'photos'),
+            ('cloud', 'nextcloud'),
+            ('movies', 'media'),
+            ('music', 'samba'),
+            ('backups', 'storage'),
+            ('photos', 'docker'),
+        ):
+            with self.subTest(step=step):
+                self.assertTrue(refused(kind, 'PASS storage', f'NEEDS SETUP {step}: sign in first'))
+        self.assertFalse(
+            refused('photos', 'PASS storage', 'PASS photos', 'FAILED gateway_tailnet: x', 'FAILED heartbeat: y')
+        )
+        self.assertFalse(refused('cloud', 'PASS storage', 'PASS nextcloud', 'FAILED media: an image did not download'))
+        # A run of an earlier attempt in the same log does not count: the last line of each step does.
+        self.assertFalse(refused('photos', 'FAILED photos: x', 'PASS storage', 'PASS photos', 'FAILED gateway_lan: x'))
+        (self.root / f'state/setup-{ID}.log').unlink()
+        self.assertTrue(storage_jobs.refused_place(job, 'photos'))
 
 
 class MovedHereTests(unittest.TestCase):
@@ -299,10 +413,30 @@ class MovedHereTests(unittest.TestCase):
         self.assertEqual(current, before)
 
 
+class ImmichComposeCheckTests(MovedHereTests):
+    def test_the_runtime_is_told_the_extra_drives_the_settings_place_files_on(self):
+        # T1-11: the films moved to an Extra drive; setup's photos step checks Immich's
+        # Compose file with the runtime, which allows a folder only on a drive it is told of.
+        self.config['locations'] = {'movies': 'd3'}
+        self.config['storage']['d3']['fstype'] = 'ext4'
+        given = {}
+
+        def ask(root, config, args):
+            given.update(json.loads(Path(args[args.index('--config') + 1]).read_text()))
+            return 1, 'stop here'
+
+        with self.assertRaises(RuntimeError):
+            photos.checked_model({}, Path('/x'), Path('/y'), self.config, ask=ask)
+        self.assertEqual(given['storage']['d3']['uuid'], 'd3-uuid')
+        self.assertEqual(given['locations'], {'movies': 'd3'})
+        self.assertEqual(given['paths']['library'], str(self.drive('d3') / 'library'))
+
+
 class DashboardPortTests(unittest.TestCase):
     def test_the_dashboard_socket_stays_up_through_a_move(self):
         self.assertIn(dashboard.SOCKET, storage_jobs.left_alone())
         self.assertIn(dashboard.SERVICE, storage_jobs.left_alone())
+        self.assertIn(dashboard.CONTROL, storage_jobs.left_alone())
 
     def test_a_port_only_closed_connections_wait_on_is_free(self):
         with socket.socket() as server:

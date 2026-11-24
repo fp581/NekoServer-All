@@ -820,13 +820,19 @@ OWN_UNITS = (
 )
 
 
-# The page's own units, which only read: the Drives page keeps showing the job while the
-# apps are stopped for the last copy. The control service is stopped with the rest: its
-# app buttons (restart, update) would start an app in the middle of the move.
-# Its socket too: the service needs it (Requires=), so stopping the socket stopped the
-# page, and setup run again a moment later found the port held by the page's closed
-# connections and gave the dashboard another one (T1-10).
-PAGE_UNITS = ('nekoserver-dashboard.socket', 'nekoserver-dashboard.service', 'nekoserver-dashboard-collect.service')
+# The page's own units: the Drives page keeps showing the job while the apps are stopped
+# for the last copy. The dashboard's socket too: the service needs it (Requires=), so
+# stopping the socket stopped the page, and setup run again a moment later found the port
+# held by the page's closed connections and gave the dashboard another one (T1-10). The
+# control service answers the page's questions about the job (storage.rs); its app
+# buttons (restart, update) refuse while the operation lock is held (control.rs), which a
+# Drives job holds from start to end (T1-11).
+PAGE_UNITS = (
+    'nekoserver-dashboard.socket',
+    'nekoserver-dashboard.service',
+    'nekoserver-dashboard-collect.service',
+    'nekoserver-control.service',
+)
 
 
 def left_alone():
@@ -905,6 +911,9 @@ class Job:
                 'started_at': self.started,
                 'finished_at': None if state == 'working' else time.time(),
                 'power_cut': power_cut,
+                # How long the apps were paused for the last copy and the switch (said on
+                # the page, and before the next move).
+                'paused_seconds': getattr(self, 'paused_seconds', None),
             },
             self.state,
         )
@@ -1126,7 +1135,8 @@ def steps_working(config):
 
     try:
         return migrate.steps_working(config)
-    except Exception:  # noqa: BLE001  (no record of the steps: the check after the move is the dashboard's)
+    except Exception:  # noqa: BLE001
+        # No record of the steps: the check after the move is the dashboard's.
         return []
 
 
@@ -1147,7 +1157,7 @@ def switch_data(job, kind, here, to, sources, staged, size):
 
     try:
         copy_all(job, sources, staged, size, final=False)
-        job.journal('stop', False)
+        job.journal('stop', False, paused_at=time.time())
         job.progress('stop')
         stopped = migrate.stop_writers(
             out=job.out, note=lambda units: job.journal('stop', False, stopped=units), own=left_alone()
@@ -1253,22 +1263,40 @@ def finish_move(job, kind, here, stopped):
 
     job.journal('start', True)
     job.progress('start')
+    other = None
     try:
         if kind == 'backups':
             # Setup never mounts the backups' new place over files at the old one.
             retire_old(job, kind, here)
         setup_again(job)
-    except Exception as error:  # noqa: BLE001  (any refusal: the move is undone, never left half)
-        unswitch(job, kind, here, stopped, error)
+    except Exception as error:  # noqa: BLE001
+        # A refusal of the place undoes the move, never half.
+        if refused_place(job, kind):
+            unswitch(job, kind, here, stopped, error)
+        other = error
     try:
         retire_old(job, kind, here)
     finally:
         migrate.start_again(stopped, job.out)
+        paused(job)
+    if other:
+        raise Stop(
+            f'Your {KIND_WORDS[kind]} are on {place_words(job.undo()["to"])} now and their apps use them there. '
+            f'Setup, run again for the move, ended with a step that does not use them failing: {other}',
+            'Run setup again (sudo bash install.sh) once that is fixed.',
+        )
     job.progress('check')
     before = job.undo().get('before') or []
     problem = before and migrate.server_check(job.config, before)
     if problem:
         raise Stop(f'Your {KIND_WORDS[kind]} were moved, but the server check after it says: {problem}')
+
+
+def paused(job):
+    """The time from the apps' stop to their start again, kept for the result."""
+    since = job.undo().get('paused_at')
+    if isinstance(since, (int, float)):
+        job.paused_seconds = max(0, round(time.time() - since))
 
 
 def moved_here(config, kind, state=None):
@@ -1289,6 +1317,49 @@ def moved_here(config, kind, state=None):
         return root_of(config, left), root_of(config, now)
     except RuntimeError:
         return None
+
+
+# The setup steps that use a kind's folders, or the drives themselves. After a move's
+# switch, a setup run that fails is taken as a refusal of the new place, and the move is
+# undone (unswitch), unless its log shows the run finished and each of these steps that
+# it has PASSED (or cannot be had on this PC, or waits for the person): then the failure was another step's (an
+# image download, the gateway), the move is finished and that failure said (T5 on
+# f58aa9b). A step the run held up (BLOCKED) or never reached is no pass (T5 on 751ac7c:
+# Immich's .env still naming the old folder when its step waited on the gateway).
+PLACE_STEPS = ('storage', 'capacity', 'docker')
+KIND_STEPS = {
+    'photos': ('photos', 'photo_backup', 'photo_preservation'),
+    'cloud': ('nextcloud',),
+    'movies': ('media', 'samba'),
+    'music': ('media', 'music', 'music_backup', 'samba'),
+    'backups': ('app_backup', 'host_backup', 'photo_backup', 'maintenance', 'backup_cards'),
+}
+STEP_LINE = re.compile(r'(?:^|\] )(START|PASS|FAILED|NEEDS SETUP|UNAVAILABLE|BLOCKED) ([a-z_]+)')
+FINE = ('PASS', 'UNAVAILABLE')
+# NEEDS SETUP is a pass only for the backup steps (their drive not plugged in): a step that
+# points an app at its folders may stop for the person before it wrote them (T5 on 2515163).
+BACKUP_STEPS = ('photo_backup', 'music_backup', 'backup_cards', 'app_backup', 'host_backup')
+
+
+def refused_place(job, kind):
+    """Whether the failed setup run of this move (its log, setup-<id>.log) refused the new
+    place: True unless it ran to its end and every one of the kind's and the drives' steps
+    it had ended PASS (a step it did not have is not in its plan)."""
+    try:
+        text = (job.state / f'setup-{job.id}.log').read_text(errors='replace')
+    except OSError:
+        return True
+    last, ended = {}, False
+    for line in text.splitlines():
+        found = STEP_LINE.search(line)
+        if found:
+            last[found[2]], ended = found[1], False
+        elif 'Finished:' in line:
+            ended = True
+    return not ended or any(
+        last.get(step, 'PASS') not in (*FINE, *(('NEEDS SETUP',) if step in BACKUP_STEPS else ()))
+        for step in (*PLACE_STEPS, *KIND_STEPS.get(kind, ()))
+    )
 
 
 def unswitch(job, kind, here, stopped, why):
@@ -1312,6 +1383,40 @@ def unswitch(job, kind, here, stopped, why):
         own=left_alone(),
     )
     stopped = list(dict.fromkeys([*(stopped or []), *earlier, *again]))
+    if not job.undo().get('files_back'):
+        unswitch_files(job, kind, here)
+    else:
+        # Undone at the start already, before Docker (resume): only what an app wrote in a
+        # new folder since (one its record still named) is added, nothing deleted.
+        for old, new in zip(paths(job.config, kind, here), paths(job.config, kind, to)):
+            if new.is_dir() and not os.path.ismount(new) and any(new.iterdir()):
+                old.mkdir(parents=True, exist_ok=True)
+                migrate.copy(new, old, out=job.out)
+    also = ''
+    try:
+        setup_again(job)
+    except Exception as error:  # noqa: BLE001
+        # Said; the files and the settings are as before.
+        also = f' Setup run again for {place_words(here)} stopped too: {error}'
+    finally:
+        migrate.start_again(stopped, job.out)
+        paused(job)
+    raise Stop(
+        f'Your {KIND_WORDS[kind]} stay on {place_words(here)}: setup could not use them on {place_words(to)} '
+        f'({why}). Nothing was changed.' + also,
+        f'Setup\'s log says why: {job.state / f"setup-{job.id}.log"}',
+    )
+
+
+def unswitch_files(job, kind, here):
+    """unswitch's part on the drives: the backups' new place unmounted, folders retired
+    before setup given back, what the apps wrote in the new folders copied back into the
+    old ones (the old ones then equal them), the settings back, the new copy out of the way
+    (undo_move). Done again from the start until it ends (files_back): at a resume it runs
+    before Docker, so no app has written at the old place yet (T5 on f58aa9b)."""
+    import migrate
+
+    to = job.undo()['to']
     if kind == 'backups' and to != 'media':
         forward = json.loads(json.dumps(job.config))
         apply_change(forward, [['locations', kind, to]])
@@ -1321,21 +1426,10 @@ def unswitch(job, kind, here, stopped, why):
         if new.is_dir() and not os.path.ismount(new):
             old.mkdir(parents=True, exist_ok=True)
             migrate.copy(new, old, final=True, out=job.out)
-    apply_change(job.config, back_change)
+    apply_change(job.config, job.undo()['change'])
     job.save_settings()
     undo_move(job)
-    also = ''
-    try:
-        setup_again(job)
-    except Exception as error:  # noqa: BLE001  (said; the files and the settings are as before)
-        also = f' Setup run again for {place_words(here)} stopped too: {error}'
-    finally:
-        migrate.start_again(stopped, job.out)
-    raise Stop(
-        f'Your {KIND_WORDS[kind]} stay on {place_words(here)}: setup could not use them on {place_words(to)} '
-        f'({why}). Nothing was changed.' + also,
-        f'Setup\'s log says why: {job.state / f"setup-{job.id}.log"}',
-    )
+    job.journal('unswitch', True, files_back=True)
 
 
 def unretire(job, kind, here):
@@ -1527,7 +1621,8 @@ def worked(job):
         job.result('failed', f'{refused} Nothing was changed.')
         job.done()
         return 1
-    except Exception as error:  # noqa: BLE001  (said on the page; the journal decides what the boot does)
+    except Exception as error:  # noqa: BLE001
+        # Said on the page; the journal decides what the boot does.
         saved = read_state(JOURNAL, job.state)
         if saved and saved.get('committed'):
             job.result('failed', f'The job stopped after the switch: {error}', 'It is finished at the next start.')
@@ -1569,6 +1664,8 @@ def resume(config, settings_files, state=None, folder=None, out=print):
         job.done()
         return 0
     job.reapply(read_state(JOURNAL, job.state) or saved)
+    if saved.get('phase') == 'unswitch' and job.action in ('move', 'back') and not saved['undo'].get('files_back'):
+        unswitch_files(job, job.request['kind'], saved['undo']['here'])
     if job.action in ('move', 'back', 'use', 'mirror_add'):
         run(
             [
@@ -1685,13 +1782,33 @@ def finish_cut_move(job, saved):
     finish_move(job, kind, here, stopped)
 
 
-def finish(config, settings_files, state=None, folder=None, out=print):
+# How often the finish after Docker tries for the operation lock, 10 s apart (a job a
+# timer started as the PC came up may hold it for a few minutes).
+FINISH_LOCK_TRIES = 60
+
+
+def finish(config, settings_files, state=None, folder=None, out=print, sleep=time.sleep):
     """After Docker, at the start: a cut-off move or added drive finished (setup run again,
-    then the old folders retired and the apps started)."""
+    then the old folders retired and the apps started), under the operation lock as the
+    job itself was, so the control service's app buttons wait for it too (control.rs)."""
+    from neko_common import OPERATION_LOCK, hold_operation
+
     saved = read_state(JOURNAL, state)
     if not saved or not saved.get('committed'):
         return 0
     job = Job(saved['request'], config, settings_files, state, folder, out)
+    for _ in range(FINISH_LOCK_TRIES):
+        held = hold_operation(OPERATION_LOCK)
+        if held is not None:
+            with held:
+                return finish_held(job, saved)
+        sleep(10)
+    job.result('failed', FACTS.get('busy', 'Another job is at work.'), 'It is tried again at the next start.')
+    return 1
+
+
+def finish_held(job, saved):
+    config = job.config
     job.reapply(saved)
     try:
         if job.action == 'mirror_add':

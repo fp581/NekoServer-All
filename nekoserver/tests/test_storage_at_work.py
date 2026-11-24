@@ -101,10 +101,16 @@ class AtWorkTests(unittest.TestCase):
         self.assertEqual(systemd.at_work, ['nekoserver-storage.service'])  # the gateway was stopped
 
     def test_the_dashboard_keeps_showing_a_drives_job_while_the_apps_are_stopped(self):
-        page = ['nekoserver-dashboard.service', 'nekoserver-dashboard-collect.service']
-        # The control service and the other quiet ones are stopped: an app button pressed
-        # meanwhile (restart, update) would start an app between the last copy and the switch.
-        others = ['nekoserver-control.service', 'nekoserver-system-check.service', 'nekoserver-cards.service']
+        page = [
+            'nekoserver-dashboard.socket',
+            'nekoserver-dashboard.service',
+            'nekoserver-dashboard-collect.service',
+            'nekoserver-control.service',
+        ]
+        # The page, its socket and the control service (which answers about the job and
+        # refuses app buttons while the job holds the operation lock) stay; the other quiet
+        # ones are stopped.
+        others = ['nekoserver-system-check.service', 'nekoserver-cards.service']
         systemd = Systemd(at_work=['nekoserver-storage.service'], running=[*page, *others])
         self.assertEqual(self.stop(systemd), others)
         self.assertEqual(systemd.running, page)
