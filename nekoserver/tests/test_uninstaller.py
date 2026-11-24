@@ -1959,8 +1959,34 @@ class DockerDownTests(unittest.TestCase):
         self.assertIn(f'sudo mv {self.RECORD} /root/', shown)
         # A Docker that runs: only the usual words (its resume service can finish the job).
         self.docker_failed = False
+        self.system.running.add('docker.service')
         _, _, shown = self.main([])
         self.assertNotIn('Docker cannot start now', shown)
+
+    def test_with_docker_never_started_for_a_missing_drive_it_says_how_to_go_on(self):
+        """T1-R17 (drill E on Debian): docker.service has RequiresMountsFor= the NekoServer
+        drives, so with the HDD gone it is never started and never fails: "inactive". Only
+        "Run sudo systemctl start nekoserver-app-resume.service" was said, which fails with
+        "A dependency job ... failed"."""
+        self.system.write(self.RECORD, '{}')
+        self.assertNotIn('docker.service', self.system.running)  # systemctl is-active: inactive
+        code, asked, shown = self.main([])
+        self.assertEqual((code, asked), (1, []))
+        self.assertIn('Docker cannot start now', shown)
+        self.assertIn('Connect the missing drive and restart the computer', shown)
+        self.assertIn(f'sudo mv {self.RECORD} /root/', shown)
+        self.assertNotIn('docker.service failed', shown)  # it did not fail: it is not running
+
+    def test_a_docker_still_starting_gets_the_usual_words_only(self):
+        """Just after a boot, or while the resume unit starts it: the job is about to finish
+        by itself, and setting its record aside then is what this check prevents."""
+        self.system.write(self.RECORD, '{}')
+        self.system.failing[('systemctl', 'is-active', 'docker.service')] = (3, 'activating')
+        code, asked, shown = self.main([])
+        self.assertEqual((code, asked), (1, []))
+        self.assertIn('Run  sudo systemctl start nekoserver-app-resume.service', shown)
+        self.assertNotIn('Docker cannot start now', shown)
+        self.assertNotIn('sudo mv', shown)
 
     def test_docker_that_fails_to_start_is_not_asked_and_the_wait_is_said_first(self):
         self.docker_failed = True
