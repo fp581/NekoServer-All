@@ -1643,9 +1643,11 @@ def _no_cut_off_job(plan, call):
         record = str(path)
         if job != 'maintenance' and plan.at(record).exists():
             # Not only "failed": with a drive it needs missing, docker.service (RequiresMountsFor=)
-            # is never started, so it stays "inactive" and never fails (T1-R17, on Debian).
+            # is never started, so it stays "inactive" and never fails (T1-R17, on Debian). A
+            # Docker still starting ("activating", just after a boot) is not: the job is about
+            # to finish by itself, and its record must not be set aside then.
             state = (call(['systemctl', 'is-active', DOCKER_SERVICE], 30)[1].split() or ['unknown'])[0]
-            down = state != 'active'
+            down = state in STOPPED
             raise Stopped(
                 'A NekoServer job was cut off and is not finished yet: its record ' + record + ' is still there, and '
                 'removing NekoServer now would delete what finishes it. Run  sudo systemctl start '
