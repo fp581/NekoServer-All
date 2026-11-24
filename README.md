@@ -1,6 +1,12 @@
 # NekoServer
 **Turn a Linux PC into a home server** for your photos, films, music and files. One guided setup installs the apps you choose, makes an account in each one, connects them to each other and sets up the backups. You choose once, approve once, and setup does the rest. It never formats a drive and never deletes your files.
 
+
+
+<p align="center">
+  <img src="docs/media/nekoserver-overview.webp" alt="NekoServer: turn your Linux PC into a home media server. Movies and shows, requests and downloads, music, phone photo backup, private files, a live hardware dashboard, backups and recovery, private remote access, guided setup." width="480">
+</p>
+
 ## What you can switch on
 
 Setup's first page asks one thing: *What would you like this server to do?* Each line is a switch.
@@ -20,12 +26,6 @@ Setup's first page asks one thing: *What would you like this server to do?* Each
 Always set up, whatever you choose: the **dashboard** (with a PIN, in two themes: Moonlit Neko with its cat, or a quiet Professional one, each light or dark), **backups**, weekly app updates and a monthly backup check, **private access from your own devices** through Tailscale, and **shared folders** on your home network when there is something to share (photos, films and shows, or music).
 
 Any combination works, including none of the apps. Switching something off later stops it and keeps its data.
-
-<p align="center">
-  <img src="docs/media/nekoserver-overview.webp" alt="NekoServer: turn your Linux PC into a home media server. Movies and shows, requests and downloads, music, phone photo backup, private files, a live hardware dashboard, backups and recovery, private remote access, guided setup." width="480">
-</p>
-
-
 
 ## What you need
 
