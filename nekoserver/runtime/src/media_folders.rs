@@ -348,6 +348,12 @@ fn is_own(path: &str, own: &[String]) -> bool {
     own.iter()
         .any(|o| path == o || path.starts_with(&format!("{o}/")))
 }
+/// The folders the Drives page's jobs make at a drive's top (contract §5): an old copy, a
+/// copy under way, one being deleted. Never offered, nor anything inside them.
+const JOB_FOLDERS: [&str; 3] = ["nekoserver-old-", "nekoserver-new-", "nekoserver-deleting-"];
+fn is_job_folder(name: &str) -> bool {
+    JOB_FOLDERS.iter().any(|start| name.starts_with(start))
+}
 
 /// The mounts of the kernel's table: (where, filesystem type), the last one for a folder
 /// in effect.
@@ -408,6 +414,12 @@ pub fn inside(path: &str, table: &str, cfg: &Value) -> Value {
             "That is one of NekoServer's own folders, which are used already. Choose a folder of yours.",
         );
     }
+    if path.split('/').any(is_job_folder) {
+        return refuse(
+            "E42",
+            "That folder belongs to a move on the Drives page (a copy it keeps or deletes). Choose a folder of yours.",
+        );
+    }
     let points: Vec<String> = mounts(table).into_iter().map(|(p, _)| p).collect();
     let limit = facts()["browse_limit"].as_u64().unwrap_or(200) as usize;
     let wanted = PathBuf::from(path);
@@ -457,7 +469,11 @@ fn names_in(path: &Path, limit: usize) -> std::result::Result<(Vec<String>, bool
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue; // not UTF-8: no device writes such a name, and the page could not show it
         };
-        if name.starts_with('.') || name.chars().any(char::is_control) || name.contains('\\') {
+        if name.starts_with('.')
+            || name.chars().any(char::is_control)
+            || name.contains('\\')
+            || is_job_folder(&name)
+        {
             continue;
         }
         names.push(name);
@@ -779,7 +795,17 @@ mod tests {
         let _ = fs::remove_dir_all(&top);
         // Looked at as if under /mnt: the page may look only there, so the test's own
         // folder stands in through the check that matters here (names_in).
-        for name in ["Films", "Shows", ".hidden", "lost+found"] {
+        // The Drives page's own folders (an old copy, a copy under way, one being deleted)
+        // are never offered: picking one would put an app's folder on a copy the page deletes.
+        for name in [
+            "Films",
+            "Shows",
+            ".hidden",
+            "lost+found",
+            "nekoserver-old-photos-0123456789abcdef",
+            "nekoserver-new-movies-0123456789abcdef",
+            "nekoserver-deleting-music-0123456789abcdef",
+        ] {
             fs::create_dir_all(top.join(name)).unwrap();
         }
         fs::write(top.join("notes.txt"), "x").unwrap();
@@ -810,6 +836,14 @@ mod tests {
             inside("/srv/nekoserver/appdata", TABLE, &cfg)["error"],
             "E42"
         );
+        for path in [
+            "/mnt/nekoserver-drives/d3/nekoserver-old-photos-0123456789abcdef",
+            "/mnt/nekoserver-drives/d3/nekoserver-new-movies-0123456789abcdef/Films",
+        ] {
+            let refused = inside(path, TABLE, &cfg);
+            assert_eq!(refused["error"], "E42", "{path}");
+            assert!(refused["message"].as_str().unwrap().contains("Drives page"));
+        }
         let missing = inside("/mnt/not-there-at-all", TABLE, &cfg);
         assert_eq!(missing["error"], "E42");
         assert!(missing["message"].as_str().unwrap().contains("not there"));
