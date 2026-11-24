@@ -1131,7 +1131,7 @@ def parents_like(target, here_root, to_root):
             seen = like.stat()
             os.chmod(folder, stat.S_IMODE(seen.st_mode))
             if seen.st_uid != folder.stat().st_uid or seen.st_gid != folder.stat().st_gid:
-                os.chown(folder, seen.st_uid, seen.st_gid)
+                os.chown(folder, seen.st_uid, seen.st_gid, follow_symlinks=False)
         else:
             os.chmod(folder, 0o755)
 
