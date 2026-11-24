@@ -220,6 +220,13 @@ class BtrfsMemberTests(Folders):
         self.assertTrue(result['advice'].endswith('Btrfs said: nothing'), result['advice'])
 
 
+class ReplaceStatusTests(unittest.TestCase):
+    def test_the_part_done_of_any_length(self):
+        for said, done in (('7.5% done\n', 7.5), ('5% done', 5.0), ('Started on 1.Dec, 63.25% done', 63.25)):
+            with self.subTest(said=said):
+                self.assertEqual(mirror_add.percent_done(said), done)
+
+
 class ResultFieldsTests(Folders):
     """Each answer has the fields the page reads, and no others."""
 

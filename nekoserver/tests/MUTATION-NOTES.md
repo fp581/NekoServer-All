@@ -261,3 +261,7 @@ mirror_add.py (c2c491d): 131 mutants, 43 left: wording and `[:301]` advice slice
 unused undo keys ('disk', 'array'), the btrfs dict's unused 'dev', `find`'s `found[2]`, `offers`' code
 of a refusal nobody reads, the sleep and the status time limit by one, and three that are a finding,
 not a missing test: 363/364/366, "Never started" counted as finished (plans/1.0.1-findings.md T6-101-1).
+After T2's fix (e739628, changed lines only): 23 mutants of the new helpers left, all wording, the
+labels of `wait_replace`'s answers that no caller compares, `>= 2` against `> 2` or `>= 3` on a piece of a
+status line that always has four words, `percent_done` walking past the start of a line that never ends in
+a digit, and `NEVER_LOOKS` by one. The "never counted as finished" mutants are killed now.
