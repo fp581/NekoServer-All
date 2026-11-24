@@ -818,6 +818,18 @@ OWN_UNITS = (
     FACTS.get('resume', 'nekoserver-storage-resume.service'),
     FINISH_UNIT + '.service',
 )
+
+
+def left_alone():
+    """The units a move of one kind leaves running: its own, and those that write none of
+    NekoServer's data (migrate.QUIET) and are not writers of the drives: the dashboard and
+    its control service keep showing the job while the apps are stopped for the last copy.
+    A whole-drive move stops them all (the drive itself goes away)."""
+    import migrate
+
+    return (*OWN_UNITS, *sorted(migrate.QUIET - set(migrate.WRITERS)))
+
+
 JOBS = ('look', 'use', 'release', 'move', 'back', 'delete_old', 'mirror_add')
 
 
@@ -1133,7 +1145,7 @@ def switch_data(job, kind, here, to, sources, staged, size):
         job.journal('stop', False)
         job.progress('stop')
         stopped = migrate.stop_writers(
-            out=job.out, note=lambda units: job.journal('stop', False, stopped=units), own=OWN_UNITS
+            out=job.out, note=lambda units: job.journal('stop', False, stopped=units), own=left_alone()
         )
         copy_all(job, sources, staged, size, final=True)
         job.journal('compare', False)
@@ -1580,7 +1592,7 @@ def finish(config, settings_files, state=None, folder=None, out=print):
         else:
             here = saved['undo']['here']
             stopped = migrate.stop_writers(
-                out=out, note=lambda units: job.journal('start', True, stopped=units), own=OWN_UNITS
+                out=out, note=lambda units: job.journal('start', True, stopped=units), own=left_alone()
             )
             for old, new in zip(paths(config, kind, here), paths(config, kind, saved['undo']['to'])):
                 if old.exists() and not os.path.ismount(old) and new.exists():

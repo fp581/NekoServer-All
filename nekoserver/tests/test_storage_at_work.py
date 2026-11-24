@@ -82,22 +82,31 @@ class Systemd:
 
 
 class AtWorkTests(unittest.TestCase):
-    def stop(self, systemd, own=storage_jobs.OWN_UNITS):
+    def stop(self, systemd, own=None):
         with (
             mock.patch.object(migrate, 'nekoserver_units', systemd.units),
             mock.patch.object(migrate, 'run', systemd.run),
         ):
+            own = storage_jobs.left_alone() if own is None else own
             return migrate.stop_writers(note=lambda units: None, sleep=lambda seconds: None, own=own)
 
     def test_a_drives_job_never_waits_for_its_own_unit_nor_a_gateway_waiting_for_its_address(self):
         systemd = Systemd(
             at_work=['nekoserver-storage.service', 'nekoserver-gateway-lan.service'],
-            running=['nekoserver-dashboard.service'],
+            running=['nekoserver-immich-resume.service'],
         )
         stopped = self.stop(systemd)
-        self.assertIn('nekoserver-dashboard.service', stopped)
+        self.assertEqual(stopped, ['nekoserver-immich-resume.service', 'nekoserver-gateway-lan.service'])
         self.assertNotIn(['systemctl', 'stop', 'nekoserver-storage.service'], systemd.calls)
         self.assertEqual(systemd.at_work, ['nekoserver-storage.service'])  # the gateway was stopped
+
+    def test_the_dashboard_keeps_showing_a_drives_job_while_the_apps_are_stopped(self):
+        page = ['nekoserver-dashboard.service', 'nekoserver-control.service', 'nekoserver-dashboard-collect.service']
+        systemd = Systemd(at_work=['nekoserver-storage.service'], running=[*page, 'nekoserver-cards.service'])
+        self.assertEqual(self.stop(systemd), ['nekoserver-cards.service'])
+        self.assertEqual(systemd.running, page)
+        # A whole-drive move stops them too: the drive they run from goes away.
+        self.assertEqual(self.stop(Systemd(running=list(page)), own=()), page)
 
     def test_the_finish_after_docker_never_waits_for_itself(self):
         self.stop(Systemd(at_work=['nekoserver-storage-finish.service']))
