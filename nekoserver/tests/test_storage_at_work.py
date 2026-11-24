@@ -110,7 +110,7 @@ class AtWorkTests(unittest.TestCase):
         self.assertEqual(systemd.running, page)
         # A whole-drive move stops them too: the drive they run from goes away.
         self.assertEqual(self.stop(Systemd(running=list(page)), own=()), page)
-        self.assertFalse(set(storage_jobs.PAGE_UNITS) - migrate.QUIET)
+        self.assertFalse({u for u in storage_jobs.PAGE_UNITS if u.endswith('.service')} - migrate.QUIET)
 
     def test_the_finish_after_docker_never_waits_for_itself(self):
         self.stop(Systemd(at_work=['nekoserver-storage-finish.service']))

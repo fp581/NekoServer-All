@@ -124,8 +124,11 @@ SPARE_PORTS = range(8788, 8800)
 
 
 def port_free(port):
+    """No program listens on the port. Connections closed a moment ago (TIME_WAIT: the
+    page's, when the dashboard was stopped just before) do not make it look taken (T1-10)."""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             probe.bind(('127.0.0.1', port))
     except OSError:
         return False

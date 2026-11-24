@@ -823,7 +823,10 @@ OWN_UNITS = (
 # The page's own units, which only read: the Drives page keeps showing the job while the
 # apps are stopped for the last copy. The control service is stopped with the rest: its
 # app buttons (restart, update) would start an app in the middle of the move.
-PAGE_UNITS = ('nekoserver-dashboard.service', 'nekoserver-dashboard-collect.service')
+# Its socket too: the service needs it (Requires=), so stopping the socket stopped the
+# page, and setup run again a moment later found the port held by the page's closed
+# connections and gave the dashboard another one (T1-10).
+PAGE_UNITS = ('nekoserver-dashboard.socket', 'nekoserver-dashboard.service', 'nekoserver-dashboard-collect.service')
 
 
 def left_alone():
@@ -1181,7 +1184,8 @@ def put_in_place(job, kind, here, to, staged):
         if copy_.exists():
             target.parent.mkdir(parents=True, exist_ok=True)
             os.rename(copy_, target)
-    job.commit('switch', [['locations', kind, None if kind == 'backups' and to == 'media' else to]])
+    was = (job.config.get('locations') or {}).get(kind)
+    job.commit('switch', [['locations', kind, None if kind == 'backups' and to == 'media' else to]], was=was)
 
 
 def backup_binds(config):
@@ -1254,6 +1258,9 @@ def finish_move(job, kind, here, stopped):
             # Setup never mounts the backups' new place over files at the old one.
             retire_old(job, kind, here)
         setup_again(job)
+    except Exception as error:  # noqa: BLE001  (any refusal: the move is undone, never left half)
+        unswitch(job, kind, here, stopped, error)
+    try:
         retire_old(job, kind, here)
     finally:
         migrate.start_again(stopped, job.out)
@@ -1264,13 +1271,95 @@ def finish_move(job, kind, here, stopped):
         raise Stop(f'Your {KIND_WORDS[kind]} were moved, but the server check after it says: {problem}')
 
 
+def moved_here(config, kind, state=None):
+    """While setup runs again for a Drives job's move of `kind` (its journal past the
+    commit point: phase "start", or "unswitch" while the move is undone): (the folder of the
+    drive the kind left, the folder of the drive the settings name now); None any other
+    time. Setup's checks that an app's own record names the folder the settings do take
+    the first for the second then, and write the second (T1-9: Immich's .env)."""
+    saved = read_state(JOURNAL, state)
+    if not saved or not saved.get('committed') or saved.get('job') not in ('move', 'back'):
+        return None
+    undo = saved.get('undo') or {}
+    ends = {'start': (undo.get('here'), undo.get('to')), 'unswitch': (undo.get('to'), undo.get('here'))}
+    left, now = ends.get(saved.get('phase'), (None, None))
+    try:
+        if (saved.get('request') or {}).get('kind') != kind or not left or now != place_of(config, kind):
+            return None
+        return root_of(config, left), root_of(config, now)
+    except RuntimeError:
+        return None
+
+
+def unswitch(job, kind, here, stopped, why):
+    """Setup refused the new place after the switch (T1-9: Immich's .env named the old
+    folder): the move undone, so the server is as it was, never half. What the apps wrote
+    in the new folders meanwhile is copied back into the old ones (still there: they are
+    retired after setup), the settings name the old place again, the new copy goes (a
+    "back" keeps its old copy) and setup runs again for the old place. The journal says
+    "unswitch" first: a power cut in it goes on with it at the next start. Ends with Stop:
+    the job failed and nothing was changed."""
+    import migrate
+
+    to = job.undo()['to']
+    back_change = [['locations', kind, job.undo().get('was')]]
+    job.journal('unswitch', True, change=back_change, why=str(why))
+    job.progress('unswitch')
+    earlier = job.undo().get('stopped_again') or []
+    again = migrate.stop_writers(
+        out=job.out,
+        note=lambda units: job.journal('unswitch', True, stopped_again=[*earlier, *units]),
+        own=left_alone(),
+    )
+    stopped = list(dict.fromkeys([*(stopped or []), *earlier, *again]))
+    if kind == 'backups' and to != 'media':
+        forward = json.loads(json.dumps(job.config))
+        apply_change(forward, [['locations', kind, to]])
+        unbind_backups(forward)
+    unretire(job, kind, here)
+    for old, new in zip(paths(job.config, kind, here), paths(job.config, kind, to)):
+        if new.is_dir() and not os.path.ismount(new):
+            old.mkdir(parents=True, exist_ok=True)
+            migrate.copy(new, old, final=True, out=job.out)
+    apply_change(job.config, back_change)
+    job.save_settings()
+    undo_move(job)
+    also = ''
+    try:
+        setup_again(job)
+    except Exception as error:  # noqa: BLE001  (said; the files and the settings are as before)
+        also = f' Setup run again for {place_words(here)} stopped too: {error}'
+    finally:
+        migrate.start_again(stopped, job.out)
+    raise Stop(
+        f'Your {KIND_WORDS[kind]} stay on {place_words(here)}: setup could not use them on {place_words(to)} '
+        f'({why}). Nothing was changed.' + also,
+        f'Setup\'s log says why: {job.state / f"setup-{job.id}.log"}',
+    )
+
+
+def unretire(job, kind, here):
+    """Folders retired before setup ran (the backups') given their places back."""
+    old = root_of(job.config, here) / OLD_NAME.format(kind=kind, id=job.id)
+    for folder, rel in zip(paths(job.config, kind, here), kind_folders(kind)):
+        if not folder.exists() and (old / rel).exists():
+            folder.parent.mkdir(parents=True, exist_ok=True)
+            os.rename(old / rel, folder)
+    if old.is_dir():
+        for left in sorted((p for p in old.rglob('*') if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
+            if not any(left.iterdir()):
+                left.rmdir()
+        if not any(old.iterdir()):
+            old.rmdir()
+
+
 def undo_move(job):
     """Before the commit point: the new copy taken out of the apps' places again and
     deleted; the old folders were never touched."""
     import shutil
 
     journal = read_state(JOURNAL, job.state) or {}
-    saved, switching = journal.get('undo', {}), journal.get('phase') == 'switch'
+    saved, switching = journal.get('undo', {}), journal.get('phase') in ('switch', 'unswitch')
     staging = Path(saved.get('staging', ''))
     kind, to, here = job.request['kind'], saved.get('to'), saved.get('here')
     if to and switching:
@@ -1411,7 +1500,10 @@ def run_request(request, config, settings_files, state=None, folder=None, out=pr
 
 def stopped_state(saved):
     """A job that ended with Stop: done after its commit point; failed before it changed
-    anything (no journal yet, or still copying); undone when it put things back."""
+    anything (no journal yet, or still copying) or when setup refused the new place and
+    the move was undone (unswitch); undone when it put things back."""
+    if saved.get('phase') == 'unswitch':
+        return 'failed'
     if saved.get('committed'):
         return 'done'
     if saved.get('phase') in (None, 'copy'):
@@ -1593,6 +1685,8 @@ def finish(config, settings_files, state=None, folder=None, out=print):
             setup_again(job)
         else:
             here = saved['undo']['here']
+            if saved.get('phase') == 'unswitch':
+                unswitch(job, kind, here, saved['undo'].get('stopped'), saved['undo'].get('why', ''))
             stopped = migrate.stop_writers(
                 out=out, note=lambda units: job.journal('start', True, stopped=units), own=left_alone()
             )
@@ -1600,6 +1694,12 @@ def finish(config, settings_files, state=None, folder=None, out=print):
                 if old.exists() and not os.path.ismount(old) and new.exists():
                     migrate.copy(old, new, final=True, out=out)
             finish_move(job, kind, here, stopped)
+    except Stop as stop:
+        state = stopped_state(read_state(JOURNAL, job.state) or saved)
+        job.result(state, str(stop), stop.advice, power_cut=True)
+        job.done()
+        write_state(LOOK, look(config), job.state)
+        return 0 if state == 'done' else 1
     except Exception as error:  # noqa: BLE001
         job.result('failed', f'Finishing the job at the start stopped: {error}', 'It is tried again at the next start.')
         return 1

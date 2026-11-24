@@ -141,6 +141,28 @@ def checked_env(env, upload, db):
     return content
 
 
+def follow_drives_move(env, upload, cfg, log):
+    """The photos moved from the Drives page (storage_jobs.moved_here): Immich's .env
+    still names the folder they left, and setup run again for that move writes the new one
+    instead of refusing (T1-9). Only that line, only from exactly that folder, only in a
+    .env checked_env takes; anything else is still refused there. True when written."""
+    import storage_jobs
+
+    moved = storage_jobs.moved_here(cfg, 'photos')
+    if not moved or env.is_symlink() or not env.is_file() or not Path(upload).is_relative_to(moved[1]):
+        return False
+    if env.stat().st_uid != ROOT_UID or env.stat().st_mode & 0o077:
+        return False
+    lines = env.read_text().splitlines()
+    old = 'UPLOAD_LOCATION=' + str(moved[0] / Path(upload).relative_to(moved[1]))
+    if old not in lines:
+        return False
+    new = ['UPLOAD_LOCATION=' + str(upload) if line == old else line for line in lines]
+    atomic_write(env, '\n'.join(new) + '\n', 0o600)
+    log(f'Immich: its photos are in {upload} now (moved from the Drives page); its settings say so')
+    return True
+
+
 def follow_timezone(env, content, zone, log):
     """Immich's time zone (TZ in its .env, which its containers are started with) brought
     to the one the rest of the server uses now. It was written once, at the first setup:
@@ -393,6 +415,7 @@ def _run(ctx):
         safe_path(target)
     compose = safe_path(compose_dir / 'compose.yaml')
     env = safe_path(compose_dir / '.env')
+    follow_drives_move(env, upload, cfg, ctx.log)
     if compose.exists() and not env.exists():
         start_cut_off_setup_again(ctx, compose, db)
     if not compose.exists():
