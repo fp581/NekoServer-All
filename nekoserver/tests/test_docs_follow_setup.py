@@ -178,6 +178,30 @@ class RootOnlyFolderTests(unittest.TestCase):
         self.assertIn('sudo ls -l /media/$USER/*/immich-database/', steps)
 
 
+def new_hdd_text(recovery):
+    """RECOVERY.md's words for a new HDD, in the row "The SSD or the HDD broke"."""
+    return recovery.split('After a new HDD, Nextcloud starts again')[1].split(chr(10))[0]
+
+
+class AfterALostDriveTests(unittest.TestCase):
+    """1.0 round T1-R14 and T1-final-4: after a whole-server restore or a new HDD, RECOVERY.md
+    has the Nextcloud files uploaded again, and a file uploaded again is a new file to
+    Nextcloud, so the link shared to it is gone although the database copy holds the share.
+    And after a new HDD Jellyfin keeps listing the films lost with it (films are not backed
+    up) until a library scan. Both are said where the reader does that step."""
+
+    def test_the_upload_again_says_shared_links_do_not_come_back(self):
+        recovery = doc('RECOVERY.md')
+        step5 = recovery.split("### Nextcloud's database")[1].split(chr(10) + '5. ')[1].split(chr(10))[0]
+        self.assertIn('Links you had shared to files you upload again do not come back', step5)
+        self.assertIn('Links you had shared to those files do not come back with them', new_hdd_text(recovery))
+
+    def test_a_new_hdd_says_how_jellyfin_forgets_the_lost_films(self):
+        new_hdd = new_hdd_text(doc('RECOVERY.md'))
+        self.assertIn('Films and shows are not backed up', new_hdd)
+        self.assertIn('*Dashboard* → *Libraries* → *Scan All Libraries*', new_hdd)
+
+
 class FirstReadTests(unittest.TestCase):
     """1.0 round T5-02 to T5-05: what a first-time reader of the README is told matches
     what setup and install.sh do."""
