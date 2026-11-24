@@ -1684,13 +1684,15 @@ def lost_drive_asked(apps, uuid):
     return questions.yes_no('install_drive_lost', apps=apps, uuid=uuid) is True
 
 
-def mount_installed(context, fstab=FSTAB):
-    """Every app installed on another drive has its folder there mounted at its usual
-    place, now and at every start. An app whose settings are on the apps' drive already
-    is never moved: setup stops and says so before anything is changed."""
-    config = context.config
-    binds = installed_binds(config)
-    data = mount_path(config['data_mount'])
+def kept_words(app, source, target, drive):
+    if app == 'backups':
+        return f'Backups: {target} is kept on the drive at {drive} ({source})'
+    return f'{app}: its settings are kept on the drive at {drive} ({source})'
+
+
+def never_over_files(binds):
+    """Setup stops, before anything is changed, when a usual place still holds the files
+    the settings put on another drive: moving them is a job of its own."""
     for app, _source, target, drive in binds:
         if app == 'backups' and not on_its_drive(target, drive) and has_files(target):
             raise RuntimeError(
@@ -1704,6 +1706,15 @@ def mount_installed(context, fstab=FSTAB):
                 'on another drive. Moving an app that is set up is a job of its own, with the app stopped; take its '
                 'group out of "install" in my-config.json and run setup again. Nothing was changed.'
             )
+
+
+def mount_installed(context, fstab=FSTAB):
+    """Every app installed on another drive has its folder there mounted at its usual
+    place, now and at every start. An app whose settings are on the apps' drive already
+    is never moved: setup stops and says so before anything is changed."""
+    config = context.config
+    binds = installed_binds(config)
+    never_over_files(binds)
     lines = [installed_line(source, target, drive, bind_parent(config, target)) for _, source, target, drive in binds]
     fstab = safe_path(fstab)
     text = fstab.read_text() if fstab.exists() else ''
@@ -1721,11 +1732,7 @@ def mount_installed(context, fstab=FSTAB):
         call(['mount', str(target)])
         if not on_its_drive(target, drive):
             raise RuntimeError(f'{target} is not the folder of {app} on its drive after mounting it')
-        context.log(
-            f'Backups: {target} is kept on the drive at {drive} ({source})'
-            if app == 'backups'
-            else f'{app}: its settings are kept on the drive at {drive} ({source})'
-        )
+        context.log(kept_words(app, source, target, drive))
 
 
 def existing_media_asked(context):
