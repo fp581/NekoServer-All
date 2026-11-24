@@ -11,7 +11,20 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import mirror_add
-from tests.test_mirror_add import GIB, POOL, REQUEST, SHOW, UUID, Stand, by_id, md_sys, write
+from tests.test_mirror_add import (
+    FINISHED,
+    GIB,
+    HEALED,
+    POOL,
+    REQUEST,
+    SHOW,
+    UUID,
+    Stand,
+    by_id,
+    md_sys,
+    shows,
+    write,
+)
 
 MOUNT = '/mnt/nekoserver-media'
 
@@ -154,12 +167,12 @@ class BtrfsMemberTests(Folders):
         self.assertEqual(mirror_add.resume(cut, stand.ctx)['state'], 'undone')
 
     def test_a_balance_that_fails_is_said_after_the_drive_is_in(self):
-        statuses = [(0, 'Never started\n'), (0, '50.0% done\n'), (0, 'Started on 1.Dec, finished on 1.Dec\n')]
+        statuses = [(0, 'Never started\n'), (0, '50.0% done\n'), FINISHED]
         balance = (1, 'ERROR: error during balancing\nsecond line\nThere may be more info in syslog\n')
         stand = Stand(
             '/nonexistent',
             self.dev,
-            answers=self.answers(**{'btrfs replace status': statuses, 'btrfs balance': balance}),
+            answers=self.answers(**shows(HEALED), **{'btrfs replace status': statuses, 'btrfs balance': balance}),
         )
         result = mirror_add.run_job(POOL, stand.ctx)
         self.assertEqual(set(result), {'state', 'message', 'advice'})
@@ -172,8 +185,9 @@ class BtrfsMemberTests(Folders):
         self.assertEqual(stand.asked.count(f'btrfs replace status -1 {MOUNT}'), 3)
 
     def test_a_balance_that_works_ends_with_no_advice(self):
-        statuses = [(0, 'Never started\n'), (0, 'Started on 1.Dec, finished on 1.Dec\n')]
-        stand = Stand('/nonexistent', self.dev, answers=self.answers(**{'btrfs replace status': statuses}))
+        statuses = [(0, 'Never started\n'), FINISHED]
+        answers = self.answers(**shows(HEALED), **{'btrfs replace status': statuses})
+        stand = Stand('/nonexistent', self.dev, answers=answers)
         result = mirror_add.run_job(POOL, stand.ctx)
         self.assertEqual(set(result), {'state', 'message', 'advice'})
         self.assertEqual((result['state'], result['advice']), ('done', None))
