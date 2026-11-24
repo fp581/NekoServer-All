@@ -27,7 +27,9 @@ from neko_common import SHARED
 FACTS = SHARED['storage_jobs']
 ARRAY = re.compile(r'(md)-([A-Za-z0-9_-]{1,64})|(btrfs)-([0-9a-fA-F-]{8,64})')
 BALANCE = ['-dconvert=raid1,soft', '-mconvert=raid1,soft']
-REBUILDING = ('recover', 'resync', 'repair', 'reshape')
+# md's sync_action: only an idle (or frozen) array takes a new member; recover, resync,
+# repair, reshape, check, or a word not known yet, counts as at work (nothing offered).
+MD_QUIET = ('idle', 'frozen')
 # A partition table needs room beyond the partition itself (GPT's copy at the end).
 TABLE_ROOM = 1 << 20
 # mdadm metadata 0.90 and 1.0 keep their superblock at the end of a member, past the data.
@@ -37,6 +39,25 @@ END_METADATA = ('0.90', '1.0')
 STATUS_LIMIT = 120
 # How many looks 10 s apart a replace may still say "Never started" after its start.
 NEVER_LOOKS = 30
+# How many starts a Btrfs rebuild's journal may hold the page while its state can't be read.
+HOLD_RUNS = 3
+# `btrfs replace status` words, in the order they are looked for, and the states that are over.
+REPLACE_WORDS = (
+    ('never started', 'never'),
+    ('finished on', 'finished'),
+    ('canceled on', 'canceled'),
+    ('cancelled on', 'canceled'),
+    ('suspended on', 'suspended'),
+    ('% done', 'running'),
+)
+OVER = ('never', 'finished', 'canceled')
+# What a replace that is over left behind when the pool still misses a drive.
+NOT_WHOLE = {
+    'never': 'Btrfs did not start copying onto the new drive, so nothing was changed in the pool. The new drive was erased; see RECOVERY.md, "A drive of a Btrfs pool failed".',
+    'canceled': 'The copy onto the new drive was cancelled, so the pool still misses a drive. Add the new drive again from the Drives page.',
+    'suspended': 'Btrfs paused the copy onto the new drive. Restart the server: Btrfs goes on with it when the pool opens, and the dashboard shows the pool rebuilding until it is done.',
+    'finished': 'Btrfs says the copy ended, but the pool still misses a drive, so your data is not on two drives yet. See RECOVERY.md, "A drive of a Btrfs pool failed".',
+}
 # Kernel names and Btrfs's numbers are ASCII digits (str.isdigit() also takes "²").
 DIGITS = '0123456789'
 
@@ -78,7 +99,7 @@ def md_array(sys_block, name):
         'kind': 'md',
         'dev': f'/dev/{name}',
         'degraded': (number(md / 'degraded') or 0) > 0,
-        'rebuilding': action in REBUILDING,
+        'rebuilding': action not in MD_QUIET,
         'like': like,
         'min_bytes': need,
     }
@@ -147,10 +168,11 @@ def btrfs_pool(run, uuid):
     rc, mounted = run(['findmnt', '-n', '-o', 'TARGET', '--source', f'UUID={uuid}'])
     mount = mounted.splitlines()[0].strip() if rc == 0 and mounted.strip() else None
     # A replace at work still lists the missing device until it ends: ask Btrfs itself.
+    # Anything but a replace that is over (or never was) counts as at work.
     rebuilding = False
     if mount:
         rc, said = run(['btrfs', 'replace', 'status', '-1', mount], timeout=STATUS_LIMIT)
-        rebuilding = rc != 0 or '% done' in said or 'running' in said.lower()
+        rebuilding = replace_state(rc, said) not in OVER
     return {
         'id': f'btrfs-{uuid}',
         'kind': 'btrfs',
@@ -326,26 +348,38 @@ def last_words(said):
     return (said.strip().splitlines() or [''])[-1][:300] or 'nothing'
 
 
+def replace_state(rc, said):
+    """What `btrfs replace status -1` says (btrfs-progs cmds/replace.c, one line per state):
+    'never' ("Never started"), 'running' ("x% done"), 'finished' ("Started on ..., finished
+    on ..."), 'canceled' ("..., canceled on ... at x%"), 'suspended' ("..., suspended on ...
+    at x%"), or 'unknown' (no answer, or one not in that list)."""
+    if rc != 0:
+        return 'unknown'
+    text = said.lower()
+    for words, state in REPLACE_WORDS:
+        if words in text:
+            return state
+    return 'unknown'
+
+
 def wait_replace(array, ctx):
-    """Follow Btrfs's replace to its end: ('finished' | 'never' | 'lost', what Btrfs said).
+    """Follow Btrfs's replace until it is over: (its state, what Btrfs said).
 
     `btrfs replace start` without -B returns before the kernel has begun (or refused) the
-    replace, so "Never started" right after it means "not yet": only one that stays so for
-    NEVER_LOOKS looks is a replace that never began."""
-    never = 0
+    replace, so "Never started" right after it means "not yet", and a suspended one may go on
+    by itself: only one that stays so for NEVER_LOOKS looks is taken as it is."""
+    waits = 0
     while True:
         rc, said = ctx.run(['btrfs', 'replace', 'status', '-1', array['mount']], timeout=STATUS_LIMIT)
-        done = percent_done(said)
-        if rc != 0:
-            return 'lost', said
-        if done is not None:
-            ctx.progress('rebuild', percent=done)
-        elif 'finished' in said.lower():
-            return 'finished', said
-        elif 'never started' in said.lower() and never < NEVER_LOOKS:
-            never += 1
+        state = replace_state(rc, said)
+        if state == 'running':
+            done = percent_done(said)
+            if done is not None:
+                ctx.progress('rebuild', percent=done)
+        elif state in ('never', 'suspended') and waits < NEVER_LOOKS:
+            waits += 1
         else:
-            return ('never' if 'never started' in said.lower() else 'lost'), said
+            return state, said
         ctx.sleep(10)
 
 
@@ -376,7 +410,7 @@ def finish_btrfs(array, member, ctx):
     """Wait for Btrfs's replace, then mirror what was written meanwhile (RECOVERY.md).
     Done only on the kernel's own "finished" and a pool that misses no device."""
     how, said = wait_replace(array, ctx)
-    if how == 'lost':
+    if how == 'unknown':
         # Btrfs may well go on copying: the journal stays, so no other job is taken, and
         # the next start finishes this one (`finish`).
         return {
@@ -389,19 +423,12 @@ def finish_btrfs(array, member, ctx):
                 '(RECOVERY.md, "A drive of a Btrfs pool failed"). Btrfs said: ' + last_words(said)
             ),
         }
+    # Every other state is over for this job: the journal goes, so the page is never held.
     ctx.clear()
-    if how == 'never':
-        return {
-            'state': 'failed',
-            'message': 'Btrfs did not start copying onto the new drive, so nothing was changed in the pool. The new drive was erased; see RECOVERY.md, "A drive of a Btrfs pool failed".',
-            'advice': 'Btrfs said: ' + last_words(said),
-        }
+    # A pool whole again counts, whatever the replace record says: a cut after the replace
+    # ended leaves no record at the next mount ("Never started").
     if not healed(array, member, ctx):
-        return {
-            'state': 'failed',
-            'message': 'Btrfs says the copy ended, but the pool still misses a drive, so your data is not on two drives yet. See RECOVERY.md, "A drive of a Btrfs pool failed".',
-            'advice': 'Btrfs said: ' + last_words(said),
-        }
+        return {'state': 'failed', 'message': NOT_WHOLE[how], 'advice': 'Btrfs said: ' + last_words(said)}
     ctx.progress('rebuild', percent=100.0)
     return balanced(array, read_errors(said), ctx)
 
@@ -463,7 +490,19 @@ def resume(journal, ctx):
 
 def finish(journal, ctx):
     """A Btrfs rebuild started before a restart: waited for and balanced. Nothing is erased
-    and no replace is started."""
+    and no replace is started. A pool not open, or a replace that cannot be read, keeps the
+    journal for the next start, but for HOLD_RUNS starts at most: the page is never held for
+    good (a replace still at work keeps the pool shown as rebuilding, so nothing is offered)."""
+    undo = journal.get('undo') or {}
+    runs = undo.get('runs', 0) + 1
+    if runs > HOLD_RUNS:
+        ctx.clear()
+        return {
+            'state': 'failed',
+            'message': f'The copy onto the new drive could not be followed in {HOLD_RUNS} starts, so the Drives page lets go of it. See RECOVERY.md, "A drive of a Btrfs pool failed".',
+            'advice': 'Run `sudo btrfs replace status <the pool folder>` to see how it stands.',
+        }
+    ctx.journal('rebuild', committed=True, undo={**undo, 'runs': runs})
     array = find((journal.get('request') or {}).get('array'), ctx.run, ctx.sys_block)
     if array is None or array['kind'] != 'btrfs' or not array['mount']:
         return {
@@ -471,7 +510,7 @@ def finish(journal, ctx):
             'message': 'The pool is not open, so the copy onto the new drive cannot be finished now. Restart the server once more.',
             'advice': None,
         }
-    return finish_btrfs(array, (journal.get('undo') or {}).get('member'), ctx)
+    return finish_btrfs(array, undo.get('member'), ctx)
 
 
 def is_member(array, member, ctx):

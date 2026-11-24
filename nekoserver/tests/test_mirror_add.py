@@ -201,6 +201,21 @@ class Md(unittest.TestCase):
         self.assertIn('add new device failed', result['advice'])
         self.assertEqual(stand.cleared, 1)
 
+    def test_only_an_idle_array_takes_a_new_member(self):
+        """Every md sync_action is offered or at work; one not known yet is at work."""
+        for action, at_work in (
+            ('idle', False),
+            ('frozen', False),
+            ('recover', True),
+            ('resync', True),
+            ('repair', True),
+            ('reshape', True),
+            ('check', True),
+            ('something-new', True),
+        ):
+            array = mirror_add.md_array(md_sys(self.root / action, action=action), 'md0')
+            self.assertEqual(array['rebuilding'], at_work, action)
+
     def test_names_and_counts_are_read_in_one_pass(self):
         """Sonar S8786: no backtracking pattern on what /sys or Btrfs says."""
         for kname, disk in (
@@ -390,6 +405,69 @@ class Btrfs(unittest.TestCase):
         self.assertFalse(any(a.startswith('btrfs balance') for a in stand.asked))
         self.assertEqual(stand.slept, mirror_add.NEVER_LOOKS, 'waited, within a limit')
         self.assertEqual(stand.cleared, 1, 'nothing is copying: no journal holds the page')
+
+    def test_every_replace_status_is_one_state(self):
+        """btrfs-progs cmds/replace.c prints one line per kernel state (T6-101-4)."""
+        at = 'Started on 24.Nov 10:00:00, {} on 24.Nov 10:30:00{}, 0 write errs, 0 uncorr. read errs\n'
+        for rc, said, state, at_work in (
+            (0, 'Never started\n', 'never', False),
+            (0, '12.5% done, 0 write errs, 0 uncorr. read errs\n', 'running', True),
+            (0, at.format('finished', ''), 'finished', False),
+            (0, at.format('canceled', ' at 41.0%'), 'canceled', False),
+            (0, at.format('suspended', ' at 41.0%'), 'suspended', True),
+            (0, 'Unknown replace state\n', 'unknown', True),
+            (1, 'ERROR: ioctl(DEV_REPLACE_STATUS) failed\n', 'unknown', True),
+        ):
+            self.assertEqual(mirror_add.replace_state(rc, said), state, said)
+            stand = Stand('/nonexistent', self.dev, answers=self.answers(**{'btrfs replace status': (rc, said)}))
+            self.assertEqual(mirror_add.btrfs_pool(stand.run, UUID)['rebuilding'], at_work, said)
+
+    def test_every_end_of_a_replace_lets_go_of_the_page(self):
+        """Over with the pool not whole: failed with its own words, journal cleared, no balance.
+        Only an answer that can't be read keeps the journal (Btrfs may be copying)."""
+        at = 'Started on 24.Nov 10:00:00, {} on 24.Nov 10:30:00 at 41.0%, 0 write errs, 0 uncorr. read errs\n'
+        for said, words, waits in (
+            ((0, at.format('canceled')), 'Add the new drive again', 0),
+            ((0, at.format('suspended')), 'Restart the server', mirror_add.NEVER_LOOKS),
+            ((0, 'Never started\n'), 'did not start copying', mirror_add.NEVER_LOOKS),
+            (FINISHED, 'still misses a drive', 0),
+        ):
+            stand = Stand(
+                '/nonexistent',
+                self.dev,
+                answers=self.answers(**shows(SHOW), **{'btrfs replace status': [(0, 'Never started\n'), said]}),
+            )
+            result = mirror_add.run_job(POOL, stand.ctx)
+            self.assertEqual(result['state'], 'failed', said)
+            self.assertIn(words, result['message'], said)
+            self.assertEqual(stand.cleared, 1, said)
+            self.assertFalse(any(a.startswith('btrfs balance') for a in stand.asked), said)
+            self.assertEqual(stand.slept, waits, said)
+
+    def test_a_rebuild_that_cannot_be_followed_holds_the_page_three_starts_at_most(self):
+        stand = Stand('/nonexistent', self.dev, answers=self.answers(findmnt=(1, '')))
+        cut = {'phase': 'rebuild', 'request': POOL, 'undo': {'array': f'btrfs-{UUID}', 'member': 'ata-NEW_S9'}}
+        for runs in range(1, mirror_add.HOLD_RUNS + 1):
+            result = mirror_add.finish(cut, stand.ctx)
+            self.assertIn('Restart the server once more', result['message'])
+            self.assertEqual(stand.cleared, 0)
+            self.assertEqual(stand.journals[-1], ('rebuild', True, {**cut['undo'], 'runs': runs}))
+            cut = {**cut, 'undo': stand.journals[-1][2]}
+        last = mirror_add.finish(cut, stand.ctx)
+        self.assertEqual(last['state'], 'failed')
+        self.assertIn('lets go of it', last['message'])
+        self.assertEqual(stand.cleared, 1)
+        self.assertFalse(any(a.startswith('btrfs replace start') for a in stand.asked))
+
+    def test_a_pool_whole_again_without_a_replace_record_is_finished(self):
+        """Cut after the replace ended: the next mount keeps no record ("Never started"),
+        but the pool holds the new drive and misses none, so it is balanced and done."""
+        stand = Stand('/nonexistent', self.dev, answers=self.answers(**shows(HEALED)))
+        cut = {'phase': 'rebuild', 'request': POOL, 'undo': {'array': f'btrfs-{UUID}', 'member': 'ata-NEW_S9'}}
+        result = mirror_add.finish(cut, stand.ctx)
+        self.assertEqual(result['state'], 'done', result)
+        self.assertNotIn('erased', result['message'])
+        self.assertTrue(any(a.startswith('btrfs balance start') for a in stand.asked))
 
     def test_finished_is_done_only_when_the_pool_misses_no_drive(self):
         # The new drive not in the pool, or in it while a device is still missing.
