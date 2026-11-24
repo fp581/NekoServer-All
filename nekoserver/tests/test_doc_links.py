@@ -63,12 +63,14 @@ class DocLinkTests(unittest.TestCase):
 
 JOURNEYS = sorted((ROOT / 'tests' / 'journeys').glob('*.md'))
 TEST_DOCS = [ROOT / 'TESTING.md', ROOT / 'tests' / 'COVERAGE-MAP.md'] + JOURNEYS
-CITED = re.compile(r'`(test_[a-z0-9_]+)`((?:,? (?:and )?`[^`]+`)*),? \(((?:tests|runtime)/[^):\s]+\.(?:py|rs))')
+NAME = r'[a-z][a-z0-9]*(?:_[a-z0-9]+)+|[A-Z][A-Za-z0-9]*Tests'
+CITED = re.compile(r'`(' + NAME + r')`((?:,? (?:and )?`[^`]+`)*),? \(((?:tests|runtime)/[^):\s]+\.(?:py|rs))')
 
 
 class CitedTestTests(unittest.TestCase):
-    """The testing docs name the test that proves a row, with its file: that test exists in that
-    file, so a reader who opens it finds the proof, not a test renamed or moved since."""
+    """The testing docs name the test that proves a row, with its file: that test (a Python or
+    Rust test function or a test class) exists in that file, so a reader who opens it finds the
+    proof, not a test renamed or moved since."""
 
     def test_every_test_the_testing_docs_cite_is_in_the_file_named(self):
         missing, cited = [], 0
@@ -76,7 +78,7 @@ class CitedTestTests(unittest.TestCase):
             for first, more, path in CITED.findall(doc.read_text()):
                 source = ROOT / path
                 text = source.read_text() if source.exists() else ''
-                for name in [first] + re.findall(r'`(test_[a-z0-9_]+)`', more):
+                for name in [first] + re.findall(r'`(' + NAME + r')`', more):
                     cited += 1
                     if not re.search(r'\b(?:def|fn|class) ' + name + r'\b', text):
                         missing.append(f'{doc.name}: {name} ({path})')
