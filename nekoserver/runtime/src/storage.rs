@@ -495,8 +495,32 @@ mod tests {
         }
         assert!(checked("app_data_move", &json!({"kind": "tv", "to": "d3"})).is_err());
         assert!(checked("app_drive_release", &json!({"drive": "media"})).is_err());
+        assert_eq!(
+            checked(
+                "app_drive_release",
+                &json!({"drive": "d3", "kind": "photos"})
+            )
+            .unwrap(),
+            json!({"job": "release", "drive": "d3"})
+        );
+        // A kernel name of any length is no stable name, nor one of a known kind only.
+        for disk in ["sdcdefghijk", "md127abcdef", "ata-"] {
+            let mut wrong = erase();
+            wrong["disk"] = json!(disk);
+            assert!(checked("app_drive_use", &wrong).is_err(), "{disk}");
+        }
         let copy = json!({"kind": "music", "copy": "0123456789abcdef", "confirm": "delete music"});
         assert!(checked("app_data_delete_old", &copy).is_ok());
+        assert_eq!(
+            checked("app_data_move_back", &copy).unwrap(),
+            json!({"job": "back", "kind": "music", "copy": "0123456789abcdef"})
+        );
+        // An old copy's id is 16 lower-case hex digits, as storage_jobs.py writes it.
+        for id in ["0123456789ABCDEF", "0123456789abcdeg", "0123456789abcde/"] {
+            let mut wrong = copy.clone();
+            wrong["copy"] = json!(id);
+            assert!(checked("app_data_move_back", &wrong).is_err(), "{id}");
+        }
         let mut short = copy.clone();
         short["copy"] = json!("0123");
         assert!(checked("app_data_move_back", &short).is_err());
