@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import migrate
 import storage_jobs
-from tests.test_storage_jobs import ID, Jobs, copy
+from tests.test_storage_jobs import ID, Jobs, copy, last_result, saved_journal
 from tests.test_storage_refusals import disk, part, world
 
 UNIT = 'nekoserver-immich.service'
@@ -143,7 +143,7 @@ class MoveStepsTests(Marked):
         self.run_job('move', kind='photos', to='media')
         self.marks.clear()
         self.assertEqual(self.run_job('delete_old', kind='photos', copy=ID), 1)
-        self.assertEqual(self.last_result()['advice'], 'Type exactly: delete photos')
+        self.assertEqual(last_result(self.root)['advice'], 'Type exactly: delete photos')
         self.assertEqual(self.run_job('delete_old', kind='photos', copy=ID, confirm='delete photos'), 0)
         self.assertIn(('journal', 'delete', True), self.marks)
         self.assertLess(self.marks.index(('journal', 'delete', True)), self.marks.index(('progress', 'delete', None)))
@@ -164,15 +164,15 @@ class InTheWayTests(Marked):
         (self.root / 'media/photos').mkdir()
         (self.root / 'media/photos/immich-library').symlink_to(self.root / 'elsewhere')
         self.assertEqual(self.run_job('move', kind='photos', to='media'), 1)
-        self.assertIn('is in the way: it is not empty', self.last_result()['message'])
-        self.assertEqual(self.last_result()['state'], 'undone')
+        self.assertIn('is in the way: it is not empty', last_result(self.root)['message'])
+        self.assertEqual(last_result(self.root)['state'], 'undone')
         self.assertEqual((self.root / 'ssd/photos/immich-library/x.jpg').read_text(), 'one')
 
     def test_files_at_the_new_place_stop_the_move_before_any_copy(self):
         self.files(self.root / 'ssd/photos/immich-library', **{'x.jpg': 'one'})
         self.files(self.root / 'media/photos/immich-library', **{'mine.jpg': 'theirs'})
         self.assertEqual(self.run_job('move', kind='photos', to='media'), 1)
-        self.assertIn('holds files already. Nothing was changed.', self.last_result()['message'])
+        self.assertIn('holds files already. Nothing was changed.', last_result(self.root)['message'])
         self.assertEqual((self.copies, self.journals()), ([], []))
 
 
@@ -218,21 +218,21 @@ class StoppedTests(Marked):
         self.files(self.root / 'ssd/photos/immich-library', **{'x.jpg': 'one'})
         with mock.patch.object(migrate, 'copy', side_effect=OSError('No space left on device')):
             self.assertEqual(self.run_job('move', kind='photos', to='media'), 1)
-        self.assertEqual(self.last_result()['state'], 'failed')
+        self.assertEqual(last_result(self.root)['state'], 'failed')
         self.assertEqual(
-            self.last_result()['message'], 'The job stopped: No space left on device. Nothing was changed.'
+            last_result(self.root)['message'], 'The job stopped: No space left on device. Nothing was changed.'
         )
-        self.assertIsNone(self.saved_journal())
+        self.assertIsNone(saved_journal(self.root))
         self.assertEqual(self.started, [None])
 
     def test_an_error_after_the_commit_point_is_left_for_the_start_to_finish(self):
         self.files(self.root / 'ssd/photos/immich-library', **{'x.jpg': 'one'})
         with mock.patch.object(storage_jobs.Job, 'save_settings', side_effect=OSError('Read-only file system')):
             self.assertEqual(self.run_job('move', kind='photos', to='media'), 1)
-        self.assertEqual(self.last_result()['state'], 'failed')
-        self.assertEqual(self.last_result()['message'], 'The job stopped after the switch: Read-only file system')
-        self.assertEqual(self.last_result()['advice'], 'It is finished at the next start.')
-        self.assertTrue(self.saved_journal()['committed'])
+        self.assertEqual(last_result(self.root)['state'], 'failed')
+        self.assertEqual(last_result(self.root)['message'], 'The job stopped after the switch: Read-only file system')
+        self.assertEqual(last_result(self.root)['advice'], 'It is finished at the next start.')
+        self.assertTrue(saved_journal(self.root)['committed'])
         # Never undone: the settings may name the new place already.
         self.assertEqual((self.root / 'media/photos/immich-library/x.jpg').read_text(), 'one')
         self.assertFalse((self.root / f'media/nekoserver-new-photos-{ID}/photos/immich-library').exists())
@@ -244,12 +244,12 @@ class StoppedTests(Marked):
         with mock.patch.object(storage_jobs, 'steps_working', lambda config: [UNIT]):
             self.assertEqual(self.run_job('move', kind='photos', to='media'), 0)
         self.assertEqual(self.checks, [[UNIT]])
-        self.assertEqual(self.last_result()['state'], 'done')
+        self.assertEqual(last_result(self.root)['state'], 'done')
         self.assertEqual(
-            self.last_result()['message'],
+            last_result(self.root)['message'],
             'Your photos were moved, but the server check after it says: Immich does not answer',
         )
-        self.assertIsNone(self.saved_journal())
+        self.assertIsNone(saved_journal(self.root))
 
     def test_a_disk_refused_at_the_erase_is_said_and_nothing_changes(self):
         self.disk = disk('sdc', serial='S-AAAA')
@@ -261,11 +261,12 @@ class StoppedTests(Marked):
             shown = storage_jobs.describe(dict(world(self.disk), named={}))[0]
             asked = {k: shown[k] for k in ('by_id', 'serial', 'size_bytes')}
             self.assertEqual(self.run_job('use', how='erase', disk=asked, confirm='4 TB AAAA'), 1)
-        self.assertEqual(self.last_result()['state'], 'failed')
+        self.assertEqual(last_result(self.root)['state'], 'failed')
         self.assertEqual(
-            self.last_result()['message'], 'Linux is using the disk right now: nothing was erased. Nothing was changed.'
+            last_result(self.root)['message'],
+            'Linux is using the disk right now: nothing was erased. Nothing was changed.',
         )
-        self.assertIsNone(self.saved_journal())
+        self.assertIsNone(saved_journal(self.root))
         self.assertFalse(self.settings[0].exists())
 
 
@@ -289,7 +290,7 @@ class CutMoveTests(Marked):
         self.assertEqual(self.resume(), 0)
         self.assertTrue(mount_point.is_dir())
         self.assertFalse(staging.exists())
-        self.assertEqual(self.last_result()['started_at'], 123.0)
+        self.assertEqual(last_result(self.root)['started_at'], 123.0)
 
     def test_a_cut_switch_takes_back_only_the_folders_that_were_switched(self):
         # library/tv and library/downloads were switched; library/movies never was.
@@ -301,15 +302,15 @@ class CutMoveTests(Marked):
         self.assertFalse((self.root / 'drives/d3/library/downloads').exists())
         self.assertFalse(staging.exists())
         self.assertEqual((self.root / 'media/library/tv/s01.mkv').read_text(), 'tv')
-        self.assertEqual(self.last_result()['state'], 'undone')
+        self.assertEqual(last_result(self.root)['state'], 'undone')
 
     def test_a_drive_the_job_came_from_that_is_missing_keeps_the_journal(self):
         self.cut('copy', kind='photos', to='media', here='d3')
         (self.root / 'drives/d3').rmdir()
         self.assertEqual(self.resume(), 1)
-        self.assertEqual(self.last_result()['state'], 'failed')
-        self.assertEqual(self.last_result()['advice'], 'Plug it in and restart.')
-        self.assertIsNotNone(self.saved_journal())
+        self.assertEqual(last_result(self.root)['state'], 'failed')
+        self.assertEqual(last_result(self.root)['advice'], 'Plug it in and restart.')
+        self.assertIsNotNone(saved_journal(self.root))
 
     def test_a_cut_way_back_gives_the_old_copy_its_name_again(self):
         staging = self.cut('copy', kind='photos', to='ssd', job='back', copy=ID)
@@ -357,9 +358,9 @@ class FinishedAtTheStartTests(Marked):
                 self.committed('delete_old', phase='delete', kind='photos', copy=ID, deleting=str(gone))
                 self.assertEqual(self.resume(), 0)
                 self.assertFalse(old.exists() or gone.exists())
-                self.assertEqual(self.last_result()['state'], 'resumed')
-                self.assertTrue(self.last_result()['power_cut'])
-                self.assertIsNone(self.saved_journal())
+                self.assertEqual(last_result(self.root)['state'], 'resumed')
+                self.assertTrue(last_result(self.root)['power_cut'])
+                self.assertIsNone(saved_journal(self.root))
                 self.tools.assert_not_called()
 
     def test_a_deletion_journal_naming_another_folder_deletes_nothing(self):
@@ -376,7 +377,7 @@ class FinishedAtTheStartTests(Marked):
             self.assertEqual(self.resume(), 0)
         self.assertEqual(dropped, [self.root / 'drives/d3'])
         self.assertNotIn('d3', self.saved(0)['storage'])
-        self.assertEqual((self.last_result()['state'], self.last_result()['power_cut']), ('resumed', True))
+        self.assertEqual((last_result(self.root)['state'], last_result(self.root)['power_cut']), ('resumed', True))
         self.tools.assert_not_called()
 
     def test_an_erase_cut_after_the_format_adds_an_ext4_drive_with_the_erases_id(self):
@@ -392,8 +393,8 @@ class FinishedAtTheStartTests(Marked):
         job = self.job('use', how='erase', disk={})
         job.journal('partition', False, drive='d4', erased={'phase': 'partition', 'uuid': 'u-made', 'partuuid': 'p'})
         self.assertEqual(self.resume(), 0)
-        self.assertEqual(self.last_result()['message'], storage_jobs.UNDONE_WORDS['use'])
-        self.assertIn('erase it again from the Drives page', self.last_result()['message'])
+        self.assertEqual(last_result(self.root)['message'], storage_jobs.UNDONE_WORDS['use'])
+        self.assertIn('erase it again from the Drives page', last_result(self.root)['message'])
 
     def test_a_filesystem_is_there_only_when_blkid_finds_its_id(self):
         calls = []
@@ -428,7 +429,7 @@ class FinishedAtTheStartTests(Marked):
         self.job('move', kind='photos', to='media').journal('copy', False, here='ssd', to='media')
         self.assertEqual(self.finish(), 0)
         self.assertEqual(self.setups, [])
-        self.assertIsNotNone(self.saved_journal())
+        self.assertIsNotNone(saved_journal(self.root))
 
     def test_the_finish_stops_the_apps_copies_what_is_left_and_starts_them_again(self):
         # The copy at the new place is complete; the old folder was retired already.
@@ -441,7 +442,7 @@ class FinishedAtTheStartTests(Marked):
 
         def stop_writers(out=print, note=None):
             note([UNIT])
-            seen.append(self.saved_journal())
+            seen.append(saved_journal(self.root))
             return [UNIT]
 
         with mock.patch.object(migrate, 'stop_writers', stop_writers):
@@ -450,7 +451,7 @@ class FinishedAtTheStartTests(Marked):
         # The apps it stopped are in the journal at once, still on the far side of the commit.
         self.assertEqual((seen[0]['phase'], seen[0]['committed'], seen[0]['undo']['stopped']), ('start', True, [UNIT]))
         self.assertEqual(self.started, [[UNIT]])
-        self.assertEqual((self.last_result()['state'], self.last_result()['power_cut']), ('resumed', True))
+        self.assertEqual((last_result(self.root)['state'], last_result(self.root)['power_cut']), ('resumed', True))
 
     def test_the_finish_copies_with_the_last_copys_care(self):
         self.files(self.root / 'ssd/photos/immich-library', **{'late.jpg': 'meanwhile'})
@@ -466,10 +467,10 @@ class FinishedAtTheStartTests(Marked):
         self.committed('use', phase='mount', drive='d4', change=[['storage', 'd4', {'uuid': 'u'}]])
         with mock.patch.object(storage_jobs, 'setup_again', side_effect=RuntimeError('setup failed')):
             self.assertEqual(self.finish(), 1)
-        self.assertEqual(self.last_result()['state'], 'failed')
-        self.assertEqual(self.last_result()['message'], 'Finishing the job at the start stopped: setup failed')
-        self.assertEqual(self.last_result()['advice'], 'It is tried again at the next start.')
-        self.assertIsNotNone(self.saved_journal())
+        self.assertEqual(last_result(self.root)['state'], 'failed')
+        self.assertEqual(last_result(self.root)['message'], 'Finishing the job at the start stopped: setup failed')
+        self.assertEqual(last_result(self.root)['advice'], 'It is tried again at the next start.')
+        self.assertIsNotNone(saved_journal(self.root))
 
 
 class OldCopiesTests(Marked):
@@ -484,7 +485,7 @@ class OldCopiesTests(Marked):
         self.assertEqual([(c['kind'], c['place'], c['bytes']) for c in copies], [('photos', 'ssd', 5)])
         self.assertEqual(copies[0]['at'], (ssd / f'nekoserver-old-photos-{ID}').stat().st_mtime)
         self.assertEqual(self.run_job('delete_old', kind='movies', copy=ID, confirm='delete films and shows'), 1)
-        self.assertIn('not there any more', self.last_result()['message'])
+        self.assertIn('not there any more', last_result(self.root)['message'])
         self.assertTrue((self.root / 'elsewhere').is_dir())
 
     def test_a_drive_that_is_away_hides_no_other_drives_copies(self):
@@ -510,7 +511,7 @@ class UseAndReleaseTests(Marked):
         self.disk = disk('sdc', serial='S-AAAA', children=[part('sdc1', fstype='ext4', uuid='ssd-1')])
         self.assertEqual(self.run_job('use', how='take_over', disk=self.asked()), 1)
         self.assertEqual(
-            self.last_result()['message'],
+            last_result(self.root)['message'],
             'NekoServer does not use that disk: NekoServer keeps your apps or your media and backups on it. '
             'Nothing was changed.',
         )
@@ -585,22 +586,22 @@ class MirrorJournalTests(Marked):
         self.answer = {'state': 'resumed', 'message': 'The rebuild goes on.', 'advice': 'Leave it on.'}
         self.cut(False)
         self.assertEqual(self.resume(), 0)
-        shown = self.last_result()
+        shown = last_result(self.root)
         self.assertEqual(
             (shown['state'], shown['message'], shown['advice'], shown['power_cut']),
             ('resumed', 'The rebuild goes on.', 'Leave it on.', True),
         )
-        self.assertIsNone(self.saved_journal())
+        self.assertIsNone(saved_journal(self.root))
         self.answer = {'state': 'failed', 'message': 'The new drive is gone.', 'power_cut': False}
         self.cut(False)
         self.assertEqual(self.resume(), 1)
-        self.assertFalse(self.last_result()['power_cut'])
+        self.assertFalse(last_result(self.root)['power_cut'])
 
     def test_a_mirror_job_run_now_is_no_power_cut(self):
         self.answer = {'state': 'done', 'message': 'The new drive is in the mirror.'}
         job = self.job('mirror_add', array='md-md0')
         self.assertEqual(storage_jobs.mirror_result(job, self.answer), 0)
-        self.assertFalse(self.last_result()['power_cut'])
+        self.assertFalse(last_result(self.root)['power_cut'])
 
     def test_a_committed_mirror_job_is_waited_for_after_the_start(self):
         for answer, state, code in (('done', 'resumed', 0), ('failed', 'failed', 1)):
@@ -608,7 +609,7 @@ class MirrorJournalTests(Marked):
                 self.answer = {'state': answer, 'message': f'It is {answer}.', 'advice': 'Look at the Drives page.'}
                 self.cut(True)
                 self.assertEqual(self.finish(), code)
-                shown = self.last_result()
+                shown = last_result(self.root)
                 self.assertEqual(
                     (shown['state'], shown['message'], shown['advice'], shown['power_cut']),
                     (state, f'It is {answer}.', 'Look at the Drives page.', True),
