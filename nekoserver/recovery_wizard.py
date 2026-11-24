@@ -1617,17 +1617,50 @@ PART_WAY = (
 )
 
 
+INCOMPLETE = '-INCOMPLETE.txt'
+
+
+def incomplete_mark(target):
+    """The file beside a restore's folder that says it is not finished. Beside it, not in
+    it: the restore tools make their folder themselves and refuse one that exists."""
+    return Path(target).with_name(Path(target).name + INCOMPLETE)
+
+
 @contextlib.contextmanager
 def part_way(target, output):
     """Around a restore's writing: stopped there (Ctrl+C, a closed terminal), the folder it
     was writing is named as incomplete. The menu said only "what was already restored
-    stays as it is", and a folder with some of the files read as a finished restore."""
+    stays as it is", and a folder with some of the files read as a finished restore.
+    Killed or cut off by a power cut, nothing can be said then: the mark written first
+    stays, and the next menu run names the folder (T1-R15)."""
+    mark = incomplete_mark(target)
+    try:
+        mark.write_text(PART_WAY.format(target=target).strip() + '\n')
+    except OSError:
+        pass  # no mark, as before: the restore itself is not stopped for it
     try:
         yield
     except KeyboardInterrupt:
         if os.path.lexists(target):
             output(PART_WAY.format(target=target))
         raise
+    mark.unlink(missing_ok=True)
+
+
+def name_incomplete(config, output):
+    """When the menu starts: every folder under restored/ that a restore left marked as
+    incomplete (killed, a power cut) is named, with the words Ctrl+C says. Nothing is
+    deleted but a mark whose folder is gone already."""
+    try:
+        marks = sorted(restore_home(config).glob('*' + INCOMPLETE))
+    except OSError:
+        return
+    for mark in marks:
+        folder = mark.with_name(mark.name[: -len(INCOMPLETE)])
+        if os.path.lexists(folder):
+            output(PART_WAY.format(target=folder))
+        else:
+            mark.unlink(missing_ok=True)
 
 
 @contextlib.contextmanager
@@ -3923,6 +3956,7 @@ def menu_loop(config, prompt, output):
         'Choosing something here changes nothing yet: you are always shown exactly what will happen first,',
         'and asked. Pressing Enter alone never approves anything.',
     )
+    name_incomplete(config, output)
     sections = {'restore': restore_section, 'drive': drive_section}
     # Something may have changed only once a question was answered yes: after only
     # looking around, "what was already restored or repaired stays" named work never
