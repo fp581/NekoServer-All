@@ -706,6 +706,9 @@ def start_lan_gateway():
     # waiting for an old home-network address (minutes) and time out; restart replaces it.
     command(['systemctl', 'enable', GATEWAY_LAN_UNIT])
     try:
+        # Waiting at boot for a home address that changed, it failed over and over and used
+        # up its start limit; systemd then refused this restart for 30 minutes (T1-R18).
+        command(['systemctl', 'reset-failed', GATEWAY_LAN_UNIT])
         command(['systemctl', 'restart', GATEWAY_LAN_UNIT])
     except RuntimeError:
         command(['systemctl', 'stop', GATEWAY_LAN_UNIT])
