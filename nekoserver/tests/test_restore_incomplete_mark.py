@@ -43,16 +43,20 @@ class IncompleteMarkTests(unittest.TestCase):
             self.assertIn(f'sudo rm -r "{self.target}"', mark.read_text())
         self.assertEqual(self.marks(), [])
 
-    def test_a_restore_stopped_by_ctrl_c_keeps_its_mark(self):
-        with self.assertRaises(KeyboardInterrupt), recovery_wizard.part_way(self.target, lambda line: None):
+    def stopped_by(self, stop):
+        """A restore that made its folder and was then stopped by `stop`."""
+        with recovery_wizard.part_way(self.target, lambda line: None):
             self.target.mkdir()
-            raise KeyboardInterrupt
+            raise stop
+
+    def test_a_restore_stopped_by_ctrl_c_keeps_its_mark(self):
+        with self.assertRaises(KeyboardInterrupt):
+            self.stopped_by(KeyboardInterrupt())
         self.assertEqual(self.marks(), ['nextcloud-neko-20261124-110719-INCOMPLETE.txt'])
 
     def test_a_restore_ended_by_an_error_keeps_its_mark_and_one_that_returns_early_does_not(self):
-        with self.assertRaises(OSError), recovery_wizard.part_way(self.target, print):
-            self.target.mkdir()
-            raise OSError('No space left on device')
+        with self.assertRaises(OSError):
+            self.stopped_by(OSError('No space left on device'))
         self.assertEqual(self.marks(), ['nextcloud-neko-20261124-110719-INCOMPLETE.txt'])
         other = self.home / 'photos-neko-20261124-120000'
 
