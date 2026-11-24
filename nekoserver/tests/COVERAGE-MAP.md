@@ -146,11 +146,11 @@ that fails without the fix and the journey or rule it belongs to.
 | B-100-29 | Every recovery text names whose backup password it asks for (T1-R8, T3-R8b) | `RebuiltServerPasswordWordsTests` (tests/test_rebuilt_server_password_words.py) | J09 |
 | B-100-30 | A weekly app update that was undone says so (T1-R11) | `a_rolled_back_weekly_update_says_the_apps_are_back_and_working` (runtime/src/collect.rs), `an_app_left_broken_after_an_undone_one_makes_the_night_a_failure` (runtime/src/maintenance.rs) | J07, S06 |
 | B-100-31 | A made-up app password starts with a letter or digit (after T1-R12) | `GeneratedPasswordStartTests` (tests/test_generated_passwords.py) | J01 |
-| B-100-32 | Tests of the setup driver's parts, folder-access rows, mistyped settings (T6-rc1) | tests only: tests/test_permission_checks.py, tests/test_mistyped_settings.py, tests/test_neko_restore.py | S03, F05 |
-| B-100-33 | Tests of the home gateway, the snapshot refusals, the backup password tool, recover.py (T6-rc2 to T6-rc4) | tests only: tests/test_gateway_lan_apply.py, tests/test_snapshot_refusals.py, tests/test_backup_secrets_words.py, tests/test_recover_command.py | S05, S07 |
-| B-100-34 | The tests no longer depend on the PC they run on (INT-later-2) | tests only: the host-state tests of X07 | X07 |
-| B-100-35 | Tests of the recovery tools, the guided restore and the Nextcloud bring-back (T6-rc5 to T6-rc7) | tests only: tests/test_recovery_command_failures.py, tests/test_wizard_checked_copies.py, tests/test_restore_dates_and_accepted.py, tests/test_nextcloud_restore_choices.py | J09, S05 |
-| B-100-36 | Setup says which backup password is in force when it keeps the key (T4-key; its changelog line sits under v0.52.3) | `test_a_kept_key_says_which_password_is_in_force_also_on_new_drives` (tests/test_backup_secrets_words.py) | X05 |
+| B-100-32 | Setup says which backup password is in force when it keeps the key (T4-key; its changelog line sits under v0.52.3) | `test_a_kept_key_says_which_password_is_in_force_also_on_new_drives` (tests/test_backup_secrets_words.py) | X05 |
+| B-100-33 | Tests of the setup driver's parts, folder-access rows, mistyped settings (T6-rc1) | tests only: tests/test_permission_checks.py, tests/test_mistyped_settings.py, tests/test_neko_restore.py | S03, F05 |
+| B-100-34 | Tests of the home gateway, the snapshot refusals, the backup password tool, recover.py (T6-rc2 to T6-rc4) | tests only: tests/test_gateway_lan_apply.py, tests/test_snapshot_refusals.py, tests/test_backup_secrets_words.py, tests/test_recover_command.py | S05, S07 |
+| B-100-35 | The tests no longer depend on the PC they run on (INT-later-2) | tests only: the host-state tests of X07 | X07 |
+| B-100-36 | Tests of the recovery tools, the guided restore and the Nextcloud bring-back (T6-rc5 to T6-rc7) | tests only: tests/test_recovery_command_failures.py, tests/test_wizard_checked_copies.py, tests/test_restore_dates_and_accepted.py, tests/test_nextcloud_restore_choices.py | J09, S05 |
 
 ## What is not tested
 
