@@ -19,6 +19,7 @@ that neither the start of the computer nor a new job could clear. Now:
 
 import json
 import os
+import re
 import socket
 import sys
 import tempfile
@@ -36,8 +37,16 @@ from tests.test_storage_jobs import ID, Jobs, last_result, saved_journal  # noqa
 REFUSED = 'FAILED photos: Existing Immich paths differ'
 
 
+def setup_log(*lines, finished=True):
+    """A setup run's log as installer.py writes it: its step lines, then the last line."""
+    said = [f'[2026-11-24 22:00:0{n % 10}] {line}' for n, line in enumerate(lines)]
+    return '\n'.join([*said, *(['[2026-11-24 22:01:00] Finished: 30 of 32 steps done'] if finished else [])]) + '\n'
+
+
 class Refusing:
-    """Setup run again: refuses (raises) or works, in turn; what the apps write meanwhile."""
+    """Setup run again: refuses (raises) or works, in turn, with its log (setup-<id>.log);
+    what the apps write meanwhile. An answer is None (works), the error (its log: that
+    step FAILED), or (the error, the log)."""
 
     def __init__(self, test, *answers, writes=None):
         self.test, self.answers, self.writes = test, list(answers), writes or {}
@@ -49,8 +58,12 @@ class Refusing:
             (self.test.root / path).write_text(text)
         self.writes = {}
         answer = self.answers.pop(0)
-        if answer:
-            raise RuntimeError(answer)
+        error, log = answer if isinstance(answer, tuple) else (answer, None)
+        if log is None:
+            log = setup_log(*(f'FAILED {step}: no' for step in re.findall(r'FAILED ([a-z_]+)', error or '')))
+        (job.state / f'setup-{job.id}.log').write_text(log)
+        if error:
+            raise RuntimeError(error)
 
 
 class UnswitchTests(Jobs):
@@ -150,9 +163,18 @@ class UnswitchTests(Jobs):
         self.assertEqual(last_result(self.root)['state'], 'failed')
         self.assertIsNone(saved_journal(self.root))
 
+    GATEWAY = 'setup ended with a failed step (FAILED gateway_lan: no address)'
+
     def test_a_failure_of_a_step_that_does_not_use_the_place_finishes_the_move(self):
         self.files(self.root / 'ssd/photos/immich-library', **{'x.jpg': 'one'})
-        with self.refusing('setup ended with a failed step (FAILED gateway_lan: no address)'):
+        log = setup_log(
+            'PASS storage',
+            'PASS docker',
+            'PASS photos',
+            'UNAVAILABLE photo_backup: no USB drive',
+            'FAILED gateway_lan: no',
+        )
+        with self.refusing((self.GATEWAY, log)):
             self.assertEqual(self.run_job('move', kind='photos', to='d3'), 0)
         self.assertEqual((self.root / 'drives/d3/photos/immich-library/x.jpg').read_text(), 'one')
         self.assertTrue((self.root / f'ssd/nekoserver-old-photos-{ID}/photos/immich-library/x.jpg').exists())
@@ -183,14 +205,38 @@ class UnswitchTests(Jobs):
         self.assertIsNotNone(saved_journal(self.root))
         self.assertIn('next start', last_result(self.root)['advice'])
 
-    def test_which_failures_refuse_the_place(self):
-        refused = storage_jobs.refused_place
-        self.assertTrue(refused('photos', RuntimeError('FAILED photos: Existing Immich paths differ')))
-        self.assertTrue(refused('movies', RuntimeError('FAILED gateway_lan: x; FAILED media: y')))
-        self.assertTrue(refused('cloud', RuntimeError('FAILED storage: the drive is not mounted')))
-        self.assertTrue(refused('music', RuntimeError('setup did not finish (exit code 2)')))
-        self.assertFalse(refused('photos', RuntimeError('FAILED gateway_tailnet: x; FAILED heartbeat: y')))
-        self.assertFalse(refused('cloud', RuntimeError('FAILED media: an image did not download')))
+    def test_a_kind_step_the_run_held_up_or_never_reached_undoes_the_move(self):
+        self.files(self.root / 'ssd/photos/immich-library', **{'x.jpg': 'one'})
+        for log in (
+            setup_log('PASS storage', 'FAILED docker: an image did not download', 'BLOCKED photos: waits on docker'),
+            setup_log('PASS storage', 'FAILED gateway_lan: no', 'START photos', finished=False),
+        ):
+            with self.subTest(log=log), self.refusing((self.GATEWAY, log), None):
+                self.assertEqual(self.run_job('move', kind='photos', to='d3'), 1)
+                self.assertEqual(self.saved()['locations'], {})
+                self.assertEqual((self.root / 'ssd/photos/immich-library/x.jpg').read_text(), 'one')
+                self.assertEqual(last_result(self.root)['state'], 'failed')
+
+    def test_which_runs_refuse_the_place(self):
+        job = SimpleNamespace(state=self.root / 'state', id=ID)
+
+        def refused(kind, *lines, finished=True):
+            (self.root / f'state/setup-{ID}.log').write_text(setup_log(*lines, finished=finished))
+            return storage_jobs.refused_place(job, kind)
+
+        self.assertTrue(refused('photos', 'PASS storage', 'FAILED photos: Existing Immich paths differ'))
+        self.assertTrue(refused('movies', 'FAILED gateway_lan: x', 'FAILED media: y'))
+        self.assertTrue(refused('cloud', 'FAILED storage: the drive is not mounted'))
+        self.assertTrue(refused('music', 'PASS storage', 'PASS media', finished=False))
+        self.assertFalse(refused('photos', 'PASS photos', 'NEEDS SETUP photo_backup: plug in the USB drive'))
+        self.assertFalse(
+            refused('photos', 'PASS storage', 'PASS photos', 'FAILED gateway_tailnet: x', 'FAILED heartbeat: y')
+        )
+        self.assertFalse(refused('cloud', 'PASS storage', 'PASS nextcloud', 'FAILED media: an image did not download'))
+        # A run of an earlier attempt in the same log does not count: the last line of each step does.
+        self.assertFalse(refused('photos', 'FAILED photos: x', 'PASS storage', 'PASS photos', 'FAILED gateway_lan: x'))
+        (self.root / f'state/setup-{ID}.log').unlink()
+        self.assertTrue(storage_jobs.refused_place(job, 'photos'))
 
 
 class MovedHereTests(unittest.TestCase):

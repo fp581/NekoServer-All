@@ -1269,7 +1269,7 @@ def finish_move(job, kind, here, stopped):
             retire_old(job, kind, here)
         setup_again(job)
     except Exception as error:  # noqa: BLE001  (a refusal of the place undoes the move, never half)
-        if refused_place(kind, error):
+        if refused_place(job, kind):
             unswitch(job, kind, here, stopped, error)
         other = error
     try:
@@ -1317,11 +1317,13 @@ def moved_here(config, kind, state=None):
         return None
 
 
-# The setup steps that use a kind's folders, or the drives themselves: one of them failing
-# after a move's switch is a refusal of the new place, and the move is undone (unswitch).
-# Any other step failing (an image download, the gateway) has nothing to do with the
-# place: the move is finished and the failure said (T5 on f58aa9b). A failure that names
-# no step is taken as a refusal.
+# The setup steps that use a kind's folders, or the drives themselves. After a move's
+# switch, a setup run that fails is taken as a refusal of the new place, and the move is
+# undone (unswitch), unless its log shows the run finished and each of these steps that
+# it has PASSED (or cannot be had on this PC, or waits for the person): then the failure was another step's (an
+# image download, the gateway), the move is finished and that failure said (T5 on
+# f58aa9b). A step the run held up (BLOCKED) or never reached is no pass (T5 on 751ac7c:
+# Immich's .env still naming the old folder when its step waited on the gateway).
 PLACE_STEPS = ('storage', 'capacity', 'docker')
 KIND_STEPS = {
     'photos': ('photos', 'photo_backup', 'photo_preservation'),
@@ -1330,12 +1332,27 @@ KIND_STEPS = {
     'music': ('media', 'music', 'music_backup', 'samba'),
     'backups': ('app_backup', 'host_backup', 'photo_backup', 'maintenance', 'backup_cards'),
 }
-FAILED_STEP = re.compile(r'FAILED ([a-z_]+)')
+STEP_LINE = re.compile(r'(?:^|\] )(START|PASS|FAILED|NEEDS SETUP|UNAVAILABLE|BLOCKED) ([a-z_]+)')
+# NEEDS SETUP: the step ran to its end and waits for the person (a sign-in, a drive plugged in).
+FINE = ('PASS', 'UNAVAILABLE', 'NEEDS SETUP')
 
 
-def refused_place(kind, error):
-    failed = set(FAILED_STEP.findall(str(error)))
-    return not failed or bool(failed & {*PLACE_STEPS, *KIND_STEPS.get(kind, ())})
+def refused_place(job, kind):
+    """Whether the failed setup run of this move (its log, setup-<id>.log) refused the new
+    place: True unless it ran to its end and every one of the kind's and the drives' steps
+    it had ended PASS (a step it did not have is not in its plan)."""
+    try:
+        text = (job.state / f'setup-{job.id}.log').read_text(errors='replace')
+    except OSError:
+        return True
+    last, ended = {}, False
+    for line in text.splitlines():
+        found = STEP_LINE.search(line)
+        if found:
+            last[found[2]], ended = found[1], False
+        elif 'Finished:' in line:
+            ended = True
+    return not ended or any(last.get(step, 'PASS') not in FINE for step in (*PLACE_STEPS, *KIND_STEPS.get(kind, ())))
 
 
 def unswitch(job, kind, here, stopped, why):
