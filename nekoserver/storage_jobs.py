@@ -820,13 +820,19 @@ OWN_UNITS = (
 )
 
 
-# The page's own units, which only read: the Drives page keeps showing the job while the
-# apps are stopped for the last copy. The control service is stopped with the rest: its
-# app buttons (restart, update) would start an app in the middle of the move.
-# Its socket too: the service needs it (Requires=), so stopping the socket stopped the
-# page, and setup run again a moment later found the port held by the page's closed
-# connections and gave the dashboard another one (T1-10).
-PAGE_UNITS = ('nekoserver-dashboard.socket', 'nekoserver-dashboard.service', 'nekoserver-dashboard-collect.service')
+# The page's own units: the Drives page keeps showing the job while the apps are stopped
+# for the last copy. The dashboard's socket too: the service needs it (Requires=), so
+# stopping the socket stopped the page, and setup run again a moment later found the port
+# held by the page's closed connections and gave the dashboard another one (T1-10). The
+# control service answers the page's questions about the job (storage.rs); its app
+# buttons (restart, update) refuse while the operation lock is held (control.rs), which a
+# Drives job holds from start to end (T1-11).
+PAGE_UNITS = (
+    'nekoserver-dashboard.socket',
+    'nekoserver-dashboard.service',
+    'nekoserver-dashboard-collect.service',
+    'nekoserver-control.service',
+)
 
 
 def left_alone():
@@ -1253,17 +1259,26 @@ def finish_move(job, kind, here, stopped):
 
     job.journal('start', True)
     job.progress('start')
+    other = None
     try:
         if kind == 'backups':
             # Setup never mounts the backups' new place over files at the old one.
             retire_old(job, kind, here)
         setup_again(job)
-    except Exception as error:  # noqa: BLE001  (any refusal: the move is undone, never left half)
-        unswitch(job, kind, here, stopped, error)
+    except Exception as error:  # noqa: BLE001  (a refusal of the place undoes the move, never half)
+        if refused_place(kind, error):
+            unswitch(job, kind, here, stopped, error)
+        other = error
     try:
         retire_old(job, kind, here)
     finally:
         migrate.start_again(stopped, job.out)
+    if other:
+        raise Stop(
+            f'Your {KIND_WORDS[kind]} are on {place_words(job.undo()["to"])} now and their apps use them there. '
+            f'Setup, run again for the move, ended with a step that does not use them failing: {other}',
+            'Run setup again (sudo bash install.sh) once that is fixed.',
+        )
     job.progress('check')
     before = job.undo().get('before') or []
     problem = before and migrate.server_check(job.config, before)
@@ -1291,6 +1306,27 @@ def moved_here(config, kind, state=None):
         return None
 
 
+# The setup steps that use a kind's folders, or the drives themselves: one of them failing
+# after a move's switch is a refusal of the new place, and the move is undone (unswitch).
+# Any other step failing (an image download, the gateway) has nothing to do with the
+# place: the move is finished and the failure said (T5 on f58aa9b). A failure that names
+# no step is taken as a refusal.
+PLACE_STEPS = ('storage', 'capacity', 'docker')
+KIND_STEPS = {
+    'photos': ('photos', 'photo_backup', 'photo_preservation'),
+    'cloud': ('nextcloud',),
+    'movies': ('media', 'samba'),
+    'music': ('media', 'music', 'music_backup', 'samba'),
+    'backups': ('app_backup', 'host_backup', 'photo_backup', 'maintenance', 'backup_cards'),
+}
+FAILED_STEP = re.compile(r'FAILED ([a-z_]+)')
+
+
+def refused_place(kind, error):
+    failed = set(FAILED_STEP.findall(str(error)))
+    return not failed or bool(failed & {*PLACE_STEPS, *KIND_STEPS.get(kind, ())})
+
+
 def unswitch(job, kind, here, stopped, why):
     """Setup refused the new place after the switch (T1-9: Immich's .env named the old
     folder): the move undone, so the server is as it was, never half. What the apps wrote
@@ -1312,18 +1348,15 @@ def unswitch(job, kind, here, stopped, why):
         own=left_alone(),
     )
     stopped = list(dict.fromkeys([*(stopped or []), *earlier, *again]))
-    if kind == 'backups' and to != 'media':
-        forward = json.loads(json.dumps(job.config))
-        apply_change(forward, [['locations', kind, to]])
-        unbind_backups(forward)
-    unretire(job, kind, here)
-    for old, new in zip(paths(job.config, kind, here), paths(job.config, kind, to)):
-        if new.is_dir() and not os.path.ismount(new):
-            old.mkdir(parents=True, exist_ok=True)
-            migrate.copy(new, old, final=True, out=job.out)
-    apply_change(job.config, back_change)
-    job.save_settings()
-    undo_move(job)
+    if not job.undo().get('files_back'):
+        unswitch_files(job, kind, here)
+    else:
+        # Undone at the start already, before Docker (resume): only what an app wrote in a
+        # new folder since (one its record still named) is added, nothing deleted.
+        for old, new in zip(paths(job.config, kind, here), paths(job.config, kind, to)):
+            if new.is_dir() and not os.path.ismount(new) and any(new.iterdir()):
+                old.mkdir(parents=True, exist_ok=True)
+                migrate.copy(new, old, out=job.out)
     also = ''
     try:
         setup_again(job)
@@ -1336,6 +1369,30 @@ def unswitch(job, kind, here, stopped, why):
         f'({why}). Nothing was changed.' + also,
         f'Setup\'s log says why: {job.state / f"setup-{job.id}.log"}',
     )
+
+
+def unswitch_files(job, kind, here):
+    """unswitch's part on the drives: the backups' new place unmounted, folders retired
+    before setup given back, what the apps wrote in the new folders copied back into the
+    old ones (the old ones then equal them), the settings back, the new copy out of the way
+    (undo_move). Done again from the start until it ends (files_back): at a resume it runs
+    before Docker, so no app has written at the old place yet (T5 on f58aa9b)."""
+    import migrate
+
+    to = job.undo()['to']
+    if kind == 'backups' and to != 'media':
+        forward = json.loads(json.dumps(job.config))
+        apply_change(forward, [['locations', kind, to]])
+        unbind_backups(forward)
+    unretire(job, kind, here)
+    for old, new in zip(paths(job.config, kind, here), paths(job.config, kind, to)):
+        if new.is_dir() and not os.path.ismount(new):
+            old.mkdir(parents=True, exist_ok=True)
+            migrate.copy(new, old, final=True, out=job.out)
+    apply_change(job.config, job.undo()['change'])
+    job.save_settings()
+    undo_move(job)
+    job.journal('unswitch', True, files_back=True)
 
 
 def unretire(job, kind, here):
@@ -1569,6 +1626,8 @@ def resume(config, settings_files, state=None, folder=None, out=print):
         job.done()
         return 0
     job.reapply(read_state(JOURNAL, job.state) or saved)
+    if saved.get('phase') == 'unswitch' and job.action in ('move', 'back') and not saved['undo'].get('files_back'):
+        unswitch_files(job, job.request['kind'], saved['undo']['here'])
     if job.action in ('move', 'back', 'use', 'mirror_add'):
         run(
             [

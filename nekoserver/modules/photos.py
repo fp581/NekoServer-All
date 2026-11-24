@@ -231,9 +231,10 @@ def checked_model(model, upload, db, config, ask=None):
     refused = 'The downloaded Immich Compose file asks for more than NekoServer gives Immich ({}); nothing was started'
     with tempfile.TemporaryDirectory(prefix='neko-compose-') as work:
         settings, models = Path(work) / 'settings.json', Path(work) / 'model.json'
-        # With the folders setup decided (`paths`), which the runtime reads.
-        found = {k: config.get(k) for k in ('data_mount', 'media_mount', 'locations')}
-        settings.write_text(json.dumps({**found, 'paths': native_runtime.saved_paths(config)}))
+        # The drives as the runtime's jobs read them, with the folders setup decided
+        # (`paths`): a folder on an Extra drive is only allowed with that drive named in
+        # "storage" (T1-11: paths.library of films moved to an Extra drive was refused).
+        settings.write_text(json.dumps(native_runtime.storage_config(config)))
         models.write_text(json.dumps(model))
         args = ['check-compose', '--config', str(settings), '--app', 'immich', '--model', str(models)]
         code, said = (ask or native_runtime.ask_runtime)(Path(__file__).resolve().parents[1], config, args)

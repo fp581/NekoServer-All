@@ -95,7 +95,10 @@ class UnswitchTests(Jobs):
 
     def test_backups_retired_before_setup_come_back_when_it_refuses(self):
         self.files(self.root / 'media', **{'backups/host.tar': 'h', 'photos/archive/2020.zip': 'z'})
-        with self.refusing('FAILED backups', None), mock.patch.object(storage_jobs, 'unbind_backups') as unbind:
+        with (
+            self.refusing('FAILED storage: the backups folder is not mounted', None),
+            mock.patch.object(storage_jobs, 'unbind_backups') as unbind,
+        ):
             self.assertEqual(self.run_job('move', kind='backups', to='d3'), 1)
         self.assertEqual((self.root / 'media/backups/host.tar').read_text(), 'h')
         self.assertEqual((self.root / 'media/photos/archive/2020.zip').read_text(), 'z')
@@ -133,13 +136,42 @@ class UnswitchTests(Jobs):
         )
         with mock.patch.object(storage_jobs, 'run', mock.Mock()):
             self.assertEqual(storage_jobs.resume(self.config, self.settings, self.root / 'state', self.root / 'run'), 0)
+        # Before Docker (resume): the files are back at the old place and the settings too.
         self.assertEqual(self.saved()['locations'], {})
-        self.assertEqual(storage_jobs.finish(self.config, self.settings, self.root / 'state', self.root / 'run'), 1)
         self.assertEqual((self.root / 'ssd/photos/immich-library/late.jpg').read_text(), 'meanwhile')
         self.assertFalse((self.root / 'media/photos/immich-library').exists())
+        self.assertTrue(saved_journal(self.root)['undo']['files_back'])
+        # Docker starts the apps, on the old place: what they write there is kept by the finish.
+        self.files(self.root / 'ssd/photos/immich-library', **{'after-boot.jpg': 'taken after the start'})
+        self.assertEqual(storage_jobs.finish(self.config, self.settings, self.root / 'state', self.root / 'run'), 1)
+        self.assertEqual((self.root / 'ssd/photos/immich-library/after-boot.jpg').read_text(), 'taken after the start')
+        self.assertEqual((self.root / 'ssd/photos/immich-library/late.jpg').read_text(), 'meanwhile')
         self.assertEqual(self.setups[-1]['locations'], {})
         self.assertEqual(last_result(self.root)['state'], 'failed')
         self.assertIsNone(saved_journal(self.root))
+
+    def test_a_failure_of_a_step_that_does_not_use_the_place_finishes_the_move(self):
+        self.files(self.root / 'ssd/photos/immich-library', **{'x.jpg': 'one'})
+        with self.refusing('setup ended with a failed step (FAILED gateway_lan: no address)'):
+            self.assertEqual(self.run_job('move', kind='photos', to='d3'), 0)
+        self.assertEqual((self.root / 'drives/d3/photos/immich-library/x.jpg').read_text(), 'one')
+        self.assertTrue((self.root / f'ssd/nekoserver-old-photos-{ID}/photos/immich-library/x.jpg').exists())
+        self.assertEqual(self.saved()['locations'], {'photos': 'd3'})
+        result = last_result(self.root)
+        self.assertEqual(result['state'], 'done')
+        self.assertIn('gateway_lan: no address', result['message'])
+        self.assertIn('Run setup again', result['advice'])
+        self.assertIsNone(saved_journal(self.root))
+        self.assertEqual(self.started, [['nekoserver-immich.service']])
+
+    def test_which_failures_refuse_the_place(self):
+        refused = storage_jobs.refused_place
+        self.assertTrue(refused('photos', RuntimeError('FAILED photos: Existing Immich paths differ')))
+        self.assertTrue(refused('movies', RuntimeError('FAILED gateway_lan: x; FAILED media: y')))
+        self.assertTrue(refused('cloud', RuntimeError('FAILED storage: the drive is not mounted')))
+        self.assertTrue(refused('music', RuntimeError('setup did not finish (exit code 2)')))
+        self.assertFalse(refused('photos', RuntimeError('FAILED gateway_tailnet: x; FAILED heartbeat: y')))
+        self.assertFalse(refused('cloud', RuntimeError('FAILED media: an image did not download')))
 
 
 class MovedHereTests(unittest.TestCase):
@@ -299,10 +331,30 @@ class MovedHereTests(unittest.TestCase):
         self.assertEqual(current, before)
 
 
+class ImmichComposeCheckTests(MovedHereTests):
+    def test_the_runtime_is_told_the_extra_drives_the_settings_place_files_on(self):
+        # T1-11: the films moved to an Extra drive; setup's photos step checks Immich's
+        # Compose file with the runtime, which allows a folder only on a drive it is told of.
+        self.config['locations'] = {'movies': 'd3'}
+        self.config['storage']['d3']['fstype'] = 'ext4'
+        given = {}
+
+        def ask(root, config, args):
+            given.update(json.loads(Path(args[args.index('--config') + 1]).read_text()))
+            return 1, 'stop here'
+
+        with self.assertRaises(RuntimeError):
+            photos.checked_model({}, Path('/x'), Path('/y'), self.config, ask=ask)
+        self.assertEqual(given['storage']['d3']['uuid'], 'd3-uuid')
+        self.assertEqual(given['locations'], {'movies': 'd3'})
+        self.assertEqual(given['paths']['library'], str(self.drive('d3') / 'library'))
+
+
 class DashboardPortTests(unittest.TestCase):
     def test_the_dashboard_socket_stays_up_through_a_move(self):
         self.assertIn(dashboard.SOCKET, storage_jobs.left_alone())
         self.assertIn(dashboard.SERVICE, storage_jobs.left_alone())
+        self.assertIn(dashboard.CONTROL, storage_jobs.left_alone())
 
     def test_a_port_only_closed_connections_wait_on_is_free(self):
         with socket.socket() as server:
