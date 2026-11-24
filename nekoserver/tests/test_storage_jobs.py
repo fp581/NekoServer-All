@@ -234,9 +234,13 @@ class PowerCutTests(Jobs):
     def test_the_finish_copies_again_what_was_written_meanwhile_and_retires_the_old_folders(self):
         self.files(self.root / 'ssd/photos/immich-library', **{'x.jpg': 'one', 'late.jpg': 'meanwhile'})
         self.files(self.root / 'media/photos/immich-library', **{'x.jpg': 'one'})
-        self.config['locations'] = {'photos': 'media'}
-        self.cut('start', True)
+        # Cut after the journal's commit and before the settings were written: the settings
+        # on disk still say "ssd"; the finish takes the change from the journal.
+        self.cut('start', True, change=[['locations', 'photos', 'media']])
         self.assertEqual(storage_jobs.finish(self.config, self.settings, self.root / 'state', self.root / 'run'), 0)
+        self.assertEqual(self.setups[0]['locations'], {'photos': 'media'})
+        self.assertEqual(self.saved(0)['locations'], {'photos': 'media'})
+        self.assertTrue((self.root / 'media/photos/immich-library/x.jpg').exists())
         self.assertEqual((self.root / 'media/photos/immich-library/late.jpg').read_text(), 'meanwhile')
         self.assertTrue((self.root / f'ssd/nekoserver-old-photos-{ID}/photos/immich-library/x.jpg').exists())
         self.assertEqual(self.result()['state'], 'resumed')
@@ -326,6 +330,36 @@ class DriveTests(Jobs):
         self.config['locations']['music'] = 'd3'
         self.assertEqual(self.run_job('release', drive='d3'), 1)
         self.assertIn('Move them first', self.result()['message'])
+
+    def test_a_drive_with_a_media_folder_of_the_person_on_it_is_never_given_up(self):
+        self.config['placement'] = {'movies': {'extra': [{'path': str(self.root / 'drives/d3/My films')}]}}
+        self.assertEqual(self.run_job('release', drive='d3'), 1)
+        self.assertIn('Media folders page', self.result()['message'])
+        self.assertIn('d3', self.config['storage'])
+
+    def test_an_added_drive_cut_before_its_settings_were_written_is_added_at_the_finish(self):
+        job = storage_jobs.Job(
+            self.request('use', how='take_over', disk=self.asked()),
+            self.config,
+            self.settings,
+            self.root / 'state',
+            self.root / 'run',
+        )
+        entry = {'uuid': 'u-new', 'fstype': 'ext4', 'added': True}
+        job.journal('mount', True, drive='d4', change=[['storage', 'd4', entry]])
+        with mock.patch.object(storage_jobs, 'run', mock.Mock()):
+            storage_jobs.resume(self.config, self.settings, self.root / 'state', self.root / 'run')
+        self.assertEqual(self.saved(0)['storage']['d4'], entry)
+        self.assertEqual(storage_jobs.finish(self.config, self.settings, self.root / 'state', self.root / 'run'), 0)
+        self.assertEqual(self.setups[0]['storage']['d4'], entry)
+        self.assertEqual(self.result()['state'], 'resumed')
+
+    def test_a_device_of_a_mounted_pool_of_several_is_never_offered(self):
+        first = disk('sdc', serial='S-AAAA', children=[part('sdc1', fstype='btrfs', uuid='pool', mountpoints=['/x'])])
+        second = disk('sdd', serial='S-BBBB', children=[part('sdd1', fstype='btrfs', uuid='pool')])
+        second['maj:min'], second['children'][0]['maj:min'] = '8:48', '8:49'
+        rows = storage_jobs.describe(dict(world(first, second), named={}))
+        self.assertEqual(storage_jobs.refusal(rows[1], 0)['code'], 'mounted')
 
 
 class MirrorTests(Jobs):

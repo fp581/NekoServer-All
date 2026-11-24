@@ -175,6 +175,7 @@ def describe(world):
     counts = {}
     for disk in world['lsblk']:
         counts[identity(disk)] = counts.get(identity(disk), 0) + 1
+    world = dict(world, mounted_uuids=mounted_uuids(world))
     rows = []
     for disk in world['lsblk']:
         if disk.get('type') != disk_type:
@@ -202,9 +203,25 @@ def serial_of(disk):
     return (disk.get('serial') or '').strip() or loop_serial(disk)
 
 
+def mounted_uuids(world):
+    """The filesystem UUIDs mounted now. A Btrfs pool of several devices is mounted from
+    one of them (mountinfo names an anonymous 0:N device): the others carry its UUID."""
+    return {
+        row['uuid']
+        for top in world['lsblk']
+        for row, _ in walk([top])
+        if row.get('uuid') and (row.get('maj:min') in world['mounted'] or any(row.get('mountpoints') or []))
+    }
+
+
 def in_use(everything, world):
-    """Whether any of these devices is mounted (in any namespace) or used as swap."""
-    mounted = any(r.get('maj:min') in world['mounted'] or any(r.get('mountpoints') or []) for r in everything)
+    """Whether any of these devices is mounted (in any namespace), a device of a mounted
+    filesystem, or used as swap."""
+    held = world.get('mounted_uuids') or set()
+    mounted = any(
+        r.get('maj:min') in world['mounted'] or any(r.get('mountpoints') or []) or r.get('uuid') in held
+        for r in everything
+    )
     swap = any(os.path.realpath(r['path']) in world['swaps'] for r in everything if r.get('path'))
     return mounted, swap
 
@@ -623,7 +640,27 @@ def release_problem(config, drive, copies):
         return 'Apps keep their settings on it. Move them in setup first.'
     if any(c['place'] == drive for c in copies):
         return 'An old copy is on it. Delete it or move it back first.'
+    if folders_on(config, drive):
+        return (
+            'Films, shows or music NekoServer uses are in a folder on it. Take it out on the Media folders page first.'
+        )
     return None
+
+
+def folders_on(config, drive):
+    """The person's own media folders (setup's existing-media question and the Media folders
+    page: "placement" … "extra") that are on this drive: their binds name a path there."""
+    from existing_media import listed_extras
+
+    root = Path(os.path.realpath(root_of(config, drive)))
+    saved = config.get('placement') if isinstance(config.get('placement'), dict) else {}
+    found = []
+    for row in ('movies', 'music'):
+        for entry in listed_extras(saved, row):
+            path = entry.get('path') if isinstance(entry, dict) else entry
+            if isinstance(path, str) and root in (Path(os.path.realpath(path)), *Path(os.path.realpath(path)).parents):
+                found.append(path)
+    return found
 
 
 # ---- the files the page reads --------------------------------------------------------------
@@ -844,6 +881,31 @@ class Job:
         for path in self.settings_files:
             atomic_json(path, self.config)
 
+    def commit(self, phase, change, **undo):
+        """The commit point: the settings change written in the journal first, then into
+        every settings file. A cut between them is finished from the journal (reapply)."""
+        self.journal(phase, True, change=change, **undo)
+        apply_change(self.config, change)
+        self.save_settings()
+
+    def reapply(self, saved):
+        """A committed job's settings change made again (the same each time), so finishing
+        it never works from the settings as they were before."""
+        change = (saved.get('undo') or {}).get('change')
+        if saved.get('committed') and change:
+            apply_change(self.config, change)
+            self.save_settings()
+
+
+def apply_change(config, change):
+    """[[section, key, value]]: value None takes the key out."""
+    for section, key, value in change:
+        part = config.setdefault(section, {})
+        if value is None:
+            part.pop(key, None)
+        else:
+            part[key] = value
+
 
 def this_boot():
     import migrate
@@ -912,9 +974,7 @@ def add_drive(job, name, uuid, fstype):
 
 
 def add_settings(job, name, uuid, fstype):
-    job.config.setdefault('storage', {})[name] = {'uuid': uuid, 'fstype': fstype, 'added': True}
-    job.journal('mount', True, drive=name)
-    job.save_settings()
+    job.commit('mount', [['storage', name, {'uuid': uuid, 'fstype': fstype, 'added': True}]], drive=name)
 
 
 def release(job):
@@ -928,12 +988,10 @@ def release(job):
     problem = release_problem(job.config, name, old_copies(job.config))
     if problem:
         raise Stop(problem + ' Nothing was changed.')
-    job.journal('release', True, drive=name)
+    job.commit('release', [['storage', name, None]], drive=name)
     drop_fstab_line(EXTRA_MOUNT_ROOT() / name)
     if os.path.ismount(EXTRA_MOUNT_ROOT() / name):
         run(['umount', str(EXTRA_MOUNT_ROOT() / name)])
-    job.config['storage'].pop(name)
-    job.save_settings()
     return f'{place_words(name)} is no longer used. You can unplug it.'
 
 
@@ -1086,13 +1144,7 @@ def put_in_place(job, kind, here, to, staged):
         if copy_.exists():
             target.parent.mkdir(parents=True, exist_ok=True)
             os.rename(copy_, target)
-    locations = job.config.setdefault('locations', {})
-    if kind == 'backups' and to == 'media':
-        locations.pop('backups', None)
-    else:
-        locations[kind] = to
-    job.journal('switch', True)
-    job.save_settings()
+    job.commit('switch', [['locations', kind, None if kind == 'backups' and to == 'media' else to]])
 
 
 def backup_binds(config):
@@ -1365,6 +1417,7 @@ def resume(config, settings_files, state=None, folder=None, out=print):
         job.result('undone', UNDONE_WORDS.get(job.job, UNDONE_WORDS['move']), power_cut=True)
         job.done()
         return 0
+    job.reapply(read_state(JOURNAL, job.state) or saved)
     if job.job in ('move', 'back', 'use', 'mirror_add'):
         run(
             [
@@ -1458,10 +1511,7 @@ def finish_cut_off(job, saved):
         if original.name.startswith('nekoserver-old-') and original.exists():
             shutil.rmtree(original)
     elif job.job == 'release':
-        name = saved['undo']['drive']
-        drop_fstab_line(EXTRA_MOUNT_ROOT() / name)
-        job.config.get('storage', {}).pop(name, None)
-        job.save_settings()
+        drop_fstab_line(EXTRA_MOUNT_ROOT() / saved['undo']['drive'])
     job.result('resumed', 'The power went off during the job; it was finished at the start.', power_cut=True)
     job.done()
 
@@ -1475,6 +1525,7 @@ def finish(config, settings_files, state=None, folder=None, out=print):
     if not saved or not saved.get('committed'):
         return 0
     job = Job(saved['request'], config, settings_files, state, folder, out)
+    job.reapply(saved)
     kind = job.request.get('kind')
     try:
         if job.job == 'mirror_add':
