@@ -37,6 +37,8 @@ END_METADATA = ('0.90', '1.0')
 STATUS_LIMIT = 120
 # How many looks 10 s apart a replace may still say "Never started" after its start.
 NEVER_LOOKS = 30
+# Kernel names and Btrfs's numbers are ASCII digits (str.isdigit() also takes "²").
+DIGITS = '0123456789'
 
 
 def line(path):
@@ -96,10 +98,10 @@ def disk_of(kname):
     """The disk a partition's kernel name belongs to: sdb1 → sdb, nvme0n1p2 → nvme0n1,
     mmcblk0p1 → mmcblk0 (the "p" only after a digit, so sdp1 → sdp). Plain string steps, no
     regular expression: a name read from /sys never costs more than one pass."""
-    base = kname.rstrip('0123456789')
+    base = kname.rstrip(DIGITS)
     if base == kname:
         return kname
-    if base.endswith('p') and base[-2:-1].isdigit():
+    if base.endswith('p') and len(base) > 1 and base[-2] in DIGITS:
         return base[:-1]
     return base
 
@@ -110,7 +112,7 @@ def percent_done(said):
     if end < 0:
         return None
     start = end
-    while start > 0 and (said[start - 1].isdigit() or said[start - 1] == '.'):
+    while start > 0 and said[start - 1] in DIGITS + '.':
         start -= 1
     try:
         return float(said[start:end])
@@ -353,7 +355,7 @@ def read_errors(said):
     for part in said.split(','):
         words = part.split()
         # ", N write errs, M uncorr. read errs" (plain string steps, no regular expression)
-        if len(words) >= 2 and words[0].isdigit() and words[1] in ('write', 'uncorr.'):
+        if len(words) >= 2 and words[0].isdecimal() and words[1] in ('write', 'uncorr.'):
             errors += int(words[0])
     return errors
 
