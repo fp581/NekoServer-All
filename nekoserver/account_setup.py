@@ -819,11 +819,26 @@ PHOTOS_FIRST = (
 
 
 def immich_waits_for_its_photos(config):
-    """Immich's database knows photos, and none of its folders is on the photo drive."""
+    """None of Immich's folders is on the photo drive, and Immich's own log says it stops
+    for a missing folder marker ("Failed to read (/data/encoded-video/.immich): ENOENT"):
+    its database knows photos that are not there. A new Immich, still starting or stopped
+    for another reason, never logs that (it makes its folders itself once it is up)."""
     from modules import photos
 
     try:
-        db = Path(config['data_mount']) / 'appdata' / 'immich' / 'postgres'
-        return photos.waits_for_its_photos(photo_library(config), db)
-    except (KeyError, OSError, RuntimeError, ValueError):
+        if any((photo_library(config) / name).is_dir() for name in photos.IMMICH_FOLDERS):
+            return False
+        ids = docker(
+            [
+                'ps',
+                '-aq',
+                '--filter',
+                'label=com.docker.compose.project=neko-immich',
+                '--filter',
+                'label=com.docker.compose.service=immich-server',
+            ]
+        ).split()
+        said = docker(['logs', '--tail', '200', ids[0]]) if ids else ''
+    except (KeyError, OSError, RuntimeError, ValueError, subprocess.SubprocessError):
         return False
+    return any('Failed to read' in line and photos.MARKER in line for line in said.splitlines())
