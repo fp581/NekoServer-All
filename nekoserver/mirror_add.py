@@ -61,27 +61,14 @@ def md_array(sys_block, name):
     if not md.is_dir():
         return None
     action = line(md / 'sync_action') or 'idle'
-    members = []
-    for dev in sorted(md.glob('dev-*')):
-        state = line(dev / 'state') or ''
-        if 'faulty' in state:
-            continue
-        kname = dev.name[len('dev-') :]
-        members.append((kname, number(dev / 'offset') or 0))
+    members = md_members(md)
     component = number(md / 'component_size')  # KiB each member holds
     need = None
     like = None
     if members and component:
         kname, offset = members[0]
         like = f'/dev/{kname}'
-        partition = Path(sys_block) / re.sub(r'p?\d+$', '', kname) / kname
-        start = number(partition / 'start') if partition.is_dir() else None
-        if start is not None:
-            # A partition: the new drive gets one of the same size at the same place.
-            need = (start + (number(partition / 'size') or 0)) * 512 + TABLE_ROOM
-        else:
-            version = (line(md / 'metadata_version') or '').split(':')[-1]
-            need = offset * 512 + component * 1024 + (END_ROOM if version in END_METADATA else 0)
+        need = md_need(sys_block, md, kname, offset, component)
     return {
         'id': f'md-{name}',
         'kind': 'md',
@@ -91,6 +78,27 @@ def md_array(sys_block, name):
         'like': like,
         'min_bytes': need,
     }
+
+
+def md_members(md):
+    """The members still working: (kernel name, data offset in sectors)."""
+    members = []
+    for dev in sorted(md.glob('dev-*')):
+        if 'faulty' in (line(dev / 'state') or ''):
+            continue
+        members.append((dev.name[len('dev-') :], number(dev / 'offset') or 0))
+    return members
+
+
+def md_need(sys_block, md, kname, offset, component):
+    """The bytes a new member needs, laid out like the member `kname`."""
+    partition = Path(sys_block) / re.sub(r'p?\d+$', '', kname) / kname
+    start = number(partition / 'start') if partition.is_dir() else None
+    if start is not None:
+        # A partition: the new drive gets one of the same size at the same place.
+        return (start + (number(partition / 'size') or 0)) * 512 + TABLE_ROOM
+    version = (line(md / 'metadata_version') or '').split(':')[-1]
+    return offset * 512 + component * 1024 + (END_ROOM if version in END_METADATA else 0)
 
 
 def btrfs_pool(run, uuid):
