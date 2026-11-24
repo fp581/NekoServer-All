@@ -239,11 +239,19 @@ def why_not(row, need):
 def nothing_at_work(lock=SETUP_LOCK, recovery=None):
     """Why a move (either way) cannot start now, or None: setup running, an unfinished app
     update, monthly check, upgrade or move, or a backup or app update at work (the
-    backups' shared lock, `recovery`)."""
+    backups' shared lock, `recovery`). A change from the Drives page that is not finished
+    has copies at work at a drive's top (nekoserver-new-...): the whole drive is never
+    copied with them."""
+    import storage_jobs
+
     for path, what in (
         (MAINTENANCE_JOURNAL, 'An app update or the monthly check is not finished yet'),
         (UPGRADE_JOURNAL, 'A NekoServer upgrade is at work'),
         (JOURNAL, 'A move to another drive is not finished yet (sudo python3 migrate.py resume)'),
+        (
+            storage_jobs.STATE / storage_jobs.JOURNAL,
+            'A change on the Drives page is not finished yet (restart the computer)',
+        ),
     ):
         if Path(path).exists():
             return what
@@ -401,13 +409,15 @@ def jobs_at_work(out=print, sleep=time.sleep, wait=SHORT_JOBS_WAIT):
         waited += 5
 
 
-def stop_writers(journal=JOURNAL, out=print, sleep=time.sleep):
+def stop_writers(journal=JOURNAL, out=print, sleep=time.sleep, note=None):
     """Everything that writes to the drives stops; what ran is noted to start again. The
     timers go first, so no job starts meanwhile; a job already at work (a backup worker,
     a oneshot service: "activating") is given a few minutes to end, then stops the move
-    rather than being cut off half-way."""
+    rather than being cut off half-way. `note(stopped)`: where that is written down (this
+    move's journal unless named: the dashboard's storage jobs keep their own)."""
+    note = note or (lambda stopped: record(journal, phase='stopped', stopped=stopped))
     timers = [u for u in nekoserver_units() if u.endswith(TIMER)]
-    record(journal, phase='stopped', stopped=timers)
+    note(timers)
     for unit in timers:
         run(['systemctl', 'stop', unit], 600, check=False)
     # A timer still active would start a backup during the quiet copy and the switch
@@ -420,7 +430,7 @@ def stop_writers(journal=JOURNAL, out=print, sleep=time.sleep):
         raise RuntimeError(', '.join(busy) + ' is at work (a backup or another job); try again once it has finished')
     rest = active(WRITERS) + [u for u in nekoserver_units() if not u.endswith(TIMER)]
     stopped = timers + rest
-    record(journal, phase='stopped', stopped=stopped)
+    note(stopped)
     for unit in rest:
         run(['systemctl', 'stop', unit], 600, check=False)
     still = active(WRITERS) + [u for u in nekoserver_units('active,' + AT_WORK) if not u.endswith(TIMER)]
