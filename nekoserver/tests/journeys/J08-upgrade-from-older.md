@@ -76,5 +76,8 @@ then `nekoserver-upgrade-resume.service`) drive it; reading the dashboard is by 
 checkpoint by the new release's setup: to e09cdbd (33 of 34, the phone step waiting), to 37843d5
 (T1-gate-37843d5: the first page, the answers kept, the one-time move to stable said as above,
 16 of 16 containers, the dashboard on 1.0.0 with no alert, a restart fine) and to 7efba8a. Not
-run: the upgrade from 0.47.9, the dashboard's upgrade button, and the check made to fail. The
-channels drill on the final commit 597c800: pending.
+run: the upgrade from 0.47.9, the dashboard's upgrade button, and the check made to fail. On the
+final commit 597c800 the channels drill passed (T1-final-8), and so did the upgrade cut by a
+power cut mid-run (T1-final-7: still 0.52.3 and working after the boot, then "Continue
+unfinished setup" to 1.0.0); on e2da4a2 the upgrade with a restart after it (T1-proof-8).
+Betas being offered could not be shown live: no release newer than 1.0.0 exists.
