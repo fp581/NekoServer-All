@@ -1667,33 +1667,39 @@ def finish_cut_off(job, saved):
     job.done()
 
 
+def finish_cut_move(job, saved):
+    """A move or a "back" cut off after its switch: finished (what was written at the old
+    place meanwhile copied again, then setup, the old folders retired, the apps started),
+    or, cut off while it was being undone (unswitch), undone."""
+    import migrate
+
+    kind, here = job.request.get('kind'), saved['undo']['here']
+    if saved.get('phase') == 'unswitch':
+        unswitch(job, kind, here, saved['undo'].get('stopped'), saved['undo'].get('why', ''))
+    stopped = migrate.stop_writers(
+        out=job.out, note=lambda units: job.journal('start', True, stopped=units), own=left_alone()
+    )
+    for old, new in zip(paths(job.config, kind, here), paths(job.config, kind, saved['undo']['to'])):
+        if old.exists() and not os.path.ismount(old) and new.exists():
+            migrate.copy(old, new, final=True, out=job.out)
+    finish_move(job, kind, here, stopped)
+
+
 def finish(config, settings_files, state=None, folder=None, out=print):
     """After Docker, at the start: a cut-off move or added drive finished (setup run again,
     then the old folders retired and the apps started)."""
-    import migrate
-
     saved = read_state(JOURNAL, state)
     if not saved or not saved.get('committed'):
         return 0
     job = Job(saved['request'], config, settings_files, state, folder, out)
     job.reapply(saved)
-    kind = job.request.get('kind')
     try:
         if job.action == 'mirror_add':
             return finish_mirror(job, saved)
         if job.action == 'use':
             setup_again(job)
         else:
-            here = saved['undo']['here']
-            if saved.get('phase') == 'unswitch':
-                unswitch(job, kind, here, saved['undo'].get('stopped'), saved['undo'].get('why', ''))
-            stopped = migrate.stop_writers(
-                out=out, note=lambda units: job.journal('start', True, stopped=units), own=left_alone()
-            )
-            for old, new in zip(paths(config, kind, here), paths(config, kind, saved['undo']['to'])):
-                if old.exists() and not os.path.ismount(old) and new.exists():
-                    migrate.copy(old, new, final=True, out=out)
-            finish_move(job, kind, here, stopped)
+            finish_cut_move(job, saved)
     except Stop as stop:
         state = stopped_state(read_state(JOURNAL, job.state) or saved)
         job.result(state, str(stop), stop.advice, power_cut=True)
