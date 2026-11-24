@@ -164,6 +164,25 @@ class UnswitchTests(Jobs):
         self.assertIsNone(saved_journal(self.root))
         self.assertEqual(self.started, [['nekoserver-immich.service']])
 
+    def test_the_result_says_how_long_the_apps_were_paused(self):
+        self.files(self.root / 'ssd/photos/immich-library', **{'x.jpg': 'one'})
+        self.assertEqual(self.run_job('move', kind='photos', to='media'), 0)
+        self.assertIsInstance(last_result(self.root)['paused_seconds'], int)
+
+    def test_the_finish_after_docker_holds_the_operation_lock(self):
+        import fcntl
+
+        job = storage_jobs.Job(
+            self.request('move', kind='photos', to='media'), self.config, self.settings, self.root / 'state'
+        )
+        job.journal('start', True, staging='x', here='ssd', to='media', change=[['locations', 'photos', 'media']])
+        with open(self.root / 'operation.lock', 'a') as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            self.assertEqual(storage_jobs.finish(self.config, self.settings, self.root / 'state', self.root / 'run'), 1)
+        self.assertEqual(self.setups, [])
+        self.assertIsNotNone(saved_journal(self.root))
+        self.assertIn('next start', last_result(self.root)['advice'])
+
     def test_which_failures_refuse_the_place(self):
         refused = storage_jobs.refused_place
         self.assertTrue(refused('photos', RuntimeError('FAILED photos: Existing Immich paths differ')))

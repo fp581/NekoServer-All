@@ -911,6 +911,9 @@ class Job:
                 'started_at': self.started,
                 'finished_at': None if state == 'working' else time.time(),
                 'power_cut': power_cut,
+                # How long the apps were paused for the last copy and the switch (said on
+                # the page, and before the next move).
+                'paused_seconds': getattr(self, 'paused_seconds', None),
             },
             self.state,
         )
@@ -1153,7 +1156,7 @@ def switch_data(job, kind, here, to, sources, staged, size):
 
     try:
         copy_all(job, sources, staged, size, final=False)
-        job.journal('stop', False)
+        job.journal('stop', False, paused_at=time.time())
         job.progress('stop')
         stopped = migrate.stop_writers(
             out=job.out, note=lambda units: job.journal('stop', False, stopped=units), own=left_alone()
@@ -1273,6 +1276,7 @@ def finish_move(job, kind, here, stopped):
         retire_old(job, kind, here)
     finally:
         migrate.start_again(stopped, job.out)
+        paused(job)
     if other:
         raise Stop(
             f'Your {KIND_WORDS[kind]} are on {place_words(job.undo()["to"])} now and their apps use them there. '
@@ -1284,6 +1288,13 @@ def finish_move(job, kind, here, stopped):
     problem = before and migrate.server_check(job.config, before)
     if problem:
         raise Stop(f'Your {KIND_WORDS[kind]} were moved, but the server check after it says: {problem}')
+
+
+def paused(job):
+    """The time from the apps' stop to their start again, kept for the result."""
+    since = job.undo().get('paused_at')
+    if isinstance(since, (int, float)):
+        job.paused_seconds = max(0, round(time.time() - since))
 
 
 def moved_here(config, kind, state=None):
@@ -1364,6 +1375,7 @@ def unswitch(job, kind, here, stopped, why):
         also = f' Setup run again for {place_words(here)} stopped too: {error}'
     finally:
         migrate.start_again(stopped, job.out)
+        paused(job)
     raise Stop(
         f'Your {KIND_WORDS[kind]} stay on {place_words(here)}: setup could not use them on {place_words(to)} '
         f'({why}). Nothing was changed.' + also,
@@ -1746,11 +1758,24 @@ def finish_cut_move(job, saved):
 
 def finish(config, settings_files, state=None, folder=None, out=print):
     """After Docker, at the start: a cut-off move or added drive finished (setup run again,
-    then the old folders retired and the apps started)."""
+    then the old folders retired and the apps started), under the operation lock as the
+    job itself was, so the control service's app buttons wait for it too (control.rs)."""
+    from neko_common import OPERATION_LOCK, hold_operation
+
     saved = read_state(JOURNAL, state)
     if not saved or not saved.get('committed'):
         return 0
     job = Job(saved['request'], config, settings_files, state, folder, out)
+    held = hold_operation(OPERATION_LOCK)
+    if held is None:
+        job.result('failed', FACTS.get('busy', 'Another job is at work.'), 'It is tried again at the next start.')
+        return 1
+    with held:
+        return finish_held(job, saved)
+
+
+def finish_held(job, saved):
+    config = job.config
     job.reapply(saved)
     try:
         if job.action == 'mirror_add':

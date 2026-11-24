@@ -101,11 +101,11 @@
     "step_words": {
       "look": "Looking at your disks",
       "copy": "Copying {kind} while the apps keep running",
-      "stop": "Stopping the apps that use {kind}",
+      "stop": "Pausing all apps for the last step (they start again by themselves)",
       "last_copy": "Copying what changed in {kind} since",
       "compare": "Checking that every file of {kind} arrived whole",
       "switch": "Switching {kind} to the new drive",
-      "start": "Starting the apps again",
+      "start": "Starting all apps again",
       "unswitch": "Putting {kind} back where they were",
       "check": "Checking that the apps work",
       "erase": "Erasing the drive",
