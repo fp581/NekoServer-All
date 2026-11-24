@@ -265,3 +265,14 @@ After T2's fix (e739628, changed lines only): 23 mutants of the new helpers left
 labels of `wait_replace`'s answers that no caller compares, `>= 2` against `> 2` or `>= 3` on a piece of a
 status line that always has four words, `percent_done` walking past the start of a line that never ends in
 a digit, and `NEVER_LOOKS` by one. The "never counted as finished" mutants are killed now.
+
+## 1.0.1 round: the Drives page's Rust lines (cargo-mutants --in-diff v1.0.0..c17ab91, 2026-11-24)
+216 mutants on the lines 1.0.1 added to control.rs, serve.rs, storage.rs, drives.rs, media_folders.rs
+and collect.rs: 190 caught, 3 unviable, 23 missed. 15 of them were missing tests, now added (drives.rs:
+the by-id rank before the alphabet, each drive's words, `rotational` however lsblk says it, the mounted
+filesystem shown; storage.rs: release and back pass their fields, a long kernel name or a bare "ata-" is
+no stable name, an old copy's id is lower-case hex only; media_folders.rs: a backslash or a control
+character in a name is left out on its own). The 8 left are expected: `<` against `<=` on a boundary
+(the PIN token's lifetime, the shared tries' `left < 1.0` moved from unlock unchanged, a request's 60 s
+`ON_ITS_WAY`), `(rank, name) <` against `<=` in drives::by_id (two entries of one folder never have one
+name), control::run's service loop, and drives::disks (it runs the real lsblk; from_lsblk is tested).
